@@ -1233,6 +1233,189 @@ async function pulledEgress(others: Slot[]) {
   });
 }
 
+/**
+ * Round I, run 8, on a host that pulls: a guest running behind a unit an earlier configuration
+ * made is ended at the agent's start; from inside a pulled guest nothing leaves but through
+ * its proxy; one slot's proxy user cannot read another slot's credentials; removing the files
+ * alone (what it does, stated); a wake from disk without credentials fetches; a changed answer
+ * at a cold start replaces stale credentials and the guest browses again.
+ */
+async function pulledRun8(others: Slot[]) {
+  for (const slot of others) await slot.ensureStopped();
+  // A guest on a host that does not pull yet, with no egress: its proxy goes direct.
+  const direct = new Slot("bench-direct", -1, { egress: false });
+  await direct.create();
+  await direct.learnIndex();
+  await direct.call("start");
+  (await firstReply(direct, now())).cdp.close();
+  const directUnit = await helper({ cmd: "egress-unit", index: direct.index });
+  const standins = await helper({ cmd: "standins", assigned: ["bench-p8-a", "bench-p8-b"] });
+  const switched = sinceNow();
+  await helper({ cmd: "pull-mode", origin: standins.origin });
+  await waitForAgent(others[0]!);
+  const directAfter = {
+    phase: (await direct.status()).phase,
+    vmms: ((await helper({ cmd: "vmm-pids", slotId: direct.id })).pids as string[]).length,
+    ended: (await agentLines(switched)).some(
+      (line) => line.event === "egress.unrequired-ended" && line.slotId === direct.id,
+    ),
+  };
+  // Two pulled slots, both assigned, both running.
+  const a = new Slot("bench-p8-a", -1, { egress: false });
+  const b = new Slot("bench-p8-b", -1, { egress: false });
+  const live: Record<string, { cdp: Cdp; session: string }> = {};
+  for (const slot of [a, b]) {
+    await slot.create();
+    await slot.learnIndex();
+    const began = now();
+    await slot.call("start");
+    const reply = await firstReply(slot, began);
+    const work = await setup(reply.cdp);
+    live[slot.id] = { cdp: reply.cdp, session: await reply.cdp.attach(work.targets.at(-1)!) };
+  }
+  const https = async (slot: Slot) => httpsProbe(live[slot.id]!.cdp, live[slot.id]!.session);
+  const firstHttps = { a: await https(a), b: await https(b) };
+  // From inside guest a: only its own proxy answers.
+  const facts = await helper({ cmd: "facts" });
+  const probes: [string, string, string, number, "open" | "closed"][] = [
+    ["own proxy (positive control)", "tcp", "172.16.0.1", 3128, "open"],
+    ["public address direct, TCP 443", "tcp", "1.1.1.1", 443, "closed"],
+    ["public address direct, TCP 80", "tcp", "93.184.215.14", 80, "closed"],
+    ["public DNS over UDP", "udp-dns", "8.8.8.8", 53, "closed"],
+    ["metadata DNS over UDP", "udp-dns", "169.254.169.254", 53, "closed"],
+    ["ICMP to a public address", "icmp", "1.1.1.1", 0, "closed"],
+    ["ICMP to the metadata address", "icmp", "169.254.169.254", 0, "closed"],
+    ["metadata address, TCP 80", "tcp", "169.254.169.254", 80, "closed"],
+    ...[7310, 7311, 7312].flatMap((port): [string, string, string, number, "closed"][] => [
+      [`host port ${port} via the slot's veth`, "tcp", vethHost(a.index), port, "closed"],
+      [`host port ${port} on the host's address`, "tcp", String(facts.hostAddress), port, "closed"],
+    ]),
+  ];
+  const fromGuest = [];
+  for (const [what, kind, host, port, want] of probes) {
+    const response = await fetch(
+      `${a.bridge}/probe?kind=${kind}&host=${encodeURIComponent(host)}&port=${port}`,
+      { signal: AbortSignal.timeout(6000) },
+    );
+    const probe = (await response.json()) as { result: string };
+    const open = probe.result === "connected" || probe.result === "answered";
+    fromGuest.push({
+      what,
+      kind,
+      host,
+      port,
+      result: probe.result,
+      ok: want === "open" ? open : !open,
+    });
+  }
+  // One slot's proxy user and the other slot's credentials.
+  const crossRead = (
+    await helper({ cmd: "cross-read", fromIndex: a.index, toIndex: b.index, slotId: b.id })
+  ).tried as { asProxyUser: string; forRoot: string }[];
+  // Removing a's files alone, its proxy still running.
+  await helper({ cmd: "credentials-remove", slotId: a.id, index: a.index, stop: false });
+  const afterRemovalAlone = await https(a);
+  live[a.id]!.cdp.close();
+  await a.call("stop");
+  // b: parked to disk, its files removed, woken: it fetches again and browses.
+  live[b.id]!.cdp.close();
+  await b.call("pause");
+  await b.waitForDisk();
+  await helper({ cmd: "credentials-remove", slotId: b.id, index: b.index });
+  const accountBefore = (
+    (await helper({ cmd: "standin-log", which: "account" })).lines as {
+      slotId?: string;
+    }[]
+  ).filter((row) => row.slotId === b.id).length;
+  const woke = now();
+  await b.call("resume");
+  const reply = await firstReply(b, woke);
+  const work = await setup(reply.cdp);
+  const bSession = await reply.cdp.attach(work.targets.at(-1)!);
+  const wakeHttps = await httpsProbe(reply.cdp, bSession);
+  reply.cdp.close();
+  const accountAfter = (
+    (await helper({ cmd: "standin-log", which: "account" })).lines as {
+      slotId?: string;
+    }[]
+  ).filter((row) => row.slotId === b.id).length;
+  const bCredentials = await helper({ cmd: "credentials-info", slotId: b.id });
+  // a: its password rotated at the account; its next cold start replaces the stale copy.
+  await helper({ cmd: "credentials-remove", slotId: a.id, index: a.index });
+  await a.call("start");
+  let aReply = await firstReply(a, now());
+  aReply.cdp.close();
+  await a.call("stop");
+  const before = (await helper({ cmd: "credentials-info", slotId: a.id })).passwordSha;
+  await helper({ cmd: "standins-rotate", slotId: a.id });
+  // From a's start on: its guest's requests, by the username the upstream saw.
+  const rotatedAt = Date.now();
+  const began = now();
+  await a.call("start");
+  aReply = await firstReply(a, began);
+  const aWork = await setup(aReply.cdp);
+  const aSession = await aReply.cdp.attach(aWork.targets.at(-1)!);
+  const rotatedHttps = await httpsProbe(aReply.cdp, aSession);
+  aReply.cdp.close();
+  const after = (await helper({ cmd: "credentials-info", slotId: a.id })).passwordSha;
+  const upstream = (await helper({ cmd: "standin-log", which: "upstream" })).lines as {
+    at: number;
+    line?: string;
+    authOk?: boolean;
+    slot?: string | null;
+  }[];
+  const afterRotation = upstream.filter(
+    (row) => row.at >= rotatedAt && row.line && row.slot === a.id,
+  );
+  const othersAfterRotation = upstream.filter(
+    (row) => row.at >= rotatedAt && row.line && row.slot !== a.id,
+  );
+  for (const slot of [a, b, direct]) {
+    await slot.ensureStopped().catch(() => undefined);
+    await admin({ op: "delete", slotId: slot.id, term: slot.term, eraseProfile: true } as never);
+  }
+  await helper({ cmd: "pull-mode", off: true });
+  await waitForAgent(others[0]!);
+  emit({
+    kind: "pull-run8",
+    direct: { unit_before: directUnit, after_switch: directAfter },
+    first_https: firstHttps,
+    from_guest: fromGuest,
+    cross_read: crossRead,
+    after_removal_alone: afterRemovalAlone,
+    wake_from_disk: {
+      https: wakeHttps,
+      fetched: accountAfter - accountBefore,
+      credentials: bCredentials,
+    },
+    rotation: {
+      before,
+      after,
+      https: rotatedHttps,
+      upstream_after: afterRotation,
+      others_after: othersAfterRotation.map(({ line: _line, ...row }) => row),
+    },
+    ok:
+      directUnit.required === false &&
+      directAfter.phase === "stopped" &&
+      directAfter.vmms === 0 &&
+      directAfter.ended &&
+      firstHttps.a === "opaque" &&
+      firstHttps.b === "opaque" &&
+      fromGuest.every((probe) => probe.ok) &&
+      crossRead.every((entry) => entry.asProxyUser !== "read" && entry.forRoot === "present") &&
+      wakeHttps === "opaque" &&
+      accountAfter - accountBefore === 1 &&
+      (bCredentials.files as Record<string, unknown>).password !== null &&
+      before !== null &&
+      after !== null &&
+      before !== after &&
+      rotatedHttps === "opaque" &&
+      afterRotation.length > 0 &&
+      afterRotation.every((row) => row.authOk === true),
+  });
+}
+
 /** Round D, D3: the run's own verdict, from every row it wrote. */
 function assertAll() {
   const failed = emitted.filter(
@@ -1821,11 +2004,13 @@ async function afterReboot(slots: Slot[]) {
 
 async function main() {
   // A rerun starts clean: the previous run's slots are deleted (their guests ended, state erased).
+  await helper({ cmd: "bench-credentials", action: "save" });
   const listed = await admin({ op: "list" });
   if (listed.op === "list")
     for (const slot of listed.slots)
       if (slot.slotId.startsWith("bench-"))
         await admin({ op: "delete", slotId: slot.slotId, term: slot.term });
+  await helper({ cmd: "bench-credentials", action: "restore" });
   const slots = [0, 1, 2, 3, 4].map((index) => new Slot(`bench-${index}`, index));
   for (const slot of slots) await slot.create();
   const [first] = slots;
@@ -1870,6 +2055,7 @@ async function main() {
   if (options.phases.includes("profile")) await agentMadeProfile();
   if (options.phases.includes("mkfs-time")) await mkfsTimes();
   if (options.phases.includes("egress-pull")) await pulledEgress(slots);
+  if (options.phases.includes("pull-run8")) await pulledRun8(slots);
   assertAll();
   emit({ kind: "done" });
 }

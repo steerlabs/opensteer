@@ -96,7 +96,13 @@ export interface HypervisorDriver {
   /** Round H: all of the slot's pulled credentials are on this host. */
   hasPulledEgress(slotId: string): Promise<boolean>;
   /** Round H: writes them (temporary names renamed into place; root-owned, 0600, root-only dir). */
-  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<void>;
+  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<boolean>;
+  /**
+   * Round I, U3: on a pulling host, whether the slot's proxy unit as systemd holds it requires
+   * an upstream and loads its credentials from the slot's derived files (or none, when it has
+   * none). False for a unit an earlier agent or configuration made.
+   */
+  proxyRequiresUpstream(slotId: string): Promise<boolean>;
   /** Round H: the paths a slot's pulled credentials have on this host. */
   pulledEgressFiles(slotId: string): readonly string[];
   /** Re-applies the host's own rules if they are gone; true if it had to. */

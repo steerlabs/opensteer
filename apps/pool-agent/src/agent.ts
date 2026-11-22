@@ -45,7 +45,7 @@ import {
 } from "./driver.js";
 import { fits, guestCharge } from "./capacity.js";
 import { ProfilesFull } from "./profiles.js";
-import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
+import { acceptSlotEgress, type SlotEgressAnswer } from "./slot-egress-fetch.js";
 import {
   isTombstone,
   type JournalRecord,
@@ -302,6 +302,21 @@ export class PoolAgent {
         this.#log({ event: "slot.orphan-released", slotId });
       }
     await mapLimit(this.#live(), 16, (slot) => slot.lane.run(() => this.#settle(slot)));
+    // Round I, U3: on a pulling host no guest keeps running behind a proxy unit an earlier
+    // agent or configuration made (one that does not require an upstream, or loads its
+    // credentials from elsewhere): it is ended. A guest paused in memory gets the slot's own
+    // unit at its wake, before it runs.
+    if (this.#driver.pullsEgress)
+      for (const slot of this.#live())
+        if (
+          slot.record.phase === "running" &&
+          !(await this.#step("verify", () =>
+            this.#driver.proxyRequiresUpstream(slot.record.slotId),
+          ))
+        ) {
+          await slot.lane.run(() => this.#lose(slot));
+          this.#log({ event: "egress.unrequired-ended", slotId: slot.record.slotId });
+        }
     const swept = await this.#step("sweep", () =>
       this.#driver.sweep(
         new Map(
@@ -816,6 +831,11 @@ export class PoolAgent {
     return this.#admin.run(async () => {
       const slot = this.#slots.get(slotId);
       if (!slot || slot.deleted) {
+        // Round I, U8: a delete naming a tombstoned slot carries a term not lower than its
+        // tombstone's, so an old delete replayed never erases what a later slot kept.
+        const tombstone = this.#tombstones.get(slotId);
+        if (term !== undefined && tombstone && term < tombstone.record.term)
+          throw new SlotConflict("This slot was deleted at a later term than this delete names.");
         // Round H: a slot it does not know: leftover pulled credentials at its derived paths.
         if (this.#driver.pullsEgress) {
           await this.#driver.eraseCredentials(this.#driver.pulledEgressFiles(slotId));
@@ -967,13 +987,17 @@ export class PoolAgent {
   }
 
   /**
-   * Round H: no upstream, no start. On a host that pulls its slots' credentials, a start or a
-   * wake from disk whose slot has none fetches them first, before anything is written or
-   * booted (its proxy's service cannot have started: no guest of the slot runs).
-   * - Fetched: written in place, and the start goes on (its proxy is defined again with them).
-   * - None assigned: a stored, signed `applied: false`, reason `egress-required`; nothing booted.
-   * - The fetch could not be completed: refused as "try again" (`unavailable`), nothing written.
-   * Credentials already present are used as they are.
+   * Round H, and round I (U1): no upstream, no start, and the host's credentials are a copy.
+   * On a host that pulls its slots' credentials, every start and every wake from disk asks the
+   * account service first, whether or not credentials are there, before anything is written or
+   * booted (no guest of the slot runs, so its proxy's service is not running either).
+   * - Given: checked as the proxy checks them (U2), written if they differ from what is there,
+   *   and the start goes on (its proxy is defined again if the upstream differs).
+   * - None assigned: what is there is removed, and a stored, signed `applied: false` with
+   *   reason `egress-required` answers; nothing booted.
+   * - Not completed (no answer, a refusal, a malformed answer, its deadline): what is there is
+   *   used, if anything is; otherwise "try again" (`unavailable`), with nothing written.
+   * A wake from memory asks nothing.
    */
   async #withEgress(
     slot: Slot,
@@ -982,23 +1006,29 @@ export class PoolAgent {
   ): Promise<BrowserPoolAgentResult> {
     const fetch = this.#options.egressFetch;
     const slotId = slot.record.slotId;
-    if (!fetch || (await this.#driver.hasPulledEgress(slotId))) return work();
+    if (!fetch) return work();
     let answer: SlotEgressAnswer | null;
     try {
-      answer = await within(this.#deadlines.egress, "The slot's egress fetch", (signal) =>
+      const fetched = await within(this.#deadlines.egress, "The slot's egress fetch", (signal) =>
         fetch(slotId, signal),
       );
+      answer = fetched === null ? null : acceptSlotEgress(fetched);
     } catch (error) {
       // Never the error's text: it is the fetch's, and says nothing secret, but stays out anyway.
       this.#log({ event: "egress.fetch-failed", slotId, error: (error as Error)?.name ?? "error" });
+      if (await this.#driver.hasPulledEgress(slotId)) {
+        this.#log({ event: "egress.kept", slotId });
+        return work();
+      }
       throw new AgentUnavailable("The slot's egress could not be fetched; try again later.");
     }
     if (answer === null) {
+      await this.#driver.eraseCredentials(this.#driver.pulledEgressFiles(slotId));
       this.#log({ event: "egress.none", slotId });
       return this.#store(slot, slot.record, refused(call.id, "egress-required", slot.record));
     }
-    await this.#driver.writePulledEgress(slotId, answer);
-    this.#log({ event: "egress.fetched", slotId });
+    const written = await this.#driver.writePulledEgress(slotId, answer);
+    this.#log({ event: "egress.fetched", slotId, changed: written });
     return work();
   }
 

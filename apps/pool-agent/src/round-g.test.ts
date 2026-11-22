@@ -6,7 +6,7 @@
  * c2cc9d421 and failed there.
  */
 import { generateKeyPairSync } from "node:crypto";
-import { appendFile, readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -170,6 +170,8 @@ describe("a profile make that crashed", () => {
 
 describe("a deleted slot's upstream credentials (round G, B)", () => {
   const credentials = async (root: string, name: string) => {
+    // Round I, U4: no fake makes the credentials root by itself; the operator would.
+    await mkdir(root, { recursive: true });
     const files = {
       usernameFile: `${root}/${name}-username`,
       passwordFile: `${root}/${name}-password`,

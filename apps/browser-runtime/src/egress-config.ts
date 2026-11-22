@@ -2,6 +2,10 @@ import { X509Certificate } from "node:crypto";
 import { createSecureContext, getCACertificates, type SecureContext } from "node:tls";
 import { refused } from "@opensteer/core";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
+import {
+  browserEgressCredentialAccepted,
+  parseBrowserEgressUpstreamUrl,
+} from "@opensteer/browser-runtime-core/browser-egress-upstream";
 
 const upstreamUrl = "OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL";
 const upstreamUsername = "OPENSTEER_BROWSER_EGRESS_UPSTREAM_USERNAME";
@@ -30,9 +34,9 @@ export async function readBrowserEgressUpstream(
     if (configured) throw refused("bad_request", `${configured} requires ${upstreamUrl}.`);
     return undefined;
   }
-  const text = value.trim();
-  const url = URL.parse(text);
-  if (!/^https:\/\/(?:\[[^\]]+\]|[^:/?#@\\\s]+):[0-9]+$/iu.test(text) || !url || url.port === "0") {
+  // Round I, U2: the same check a pool host applies before it writes an upstream.
+  const url = parseBrowserEgressUpstreamUrl(value);
+  if (!url) {
     throw refused(
       "bad_request",
       `${upstreamUrl} must be https://host:port without credentials or a path.`,
@@ -41,7 +45,7 @@ export async function readBrowserEgressUpstream(
 
   const username = await readCredential(environment, upstreamUsername);
   const password = await readCredential(environment, upstreamPassword);
-  if (username.includes(":")) {
+  if (!browserEgressCredentialAccepted(username, "username")) {
     throw refused("bad_request", `${upstreamUsername} cannot contain a colon.`);
   }
   const caFile = environment[upstreamCaFile];
@@ -58,8 +62,8 @@ export async function readBrowserEgressUpstream(
     throw refused("bad_request", "Could not configure browser egress upstream TLS trust.");
   }
   return {
-    hostname: url.hostname.replace(/^\[|\]$/gu, ""),
-    port: Number(url.port || 443),
+    hostname: url.hostname,
+    port: url.port,
     authorization: `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`,
     secureContext,
   };
@@ -87,7 +91,7 @@ async function readCredential(environment: NodeJS.ProcessEnv, name: string): Pro
     }
     value = (await readFile(file, fileName, 16 * 1024)).toString("utf8").replace(/[\r\n]+$/u, "");
   }
-  if (!value?.trim()) {
+  if (!value || !browserEgressCredentialAccepted(value, "password")) {
     throw refused("bad_request", `${upstreamUrl} requires ${name} or ${fileName}.`);
   }
   return value;

@@ -15,6 +15,10 @@
 import { randomBytes, sign, type KeyObject } from "node:crypto";
 import { request } from "node:https";
 import { getCACertificates } from "node:tls";
+import {
+  browserEgressCredentialWritable,
+  parseBrowserEgressUpstreamUrl,
+} from "@opensteer/browser-runtime-core/browser-egress-upstream";
 
 export const slotEgressDomain = "opensteer-pool-slot-egress-v1";
 const maximumAnswerBytes = 16 * 1024;
@@ -105,6 +109,11 @@ export async function fetchSlotEgress(options: {
           response.on("error", () =>
             reject(new SlotEgressUnavailable("The account service's answer was cut off.")),
           );
+          // Round I, U8: a response that closes before it is complete fails at once.
+          response.on("close", () => {
+            if (!response.complete)
+              reject(new SlotEgressUnavailable("The account service's answer was cut off."));
+          });
         },
       );
       outgoing.on("error", (error: NodeJS.ErrnoException) =>
@@ -141,35 +150,20 @@ function parseAnswer(text: string): SlotEgressAnswer | null {
   const { url, username, password } = egress as Record<string, unknown>;
   if (typeof url !== "string" || typeof username !== "string" || typeof password !== "string")
     throw new SlotEgressUnavailable("The account service's egress is malformed.");
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new SlotEgressUnavailable("The egress address is not a URL.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username ||
-    parsed.password ||
-    (parsed.pathname !== "/" && parsed.pathname !== "") ||
-    parsed.search ||
-    parsed.hash
-  )
-    throw new SlotEgressUnavailable("The egress address is not an https proxy address.");
-  // Never a control character in what becomes a file the proxy reads line by line.
-  const plain = (value: string) =>
-    value.length > 0 &&
-    value.length <= 1024 &&
-    [...value].every((character) => {
-      const code = character.charCodeAt(0);
-      return code >= 0x20 && code !== 0x7f;
-    });
-  if (!plain(username) || username.includes(":"))
+  return acceptSlotEgress({ upstreamUrl: url, username, password });
+}
+
+/**
+ * Round I, U2: an upstream a pool host may write for a slot's proxy, checked by the same
+ * function the proxy's own configuration uses (`browser-egress-upstream.ts`), so nothing is
+ * written that the proxy would refuse to start with. The address is kept as the proxy reads it.
+ */
+export function acceptSlotEgress(egress: SlotEgressAnswer): SlotEgressAnswer {
+  const url = parseBrowserEgressUpstreamUrl(egress.upstreamUrl);
+  if (!url) throw new SlotEgressUnavailable("The egress address is not an https proxy address.");
+  if (!browserEgressCredentialWritable(egress.username, "username"))
     throw new SlotEgressUnavailable("The egress username is malformed.");
-  if (!plain(password)) throw new SlotEgressUnavailable("The egress password is malformed.");
-  return {
-    upstreamUrl: `https://${parsed.hostname}:${parsed.port || "443"}`,
-    username,
-    password,
-  };
+  if (!browserEgressCredentialWritable(egress.password, "password"))
+    throw new SlotEgressUnavailable("The egress password is malformed.");
+  return { upstreamUrl: url.text, username: egress.username, password: egress.password };
 }

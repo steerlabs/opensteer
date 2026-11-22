@@ -1,9 +1,15 @@
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
+import { posix } from "node:path";
 import { z } from "zod";
 import { maximumSlots } from "./firecracker/slot-numbers.js";
 import { isPublicIp } from "@opensteer/access/public-network";
 
-const path = z.string().regex(/^\/[A-Za-z0-9._/-]{1,255}$/u);
+// Round I, U6: a path from configuration is normalised once, here: no "." or ".." segment
+// kept, no doubled or trailing slash, so every comparison of a path made from it holds.
+const path = z
+  .string()
+  .regex(/^\/[A-Za-z0-9._/-]{1,255}$/u)
+  .transform((value) => posix.normalize(value).replace(/(.)\/+$/u, "$1"));
 const port = z.number().int().min(1).max(65_535);
 const listen = z.union([
   z.strictObject({ host: z.string().min(1).max(64), port }),

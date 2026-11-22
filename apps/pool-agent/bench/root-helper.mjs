@@ -521,7 +521,14 @@ async function run(command) {
       );
       const dir = existsSync(root) ? (statSync(root).mode & 0o777).toString(8) : null;
       const url = files.url ? readFileSync(`${root}/${base}.url`, "utf8") : null;
-      return { dir, files, url };
+      // Never the password itself: a digest, to see that it changed.
+      const passwordSha = files.password
+        ? createHash("sha256")
+            .update(readFileSync(`${root}/${base}.password`))
+            .digest("hex")
+            .slice(0, 16)
+        : null;
+      return { dir, files, url, passwordSha };
     }
     case "credentials-remove": {
       // Round H, item (d): the slot's pulled credentials taken away, and its proxy process ended
@@ -530,7 +537,76 @@ async function run(command) {
       const base = `slot-${createHash("sha256").update(command.slotId).digest("hex")}`;
       for (const kind of ["url", "username", "password"])
         rmSync(`${root}/${base}.${kind}`, { force: true });
-      spawnSync("systemctl", ["stop", `opensteer-pool-egress-${command.index}.service`]);
+      // Round I: `stop: false` leaves a running proxy as it is, to show what removal alone does.
+      if (command.stop !== false)
+        spawnSync("systemctl", ["stop", `opensteer-pool-egress-${command.index}.service`]);
+      return { ok: true };
+    }
+    case "bench-credentials": {
+      // The bench's own upstream credentials are shared by its slots, and since round G a
+      // delete removes a slot's files once no other live slot names them: the bench keeps a
+      // copy across its own cleanup of an earlier run's slots.
+      const dir = "/etc/opensteer-pool-bench";
+      const copy = "/var/lib/opensteer-pool-bench/credentials-copy";
+      const names = ["upstream-username", "upstream-password", "upstream-ca.pem"];
+      if (command.action === "save") {
+        execFileSync("install", ["-d", "-m", "0700", copy]);
+        for (const name of names)
+          if (existsSync(`${dir}/${name}`))
+            execFileSync("cp", ["-p", `${dir}/${name}`, `${copy}/${name}`]);
+      } else {
+        for (const name of names)
+          if (!existsSync(`${dir}/${name}`) && existsSync(`${copy}/${name}`))
+            execFileSync("cp", ["-p", `${copy}/${name}`, `${dir}/${name}`]);
+      }
+      return { present: names.filter((name) => existsSync(`${dir}/${name}`)).length };
+    }
+    case "cross-read": {
+      // Round I, run 8: one slot's proxy user tries to read another slot's credentials, in
+      // credentialsRoot and in its running proxy's /run/credentials.
+      const root = "/etc/opensteer-pool/credentials";
+      const base = `slot-${createHash("sha256").update(command.slotId).digest("hex")}`;
+      const uid = String(300000 + command.fromIndex);
+      const attempt = (file) => {
+        const out = spawnSync(
+          "setpriv",
+          ["--reuid", uid, "--regid", uid, "--clear-groups", "--no-new-privs", "cat", file],
+          { encoding: "utf8" },
+        );
+        return out.status === 0 ? "read" : (out.stderr.trim().split(": ").at(-1) ?? "refused");
+      };
+      const asRoot = (file) => (existsSync(file) ? "present" : "absent");
+      const files = [
+        `${root}/${base}.password`,
+        `${root}/${base}.username`,
+        `/run/credentials/opensteer-pool-egress-${command.toIndex}.service/password`,
+      ];
+      return {
+        tried: files.map((file) => ({
+          file: file.replace(/slot-[0-9a-f]{64}/u, "slot-<other>"),
+          asProxyUser: attempt(file),
+          forRoot: asRoot(file),
+        })),
+      };
+    }
+    case "standins-rotate": {
+      // Round I, run 8: the account stand-in gives the slot a new password; the upstream
+      // stand-in accepts only the new one.
+      const dir = "/run/opensteer-run-standins";
+      for (const name of ["account.json", "upstream.json"]) {
+        const value = JSON.parse(readFileSync(`${dir}/${name}`, "utf8"));
+        value.assigned[command.slotId].password = createHash("sha256")
+          .update(`${command.slotId}${Math.random()}`)
+          .digest("base64url");
+        if (name === "upstream.json") {
+          const account = JSON.parse(readFileSync(`${dir}/account.json`, "utf8"));
+          value.assigned[command.slotId].password = account.assigned[command.slotId].password;
+        }
+        writeFileSync(`${dir}/${name}`, JSON.stringify(value), { mode: 0o600 });
+      }
+      for (const unit of ["run-account-standin", "run-upstream-standin"])
+        spawnSync("systemctl", ["restart", `${unit}.service`]);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
       return { ok: true };
     }
     case "proxy-request": {

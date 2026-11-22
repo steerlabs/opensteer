@@ -1,53 +1,53 @@
 # The pool host, from the provisioner's side
 
 Written for whoever builds the provisioner's hosts and slots. It is taken from the code at
-`browser-pool-agent` as of this page. Every claim names its file and line.
+`browser-pool-agent` as of this page. Every claim names its file and function (round I, U7: not line numbers, which drift).
 
 ## 1. The administration interface
 
 **Transport.**
 
 - `POST /v1` on the admin listener: `agent.json` `admin.listen`, port `OSP_ADMIN_PORT` 7311
-  (`setup-host.sh:32`).
+  (`setup-host.sh`, `OSP_ADMIN_PORT`).
 - The host firewall drops it from anywhere but loopback and `OSP_PROVISIONER_CIDR`
-  (`setup-host.sh:306`). The provisioner's side is already written:
-  `callBrowserPoolAgentAdmin` (`packages/browser-runtime-core/src/browser-pool-agent-wire.ts:297`).
+  (`setup-host.sh`, `host_firewall`). The provisioner's side is already written:
+  `callBrowserPoolAgentAdmin` (`packages/browser-runtime-core/src/browser-pool-agent-wire.ts`, `callBrowserPoolAgentAdmin`).
 
-**Envelope** (`browser-pool-agent-wire.ts:158`):
+**Envelope** (`browser-pool-agent-wire.ts`, `BrowserPoolAgentAdminEnvelope`):
 
 ```text
 { v: 1, host, issuedAt, nonce, request }
 ```
 
 - `host` is the host id the provisioner enrolled. A request naming another host is refused
-  (`apps/pool-agent/src/server.ts:250`).
+  (`apps/pool-agent/src/server.ts`, `createAdminServer`).
 - `issuedAt` must be within 5 minutes of the host's clock (`browserPoolAgentRequestWindowMs`,
-  `browser-pool-agent-wire.ts:14`; `server.ts:260`).
+  `browser-pool-agent-wire.ts`, `browserPoolAgentRequestWindowMs`; `server.ts`, `createAdminServer`).
 - `nonce` makes each envelope distinct. **There is no nonce ledger.** Replays are made harmless
   by idempotency and terms (below), not by remembering nonces.
 
 **Who signs what.**
 
 - The provisioner signs `browserPoolAgentAdminBytes(envelope)`
-  (`browser-pool-agent-wire.ts:197`, canonical JSON) with its Ed25519 key. Its public half is
-  `agent.json` `admin.provisionerKey`, checked at `server.ts:251`.
+  (`browser-pool-agent-wire.ts`, `browserPoolAgentAdminBytes`, canonical JSON) with its Ed25519 key. Its public half is
+  `agent.json` `admin.provisionerKey`, checked at `server.ts`, `createAdminServer`.
 - The host signs every reply with its host key: `browserPoolAgentAdminReplyBytes(requestBytes,
-reply)` (`browser-pool-agent-wire.ts:202`), i.e. sha256 of the request plus the canonical
-  reply (`server.ts:268`). The client checks it against the host key pinned at enrolment
-  (`browser-pool-agent-wire.ts:323`).
+reply)` (`browser-pool-agent-wire.ts`, `browserPoolAgentAdminReplyBytes`), i.e. sha256 of the request plus the canonical
+  reply (`server.ts`, `createAdminServer`). The client checks it against the host key pinned at enrolment
+  (`browser-pool-agent-wire.ts`, `callBrowserPoolAgentAdmin`).
 - **What a reply proves:** this host, holding the enrolled host key, answered this exact
   request.
 
-**Calls** (schema: `server.ts:92–131`; handling: `server.ts:275`).
+**Calls** (schema: `server.ts`, `adminSchema`; handling: `server.ts`, `administer`).
 
-| Call                                                                                                    | Does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Idempotency                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `create {slotId, term, homeKey, relayKey?, ticketKey?, guest: {vcpus, memoryMib, profileMib, egress?}}` | Makes the slot and its number, namespace and proxy socket, and its profile disk if none is there (section 4). No guest is started. The reply's `slot.controlKey` is the slot's own public key.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | A repeat with the same `homeKey` and `term` returns the same slot and touches no file. Another key or term is `conflict`. A create at or below a deleted slot's last term is `conflict`, for the 30 days its tombstone is kept (`agent.ts:594`, `agent.ts:180`). A profile that cannot be made leaves no slot and no file (`agent.ts:607–620`); one that would make the profiles exceed their filesystem is a signed `conflict` and nothing is made (`profiles.ts:46`, `agent.ts:638`). On a host that pulls egress (section 8) a create names no `egress`, or it is `conflict` (`agent.ts:625`). |
-| `replace-key {slotId, term, homeKey, relayKey?, ticketKey?}`                                            | A new Home key set at a higher term, in one journal write. The old set is refused from then on. **The guest is ended and its saved state discarded; the next start is cold.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | The same term and keys again is a no-op. A lower or equal term is `conflict` (`agent.ts:683–730`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `delete {slotId, term, eraseProfile?}`                                                                  | Ends the guest, erases saved state, the network and the proxy, and writes a tombstone. Answers `{erased: true}` only after the VMM's exit was seen and the files are gone. It also removes the slot's upstream credential files before its record goes, and adds `credentialsErased: true` once they are seen gone, also when the slot has none, and on a pulling host for a slot it no longer knows (a file another live slot also names is kept, and the field is absent; a file that cannot be removed fails the delete, which may be sent again). Settle a deletion on `erased`, `profileErased` and `credentialsErased` all true. With `eraseProfile: true` it then removes the profile disk and adds `profileErased: true` only once the file is seen gone; if it cannot, the delete is refused (`unavailable`) and may be sent again (`agent.ts:769–838`, credentials at `agent.ts:827`, `server.ts:294`). | A delete naming another term is `conflict` and erases nothing. A slot already gone, or never known, answers `erased: true`; with `eraseProfile` a leftover profile at that slot id's path is removed, with the same evidence (`agent.ts:794`).                                                                                                                                                                                                                                                                                                                                                    |
-| `list`                                                                                                  | Every live slot: `slotId`, `term`, `controlKey`, `status`, and `parked: {tier, writeMs?}` while paused (`agent.ts:1706`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Read only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Call                                                                                                    | Does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Idempotency                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create {slotId, term, homeKey, relayKey?, ticketKey?, guest: {vcpus, memoryMib, profileMib, egress?}}` | Makes the slot and its number, namespace and proxy socket, and its profile disk if none is there (section 4). No guest is started. The reply's `slot.controlKey` is the slot's own public key.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | A repeat with the same `homeKey` and `term` returns the same slot and touches no file. Another key or term is `conflict`. A create at or below a deleted slot's last term is `conflict`, for the 30 days its tombstone is kept (`agent.ts`, `#create`, `agent.ts`, `tombstoneRetentionMs`). A profile that cannot be made leaves no slot and no file (`agent.ts`, `#create`); one whose room the profiles' filesystem cannot guarantee is a signed `conflict` and nothing is made (round I: the new size plus what every existing profile may still fill in, against what an unprivileged writer can still use, `bavail`) (`profiles.ts`, `ensureProfile`, `agent.ts`, `#create`). On a host that pulls egress (section 8) a create names no `egress`, or it is `conflict` (`agent.ts`, `#create`). |
+| `replace-key {slotId, term, homeKey, relayKey?, ticketKey?}`                                            | A new Home key set at a higher term, in one journal write. The old set is refused from then on. **The guest is ended and its saved state discarded; the next start is cold.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | The same term and keys again is a no-op. A lower or equal term is `conflict` (`agent.ts`, `replaceKey`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `delete {slotId, term, eraseProfile?}`                                                                  | Ends the guest, erases saved state, the network and the proxy, and writes a tombstone. Answers `{erased: true}` only after the VMM's exit was seen and the files are gone. It also removes the slot's upstream credential files before its record goes, and adds `credentialsErased: true` once they are seen gone, also when the slot has none, and on a pulling host for a slot it no longer knows (a file another live slot also names is kept, and the field is absent; a file that cannot be removed fails the delete, which may be sent again). Settle a deletion on `erased`, `profileErased` and `credentialsErased` all true. With `eraseProfile: true` it then removes the profile disk and adds `profileErased: true` only once the file is seen gone; if it cannot, the delete is refused (`unavailable`) and may be sent again (`agent.ts`, `deleteSlotWithEvidence`, credentials at `agent.ts`, `deleteSlotWithEvidence`, `server.ts`, `administer`). | A delete naming another term is `conflict` and erases nothing; so is one naming a tombstoned slot at a term below its tombstone's (round I). A slot already gone, or never known, answers `erased: true`; with `eraseProfile` a leftover profile at that slot id's path is removed, with the same evidence (`agent.ts`, `deleteSlotWithEvidence`).                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `list`                                                                                                  | Every live slot: `slotId`, `term`, `controlKey`, `status`, and `parked: {tier, writeMs?}` while paused (`agent.ts`, `#summary`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Read only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-**Refusals** (`server.ts:296`, and the envelope checks above): `conflict`, `unknown-slot`, `unavailable`, `bad-request`,
+**Refusals** (`server.ts`, `administer`, and the envelope checks above): `conflict`, `unknown-slot`, `unavailable`, `bad-request`,
 `stale-request`, `unauthenticated`. The client throws `BrowserPoolAgentUnavailable` for any of
 them.
 
@@ -59,22 +59,22 @@ signature over that answer verified (`browser-pool-agent-wire.ts`, `BrowserPoolA
 - **A signed `unavailable`:** the host answered but could not finish, so the effect may be
   partial. Read `list`, or send the call again.
 - **No `refusal`:** no verified answer; the effect is unknown. This includes `bad-request`,
-  `unauthenticated` and `stale-request`, which the host sends unsigned (`server.ts:245–264`).
+  `unauthenticated` and `stale-request`, which the host sends unsigned (`server.ts`, `createAdminServer`).
 
 ## 2. What a host reports at setup
 
-`setup-host.sh install` (`setup-host.sh:414`) does not enrol the host. It makes what enrolment
+`setup-host.sh install` (`setup-host.sh`, its `install` mode) does not enrol the host. It makes what enrolment
 needs, and the operator writes `/etc/opensteer-pool/agent.json` from the provisioner's values
-(`HOST-SETUP.md:132`).
+(`HOST-SETUP.md`, "Agent configuration").
 
-| Fact                                 | Where it comes from                                                                                                                                                                                           |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Host id                              | Chosen by the provisioner, written into `agent.json` `admin.hostId` (`apps/pool-agent/src/config.ts:23`). Not generated on the host.                                                                          |
-| Host key (pin it)                    | `host_key()` makes `/etc/opensteer-pool/host-key.pem` (root, 0600) and publishes `/etc/opensteer-pool/host-key.pub` (`setup-host.sh:107–115`). It signs admin replies and the answer that a slot was deleted. |
-| Relay key (pin it; not the host key) | `/etc/opensteer-pool/relay-key.pem`, certificate `/etc/opensteer-pool-relay/relay-cert.pem`, public half `/etc/opensteer-pool-relay/relay-key.pub` (`setup-host.sh:119–129`).                                 |
-| Relay address                        | `relay.json` `listen` 0.0.0.0:`OSP_RELAY_PORT` 7312 (`setup-host.sh:33, 220–221`). The firewall allows only loopback and `OSP_HOME_CIDR` (`setup-host.sh:305`).                                               |
-| Agent's Home address                 | `agent.json` `listen`, port `OSP_AGENT_PORT` 7310 (`setup-host.sh:31`). Same firewall rule as the relay.                                                                                                      |
-| Admin address                        | `agent.json` `admin.listen`, port 7311 (above).                                                                                                                                                               |
+| Fact                                 | Where it comes from                                                                                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host id                              | Chosen by the provisioner, written into `agent.json` `admin.hostId` (`apps/pool-agent/src/config.ts`, `agentConfigSchema`). Not generated on the host.                                                                  |
+| Host key (pin it)                    | `host_key()` makes `/etc/opensteer-pool/host-key.pem` (root, 0600) and publishes `/etc/opensteer-pool/host-key.pub` (`setup-host.sh`, `host_key`). It signs admin replies and the answer that a slot was deleted.       |
+| Relay key (pin it; not the host key) | `/etc/opensteer-pool/relay-key.pem`, certificate `/etc/opensteer-pool-relay/relay-cert.pem`, public half `/etc/opensteer-pool-relay/relay-key.pub` (`setup-host.sh`, `host_key`).                                       |
+| Relay address                        | `relay.json` `listen` 0.0.0.0:`OSP_RELAY_PORT` 7312 (`setup-host.sh`: `OSP_RELAY_PORT`, and `relay.json` in `install_units`). The firewall allows only loopback and `OSP_HOME_CIDR` (`setup-host.sh`, `host_firewall`). |
+| Agent's Home address                 | `agent.json` `listen`, port `OSP_AGENT_PORT` 7310 (`setup-host.sh`, `OSP_AGENT_PORT`). Same firewall rule as the relay.                                                                                                 |
+| Admin address                        | `agent.json` `admin.listen`, port 7311 (above).                                                                                                                                                                         |
 
 The host's IP address is the provisioner's to know; the host prints none.
 
@@ -83,16 +83,16 @@ The host's IP address is the provisioner's to know; the host prints none.
 **The Home makes its keys and hands back only their public halves.**
 
 - It makes `ManagedBrowserPoolHomeKeys`: `homeKey`, `relayKey` plus a self-signed
-  `relayCertificate`, and `ticketKey` (`apps/host/src/browser/managed-pool.ts:128`).
-- `managedBrowserPoolRegistration(keys)` (`managed-pool.ts:139`) returns `{homeKey, relayKey,
+  `relayCertificate`, and `ticketKey` (`apps/host/src/browser/managed-pool.ts`, `ManagedBrowserPoolHomeKeys`).
+- `managedBrowserPoolRegistration(keys)` (`managed-pool.ts`, `managedBrowserPoolRegistration`) returns `{homeKey, relayKey,
 ticketKey: {keyId, spki}}`, each as SPKI DER base64. These are exactly the key fields of
   `create` and `replace-key`.
 - **Private keys never leave the Home.**
 
 **The provisioner hands the Home public material only**
-(`ManagedBrowserPoolTarget`, `apps/host/src/browser/browser-pool-agent-client.ts:92`, with the
-relay of `managed-pool.ts:117`; built by `managedBrowserPool(target, keys)`,
-`managed-pool.ts:159`):
+(`ManagedBrowserPoolTarget`, `apps/host/src/browser/browser-pool-agent-client.ts`, `ManagedBrowserPoolTarget`, with the
+relay of `managed-pool.ts`, `ManagedBrowserPoolRelay`; built by `managedBrowserPool(target, keys)`,
+`managed-pool.ts`, `managedBrowserPool`):
 
 ```text
 { kind: "managed-pool", agentUrl, slotId, term,
@@ -107,26 +107,26 @@ The agent makes and erases it, because it is the only party on the host (round G
 provisioner never sends a path and never touches the file.
 
 - **Its path is derived from the slot id alone:** `<profilesRoot>/slot-<sha256 of the slot
-id>.ext4` (`apps/pool-agent/src/profiles.ts:20`).
+id>.ext4` (`apps/pool-agent/src/profiles.ts`, `profileFileName`).
   - No slot id reaches a file elsewhere or another slot's file. `profilesRoot` defaults to
-    `/var/lib/opensteer-pool/profiles`, which setup makes 0711 (`setup-host.sh:143`).
+    `/var/lib/opensteer-pool/profiles`, which setup makes 0711 (`setup-host.sh`, `install_units`).
   - The earlier `guest.profilePath` is still accepted on the wire, but only if it is that same
-    path. Anything else is `conflict` (`agent.ts:607–613`).
-  - The boot checks stay: a plain file under the root, not a link (`firecracker/paths.ts:13–28`,
-    `firecracker/driver.ts:182, 627`).
-- **`create` with `profileMib`** (64 MiB to 1 TiB, `server.ts:106`):
+    path. Anything else is `conflict` (`agent.ts`, `#create`).
+  - The boot checks stay: a plain file under the root, not a link (`firecracker/paths.ts`, `confine`,
+    `firecracker/driver.ts`, `confineGuest` and `#prepareJail`).
+- **`create` with `profileMib`** (64 MiB to 1 TiB, `server.ts`, `adminSchema`):
   - **No file there:** the agent makes a sparse file of that size with an ext4 filesystem
-    (`mkfs.ext4 -q -F -m 0`, `firecracker/driver.ts:185–188`). It makes it under a temporary
-    name and links it into place only once it is formatted (`profiles.ts:32–62`). A make that
+    (`mkfs.ext4 -q -F -m 0`, `firecracker/driver.ts`, `ensureProfile`). It makes it under a temporary
+    name and links it into place only once it is formatted (`profiles.ts`, `ensureProfile`). A make that
     fails leaves nothing under the slot's name, and the create is refused with no slot. A
-    temporary file a crash left behind is removed when the driver opens (`profiles.ts:77`,
-    `firecracker/driver.ts:152`).
+    temporary file a crash left behind is removed when the driver opens (`profiles.ts`, `sweepUnfinishedProfiles`,
+    `firecracker/driver.ts`, `open`).
   - **A file there:** kept exactly as it is, never formatted, whatever `profileMib` says. This is
     what lets a replaced host instance keep every profile: the provisioner creates the slot again
     at a higher term, and the person's profile is still theirs.
 - **What the agent does to it at each boot:** chowns it to the slot's uid, sets 0600 and
-  bind-mounts it into the jail (`firecracker/driver.ts:627–631`). The guest mounts it as
-  `/dev/vdb` (`apps/pool-agent/guest/init.sh:32`).
+  bind-mounts it into the jail (`firecracker/driver.ts`, `#prepareJail`). The guest mounts it as
+  `/dev/vdb` (`apps/pool-agent/guest/init.sh`, its profile mount).
 - **Erasing it.** Only `delete` with `eraseProfile: true` removes a profile (section 1).
   - No other call removes one: not a failed create, not a rollback, not `replace-key`.
   - Without `eraseProfile` the file stays for the same slot id's next create.
@@ -134,13 +134,13 @@ id>.ext4` (`apps/pool-agent/src/profiles.ts:20`).
   deleted term. A create above it, for the same slot id, finds the kept file and uses it: the
   slot id is the person's Cloud Computer. A file is never handed to another slot id, because the
   path is derived from the id.
-- **Credential files: placing them is the same gap, not closed in this round.** The account
-  service and a host-side fetch will close it. The egress files
-  (`usernameFile`, `passwordFile`, `caFile`) must still be files under `driver.credentialsRoot`
-  (`firecracker/driver.ts:185`), and the provisioner cannot write them through this interface.
+- **Credential files.** On a host that pulls egress (`driver.requireEgressUpstream`), the agent
+  fetches and writes them itself (section 8); the provisioner never places one. On a host that
+  does not, they are files the create names under `driver.credentialsRoot`, placed by its
+  operator.
 - **What a delete leaves:**
   - the host user `osp-egress-<n>`, reused by the next slot on that number
-    (`firecracker/egress.ts:42`);
+    (`firecracker/egress.ts`, `ensureEgressUser`);
   - a journal tombstone holding no secret, pruned after 30 days;
   - without `eraseProfile`, the profile.
 - **What the agent removes itself:** the guest, its saved state, its jail, the namespace and
@@ -151,18 +151,18 @@ id>.ext4` (`apps/pool-agent/src/profiles.ts:20`).
 ## 5. Capacity
 
 - **The agent enforces a capacity, but does not report it on the wire.** It logs it once at
-  start: `{"event":"capacity","guestBytes","proxies"}` (`agent.ts:252`). The values come from
-  `capacity.ts:13–43`:
+  start: `{"event":"capacity","guestBytes","proxies"}` (`agent.ts`, `start`). The values come from
+  `capacity.ts`: `guestCharge`, `guestBudget`, `hostCapacity`, `fits`:
   - `guestBytes` = host memory less max(2 GiB, 10 %) less the proxies' slice (1,536 MiB);
   - each guest in memory is charged its memory + 512 MiB;
   - `proxies` = slice / 128 MiB.
 - **A start or a wake from disk that doesn't fit** first saves guests paused in memory to disk,
   oldest park first. If that isn't enough, it is refused as `unavailable`, "This host has no
-  memory for another guest now; try again later." (`agent.ts:836`). The Home's journal sends it
+  memory for another guest now; try again later." (`agent.ts`, `#admitted`). The Home's journal sends it
   again later.
 - **To place by capacity,** compute from the host's memory with `capacity.ts`, and read
   occupancy from `list`: each slot's `status.phase`, plus `parked.tier` while paused.
-  `maximumSlots` is 16,384 per host (`firecracker/slot-numbers.ts:15`).
+  `maximumSlots` is 16,384 per host (`firecracker/slot-numbers.ts`, `maximumSlots`).
 
 ## 6. What the provisioner must never do
 
@@ -184,7 +184,7 @@ id>.ext4` (`apps/pool-agent/src/profiles.ts:20`).
   - not the slot's control key, of which only its public half is on the wire.
 - **Never take the Home's private keys either.**
 - **Never pin the host key in the relay key's place.** The Home refuses a relay that presents
-  the host key (`tests/browser-pool-relay.test.ts:256–273`).
+  the host key (`tests/browser-pool-relay.test.ts`, the impostor-relay tests).
 - **Never treat an `unavailable` reply as a failed effect.** The call may have happened; read
   the slot with `list`. A start or wake refused for capacity did not happen.
 - **Never edit `agent.json`, the journal or `slots.json` while the agent runs,** and never open
@@ -193,7 +193,7 @@ id>.ext4` (`apps/pool-agent/src/profiles.ts:20`).
 ## 7. Replacing a host instance: what is on which disk
 
 - **Today it is all one tree.** `setup-host.sh` keeps all of the agent's state in one directory,
-  `/var/lib/opensteer-pool`, described as durable (`setup-host.sh:24`; `HOST-SETUP.md:32`, "on
+  `/var/lib/opensteer-pool`, described as durable (`setup-host.sh`, `STATE`; `HOST-SETUP.md`, its table of disks, "on
   the persistent disk"). That tree holds:
   - the journal, with slot records and tombstones (`journal`);
   - the driver's slot numbers (`driver/slots.json`);
@@ -218,40 +218,63 @@ id>.ext4` (`apps/pool-agent/src/profiles.ts:20`).
   `agent.json`. How a provisioned host mounts that disk and enrols is the enrolment's to decide;
   nothing in the agent assumes it.
 
-## 8. Egress on a host that pulls it (`driver.requireEgressUpstream`, round H)
+## 8. Egress on a host that pulls it (`driver.requireEgressUpstream`, rounds H and I)
 
-No upstream, no start. On such a host:
+No upstream, no start, and the host's credentials are a copy of what the account service says.
 
 - **The proxy always requires an upstream.** Every slot's proxy unit is defined with
-  `OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true` and `--use-system-ca`
-  (`firecracker/egress.ts:102, 160`; the one program, `firecracker/driver.ts:348`). With no
-  credentials it refuses everything; it never connects directly.
+  `OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true` and `--use-system-ca` (`firecracker/egress.ts`,
+  `defineEgress`; the one program, `firecracker/driver.ts`, `#program`). With no credentials it
+  refuses everything; it never connects directly.
+- **A unit is the slot's own only as this host defines it.** A definition is compared on its
+  "upstream required" setting, its upstream, and where it loads its credentials from
+  (`firecracker/driver.ts`, `#revivePulled` and `proxyRequiresUpstream`). Anything else is
+  defined again at the slot's next start or wake. At the agent's start, a guest found running
+  behind such a unit is ended (`agent.ts`, `start`).
 - **A create names no `egress`.** The slot's credentials live at paths derived from its id:
-  `<credentialsRoot>/slot-<sha256>.{url,username,password}` (`slot-credentials.ts:17`).
+  `<credentialsRoot>/slot-<sha256>.{url,username,password}` (`slot-credentials.ts`,
+  `credentialFiles`).
   - They count as present only when all three are there.
-  - They are written by temporary name, renamed into place, root-owned, 0600, in a root-only
-    directory (`slot-credentials.ts:52`).
+  - They are written by temporary name and renamed into place, root-owned, 0600, in a root-only
+    directory that may not be a symlink (`slot-credentials.ts`, `writePulledEgress` and
+    `secureCredentialsRoot`).
+  - A replaced set stops counting as present before it is rewritten.
   - A temporary file a crash left is swept when the driver opens, and never read
-    (`firecracker/driver.ts:176`).
-- **At a start, or a wake from disk, of a slot without credentials** the agent fetches them
-  first, before anything is written or booted (`agent.ts:972`). The fetch has its own 10 s bound
-  and takes the step's signal.
-  - **Fetched:** written, the proxy is defined again with their upstream
-    (`firecracker/driver.ts:361`), and the start goes on.
-  - **None assigned:** a stored, signed `applied: false` with reason `egress-required`, and
-    nothing booted (`agent.ts:992`).
-  - **The fetch could not be completed:** refused as `unavailable` ("try again later"), and
-    nothing written.
-  - **Credentials already present** are used as they are.
-- **`delete` removes the slot's pulled credentials,** for a slot it no longer knows too, and
-  answers `credentialsErased: true` once they are seen gone (`agent.ts:817, 842`).
+    (`firecracker/driver.ts`, `open`).
+- **Every start and every wake from disk asks the account service first,** whether or not
+  credentials are there, before anything is written or booted (`agent.ts`, `#withEgress`). The
+  fetch has its own 10 s bound and takes the step's signal. A wake from memory asks nothing.
+  - **Given:** checked as the proxy itself checks them (one function,
+    `packages/browser-runtime-core/src/browser-egress-upstream.ts`; `slot-egress-fetch.ts`,
+    `acceptSlotEgress`). They are written if they differ from what is there, and the proxy is
+    defined again if its definition differs. Then the start goes on.
+  - **None assigned:** what is there is removed, and a stored, signed `applied: false` with
+    reason `egress-required` answers; nothing is booted.
+  - **The fetch could not be completed** (no answer, a refusal, a malformed answer, its
+    deadline): what is there is used, if anything is. Otherwise it is refused as `unavailable`
+    ("try again later"), with nothing written.
+  - So a rotated password or a bad answer once written never wedges a slot, and an endpoint
+    taken away stops being used at the next cold start.
+- **`delete` ends the guest and its proxy first, then removes the credentials,** for a slot it
+  no longer knows too. It answers `credentialsErased: true` once they are seen gone
+  (`agent.ts`, `deleteSlotWithEvidence`). **Removing the files alone does not cut a proxy that is
+  already running**: it read them when it started (run 8, item 4). Run 7 stopped the proxy's
+  service to cut it. Credentials that change stop the slot's proxy service, so its next start
+  reads the new copy (`firecracker/driver.ts`, `writePulledEgress`).
 - **The fetch** (`slot-egress-fetch.ts`; `agent.json` `driver.egress.accountOrigin`, https only,
-  `config.ts:59`):
+  `config.ts`, `agentConfigSchema`):
   - The request is `POST {accountOrigin}/v1/browser-pool/hosts/{hostId}/slot-egress` with
     `{v: 1, hostId, slotId, issuedAt, nonce, signature}`.
-  - The signature is made by the host key over `opensteer-pool-slot-egress-v1\n<hostId>\n<slotId>\n<issuedAt>\n<nonce>`
-    (`slot-egress-fetch.ts:34`).
-  - The answer is `200 {"egress": {url, username, password}}`, or `200 {}` for none; anything
-    else could not be completed (`slot-egress-fetch.ts:125`).
-  - TLS uses the system's roots, no redirect is followed, and the answer is capped at 16 KiB.
+  - The signature is made by the host key over
+    `opensteer-pool-slot-egress-v1\n<hostId>\n<slotId>\n<issuedAt>\n<nonce>`
+    (`slot-egress-fetch.ts`, `slotEgressBytes`).
+  - The answer is `200 {"egress": {url, username, password}}`, or `200 {}` for none.
+    - `url` is `https://host:port` with an explicit port that is not 0, as the proxy requires;
+      at most 1024 characters.
+    - `username` and `password` are not blank, have no control character, are at most 1024
+      characters, and the username has no colon.
+    - Anything else could not be completed (`slot-egress-fetch.ts`, `parseAnswer` and
+      `acceptSlotEgress`).
+  - TLS uses the system's roots, no redirect is followed, and the answer is capped at 16 KiB. A
+    reply cut off part-way fails at once.
   - The password is never logged, journaled or put in an error.
