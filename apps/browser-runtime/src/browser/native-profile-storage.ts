@@ -1,15 +1,15 @@
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserCookieFromCdp } from "@opensteer/browser-profile/cookies";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CDPSession } from "playwright-core";
 
 export async function initializeNativePreferences(directory: string): Promise<void> {
   if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
-  // The runtime holds the root lock and this profile's lifecycle lane, with no
-  // browser owning this directory. Chromium defers tab restore to the first
-  // window; Opensteer's durable tab descriptors are the only tab-restore authority.
+  // The runtime holds the root lock and this profile's lifecycle lane, with no browser owning
+  // this directory. Chromium never loads a last session (L1): its session records are deleted,
+  // and it starts on a new tab page; a restarted Home's tabs open fresh at their addresses.
   const sessions = path.join(directory, "Default", "Sessions");
   const records = await readdir(sessions, { withFileTypes: true }).catch((error) => {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
@@ -26,12 +26,33 @@ export async function initializeNativePreferences(directory: string): Promise<vo
     await unlink(path.join(sessions, record.name));
   }
   await mkdir(path.join(directory, "Default"), { recursive: true, mode: 0o700 });
+  const preferences = path.join(directory, "Default", "Preferences");
+  const startup = { session: { restore_on_startup: 5 } };
+  const created = await writeFile(preferences, JSON.stringify(startup), {
+    flag: "wx",
+    mode: 0o600,
+  }).then(
+    () => true,
+    (error: unknown) => {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+      return false;
+    },
+  );
+  if (created) return;
+  // A profile an earlier runtime set to restore its last session is set back to a new tab page.
+  const prefs = JSON.parse(await readFile(preferences, "utf8").catch(() => "null")) as {
+    session?: { restore_on_startup?: unknown };
+  } | null;
+  if (prefs?.session?.restore_on_startup !== 1) return;
+  const temp = `${preferences}.tmp-${process.pid}-${randomUUID()}`;
   await writeFile(
-    path.join(directory, "Default", "Preferences"),
-    JSON.stringify({ session: { restore_on_startup: 1 } }),
-    { flag: "wx", mode: 0o600 },
-  ).catch((error) => {
-    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    temp,
+    JSON.stringify({ ...prefs, session: { ...prefs.session, restore_on_startup: 5 } }),
+    { mode: 0o600 },
+  );
+  await rename(temp, preferences).catch(async (error: unknown) => {
+    await unlink(temp).catch(() => undefined);
+    throw error;
   });
 }
 

@@ -8,7 +8,6 @@ import {
   type CdpParameters,
 } from "@opensteer/browser-core";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
-import { BrowserSurfaceIdSchema, type BrowserSurfaceId } from "@opensteer/protocol/browser";
 import {
   BrowserRuntimeError,
   pageUnnameableReason,
@@ -20,7 +19,6 @@ import {
   type BrowserPage,
   type BrowserMemoryPressure,
   type BrowserRendererUsage,
-  type BrowserSessionRestore,
   type CdpSession,
   type LaunchedBrowser,
   type LocalProfileEngine,
@@ -68,7 +66,6 @@ import {
   ChromiumTabLifecycleBridge,
   ensureTabLifecycleExtension,
   isInternalExtensionUrl,
-  tabNameBound,
   type ChromiumTabEntry,
 } from "./tab-lifecycle-extension.js";
 
@@ -623,7 +620,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     directory: string,
     lifecycleExtensionDir: string,
     deadline: number,
-    restoreLastSession = true,
   ): Parameters<typeof chromium.launchPersistentContext>[1] {
     return {
       // Playwright owns the child before returning the context and reaps it on
@@ -647,7 +643,9 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         "--disable-component-extensions-with-background-pages",
         "--disable-component-update",
         "--disable-background-networking",
-        ...(restoreLastSession ? ["--restore-last-session"] : []),
+        // Chromium never loads a last session (L1): its session files are deleted before launch,
+        // and no window opens by itself. A restarted Home's tabs open fresh at their addresses.
+        "--no-startup-window",
         "--no-first-run",
         "--no-default-browser-check",
         `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
@@ -671,7 +669,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     deadline: number,
     signal?: AbortSignal,
     requestedAuthenticator?: PasskeyAuthenticator,
-    restoreLastSession = true,
   ): Promise<LaunchedBrowser> {
     const started = performance.now();
     const correlationId = randomUUID();
@@ -694,13 +691,13 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     await access(this.executablePath, constants.X_OK);
     await this.prepare();
     timing("prepare");
-    await initializeNativePreferences(directory, restoreLastSession);
+    await initializeNativePreferences(directory);
     const lifecycleExtensionDir = await ensureTabLifecycleExtension(directory);
     timing("preferences");
     signal?.throwIfAborted();
     const context = await chromium.launchPersistentContext(
       directory,
-      this.nativeLaunchOptions(directory, lifecycleExtensionDir, deadline, restoreLastSession),
+      this.nativeLaunchOptions(directory, lifecycleExtensionDir, deadline),
     );
     let ownedProcess: ChildProcess;
     try {
@@ -748,8 +745,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       throw new Error("Persistent Chromium has no browser owner.");
     }
     let stopped: Promise<void> | undefined;
-    /** Set when this launch hands the directory straight to a relaunch (K4). */
-    let keepDirectory = false;
     const owner = {
       close: () => {
         // Ask Chromium to close normally; the cleanup deadline must also contain
@@ -807,9 +802,8 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
               this.nativeBrowsers.delete(directory);
               this.nativeCloseFailures.delete(directory);
             };
-            if (exitProven) {
-              if (!keepDirectory) release();
-            } else {
+            if (exitProven) release();
+            else {
               this.nativeCloseFailures.add(directory);
               void exited.then(release);
             }
@@ -838,68 +832,28 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       context.on("page", (page) => {
         page.on("close", () => openDialogs.delete(page));
       });
+      if (context.pages().length) throw new Error("Chromium restored unauthorized tabs.");
       // Keep one private blank target only while this bounded profile host is warm.
       // Without it, closing the last tab also discards Chromium's warm renderer.
-      const helper = await context.newPage();
+      const helper = await withTimeout(context.newPage(), remainingMs(deadline), {
+        timeoutError: () => new Error("The private page did not open."),
+      });
       timing("cookie-target");
-      const browserCdp = await browser.newBrowserCDPSession();
+      const browserCdp = await withTimeout(browser.newBrowserCDPSession(), remainingMs(deadline), {
+        timeoutError: () => new Error("The browser debugger did not attach."),
+      });
       timing("cdp");
-      const candidateLifecycle =
+      // The helper that sleeps tabs by discard, if it answers; otherwise tabs sleep by closing.
+      const candidate =
         typeof context.serviceWorkers === "function"
           ? new ChromiumTabLifecycleBridge(context, browserCdp, helper)
           : undefined;
-      let lifecycle: ChromiumTabLifecycleBridge | undefined;
-      const helperTargetId = candidateLifecycle
-        ? await lookupTargetId(context, helper, deadline)
-        : syncTargetIdOfPage(helper);
-      const restoredRows: ChromiumTabEntry[] = [];
-      const closeTarget = (targetId: string) =>
-        withTimeout(browserCdp.send("Target.closeTarget", { targetId }), nameTargetMs, {
-          timeoutError: () => new Error("Launch Target.closeTarget timed out."),
-        }).then(() => undefined);
-      const rows = candidateLifecycle
-        ? await readRows(
-            candidateLifecycle,
-            restoreLastSession ? (performance.now() + deadline) / 2 : deadline,
-          )
-        : null;
-      if (candidateLifecycle && !rows && restoreLastSession) {
-        // K4: no read that agrees with itself, so no restored session. Chromium starts once more
-        // without its last session, and the Home's tabs come back as fresh pages at their addresses.
-        process.stderr.write(
-          '{"event":"browser-runtime.tab-restore-skipped","reason":"inventory-unknown"}\n',
-        );
-        keepDirectory = true;
-        await owner.close();
-        return await this.launchNative(directory, deadline, signal, requestedAuthenticator, false);
-      }
-      if (candidateLifecycle && rows) {
-        lifecycle = candidateLifecycle;
-        const launchRows = rows.filter(
-          (row) =>
-            !(row.targetId !== null && row.targetId === helperTargetId) &&
-            !isInternalExtensionUrl(row.url),
-        );
-        // A restored tab is the Home tab its own group title alone names, and nothing else is.
-        const orphans: ChromiumTabEntry[] = [];
-        for (const row of launchRows) (keptTitleOf(row, rows) ? restoredRows : orphans).push(row);
-        reportRestoreLaunch(launchRows, restoredRows.length);
-        // K6: an orphan not proven removed stays hidden (K3) and is reported, never assumed gone.
-        const removeBy = Math.min(deadline, performance.now() + nameTargetMs);
-        const removed = await Promise.all(
-          orphans.map((orphan) => removeTabById(candidateLifecycle, orphan, removeBy, closeTarget)),
-        );
-        for (const outcome of removed) if (outcome === "unknown") reportUnconfirmedRemoval(1);
-      } else if (candidateLifecycle) {
-        // No read even without a last session: nothing was restored, and K3 closes every page
-        // that has no provenance, since none can be classified.
+      const lifecycle = candidate && (await readRows(candidate, deadline)) ? candidate : undefined;
+      if (candidate && !lifecycle)
         process.stderr.write(
           '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
         );
-      }
-      // Snapshot every non-helper page present after inventory (including any restored
-      // tabs Chromium finished initializing during launch) so none leak before claiming.
-      const preHelperPages = new Set(context.pages().filter((page) => page !== helper));
+      const helperTargetId = lifecycle ? await lookupTargetId(context, helper, deadline) : null;
       const launched = new PlaywrightLaunchedBrowser(
         owner,
         context,
@@ -911,8 +865,6 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         helper,
         true,
         lifecycle,
-        restoredRows,
-        preHelperPages,
         helperTargetId ?? undefined,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
@@ -954,8 +906,6 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     privatePage?: Page,
     dedicatedContext = false,
     lifecycle?: ChromiumTabLifecycleBridge,
-    restoredRows: readonly ChromiumTabEntry[] = [],
-    preHelperPages: ReadonlySet<Page> = new Set(),
     privatePageTargetId?: string,
   ) {
     this.persistencePage = privatePage;
@@ -970,8 +920,6 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       providerConfig,
       privatePage,
       lifecycle,
-      restoredRows,
-      preHelperPages,
       dedicatedContext,
     );
     if (authenticator) {
@@ -1055,8 +1003,6 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    * disposable Guest owners kill only their own child.
    */
   private async closeOnce(): Promise<void> {
-    // Tabs still being named finish first, so Chromium's own session carries their names.
-    await this.contextHandle.settleNaming();
     this.contextHandle.markClosed();
     const detached = await Promise.allSettled([
       withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
@@ -1093,22 +1039,19 @@ function parseChromiumDiscardRestore(value: unknown): ChromiumDiscardRestore | n
   return parsed.success ? parsed.data : null;
 }
 
-/** One bound for a claim or a wake: its queue wait, the activation and the arrival together. */
+/** One bound for a wake: its lane wait, the activation and the arrival together. */
 const wakeDiscardedTabMs = 10_000;
-/** How long a park waits for the page of a tab Chromium is loading, before freezing it. */
-const parkPageWaitMs = 1_000;
 /** How long a page with no provenance is classified, once no open of ours can be its creator. */
 const arrivalIdentifyMs = 2_000;
 /** How long the runtime's own new page may take; a page with no opener waits inside it (K3). */
 const openPageMs = 10_000;
-/** How long an orderly close waits for tabs still being named. */
-const namingSettleMs = 1_500;
-/** Attempts per name, removing it in the background or naming a saved tab, before giving up. */
+/** Background removal attempts per sleeping tab, since it was given up, before it is reported. */
 const removalRetryBound = 8;
-/** The group title a tab that is not a saved Home tab carries while it sleeps. */
+/** The group title a tab carries while it sleeps, and only then (L2). */
 const sleepTitlePrefix = "opensteer-sleep:";
 
 const remainingMs = (deadline: number) => Math.max(1, deadline - performance.now());
+const notWanted = () => new Error("The page is no longer wanted.");
 
 /**
  * Reads a Playwright Chromium page's CDP targetId synchronously from its
@@ -1149,9 +1092,7 @@ async function lookupTargetId(
     const response = (await withTimeout(
       session.send("Target.getTargetInfo"),
       remainingMs(deadline),
-      {
-        timeoutError: () => new Error("Target lookup getTargetInfo timed out."),
-      },
+      { timeoutError: () => new Error("Target lookup getTargetInfo timed out.") },
     )) as { targetInfo?: { targetId?: unknown } };
     return typeof response.targetInfo?.targetId === "string" ? response.targetInfo.targetId : null;
   } catch {
@@ -1162,15 +1103,6 @@ async function lookupTargetId(
         timeoutError: () => new Error("Target lookup detach timed out."),
       }).catch(() => undefined);
   }
-}
-
-/** A name the runtime writes and keeps (K10): a Home surface id within the bound, never a sleep name. */
-function isHomeTabName(title: string): boolean {
-  return (
-    title.length <= tabNameBound &&
-    !title.startsWith(sleepTitlePrefix) &&
-    BrowserSurfaceIdSchema.safeParse(title).success
-  );
 }
 
 type Named =
@@ -1189,16 +1121,6 @@ function findNamed(rows: readonly ChromiumTabEntry[], name: string): Named {
   return found ? { kind: "one", row: found } : { kind: "none" };
 }
 
-/**
- * K3's classifier, the same for a launch row and for any page that arrives later: the Home name
- * the row's tab alone carries, or null (the tab is nobody's).
- */
-function keptTitleOf(row: ChromiumTabEntry, rows: readonly ChromiumTabEntry[]): string | null {
-  const title = row.identity;
-  if (!title || isBlankAddress(row.url) || !isHomeTabName(title)) return null;
-  return findNamed(rows, title).kind === "one" ? title : null;
-}
-
 /** K1: one read that agrees with itself inside `deadline`, or null: not known. */
 function readRows(
   lifecycle: ChromiumTabLifecycleBridge,
@@ -1207,55 +1129,6 @@ function readRows(
   return withTimeout(lifecycle.inventory(deadline), remainingMs(deadline), {
     timeoutError: () => new Error("Tab inventory timed out."),
   }).catch(() => null);
-}
-
-/**
- * K6 for a tab no name identifies: `removed` only when the remove resolved and a read that agrees
- * with itself has no row with that tab id. A missing id alone proves nothing.
- */
-async function removeTabById(
-  lifecycle: ChromiumTabLifecycleBridge,
-  row: ChromiumTabEntry,
-  deadline: number,
-  closeTarget: ((targetId: string) => Promise<void>) | undefined,
-): Promise<"removed" | "unknown"> {
-  let asked = false;
-  for (;;) {
-    let resolved = await lifecycle.removeByTabId(row.tabId).catch(() => false);
-    if (!resolved && row.targetId && closeTarget)
-      resolved = await closeTarget(row.targetId).then(
-        () => true,
-        () => false,
-      );
-    asked ||= resolved;
-    if (asked) {
-      const rows = await readRows(lifecycle, deadline);
-      if (rows && !rows.some((entry) => entry.tabId === row.tabId)) return "removed";
-    }
-    if (performance.now() + 40 >= deadline) return "unknown";
-    await delay(40);
-  }
-}
-
-/**
- * One line per native launch: what Chromium restored and what its group titles said. Every
- * restored tab is a Home tab by its own title or is closed, so this tells a lost restore apart:
- * Chromium restored nothing, or tabs came back without a title, with a title no Home tab id has,
- * or with a title two tabs carry.
- */
-function reportRestoreLaunch(rows: readonly ChromiumTabEntry[], named: number): void {
-  const count = (test: (row: ChromiumTabEntry) => boolean) => rows.filter(test).length;
-  const many = (row: ChromiumTabEntry) =>
-    !!row.identity && findNamed(rows, row.identity).kind === "many";
-  const event = {
-    event: "browser-runtime.tab-restore-launch",
-    restored: rows.length,
-    named,
-    untitled: count((row) => !row.identity),
-    unknownTitle: count((row) => !!row.identity && !many(row) && !isHomeTabName(row.identity)),
-    duplicateTitle: count(many),
-  };
-  process.stderr.write(`${JSON.stringify(event)}\n`);
 }
 
 function reportUnconfirmedRemoval(attempts: number): void {
@@ -1268,35 +1141,59 @@ function isBlankAddress(url: string): boolean {
   return url === "" || url === "about:blank" || url === "chrome://newtab/";
 }
 
-/** A Home tab Chromium restored with its group title, not yet claimed by a session. */
-interface RestoredTab {
-  /** Its page, once Chromium loaded it; hidden until a claim takes it. */
-  page: Page | undefined;
-}
-
-/** A tab put to sleep by discard; it is found again by its group title, never by its id. */
+/** One sleep of one tab: discarded, then named by its token, and found again by that name alone. */
 interface SleepingTab {
   readonly title: string;
   readonly url: string;
-  readonly surfaceId?: BrowserSurfaceId;
-  /** Resolves when the discard (or the close it fell back to) has finished. */
+  /**
+   * The tab as last known: its id from Chromium's answer to the discard (a discard gives a tab a
+   * new id, and may give it a new target too, seen on real Chromium), and its target then.
+   */
+  tabId: number;
+  targetId: string | null;
+  /** Whether the name was asked of Chromium; then the name, too, must be gone for a removal. */
+  named: boolean;
+  /** Whether a remove (or the close of its page) was answered; an unnamed tab needs one. */
+  removeAsked: boolean;
+  /** Resolves when the sleep (or the close it fell back to) has finished. */
   readonly settled: Promise<void>;
 }
 
-/** A wake waiting for its tab's page: it takes only the one tab carrying its name (K2). */
+/** A wake waiting for its tab's page: it takes only the one tab carrying its name (K2, L4). */
 interface ArmedWake {
-  readonly title: string;
+  arrived: { readonly page: Page; readonly row: ChromiumTabEntry } | null;
+  /** A second carrier, or a second arrival, was seen: the wake gives up. */
+  spoiled: boolean;
+  readonly settled: Promise<void>;
   arrive(page: Page, row: ChromiumTabEntry): void;
-  giveUp(): void;
+  spoil(): void;
+}
+
+function armWake(): ArmedWake {
+  const settled = Promise.withResolvers<void>();
+  const wake: ArmedWake = {
+    arrived: null,
+    spoiled: false,
+    settled: settled.promise,
+    arrive: (page, row) => {
+      if (wake.arrived) wake.spoiled = true;
+      else wake.arrived = { page, row };
+      settled.resolve();
+    },
+    spoil: () => {
+      wake.spoiled = true;
+      settled.resolve();
+    },
+  };
+  return wake;
 }
 
 /**
- * Chromium carries each saved Home tab's identity itself: the helper puts the tab in its own tab
- * group whose title is the tab's Home surface id. The title survives discard and session restore
- * after a clean exit or a crash, and no page can read or change it. A page is published only with
- * positive provenance (K3): the runtime's own new page, a page its published opener opened, or the
- * tab a claim or wake took by its name. Every other page is classified by its tab's name like a
- * launch row: a kept Home name waits hidden for its claim, anything else is closed with evidence.
+ * A page is published only with positive provenance (K3): the runtime's own new page, a page its
+ * published opener opened, or the tab a wake took by its name. Every other page is classified by
+ * its tab's group title: the page of a sleeping tab stays hidden, anything else is closed with
+ * evidence. A tab carries a title only while it sleeps (L2): the helper names it after Chromium
+ * discarded it, and the wake removes the name once it takes the tab.
  */
 class PlaywrightContextHandle implements BrowserContext {
   private closed = false;
@@ -1317,54 +1214,31 @@ class PlaywrightContextHandle implements BrowserContext {
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
   readonly lifecycle: ChromiumTabLifecycleBridge | undefined;
-  readonly sessionRestore: BrowserSessionRestore | undefined;
-  /** A native profile's context: K3 holds for every page, and no root is taken from `pages()`. */
-  readonly nativeProfile: boolean;
+  /** A native profile's context: K3 holds for every page. */
+  private readonly nativeProfile: boolean;
   private readonly privatePage: Page | undefined;
 
-  /** Restored Home tabs nobody has claimed, by the surface id their group title names. */
-  private readonly restored = new Map<BrowserSurfaceId, RestoredTab>();
-  /** The Home's saved tabs once it named them (reconcile); until then any Home name is kept. */
-  private keepList: ReadonlySet<BrowserSurfaceId> | null = null;
-  /** Names being claimed right now: a page carrying one waits, hidden, for its claim. */
-  private readonly claimingTitles = new Set<string>();
-  private readonly sleepingByToken = new Map<string, SleepingTab>();
+  /** Sleeping tabs by token. A token is one sleep of one tab, and the key of that tab's lane. */
+  private readonly sleeping = new Map<string, SleepingTab>();
+  /** The token of the tab carrying each sleep name. */
   private readonly sleepingTitles = new Map<string, string>();
-  /** Names given up and being removed from Chromium, with their background attempts. */
+  /** Tokens given up: their tabs are removed in the background until proven, then forgotten. */
   private readonly removals = new Map<string, { attempts: number }>();
-  /** Names whose removal could not be confirmed within the bound; still never handed off. */
+  /** Tokens whose removal could not be confirmed within the bound; still guarded. */
   private readonly unremovable = new Set<string>();
   private removalTimer: ReturnType<typeof setTimeout> | undefined;
   private removalDrain: Promise<void> | null = null;
-  /** Saved tabs whose naming waits for another tab still carrying the same name to go. */
-  private readonly deferredNames = new Map<BrowserSurfaceId, PlaywrightPageHandle>();
-  private readonly naming = new Set<Promise<void>>();
-  /** Saved pages waiting for their first real navigation before they are named. */
-  private readonly awaitingFirstNavigation = new Map<Page, { done(): void }>();
-  private readonly savedSurfaceByPage = new WeakMap<PlaywrightPageHandle, BrowserSurfaceId>();
-  /** The page each saved surface is bound to now; a live binding is never a restored tab. */
-  private readonly boundPages = new Map<BrowserSurfaceId, PlaywrightPageHandle>();
-  private readonly unnameable = new Set<BrowserSurfaceId>();
+  /** Wakes waiting for their tab's page, by the tab's sleep name. */
+  private readonly wakes = new Map<string, ArmedWake>();
   private readonly published = new WeakSet<Page>();
-  private readonly hiddenPages = new WeakSet<Page>();
   /** Pages being closed: never published, whatever answers later. */
   private readonly ending = new WeakSet<Page>();
-  private readonly frozenPages = new WeakSet<Page>();
   private readonly identifyingPages = new WeakSet<Page>();
-  /** The name a hidden page was last seen with, so its name's removal closes it first. */
+  /** The name a hidden page was seen with, so its tab's removal closes it first. */
   private readonly pageTitles = new WeakMap<Page, string>();
   /** `newPage` calls in flight; a page they create is published by their answer. */
   private readonly openingPages = new Set<Promise<Page>>();
-  /** One lane per name, and so per page: naming, sleep, release, parking and removal. */
   private readonly laneTails = new Map<string, Promise<void>>();
-  private parkingArmed = false;
-  private parkedActive = 0;
-  private readonly parkedWaiters: Array<() => void> = [];
-  private reconcileTail: Promise<void> = Promise.resolve();
-  private reconcileAbort: AbortController | undefined;
-  private reconcileFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-  private wakeTail: Promise<void> = Promise.resolve();
-  private activeWake: ArmedWake | null = null;
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -1373,8 +1247,6 @@ class PlaywrightContextHandle implements BrowserContext {
     providerConfig?: BrowserPagePolicyConfig,
     privatePage?: Page,
     lifecycle?: ChromiumTabLifecycleBridge,
-    restoredRows: readonly ChromiumTabEntry[] = [],
-    preHelperPages: ReadonlySet<Page> = new Set(),
     nativeProfile = false,
   ) {
     this.privatePage = privatePage;
@@ -1384,32 +1256,10 @@ class PlaywrightContextHandle implements BrowserContext {
     this.context = context;
     this.openDialogs = openDialogs;
     this.nativeProfile = nativeProfile;
-    const restoredByTarget = new Map<string, BrowserSurfaceId>();
-    for (const row of restoredRows) {
-      const surfaceId = row.identity as BrowserSurfaceId;
-      this.restored.set(surfaceId, { page: undefined });
-      if (row.targetId) restoredByTarget.set(row.targetId, surfaceId);
-    }
-    if (!nativeProfile)
-      for (const page of context.pages()) if (!this.isHiddenPage(page)) this.published.add(page);
-    for (const page of preHelperPages) {
-      const targetId = syncTargetIdOfPage(page);
-      const surfaceId = targetId ? restoredByTarget.get(targetId) : undefined;
-      if (surfaceId && page !== privatePage) {
-        this.hiddenPages.add(page);
-        this.pageTitles.set(page, surfaceId);
-        this.restored.get(surfaceId)!.page = page;
-      } else this.arrive(page);
-    }
-    if (lifecycle) {
-      this.sessionRestore = {
-        claim: (surfaceId, _url, own, signal) => this.claimRestored(surfaceId, own, signal),
-        reconcile: (savedTabIds) => this.reconcileSavedTabs(savedTabIds),
-        armFallbackReconcile: (keepIds, delayMs = 5_000) =>
-          this.armFallbackReconcile(keepIds, delayMs),
-        trackSavedTab: (surfaceId, page) => this.trackSavedTab(surfaceId, page),
-        flush: () => this.settleNaming(),
-      };
+    for (const page of context.pages()) {
+      if (this.isHiddenPage(page)) continue;
+      if (nativeProfile) this.arrive(page);
+      else this.published.add(page);
     }
     context.on("close", () => {
       this.markClosed();
@@ -1431,12 +1281,12 @@ class PlaywrightContextHandle implements BrowserContext {
       return;
     }
     if (opener) {
-      // A tab opened by a page nobody holds (restored, sleeping or unknown) is nobody's.
+      // A tab opened by a page nobody holds (a sleeping or unknown tab's) is nobody's.
       void this.closePageWithEvidence(page);
       return;
     }
     if (!this.nativeProfile) {
-      // A fresh context restores nothing: every page in it is its sessions' own.
+      // A fresh context sleeps no tab by name: every page in it is its sessions' own.
       const handle = this.wrap(page);
       this.published.add(page);
       queueMicrotask(() => {
@@ -1445,7 +1295,6 @@ class PlaywrightContextHandle implements BrowserContext {
       for (const listener of this.pageListeners) listener(handle);
       return;
     }
-    this.hiddenPages.add(page);
     this.identifyingPages.add(page);
     void this.classify(page).catch(() => undefined);
   }
@@ -1455,7 +1304,6 @@ class PlaywrightContextHandle implements BrowserContext {
     // A page that closed itself is still handed off, so its end is seen; one we close is not.
     if (this.closed || this.ending.has(page)) return false;
     this.identifyingPages.delete(page);
-    this.hiddenPages.delete(page);
     if (this.published.has(page)) return true;
     this.published.add(page);
     if (!announce) return true;
@@ -1505,60 +1353,40 @@ class PlaywrightContextHandle implements BrowserContext {
     const title = row.identity ?? null;
     if (title !== null) this.pageTitles.set(page, title);
     const one = title !== null && findNamed(rows, title).kind === "one";
-    const wake = this.activeWake;
-    if (wake && title === wake.title) {
-      // K2: the wake takes only the one tab carrying its name; otherwise it gives up and the page
-      // stays hidden until its name's removal closes it.
+    const wake = title === null ? undefined : this.wakes.get(title);
+    if (wake) {
+      // K2, L4: the wake takes only the one tab carrying its name, seen once; a second carrier
+      // or a second arrival makes it give up. The page stays hidden either way.
       if (one) wake.arrive(page, row);
-      else wake.giveUp();
+      else wake.spoil();
       return;
     }
-    if (one && title !== null && !this.removals.has(title) && !this.unremovable.has(title)) {
-      if (this.claimingTitles.has(title)) return;
-      if (this.sleepingTitles.has(title)) {
-        // A sleeping tab Chromium loaded by itself goes back to sleep, unseen. A discarded tab's own
-        // placeholder page is left alone: discarding it again would rewrite its saved entry.
-        if (!row.discarded && row.status !== "unloaded")
-          void this.onLane(title, () => this.lifecycle!.discardByTabId(row.tabId)).catch(
-            () => undefined,
-          );
-        return;
-      }
-      const surfaceId = title as BrowserSurfaceId;
-      let entry = this.restored.get(surfaceId);
-      if (!entry && keptTitleOf(row, rows) && this.isKept(surfaceId)) {
-        entry = { page: undefined };
-        this.restored.set(surfaceId, entry);
-      }
-      if (entry) {
-        entry.page = page;
-        if (this.parkingArmed)
-          void this.parkRestored(surfaceId, entry, { waitForLoad: true }).catch(() => undefined);
-        return;
-      }
+    const tokenId = title === null ? undefined : this.sleepingTitles.get(title);
+    if (tokenId && one && !this.removals.has(tokenId) && !this.unremovable.has(tokenId)) {
+      // A sleeping tab Chromium loaded by itself goes back to sleep, unseen, on its own lane.
+      if (!row.discarded && row.status !== "unloaded")
+        void this.onLane(tokenId, () => this.sleepAgain(tokenId)).catch(() => undefined);
+      return;
     }
     void this.closePageWithEvidence(page);
   }
 
-  /** In the keep list (any Home name before the Home said it), and bound to no live page. */
-  private isKept(surfaceId: BrowserSurfaceId): boolean {
-    const bound = this.boundPages.get(surfaceId);
-    return (this.keepList?.has(surfaceId) ?? true) && (!bound || bound.isClosed());
-  }
-
-  private isGuardedName(title: string): boolean {
-    return (
-      this.restored.has(title as BrowserSurfaceId) ||
-      this.claimingTitles.has(title) ||
-      this.sleepingTitles.has(title) ||
-      this.removals.has(title) ||
-      this.unremovable.has(title)
-    );
+  /** On the tab's lane: still this token's sleep, still loaded, and no wake for it, it sleeps again. */
+  private async sleepAgain(tokenId: string): Promise<void> {
+    const record = this.sleeping.get(tokenId);
+    if (!record || this.closed || this.wakes.has(record.title)) return;
+    const rows = await this.read(performance.now() + nameTargetMs);
+    const named = rows ? findNamed(rows, record.title) : null;
+    if (this.sleeping.get(tokenId) !== record || this.wakes.has(record.title)) return;
+    if (named?.kind === "one" && !named.row.discarded && named.row.status !== "unloaded") {
+      const discardedId = await this.lifecycle?.discardByTabId(named.row.tabId).catch(() => null);
+      if (discardedId != null) record.tabId = discardedId;
+    }
   }
 
   /**
    * The one bounded close with evidence: Playwright's close, then the target's own close. The page
-   * is unpublished at once and stays hidden whether or not the close is confirmed.
+   * is unpublished at once and stays out of reach whether or not the close is confirmed.
    */
   private async closePageWithEvidence(
     page: Page,
@@ -1566,7 +1394,6 @@ class PlaywrightContextHandle implements BrowserContext {
   ): Promise<boolean> {
     this.ending.add(page);
     this.published.delete(page);
-    this.hiddenPages.add(page);
     this.identifyingPages.delete(page);
     if (!page.isClosed())
       await withTimeout(page.close({ runBeforeUnload: false }), remainingMs(deadline) / 2, {
@@ -1588,56 +1415,85 @@ class PlaywrightContextHandle implements BrowserContext {
     return readRows(this.lifecycle, deadline);
   }
 
-  /** Runs `fn` after every earlier task on the same name; tasks on one name never overlap. */
-  private onLane<T>(title: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.laneTails.get(title) ?? Promise.resolve();
+  /** Runs `fn` after every earlier task of the same sleeping tab; they never overlap. */
+  private onLane<T>(tokenId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.laneTails.get(tokenId) ?? Promise.resolve();
     const run = previous.then(fn);
     const tail = run.then(
       () => undefined,
       () => undefined,
     );
-    this.laneTails.set(title, tail);
+    this.laneTails.set(tokenId, tail);
     void tail.then(() => {
-      if (this.laneTails.get(title) === tail) this.laneTails.delete(title);
+      if (this.laneTails.get(tokenId) === tail) this.laneTails.delete(tokenId);
     });
     return run;
   }
 
   /**
-   * K6, on the name's lane: the tab carrying `title` is removed only when a read that agrees with
-   * itself finds no tab carrying it, within `attempts`. Its hidden pages close first; `many` is not
-   * removed by name.
+   * K6, on the tab's lane: a sleeping tab is removed only on evidence, a read that agrees with
+   * itself in which no tab carries its name and none has its target, after a remove resolved
+   * when it was never named. Its hidden pages close first; `many` is not removed by name.
    */
-  private async removeNamed(title: string, attempts: number): Promise<boolean> {
+  private async removeSleeping(record: SleepingTab, attempts: number): Promise<boolean> {
     const lifecycle = this.lifecycle;
     if (!lifecycle) return false;
     const deadline = performance.now() + attempts * nameTargetMs;
+    const gone = (rows: readonly ChromiumTabEntry[] | null) =>
+      rows !== null &&
+      findNamed(rows, record.title).kind === "none" &&
+      !rows.some(
+        (row) =>
+          row.tabId === record.tabId ||
+          (record.targetId !== null && row.targetId === record.targetId),
+      ) &&
+      (record.named || record.removeAsked);
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (this.closed) return false;
       for (const page of this.context.pages())
-        if (!this.published.has(page) && this.pageTitles.get(page) === title)
+        if (!this.published.has(page) && this.pageTitles.get(page) === record.title)
           await this.closePageWithEvidence(page, deadline);
       const rows = await this.read(deadline);
       if (this.closed) return false;
-      const named = rows ? findNamed(rows, title) : null;
-      if (named?.kind === "none") return true;
-      if (named?.kind === "one") {
-        const { row } = named;
-        const asked = await lifecycle.removeByTabId(row.tabId).catch(() => false);
-        if (!asked && row.targetId && this.closeTarget)
-          await this.closeTarget(row.targetId).catch(() => undefined);
-        const after = await this.read(deadline);
-        if (after && findNamed(after, title).kind === "none") return true;
+      if (gone(rows)) return true;
+      const named = rows ? findNamed(rows, record.title) : null;
+      const tab =
+        named?.kind === "one"
+          ? named.row
+          : named?.kind === "none"
+            ? rows!.find(
+                (row) =>
+                  row.tabId === record.tabId ||
+                  (record.targetId !== null && row.targetId === record.targetId),
+              )
+            : undefined;
+      if (tab) {
+        let resolved = await lifecycle.removeByTabId(tab.tabId).catch(() => false);
+        if (!resolved && tab.targetId && this.closeTarget)
+          resolved = await this.closeTarget(tab.targetId).then(
+            () => true,
+            () => false,
+          );
+        record.removeAsked ||= resolved;
+        if (gone(await this.read(deadline))) return true;
       }
       if (attempt < attempts - 1) await delay(40);
     }
     return false;
   }
 
-  /** Gives `title` up: guarded at once, removed in the background until proven, or reported. */
-  private giveUpName(title: string): void {
-    if (this.closed || this.removals.has(title) || this.unremovable.has(title)) return;
-    this.removals.set(title, { attempts: 0 });
+  /** Forgets one sleep, only once its tab woke or is proven removed. */
+  private forget(tokenId: string, record: SleepingTab): void {
+    if (this.sleeping.get(tokenId) === record) this.sleeping.delete(tokenId);
+    if (this.sleepingTitles.get(record.title) === tokenId) this.sleepingTitles.delete(record.title);
+    this.removals.delete(tokenId);
+    this.unremovable.delete(tokenId);
+  }
+
+  /** Gives a sleep up: guarded at once, removed in the background until proven, or reported. */
+  private giveUp(tokenId: string): void {
+    if (this.closed || this.removals.has(tokenId) || this.unremovable.has(tokenId)) return;
+    this.removals.set(tokenId, { attempts: 0 });
     this.scheduleRemovalDrain(0);
   }
 
@@ -1660,482 +1516,62 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   private async drainRemovals(): Promise<void> {
-    for (const [title, tracker] of Array.from(this.removals)) {
+    for (const [tokenId, tracker] of Array.from(this.removals)) {
       if (this.closed) return;
-      await this.onLane(title, async () => {
-        if (this.removals.get(title) !== tracker) return;
+      await this.onLane(tokenId, async () => {
+        if (this.removals.get(tokenId) !== tracker) return;
+        const record = this.sleeping.get(tokenId);
+        if (!record) {
+          this.removals.delete(tokenId);
+          return;
+        }
         tracker.attempts++;
-        if (await this.removeNamed(title, 1)) {
-          // Proven removed (K6): its guard, and a sleep token a failed release kept, go now.
-          this.removals.delete(title);
-          for (const [tokenId, sleeping] of this.sleepingByToken)
-            if (sleeping.title === title) this.sleepingByToken.delete(tokenId);
-          if (this.sleepingTitles.has(title)) this.sleepingTitles.delete(title);
-          this.retryDeferredName(title);
-        } else if (tracker.attempts >= removalRetryBound) {
+        if (await this.removeSleeping(record, 1)) this.forget(tokenId, record);
+        else if (tracker.attempts >= removalRetryBound) {
           // Rule A: recorded as not removed, never retried silently forever; still guarded.
-          this.removals.delete(title);
-          this.unremovable.add(title);
+          this.removals.delete(tokenId);
+          this.unremovable.add(tokenId);
           reportUnconfirmedRemoval(tracker.attempts);
         }
       });
     }
   }
 
-  /**
-   * Takes a restored tab from every claim at once and removes it on its lane; its page stays
-   * hidden and its name guarded until its removal is proven.
-   */
-  private evictRestored(surfaceId: BrowserSurfaceId): Promise<boolean> {
-    const entry = this.restored.get(surfaceId);
-    this.restored.delete(surfaceId);
-    if (entry?.page) this.pageTitles.set(entry.page, surfaceId);
-    this.removals.set(surfaceId, this.removals.get(surfaceId) ?? { attempts: 0 });
-    return this.onLane(surfaceId, async () => {
-      if (this.closed) return false;
-      if (entry?.page) await this.closePageWithEvidence(entry.page);
-      const removed = await this.removeNamed(surfaceId, 3);
-      if (removed) {
-        this.removals.delete(surfaceId);
-        this.retryDeferredName(surfaceId);
-      } else this.scheduleRemovalDrain();
-      return removed;
-    });
-  }
-
-  private armFallbackReconcile(keepIds: ReadonlySet<BrowserSurfaceId>, delayMs: number): void {
-    if (this.closed || this.restored.size === 0) return;
-    clearTimeout(this.reconcileFallbackTimer);
-    this.reconcileFallbackTimer = setTimeout(() => {
-      this.reconcileFallbackTimer = undefined;
-      if (this.closed) return;
-      void this.reconcileSavedTabs(keepIds).catch(() => undefined);
-    }, delayMs);
-    this.reconcileFallbackTimer.unref?.();
-  }
-
-  private reconcileSavedTabs(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void> {
-    if (this.reconcileFallbackTimer) clearTimeout(this.reconcileFallbackTimer);
-    this.reconcileFallbackTimer = undefined;
-    this.reconcileAbort?.abort();
-    const abort = new AbortController();
-    this.reconcileAbort = abort;
-    const work = this.reconcileTail.then(() =>
-      this.reconcileSavedTabsOnce(savedTabIds, abort.signal),
-    );
-    this.reconcileTail = work.then(
-      () => undefined,
-      () => undefined,
-    );
-    const deadline = new Error("Reconcile deadline passed.");
-    return withTimeout(work, 6_000, { timeoutError: () => deadline }).catch((error: unknown) => {
-      if (error !== deadline) throw error;
-      // Deadline passed (Rule B): the body is fenced and every restored tab nobody is claiming
-      // is given up, so the session goes on opening tabs by address.
-      abort.abort();
-      for (const surfaceId of Array.from(this.restored.keys()))
-        if (!this.claimingTitles.has(surfaceId))
-          void this.evictRestored(surfaceId).catch(() => undefined);
-      this.parkingArmed = true;
-    });
-  }
-
-  /**
-   * Closes every restored tab whose name is outside `savedTabIds` and that no session is
-   * claiming, then parks the rest: a loaded one is discarded so no unowned page runs, a
-   * never-loaded one is left untouched so its `sessionStorage` survives.
-   */
-  private async reconcileSavedTabsOnce(
-    savedTabIds: ReadonlySet<BrowserSurfaceId>,
-    signal: AbortSignal,
-  ): Promise<void> {
-    if (!this.lifecycle || signal.aborted || this.closed) return;
-    this.keepList = savedTabIds;
-    // Removals finish (or are left guarded, K6) before the caller goes on; none is assumed done.
-    await Promise.all(
-      Array.from(this.restored.keys())
-        .filter((surfaceId) => !savedTabIds.has(surfaceId) && !this.claimingTitles.has(surfaceId))
-        .map((surfaceId) => this.evictRestored(surfaceId).catch(() => false)),
-    );
-    const rows =
-      this.restored.size > 0 ? await this.read(performance.now() + 2 * nameTargetMs) : [];
-    if (signal.aborted || this.closed) return;
-    this.parkingArmed = true;
-    for (const [surfaceId, entry] of Array.from(this.restored)) {
-      if (this.claimingTitles.has(surfaceId)) continue;
-      // Not known is never "absent" (Rule A): the tab is given up.
-      if (!rows) {
-        void this.evictRestored(surfaceId).catch(() => undefined);
-        continue;
-      }
-      const named = findNamed(rows, surfaceId);
-      if (
-        named.kind === "one" &&
-        (named.row.discarded || (named.row.status === "unloaded" && !entry.page))
-      )
-        continue;
-      // Off the path to ready: parking a loaded tab waits for a discard slot.
-      void this.parkRestored(surfaceId, entry, { waitForLoad: false }).catch(() => undefined);
-    }
-  }
-
-  private async withParkingSlot<T>(fn: () => Promise<T>): Promise<T> {
-    while (this.parkedActive >= 4 && !this.closed) {
-      await new Promise<void>((resolve) => this.parkedWaiters.push(resolve));
-    }
-    this.parkedActive++;
-    try {
-      return await fn();
-    } finally {
-      this.parkedActive--;
-      this.parkedWaiters.shift()?.();
-    }
-  }
-
-  /**
-   * Discards a restored tab Chromium has loaded before any session claimed it. Runs on the tab's
-   * lane and acts only while the entry it was given is still the tab's unclaimed entry.
-   */
-  private parkRestored(
-    surfaceId: BrowserSurfaceId,
-    entry: RestoredTab,
-    options: { readonly waitForLoad: boolean },
-  ): Promise<void> {
-    const current = () =>
-      !this.closed &&
-      this.lifecycle !== undefined &&
-      this.restored.get(surfaceId) === entry &&
-      !this.claimingTitles.has(surfaceId);
-    if (!current()) return Promise.resolve();
-    return this.onLane(surfaceId, () =>
-      this.withParkingSlot(() => this.parkOnLane(surfaceId, entry, options, current)),
-    );
-  }
-
-  private async parkOnLane(
-    surfaceId: BrowserSurfaceId,
-    entry: RestoredTab,
-    options: { readonly waitForLoad: boolean },
-    current: () => boolean,
-  ): Promise<void> {
-    if (!current()) return;
-    const deadline = performance.now() + 2 * nameTargetMs;
-    const rows = await this.read(deadline);
-    if (!current()) return;
-    const named = rows ? findNamed(rows, surfaceId) : null;
-    if (named?.kind === "none") {
-      // K6: a read that agrees with itself and no tab carries the name, on its lane: removed.
-      this.restored.delete(surfaceId);
-      return;
-    }
-    if (named?.kind !== "one") {
-      // Not known, or not one tab: given up.
-      void this.evictRestored(surfaceId);
-      return;
-    }
-    const { row } = named;
-    if (row.discarded) return;
-    // The tab's page, as cached or as the target its named row names: frozen before the discard,
-    // or its page state (scroll, form fields) would not reach Chromium's own record.
-    const findPage = () =>
-      entry.page && !entry.page.isClosed()
-        ? entry.page
-        : this.context
-            .pages()
-            .find(
-              (candidate) =>
-                !candidate.isClosed() &&
-                !this.published.has(candidate) &&
-                row.targetId !== null &&
-                syncTargetIdOfPage(candidate) === row.targetId,
-            );
-    let page = findPage();
-    // A tab Chromium is loading may not have its page yet: wait for it briefly, since a discard
-    // mid-load without a freeze would save a half-restored state over the tab's own.
-    const pageDeadline = performance.now() + parkPageWaitMs;
-    while (
-      !page &&
-      row.targetId &&
-      row.status !== "unloaded" &&
-      performance.now() < pageDeadline &&
-      current()
-    ) {
-      await delay(25);
-      page = findPage();
-    }
-    if (page && page !== entry.page) {
-      this.hiddenPages.add(page);
-      this.pageTitles.set(page, surfaceId);
-      entry.page = page;
-    }
-    if (page && (options.waitForLoad || row.status !== "complete")) {
-      // Let Chromium finish restoring page state before it is frozen and discarded.
-      await page.waitForLoadState("load", { timeout: 1_000 }).catch(() => undefined);
-    }
-    if (!current()) return;
-    if (row.active) await this.activatePrivateAnchor();
-    const frozen = page && !page.isClosed() ? page : undefined;
-    if (frozen) await this.setLifecycleState(frozen, "frozen");
-    if (!current()) {
-      // Claimed, given up or removed meanwhile: what this run froze it unfreezes.
-      if (frozen && !this.closed) await this.setLifecycleState(frozen, "active");
-      return;
-    }
-    await this.lifecycle!.discardByTabId(row.tabId).catch(() => null);
-    if (!current()) return;
-    const after = await this.read(performance.now() + 2 * nameTargetMs);
-    if (!current()) return;
-    const afterNamed = after ? findNamed(after, surfaceId) : null;
-    if (afterNamed?.kind === "one" && afterNamed.row.discarded) {
-      if (entry.page?.isClosed()) entry.page = undefined;
-      return;
-    }
-    if (afterNamed?.kind === "none") {
-      this.restored.delete(surfaceId);
-      return;
-    }
-    // Still loaded, ambiguous or not known: given up, so it opens by address when claimed.
-    void this.evictRestored(surfaceId);
+  markClosed(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const wake of this.wakes.values()) wake.spoil();
+    clearTimeout(this.removalTimer);
+    this.removalTimer = undefined;
+    this.sleeping.clear();
+    this.sleepingTitles.clear();
+    this.removals.clear();
+    this.unremovable.clear();
+    this.wakes.clear();
+    this.laneTails.clear();
   }
 
   /**
    * Flushes Blink's page state (scroll, form controls) into Chromium's navigation entry before a
-   * discard, or undoes that. A page is marked frozen before the request, so even a freeze that
-   * timed out is undone; a failed freeze still lets the discard go on (no unowned page stays live).
+   * discard. Best effort: the discard still goes on, so no page stays running unowned.
    */
-  private async setLifecycleState(page: Page, state: "frozen" | "active"): Promise<boolean> {
-    if (state === "frozen") this.frozenPages.add(page);
-    else if (page.isClosed()) {
-      this.frozenPages.delete(page);
-      return false;
-    }
+  private async freezeBeforeDiscard(page: Page): Promise<void> {
     let session: PlaywrightCdpSession | undefined;
     try {
       session = await withTimeout(this.context.newCDPSession(page), 1_000, {
-        timeoutError: () => new Error("Lifecycle CDP attach timed out."),
+        timeoutError: () => new Error("Freeze CDP attach timed out."),
       });
-      await withTimeout(session.send("Page.setWebLifecycleState", { state }), 1_000, {
-        timeoutError: () => new Error("Lifecycle state change timed out."),
+      await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_000, {
+        timeoutError: () => new Error("Freeze timed out."),
       });
-      if (state === "active") this.frozenPages.delete(page);
-      return true;
     } catch {
-      return false;
+      // Best-effort flush.
     } finally {
       if (session)
         await withTimeout(session.detach(), 500, {
-          timeoutError: () => new Error("Lifecycle CDP detach timed out."),
+          timeoutError: () => new Error("Freeze detach timed out."),
         }).catch(() => undefined);
     }
-  }
-
-  /**
-   * A session's claim of its own restored tab: the tab whose group title is `surfaceId`, or
-   * nothing (the caller opens the tab by address). One deadline bounds the lane wait and the wake.
-   */
-  private async claimRestored(
-    surfaceId: BrowserSurfaceId,
-    own?: (page: BrowserPage) => void,
-    signal?: AbortSignal,
-  ): Promise<BrowserPage | null> {
-    if (!this.lifecycle || !this.restored.has(surfaceId)) return null;
-    const deadline = performance.now() + wakeDiscardedTabMs;
-    this.claimingTitles.add(surfaceId);
-    try {
-      const lane = this.laneTails.get(surfaceId);
-      if (lane) {
-        const settled = await withTimeout(
-          lane.then(() => true),
-          remainingMs(deadline),
-          {
-            timeoutError: () => new Error("Pending parked discard wait timed out."),
-          },
-        ).catch(() => false);
-        if (!settled) {
-          // Rule B: the run on this tab is still in its freeze or discard, so the claim gives the
-          // tab up instead of taking it beside that run.
-          if (this.restored.has(surfaceId)) void this.evictRestored(surfaceId);
-          return null;
-        }
-      }
-      const entry = this.restored.get(surfaceId);
-      if (!entry) return null;
-      this.restored.delete(surfaceId);
-      try {
-        // Always through the named tab: a cached page may be a discarded tab's placeholder, which
-        // only activation loads with its own history and state.
-        const page = await this.wakeNamed(surfaceId, deadline, signal);
-        if (this.frozenPages.has(page) && !(await this.setLifecycleState(page, "active"))) {
-          throw new Error("Restored tab remained frozen and could not be unfrozen.");
-        }
-        await this.ensurePagePolicyOnRestoredPage(page);
-        if (!this.publish(page, false)) throw new Error("The restored tab closed.");
-        const handle = this.wrap(page);
-        handle.restoredFromSession = true;
-        this.trackSavedTab(surfaceId, handle);
-        own?.(handle);
-        return handle;
-      } catch {
-        // The restored tab is given up; its page stays hidden until its removal is proven.
-        this.restored.set(surfaceId, entry);
-        void this.evictRestored(surfaceId);
-        return null;
-      }
-    } finally {
-      this.claimingTitles.delete(surfaceId);
-    }
-  }
-
-  /**
-   * Gives a saved page's tab its Home surface id as its name, on that name's lane (K7). A page
-   * still at its first blank entry is named after its first real navigation (naming it earlier
-   * makes Chromium save a broken history for it); a name another tab still carries waits.
-   */
-  private trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null): void {
-    if (page === null) {
-      // The binding goes now: a name task still waiting finds it gone before its write (K7).
-      const bound = this.boundPages.get(surfaceId);
-      if (bound && this.savedSurfaceByPage.get(bound) === surfaceId)
-        this.savedSurfaceByPage.delete(bound);
-      this.deferredNames.delete(surfaceId);
-      this.boundPages.delete(surfaceId);
-      return;
-    }
-    if (!(page instanceof PlaywrightPageHandle) || !this.lifecycle) return;
-    this.savedSurfaceByPage.set(page, surfaceId);
-    this.boundPages.set(surfaceId, page);
-    this.deferredNames.delete(surfaceId);
-    if (!isHomeTabName(surfaceId)) {
-      // K10: never written, so the tab comes back as a fresh page at its address.
-      if (!this.unnameable.has(surfaceId))
-        process.stderr.write('{"event":"browser-runtime.tab-name-unusable"}\n');
-      this.unnameable.add(surfaceId);
-      return;
-    }
-    const raw = page.rawPage;
-    if (isBlankAddress(page.url())) {
-      if (this.awaitingFirstNavigation.has(raw)) return;
-      const onNavigated = (frame: Frame) => {
-        if (frame !== raw.mainFrame() || isBlankAddress(frame.url())) return;
-        done();
-        // The binding now, not the one this callback was made for.
-        const current = this.savedSurfaceByPage.get(page);
-        if (current) this.trackSavedTab(current, page);
-      };
-      const done = () => {
-        raw.off("framenavigated", onNavigated);
-        this.awaitingFirstNavigation.delete(raw);
-      };
-      this.awaitingFirstNavigation.set(raw, { done });
-      raw.on("framenavigated", onNavigated);
-      return;
-    }
-    const bound = () =>
-      !this.closed &&
-      !page.isClosed() &&
-      !page.closeRequested &&
-      this.savedSurfaceByPage.get(page) === surfaceId;
-    const naming = this.onLane(surfaceId, async () => {
-      const deadline = performance.now() + targetLookupMs;
-      for (let attempt = 0; attempt < removalRetryBound && bound(); attempt++) {
-        const targetId = await lookupTargetId(this.context, raw, deadline);
-        const rows = targetId && bound() ? await this.read(deadline) : null;
-        const row = rows?.find((entry) => entry.targetId === targetId);
-        if (rows && row) {
-          const named = findNamed(rows, surfaceId);
-          const ours = named.kind === "one" && named.row.tabId === row.tabId;
-          if (!ours && (named.kind !== "none" || this.isGuardedName(surfaceId))) {
-            this.deferredNames.set(surfaceId, page);
-            return;
-          }
-          // The binding is checked immediately before the write (K7, K8).
-          if (!bound()) return;
-          if (await this.lifecycle!.nameTab(row.tabId, surfaceId).catch(() => false)) return;
-        }
-        if (performance.now() + 100 >= deadline) return;
-        await delay(100 * (attempt + 1));
-      }
-    }).catch(() => undefined);
-    this.naming.add(naming);
-    void naming.finally(() => this.naming.delete(naming));
-  }
-
-  private retryDeferredName(surfaceId: string): void {
-    const page = this.deferredNames.get(surfaceId as BrowserSurfaceId);
-    if (page) this.trackSavedTab(surfaceId as BrowserSurfaceId, page);
-  }
-
-  /** Before an orderly close: tabs being named finish, so Chromium's session carries them. */
-  async settleNaming(): Promise<void> {
-    const deadline = performance.now() + namingSettleMs;
-    // A saved tab still waiting for its first real navigation is named now if Chromium already
-    // has an address for it: its navigation commits within the bound, so Chromium's session
-    // carries its name. A tab Chromium shows blank has nothing to restore.
-    if (this.awaitingFirstNavigation.size > 0) {
-      const rows = await this.read(deadline);
-      for (const [raw, waiting] of Array.from(this.awaitingFirstNavigation)) {
-        const targetId = syncTargetIdOfPage(raw);
-        const row = rows?.find((entry) => targetId !== null && entry.targetId === targetId);
-        if (!row || isBlankAddress(row.url)) continue;
-        const page = this.wrap(raw);
-        while (isBlankAddress(page.url()) && performance.now() < deadline) await delay(50);
-        const current = this.savedSurfaceByPage.get(page);
-        if (isBlankAddress(page.url()) || !current) continue;
-        waiting.done();
-        this.trackSavedTab(current, page);
-      }
-    }
-    if (this.naming.size === 0) return;
-    await withTimeout(Promise.allSettled(this.naming), remainingMs(deadline), {
-      timeoutError: () => new Error("Tab naming did not settle."),
-    }).catch(() => undefined);
-  }
-
-  markClosed(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.reconcileAbort?.abort();
-    this.reconcileAbort = undefined;
-    this.activeWake?.giveUp();
-    for (const wake of this.parkedWaiters.splice(0)) wake();
-    clearTimeout(this.reconcileFallbackTimer);
-    clearTimeout(this.removalTimer);
-    this.reconcileFallbackTimer = this.removalTimer = undefined;
-    this.restored.clear();
-    this.claimingTitles.clear();
-    this.sleepingByToken.clear();
-    this.sleepingTitles.clear();
-    this.removals.clear();
-    this.unremovable.clear();
-    this.deferredNames.clear();
-    this.boundPages.clear();
-    for (const waiting of Array.from(this.awaitingFirstNavigation.values())) waiting.done();
-    this.laneTails.clear();
-    this.parkingArmed = false;
-  }
-
-  private async ensurePagePolicyOnRestoredPage(page: Page): Promise<void> {
-    if (page.isClosed()) return;
-    const script = browserPagePolicyScriptFor(this.providerConfig);
-    if (typeof page.addInitScript === "function") {
-      await withTimeout(page.addInitScript({ content: script }), 1_000, {
-        timeoutError: () => new Error("Page policy initScript timed out."),
-      }).catch(() => undefined);
-    }
-    const frames = typeof page.frames === "function" ? page.frames() : [];
-    await withTimeout(
-      Promise.allSettled(
-        frames.map((frame) =>
-          typeof frame.evaluate === "function"
-            ? frame.evaluate((source: string) => {
-                globalThis.eval(source);
-              }, script)
-            : Promise.resolve(),
-        ),
-      ),
-      1_000,
-      { timeoutError: () => new Error("Page policy sync timed out.") },
-    ).catch(() => undefined);
   }
 
   async activatePrivateAnchor(): Promise<void> {
@@ -2146,73 +1582,71 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
-   * Puts a page's tab to sleep by discard, on its name's lane (K7). The tab is named first (a
-   * saved tab keeps its Home surface id, any other tab gets its token's name), the name is guarded
-   * before Chromium is asked, and afterwards the tab is found by that name alone.
+   * Puts a page's tab to sleep by discard, on that sleep's own lane (L2): Chromium discards the
+   * tab first, then the helper names the tab Chromium returns with the token's name. A discarded
+   * tab runs no script, so nothing it opens can inherit the name. A tab that cannot be put to
+   * sleep under its name is closed, or removed with evidence, and wakes by address; until that
+   * evidence its token and guard stay (L4).
    */
   async sleepTab(
-    handle: PlaywrightPageHandle,
+    _handle: PlaywrightPageHandle,
     page: Page,
     token: { readonly tokenId: string; readonly targetId: string; readonly url: string },
     detach: () => Promise<void>,
   ): Promise<void> {
-    const saved = this.savedSurfaceByPage.get(handle);
-    const surfaceId = saved && isHomeTabName(saved) ? saved : undefined;
-    const title = surfaceId ?? `${sleepTitlePrefix}${token.tokenId}`;
+    const lifecycle = this.lifecycle!;
+    const { tokenId } = token;
     const settled = Promise.withResolvers<void>();
-    this.sleepingByToken.set(token.tokenId, {
-      title,
+    const record: SleepingTab = {
+      title: `${sleepTitlePrefix}${tokenId}`,
       url: token.url,
+      tabId: -1,
+      targetId: token.targetId,
+      named: false,
+      removeAsked: false,
       settled: settled.promise,
-      ...(surfaceId ? { surfaceId } : {}),
-    });
-    this.sleepingTitles.set(title, token.tokenId);
-    const forget = () => {
-      this.sleepingByToken.delete(token.tokenId);
-      if (this.sleepingTitles.get(title) === token.tokenId) this.sleepingTitles.delete(title);
     };
+    // The name is guarded before Chromium is asked anything.
+    this.sleeping.set(tokenId, record);
+    this.sleepingTitles.set(record.title, tokenId);
     const detachBounded = () =>
       withTimeout(detach(), nameTargetMs, {
         timeoutError: () => new Error("Sleep detach timed out."),
       }).catch(() => undefined);
     try {
-      await this.onLane(title, async () => {
-        const deadline = performance.now() + 2 * nameTargetMs;
+      await this.onLane(tokenId, async () => {
+        const deadline = performance.now() + 3 * nameTargetMs;
         const rows = await this.read(deadline);
         const row = rows?.find((entry) => entry.targetId === token.targetId);
-        const named = rows ? findNamed(rows, title) : null;
-        // A name is never given to a second tab: one another tab carries, or one being restored or
-        // removed, leaves this tab unnamed. A blank tab is not named (see trackSavedTab).
-        const free =
-          (named?.kind === "one" && named.row.tabId === row?.tabId) ||
-          (named?.kind === "none" &&
-            !this.restored.has(title as BrowserSurfaceId) &&
-            !this.removals.has(title) &&
-            !this.unremovable.has(title));
-        const live = () => !this.closed && !page.isClosed();
-        if (
-          !row ||
-          !free ||
-          isBlankAddress(token.url) ||
-          !live() ||
-          !(await this.lifecycle!.nameTab(row.tabId, title).catch(() => false))
-        ) {
-          // The tab cannot be named, so it could not be found again: it closes and wakes by address.
-          forget();
+        if (row) record.tabId = row.tabId;
+        if (!row || isBlankAddress(token.url) || this.closed || page.isClosed()) {
+          // Not found, or nothing to keep: the tab sleeps by closing and wakes by address.
           await detachBounded();
-          await this.closePageWithEvidence(page);
+          if (await this.closePageWithEvidence(page, deadline)) this.forget(tokenId, record);
+          else this.giveUp(tokenId);
           return;
         }
         if (row.active) await this.activatePrivateAnchor();
-        await this.setLifecycleState(page, "frozen");
+        await this.freezeBeforeDiscard(page);
         await detachBounded();
-        await this.lifecycle!.discardByTabId(row.tabId).catch(() => null);
-        const after = await this.read(performance.now() + 2 * nameTargetMs);
-        const asleep = after ? findNamed(after, title) : null;
-        if (asleep?.kind === "one" && asleep.row.discarded) return;
-        // Still loaded, gone, ambiguous or not known: the page closes. The name stays guarded
-        // until a wake or release proves what became of the tab.
-        await this.closePageWithEvidence(page);
+        const discardedId = await lifecycle.discardByTabId(row.tabId).catch(() => null);
+        if (discardedId !== null) record.tabId = discardedId;
+        const after = await this.read(deadline);
+        const tab =
+          discardedId === null ? undefined : after?.find((entry) => entry.tabId === discardedId);
+        record.targetId = tab ? tab.targetId : record.targetId;
+        if (tab?.discarded && !this.closed) {
+          record.named = await lifecycle.nameTab(tab.tabId, record.title).catch(() => true);
+          const check = await this.read(deadline);
+          const named = check ? findNamed(check, record.title) : null;
+          if (named?.kind === "one" && named.row.tabId === tab.tabId && named.row.discarded) return;
+        }
+        // Not asleep under its name: closed and removed with evidence, it wakes by address. Its
+        // page still open proves the tab was not discarded, so closing it closes the tab.
+        if (!page.isClosed())
+          record.removeAsked ||= await this.closePageWithEvidence(page, deadline);
+        if (await this.removeSleeping(record, 1)) this.forget(tokenId, record);
+        else this.giveUp(tokenId);
       });
     } finally {
       settled.resolve();
@@ -2222,97 +1656,100 @@ class PlaywrightContextHandle implements BrowserContext {
   async releaseRestore(restore: unknown): Promise<boolean> {
     const discardRestore = parseChromiumDiscardRestore(restore);
     if (!discardRestore || !this.lifecycle) return true;
-    const sleeping = this.sleepingByToken.get(discardRestore.tokenId);
-    if (!sleeping) return true;
-    await sleeping.settled;
-    const removed = await this.onLane(sleeping.title, () => this.removeNamed(sleeping.title, 1));
+    const { tokenId } = discardRestore;
+    const record = this.sleeping.get(tokenId);
+    if (!record) return true;
+    await record.settled;
+    const removed = await this.onLane(
+      tokenId,
+      async () => this.sleeping.get(tokenId) !== record || (await this.removeSleeping(record, 1)),
+    );
     if (!removed) {
       // K6: not proven gone. The token stays, so a later release asks again, and the background
       // drain retries within its bound or reports the removal unconfirmed; the name stays guarded.
-      this.giveUpName(sleeping.title);
+      this.giveUp(tokenId);
       return false;
     }
-    this.sleepingByToken.delete(discardRestore.tokenId);
-    if (this.sleepingTitles.get(sleeping.title) === discardRestore.tokenId)
-      this.sleepingTitles.delete(sleeping.title);
-    this.removals.delete(sleeping.title);
-    this.retryDeferredName(sleeping.title);
+    this.forget(tokenId, record);
     return true;
   }
 
   /**
-   * Wakes the one tab carrying `title`; its page is returned hidden, for the caller to take. One
-   * deadline covers the queue wait and the arrival; a wake whose creation was abandoned, or whose
-   * deadline passed in the queue, does not run (K8).
+   * Wakes the one tab carrying the sleep's name, on that sleep's lane, inside one deadline. The
+   * page is taken only after a last check that the name is still on exactly one tab and it is
+   * this page's; then the name is removed (L2). An abandoned wake leaves the tab asleep under its
+   * name (L4).
    */
-  private wakeNamed(title: string, deadline: number, signal?: AbortSignal): Promise<Page> {
-    const run = this.wakeTail.then(() => {
-      if (signal?.aborted || performance.now() >= deadline || this.closed)
-        throw new Error("The wake was abandoned.");
-      return this.wakeNamedOnce(title, deadline);
-    });
-    this.wakeTail = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return withTimeout(run, remainingMs(deadline), {
-      timeoutError: () => new Error("Waking sleeping Chromium tab timed out."),
-    });
-  }
-
-  private async wakeNamedOnce(title: string, deadline: number): Promise<Page> {
-    const lifecycle = this.lifecycle;
-    if (!lifecycle) throw new Error("Tab lifecycle helper is unavailable.");
+  private async wakeOnLane(
+    tokenId: string,
+    record: SleepingTab,
+    deadline: number,
+    signal: AbortSignal | undefined,
+  ): Promise<Page> {
+    const lifecycle = this.lifecycle!;
+    const wanted = () =>
+      this.sleeping.get(tokenId) === record &&
+      !this.removals.has(tokenId) &&
+      !this.unremovable.has(tokenId) &&
+      !signal?.aborted &&
+      !this.closed &&
+      performance.now() < deadline;
+    if (!wanted() || !record.named) throw notWanted();
     const rows = await this.read(deadline);
-    const named = rows ? findNamed(rows, title) : null;
+    const named = rows ? findNamed(rows, record.title) : null;
     if (named?.kind !== "one") throw new Error("The named tab is not exactly one tab.");
     const { row } = named;
-    const activate = async () => {
-      const reply = await withTimeout(lifecycle.activateByTabId(row.tabId), remainingMs(deadline), {
-        timeoutError: () => new Error("Activating sleeping Chromium tab timed out."),
-      });
-      // K2: Chromium's own answer names the tab the read named, loaded (seen on real Chromium).
-      if (!reply.ok || reply.tabId !== row.tabId || reply.discarded)
-        throw new Error("Chromium did not activate the named tab.");
-      return reply;
-    };
-    const candidate = row.targetId
-      ? this.context
-          .pages()
-          .find(
-            (page) =>
-              page !== this.privatePage &&
-              !page.isClosed() &&
-              !this.published.has(page) &&
-              !this.ending.has(page) &&
-              syncTargetIdOfPage(page) === row.targetId,
-          )
-      : undefined;
-    if (candidate) {
-      this.identifyingPages.delete(candidate);
-      // A discarded or never-loaded tab loads its own entry only when activated.
-      if (row.discarded || row.status === "unloaded") await activate();
-      return candidate;
-    }
-    const arrival = Promise.withResolvers<{ page: Page; row: ChromiumTabEntry } | null>();
-    const wake: ArmedWake = {
-      title,
-      arrive: (page, arrived) => arrival.resolve({ page, row: arrived }),
-      giveUp: () => arrival.resolve(null),
-    };
-    // The guard is in place before Chromium is asked to activate the tab.
-    this.activeWake = wake;
+    const wake = armWake();
+    this.wakes.set(record.title, wake);
     try {
-      const reply = await activate();
-      const arrived = await withTimeout(arrival.promise, remainingMs(deadline), {
+      const candidate = row.targetId
+        ? this.context
+            .pages()
+            .find(
+              (page) =>
+                page !== this.privatePage &&
+                !page.isClosed() &&
+                !this.published.has(page) &&
+                !this.ending.has(page) &&
+                syncTargetIdOfPage(page) === row.targetId,
+            )
+        : undefined;
+      if (candidate) wake.arrive(candidate, row);
+      if (!wanted()) throw notWanted();
+      if (!candidate || row.discarded || row.status === "unloaded") {
+        const reply = await withTimeout(
+          lifecycle.activateByTabId(row.tabId),
+          remainingMs(deadline),
+          {
+            timeoutError: () => new Error("Activating sleeping Chromium tab timed out."),
+          },
+        );
+        // K2: Chromium's own answer names the tab the read named, loaded (seen on real Chromium).
+        if (!reply.ok || reply.tabId !== row.tabId || reply.discarded)
+          throw new Error("Chromium did not activate the named tab.");
+      }
+      await withTimeout(wake.settled, remainingMs(deadline), {
         timeoutError: () => new Error("Waking sleeping Chromium tab timed out."),
       });
-      // Otherwise the arriving page stays hidden: its name's removal closes it.
-      if (!arrived || arrived.row.tabId !== reply.tabId)
-        throw new Error("The woken tab was not the one tab carrying its name.");
+      const arrived = wake.arrived;
+      if (!arrived || wake.spoiled) throw new Error("The woken tab was not the one tab named.");
+      // L4: the last check at the take, on the candidate shortcut too.
+      const targetId = await lookupTargetId(this.context, arrived.page, deadline);
+      const last = await this.read(deadline);
+      const now = last ? findNamed(last, record.title) : null;
+      if (wake.spoiled || now?.kind !== "one" || now.row.targetId !== targetId)
+        throw new Error("The woken tab was not the one tab named.");
+      if (!wanted()) {
+        // Abandoned after it loaded: it goes back to sleep under its name.
+        const discardedId = await lifecycle.discardByTabId(now.row.tabId).catch(() => null);
+        if (discardedId !== null) record.tabId = discardedId;
+        throw notWanted();
+      }
+      await lifecycle.unnameTab(now.row.tabId).catch(() => false);
+      this.forget(tokenId, record);
       return arrived.page;
     } finally {
-      if (this.activeWake === wake) this.activeWake = null;
+      if (this.wakes.get(record.title) === wake) this.wakes.delete(record.title);
     }
   }
 
@@ -2334,13 +1771,18 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /** K3 (a): the runtime's own new page, published by Playwright's answer to this call. */
-  private async openFreshPage(): Promise<Page> {
+  private async openFreshPage(signal: AbortSignal | undefined): Promise<Page> {
     const opening = withTimeout(this.context.newPage(), openPageMs, {
       timeoutError: () => new Error("Opening a page timed out."),
     });
     this.openingPages.add(opening);
     try {
       const page = await opening;
+      if (signal?.aborted) {
+        // Abandoned while it opened: nobody takes it, so it is closed here.
+        void this.closePageWithEvidence(page);
+        throw notWanted();
+      }
       if (!this.publish(page, true)) throw new Error("The new page closed.");
       return page;
     } finally {
@@ -2353,35 +1795,34 @@ class PlaywrightContextHandle implements BrowserContext {
     readonly own?: (page: BrowserPage) => void;
     readonly signal?: AbortSignal;
   }): Promise<BrowserPage> {
+    const signal = options?.signal;
     await this.beforeCreatePage?.().catch(() => undefined);
+    if (signal?.aborted) throw notWanted();
     const discardRestore = parseChromiumDiscardRestore(options?.restore);
     if (discardRestore && this.lifecycle) {
-      const sleeping = this.sleepingByToken.get(discardRestore.tokenId);
-      if (sleeping) {
+      const { tokenId } = discardRestore;
+      const record = this.sleeping.get(tokenId);
+      if (record) {
         const deadline = performance.now() + wakeDiscardedTabMs;
-        await withTimeout(sleeping.settled, remainingMs(deadline), {
-          timeoutError: () => new Error("The tab's sleep did not settle."),
-        }).catch(() => undefined);
         try {
-          const woken = await this.wakeNamed(sleeping.title, deadline, options?.signal);
+          const woken = await withTimeout(
+            this.onLane(tokenId, () => this.wakeOnLane(tokenId, record, deadline, signal)),
+            remainingMs(deadline),
+            { timeoutError: () => new Error("Waking sleeping Chromium tab timed out.") },
+          );
           if (!this.publish(woken, false)) throw new Error("The woken tab closed.");
-          this.sleepingByToken.delete(discardRestore.tokenId);
-          if (this.sleepingTitles.get(sleeping.title) === discardRestore.tokenId)
-            this.sleepingTitles.delete(sleeping.title);
           const handle = this.wrap(woken);
-          if (sleeping.surfaceId) this.trackSavedTab(sleeping.surfaceId, handle);
           options?.own?.(handle);
           return handle;
-        } catch {
-          // Rule B: the wake gave its tab up. The token stays for its release; the name stays
-          // guarded until its removal is proven (K6).
-          if (this.sleepingTitles.get(sleeping.title) === discardRestore.tokenId)
-            this.sleepingTitles.delete(sleeping.title);
-          this.giveUpName(sleeping.title);
+        } catch (error) {
+          // L4: an open nobody wants starts no fresh page, and its tab stays asleep under its name.
+          if (signal?.aborted || this.closed) throw error;
+          // Rule B: the wake gave its tab up. The token stays for its release, and the tab is
+          // removed in the background on evidence (K6).
+          if (this.sleeping.get(tokenId) === record) this.giveUp(tokenId);
         }
       }
-      const fallback = this.wrap(await this.openFreshPage());
-      if (sleeping?.surfaceId) this.trackSavedTab(sleeping.surfaceId, fallback);
+      const fallback = this.wrap(await this.openFreshPage(signal));
       options?.own?.(fallback);
       if (discardRestore.url && discardRestore.url !== "about:blank") {
         void fallback
@@ -2391,7 +1832,7 @@ class PlaywrightContextHandle implements BrowserContext {
       }
       return fallback;
     }
-    const handle = this.wrap(await this.openFreshPage());
+    const handle = this.wrap(await this.openFreshPage(signal));
     options?.own?.(handle);
     return handle;
   }
@@ -2459,7 +1900,6 @@ async function documentMediaPlaying(frame: Frame): Promise<boolean | null> {
 
 class PlaywrightPageHandle implements BrowserPage {
   readonly captureRestore?: () => Promise<unknown | null>;
-  restoredFromSession = false;
   private pendingDiscard: {
     readonly tokenId: string;
     readonly targetId: string;

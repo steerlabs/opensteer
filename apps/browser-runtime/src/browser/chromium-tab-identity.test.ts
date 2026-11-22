@@ -1,10 +1,11 @@
 /**
- * R2: can Chromium itself carry which Home tab a Chromium tab is? Each saved tab is put in its own
- * tab group whose title is its Home surface id. Launched exactly as the Linux runtime launches a
- * native profile (same options, same bundled helper), without the runtime's restore code.
+ * What the Linux runtime relies on Chromium for, asked of Chromium itself: a discarded tab can be
+ * named and is found by that name (L2), Chromium discards no tab by itself, and a tab a page opens
+ * arrives with its opener known (K3). Launched exactly as the Linux runtime launches a native
+ * profile (same options, same bundled helper), without the runtime.
  */
 import { once } from "node:events";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,7 +21,6 @@ import {
 } from "./tab-lifecycle-extension.js";
 
 const executablePath = findChromium();
-const tabCount = 70;
 
 async function fixtureServer() {
   const server = createServer((request, response) => {
@@ -96,8 +96,6 @@ async function launch(directory: string): Promise<Running> {
   return { context, helper, lifecycle, pid: process.pid };
 }
 
-const surface = (i: number) => `srf_00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
-
 /** Profile tabs only: no helper, extension or blank tabs. */
 async function profileTabs(lifecycle: ChromiumTabLifecycleBridge): Promise<ChromiumTabEntry[]> {
   return (await lifecycle.inventory()).filter(
@@ -108,305 +106,6 @@ async function profileTabs(lifecycle: ChromiumTabLifecycleBridge): Promise<Chrom
       !tab.url.startsWith("chrome-extension://"),
   );
 }
-
-/** Opens `count` tabs (every tenth address repeated, so addresses cannot tell them apart) and names each. */
-async function openNamedTabs(running: Running, url: (site: number, query: string) => string) {
-  const expected = new Map<string, string>();
-  const nameMs: number[] = [];
-  for (let i = 0; i < tabCount; i++) {
-    const page = await running.context.newPage();
-    const address = i % 10 === 0 ? url(1, "same") : url((i % 9) + 1, `tab=${i}`);
-    await page.goto(address);
-    const tabId = await vi.waitFor(
-      async () => {
-        const targetId = (
-          (await (await running.context.newCDPSession(page)).send("Target.getTargetInfo")) as {
-            targetInfo: { targetId: string };
-          }
-        ).targetInfo.targetId;
-        const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId);
-        expect(row).toBeDefined();
-        return row!.tabId;
-      },
-      { timeout: 5_000, interval: 50 },
-    );
-    const started = performance.now();
-    expect(await running.lifecycle.nameTab(tabId, surface(i))).toBe(true);
-    nameMs.push(performance.now() - started);
-    // What the address alone cannot say: which of the repeated "same" pages this is.
-    await page.evaluate((mark) => sessionStorage.setItem("mark", mark), surface(i));
-    expected.set(surface(i), address);
-  }
-  return { expected, nameMs };
-}
-
-function expectCarried(tabs: readonly ChromiumTabEntry[], expected: ReadonlyMap<string, string>) {
-  const named = tabs.filter((tab) => tab.identity);
-  expect(named).toHaveLength(expected.size);
-  expect(new Set(named.map((tab) => tab.identity)).size).toBe(expected.size);
-  for (const tab of named) expect(tab.url).toBe(expected.get(tab.identity!));
-}
-
-async function sessionFilesHold(directory: string, needle: string): Promise<boolean> {
-  const sessions = path.join(directory, "Default", "Sessions");
-  const files = await readdir(sessions).catch(() => [] as string[]);
-  for (const name of files.filter((file) => file.startsWith("Session_"))) {
-    const bytes = await readFile(path.join(sessions, name));
-    if (
-      bytes.includes(Buffer.from(needle, "utf8")) ||
-      bytes.includes(Buffer.from(needle, "utf16le"))
-    )
-      return true;
-  }
-  return false;
-}
-
-/** Checks (c) and (d) after a restart: every title came back on its own tab, none of them loaded. */
-async function expectRestoredByTitle(running: Running, expected: ReadonlyMap<string, string>) {
-  const restored = await vi.waitFor(
-    async () => {
-      const tabs = await profileTabs(running.lifecycle);
-      expect(tabs.filter((tab) => tab.identity)).toHaveLength(expected.size);
-      return tabs;
-    },
-    { timeout: 20_000, interval: 200 },
-  );
-  expectCarried(restored, expected);
-  // (d) Reading the title needs no page: most restored tabs are still unloaded.
-  const states = new Map<string, number>();
-  for (const tab of restored) {
-    const key = `${tab.status}/${tab.discarded ? "discarded" : "kept"}/${tab.targetId ? "target" : "no-target"}`;
-    states.set(key, (states.get(key) ?? 0) + 1);
-  }
-  process.stdout.write(
-    `${JSON.stringify({ event: "r2.restored", ...Object.fromEntries(states) })}\n`,
-  );
-  const unloaded = restored.filter((tab) => tab.status === "unloaded");
-  expect(unloaded.length).toBeGreaterThan(tabCount / 2);
-  // And reading it again does not load them.
-  const again = await profileTabs(running.lifecycle);
-  expect(again.filter((tab) => tab.status === "unloaded").length).toBeGreaterThanOrEqual(
-    unloaded.length,
-  );
-  return restored;
-}
-
-it("carries each tab's Home id in Chromium's own tab group title through discard, clean restart and SIGKILL (R2 a-d, f)", async () => {
-  const url = await fixtureServer();
-  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-"));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-
-  // (a) The API works in this mode.
-  const first = await launch(directory);
-  const { expected, nameMs } = await openNamedTabs(first, url);
-  const inventoryStarted = performance.now();
-  const named = await profileTabs(first.lifecycle);
-  const inventoryMs = performance.now() - inventoryStarted;
-  expectCarried(named, expected);
-
-  // (b) Discard, including a discard that replaces the tab's id, and a tab discarded twice.
-  const victims = named.slice(5, 10);
-  const replaced: boolean[] = [];
-  for (const tab of victims) {
-    const newTabId = await first.lifecycle.discardByTabId(tab.tabId);
-    expect(newTabId).not.toBeNull();
-    replaced.push(newTabId !== tab.tabId);
-  }
-  const twice = victims[0]!;
-  const twiceNow = (await profileTabs(first.lifecycle)).find((t) => t.identity === twice.identity)!;
-  expect(await first.lifecycle.activateByTabId(twiceNow.tabId)).toMatchObject({
-    ok: true,
-    tabId: twiceNow.tabId,
-  });
-  await vi.waitFor(
-    async () => {
-      const row = (await profileTabs(first.lifecycle)).find((t) => t.identity === twice.identity);
-      expect(row?.discarded).toBe(false);
-    },
-    { timeout: 10_000, interval: 100 },
-  );
-  await first.helper.bringToFront();
-  const again = (await profileTabs(first.lifecycle)).find((t) => t.identity === twice.identity)!;
-  expect(await first.lifecycle.discardByTabId(again.tabId)).not.toBeNull();
-  const afterDiscards = await profileTabs(first.lifecycle);
-  expectCarried(afterDiscards, expected);
-  for (const tab of victims)
-    expect(afterDiscards.find((t) => t.identity === tab.identity)?.discarded).toBe(true);
-
-  // (c) Clean close and restart with session restore.
-  await vi.waitFor(async () => expect(await sessionFilesHold(directory, surface(69))).toBe(true), {
-    timeout: 15_000,
-    interval: 250,
-  });
-  await first.context.close();
-  const second = await launch(directory);
-  const restored = await expectRestoredByTitle(second, expected);
-  // The title names the tab, not just an address: the "same"-address tabs are told apart by it.
-  const sameTabs = restored.filter((tab) => tab.url === url(1, "same"));
-  expect(sameTabs.length).toBe(tabCount / 10);
-  const probe = sameTabs[3]!;
-  expect(await second.lifecycle.activateByTabId(probe.tabId)).toMatchObject({
-    ok: true,
-    tabId: probe.tabId,
-  });
-  const probePage = await vi.waitFor(
-    async () => {
-      for (const page of second.context.pages()) {
-        if (page === second.helper || page.url() !== url(1, "same")) continue;
-        const mark = await page.evaluate(() => sessionStorage.getItem("mark")).catch(() => null);
-        if (mark) return { page, mark };
-      }
-      throw new Error("Activated tab not yet loaded.");
-    },
-    { timeout: 10_000, interval: 100 },
-  );
-  expect(probePage.mark).toBe(probe.identity);
-
-  // (c) SIGKILL with about seventy tabs, then restart.
-  await second.helper.bringToFront();
-  await vi.waitFor(
-    async () => {
-      expect(await sessionFilesHold(directory, surface(0))).toBe(true);
-      const prefs = JSON.parse(
-        await readFile(path.join(directory, "Default", "Preferences"), "utf8"),
-      ) as { profile?: { exit_type?: string } };
-      expect(prefs.profile?.exit_type).toBe("Crashed");
-    },
-    { timeout: 15_000, interval: 250 },
-  );
-  process.kill(-second.pid, "SIGKILL");
-  await vi.waitFor(() => expect(second.context.pages()).toHaveLength(0), { timeout: 10_000 });
-  const third = await launch(directory);
-  await expectRestoredByTitle(third, expected);
-
-  // (f) Cost: one helper call per saved tab when it is first tracked, and an inventory that reads
-  // every group title at once.
-  const sorted = [...nameMs].sort((a, b) => a - b);
-  process.stdout.write(
-    `${JSON.stringify({
-      event: "r2.cost",
-      tabs: tabCount,
-      nameMedianMs: Number(sorted[Math.floor(sorted.length / 2)]!.toFixed(1)),
-      nameP95Ms: Number(sorted[Math.floor(sorted.length * 0.95)]!.toFixed(1)),
-      inventoryWith70GroupsMs: Number(inventoryMs.toFixed(1)),
-      discardReplacedTabId: replaced,
-    })}\n`,
-  );
-}, 240_000);
-
-it("keeps a tab's group out of its page, its picture and its popups (R2 e)", async () => {
-  const url = await fixtureServer();
-  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-picture-"));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const running = await launch(directory);
-  const page = await running.context.newPage();
-  await page.goto(url(1, "picture"));
-  const cdp = await running.context.newCDPSession(page);
-  const look = async () => ({
-    shot: ((await cdp.send("Page.captureScreenshot", { format: "png" })) as { data: string }).data,
-    size: await page.evaluate(() => [innerWidth, innerHeight, outerWidth, outerHeight]),
-  });
-  const before = await look();
-  const targetId = (
-    (await cdp.send("Target.getTargetInfo")) as { targetInfo: { targetId: string } }
-  ).targetInfo.targetId;
-  const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
-  expect(await running.lifecycle.nameTab(row.tabId, surface(1))).toBe(true);
-  const after = await look();
-  // The picture a person is streamed is the page's own pixels; the group changes none of them.
-  expect(after.size).toEqual(before.size);
-  expect(after.shot).toBe(before.shot);
-
-  // A tab opened from a named tab is not named by that: it gets no group title of its own.
-  await page.goto(url(1, "x").replace("/page?x", "/opener"));
-  const popupPromise = running.context.waitForEvent("page");
-  await page.click("#out");
-  const popup = await popupPromise;
-  await popup.waitForLoadState();
-  const popupTargetId = (
-    (await (await running.context.newCDPSession(popup)).send("Target.getTargetInfo")) as {
-      targetInfo: { targetId: string };
-    }
-  ).targetInfo.targetId;
-  await vi.waitFor(
-    async () => {
-      const tabs = await running.lifecycle.inventory();
-      const popupRow = tabs.find((t) => t.targetId === popupTargetId);
-      expect(popupRow).toBeDefined();
-      process.stdout.write(
-        `${JSON.stringify({ event: "r2.popup", identity: popupRow!.identity ?? null })}\n`,
-      );
-      expect(tabs.filter((t) => t.identity === surface(1))).toHaveLength(1);
-    },
-    { timeout: 5_000, interval: 100 },
-  );
-}, 60_000);
-
-it("keeps a named tab's history, history state and form field through discard and clean restart exactly as an unnamed tab's (R2 c)", async () => {
-  const url = await fixtureServer();
-  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-state-"));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const first = await launch(directory);
-  const prepare = async (site: number, name: string | null) => {
-    const page = await first.context.newPage();
-    await page.goto(url(site, "x").replace("/page?x", "/spa"));
-    await page.evaluate(() => {
-      history.pushState({ step: 1 }, "", "/spa/step-1");
-      history.pushState({ step: 2 }, "", "/spa/step-2");
-    });
-    await page.fill("#draft", `typed-${site}`);
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    const cdp = await first.context.newCDPSession(page);
-    const targetId = (
-      (await cdp.send("Target.getTargetInfo")) as { targetInfo: { targetId: string } }
-    ).targetInfo.targetId;
-    const row = (await first.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
-    if (name) expect(await first.lifecycle.nameTab(row.tabId, name)).toBe(true);
-    await cdp.send("Page.setWebLifecycleState", { state: "frozen" });
-    await cdp.detach();
-    expect(await first.lifecycle.discardByTabId(row.tabId)).not.toBeNull();
-  };
-  await prepare(1, null);
-  await prepare(2, surface(2));
-  await first.context.close();
-  const second = await launch(directory);
-  const tabs = await vi.waitFor(
-    async () => {
-      const rows = (await profileTabs(second.lifecycle)).filter((t) => t.url.includes("/spa"));
-      expect(rows).toHaveLength(2);
-      return rows;
-    },
-    { timeout: 20_000, interval: 200 },
-  );
-  const result: Record<string, unknown> = {};
-  for (const row of tabs) {
-    expect(await second.lifecycle.activateByTabId(row.tabId)).toMatchObject({
-      ok: true,
-      tabId: row.tabId,
-    });
-    const page = await vi.waitFor(
-      async () => {
-        const found = second.context
-          .pages()
-          .find((p) => p !== second.helper && new URL(p.url()).host === new URL(row.url).host);
-        expect(found).toBeDefined();
-        await found!.waitForLoadState("load");
-        return found!;
-      },
-      { timeout: 10_000, interval: 100 },
-    );
-    result[row.identity ?? "ungrouped"] = await page.evaluate(() => ({
-      path: location.pathname,
-      state: history.state,
-      length: history.length,
-      draft: (document.getElementById("draft") as HTMLInputElement).value,
-    }));
-  }
-  process.stdout.write(`${JSON.stringify({ event: "r2.state", ...result })}\n`);
-  expect(result[surface(2)]).toEqual(
-    result.ungrouped && { ...(result.ungrouped as object), draft: "typed-2" },
-  );
-}, 120_000);
 
 it("reports the opener of a tab opened with noopener, by a link and by window.open (K3 gate, test 7)", async () => {
   const url = await fixtureServer();
@@ -437,42 +136,6 @@ it("reports the opener of a tab opened with noopener, by a link and by window.op
     open: { url: "?via=open", openerKnown: true, playwrightOpener: true },
   });
 }, 60_000);
-
-it("keeps a group title of up to 512 characters through a clean restart (K10)", async () => {
-  const url = await fixtureServer();
-  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-title-length-"));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  const lengths = [64, 256, 512, 1024, 4096];
-  const first = await launch(directory);
-  for (const [index, length] of lengths.entries()) {
-    const page = await first.context.newPage();
-    await page.goto(url(index + 1, `len=${length}`));
-    const cdp = await first.context.newCDPSession(page);
-    const targetId = (
-      (await cdp.send("Target.getTargetInfo")) as { targetInfo: { targetId: string } }
-    ).targetInfo.targetId;
-    const row = (await first.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
-    expect(await first.lifecycle.nameTab(row.tabId, `${length}:`.padEnd(length, "x"))).toBe(true);
-  }
-  await vi.waitFor(async () => expect(await sessionFilesHold(directory, "4096:x")).toBe(true), {
-    timeout: 15_000,
-    interval: 250,
-  });
-  await first.context.close();
-  const second = await launch(directory);
-  const survived = await vi.waitFor(
-    async () => {
-      const rows = (await profileTabs(second.lifecycle)).filter((t) => t.url.includes("len="));
-      expect(rows).toHaveLength(lengths.length);
-      return Object.fromEntries(
-        rows.map((t) => [new URL(t.url).searchParams.get("len"), t.identity?.length ?? 0]),
-      );
-    },
-    { timeout: 20_000, interval: 200 },
-  );
-  process.stdout.write(`${JSON.stringify({ event: "k10.title-length", survived })}\n`);
-  for (const length of [64, 256, 512]) expect(survived[String(length)]).toBe(length);
-}, 120_000);
 
 it("marks every tab as not discardable by Chromium itself, and answers an activation with the tab it activated (K3, K2)", async () => {
   const url = await fixtureServer();
@@ -521,73 +184,55 @@ it("marks every tab as not discardable by Chromium itself, and answers an activa
   expect(awake.tabId).toBe(reply.tabId);
 }, 60_000);
 
-it("leaves the name with the opener, told by its own page, and with no tab when the opener closes at once after opening one (K5, test 1)", async () => {
+it("names a tab after Chromium discarded it: no page arrives while it sleeps, it keeps its target, and wakes by that name with its state (L2)", async () => {
   const url = await fixtureServer();
-  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-popup-owner-"));
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-discard-then-name-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const running = await launch(directory);
-  const targetOf = async (page: Page) =>
+  const page = await running.context.newPage();
+  await page.goto(url(1, "sleeper"));
+  await page.evaluate(() => sessionStorage.setItem("mark", "kept"));
+  const targetOf = async (p: Page) =>
     (
-      (await (await running.context.newCDPSession(page)).send("Target.getTargetInfo")) as {
+      (await (await running.context.newCDPSession(p)).send("Target.getTargetInfo")) as {
         targetInfo: { targetId: string };
       }
     ).targetInfo.targetId;
-  const nameOpener = async (name: string) => {
-    const opener = await running.context.newPage();
-    await opener.goto(url(1, "x").replace("/page?x", "/opener"));
-    const targetId = await targetOf(opener);
-    const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
-    expect(await running.lifecycle.nameTab(row.tabId, name)).toBe(true);
-    return opener;
-  };
-
-  // The opener keeps its name, and the tab carrying it is the opener by its own content.
-  const opener = await nameOpener(surface(1));
-  const popupPromise = running.context.waitForEvent("page");
-  await opener.click("#out");
-  const popup = await popupPromise;
-  await popup.waitForLoadState();
-  const pages = new Map([
-    [await targetOf(opener), opener],
-    [await targetOf(popup), popup],
-  ]);
-  await vi.waitFor(
-    async () => {
-      const carriers = (await running.lifecycle.inventory()).filter(
-        (t) => t.identity === surface(1),
-      );
-      expect(carriers).toHaveLength(1);
-      const carrier = pages.get(carriers[0]!.targetId!)!;
-      expect(await carrier.evaluate(() => document.body.innerText.trim())).toBe("out");
-    },
-    { timeout: 5_000, interval: 50 },
+  const targetId = await targetOf(page);
+  const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
+  const arrivals: string[] = [];
+  running.context.on("page", (p) => arrivals.push(p.url()));
+  await running.helper.bringToFront();
+  const discardedId = await running.lifecycle.discardByTabId(row.tabId);
+  // Chromium's answer names the tab after the discard; its target may or may not change.
+  const asleep = (await running.lifecycle.inventory()).find((t) => t.tabId === discardedId)!;
+  expect(asleep).toMatchObject({ discarded: true, identity: null });
+  expect(await running.lifecycle.nameTab(asleep.tabId, "opensteer-sleep:l2")).toBe(true);
+  const named = (await running.lifecycle.inventory()).filter(
+    (t) => t.identity === "opensteer-sleep:l2",
   );
-
-  // The opener opens a tab and closes itself at once: the new tab ends with no name.
-  const outcomes: (string | null)[] = [];
-  for (let round = 0; round < 10; round++) {
-    const name = surface(100 + round);
-    const closing = await nameOpener(name);
-    const childPromise = running.context.waitForEvent("page");
-    // Chromium refuses a page's own window.close here, so the close follows the open at once.
-    await closing.evaluate((query) => void window.open(`/child?${query}`), `round=${round}`);
-    await closing.close();
-    const child = await childPromise;
-    await child.waitForLoadState();
-    const childTarget = await targetOf(child);
-    // The opener's close reaches the helper: no tab carries its name, the new tab included.
-    const outcome = await vi
-      .waitFor(
-        async () => {
-          const rows = await running.lifecycle.inventory();
-          expect(rows.filter((t) => t.identity === name)).toHaveLength(0);
-          return rows.find((t) => t.targetId === childTarget)?.identity ?? null;
-        },
-        { timeout: 5_000, interval: 50 },
-      )
-      .catch(() => name);
-    outcomes.push(outcome);
-  }
-  process.stdout.write(`${JSON.stringify({ event: "k5.popup-owner", outcomes })}\n`);
-  expect(outcomes).toEqual(Array.from({ length: 10 }, () => null));
-}, 90_000);
+  expect(named).toMatchObject([{ tabId: asleep.tabId, discarded: true, status: "unloaded" }]);
+  expect(arrivals).toEqual([]);
+  const arrived = running.context.waitForEvent("page");
+  const reply = await running.lifecycle.activateByTabId(asleep.tabId);
+  const woken = await arrived;
+  await woken.waitForLoadState();
+  expect(reply).toEqual({ ok: true, tabId: asleep.tabId, discarded: false });
+  const wokenTarget = await targetOf(woken);
+  const awake = (await running.lifecycle.inventory()).find((t) => t.targetId === wokenTarget)!;
+  expect(awake).toMatchObject({ tabId: asleep.tabId, identity: "opensteer-sleep:l2" });
+  expect(await woken.evaluate(() => sessionStorage.getItem("mark"))).toBe("kept");
+  expect(await running.lifecycle.unnameTab(awake.tabId)).toBe(true);
+  expect((await running.lifecycle.inventory()).find((t) => t.tabId === awake.tabId)?.identity).toBe(
+    null,
+  );
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "l2.discard-then-name",
+      before: row.tabId,
+      asleep: asleep.tabId,
+      targetKeptThroughDiscard: asleep.targetId === targetId,
+      wokenTargetIsAsleepTarget: wokenTarget === asleep.targetId,
+    })}\n`,
+  );
+}, 60_000);

@@ -4,7 +4,6 @@ import type {
   BrowserCaptureDescriptor,
   BrowserEngine,
   BrowserSessionId,
-  BrowserSurfaceId,
   LocalProfileBinding,
 } from "@opensteer/protocol/browser";
 import type { PageEndReason } from "./page-ownership.js";
@@ -114,8 +113,6 @@ export interface BrowserPage {
   observeHumanInput?(listener: (observation: HumanInputObservation) => void): () => void;
   /** Opened behind its opener, as a ⌘-click opens a tab: nobody asked to look at it yet. */
   readonly openedInBackground?: boolean;
-  /** True when the page came back from the engine's own session restore with its document intact. */
-  readonly restoredFromSession?: boolean;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */
@@ -137,28 +134,6 @@ export interface BrowserPage {
   url(): string;
 }
 
-export interface BrowserSessionRestore {
-  /** Claims the Chromium-restored tab that carries `surfaceId` as its own identity, or returns null. */
-  claim(
-    surfaceId: BrowserSurfaceId,
-    url?: string,
-    own?: (page: BrowserPage) => void,
-    /** Aborted when the creation that asked was abandoned: a queued wake for it does not run. */
-    signal?: AbortSignal,
-  ): Promise<BrowserPage | null>;
-  /**
-   * Reconciles restored tabs against the Home's authoritative saved-tab list,
-   * closing every restored tab not named in `savedTabIds` with evidence.
-   */
-  reconcile(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void>;
-  /** Arms a bounded fallback reconcile if the Home never sends `session.saved`. */
-  armFallbackReconcile?(keepIds: ReadonlySet<BrowserSurfaceId>, delayMs?: number): void;
-  /** Gives a saved-lineage page's tab its durable Home `surfaceId` as identity, or forgets it on `null`. */
-  trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null): void;
-  /** Lets tabs still being given their identity finish before an orderly browser close. */
-  flush?(): Promise<void>;
-}
-
 export interface BrowserContext {
   /** False after whole-context/browser teardown; page closes alone keep it connected. */
   isConnected?(): boolean;
@@ -170,7 +145,7 @@ export interface BrowserContext {
   createPage(options?: {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
-    /** Aborted when the creation that asked was abandoned: a queued wake for it does not run. */
+    /** Aborted when the creation that asked is abandoned: a wake for it stops where it checks. */
     readonly signal?: AbortSignal;
   }): Promise<BrowserPage>;
   /**
@@ -178,10 +153,6 @@ export interface BrowserContext {
    * Returns true only when the tab is confirmed gone from the browser.
    */
   releaseRestore?(restore: unknown): Promise<boolean> | boolean;
-  /** Present only on engines that persist and reconcile native session restore. */
-  readonly sessionRestore?: BrowserSessionRestore | undefined;
-  /** True on a native profile's context: the runtime never takes a root page from `pages()`. */
-  readonly nativeProfile?: boolean;
   /**
    * Set by the runtime where it reads memory pressure: awaited before `createPage` makes a page,
    * so a burst of opens sheds sleeping-eligible tabs first. It never rejects.

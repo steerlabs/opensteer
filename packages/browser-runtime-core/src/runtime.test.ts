@@ -122,39 +122,6 @@ describe("BrowserRuntime", () => {
     },
   );
 
-  it("never takes the first page a tab-restoring browser has as a new session's root (C2)", async () => {
-    // A page that reached the page list by arrival order, as another surface's restored tab could.
-    const arrived = new FakePage({ url: "https://another-surface.test/", title: "Another" });
-    const context = new FakeContext([arrived]);
-    const claim = vi.fn(async () => null);
-    Object.assign(context, {
-      sessionRestore: {
-        claim,
-        reconcile: async () => {},
-        armFallbackReconcile: () => {},
-        trackSavedTab: () => {},
-      },
-    });
-    const runtime = new BrowserRuntime({
-      launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
-      runtimeId: "runtime_test",
-      sessionFilesRoot: testSessionFilesRoot(),
-      ticketVerifier: new FakeTicketVerifier(
-        freshClaims({ tabRestoreVersion: 1, surfaceState: 1 }),
-      ),
-    });
-    const sink = new FakeSink();
-    try {
-      await runtime.attach("fresh-ticket", sink);
-      const rows = [...sink.tabs.rows.values()];
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!.url).not.toBe("https://another-surface.test/");
-      expect(context.pages()).toHaveLength(2);
-    } finally {
-      await runtime.shutdown();
-    }
-  });
-
   it("retires an idle Guest process with a reason and preserves suspended tab records", async () => {
     vi.useFakeTimers();
     vi.spyOn(process, "availableMemory").mockReturnValue(0);

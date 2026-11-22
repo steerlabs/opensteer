@@ -724,3 +724,24 @@ it("stops after a timed-out drain empties, and keeps asking a page handed off ju
   late.crash();
   expect(context.handOffListeners, "An emptied registry lets go of its contexts").toBe(0);
 });
+
+it.each(["abandon", "endSession", "endOtherPages", "shutdown"] as const)(
+  "aborts a creation's signal whenever it stops being wanted (L4, %s)",
+  async (how) => {
+    const { owner } = registry();
+    let signal: AbortSignal | undefined;
+    const pending = Promise.withResolvers<FakePage>();
+    const creation = owner.create("session", null, "open-failed", (_own, given) => {
+      signal = given;
+      return pending.promise;
+    });
+    void creation.page.catch(() => undefined);
+    expect(signal?.aborted).toBe(false);
+    if (how === "abandon") creation.abandon();
+    else if (how === "endSession") void owner.endSession("session", "session-ended");
+    else if (how === "endOtherPages") void owner.endOtherPages("session", new Set(), 1);
+    else void owner.shutdown(1);
+    expect(signal?.aborted).toBe(true);
+    pending.reject(new Error("ended"));
+  },
+);

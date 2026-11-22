@@ -206,7 +206,15 @@ interface Creation {
   readonly surfaceId: BrowserSurfaceId | null;
   readonly reason: PageEndReason;
   abandoned: boolean;
+  /** Aborted with `abandoned`: the engine's own steps stop where they check it. */
+  readonly abort: AbortController;
   page: BrowserPage | null;
+}
+
+/** Every way a creation stops being wanted goes through here, so its signal always aborts. */
+function abandon(creation: Creation): void {
+  creation.abandoned = true;
+  creation.abort.abort();
 }
 
 /**
@@ -277,8 +285,7 @@ export class PageOwnership {
   /** The session ended: every page it holds, admitted or not, is asked to end. */
   endSession(session: string, reason: PageEndReason): Promise<void> {
     this.ended.add(session);
-    for (const creation of this.creations)
-      if (creation.session === session) creation.abandoned = true;
+    for (const creation of this.creations) if (creation.session === session) abandon(creation);
     const ending = [...this.held].filter((entry) => entry.session === session);
     for (const entry of ending) this.request(entry, reason);
     return Promise.all(ending.map((entry) => entry.settled.promise)).then(() => undefined);
@@ -292,8 +299,7 @@ export class PageOwnership {
     reason: PageEndReason = "session-ended",
   ): Promise<boolean> {
     const shouldEnd = (entry: NativePage) => entry.session === session && !keep.has(entry.page);
-    for (const creation of this.creations)
-      if (creation.session === session) creation.abandoned = true;
+    for (const creation of this.creations) if (creation.session === session) abandon(creation);
     for (const entry of this.held) if (shouldEnd(entry)) this.request(entry, reason);
     return this.until(
       () =>
@@ -325,8 +331,14 @@ export class PageOwnership {
     reason: PageEndReason,
     start: (own: (page: BrowserPage) => void, signal: AbortSignal) => Promise<BrowserPage>,
   ): { readonly page: Promise<BrowserPage>; abandon(): void } {
-    const creation: Creation = { session, surfaceId, reason, abandoned: false, page: null };
-    const abandoned = new AbortController();
+    const creation: Creation = {
+      session,
+      surfaceId,
+      reason,
+      abandoned: false,
+      abort: new AbortController(),
+      page: null,
+    };
     this.creations.add(creation);
     const own = (page: BrowserPage) => {
       if (creation.page === page) return;
@@ -338,7 +350,7 @@ export class PageOwnership {
     };
     let created: Promise<BrowserPage>;
     try {
-      created = start(own, abandoned.signal);
+      created = start(own, creation.abort.signal);
     } catch (error) {
       created = Promise.reject(error);
     }
@@ -351,8 +363,7 @@ export class PageOwnership {
         return page;
       },
       (error: unknown) => {
-        creation.abandoned = true;
-        abandoned.abort();
+        abandon(creation);
         if (creation.page) this.request(this.track(creation.page), reason);
         this.creations.delete(creation);
         this.notify(this.drains);
@@ -363,8 +374,7 @@ export class PageOwnership {
     return {
       page,
       abandon: () => {
-        creation.abandoned = true;
-        abandoned.abort();
+        abandon(creation);
         if (creation.page) this.request(this.track(creation.page), reason);
       },
     };
@@ -552,7 +562,7 @@ export class PageOwnership {
    */
   async shutdown(withinMs: number): Promise<boolean> {
     this.shuttingDown = true;
-    for (const creation of this.creations) creation.abandoned = true;
+    for (const creation of this.creations) abandon(creation);
     for (const entry of this.held) this.request(entry, "runtime-shutdown");
     await this.until(() => !this.drained(), withinMs);
     // Recovery stops only when nothing is held at this moment, a page handed off late included.

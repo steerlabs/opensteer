@@ -13,8 +13,7 @@ export const tabLifecycleExtensionDirName = ".opensteer-tab-lifecycle-extension"
 
 /**
  * Minimal MV3 extension bundled with the Linux runtime for native profiles only.
- * Permissions are strictly `tabs`, `tabGroups`, `storage` (session storage only, for which tab
- * each named group was made for) and `debugger`: no host permissions, no content
+ * Permissions are strictly `tabs`, `tabGroups` and `debugger`: no host permissions, no content
  * scripts, no `externally_connectable`, no network access.
  */
 const extensionManifestJson = JSON.stringify(
@@ -22,7 +21,7 @@ const extensionManifestJson = JSON.stringify(
     manifest_version: 3,
     name: "Opensteer Tab Lifecycle Helper",
     version: "0.1.0",
-    permissions: ["tabs", "debugger", "tabGroups", "storage"],
+    permissions: ["tabs", "debugger", "tabGroups"],
     background: {
       service_worker: "sw.js",
     },
@@ -33,65 +32,17 @@ const extensionManifestJson = JSON.stringify(
 
 /** The helper's service worker source; exported so its rules can be tested alone. */
 export const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle helper (native profiles only).
-// A saved tab's identity is the title of its own tab group: Chromium keeps it through discard and
-// session restore, and no page can read or change it.
-// The worker records which tab each group it made was made for (chrome.storage.session: it survives
-// a worker restart and ends with the browser). Any other member of such a group is taken out
-// whenever it is seen, whatever the count, and the named tab leaves its group only in nameTab.
-// After a browser restart the record is empty and nothing in it is read: the runtime decides.
-const OWNERS = "opensteer.groupOwners";
-let ownersWrite = Promise.resolve();
-async function readOwners() {
-  return (await chrome.storage.session.get(OWNERS))[OWNERS] ?? {};
-}
-function updateOwners(change) {
-  ownersWrite = ownersWrite.then(async () => {
-    const owners = await readOwners();
-    change(owners);
-    await chrome.storage.session.set({ [OWNERS]: owners });
-  }).catch(() => {});
-  return ownersWrite;
-}
-async function guardGroup(tabId, groupId) {
-  if (typeof tabId !== "number" || typeof groupId !== "number" || groupId < 0) return;
-  await ownersWrite;
-  const owner = (await readOwners())[groupId];
-  if (owner !== undefined && owner !== tabId) await chrome.tabs.ungroup(tabId).catch(() => {});
-}
+// A sleeping tab's name is the title of its own tab group, given after Chromium discarded it and
+// removed when it wakes. Chromium keeps it through the discard, and no page can read or change it.
+// The worker keeps no memory of its own.
 // Chromium discards no tab by itself (memory pressure, Memory Saver): only the runtime does, so a
 // tab's page is never replaced behind it.
 function keepFromAutoDiscard(tabId) {
   if (typeof tabId === "number") chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
 }
 chrome.tabs.query({}).then((tabs) => tabs.forEach((tab) => keepFromAutoDiscard(tab.id)), () => {});
-chrome.tabs.onCreated.addListener((tab) => {
-  keepFromAutoDiscard(tab.id);
-  void guardGroup(tab.id, tab.groupId);
-});
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if ("groupId" in changeInfo) void guardGroup(tabId, changeInfo.groupId);
-});
-chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  keepFromAutoDiscard(addedTabId);
-  void updateOwners((owners) => {
-    for (const groupId of Object.keys(owners))
-      if (owners[groupId] === removedTabId) owners[groupId] = addedTabId;
-  });
-});
-chrome.tabs.onRemoved.addListener((tabId) => {
-  void ownersWrite.then(async () => {
-    const owners = await readOwners();
-    for (const groupId of Object.keys(owners)) {
-      if (owners[groupId] !== tabId) continue;
-      // The named tab is gone: no tab left in its group inherits its name.
-      const members = await chrome.tabs.query({ groupId: Number(groupId) }).catch(() => []);
-      for (const member of members) await chrome.tabs.ungroup(member.id).catch(() => {});
-      await updateOwners((current) => {
-        delete current[groupId];
-      });
-    }
-  });
-});
+chrome.tabs.onCreated.addListener((tab) => keepFromAutoDiscard(tab.id));
+chrome.tabs.onReplaced.addListener((addedTabId) => keepFromAutoDiscard(addedTabId));
 globalThis.__opensteer = {
   async inventory() {
     const [tabs, targets, groups] = await Promise.all([
@@ -132,24 +83,13 @@ globalThis.__opensteer = {
   },
   async nameTab(tabId, name) {
     const tab = await chrome.tabs.get(tabId);
-    if (typeof tab.groupId === "number" && tab.groupId >= 0) {
-      const group = await chrome.tabGroups.get(tab.groupId);
-      const members = await chrome.tabs.query({ groupId: tab.groupId });
-      const owner = (await readOwners())[tab.groupId];
-      if (group.title === name && members.length === 1 && (owner === undefined || owner === tabId)) {
-        // Already this tab's own name (after a restart, the record is taken up again here).
-        await updateOwners((owners) => {
-          owners[tab.groupId] = tabId;
-        });
-        return true;
-      }
-      await chrome.tabs.ungroup(tabId);
-    }
+    if (typeof tab.groupId === "number" && tab.groupId >= 0) await chrome.tabs.ungroup(tabId);
     const groupId = await chrome.tabs.group({ tabIds: [tabId] });
-    await updateOwners((owners) => {
-      owners[groupId] = tabId;
-    });
     await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
+    return true;
+  },
+  async unnameTab(tabId) {
+    await chrome.tabs.ungroup(tabId);
     return true;
   },
   async discardByTabId(tabId) {
@@ -179,10 +119,10 @@ globalThis.__opensteer = {
 `;
 
 /**
- * The longest name the runtime writes or reads (K10): the smaller of 512 and what Chromium keeps
- * through a restart (4096 measured). A longer title is that row's problem: it names nothing.
+ * The longest name the runtime reads (K10); it writes only sleep names, far shorter. A longer
+ * title is that row's problem: it names nothing, and the other rows stay readable.
  */
-export const tabNameBound = 512;
+const tabNameBound = 512;
 
 const tabEntrySchema = z.object({
   tabId: z.number().int(),
@@ -490,6 +430,24 @@ export class ChromiumTabLifecycleBridge {
               }
             ).__opensteer.nameTab(id, title),
           [tabId, name] as const,
+        ),
+      "change",
+    );
+    return raw === true;
+  }
+
+  /** Takes a woken tab out of its group: a tab has a name only while it sleeps. */
+  async unnameTab(tabId: number): Promise<boolean> {
+    const raw = await this.callWorker(
+      (worker) =>
+        worker.evaluate(
+          (id) =>
+            (
+              globalThis as unknown as {
+                __opensteer: { unnameTab(tabId: number): Promise<unknown> };
+              }
+            ).__opensteer.unnameTab(id),
+          tabId,
         ),
       "change",
     );

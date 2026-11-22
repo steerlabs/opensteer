@@ -1280,50 +1280,19 @@ export class BrowserRuntime implements NativePresentationSource {
               "This browser profile has a whole-context CDP attachment.",
             );
           stage = "page-create";
-          const saveTabs =
-            claims.tabRestoreVersion === 1 &&
-            claims.identity.kind === "profile-local" &&
-            (claims.initialSurfaceId !== undefined ||
-              (claims.actor !== "agent" && claims.creationOrigin !== "agent"));
-          // A new host's launch page is this session's root unless another already owns it. A
-          // native profile's launch makes no launch page, whether or not it restored its session
-          // (K4): `pages()[0]` could only be some page that arrived later. The root is then this
-          // session's own claim or a new page by address, never the first page the browser has.
-          const launchPage =
-            createdHost &&
-            !host.browser.context.sessionRestore &&
-            !host.browser.context.nativeProfile
-              ? host.browser.context.pages()[0]
-              : undefined;
+          // A new host's launch page is this session's root unless another already owns it.
+          const launchPage = createdHost ? host.browser.context.pages()[0] : undefined;
           if (launchPage && this.pages.claim(launchPage, claims.sessionId)) rootPage = launchPage;
           else {
             // Owned by this session from its handle on; rollback ends it.
             const context = host.browser.context;
-            const restoreSurfaceId =
-              claims.tabRestoreVersion === 1 ? claims.initialSurfaceId : undefined;
             const creation = this.pages.create(
               claims.sessionId,
-              restoreSurfaceId ?? null,
+              null,
               "open-failed",
-              (own, signal) =>
-                restoreSurfaceId && saveTabs && context.sessionRestore
-                  ? context.sessionRestore
-                      .claim(restoreSurfaceId, claims.initialNavigation?.url, own, signal)
-                      .then((restored) => restored ?? context.createPage({ own }))
-                  : context.createPage({ own }),
+              (own, signal) => context.createPage({ own, signal }),
             );
             rootPage = await wait(creation.page);
-          }
-
-          if (createdHost && host.browser.context.sessionRestore) {
-            const sessionRestore = host.browser.context.sessionRestore;
-            if (claims.tabRestoreVersion === 1 && claims.initialSurfaceId && saveTabs) {
-              sessionRestore.armFallbackReconcile?.(
-                new Set<BrowserSurfaceId>([claims.initialSurfaceId]),
-              );
-            } else {
-              await wait(sessionRestore.reconcile(new Set()));
-            }
           }
 
           signal.throwIfAborted();
@@ -1352,7 +1321,6 @@ export class BrowserRuntime implements NativePresentationSource {
             ...(claims.tabRestoreVersion === 1 && claims.initialSurfaceId
               ? { initialSurfaceId: claims.initialSurfaceId }
               : {}),
-            ...(saveTabs ? { saveTabs: true } : {}),
           });
           sessionRouter.registerSession(
             claims.sessionId,
@@ -1547,9 +1515,6 @@ export class BrowserRuntime implements NativePresentationSource {
     const stateHost = host;
     return new BrowserController({
       sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
-      onSavedTabs: async (savedTabIds) => {
-        await hostBrowser.context.sessionRestore?.reconcile(savedTabIds);
-      },
       loginAuthority: this.loginAuthority,
       nativePresentation: (surfaceId, consumerToken) => {
         const live = [...this.nativePresentations].filter(
@@ -2010,15 +1975,6 @@ export class BrowserRuntime implements NativePresentationSource {
         host.stateImports.run(async () => {}),
         "cookie import drain",
       );
-      if (host.browser.context.sessionRestore && reason === "runtime-shutdown") {
-        // Orderly runtime shutdown closes non-durable agent tabs and lets saved tabs finish
-        // taking their identity BEFORE closing Chromium, so Default/Sessions carries it.
-        await quiesced.catch(() => undefined);
-        await boundedCleanup(
-          Promise.resolve(host.browser.context.sessionRestore.flush?.()),
-          "saved tab identity",
-        ).catch(() => undefined);
-      }
       if (!host.disposal) {
         host.disposal = this.disposeHost(host);
         void host.disposal.catch((error: unknown) =>

@@ -775,7 +775,7 @@ it("serializes immediate wake behind an in-flight discard and settles helper tim
   expect(invB.filter((tab) => tab.url === urlB)).toHaveLength(1);
 });
 
-it("hands off new popups synchronously even while restored tabs are parked, without dropping short-lived popups", async () => {
+it("hands off new popups synchronously, without dropping short-lived popups", async () => {
   const server = await startFixtureServer();
   const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-f6-handoff-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
@@ -787,40 +787,13 @@ it("hands off new popups synchronously even while restored tabs are parked, with
   });
   const request = nativeProfileRequest(directory);
 
-  // Seed one saved tab so the next launch has a parked unclaimed restored tab.
-  const b1 = await launcher.launch(request);
-  const ledger1 = new SurfaceLedger(b1.context, { saveTabs: true });
-  await ledger1.start();
-  const saved = await ledger1.openSurface();
-  const savedLive = ledger1.binding(saved.id)!;
-  await savedLive.cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article` });
-  await waitLoaded(savedLive.cdp, "/article");
-  await b1.context.sessionRestore!.flush!();
-  await vi.waitFor(
-    async () => {
-      const { readdir, stat } = await import("node:fs/promises");
-      const files = await readdir(path.join(directory, "Default", "Sessions")).catch(() => []);
-      const sf = files.filter((n) => n.startsWith("Session_"));
-      expect(sf.length).toBeGreaterThan(0);
-      const sizes = await Promise.all(
-        sf.map((n) => stat(path.join(directory, "Default", "Sessions", n)).then((s) => s.size)),
-      );
-      expect(Math.max(...sizes)).toBeGreaterThan(0);
-    },
-    { timeout: 10_000, interval: 100 },
-  );
-  await ledger1.close();
-  await b1.close();
-
-  // Relaunch: restored tab is now parked (unclaimedRestoredTabs.size > 0).
   const b2 = await launcher.launch(request);
   cleanup.push(() => b2.close());
   const internal2 = b2 as unknown as {
     playwrightContext: { on(event: string, listener: (p: unknown) => void): void };
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
   };
 
-  // Open an ordinary page (without claiming the parked restored tab).
+  // Open an ordinary page: the runtime's own, so its popups are published by it (K3).
   const opener = await b2.context.createPage();
   const openerCdp = await opener.cdp();
   await openerCdp.send("Page.navigate", { url: `${server.originForSite(2)}/article` });
@@ -876,7 +849,7 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   };
   const lifecycle = internal.contextHandle.lifecycle;
 
-  const ledger = new SurfaceLedger(launched.context, { saveTabs: true });
+  const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
   cleanup.push(() => ledger.close());
 
@@ -891,7 +864,6 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   await live.cdp.send("Page.navigate", { url });
   await waitLoaded(live.cdp, "/article");
   expect(await ledger.sleep(surface.id, () => null)).toBe(true);
-  await launched.context.sessionRestore!.flush!();
 
   // Fail one removal attempt (helper and target close) -> closeSurface must reject retryably,
   // keep the tab listed, emit no closed event.
