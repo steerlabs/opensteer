@@ -1800,6 +1800,44 @@ describe("DeploymentAccessService", () => {
       service.dispose();
     });
 
+    it("opens the one Home an account has, right after signing in, and never on a token refresh", async () => {
+      const server = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [server] });
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      expect(fixture.select).not.toHaveBeenCalled();
+
+      const account = signedInAccount();
+      fixture.emitAccount(account);
+      await settle();
+      expect(fixture.select).toHaveBeenCalledExactlyOnceWith(server.id);
+      fixture.emitAccount(account);
+      await settle();
+      expect(fixture.select).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("leaves several Homes, or one beside a place of this Mac's own, as a list to choose from", async () => {
+      const studio = otherMac({ livenessExpiresAt: liveLease });
+      const lab = otherMac({ livenessExpiresAt: liveLease });
+      const two = fakePorts({ deployments: [studio, lab] });
+      const listed = new DeploymentAccessService(two.ports, two.options);
+      await listed.initialize();
+      two.emitAccount(signedInAccount());
+      await settle();
+      expect(two.select).not.toHaveBeenCalled();
+      listed.dispose();
+
+      const added = deployment({ name: "Added by hand" });
+      const beside = fakePorts({ deployments: [studio, added] });
+      const mixed = new DeploymentAccessService(beside.ports, beside.options);
+      await mixed.initialize();
+      beside.emitAccount(signedInAccount());
+      await settle();
+      expect(beside.select).not.toHaveBeenCalled();
+      mixed.dispose();
+    });
+
     it("keeps an Account place this Mac joined listed and openable after the sign-in ends, until the Mac leaves it", async () => {
       const mac = otherMac({ livenessExpiresAt: liveLease });
       const other = deployment({ name: "Studio server", source: "account" });

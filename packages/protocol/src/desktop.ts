@@ -1050,6 +1050,8 @@ export const DeploymentAccessSnapshotSchema = z.strictObject({
     detail: z.string().trim().min(1).max(1_000).optional(),
     email: z.string().email().max(320).optional(),
     issuer: z.url().optional(),
+    /** The Opensteer website this app's account is managed on: where checkout happens. */
+    portalOrigin: z.url().optional(),
     status: DesktopAccountAuthStatusSchema,
     subject: z.string().min(1).max(200).optional(),
   }),

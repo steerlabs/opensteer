@@ -162,6 +162,9 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // Started while signed in: once this computer's Opensteer is known, its setup turns
   // Remote access on (remoteAccessOnWhenSignedInStart).
   const [remoteAccessOnStart, setRemoteAccessOnStart] = useState(false);
+  // The person chose a Cloud Computer and went to checkout: the Home the account lists for
+  // them next is the one to open.
+  const [awaitingCloud, setAwaitingCloud] = useState(false);
   // Data an earlier Opensteer left, which this one can't open: offered a fresh
   // start until the person chooses another way on ("Not now").
   const startFresh = useStartFresh(bridge, snapshot?.personalSetup?.state === "repair-required");
@@ -323,27 +326,46 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     [hostClient],
   );
 
+  const awaitedId =
+    awaitingCloud &&
+    snapshot?.selectedDeploymentId === null &&
+    snapshot.deployments.length === 1 &&
+    snapshot.deployments[0]!.source === "account"
+      ? snapshot.deployments[0]!.id
+      : null;
+  useEffect(() => {
+    if (awaitedId === null) return;
+    setAwaitingCloud(false);
+    void bridge.select({ deploymentId: awaitedId }).catch(() => undefined);
+  }, [awaitedId, bridge]);
+
   const facts = useMemo(
     () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),
+    [bridge],
+  );
+  // One bridge for the place screens for as long as the window's: what is read through it,
+  // such as the account's Cloud Computers, is kept across snapshots.
+  const placesBridge = useMemo<OpensteerDesktopBridge>(
+    () => ({
+      ...bridge,
+      select: async (input) => {
+        setChooserFor(null);
+        await bridge.select(input);
+      },
+    }),
     [bridge],
   );
   const places = useMemo<DesktopPlaces | null>(
     () =>
       snapshot
         ? {
-            bridge: {
-              ...bridge,
-              select: async (input) => {
-                setChooserFor(null);
-                await bridge.select(input);
-              },
-            },
+            bridge: placesBridge,
             facts,
             onAddPlace: () => setScreen("pairing"),
             snapshot,
           }
         : null,
-    [bridge, facts, snapshot],
+    [facts, placesBridge, snapshot],
   );
 
   useEffect(() => {
@@ -639,6 +661,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         return (
           <DesktopWelcome
             error={operationError ?? directoryError ?? personalLoadFailure}
+            onCloudChosen={() => setAwaitingCloud(true)}
             onConnect={setScreen}
             onSetUpHere={setUpHere}
             places={places}

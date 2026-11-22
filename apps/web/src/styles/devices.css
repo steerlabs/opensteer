@@ -507,6 +507,13 @@ a.devices-row:focus-visible {
   font-size: var(--text-md);
 }
 
+/* The one line that says what starting here does: under its row, in the row's measure. */
+.desktop-entry__note {
+  margin: calc(var(--space-4) * -1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 .desktop-entry__form {
   display: flex;
   flex-direction: column;

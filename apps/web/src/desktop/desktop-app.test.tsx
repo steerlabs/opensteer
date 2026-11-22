@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { createId } from "@opensteer/core";
+import { MockCloudComputerAccount, type MockCloudComputerScene } from "@opensteer/client/mock";
 import {
   DeploymentAccessSnapshotSchema,
   DesktopDeploymentSummarySchema,
@@ -285,13 +286,19 @@ it("remembers to turn Remote access on for an Opensteer started here while signe
     document.body.append(container);
     const root = createRoot(container);
     await act(async () => root.render(<DesktopApp bridge={bridge} />));
-    const start = await vi.waitFor(() => {
-      const found = [...container.querySelectorAll("button")].find((candidate) =>
-        candidate.textContent?.startsWith("Start Opensteer on this"),
-      );
-      if (!found) throw new Error(`No start in ${container.textContent ?? ""}`);
-      return found;
-    });
+    const find = (label: string) =>
+      vi.waitFor(() => {
+        const found = [...container.querySelectorAll("button")].find((candidate) =>
+          candidate.textContent?.startsWith(label),
+        );
+        if (!found) throw new Error(`No ${label} in ${container.textContent ?? ""}`);
+        return found;
+      });
+    if (account.status !== "signed-in") {
+      const without = await find("Use without an account");
+      await act(async () => without.click());
+    }
+    const start = await find(account.status === "signed-in" ? "On this Mac" : "Start Opensteer on");
     await act(async () => start.click());
     access = snapshot({
       account,
@@ -314,6 +321,225 @@ it("remembers to turn Remote access on for an Opensteer started here while signe
   };
   expect(await run({ available: true, status: "signed-in" } as never)).toBe("wanted");
   expect(await run({ available: true, status: "signed-out" } as never)).toBeNull();
+});
+
+describe("the front door", () => {
+  /** The desktop app on a Mac with nothing on it yet, in the given account state. */
+  async function door(input: {
+    readonly account: DeploymentAccessSnapshot["account"];
+    readonly cloud?: MockCloudComputerScene;
+  }) {
+    localStorage.clear();
+    let access = snapshot({
+      account: input.account,
+      personalSetup: personalStatus({
+        canStart: true,
+        deploymentId: null,
+        name: "Studio Mac",
+        state: "stopped",
+        step: null,
+      }),
+    });
+    const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
+    const cloud = new MockCloudComputerAccount(input.cloud ?? "none");
+    const bridge = {
+      cancel: vi.fn(async () => undefined),
+      checkDeployments: vi.fn(async () => undefined),
+      cloudComputerAct: vi.fn((command: never) => cloud.act(command)),
+      cloudComputerRead: vi.fn(() => cloud.read()),
+      createPersonalDeployment: vi.fn(async () => undefined),
+      getDeploymentAccessSnapshot: async () => access,
+      linkPersonal: vi.fn(async () => undefined),
+      onHostWebSocketEvent: () => () => undefined,
+      onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      onNotificationActivated: () => () => undefined,
+      getLocalExecutionStatus: async () => {
+        throw new Error("No local execution in this test.");
+      },
+      onLocalExecutionStatusChanged: () => () => undefined,
+      openExternalUrl: vi.fn(async () => ({ opened: true })),
+      select: vi.fn(async () => undefined),
+      signIn: vi.fn(async () => undefined),
+    };
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () =>
+      root.render(<DesktopApp bridge={bridge as unknown as OpensteerDesktopBridge} />),
+    );
+    await vi.waitFor(() => expect(container.textContent).not.toContain("Opening Opensteer…"));
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => undefined);
+    const buttons = () => [...container.querySelectorAll("button")];
+    const button = (label: string) => {
+      const found = buttons().find((candidate) => candidate.textContent?.startsWith(label));
+      if (!found) throw new Error(`No ${label} in ${container.textContent ?? ""}`);
+      return found;
+    };
+    const emit = async (next: DeploymentAccessSnapshot) => {
+      access = next;
+      await act(async () => {
+        for (const listener of listeners) listener(next);
+      });
+    };
+    const close = async () => {
+      await act(async () => root.unmount());
+      container.remove();
+    };
+    return { bridge, button, buttons, close, container, emit };
+  }
+
+  it("leads with the Opensteer account, with using it without an account a small link", async () => {
+    const app = await door({ account: { available: true, status: "signed-out" } });
+    expect(app.container.textContent).toContain("Welcome to Opensteer");
+    expect(app.container.textContent).toContain(
+      "Sign in with your Opensteer account. Your phone and connected agents can then reach your Opensteer from anywhere.",
+    );
+    // One primary action, and it is signing in.
+    const primary = app
+      .buttons()
+      .filter((candidate) => candidate.classList.contains("btn--primary"));
+    expect(primary.map((candidate) => candidate.textContent)).toEqual(["Sign in"]);
+    expect(app.button("Use without an account").classList.contains("link-btn")).toBe(true);
+    expect(app.button("Other ways in").classList.contains("link-btn")).toBe(true);
+    expect(app.container.textContent).not.toContain("Start Opensteer on");
+    await act(async () => app.button("Sign in").click());
+    expect(app.bridge.signIn).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("starts a Home without an account exactly as before, with no account call on the way", async () => {
+    const app = await door({ account: { available: true, status: "signed-out" } });
+    await act(async () => app.button("Use without an account").click());
+    expect(app.container.textContent).toContain("Use Opensteer without an account");
+    expect(app.container.textContent).toContain(
+      "Your agent lives and works here. No account needed.",
+    );
+    await act(async () => app.button("Rename").click());
+    const field = app.container.querySelector<HTMLInputElement>("#desktop-entry-name")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        field,
+        "Workshop",
+      );
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => field.form!.requestSubmit());
+    await act(async () => app.button("Start Opensteer on this").click());
+    expect(app.bridge.createPersonalDeployment).toHaveBeenCalledExactlyOnceWith({
+      name: "Workshop",
+    });
+    const personalId = createId("deployment");
+    await app.emit(
+      snapshot({
+        account: { available: true, status: "signed-out" },
+        deployments: [{ ...accessDeployment("connecting"), ...personalSummary(personalId) }],
+        personalSetup: personalStatus({
+          deploymentId: personalId,
+          name: "Workshop",
+          step: "ready",
+        }),
+        revision: 5,
+        selectedDeploymentId: personalId,
+      }),
+    );
+    // Nothing on this path reaches the Opensteer account.
+    expect(app.bridge.signIn).not.toHaveBeenCalled();
+    expect(app.bridge.linkPersonal).not.toHaveBeenCalled();
+    expect(app.bridge.cloudComputerRead).not.toHaveBeenCalled();
+    expect(app.bridge.openExternalUrl).not.toHaveBeenCalled();
+    expect(localStorage.getItem(`opensteer.setup.remote-access.v1:${personalId}`)).toBeNull();
+    await app.close();
+  });
+
+  it("keeps a pairing code and an address under Other ways in", async () => {
+    const app = await door({ account: { available: true, status: "signed-out" } });
+    await act(async () => app.button("Other ways in").click());
+    expect(app.container.textContent).toContain("From the Mac your Opensteer runs on.");
+    await act(async () => app.button("Use a pairing code").click());
+    expect(app.container.querySelector("#desktop-connect-code")).not.toBeNull();
+    await act(async () => app.button("Back").click());
+    expect(app.container.textContent).toContain("Welcome to Opensteer");
+    await app.close();
+  });
+
+  it("keeps the welcome it always had in a build with no account to sign in to", async () => {
+    const app = await door({ account: { available: false, status: "signed-out" } });
+    expect(app.container.textContent).toContain("Your AI agent, working on your computer.");
+    expect(app.button("Start Opensteer on this")).toBeTruthy();
+    expect(app.container.textContent).toContain(
+      "It’s already running on another computer. Use its pairing code.",
+    );
+    expect(app.container.textContent).not.toContain("Use without an account");
+    await app.close();
+  });
+
+  it("asks where an account with no Opensteer should have it, with the price checkout sells", async () => {
+    const app = await door({
+      account: {
+        available: true,
+        email: "ada@example.test",
+        portalOrigin: "https://app.opensteer.example",
+        status: "signed-in",
+      },
+    });
+    await vi.waitFor(() =>
+      expect(app.container.textContent).toContain("$20.00 a month. Always on."),
+    );
+    expect(app.container.textContent).toContain("Where should your Opensteer live?");
+    expect(app.container.textContent).toContain("Signed in as ada@example.test");
+    expect(app.button("On this Mac").textContent).toContain("Free. Works while this Mac is awake.");
+    expect(app.container.textContent).toContain(
+      "Your phone and connected agents can reach it from anywhere. You can turn this off in Settings.",
+    );
+    expect(app.button("On an Opensteer Cloud Computer").textContent).toContain(
+      "$20.00 a month. Always on. This Mac becomes one of its devices.",
+    );
+    await act(async () => app.button("On an Opensteer Cloud Computer").click());
+    expect(app.bridge.openExternalUrl).toHaveBeenCalledWith({
+      url: "https://app.opensteer.example/cloud-computer/checkout",
+    });
+    await vi.waitFor(() =>
+      expect(app.container.textContent).toContain("Finish checkout in your browser"),
+    );
+    // Once the account lists the Cloud Computer it set up, it opens by itself.
+    const cloudHome: DeploymentAccessDeployment = {
+      ...accessDeployment("idle"),
+      source: "account",
+    };
+    await app.emit(
+      snapshot({
+        account: { available: true, status: "signed-in" },
+        deployments: [cloudHome],
+        revision: 9,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(app.bridge.select).toHaveBeenCalledWith({ deploymentId: cloudHome.id }),
+    );
+    await app.close();
+  });
+
+  it("offers no Cloud Computer to buy while checkout sells none", async () => {
+    const app = await door({
+      account: {
+        available: true,
+        portalOrigin: "https://app.opensteer.example",
+        status: "signed-in",
+      },
+      cloud: "not-for-sale",
+    });
+    await vi.waitFor(() =>
+      expect(app.button("On an Opensteer Cloud Computer").textContent).toContain(
+        "Not available yet",
+      ),
+    );
+    expect(app.button("On an Opensteer Cloud Computer").disabled).toBe(true);
+    expect(app.container.textContent).not.toContain("$20.00");
+    await app.close();
+  });
 });
 
 it("opens this computer's Host only once main has attached it", async () => {

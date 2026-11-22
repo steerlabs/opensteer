@@ -39,6 +39,8 @@ export interface ClassifiedDeploymentAccessFailure {
 
 interface AccountPort {
   readonly available: boolean;
+  /** The Opensteer website this build's account is managed on, where checkout happens. */
+  readonly portalOrigin?: string | null;
   beginReauthorization(): Promise<DesktopAccountAuthState>;
   beginSignIn(): Promise<DesktopAccountAuthState>;
   currentState(): Promise<DesktopAccountAuthState>;
@@ -223,7 +225,9 @@ export class DeploymentAccessService {
           void this.#refreshDirectory("required", "account-change").then(() => {
             if (this.#selectedDeployment()?.source === "account") {
               this.#attachSelectedReturningDeployment();
+              return;
             }
+            this.#openOnlyHome();
           });
         }
       }),
@@ -315,7 +319,12 @@ export class DeploymentAccessService {
     const personal = this.#personalSetup();
     return freezeSnapshot(
       DeploymentAccessSnapshotSchema.parse({
-        account: this.#account,
+        account: {
+          ...this.#account,
+          ...(this.#ports.account.portalOrigin
+            ? { portalOrigin: this.#ports.account.portalOrigin }
+            : {}),
+        },
         deployments: this.#catalog.deployments.filter(this.#shown).map((deployment) => {
           const info = this.#statusInfo(deployment, personal);
           const connection = this.#connectionSnapshot(deployment);
@@ -817,6 +826,21 @@ export class DeploymentAccessService {
         this.#attachSelectedReturningDeployment();
       }
     });
+  }
+
+  /**
+   * Right after a sign-in, an account with exactly one Home opens it: nothing else is listed
+   * here, nothing is open, and the account could read and verify the one it has. Several, or
+   * one this Mac could not verify, stay a list to choose from.
+   */
+  #openOnlyHome(): void {
+    if (this.#disposed || this.#catalog.selectedDeploymentId !== null) return;
+    if (this.#unavailable.length > 0) return;
+    const shown = this.#catalog.deployments.filter(this.#shown);
+    const only = shown.length === 1 ? shown[0] : undefined;
+    if (!only || only.source !== "account" || only.onThisComputer) return;
+    if (!deploymentStatusSelectable(this.#statusInfo(only, this.#personalSetup()).status)) return;
+    void this.#select(only.id).catch(() => undefined);
   }
 
   /**
