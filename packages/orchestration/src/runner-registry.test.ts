@@ -1275,7 +1275,14 @@ describe("Runner connection registry", () => {
       },
     });
     const peer = new MemoryRunnerPeer("runner");
-    await registry.register(hello(createId("runner"), environmentId, "boot-1"), peer);
+    const identity = hello(createId("runner"), environmentId, "boot-1");
+    await registry.register(
+      { ...identity, capabilities: [...identity.capabilities, "automation-script-v1"] },
+      peer,
+    );
+    expect(peer.messages.find((m) => m.type === "host.welcome")).toMatchObject({
+      acceptsAutomationScripts: true,
+    });
     await registry.handle(peer, {
       ...fenceOf(peer),
       complete: true,
@@ -1319,6 +1326,80 @@ describe("Runner connection registry", () => {
       firingAcks: [{ executionGeneration: 2, occurrenceId }],
       type: "host.executions.acked",
     });
+  });
+
+  it("never sends firingResults, firingAcks, or acceptsAutomationScripts to an older Runner lacking automation-script-v1 (Z1)", async () => {
+    const occurrenceId = createId("triggerOccurrence");
+    const environmentId = createId("environment");
+    const onAttachFirings = vi.fn(async () => []);
+    const onTriggerResult = vi.fn(async () => undefined);
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onAttach: vi.fn(async () => []),
+        onAttachFirings,
+        onEvent: vi.fn(commitThrough),
+        onTriggerResult,
+      },
+    });
+    const peer = new MemoryRunnerPeer("legacy-runner");
+    // Older Runner: does NOT advertise "automation-script-v1".
+    await registry.register(hello(createId("runner"), environmentId, "boot-legacy"), peer);
+    const welcome = peer.messages.find((m) => m.type === "host.welcome");
+    expect(welcome).toBeDefined();
+    expect(welcome).not.toHaveProperty("acceptsAutomationScripts");
+
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      complete: true,
+      executions: [],
+      type: "runner.executions.attach",
+    });
+    expect(onAttachFirings).not.toHaveBeenCalled();
+    const attached = peer.messages.find((m) => m.type === "host.executions.attached");
+    expect(attached).toBeDefined();
+    // Strict pre-e74830388 older Runner schema rejects any firingResults field.
+    expect(attached).not.toHaveProperty("firingResults");
+
+    // Older Runner can still run a Run cleanly.
+    const command = executeCommand(environmentId);
+    const dispatchPromise = registry.dispatch(command, new AbortController().signal);
+    await waitFor(() => peer.messages.some((m) => m.type === "host.command"));
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      commandId: command.commandId,
+      correlationId: command.correlationId,
+      type: "runner.command-accepted",
+    });
+    await dispatchPromise;
+
+    // When an older Runner sends runner.trigger-result, Home must NOT emit host.executions.acked
+    // with empty acks + firingAcks (older Runner parses acks.min(1) strictly).
+    const ackCountBefore = peer.messages.filter((m) => m.type === "host.executions.acked").length;
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      environmentId,
+      executionGeneration: 1,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "ok",
+      },
+      type: "runner.trigger-result",
+    });
+    expect(onTriggerResult).toHaveBeenCalledTimes(1);
+    const acksAfter = peer.messages.filter((m) => m.type === "host.executions.acked");
+    expect(acksAfter).toHaveLength(ackCountBefore);
+    for (const ack of acksAfter) {
+      expect(ack).not.toHaveProperty("firingAcks");
+      if (ack.type === "host.executions.acked") expect(ack.acks.length).toBeGreaterThanOrEqual(1);
+    }
+    await registry.close();
   });
   it("preserves a proven steer refusal reason", async () => {
     const registry = new RunnerRegistry({

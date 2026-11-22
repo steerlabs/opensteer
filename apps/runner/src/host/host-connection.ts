@@ -690,7 +690,9 @@ export class ReconnectingHostConnection {
         new WebSocketMessageSink(socket, this.#fence),
         (runId) => this.#refreshRunCredentials(socket, runId),
         welcome.acceptsAttemptStopState === true,
-        (target) => this.#renewProxyToken(socket, target),
+        welcome.acceptsAutomationScripts === true
+          ? (target) => this.#renewProxyToken(socket, target)
+          : undefined,
       );
       const browserHandler = this.#browserModuleHandler();
       const integrationsHandler = this.#integrationsHandler;
@@ -1443,7 +1445,8 @@ export class ReconnectingHostConnection {
       // The Host hears the first settings.json read, then every Run this Runner
       // holds, and answers which continue here before it dispatches anything.
       await work.initialReports();
-      const firings = work.attachFiringInventory?.();
+      const firings =
+        welcome.acceptsAutomationScripts === true ? work.attachFiringInventory?.() : undefined;
       await sink.send({
         complete: true,
         executions: work.attachInventory(),

@@ -270,6 +270,10 @@ describe("ReconnectingHostConnection agent-stop notices", () => {
       await readyPlain;
       expect(plain.descriptors[0]?.capabilities).not.toContain(runnerAgentStopCapability);
       await plain.flushSocket(plain.sockets[0]);
+      // Z1: When Host welcome does NOT set acceptsAutomationScripts, Runner never sends firings on attach.
+      const attach = plain.received.find((m) => m.type === "runner.executions.attach");
+      expect(attach).toBeDefined();
+      expect(attach).not.toHaveProperty("firings");
     } finally {
       stopPlain.abort();
       await runningPlain;

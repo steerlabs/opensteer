@@ -2133,6 +2133,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     acceptsAgentStop: z.literal(true).optional(),
     acceptsHomeFiles: z.literal(true).optional(),
     acceptsAttemptStopState: z.literal(true).optional(),
+    /** The Home understands `firings` on attach, `firingResults`, `firingAcks`, and proxy token renewal. */
+    acceptsAutomationScripts: z.literal(true).optional(),
     agentHome: ComputerFolderSchema.optional(),
     agentHomeIsProvisional: z.literal(true).optional(),
     serverTime: IsoDateTimeSchema,

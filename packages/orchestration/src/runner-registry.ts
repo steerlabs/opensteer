@@ -838,6 +838,9 @@ export class RunnerRegistry {
         ...(identity.capabilities.includes(attemptStopStateCapability)
           ? { acceptsAttemptStopState: true as const }
           : {}),
+        ...(identity.capabilities.includes("automation-script-v1")
+          ? { acceptsAutomationScripts: true as const }
+          : {}),
         ...(this.#acceptsHomeFiles(identity) ? { acceptsHomeFiles: true as const } : {}),
         ...agentHome,
         serverTime: new Date(now).toISOString(),
@@ -2881,19 +2884,21 @@ export class RunnerRegistry {
               this.#hooks.onTriggerResult?.(connection.identity, message),
             );
             if (settled === "retired") {
-              await connection.peer
-                .send({
-                  ...connection.identity.fence,
-                  acks: [],
-                  firingAcks: [
-                    {
-                      executionGeneration: message.executionGeneration,
-                      occurrenceId: message.output.occurrenceId,
-                    },
-                  ],
-                  type: "host.executions.acked",
-                })
-                .catch(() => undefined);
+              if (connection.identity.capabilities.includes("automation-script-v1")) {
+                await connection.peer
+                  .send({
+                    ...connection.identity.fence,
+                    acks: [],
+                    firingAcks: [
+                      {
+                        executionGeneration: message.executionGeneration,
+                        occurrenceId: message.output.occurrenceId,
+                      },
+                    ],
+                    type: "host.executions.acked",
+                  })
+                  .catch(() => undefined);
+              }
               break;
             }
           } catch (error) {
@@ -2905,19 +2910,21 @@ export class RunnerRegistry {
             break;
           }
         }
-        await connection.peer
-          .send({
-            ...connection.identity.fence,
-            acks: [],
-            firingAcks: [
-              {
-                executionGeneration: message.executionGeneration,
-                occurrenceId: message.output.occurrenceId,
-              },
-            ],
-            type: "host.executions.acked",
-          })
-          .catch(() => undefined);
+        if (connection.identity.capabilities.includes("automation-script-v1")) {
+          await connection.peer
+            .send({
+              ...connection.identity.fence,
+              acks: [],
+              firingAcks: [
+                {
+                  executionGeneration: message.executionGeneration,
+                  occurrenceId: message.output.occurrenceId,
+                },
+              ],
+              type: "host.executions.acked",
+            })
+            .catch(() => undefined);
+        }
         const pending = connection.pendingTriggerPrograms.get(message.output.occurrenceId);
         if (pending && pending.executionGeneration !== message.executionGeneration) break;
         pending?.resolve();
@@ -2966,6 +2973,7 @@ export class RunnerRegistry {
         await this.#attach(connection, message);
         break;
       case "runner.proxy-token.renew": {
+        if (!connection.identity.capabilities.includes("automation-script-v1")) break;
         const answer: RunnerProxyTokenRenewAnswer = this.#hooks.onRenewProxyToken
           ? await this.#runHook(() => this.#hooks.onRenewProxyToken!(connection.identity, message))
           : { browserCdp: null, mcp: null, reason: "Token renewal is unavailable on this Host." };
@@ -3206,7 +3214,9 @@ export class RunnerRegistry {
         threadId: execution.threadId,
       });
     }
-    const firings = message.firings ?? [];
+    const supportsAutomationScripts =
+      connection.identity.capabilities.includes("automation-script-v1");
+    const firings = supportsAutomationScripts ? (message.firings ?? []) : [];
     for (const firing of firings) {
       if (!connection.identity.environmentIds.includes(firing.environmentId)) {
         throw new OpensteerError({
@@ -3215,9 +3225,10 @@ export class RunnerRegistry {
         });
       }
     }
-    const firingResults = this.#hooks.onAttachFirings
-      ? await this.#runHook(() => this.#hooks.onAttachFirings?.(connection.identity, firings))
-      : undefined;
+    const firingResults =
+      supportsAutomationScripts && this.#hooks.onAttachFirings
+        ? await this.#runHook(() => this.#hooks.onAttachFirings?.(connection.identity, firings))
+        : undefined;
     if (firingResults) {
       for (const result of firingResults) {
         if (result.status === "attached") {
@@ -3227,7 +3238,7 @@ export class RunnerRegistry {
     }
     await connection.peer.send({
       ...connection.identity.fence,
-      ...(firingResults ? { firingResults: [...firingResults] } : {}),
+      ...(supportsAutomationScripts && firingResults ? { firingResults: [...firingResults] } : {}),
       leaseMs: this.#executionLeaseMs,
       results: [...results],
       type: "host.executions.attached",
