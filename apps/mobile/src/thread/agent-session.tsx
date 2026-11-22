@@ -11,18 +11,16 @@ import {
   type OperationRequestView,
   type SessionTaskView,
 } from "@opensteer/client/host";
-import {
-  useThreadAgentPlace,
-  useRequestPageTab,
-  useThreadTranscript,
-} from "@opensteer/client/react";
+import { useThreadAgentPlace, useThreadTranscript } from "@opensteer/client/react";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
-import type { TabId } from "@opensteer/core";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
 import { useShowTab } from "../tabs/viewer-open.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionLine } from "../ui/action-line.js";
+import { useContentInsets } from "../ui/pane.js";
+import { useGutter } from "../ui/screen.js";
 import { useScreenAction } from "../ui/client-feedback.js";
 import { ComposerAction } from "../ui/composer-action.js";
 import { useHostValue, useMobileClient } from "../ui/mobile-client-context.js";
@@ -33,6 +31,7 @@ import { useAgentSessionStop, useSessionThread } from "./agent-session-hooks.js"
 
 export { useSessionRow, useSessionTask } from "./agent-session-hooks.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
+import { RequestPageLink } from "./request-page-link.js";
 import { QuestionCard } from "./waiting-questions.js";
 
 const selectUser = (snapshot: HostSnapshot) => snapshot.user;
@@ -45,6 +44,11 @@ const selectUser = (snapshot: HostSnapshot) => snapshot.user;
  */
 export function AgentSessionPane(props: {
   readonly deploymentId: string;
+  /**
+   * Points at the top of the pane covered by a floating header, as a conversation takes it.
+   * Left out, the screen's own navigation bar decides.
+   */
+  readonly headerClearance?: number | undefined;
   readonly hostClient: HostClient;
   readonly threadId: string;
   readonly title: string;
@@ -52,6 +56,14 @@ export function AgentSessionPane(props: {
   readonly onHeader?: ((header: ThreadHeaderState) => void) | undefined;
 }): ReactNode {
   const { hostClient, onHeader, threadId, title, view } = props;
+  // The pane runs under the bar's floating title and beside whatever stands at its sides (a
+  // notch, iPhone Duo's vertical bar with the bar's controls in it, a reserved region), as a
+  // conversation does: its content starts below the one and keeps off the others.
+  const gutter = useGutter();
+  const insets = useContentInsets();
+  const headerHeight = useHeaderHeight();
+  const top = props.headerClearance ?? headerHeight;
+  const sides = { paddingLeft: gutter + insets.left, paddingRight: gutter + insets.right };
   useEffect(() => {
     onHeader?.({
       connectionLabel: view.header,
@@ -79,7 +91,12 @@ export function AgentSessionPane(props: {
   const activity = view.activity;
   return (
     <View style={styles.pane} testID="agent-session">
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        automaticallyAdjustsScrollIndicatorInsets={false}
+        contentContainerStyle={[styles.content, sides, { paddingTop: top + space[12] }]}
+        contentInsetAdjustmentBehavior="never"
+        scrollIndicatorInsets={{ right: insets.right, top }}
+      >
         {place === null || view.stop === null ? null : (
           <PlaceLink
             label={workWords("work.openPlace", { place: place.title })}
@@ -97,7 +114,7 @@ export function AgentSessionPane(props: {
                   style={styles.question}
                   testID={`session-question:${request.id}`}
                 >
-                  <RequestPageButton hostClient={hostClient} onOpen={showTab} request={request} />
+                  <RequestPageLink hostClient={hostClient} onOpen={showTab} request={request} />
                   <QuestionCard
                     canRespond={canRespond}
                     deploymentId={props.deploymentId}
@@ -123,7 +140,7 @@ export function AgentSessionPane(props: {
           <OperationRequestCard hostClient={hostClient} item={item} key={item.request.id} />
         ))}
       </ScrollView>
-      <View style={styles.bar}>
+      <View style={[styles.bar, sides, { paddingBottom: space[12] + insets.bottom }]}>
         <View style={styles.barRow}>
           <ExternalAgentMark
             initial={view.agent.initial}
@@ -328,40 +345,6 @@ function PlaceLink(props: {
   );
 }
 
-/**
- * The page a question is about, one tap away, so the person signs in there, then answers:
- * the Request's own tab, or its task's only page. Nothing when that is not one page.
- */
-function RequestPageButton(props: {
-  readonly hostClient: HostClient;
-  readonly onOpen: (tabId: TabId) => void;
-  readonly request: Parameters<typeof useRequestPageTab>[1] & {};
-}): ReactNode {
-  const page = useRequestPageTab(props.hostClient, props.request);
-  return page === null ? null : (
-    <OpenPageButton label={workWords("ask.openPage")} onPress={() => props.onOpen(page.tabId)} />
-  );
-}
-
-/** The page a question is about, one tap away: the person signs in there, then answers. */
-function OpenPageButton(props: {
-  readonly label: string;
-  readonly onPress: () => void;
-}): ReactNode {
-  return (
-    <Pressable
-      accessibilityLabel={props.label}
-      accessibilityRole="link"
-      onPress={props.onPress}
-      style={styles.link}
-    >
-      <AppText role="secondaryMedium" tone="ember">
-        {props.label}
-      </AppText>
-    </Pressable>
-  );
-}
-
 function AnswerButton(props: {
   readonly busy: boolean;
   readonly label: string;
@@ -408,7 +391,7 @@ const styles = StyleSheet.create({
     borderTopColor: color.line,
     borderTopWidth: StyleSheet.hairlineWidth,
     gap: space[4],
-    padding: space[12],
+    paddingTop: space[12],
   },
   barRow: { alignItems: "center", flexDirection: "row", gap: space[8] },
   calls: { backgroundColor: color.surfaceCode, fontFamily: "Menlo", padding: space[8] },
@@ -424,7 +407,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[6],
     paddingVertical: 2,
   },
-  content: { gap: space[12], padding: space[16] },
+  content: { gap: space[12], paddingBottom: space[16] },
   grow: { flex: 1, minWidth: 0 },
   italic: { fontStyle: "italic" },
   link: { alignSelf: "flex-start", justifyContent: "center", minHeight: touchTarget },

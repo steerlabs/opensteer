@@ -1,4 +1,3 @@
-import { homesListTitle } from "@opensteer/client/computers";
 import { pushedInPresentation, screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
@@ -35,6 +34,7 @@ import { ComputerScreen } from "./screens/computer.js";
 import { DevicePageScreen } from "./screens/device-page.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
+import { deploymentsTitle } from "./screens/deployments-title.js";
 import { NeedsYouScreen } from "./screens/needs-you.js";
 import { HomeScreen } from "./screens/home.js";
 import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
@@ -197,7 +197,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         headerLargeTitle: true,
-        title: homesListTitle,
+        title: deploymentsTitle,
       }),
     },
     // Home: the new-task composer, holding its one unsent draft.
@@ -574,7 +574,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         presentation: screenPresentations.DeploymentSwitcher,
-        title: homesListTitle,
+        title: deploymentsTitle,
       }),
     },
   },

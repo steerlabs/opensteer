@@ -1,3 +1,4 @@
+import { deploymentsTitle } from "../screens/deployments-title.js";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import {
   computerAppAccessLabel,
@@ -216,7 +217,7 @@ export function addIphoneFailureText(
     case "needs-update":
       return `Update Opensteer on this ${noun}, then try again.`;
     case "profile-mismatch":
-      return `This ${noun} couldn't be added. Remove it from Computers on another device, then add it again.`;
+      return `This ${noun} couldn't be added. Remove it from ${deploymentsTitle} on another device, then add it again.`;
     case "host-update":
       return addIphoneNeedsUpdate(opensteer, noun);
     case "enrolled-elsewhere":
@@ -270,7 +271,7 @@ export function iphoneStatusLine(
       };
     case "profile-mismatch":
       return {
-        text: `This ${noun} couldn't be added. Remove it from Computers on another device, then add it again.`,
+        text: `This ${noun} couldn't be added. Remove it from ${deploymentsTitle} on another device, then add it again.`,
         tone: "amber",
       };
     case "enrollment-expired":
@@ -707,7 +708,7 @@ export function iphoneNotTold(
   readonly title: string;
 } {
   return {
-    detail: `${name} stopped sharing, but ${opensteer} couldn't be told. Remove it from Computers on another device.`,
+    detail: `${name} stopped sharing, but ${opensteer} couldn't be told. Remove it from ${deploymentsTitle} on another device.`,
     title: `Finish removing ${name}`,
   };
 }

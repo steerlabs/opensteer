@@ -1,4 +1,4 @@
-import { cloudComputerWebsite, homesListTitle } from "@opensteer/client/computers";
+import { cloudComputerWebsite } from "@opensteer/client/computers";
 import { useCloudComputer } from "@opensteer/client/react";
 import { useCopy } from "../ui/copy-mark.js";
 import { phoneShowsCloudComputerPrice } from "./cloud-computer-entry.js";
@@ -86,6 +86,7 @@ import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
 import { useCloudComputerIds, useWorkBadges } from "./work-home.js";
+import { deploymentsTitle } from "./deployments-title.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
   "connected",
@@ -456,7 +457,7 @@ export function DeploymentsScreen(): ReactNode {
           // An alert survives that reset, so a rejected callback does not
           // disappear with this screen's local state.
           if (line !== null && opened)
-            Alert.alert(line.text, `Try again from ${homesListTitle}.`, [{ text: "Done" }]);
+            Alert.alert(line.text, `Try again from ${deploymentsTitle}.`, [{ text: "Done" }]);
           else if (attempt.active) setFailure(line);
           attempt.cancel();
         });
@@ -616,7 +617,7 @@ export function DeploymentsScreen(): ReactNode {
   // The first run titles itself; a bar title above it would say it twice.
   useLayoutEffect(() => {
     if (switching) return;
-    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : homesListTitle });
+    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : deploymentsTitle });
   }, [navigation, switching, welcome]);
 
   // A price is read only where the phone may show one (phoneShowsCloudComputerPrice).

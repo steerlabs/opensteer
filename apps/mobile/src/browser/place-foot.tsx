@@ -1,6 +1,6 @@
 import type { VoiceSnapshot } from "@opensteer/client/voice";
-import { useEffect, type ReactNode } from "react";
-import { StyleSheet, useWindowDimensions, View } from "react-native";
+import { useEffect, useState, type ReactNode } from "react";
+import { StyleSheet, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 import Animated, { useSharedValue, withTiming, type SharedValue } from "react-native-reanimated";
 import { color, controlFontScaleLimit, space, type as textType, touchTarget } from "../theme.js";
 import { GlassSurface } from "../ui/glass.js";
@@ -37,8 +37,12 @@ export function usePlaceStatus(hidden: boolean): {
 } {
   const status = usePlaceBarStatus();
   const { fontScale } = useWindowDimensions();
+  // The row's words wrap rather than being cut, so it can be taller than one line: the room
+  // is what it measured, never less than one line's.
+  const [measured, setMeasured] = useState(0);
+  const least = statusRowHeight(fontScale);
   // The room stays while the foot is taken, so the page keeps its size under the keyboard.
-  const height = status !== null ? statusRowHeight(fontScale) : 0;
+  const height = status !== null ? Math.max(least, measured) : 0;
   const shown = status !== null && !hidden;
   const reserve = useSharedValue(height);
   useEffect(() => {
@@ -48,7 +52,12 @@ export function usePlaceStatus(hidden: boolean): {
     height,
     reserve,
     row: shown ? (
-      <Animated.View entering={appear} exiting={exit} style={[styles.slot, { height }]}>
+      <Animated.View
+        entering={appear}
+        exiting={exit}
+        onLayout={(event: LayoutChangeEvent) => setMeasured(event.nativeEvent.layout.height)}
+        style={[styles.slot, { minHeight: least }]}
+      >
         {status}
       </Animated.View>
     ) : null,
@@ -67,7 +76,7 @@ export function FloatingPlaceStatus(): ReactNode {
     <Animated.View entering={appear} exiting={exit} style={styles.floating}>
       <GlassSurface
         shape="capsule"
-        style={[styles.glass, { height: statusRowHeight(fontScale) }]}
+        style={[styles.glass, { minHeight: statusRowHeight(fontScale) }]}
         tint={color.floatTint}
       >
         {status}

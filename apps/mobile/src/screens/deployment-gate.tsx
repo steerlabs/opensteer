@@ -11,6 +11,7 @@ import {
 } from "../client/deployment-rows.js";
 import { GateAsleepLine } from "./gate-asleep-line.js";
 import { resetToDeployments } from "../navigation-ref.js";
+import { deploymentsTitle } from "./deployments-title.js";
 import { color, space } from "../theme.js";
 import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
@@ -120,11 +121,12 @@ export function DeploymentGate(props: {
     return (
       <Screen>
         <View style={[styles.content, column, top]}>
-          <AppText role="displaySmall">This deployment is gone</AppText>
+          {/* In a person's words, and back to the list by its own title. */}
+          <AppText role="displaySmall">This Home is no longer here</AppText>
           <AppText role="secondary" tone="muted">
-            It is no longer in this phone&apos;s list. Add it again from Deployments.
+            {`It isn’t in this phone’s list any more. You can add it again from ${deploymentsTitle}.`}
           </AppText>
-          <SecondaryButton label="Choose an Opensteer" onPress={resetToDeployments} />
+          <SecondaryButton label={deploymentsTitle} onPress={resetToDeployments} />
         </View>
       </Screen>
     );

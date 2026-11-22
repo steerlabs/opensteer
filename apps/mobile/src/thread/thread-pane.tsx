@@ -324,6 +324,8 @@ export function ThreadPane(props: ThreadPaneProps): ReactNode {
     return (
       <AgentSessionPane
         deploymentId={props.deploymentId}
+        // As a conversation takes it: beside a page there is no bar over the pane.
+        headerClearance={props.headerClearance ?? (props.withPage ? 0 : undefined)}
         hostClient={props.hostClient}
         onHeader={props.onHeader}
         threadId={threadId}
