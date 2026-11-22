@@ -364,9 +364,6 @@ import UIKit
     view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
     XCTAssertEqual(view.spellCheckingType, .no)
     XCTAssertNotEqual(view.autocorrectionType, .no)
-    XCTAssertFalse(RemoteInputTextView.letsTouchBegin(UITapGestureRecognizer(), editing: true))
-    XCTAssertTrue(RemoteInputTextView.letsTouchBegin(UITapGestureRecognizer(), editing: false))
-    XCTAssertTrue(RemoteInputTextView.letsTouchBegin(UILongPressGestureRecognizer(), editing: true))
   }
 
   // The walk's variant (b) as the native field took it: the selected word, then "!" typed over it.
@@ -398,6 +395,63 @@ import UIKit
     XCTAssertTrue(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
     XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.select(_:)), withSender: nil))
     XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.selectAll(_:)), withSender: nil))
+  }
+
+  // C1: while the field is shown, a touch changes nothing a person cannot see. Every recognizer
+  // UIKit installs on the view is refused, whatever its class (its text taps are not
+  // UITapGestureRecognizer subclasses on current iOS); only the view's own focus tap and Paste
+  // long press begin, and neither moves the caret.
+  func testOnlyTheViewsOwnRecognizersBegin() {
+    let view = RemoteInputTextView()
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    let recognizers = view.gestureRecognizers ?? []
+    let own = recognizers.filter { view.isOwn($0) }
+    XCTAssertEqual(own.count, 2, "the focus tap and the Paste long press")
+    for recognizer in recognizers where !view.isOwn(recognizer) {
+      XCTAssertFalse(view.gestureRecognizerShouldBegin(recognizer), "\(type(of: recognizer)) began")
+    }
+    for recognizer in own { XCTAssertTrue(view.gestureRecognizerShouldBegin(recognizer)) }
+  }
+  func testThePasteMenuOffersOnlyPaste() {
+    let view = RemoteInputTextView()
+    let menu = view.pasteMenu(suggested: [])
+    XCTAssertEqual(menu.children.count, 1)
+  }
+  func testTheFocusTapAndThePasteLongPressLeaveTheCaretWhereItWas() {
+    let field = Field(settled: "helloab")
+    let before = field.packets.count
+    field.view.focusTapped()
+    field.view.pasteLongPressed(at: .zero)
+    field.answerAll()
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 7, length: 0))
+    XCTAssertEqual(field.packets.count, before)
+  }
+
+  // C1 in a window, editing, as on a phone: the recognizers UIKit adds once the field is first
+  // responder are refused too. Runs on the iOS Simulator; on Mac Catalyst it would put a window
+  // on the Mac's screen, so it is skipped there.
+  func testInAWindowAndEditingOnlyTheViewsOwnRecognizersBegin() throws {
+    #if targetEnvironment(macCatalyst)
+    throw XCTSkip("Needs a window: run on the iOS Simulator")
+    #else
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+    let view = RemoteInputTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 44), textContainer: nil)
+    window.addSubview(view)
+    window.makeKeyAndVisible()
+    var packets: [[String: Any]] = []
+    view.deliver = { packets.append($0) }
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: true)
+    XCTAssertTrue(view.isFirstResponder)
+    var recognizers = view.gestureRecognizers ?? []
+    for interaction in view.interactions {
+      if let text = interaction as? UITextInteraction { recognizers += text.gesturesForFailureRequirements }
+    }
+    XCTAssertEqual(recognizers.filter { view.isOwn($0) }.count, 2)
+    for recognizer in recognizers where !view.isOwn(recognizer) {
+      XCTAssertFalse(view.gestureRecognizerShouldBegin(recognizer), "\(type(of: recognizer)) began")
+    }
+    window.isHidden = true
+    #endif
   }
 }
 #endif

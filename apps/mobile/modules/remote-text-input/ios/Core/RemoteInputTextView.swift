@@ -30,19 +30,54 @@ import UniformTypeIdentifiers
     smartDashesType = .no
     gate.apply = { [weak self] in self?.apply($0) }
     gate.idle = { [weak self] in self?.edits.settle() }
+    installTouch()
   }
   public convenience init() { self.init(frame: .zero, textContainer: nil) }
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
   public func respond(_ instruction: [String: Any]) { gate.respond(instruction) }
-  /// The field's text and caret are invisible, so a touch while it is editing must not select or
-  /// move anything in it: a tap on a word selected it, and the next keystroke replaced it on both
-  /// sides. A tap still focuses the field when it is not editing; a long press still opens the
-  /// edit menu, for Paste. The person moves the caret on the page, or with the keyboard.
-  static func letsTouchBegin(_ recognizer: UIGestureRecognizer, editing: Bool) -> Bool {
-    !(editing && recognizer is UITapGestureRecognizer)
+  /// The field's text and caret are invisible, so a touch on it changes nothing a person cannot
+  /// see: no selection and no caret move. Only the view's own two recognizers begin, by
+  /// allowlist: a tap that focuses the field and a long press that offers Paste. Every
+  /// recognizer UIKit installs is refused, whatever its class (its text taps, tap-and-drag and
+  /// loupe are not UITapGestureRecognizer subclasses). The person moves the caret on the page or
+  /// with the keyboard.
+  private lazy var focusTap = UITapGestureRecognizer(target: self, action: #selector(focusTapped))
+  private lazy var pasteLongPress = UILongPressGestureRecognizer(target: self, action: #selector(pasteLongPressRecognized(_:)))
+  private lazy var pasteMenuDelegate = RemoteInputPasteMenu(view: self)
+  private var pasteMenuInteraction: UIInteraction?
+  func isOwn(_ recognizer: UIGestureRecognizer) -> Bool { recognizer === focusTap || recognizer === pasteLongPress }
+  public override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool { isOwn(recognizer) }
+  private func installTouch() {
+    addGestureRecognizer(focusTap)
+    addGestureRecognizer(pasteLongPress)
+    let menu = UIEditMenuInteraction(delegate: pasteMenuDelegate)
+    addInteraction(menu)
+    pasteMenuInteraction = menu
   }
-  public override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-    Self.letsTouchBegin(recognizer, editing: isFirstResponder) && super.gestureRecognizerShouldBegin(recognizer)
+  /// Focuses the field without placing its caret.
+  @objc func focusTapped() {
+    if !isFirstResponder { becomeFirstResponder() }
+  }
+  @objc private func pasteLongPressRecognized(_ recognizer: UILongPressGestureRecognizer) {
+    if recognizer.state == .began { pasteLongPressed(at: recognizer.location(in: self)) }
+  }
+  /// Opens the view's own menu, which offers Paste alone and never moves the caret.
+  func pasteLongPressed(at point: CGPoint) {
+    guard isEditable, window != nil, let menu = pasteMenuInteraction as? UIEditMenuInteraction else { return }
+    menu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
+  }
+  /// Paste alone: the system's own Paste command where it suggests one, so it is named as the
+  /// system names it.
+  func pasteMenu(suggested: [UIMenuElement]) -> UIMenu {
+    func find(_ elements: [UIMenuElement]) -> UIMenuElement? {
+      for element in elements {
+        if let command = element as? UICommand, command.action == #selector(UIResponderStandardEditActions.paste(_:)) { return command }
+        if let menu = element as? UIMenu, let found = find(menu.children) { return found }
+      }
+      return nil
+    }
+    let paste = find(suggested) ?? UIAction(title: NSLocalizedString("Paste", comment: "")) { [weak self] _ in self?.paste(nil) }
+    return UIMenu(children: [paste])
   }
   private func snapshot(selection: NSRange? = nil) -> [String: Any] {
     let selection = selection ?? selectedRange
@@ -307,6 +342,15 @@ import UniformTypeIdentifiers
       if !isFirstResponder { becomeFirstResponder() }
       else if changed { reloadInputViews() }
     } else if isFirstResponder { resignFirstResponder() }
+  }
+}
+
+/// The view's own edit menu: Paste alone.
+@MainActor final class RemoteInputPasteMenu: NSObject, UIEditMenuInteractionDelegate {
+  private weak var view: RemoteInputTextView?
+  init(view: RemoteInputTextView) { self.view = view }
+  func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration, suggestedActions: [UIMenuElement]) -> UIMenu? {
+    view?.pasteMenu(suggested: suggestedActions)
   }
 }
 #endif
