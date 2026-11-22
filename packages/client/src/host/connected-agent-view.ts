@@ -16,6 +16,7 @@ import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js
 import type { ThreadSummary } from "./client.js";
 import { agentWords } from "./connected-agents-copy.js";
 import { chatFacts } from "./chat-view.js";
+import { plainSentence, sentenceAround, type SentencePart } from "./sentence-parts.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
 /**
@@ -55,6 +56,8 @@ export interface ConnectedAgentRow {
   readonly uncertain: boolean;
   /** The one line under its name. */
   readonly line: string;
+  /** `line` as parts: a chat's address a part of its own. */
+  readonly lineParts: readonly SentencePart[];
   readonly tone: ConnectedAgentTone;
   /** It has ended, so it may come off the list. */
   readonly removable: boolean;
@@ -137,7 +140,12 @@ export interface ConnectedAgentDetail {
   readonly accessMode: ThreadAccessMode;
   readonly live: ConnectedAgentLive | null;
   readonly activity: ConnectedAgentActivity;
-  readonly about: readonly { readonly label: string; readonly value: string }[];
+  /** `valueParts`: the value as parts, an address a part of its own when it is one. */
+  readonly about: readonly {
+    readonly label: string;
+    readonly value: string;
+    readonly valueParts: readonly SentencePart[];
+  }[];
 }
 
 /** Names this client can put to granted things without reading anything more. */
@@ -256,7 +264,11 @@ function rowLine(
   connection: AgentConnection,
   phase: ConnectedAgentPhase,
   names: GrantNames,
-): { readonly line: string; readonly tone: ConnectedAgentTone } {
+): {
+  readonly line: string;
+  readonly lineParts?: readonly SentencePart[];
+  readonly tone: ConnectedAgentTone;
+} {
   if (phase === "active" || phase === "revoked") {
     if (phase === "revoked") return { line: agentWords("agents.row.stopping"), tone: "neutral" };
     const summary = agentWords("agents.row.summary", {
@@ -264,11 +276,12 @@ function rowLine(
       mode: modeLabel(connection.accessMode),
     });
     // A chat says where it listens first, beside what it can use like any connected agent.
-    const where = connection.bridge ? chatFacts(connection, phase)?.where : undefined;
-    return {
-      line: where ? agentWords("chat.row", { where, summary }) : summary,
-      tone: "neutral",
-    };
+    const where = connection.bridge ? chatFacts(connection, phase)?.whereParts : undefined;
+    if (!where) return { line: summary, tone: "neutral" };
+    const slot = String.fromCharCode(0);
+    const [before = "", after = ""] = agentWords("chat.row", { where: slot, summary }).split(slot);
+    const lineParts = [before, ...where, after].filter((part) => part !== "");
+    return { line: plainSentence(lineParts), lineParts, tone: "neutral" };
   }
   if (phase === "paused") return { line: agentWords("agents.row.paused"), tone: "attention" };
   if (phase === "unknown") return { line: agentWords("agents.row.unknown"), tone: "attention" };
@@ -290,8 +303,12 @@ export function connectedAgentRow(
   const phase = connectedAgentPhase(connection, revoked, now);
   const identity = connectedAgentIdentity(connection, undefined, withdrawnAt);
   const withdrawn = phase === "active" ? agentWithdrawnLine(identity.who) : null;
-  const { line, tone } = withdrawn
-    ? { line: `${withdrawn} ${workWords("who.withdrawnDetail")}`, tone: "attention" as const }
+  const { line, lineParts, tone } = withdrawn
+    ? {
+        line: `${withdrawn} ${workWords("who.withdrawnDetail")}`,
+        lineParts: undefined,
+        tone: "attention" as const,
+      }
     : rowLine(connection, phase, names);
   return {
     id: connection.id,
@@ -299,6 +316,7 @@ export function connectedAgentRow(
     phase,
     uncertain: connection.lastActionUncertain === true,
     line,
+    lineParts: lineParts ?? [line],
     tone,
     removable: phase === "stopped" || phase === "expired",
     connection,
@@ -518,7 +536,10 @@ export function connectedAgentDetail(
       ...(row.phase === "active" && connection.expiresAt
         ? [{ label: agentWords("agent.about.expires"), value: formatDay(connection.expiresAt) }]
         : []),
-    ],
+    ].map((row) => ({
+      ...row,
+      valueParts: sentenceAround((slot) => slot, row.value),
+    })),
   };
 }
 

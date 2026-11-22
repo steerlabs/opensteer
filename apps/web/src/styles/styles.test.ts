@@ -59,3 +59,13 @@ test("the code that links me keeps its sentence's measure and puts its controls 
   expect(css).toMatch(/\.card__row\.messaging-me \{[^}]*flex-wrap:\s*wrap/u);
   expect(css).toMatch(/\.messaging-me > \.card__row-body \{[^}]*flex:\s*1 1 18rem/u);
 });
+
+/** Where a person adds or links an account, its name is never cut with an ellipsis. */
+test("a Messaging account's name is drawn whole", () => {
+  const css = readFileSync(fileURLToPath(new URL("settings.css", import.meta.url)), "utf8");
+  const rule = /\.settings-messaging-row \.card__row-title > a \{([^}]*)\}/u.exec(css)?.[1] ?? "";
+  expect(rule).not.toBe("");
+  expect(rule).not.toMatch(/ellipsis|nowrap/u);
+  const address = readFileSync(fileURLToPath(new URL("address.css", import.meta.url)), "utf8");
+  expect(address).not.toMatch(/text-overflow:\s*ellipsis/u);
+});

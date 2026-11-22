@@ -28,7 +28,7 @@ import {
   SettingsUnreadable,
   type SettingsView,
 } from "../primitives.js";
-import { AddressText } from "../../../ui/address-text.js";
+import { SentenceText } from "../../../ui/address-text.js";
 import { AgentMark } from "../agent-mark.js";
 import { ConnectedAgentPage } from "./connected-agent-page.js";
 
@@ -187,7 +187,7 @@ function AgentRows({
               <span className="card__row-body">
                 <span className="card__row-title">{row.identity.label}</span>
                 <span className={`card__row-detail connected-agents__line--${row.tone}`}>
-                  <AddressText text={row.line} />
+                  <SentenceText parts={row.lineParts} />
                 </span>
               </span>
               <Icon className="connected-agents__chevron" name="chevron-right" />

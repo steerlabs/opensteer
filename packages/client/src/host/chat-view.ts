@@ -2,6 +2,7 @@ import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import type { AgentConnection, MachineSummary } from "@opensteer/protocol";
 import type { ConnectedAgentPhase } from "./connected-agent-view.js";
 import { agentWords } from "./connected-agents-copy.js";
+import { plainSentence as plain, sentenceAround, type SentencePart } from "./sentence-parts.js";
 
 /**
  * What only a chat has beside any connected agent's page, in the person's words: where it
@@ -10,7 +11,14 @@ import { agentWords } from "./connected-agents-copy.js";
  */
 export interface ChatFacts {
   readonly where: string;
-  readonly speakers: { readonly title: string; readonly detail: string };
+  /** `where` as parts: the account's address a part of its own when it is one. */
+  readonly whereParts: readonly SentencePart[];
+  readonly speakers: {
+    readonly title: string;
+    readonly detail: string;
+    readonly titleParts: readonly SentencePart[];
+    readonly detailParts: readonly SentencePart[];
+  };
   /** Who can give it work is chosen when it is added; this says how to change it. */
   readonly fixed: string;
   /** Why it ended, once the Home lists it as ending or stopped. */
@@ -31,29 +39,48 @@ export function chatFacts(
   if (!bridge) return null;
   const account = bridge.accountName ?? bridge.provider;
   const conversation = bridge.conversationName ?? bridge.conversationId ?? "";
-  const where =
-    bridge.conversationId === null
-      ? agentWords("chat.where.dm", { account, provider: bridge.provider })
-      : agentWords("chat.where.channel", { conversation, account, provider: bridge.provider });
+  const whereParts = sentenceAround(
+    (slot) =>
+      bridge.conversationId === null
+        ? agentWords("chat.where.dm", { account: slot, provider: bridge.provider })
+        : agentWords("chat.where.channel", {
+            conversation,
+            account: slot,
+            provider: bridge.provider,
+          }),
+    account,
+  );
+  const where = plain(whereParts);
+  const words = (title: readonly SentencePart[], detail: readonly SentencePart[]) => ({
+    title: plain(title),
+    detail: plain(detail),
+    titleParts: title,
+    detailParts: detail,
+  });
+  const identity = bridge.me?.displayName;
   const speakers =
     bridge.senders === "anyone"
-      ? {
-          title: agentWords("chat.speakers.anyone", { conversation }),
-          detail: agentWords("chat.speakers.anyoneDetail"),
-        }
-      : bridge.me
-        ? {
-            title: agentWords("chat.speakers.me", { identity: bridge.me.displayName }),
-            detail: agentWords("chat.speakers.meDetail", { identity: bridge.me.displayName }),
-          }
-        : {
-            title: agentWords("chat.speakers.meNone"),
-            detail: agentWords("chat.speakers.meNoneDetail", { provider: bridge.provider }),
-          };
+      ? words(
+          [agentWords("chat.speakers.anyone", { conversation })],
+          [agentWords("chat.speakers.anyoneDetail")],
+        )
+      : identity !== undefined
+        ? words(
+            sentenceAround((slot) => agentWords("chat.speakers.me", { identity: slot }), identity),
+            sentenceAround(
+              (slot) => agentWords("chat.speakers.meDetail", { identity: slot }),
+              identity,
+            ),
+          )
+        : words(
+            [agentWords("chat.speakers.meNone")],
+            [agentWords("chat.speakers.meNoneDetail", { provider: bridge.provider })],
+          );
   const ending = phase === "stopping" || phase === "stopped" || phase === "revoked";
   const unknown = bridge.unknownReplies ?? 0;
   return {
     where,
+    whereParts,
     speakers,
     fixed: agentWords("chat.speakers.fixed"),
     // Why it ended only from a reason the Home sent and this app knows; otherwise only that it did.

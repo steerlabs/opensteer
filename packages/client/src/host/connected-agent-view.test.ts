@@ -11,6 +11,7 @@ import {
 import {
   connectedAgentDetail,
   connectedAgentPhase,
+  connectedAgentRow,
   connectedAgentIdentity,
   connectedAgentLive,
   connectedAgentWorkingTasks,
@@ -400,7 +401,7 @@ describe("connected agent detail", () => {
       names,
       { grantsAvailable: true, now },
     );
-    expect(detail.about[0]).toEqual({ label: "Calls itself", value: "TravelBot Agent" });
+    expect(detail.about[0]).toMatchObject({ label: "Calls itself", value: "TravelBot Agent" });
   });
 
   it("walks Revoked, Stopping and Stopped, and keeps last action uncertain a separate fact", () => {
@@ -687,5 +688,19 @@ describe("a list from a newer Home", () => {
     expect(connectedAgentPhase(resting!)).toBe("unknown");
     expect(connectedAgentPhase(chat!)).toBe("active");
     expect(chat!.bridge?.notice).toBeUndefined();
+  });
+});
+
+describe("a chat's address, as parts", () => {
+  it("holds the account's address as a part of its own in where it listens and its row, and a name as words", () => {
+    const chats = mockConnectedAgents("chats").connections;
+    const imessage = chats.find(({ label }) => label === "iMessage")!;
+    const slack = chats.find(({ label }) => label === "Slack")!;
+    expect(chatFacts(imessage, "paused")!.whereParts).toContainEqual({
+      address: "tim@example.com",
+    });
+    expect(chatFacts(slack, "active")!.whereParts).toEqual([chatFacts(slack, "active")!.where]);
+    const row = connectedAgentRow(slack, { profiles: [] });
+    expect(row.lineParts.join("")).toBe(row.line);
   });
 });

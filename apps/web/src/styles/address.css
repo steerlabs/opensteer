@@ -1,10 +1,16 @@
 /*
- * An address, host or URL (`Address` in ui/address-text.tsx): it wraps at the break chances
- * between its parts, is never hyphenated, and breaks inside a part only when that part alone
- * is wider than the line.
+ * An address, host or URL (`Address` in ui/address-text.tsx). Each part between its joints is an
+ * inline box: a line breaks only between boxes, so never after a hyphen of the address's own.
+ * A box wider than the line breaks inside itself, anywhere, rather than overflow. No hyphen is
+ * ever added, and nothing is cut with an ellipsis.
  */
 .address {
   hyphens: manual;
-  overflow-wrap: break-word;
-  word-break: normal;
+}
+.address__part {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }

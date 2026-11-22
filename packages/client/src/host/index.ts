@@ -7,6 +7,7 @@ export * from "./agent-activity-model.js";
 export * from "./conversation-presentation.js";
 export * from "./client.js";
 export * from "./failure-text.js";
+export * from "./sentence-parts.js";
 export * from "./deployment-policy.js";
 export * from "./browser-access.js";
 export * from "./browser-profile-settings.js";

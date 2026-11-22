@@ -33,7 +33,7 @@ import { AgentMark } from "../agent-mark.js";
 import { AgentWhoLine, AgentWithdrawnNotice } from "../agent-who.js";
 import { ChatFactsSection } from "./chat-facts.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
-import { AddressText } from "../../../ui/address-text.js";
+import { SentenceText } from "../../../ui/address-text.js";
 
 interface Edit {
   readonly revision: number;
@@ -275,7 +275,7 @@ export function ConnectedAgentPage({
             title={row.label}
             action={
               <span className="card__row-value">
-                <AddressText text={row.value} />
+                <SentenceText parts={row.valueParts} />
               </span>
             }
           />

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { agentWords, type ChatFacts, type HostClient } from "@opensteer/client/host";
-import { AddressText } from "../../../ui/address-text.js";
+import { SentenceText } from "../../../ui/address-text.js";
 import { presentFailure } from "../../use-action.js";
 import { SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 
@@ -46,10 +46,13 @@ export function ChatFactsSection({
         </p>
       ) : null}
       <SettingsGroup heading={agentWords("chat.where.title")} headingId="chat-where">
-        <SettingsRow title={<AddressText text={facts.where} />} />
+        <SettingsRow title={<SentenceText parts={facts.whereParts} />} />
       </SettingsGroup>
       <SettingsGroup heading={agentWords("chat.speakers.title")} headingId="chat-speakers">
-        <SettingsRow title={facts.speakers.title} detail={facts.speakers.detail} />
+        <SettingsRow
+          title={<SentenceText parts={facts.speakers.titleParts} />}
+          detail={<SentenceText parts={facts.speakers.detailParts} />}
+        />
         <SettingsRow title={facts.fixed} />
       </SettingsGroup>
       <SettingsGroup heading={agentWords("chat.tasks.title")} headingId="chat-tasks">

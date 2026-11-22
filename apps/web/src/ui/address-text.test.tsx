@@ -1,40 +1,19 @@
-// @vitest-environment happy-dom
-import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
-import { AddressText, addressParts } from "./address-text.js";
+import { Address, SentenceText } from "./address-text.js";
 
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
-it("breaks an address, host or URL only at its own joints: after @, before a dot, after /", () => {
-  expect(addressParts("tim@example.com")).toEqual(["tim@", "example", ".com"]);
-  expect(addressParts("alex.connect.opensteer.invalid")).toEqual([
-    "alex",
-    ".connect",
-    ".opensteer",
-    ".invalid",
-  ]);
-  expect(addressParts("https://claude.ai/api/mcp")).toEqual([
-    "https://",
-    "claude",
-    ".ai/",
-    "api/",
-    "mcp",
-  ]);
-  // Not an address: one part, broken nowhere of its own.
-  expect(addressParts("Workshop")).toEqual(["Workshop"]);
+it("draws an address as one box per part, joined back to the address exactly", () => {
+  const markup = renderToStaticMarkup(<Address value="tim@münchen.de" />);
+  expect(markup).toBe(
+    '<span class="address"><span class="address__part">tim@</span><span class="address__part">münchen</span><span class="address__part">.de</span></span>',
+  );
 });
 
-it("draws the addresses in a sentence with break chances at their joints and no hyphens", async () => {
-  const element = document.createElement("div");
-  const root = createRoot(element);
-  await act(async () =>
-    root.render(<AddressText text="Send MOCKCODE to tim@example.com in a direct message." />),
+it("draws a sentence's address part as an address and its words as words", () => {
+  const markup = renderToStaticMarkup(
+    <SentenceText parts={["Send it to ", { address: "foo.xn--p1ai" }, " now."]} />,
   );
-  const address = element.querySelector(".address")!;
-  expect(address.textContent).toBe("tim@example.com");
-  // A break chance after "@" and before ".com", none inside "example".
-  expect(address.innerHTML).toBe("tim@<wbr>example<wbr>.com");
-  expect(element.textContent).toBe("Send MOCKCODE to tim@example.com in a direct message.");
-  act(() => root.unmount());
+  expect(markup).toBe(
+    'Send it to <span class="address"><span class="address__part">foo</span><span class="address__part">.xn--p1ai</span></span> now.',
+  );
 });
