@@ -42,6 +42,10 @@ import {
   bridgeConnectionsMigrationName,
 } from "./bridge-connections-migration.js";
 import {
+  applyBridgeSenderAudit,
+  bridgeSenderAuditMigrationName,
+} from "./bridge-sender-audit-migration.js";
+import {
   applyBridgeConversion,
   bridgeConversionMigrationName,
 } from "./bridge-conversion-migration.js";
@@ -645,6 +649,7 @@ export function migrationProvider(options?: {
               [browserPoolMigrationName]: { up: applyBrowserPool },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
               [bridgeConversionMigrationName]: { up: applyBridgeConversion },
+              [bridgeSenderAuditMigrationName]: { up: applyBridgeSenderAudit },
             }
           : {}),
       };
