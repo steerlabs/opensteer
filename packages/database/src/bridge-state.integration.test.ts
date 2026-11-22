@@ -28,6 +28,53 @@ describeStore("a chat is live, waiting or ended, and every layer reads which", (
     expect(await state()).toBe("paused");
   });
 
+  it("pauses and resumes a connection holding two accounts, taking them in id order", async ({
+    storeFixture,
+  }) => {
+    const { channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("state-two-accounts");
+    const { database } = storeFixture;
+    // A shared bot: a second account on the same connection, whose id sorts before the first,
+    // so a lock taken in row order and not in id order is caught by the enforced lock order.
+    const first = await database
+      .selectFrom("channelAccounts")
+      .selectAll()
+      .where("id", "=", configured.account.id)
+      .executeTakeFirstOrThrow();
+    const second = "cha_00000000-0000-4000-8000-000000000001" as typeof first.id;
+    expect(second < first.id).toBe(true);
+    await database
+      .insertInto("channelAccounts")
+      .values({
+        ...first,
+        id: second,
+        externalAccountId: `${first.externalAccountId}-second`,
+        displayName: "Second workspace",
+        routingMode: "shared",
+      })
+      .execute();
+    const statuses = async () =>
+      (
+        await database
+          .selectFrom("channelAccounts")
+          .select(["id", "status"])
+          .where("connectionId", "=", configured.connection.id)
+          .orderBy("id")
+          .execute()
+      ).map(({ status }) => status);
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    expect(await statuses()).toEqual(["paused", "paused"]);
+    // Two changes at once on one connection: each takes both accounts in the same order.
+    await Promise.all([
+      channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected"),
+      channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused"),
+    ]);
+    const after = await statuses();
+    expect(after[0]).toBe(after[1]);
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+    expect(await statuses()).toEqual(["connected", "connected"]);
+  });
+
   it("keeps a message that was waiting when its chat was paused, and decides it when it is back", async ({
     storeFixture,
   }) => {
