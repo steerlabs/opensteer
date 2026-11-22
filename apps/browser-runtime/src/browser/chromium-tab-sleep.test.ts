@@ -1641,3 +1641,84 @@ it("keeps sleeping tabs left of the private anchor and live tabs right of it thr
   await order("p4 woken");
   process.stdout.write(`${JSON.stringify({ event: "s2.order", steps })}\n`);
 }, 120_000);
+
+it("sleeps and wakes a tab a connected agent works in as the runtime's own work, and holds the agent to its connection's commands before the sleep and after the wake", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-connection-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const sessionId = "session-connection";
+  const router = new SessionCdpRouter(launched.cdp);
+  cleanup.push(() => router.close());
+  const root = await launched.context.createPage();
+  const ledger = new SurfaceLedger(launched.context, {
+    claimTarget: (targetId, openerId) => router.claimTarget(sessionId, targetId, openerId),
+    releaseTarget: (targetId) => router.releaseTarget(sessionId, targetId),
+    rootPages: [root],
+  });
+  router.registerSession(
+    sessionId,
+    await root.targetId(),
+    (targetId) => ledger.resolveTarget(targetId),
+    directory,
+  );
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const bg = await ledger.openSurface();
+  await ledger.binding(bg.id)!.cdp.send("Page.navigate", {
+    url: `${server.originForSite(1)}/article?id=connection`,
+  });
+  await waitLoaded(ledger.binding(bg.id)!.cdp, "/article");
+  await evalValue(ledger.binding(bg.id)!.cdp, `sessionStorage.setItem("mark", "kept")`);
+
+  // The connected agent's own client: the connection's list, decided when it was opened.
+  const agent = router.openStandardClient(sessionId, { wholeContext: false, connection: true });
+  cleanup.push(async () => agent.close());
+  const heldTo = async (targetId: string) => {
+    const { sessionId: cdpSessionId } = (await agent.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId, flatten: true },
+    })) as { sessionId: string };
+    await expect(
+      agent.send({
+        method: "Storage.clearDataForOrigin",
+        parameters: { origin: server.originForSite(1), storageTypes: "all" },
+        sessionId: cdpSessionId,
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: expect.stringContaining("is not available to a connected agent"),
+    });
+    await expect(
+      agent.send({
+        method: "Browser.setPermission",
+        parameters: { permission: { name: "geolocation" }, setting: "granted" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    // Within the list, it works in the page.
+    return (
+      (await agent.send({
+        method: "Runtime.evaluate",
+        parameters: { expression: `sessionStorage.getItem("mark")`, returnByValue: true },
+        sessionId: cdpSessionId,
+      })) as { result: { value: unknown } }
+    ).result.value;
+  };
+  expect(await heldTo(ledger.binding(bg.id)!.targetId)).toBe("kept");
+
+  // The runtime's own sleep and wake: nothing of it goes through the connection's client, and
+  // the connection's list does not hold it back.
+  expect(await ledger.sleep(bg.id, () => null)).toBe(true);
+  const woken = await ledger.wake(bg.id);
+  await waitLoaded(woken.cdp, "/article");
+  expect(await evalValue(woken.cdp, `sessionStorage.getItem("mark")`)).toBe("kept");
+
+  // After the wake the same client reaches the woken tab and is held to the same list.
+  expect(await heldTo(woken.targetId)).toBe("kept");
+}, 90_000);
