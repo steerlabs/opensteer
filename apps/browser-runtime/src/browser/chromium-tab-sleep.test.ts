@@ -1,5 +1,5 @@
 import { SessionCdpRouter } from "@opensteer/browser-core";
-import { SurfaceLedger } from "@opensteer/browser-runtime-core";
+import { PageOwnership, SurfaceLedger } from "@opensteer/browser-runtime-core";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -1127,73 +1127,144 @@ it("does not steal foreground visibility or pause screencasting when a backgroun
   );
 });
 
-it.each(["no tab asleep", "a tab asleep"] as const)(
-  "keeps a tab whose opener opened it and closed itself at once, as a payment or sign-in page does (M1, %s)",
-  async (state) => {
-    const server = await startFixtureServer();
-    const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-m1-self-closing-"));
-    cleanup.push(() => rm(directory, { recursive: true, force: true }));
-    const launcher = new PlaywrightChromiumLauncher({
-      executablePath,
-      chromiumSandbox: false,
-      headless: true,
-    });
-    const launched = await launcher.launch(nativeProfileRequest(directory));
-    cleanup.push(() => launched.close());
-    const handedOff: string[] = [];
-    launched.context.handOff((page) => handedOff.push(page.url()));
-    if (state === "a tab asleep") {
-      const asleep = await launched.context.createPage();
-      const asleepCdp = await asleep.cdp();
-      await asleepCdp.send("Page.navigate", { url: `${server.originForSite(3)}/article` });
-      await waitLoaded(asleepCdp, "/article");
-      await asleep.captureRestore!();
-      await asleep.close({ reason: "slept" });
+/** The surface of the session's ledger whose page is at an address containing `part`. */
+function surfaceAt(ledger: SurfaceLedger, part: string) {
+  return ledger.snapshot().find((surface) => ledger.binding(surface.id)?.page.url().includes(part));
+}
+
+async function selfClosingSetup(asleep: boolean) {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-q1-self-closing-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  // As the runtime builds a session: one ownership for the browser, a root page the session
+  // created, and a ledger that takes only the pages ownership gives the session (its root's
+  // popups, by their opener).
+  const pages = new PageOwnership();
+  pages.adopt(launched.context);
+  const session = "session-q1";
+  const root = await pages.create(session, null, "open-failed", (own, signal) =>
+    launched.context.createPage({ own, signal }),
+  ).page;
+  const ledger = new SurfaceLedger(launched.context, {
+    pages,
+    sessionId: session,
+    rootPages: [root],
+  });
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  // Which Chromium delivered first: an opener's close, or its child's page event.
+  const order: string[] = [];
+  const raw = (
+    launched as unknown as {
+      playwrightContext: {
+        on(event: "page", fn: (page: import("playwright-core").Page) => void): void;
+      };
     }
-    const first = await launched.context.createPage();
-    const firstCdp = await first.cdp();
-    await firstCdp.send("Page.navigate", { url: `${server.originForSite(1)}/article` });
-    await waitLoaded(firstCdp, "/article");
-    // The first page opens the second by script; the second opens the third and closes itself in
-    // the same task, before Chromium announces the third.
-    const second = `${server.originForSite(1)}/article?step=second`;
-    const third = `${server.originForSite(1)}/form?step=third`;
-    await firstCdp.send("Runtime.evaluate", {
-      expression: `void window.open(${JSON.stringify(second)}, "_blank")`,
+  ).playwrightContext;
+  raw.on("page", (page) => {
+    const recorded = (page as unknown as { _opener?: { isClosed(): boolean } | null })._opener;
+    order.push(
+      `page ${new URL(page.url() || "about:blank", "http://x").search || page.url()} opener=${recorded ? (recorded.isClosed() ? "closed" : "open") : "none"}`,
+    );
+    page.once("close", () => order.push(`close ${new URL(page.url(), "http://x").search}`));
+  });
+  if (asleep) {
+    const other = await ledger.openSurface();
+    const otherLive = ledger.binding(other.id)!;
+    await otherLive.cdp.send("Page.navigate", { url: `${server.originForSite(3)}/article` });
+    await waitLoaded(otherLive.cdp, "/article");
+    expect(await ledger.sleep(other.id, () => null)).toBe(true);
+  }
+  const first = ledger.snapshot().find((surface) => ledger.binding(surface.id)?.page === root)!;
+  const firstLive = ledger.binding(first.id)!;
+  await firstLive.cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article` });
+  await waitLoaded(firstLive.cdp, "/article");
+  /** `from` opens `url` by script, and closes itself in the same task when `closeAtOnce`. */
+  const open = async (
+    from: { send<R = unknown>(method: string, params?: Record<string, unknown>): Promise<R> },
+    url: string,
+    closeAtOnce: boolean,
+  ) => {
+    await from.send("Runtime.evaluate", {
+      expression: `window.open(${JSON.stringify(url)}, "_blank");${closeAtOnce ? " window.close();" : ""}`,
       userGesture: true,
     });
-    const secondPage = await vi.waitFor(
-      () => {
-        const page = launched.context.pages().find((p) => p.url().includes("step=second"));
-        expect(page).toBeDefined();
-        return page!;
-      },
-      { timeout: 10_000, interval: 25 },
+    return vi
+      .waitFor(
+        () => {
+          const surface = surfaceAt(ledger, new URL(url).search);
+          expect(surface).toBeDefined();
+          return surface!;
+        },
+        { timeout: 10_000, interval: 25 },
+      )
+      .catch((error: unknown) => {
+        process.stdout.write(`${JSON.stringify({ event: "q1.missing", url, order })}\n`);
+        throw error;
+      });
+  };
+  return { server, ledger, firstLive, open, order };
+}
+
+it.each([
+  ["before", "no tab asleep"],
+  ["before", "a tab asleep"],
+  ["after", "no tab asleep"],
+  ["after", "a tab asleep"],
+] as const)(
+  "puts the tab a self-closing page opened in that page's session, usable there (Q1, the opener closes %s the tab is announced, %s)",
+  async (order, state) => {
+    const {
+      server,
+      ledger,
+      firstLive,
+      open,
+      order: events,
+    } = await selfClosingSetup(state === "a tab asleep");
+    const second = await open(
+      firstLive.cdp,
+      `${server.originForSite(1)}/article?step=second`,
+      false,
     );
-    const secondCdp = await secondPage.cdp();
-    await waitLoaded(secondCdp, "/article");
-    await secondCdp.send("Runtime.evaluate", {
-      expression: `window.open(${JSON.stringify(third)}, "_blank"); window.close();`,
-      userGesture: true,
-    });
-    const thirdPage = await vi.waitFor(
-      () => {
-        const page = launched.context.pages().find((p) => p.url().includes("step=third"));
-        expect(page).toBeDefined();
-        return page!;
-      },
-      { timeout: 10_000, interval: 25 },
-    );
-    await vi.waitFor(() => expect(secondPage.isClosed()).toBe(true), {
+    const secondLive = ledger.binding(second.id)!;
+    await waitLoaded(secondLive.cdp, "/article");
+    const thirdUrl = `${server.originForSite(2)}/form?step=third`;
+    const third = await open(secondLive.cdp, thirdUrl, order === "before");
+    if (order === "after")
+      await secondLive.cdp.send("Runtime.evaluate", { expression: "window.close()" });
+    await vi.waitFor(() => expect(ledger.binding(second.id) ?? null).toBeNull(), {
       timeout: 10_000,
       interval: 25,
     });
-    await waitLoaded(await thirdPage.cdp(), "/form");
-    expect(thirdPage.isClosed()).toBe(false);
-    expect(handedOff.filter((url) => url.includes("step=third"))).toHaveLength(1);
+    // The successor is this session's tab, and usable there.
+    const thirdLive = ledger.binding(third.id)!;
+    await waitLoaded(thirdLive.cdp, "/form");
+    expect(await evalValue<string>(thirdLive.cdp, "location.search")).toBe("?step=third");
+    process.stdout.write(`${JSON.stringify({ event: "q1.order", order, state, events })}\n`);
   },
   60_000,
 );
+
+it("puts the last tab of a chain of self-closing pages in the first page's session (Q1, chain)", async () => {
+  const { server, ledger, firstLive, open } = await selfClosingSetup(true);
+  const second = await open(firstLive.cdp, `${server.originForSite(1)}/article?step=second`, false);
+  const secondLive = ledger.binding(second.id)!;
+  await waitLoaded(secondLive.cdp, "/article");
+  const third = await open(secondLive.cdp, `${server.originForSite(2)}/article?step=third`, true);
+  const thirdLive = ledger.binding(third.id)!;
+  await waitLoaded(thirdLive.cdp, "/article");
+  const fourth = await open(thirdLive.cdp, `${server.originForSite(3)}/form?step=fourth`, true);
+  const fourthLive = ledger.binding(fourth.id)!;
+  await waitLoaded(fourthLive.cdp, "/form");
+  expect(await evalValue<string>(fourthLive.cdp, "location.search")).toBe("?step=fourth");
+}, 60_000);
 
 it("sleeps a tab another page opened and wakes it as itself, not as a new popup (M1)", async () => {
   const server = await startFixtureServer();

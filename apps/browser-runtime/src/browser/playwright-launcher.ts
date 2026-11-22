@@ -954,6 +954,14 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
         () => true,
         () => false,
       );
+    // Q1: Chromium names each new target's opener, also after that opener closed, where
+    // Playwright no longer does; the context keeps it for the page's handoff.
+    untypedCdp(browserCdp).on("Target.targetCreated", (event) => {
+      const info = (event as { targetInfo?: { targetId?: unknown; openerId?: unknown } })
+        .targetInfo;
+      if (typeof info?.targetId === "string" && typeof info.openerId === "string")
+        this.contextHandle.noteOpener(info.targetId, info.openerId);
+    });
     this.cdp = new PlaywrightBrowserCdpBackend(
       browserCdp,
       this.contextHandle,
@@ -1210,6 +1218,13 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly openDialogs: Map<Page, Dialog>;
   private readonly pagesByPlaywrightPage = new Map<Page, PlaywrightPageHandle>();
   private readonly handles = new WeakMap<Page, PlaywrightPageHandle>();
+  /** Each page's handle by its target, held weakly, so a child finds a closed opener (Q1). */
+  private readonly handleByTarget = new Map<string, WeakRef<PlaywrightPageHandle>>();
+  private readonly forgetTarget = new FinalizationRegistry<string>((targetId) => {
+    if (!this.handleByTarget.get(targetId)?.deref()) this.handleByTarget.delete(targetId);
+  });
+  /** Each target's opener as Chromium named it when it was created. */
+  private readonly openerByTarget = new Map<string, string>();
   /** Pages being looked up by name: a child of one is handed off after its opener (Q1). */
   private readonly classifying = new WeakMap<Page, Promise<void>>();
   private readonly pageListeners = new Set<(page: BrowserPage) => void>();
@@ -1288,6 +1303,12 @@ class PlaywrightContextHandle implements BrowserContext {
     // being looked up; its session is resolved when this page is handed off.
     const known = (page as unknown as { _opener?: Page | null })._opener;
     if (known && known !== this.privatePage) handle.openerHandle ??= this.wrap(known);
+    // Playwright forgets an opener that closed first; Chromium's own record still names it.
+    const targetId = syncTargetIdOfPage(page);
+    const openerTarget = targetId ? this.openerByTarget.get(targetId) : undefined;
+    if (targetId) this.openerByTarget.delete(targetId);
+    const recorded = openerTarget ? this.handleByTarget.get(openerTarget)?.deref() : undefined;
+    if (recorded && recorded.rawPage !== this.privatePage) handle.openerHandle ??= recorded;
     if (!this.nativeProfile || !this.lifecycle || this.sleeping.size === 0) {
       this.handOutOrdinary(page);
       return;
@@ -1465,6 +1486,12 @@ class PlaywrightContextHandle implements BrowserContext {
   private read(deadline: number): Promise<readonly ChromiumTabEntry[] | null> {
     if (!this.lifecycle || this.closed) return Promise.resolve(null);
     return readRows(this.lifecycle, deadline);
+  }
+
+  /** Chromium created `targetId` from `openerId` (Q1). */
+  noteOpener(targetId: string, openerId: string): void {
+    if (this.openerByTarget.size > 4_096) this.openerByTarget.clear();
+    this.openerByTarget.set(targetId, openerId);
   }
 
   /** A page's later close attempt, on the lane of the sleep it was put to (M3). */
@@ -1935,6 +1962,11 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!handle) {
       handle = new PlaywrightPageHandle(this, this.context, page, this.openDialogs);
       this.handles.set(page, handle);
+      const targetId = syncTargetIdOfPage(page);
+      if (targetId) {
+        this.handleByTarget.set(targetId, new WeakRef(handle));
+        this.forgetTarget.register(handle, targetId);
+      }
       this.pagesByPlaywrightPage.set(page, handle);
       page.once("close", () => this.pagesByPlaywrightPage.delete(page));
     }
