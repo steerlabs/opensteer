@@ -126,6 +126,8 @@ export interface ChromeSharedTab {
 type ReplTarget = BrowserUseTarget & {
   readonly client: StandardCdpAttachment;
   readonly share: Share;
+  /** Opened for work under a connection's authority. */
+  readonly connection: boolean;
 };
 
 const forbidden = (message: string) => new OpensteerError({ code: "forbidden", message });
@@ -419,6 +421,8 @@ export class ChromeSharedTabs {
             sessionId: target.sessionId,
             client,
             share,
+            // A connection's work is told the router's own sentence, the same at every door.
+            connection: execution!.agentConnection !== null,
           };
           const entries = openPages.get(call.contextKey) ?? new Map<string, ReplTarget>();
           const current = entries.get(tabId);
@@ -474,7 +478,11 @@ export class ChromeSharedTabs {
           if (call.signal.aborted) throw call.signal.reason;
           if (error instanceof BrowserUseCdpError) throw error;
           if (error instanceof SessionCdpRouterError && error.code === "forbidden")
-            throw forbidden("This CDP operation is unavailable on a shared Chrome tab.");
+            throw forbidden(
+              target.connection
+                ? error.message
+                : "This CDP operation is unavailable on a shared Chrome tab.",
+            );
           throw new Error("Shared Chrome command failed.", { cause: error });
         }
       },

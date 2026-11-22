@@ -541,3 +541,37 @@ it("refuses a nested message that is not a JSON string of one command, for a con
     expect(f.send, String(agentConnectionId)).not.toHaveBeenCalled();
   }
 });
+
+it("treats a connection's auto-attach on an alias of the browser root as the root's", async () => {
+  const f = await fixture();
+  const socket = await f.connect();
+  socket.send(JSON.stringify({ id: 1, method: "Target.attachToBrowserTarget" }));
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(1));
+  f.emit(Buffer.from(JSON.stringify({ id: 1, result: { sessionId: "alias-1" } })));
+  const root = {
+    id: 2,
+    method: "Target.setAutoAttach",
+    params: { autoAttach: true, flatten: true },
+    sessionId: "alias-1",
+  };
+  socket.send(JSON.stringify(root));
+  const page = {
+    id: 3,
+    method: "Target.setAutoAttach",
+    params: { autoAttach: true, flatten: true },
+    sessionId: "page",
+  };
+  socket.send(JSON.stringify(page));
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledTimes(3));
+  const sent = f.send.mock.calls.map(([frame]) => JSON.parse(String(frame)) as unknown);
+  expect(sent[1]).toEqual(root);
+  expect(sent[2]).toEqual({
+    ...page,
+    params: {
+      autoAttach: true,
+      flatten: true,
+      waitForDebuggerOnStart: false,
+      filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+    },
+  });
+});

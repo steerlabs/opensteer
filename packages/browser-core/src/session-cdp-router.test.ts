@@ -2343,3 +2343,178 @@ describe("SessionCdpRouter nested messages: one decoder, and the rules where the
       await f.router.close();
     });
 });
+
+describe("SessionCdpRouter under a connection: cookies in events, one sentence, workers, history", () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  async function standard(options: {
+    connection: boolean;
+    cookieReads?: boolean;
+    wholeContext?: boolean;
+  }) {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    Object.assign(backend, { allowsProfileCookieReads: options.cookieReads === true });
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: options.wholeContext === true,
+      ...(options.connection
+        ? { connection: true, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+        : {}),
+    });
+    const events: CdpEvent[] = [];
+    client.onEvent((event) => events.push(event));
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    const send = (method: string, parameters: CdpParameters = {}, page = true) =>
+      client
+        .send({ method, parameters, ...(page ? { sessionId } : {}) })
+        .catch((error: unknown) => error);
+    return { router, backend, client, channel, events, send, sessionId };
+  }
+
+  it("gives a connection on a shared tab no cookie in any Network or Fetch event; a person's own agent as before", async () => {
+    const cookie = "sentinel-elsewhere";
+    const raise = (channel: FakeChannel) => {
+      channel.emit("Network.requestWillBeSentExtraInfo", {
+        requestId: "1",
+        associatedCookies: [{ cookie: { name: "s", value: cookie } }],
+        headers: { Cookie: `s=${cookie}` },
+      });
+      channel.emit("Network.responseReceivedExtraInfo", {
+        requestId: "1",
+        headers: { "set-cookie": `t=${cookie}` },
+        headersText: `Set-Cookie: t=${cookie}`,
+      });
+      channel.emit("Network.requestWillBeSent", {
+        requestId: "1",
+        request: {
+          url: "https://elsewhere.test/",
+          headers: { Cookie: `s=${cookie}`, Accept: "*/*" },
+        },
+      });
+      channel.emit("Network.responseReceived", {
+        requestId: "1",
+        response: {
+          headers: { "Set-Cookie": `t=${cookie}`, "Content-Type": "text/html" },
+          requestHeadersText: `Cookie: s=${cookie}`,
+        },
+      });
+      channel.emit("Fetch.requestPaused", {
+        requestId: "f",
+        request: { url: "https://elsewhere.test/", headers: { cookie: `s=${cookie}` } },
+        responseHeaders: [
+          { name: "set-cookie", value: `t=${cookie}` },
+          { name: "content-type", value: "text/html" },
+        ],
+      });
+    };
+    const shared = await standard({ connection: true, cookieReads: true });
+    raise(shared.channel);
+    const delivered = shared.events.filter(({ method }) => /^(Network|Fetch)\./u.test(method));
+    expect(delivered.map(({ method }) => method)).toEqual([
+      "Network.requestWillBeSent",
+      "Network.responseReceived",
+      "Fetch.requestPaused",
+    ]);
+    expect(JSON.stringify(delivered)).not.toContain(cookie);
+    expect(JSON.stringify(delivered)).toContain("text/html");
+    const own = await standard({ connection: false, cookieReads: true });
+    raise(own.channel);
+    expect(own.events.filter(({ method }) => /^(Network|Fetch)\./u.test(method))).toHaveLength(5);
+    await shared.router.close();
+    await own.router.close();
+  });
+
+  it("answers a connection the same method sentence whichever check refuses it", async () => {
+    const f = await standard({ connection: true, cookieReads: true });
+    for (const [method, page] of [
+      ["Browser.crash", false],
+      ["Opensteer.fillLogin", true],
+      ["Storage.getCookies", true],
+      ["Storage.clearDataForOrigin", true],
+      ["Tracing.start", false],
+    ] as const)
+      expect(await f.send(method, {}, page), method).toMatchObject({
+        code: "forbidden",
+        message: sentence(method),
+      });
+    await f.router.close();
+  });
+
+  it("refuses a shared or service worker announced to a whole-context connection", async () => {
+    const f = await standard({ connection: true, wholeContext: true });
+    await f.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false });
+    for (const type of ["service_worker", "shared_worker"])
+      f.channel.emit("Target.attachedToTarget", {
+        sessionId: `physical-${type}`,
+        targetInfo: { targetId: `worker-${type}`, type, url: "https://a.test/sw.js" },
+        waitingForDebugger: false,
+      });
+    expect(
+      f.events
+        .filter(({ method }) => method === "Target.attachedToTarget")
+        .map(({ parameters }) => (parameters.targetInfo as { type: string }).type),
+    ).not.toEqual(expect.arrayContaining(["service_worker"]));
+    expect(
+      f.events.some(
+        ({ method, parameters }) =>
+          method === "Target.attachedToTarget" &&
+          ["service_worker", "shared_worker"].includes(
+            (parameters.targetInfo as { type: string }).type,
+          ),
+      ),
+    ).toBe(false);
+    await f.router.close();
+  });
+
+  it("re-checks the session and its target after reading the history, before the traversal", async () => {
+    const f = await standard({ connection: false });
+    const send = f.channel.send.bind(f.channel);
+    vi.spyOn(f.channel, "send").mockImplementation(async (method, parameters) => {
+      if (method === "Page.getNavigationHistory") {
+        // The caller's connection ends while the read is in flight.
+        f.client.close();
+        return { currentIndex: 0, entries: [{ id: 1, url: "https://example.test/" }] };
+      }
+      return send(method, parameters);
+    });
+    expect(await f.send("Page.navigateToHistoryEntry", { entryId: 1 })).toBeInstanceOf(Error);
+    expect(f.channel.commands.map(({ method }) => method)).not.toContain(
+      "Page.navigateToHistoryEntry",
+    );
+    await f.router.close();
+  });
+});
+
+describe("Opensteer's own methods for a connection", () => {
+  it("admits the listed ones at the top level only, and no other", async () => {
+    const { connectionCdpRefusal } = await import("./cdp-command-refusals.js");
+    for (const method of [
+      "Opensteer.listTabs",
+      "Opensteer.resumeTab",
+      "Opensteer.stageFile",
+      "Opensteer.fillLogin",
+      "Opensteer.fillCard",
+    ])
+      expect(connectionCdpRefusal(method, {}, true), method).toBeUndefined();
+    expect(connectionCdpRefusal("Opensteer.testDiagnostics", {}, true)).toMatch(
+      /^Opensteer\.testDiagnostics is not available to a connected agent\./u,
+    );
+    expect(
+      connectionCdpRefusal(
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({ id: 1, method: "Opensteer.stageFile", params: {} }),
+        },
+        true,
+      ),
+    ).toMatch(/^Opensteer\.stageFile is not available to a connected agent\./u);
+  });
+});

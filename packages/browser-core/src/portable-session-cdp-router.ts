@@ -1429,6 +1429,15 @@ export class SessionCdpRouter {
     )
       return;
     if (!state.channels.has(attached.virtualSessionId)) return;
+    // A shared Chrome tab is one tab: a connection sees no cookie of any site in its events.
+    if (
+      state.connection &&
+      this.#backend.allowsProfileCookieReads &&
+      (method.startsWith("Network.") || method.startsWith("Fetch."))
+    ) {
+      if (cookieOnlyEvents.has(method)) return;
+      parameters = withoutCookieMaterial(parameters) as CdpParameters;
+    }
     if (method === "Target.attachedToTarget") {
       const info = asRecord(parameters.targetInfo);
       const targetId = readString(info, "targetId");
@@ -2374,6 +2383,44 @@ function serializedBytes(value: unknown): number {
       cause: error,
     });
   }
+}
+
+/** Events that exist to report cookies sent and set: never delivered to a connection's tab. */
+const cookieOnlyEvents = new Set([
+  "Network.requestWillBeSentExtraInfo",
+  "Network.responseReceivedExtraInfo",
+]);
+const cookieHeader = /^(?:cookie|set-cookie|cookie2|set-cookie2)$/iu;
+const cookieKeys = new Set(["associatedCookies", "blockedCookies", "exemptedCookies"]);
+const rawHeaderText = new Set(["headersText", "requestHeadersText"]);
+
+/**
+ * A Network or Fetch event without cookie material: `Cookie` and `Set-Cookie` headers removed
+ * from every header map (`{ name: value }`) and header list (`[{ name, value }]`), raw header
+ * text dropped, and cookie lists removed, at any depth.
+ */
+function withoutCookieMaterial(value: unknown, depth = 0): unknown {
+  if (depth > 32 || typeof value !== "object" || value === null) return value;
+  if (Array.isArray(value)) return value.map((entry) => withoutCookieMaterial(entry, depth + 1));
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (cookieKeys.has(key) || rawHeaderText.has(key)) continue;
+    if (/headers$/iu.test(key) && typeof entry === "object" && entry !== null) {
+      result[key] = Array.isArray(entry)
+        ? entry.filter(
+            (header: unknown) =>
+              !(
+                typeof header === "object" &&
+                header !== null &&
+                cookieHeader.test(String((header as { name?: unknown }).name))
+              ),
+          )
+        : Object.fromEntries(Object.entries(entry).filter(([name]) => !cookieHeader.test(name)));
+      continue;
+    }
+    result[key] = withoutCookieMaterial(entry, depth + 1);
+  }
+  return result;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
