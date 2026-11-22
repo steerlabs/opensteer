@@ -147,6 +147,7 @@ async function browserUseHome() {
           runtimeId,
           wireVersion: 2,
           standardCdp: 1,
+          connectionCommands: 1,
           wholeContextCdp: 1,
           ...(runtime.localProfileStorage
             ? { localProfileStorage: runtime.localProfileStorage }

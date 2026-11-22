@@ -320,6 +320,8 @@ export async function journey(
         connect,
         // Standard CDP straight into the in-process runtime, with its recovery probe.
         standardCdpLineage: true,
+        // As a current runtime advertises: it holds a connection's rules itself.
+        connectionCommands: true,
         standardRuntime: guest,
         standardCdpRecovery: {
           relayId: "pool-loopback",
