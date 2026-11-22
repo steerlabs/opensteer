@@ -80,6 +80,20 @@ async function startFixtureServer() {
       );
       return;
     }
+    if (url.pathname === "/draft") {
+      // A long page with a draft field: scroll, typed form state and session storage together.
+      response.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      response.end(
+        `<!doctype html><html><head><title>Draft</title></head><body style="height:8000px">
+          <input id="draft" name="draft" type="text" value="" />
+          <div style="height:7000px">Content</div>
+        </body></html>`,
+      );
+      return;
+    }
     if (url.pathname === "/form") {
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
@@ -1468,9 +1482,13 @@ it.each(["no tab asleep", "a tab asleep"] as const)(
   240_000,
 );
 
-it.each(["Chromium activates it by itself", "it is left active and discarded"] as const)(
-  "wakes a sleeping tab as itself with its state when %s (run 11, S1)",
-  async (how) => {
+it.each([
+  ["Chromium activates it by itself", 1],
+  ["it is left active and discarded", 1],
+  ["Chromium activates it by itself, 20 times", 20],
+] as const)(
+  "wakes a sleeping tab as itself with its draft, scroll and session storage when %s (run 11 S1, run 12 1b/1c)",
+  async (how, rounds) => {
     const server = await startFixtureServer();
     const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-active-discarded-"));
     cleanup.push(() => rm(directory, { recursive: true, force: true }));
@@ -1494,9 +1512,13 @@ it.each(["Chromium activates it by itself", "it is left active and discarded"] a
     await waitLoaded(ledger.binding(live.id)!.cdp, "/article");
     const bg = await ledger.openSurface();
     const bgCdp = ledger.binding(bg.id)!.cdp;
-    await bgCdp.send("Page.navigate", { url: `${server.originForSite(2)}/article?id=bg` });
-    await waitLoaded(bgCdp, "/article");
+    await bgCdp.send("Page.navigate", { url: `${server.originForSite(2)}/draft?id=bg` });
+    await waitLoaded(bgCdp, "/draft");
     await evalValue(bgCdp, `sessionStorage.setItem("mark", "kept")`);
+    await evalValue(bgCdp, "document.getElementById('draft').focus()");
+    await bgCdp.send("Input.insertText", { text: "typed draft" });
+    await evalValue(bgCdp, "document.activeElement.blur()");
+    await evalValue(bgCdp, "window.scrollTo(0, 1750)");
     expect(await ledger.sleep(bg.id, () => null)).toBe(true);
     const bgRow = async () =>
       (await lifecycle.inventory()).find((tab) => tab.url.includes("id=bg"))!;
@@ -1508,25 +1530,31 @@ it.each(["Chromium activates it by itself", "it is left active and discarded"] a
     // As `e731a2dbe` put it back to sleep (no anchor first), or a tab that became active between
     // the read and the discard: the runtime's own discard leaves it active and discarded.
     if (how === "it is left active and discarded") handle.activatePrivateAnchor = async () => {};
-    // Chromium activates the sleeping tab, with no wake armed (as when the active tab beside it
-    // closes): it loads, and is put back to sleep.
-    const activated = await lifecycle.activateByTabId((await bgRow()).tabId);
-    expect(activated.ok).toBe(true);
-    await vi.waitFor(async () => expect(await bgRow()).toMatchObject({ discarded: true }), {
-      timeout: 10_000,
-      interval: 50,
-    });
+    for (let round = 1; round <= rounds; round++) {
+      // Chromium activates the sleeping tab, with no wake armed (as when the active tab beside it
+      // closes): it loads, and the runtime settles it again.
+      const activated = await lifecycle.activateByTabId((await bgRow()).tabId);
+      expect(activated.ok).toBe(true);
+      await vi.waitFor(async () => expect(await bgRow()).toMatchObject({ discarded: true }), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      if (rounds > 1) await lifecycle.activateByTabId((await lifecycle.inventory())[0]!.tabId);
+    }
     handle.activatePrivateAnchor = anchor;
     const before = await bgRow();
     process.stdout.write(`${JSON.stringify({ event: "s1.before-wake", how, row: before })}\n`);
-    // S1: the runtime never leaves it active when it put it back to sleep itself.
-    expect(before.active).toBe(how === "it is left active and discarded");
     const woken = await ledger.wake(bg.id);
-    await waitLoaded(woken.cdp, "/article");
+    await waitLoaded(woken.cdp, "/draft");
     expect(woken.page.url()).toContain("id=bg");
-    expect(await evalValue(woken.cdp, `sessionStorage.getItem("mark")`)).toBe("kept");
+    const state = await evalValue<{ mark: string | null; draft: string; scroll: number }>(
+      woken.cdp,
+      `({ mark: sessionStorage.getItem("mark"), draft: document.getElementById("draft").value, scroll: window.scrollY })`,
+    );
+    process.stdout.write(`${JSON.stringify({ event: "s1.after-wake", how, state })}\n`);
+    expect(state).toEqual({ mark: "kept", draft: "typed draft", scroll: 1750 });
   },
-  90_000,
+  180_000,
 );
 
 it("keeps sleeping tabs left of the private anchor and live tabs right of it through opens, popups, closes, sleeps and wakes (run 11, S2)", async () => {

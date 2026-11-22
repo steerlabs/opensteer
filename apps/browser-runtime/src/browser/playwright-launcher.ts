@@ -1305,6 +1305,11 @@ class PlaywrightContextHandle implements BrowserContext {
   /** Pages being closed: never published, whatever answers later. */
   private readonly ending = new WeakSet<Page>();
   private readonly identifyingPages = new WeakSet<Page>();
+  /**
+   * Pages of sleeping tabs Chromium loaded by itself whose `load` has fired: their form and scroll
+   * state is restored, so a freeze then saves it (run 12, 1b).
+   */
+  private readonly restoredPages = new WeakSet<Page>();
   /** The name a hidden page was seen with, so its tab's removal closes it first. */
   private readonly pageTitles = new WeakMap<Page, string>();
   private readonly laneTails = new Map<string, Promise<void>>();
@@ -1479,9 +1484,10 @@ class PlaywrightContextHandle implements BrowserContext {
       return;
     }
     if (one && !this.removals.has(tokenId!) && !this.unremovable.has(tokenId!)) {
-      // A sleeping tab Chromium loaded by itself goes back to sleep, unseen, on its own lane.
+      // A sleeping tab Chromium loaded by itself goes back to sleep, unseen, as an ordinary sleep
+      // goes: once it has restored, frozen, then discarded.
       if (!row.discarded && row.status !== "unloaded")
-        void this.onLane(tokenId!, () => this.sleepAgain(tokenId!)).catch(() => undefined);
+        void this.sleepAgainOnceRestored(tokenId!, page);
       return;
     }
     // A page of a sleeping tab given up: closed with evidence.
@@ -1489,8 +1495,38 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
+   * Waits, off the tab's lane (so a wake is never held behind it), until the page Chromium loaded
+   * has fired `load`: Blink has then restored its form fields and scroll from the tab's saved
+   * state. Only then may the lane put it back to sleep; a wake meanwhile takes the page instead.
+   */
+  private async sleepAgainOnceRestored(tokenId: string, page: Page): Promise<void> {
+    await page.waitForLoadState("load", { timeout: 0 }).catch(() => undefined);
+    if (this.closed || page.isClosed()) return;
+    this.restoredPages.add(page);
+    await this.onLane(tokenId, () => this.sleepAgain(tokenId)).catch(() => undefined);
+  }
+
+  /** The hidden page of a tab: Chromium announced it, and nobody has it. */
+  private hiddenPageOf(targetId: string | null): Page | undefined {
+    if (!targetId) return undefined;
+    return this.context
+      .pages()
+      .find(
+        (page) =>
+          page !== this.privatePage &&
+          !page.isClosed() &&
+          !this.published.has(page) &&
+          !this.ending.has(page) &&
+          syncTargetIdOfPage(page) === targetId,
+      );
+  }
+
+  /**
    * On the tab's lane: still this token's sleep, still loaded, and no wake for it, it sleeps again
    * under its name, verified; a tab that does not is removed with evidence (or stays guarded).
+   * A loaded tab is discarded only with its page in hand, restored and frozen first, as an ordinary
+   * sleep is: Chromium discards from the page state the renderer last saved, and a page it restored
+   * by itself has not saved what it restored (run 12, 1b and 1c: the draft was lost).
    */
   private async sleepAgain(tokenId: string): Promise<void> {
     const record = this.sleeping.get(tokenId);
@@ -1505,9 +1541,19 @@ class PlaywrightContextHandle implements BrowserContext {
       return;
     }
     if (named?.kind !== "one" || named.row.status === "unloaded") return;
+    const page = this.hiddenPageOf(named.row.targetId);
+    // Its page not yet announced: its arrival puts it back to sleep.
+    if (!page) return;
+    if (!this.restoredPages.has(page)) {
+      void this.sleepAgainOnceRestored(tokenId, page);
+      return;
+    }
     // S1: never discarded while it is the active tab (Chromium would then hold it active and
     // discarded, and activating it again would not load it).
     if (named.row.active) await this.activatePrivateAnchor();
+    await this.freezeBeforeDiscard(page);
+    if (this.sleeping.get(tokenId) !== record || this.wakes.has(record.title) || page.isClosed())
+      return;
     const discardedId = await this.lifecycle?.discardByTabId(named.row.tabId).catch(() => null);
     const after = await this.read(deadline);
     if (discardedId != null) record.tabId = discardedId;

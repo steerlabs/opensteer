@@ -65,7 +65,8 @@ sleeping tab is kept at the left end of the window, left of a private blank tab,
 to its right; a tab that wakes moves to the right end first. Chromium activates the tab beside a
 closed one and puts a tab a page opens beside the active tab, in its group, so neither reaches a
 sleeping tab. No tab is discarded while it is the active tab, and a tab that something else made
-active loads by itself and is put back to sleep. A tab that still joins a sleeping tab's group
+active loads by itself and is put back to sleep as any tab is: once it has loaded and
+restored its form fields and scroll, frozen first, so nothing typed in it is lost. A tab that still joins a sleeping tab's group
 carries its name without being that tab: its name is removed and it is an ordinary page. A connected
 agent granted one tab and what descends from it keeps that tab across its sleep: the runtime's own
 record of the sleep, never anything a page can set, puts the woken tab in the slept one's place. A

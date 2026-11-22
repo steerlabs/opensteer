@@ -28,7 +28,7 @@ const row = (tabId: number, patch: Partial<ChromiumTabEntry> = {}): ChromiumTabE
 });
 
 /** A Playwright page as the launcher sees one: its target in memory, its own close. */
-function fakePage(targetId: string, url: string) {
+function fakePage(targetId: string, url: string, loaded: Promise<void> = Promise.resolve()) {
   const events = new EventEmitter();
   let closed = false;
   const page = Object.assign(events, {
@@ -45,6 +45,8 @@ function fakePage(targetId: string, url: string) {
     frames: () => [],
     mainFrame: () => ({}),
     bringToFront: vi.fn(async () => undefined),
+    // Its `load`: settled already unless a test holds it.
+    waitForLoadState: vi.fn(() => loaded),
     _opener: null,
     _connection: { toImpl: () => ({ delegate: { _targetId: targetId } }) },
   });
@@ -68,6 +70,8 @@ afterEach(async () => {
  */
 async function launchWith(initial: ChromiumTabEntry[] = []) {
   const state = { tabs: initial, readable: true };
+  /** Every CDP command the launcher sent a page, in order. */
+  const cdpCalls: { method: string; targetId: string }[] = [];
   const directory = await mkdtemp(join(tmpdir(), "os-tab-sleep-identity-"));
   const helper = fakePage("target-helper", "about:blank");
   const pageHandlers: ((page: Page) => void)[] = [];
@@ -98,9 +102,12 @@ async function launchWith(initial: ChromiumTabEntry[] = []) {
     pages: () => livePages.filter((page) => !page.isClosed()),
     serviceWorkers: () => [],
     newCDPSession: vi.fn(async (page: unknown) => ({
-      send: vi.fn(async (method: string) =>
-        method === "Target.getTargetInfo" ? { targetInfo: { targetId: targetOf(page) } } : {},
-      ),
+      send: vi.fn(async (method: string) => {
+        cdpCalls.push({ method, targetId: targetOf(page) });
+        return method === "Target.getTargetInfo"
+          ? { targetInfo: { targetId: targetOf(page) } }
+          : {};
+      }),
       on: vi.fn(),
       off: vi.fn(),
       detach: vi.fn(async () => undefined),
@@ -222,6 +229,7 @@ async function launchWith(initial: ChromiumTabEntry[] = []) {
     sleepOne,
     nextPages,
     helper,
+    cdpCalls,
     spies: { read, discard, name, unname, remove, activate, move, newPage: context.newPage },
   };
 }
@@ -311,8 +319,9 @@ it("takes its own tab, with its state, when Chromium loaded it by itself and the
 
 it("puts a tab Chromium loaded by itself back to sleep only after the private anchor is the active tab (run 11, S1)", async () => {
   const f = await launchWith();
-  const { token } = await f.sleepOne(60);
-  // Chromium activated the sleeping tab by itself: it is loaded and the active tab.
+  await f.sleepOne(60);
+  // Chromium activated the sleeping tab by itself: it is loaded and the active tab, and its page
+  // arrives.
   f.state.tabs = f.state.tabs.map((t) => ({
     ...t,
     discarded: false,
@@ -321,12 +330,42 @@ it("puts a tab Chromium loaded by itself back to sleep only after the private an
   }));
   f.helper.bringToFront.mockClear();
   f.spies.discard.mockClear();
-  await f.internals.sleepAgain(tokenOf(token));
+  f.arrive(fakePage("target-60", "https://tab-60.test/"));
+  await vi.waitFor(() => expect(f.spies.discard).toHaveBeenCalled());
   expect(f.helper.bringToFront).toHaveBeenCalled();
-  expect(f.spies.discard).toHaveBeenCalled();
   expect(f.helper.bringToFront.mock.invocationCallOrder[0]).toBeLessThan(
     f.spies.discard.mock.invocationCallOrder[0]!,
   );
+});
+
+it("puts a tab Chromium loaded by itself back to sleep only once its page has loaded, frozen first (run 12, 1b)", async () => {
+  const f = await launchWith();
+  await f.sleepOne(65);
+  f.state.tabs = f.state.tabs.map((t) => ({ ...t, discarded: false, status: "complete" }));
+  f.spies.discard.mockClear();
+  f.cdpCalls.length = 0;
+  const discardAsIs = f.spies.discard.getMockImplementation()!;
+  let frozenAtDiscard = false;
+  f.spies.discard.mockImplementation(async function (this: ChromiumTabLifecycleBridge, tabId) {
+    frozenAtDiscard = f.cdpCalls.some(
+      (call) => call.method === "Page.setWebLifecycleState" && call.targetId === "target-65",
+    );
+    return discardAsIs.call(this, tabId);
+  });
+  const loaded = Promise.withResolvers<void>();
+  f.arrive(fakePage("target-65", "https://tab-65.test/", loaded.promise));
+  // Restoring (its `load` not yet fired): no discard, however long it takes.
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+  expect(f.spies.discard).not.toHaveBeenCalled();
+  // A second look by the lane meanwhile does not discard it either.
+  const internals = f.internals as unknown as { sleeping: Map<string, unknown> };
+  const [tokenId] = [...internals.sleeping.keys()];
+  await f.internals.sleepAgain(tokenId!);
+  expect(f.spies.discard).not.toHaveBeenCalled();
+  loaded.resolve();
+  await vi.waitFor(() => expect(f.spies.discard).toHaveBeenCalledOnce());
+  expect(frozenAtDiscard).toBe(true);
+  expect(f.state.tabs).toMatchObject([{ discarded: true }]);
 });
 
 it("wakes a tab Chromium holds active and discarded by activating the private anchor first, as itself (run 11, S1)", async () => {
