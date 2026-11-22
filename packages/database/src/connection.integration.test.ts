@@ -34,9 +34,7 @@ describeStore("the database driver", (it) => {
       );
       const killed = await sql<{
         terminated: boolean;
-      }>`select pg_terminate_backend(${rows[0]!.pid}) as terminated`.execute(
-        storeFixture.database,
-      );
+      }>`select pg_terminate_backend(${rows[0]!.pid}) as terminated`.execute(storeFixture.database);
       expect(killed.rows).toEqual([{ terminated: true }]);
       await ended.promise;
       await expect(sql`select 1`.execute(connection)).rejects.toThrow();
