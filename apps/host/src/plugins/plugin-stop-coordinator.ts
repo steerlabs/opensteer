@@ -16,8 +16,7 @@ export interface MissingStopConditions {
 }
 
 type AttemptOutcome =
-  | { readonly proved: true }
-  | { readonly proved: false; readonly missing: MissingStopConditions };
+  { readonly proved: true } | { readonly proved: false; readonly missing: MissingStopConditions };
 
 export type PluginStopServicePort = Pick<PluginService, "state" | "agentWork"> &
   Partial<Pick<PluginService, "waitForCleanup">>;

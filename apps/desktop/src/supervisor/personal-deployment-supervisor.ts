@@ -881,7 +881,11 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       );
       const runner = this.#spawn(this.#runnerSpec);
       const stoppedMode = this.#agentsStoppedSince?.();
-      if (stoppedMode && runner.runnerReceipt && (this.#onContainedBoot || this.#onUncontainedBoot)) {
+      if (
+        stoppedMode &&
+        runner.runnerReceipt &&
+        (this.#onContainedBoot || this.#onUncontainedBoot)
+      ) {
         void waitForRunnerBoot(runner.runnerReceipt.file).then(
           (contained) => {
             if (contained) this.#onContainedBoot?.(stoppedMode);
