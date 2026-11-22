@@ -142,7 +142,7 @@ describe("Homes in the list", () => {
         const root = createRoot(container);
         roots.push(root);
         const none = () => undefined;
-        const list: ReactNode = homes.map((home) => (
+        const list: ReactNode[] = homes.map((home) => (
           <DeploymentListRow
             attention={null}
             current={false}
