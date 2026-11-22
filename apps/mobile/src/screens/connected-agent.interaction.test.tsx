@@ -604,4 +604,47 @@ describe("a chat on the phone", () => {
     );
     expect(buttons.filter((label) => /^(Stop|Disconnect|Resume)/u.test(label))).toEqual([]);
   });
+
+  it("says who can give a chat work when nobody is linked as you yet", async () => {
+    await open(chat(4), chats());
+    expect(row("chat-speakers", "speakers")).toMatchObject({
+      label: "You, once you link your account",
+      detail:
+        "No Slack account is linked as you yet. Link yours on Messaging; until then, nothing sent here gives this agent work.",
+    });
+  });
+
+  it("says a chat ended with its account", async () => {
+    const client = chats();
+    const dashboard = await client.rpc["channels.get"]({});
+    if (!dashboard.ok) throw new Error("No messaging accounts");
+    await client.dispatch({
+      type: "channel.connection.status.set",
+      connectionId: dashboard.data.connections.find(({ displayName }) => displayName === "On-call")!
+        .id,
+      status: "revoked",
+      idempotencyKey: mutationIdempotencyKey("channel-remove"),
+    });
+    await open(chat(4), client);
+    await vi.waitFor(() =>
+      expect(row("chat-ended", "ended").label).toBe(
+        "Its messaging account was disconnected. To use it again, add the chat again on Messaging.",
+      ),
+    );
+  });
+
+  it("says why a task could not be stopped, in words, never the raw error", async () => {
+    const client = await open(chat(1), chats());
+    vi.spyOn(client, "stopRun").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    await vi.waitFor(() => expect(state.alerts.at(-1)?.title).toBe("Stop"));
+    expect(state.alerts.at(-1)?.body).toBeTruthy();
+    expect(state.alerts.at(-1)?.body).not.toContain("down");
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stop",
+      disabled: false,
+    });
+  });
 });

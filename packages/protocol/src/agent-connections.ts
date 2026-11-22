@@ -100,16 +100,17 @@ export const AgentConnectionBridgeSchema = z.object({
     .nullable()
     .optional(),
   /** Why a paused chat is paused: the person paused it, or its account needs attention. */
-  pausedBy: z.enum(["you", "needs-attention"]).optional(),
+  // A value from a newer Home reads as not said, never as a list that can't be read.
+  pausedBy: z.enum(["you", "needs-attention"]).optional().catch(undefined),
   /** What the account needs, when it needs attention, as the account reports it. */
   pauseDetail: z.string().max(500).nullable().optional(),
   /**
    * What happens to a message sent to a paused chat: `kept`, it arrives when the chat is back
    * (one more than an hour old is answered that it came too late); `lost`, it is not delivered.
    */
-  pausedMessages: z.enum(["kept", "lost"]).optional(),
-  /** Why an ended chat ended. */
-  endedBy: ChatEndedBySchema.optional(),
+  pausedMessages: z.enum(["kept", "lost"]).optional().catch(undefined),
+  /** Why an ended chat ended; a cause from a newer Home reads as not said. */
+  endedBy: ChatEndedBySchema.optional().catch(undefined),
   /** Replies whose delivery is not known: they may have been sent, and are never sent again. */
   unknownReplies: z.number().int().nonnegative().optional(),
   /** Its most recent tasks, newest first: its recent work, and what Stop can stop. */

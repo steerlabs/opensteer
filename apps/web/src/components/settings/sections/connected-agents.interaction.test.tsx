@@ -586,4 +586,58 @@ describe("a chat, as a connected agent", () => {
     expect(labels.some((label) => /resume|disconnect|stop$/iu.test(label))).toBe(false);
     expect(page.querySelector('[aria-labelledby="agent-grant-tasks"]')).toBeNull();
   });
+
+  it("says who can give a chat work when nobody is linked as you yet", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(4)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("You, once you link your account"));
+    expect(page.textContent).toContain(
+      "No Slack account is linked as you yet. Link yours on Messaging; until then, nothing sent here gives this agent work.",
+    );
+  });
+
+  it("says a chat ended with its account, and one ended for a reason this app doesn’t know as ended", async () => {
+    const scene = mockConnectedAgents("chats");
+    host = new MockHostClient({
+      latencyMs: 0,
+      ...scene,
+      connections: scene.connections.map((row) =>
+        row.id === chat(5)
+          ? { ...row, bridge: { ...row.bridge!, endedBy: "newer" as never } }
+          : row,
+      ),
+    });
+    const dashboard = await host.rpc["channels.get"]({});
+    if (!dashboard.ok) throw new Error("No messaging accounts");
+    await host.dispatch({
+      type: "channel.connection.status.set",
+      connectionId: dashboard.data.connections.find(({ displayName }) => displayName === "On-call")!
+        .id,
+      status: "revoked",
+      idempotencyKey: mutationIdempotencyKey("channel-remove"),
+    });
+    const page = await mount(host, `${base}/${chat(4)}`);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain(
+        "Its messaging account was disconnected. To use it again, add the chat again on Messaging.",
+      ),
+    );
+    act(() => root?.unmount());
+    const other = await mount(host, `${base}/${chat(5)}`);
+    await vi.waitFor(() => expect(other.textContent).toContain("This chat has ended."));
+    expect(other.textContent).not.toContain("You disconnected it.");
+  });
+
+  it("says why a task could not be stopped, and keeps its Stop", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Summarize my week"));
+    vi.spyOn(host, "stopRun").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await act(async () => buttonNamed(page, "Stop").click());
+    await vi.waitFor(() => expect(page.querySelector('[role="alert"]')?.textContent).toBeTruthy());
+    expect(page.querySelector('[role="alert"]')?.textContent).not.toContain("down");
+    expect(buttonNamed(page, "Stop")).toBeTruthy();
+  });
 });
