@@ -455,12 +455,20 @@ export class NativeField {
  * and `after` around a collapsed caret, and replaces exactly that span. A refusal rotates the
  * context, as #stale() does: the app learns it from the new context, not from the send. A caret
  * command moves by one grapheme and a deletion command deletes one, as Blink's do. Paste inserts
- * at the caret. tests/editing-far-model.test.ts holds this model to the real applier in Chromium.
+ * at the caret. An edit during a composition replaces it (an empty one removes it).
+ *
+ * A refusal clears the observer's own composing flag but leaves Blink's composition open: the
+ * next edit or composition, verified as if nothing were composing, replaces that composition,
+ * and an empty edit is then a Backspace inside it, which ends it.
+ * tests/editing-far-model.test.ts holds this model to the real applier in Chromium.
  */
 export class FarField {
   value = "";
   caret = 0;
+  /** Blink's open composition. */
   composition: Span | null = null;
+  /** Whether the observer knows it is composing (PageEditingObserver's #composition). */
+  composing = false;
   /** The field's context; null takes any (a test that does not rotate). */
   contextId: string | null = null;
   /** Told the new context after a refusal, as the page publishes it. */
@@ -473,7 +481,7 @@ export class FarField {
   private rotations = 0;
   private refuse(operation: EditingOperation) {
     this.refused.push(operation);
-    this.composition = null;
+    this.composing = false;
     this.rotations += 1;
     this.contextId = `00000000-0000-4000-8000-${String(100000000000 + this.rotations).slice(-12)}`;
     this.onRotate?.(this.contextId);
@@ -499,15 +507,15 @@ export class FarField {
       case "compose": {
         const change = operation.kind === "edit" ? operation.edit : operation.composition;
         const { before = "", after = "", text } = change;
-        const range = this.composition ?? {
-          start: this.caret - before.length,
-          end: this.caret + after.length,
-        };
+        // Verified around the caret unless the observer is composing; what is replaced is
+        // Blink's open composition, if there is one.
+        const around = { start: this.caret - before.length, end: this.caret + after.length };
+        const range = this.composition ?? around;
         if (
-          !this.composition &&
-          (range.start < 0 ||
-            this.value.slice(range.start, this.caret) !== before ||
-            this.value.slice(this.caret, range.end) !== after)
+          !this.composing &&
+          (around.start < 0 ||
+            this.value.slice(around.start, this.caret) !== before ||
+            this.value.slice(this.caret, around.end) !== after)
         ) {
           this.mismatched.push(operation);
           this.refuse(operation);
@@ -516,12 +524,18 @@ export class FarField {
         if (operation.kind === "compose") {
           this.replace(range.start, range.end, text);
           this.composition = text ? { start: range.start, end: range.start + text.length } : null;
+          this.composing = text.length > 0;
           const at = Math.min(Math.max(0, operation.composition.selectionEnd), text.length);
           this.caret = range.start + at;
-        } else if (text || range.end > range.start) {
+        } else if (text || (range.end > range.start && (this.composing || !this.composition))) {
           this.replace(range.start, range.end, text);
           this.composition = null;
-        } else this.deleteBackward();
+          this.composing = false;
+        } else {
+          // A Backspace: inside a composition the observer no longer knows of, it ends it.
+          this.deleteBackward();
+          this.composition = null;
+        }
         return true;
       }
       case "command":

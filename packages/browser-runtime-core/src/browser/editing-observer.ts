@@ -375,6 +375,15 @@ export class PageEditingObserver {
             replacementEnd: parsed.data.replacementEnd,
           });
         if (edit.text.length) await this.#cdp.send("Input.insertText", { text: edit.text });
+        // An edit replaces an open composition: an empty one removes it, as the empty
+        // composition of a cancel does. A Backspace would delete one of its characters and
+        // commit the rest.
+        else if (this.#composition)
+          await this.#cdp.send("Input.imeSetComposition", {
+            text: "",
+            selectionStart: 0,
+            selectionEnd: 0,
+          });
         else
           await this.#cdp.send("Input.dispatchKeyEvent", {
             type: "rawKeyDown",

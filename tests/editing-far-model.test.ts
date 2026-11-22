@@ -4,6 +4,8 @@ import type { EditingOperation } from "../packages/client/src/editing/types.js";
 import type { CdpSession } from "../packages/browser-runtime-core/src/browser/backend.js";
 import { editingCommandParameters } from "../packages/browser-runtime-core/src/browser/editing-commands.js";
 import { PageEditingObserver } from "../packages/browser-runtime-core/src/browser/editing-observer.js";
+import type { BrowserPage } from "../packages/browser-runtime-core/src/index.js";
+import { ChromiumClipboard } from "../apps/browser-runtime/src/browser/chromium-clipboard.js";
 import { FarField } from "../apps/mobile/modules/remote-text-input/tests/remote-input-port.js";
 
 /*
@@ -21,10 +23,14 @@ const seeds = Number(process.env.OPENSTEER_FAR_MODEL_SEEDS ?? 60);
 const opsPerSeed = 10;
 
 let browser: Browser;
+/** The browser's clipboard, as the runtime installs a paste's bytes into it. */
+let clipboard: ChromiumClipboard;
 beforeAll(async () => {
   browser = await chromium.launch({ executablePath: chromium.executablePath(), headless: true });
+  clipboard = await ChromiumClipboard.create(browser);
 });
 afterAll(async () => {
+  await clipboard?.close();
   await browser?.close();
 });
 
@@ -146,10 +152,24 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await vi.waitUntil(() => observer.context.field !== null, { timeout: 5000, interval: 5 });
   };
 
-  /** Sends one operation to the real page as the controller does: text, composition or command. */
+  /**
+   * Sends one operation to the real page as the controller does: text, composition, command, or
+   * a paste (its bytes installed in the browser's clipboard, then the paste command).
+   */
   const send = async (operation: EditingOperation) => {
     if (operation.kind === "edit") return observer.edit(operation.edit, false);
     if (operation.kind === "compose") return observer.edit(operation.composition, true);
+    if (operation.kind === "paste") {
+      const scope = await clipboard.open({} as BrowserPage, operation.items);
+      try {
+        await observer.input(() =>
+          cdp.send("Input.dispatchKeyEvent", editingCommandParameters("paste", process.platform)),
+        );
+      } finally {
+        await scope.close();
+      }
+      return true;
+    }
     if (operation.kind === "command")
       await observer.input(() =>
         cdp.send(
@@ -219,13 +239,112 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(far.refused).toEqual([]);
   });
 
-  const totals = { operations: 0, refusals: 0, sequences: 0 };
+  /*
+   * CR4: an empty edit during a composition. The reducer never sends one today (a cancel is an
+   * empty composition, a commit carries text), but the model and the page must agree on it.
+   */
+  it("agrees on an empty edit during a composition", async () => {
+    await seed(page, kind, "ab", 2);
+    await settle();
+    const far = new FarField();
+    far.value = "ab";
+    far.caret = 2;
+    far.contextId = observer.context.contextId;
+    const contextId = observer.context.contextId!;
+    const operations: EditingOperation[] = [
+      {
+        kind: "compose",
+        composition: {
+          contextId,
+          text: "日本",
+          selectionStart: 2,
+          selectionEnd: 2,
+          before: "",
+          after: "",
+        },
+      },
+      { kind: "edit", edit: { contextId, text: "", before: "", after: "" } },
+    ];
+    for (const [index, operation] of operations.entries()) {
+      far.take(operation);
+      expect(await send(operation), `operation ${index} refused`).toBe(true);
+      const real = await read(page, kind);
+      expect({ value: real.value, caret: real.caret }, `operation ${index}`).toEqual({
+        value: far.value,
+        caret: far.caret,
+      });
+    }
+  });
+
+  /*
+   * Open (CR4's new find): a refusal while a composition is open clears the observer's composing
+   * flag but leaves Blink's composition open, so the next keystroke, under the new context,
+   * replaces the composed text the person saw committed. Closing Blink's composition at the
+   * refusal would be trusted input for a refused operation, which the controller's passkey
+   * attribution forbids (controller.test.ts, "attributes composition before a ceremony"): the
+   * fix is the lead's decision. This states what a person should get, and fails until then.
+   */
+  it.fails(
+    "keeps the composed text when a keystroke follows a refusal during a composition",
+    async () => {
+      await seed(page, kind, "", 0);
+      await settle();
+      const contextId = observer.context.contextId!;
+      expect(
+        await send({
+          kind: "compose",
+          composition: {
+            contextId,
+            text: "日本",
+            selectionStart: 2,
+            selectionEnd: 2,
+            before: "",
+            after: "",
+          },
+        }),
+      ).toBe(true);
+      expect(
+        await send({
+          kind: "edit",
+          edit: { contextId: crypto.randomUUID(), text: "x", before: "", after: "" },
+        }),
+      ).toBe(false);
+      await settle();
+      expect(
+        await send({
+          kind: "edit",
+          edit: { contextId: observer.context.contextId!, text: "x", before: "", after: "" },
+        }),
+      ).toBe(true);
+      expect((await read(page, kind)).value).toBe("日本x");
+    },
+  );
+
+  const totals = {
+    operations: 0,
+    refusals: 0,
+    sequences: 0,
+    edits: 0,
+    commands: 0,
+    starts: 0,
+    updates: 0,
+    commits: 0,
+    cancels: 0,
+    pastes: 0,
+    stale: 0,
+    orphaned: 0,
+  };
   for (let chunk = 1; chunk <= seeds; chunk += 20) {
     const last = Math.min(chunk + 19, seeds);
     it(`agrees on text, caret and refusals over seeds ${chunk} to ${last}`, async () => {
       for (let current = chunk; current <= last; current++) {
         const next = random(current * 7919 + (kind === "textarea" ? 1 : 2));
         const pick = <T>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
+        const word = () => {
+          let text = "";
+          for (let index = 1 + Math.floor(next() * 3); index > 0; index--) text += pick(alphabet);
+          return text;
+        };
         let initial = "";
         for (let index = Math.floor(next() * 6); index > 0; index--) initial += pick(alphabet);
         const caret = pick(boundaries(initial));
@@ -236,50 +355,134 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
         far.value = initial;
         far.caret = caret;
         far.contextId = observer.context.contextId;
+        /** Contexts the page has left: an operation under one is refused by both. */
+        const old: string[] = [];
         const steps: string[] = [`seed ${JSON.stringify(initial)} at ${caret}`];
         for (let step = 0; step < opsPerSeed; step++) {
           const where = boundaries(far.value);
-          const choice = next();
-          let operation: EditingOperation;
-          if (choice < 0.55) {
-            // An edit around the caret, as the reducer restates it: what is before and after it.
+          const contextId = observer.context.contextId!;
+          const around = () => {
             const from = pick(where.filter((at) => at <= far.caret));
             const to = pick(where.filter((at) => at >= far.caret));
             const wrong = next() < 0.1;
+            return {
+              before: wrong ? "zz" : far.value.slice(from, far.caret),
+              after: far.value.slice(far.caret, to),
+            };
+          };
+          /** A caret inside a composition's text, at a code-unit boundary of its graphemes. */
+          const inner = (text: string) => {
+            const at = pick(boundaries(text));
+            return { selectionStart: at, selectionEnd: at };
+          };
+          const choice = next();
+          let operation: EditingOperation;
+          let label: string;
+          if (far.composition) {
+            // While composing, the reducer sends updates, a commit, a cancel, or (after the page
+            // rotated) an operation under the context it had.
+            if (choice < 0.4) {
+              const text = word();
+              operation = { kind: "compose", composition: { contextId, text, ...inner(text) } };
+              label = "update";
+              totals.updates += 1;
+            } else if (choice < 0.65) {
+              const text =
+                next() < 0.5 ? far.value.slice(far.composition.start, far.composition.end) : word();
+              operation = { kind: "edit", edit: { contextId, text, before: "", after: "" } };
+              label = "commit";
+              totals.commits += 1;
+            } else if (choice < 0.8) {
+              operation = {
+                kind: "compose",
+                composition: { contextId, text: "", selectionStart: 0, selectionEnd: 0 },
+              };
+              label = "cancel";
+              totals.cancels += 1;
+            } else if (choice < 0.9 && far.composing) {
+              operation = { kind: "edit", edit: { contextId, text: "", before: "", after: "" } };
+              label = "empty edit";
+              totals.edits += 1;
+            } else if (choice < 0.9) {
+              // A refusal left Blink's composition open while the observer forgot it: an empty
+              // edit then is a Backspace inside an orphaned composition. That state is the open
+              // fault reported with this test; it is not generated.
+              totals.orphaned += 1;
+              continue;
+            } else {
+              operation = {
+                kind: "compose",
+                composition: {
+                  contextId: old.at(-1) ?? crypto.randomUUID(),
+                  text: word(),
+                  selectionStart: 0,
+                  selectionEnd: 0,
+                },
+              };
+              label = "stale update";
+              totals.stale += 1;
+            }
+          } else if (choice < 0.35) {
+            operation = {
+              kind: "edit",
+              edit: { contextId, text: next() < 0.2 ? "" : pick(alphabet), ...around() },
+            };
+            label = "edit";
+            totals.edits += 1;
+          } else if (choice < 0.6) {
+            operation = { kind: "command", command: pick(commands) };
+            label = "command";
+            totals.commands += 1;
+          } else if (choice < 0.8) {
+            // A composition's start, with the text around it restated (a refused one when the
+            // text does not match).
+            const text = word();
+            operation = {
+              kind: "compose",
+              composition: { contextId, text, ...inner(text), ...around() },
+            };
+            label = "start";
+            totals.starts += 1;
+          } else if (choice < 0.9) {
+            const text = pick(["pasted", "א b", "👩‍💻e\u0301"]);
+            operation = {
+              kind: "paste",
+              items: [{ type: "text/plain", bytes: new TextEncoder().encode(text) }],
+            };
+            label = `paste ${JSON.stringify(text)}`;
+            totals.pastes += 1;
+          } else {
             operation = {
               kind: "edit",
               edit: {
-                contextId: observer.context.contextId,
-                text: next() < 0.2 ? "" : pick(alphabet),
-                before: wrong ? "zz" : far.value.slice(from, far.caret),
-                after: far.value.slice(far.caret, to),
+                contextId: old.at(-1) ?? crypto.randomUUID(),
+                text: pick(alphabet),
+                before: "",
+                after: "",
               },
             };
-          } else {
-            operation = { kind: "command", command: pick(commands) };
+            label = "stale edit";
+            totals.stale += 1;
           }
           steps.push(
-            JSON.stringify(
+            `${label} ${JSON.stringify(
               operation.kind === "edit"
                 ? { ...operation.edit, contextId: undefined }
-                : operation.command,
-            ),
+                : operation.kind === "compose"
+                  ? { ...operation.composition, contextId: undefined }
+                  : operation.kind === "command"
+                    ? operation.command
+                    : "",
+            )}`,
           );
           const refusedBefore = far.refused.length;
           far.take(operation);
-          let real = true;
-          if (operation.kind === "edit") real = await observer.edit(operation.edit, false);
-          else
-            await observer.input(() =>
-              cdp.send(
-                "Input.dispatchKeyEvent",
-                editingCommandParameters(operation.command, process.platform),
-              ),
-            );
+          const real = await send(operation);
           const modelRefused = far.refused.length > refusedBefore;
           totals.operations += 1;
           if (!real) {
             totals.refusals += 1;
+            old.push(contextId);
             // The page rotated its context; the model's own rotation names another id.
             await settle();
             far.contextId = observer.context.contextId;
@@ -290,13 +493,27 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
           expect(page_.value, `${failure}: text`).toBe(far.value);
           expect(page_.caret, `${failure}: caret`).toBe(far.caret);
         }
+        // Whatever composition is open ends with its text, as the reducer's interrupt commits it.
+        if (far.composition) {
+          const commit: EditingOperation = {
+            kind: "edit",
+            edit: {
+              contextId: observer.context.contextId!,
+              text: far.value.slice(far.composition.start, far.composition.end),
+              before: "",
+              after: "",
+            },
+          };
+          far.take(commit);
+          expect(await send(commit)).toBe(true);
+          const page_ = await read(page, kind);
+          expect(page_.value, `${kind} seed ${current}: final commit`).toBe(far.value);
+        }
         totals.sequences += 1;
       }
     });
   }
   afterAll(() => {
-    process.stdout.write(
-      `far-field model, ${kind}: ${totals.sequences} sequences, ${totals.operations} operations, ${totals.refusals} refused\n`,
-    );
+    process.stdout.write(`far-field model, ${kind}: ${JSON.stringify(totals)}\n`);
   });
 });
