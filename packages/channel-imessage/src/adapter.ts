@@ -156,10 +156,6 @@ export function createIMessageAdapter(options: {
     },
 
     outbound: {
-      async reconcile() {
-        return { kind: "unknown" as const };
-      },
-
       async send(input) {
         if (!helper) throw new ChannelDeliveryError(desktopMissing, "retryable");
         const text = input.delivery.content
@@ -181,6 +177,11 @@ export function createIMessageAdapter(options: {
               error.message,
               // The helper has durable evidence of an unconfirmed attempt.
               // It will never repeat it; leave its explanation for the owner.
+              // Every hop treats `imessage.send` as having an effect, so a
+              // lost answer is `outcome-unknown`; `failed`, `busy` and
+              // `permission-required` are only ever said before Messages was
+              // asked, or when it refused, and the helper records each key
+              // before it sends, so asking again never sends twice.
               error.code === "delivery-unconfirmed"
                 ? "dead"
                 : error.code === "outcome-unknown"

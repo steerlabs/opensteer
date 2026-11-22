@@ -1,86 +1,77 @@
 import { describe, expect, it } from "vitest";
-import { reconcileSlackDelivery, sendSlackDelivery } from "./outbound.js";
+import { sendSlackDelivery } from "./outbound.js";
 import { delivery, destination, lease } from "./test-fixtures.js";
 
+const send = (fetch_: typeof fetch) =>
+  sendSlackDelivery(
+    {
+      delivery: delivery(),
+      destination: destination(),
+      lease: lease(),
+      signal: AbortSignal.timeout(1_000),
+    },
+    fetch_,
+  );
+
 describe("sendSlackDelivery", () => {
-  it("posts an actor message normally in a direct message, where nothing else is visible", async () => {
+  it("posts one message where the delivery came from, and nothing else", async () => {
     const calls: { body: unknown; url: string }[] = [];
-    const fetch_ = respond(calls, () => ok({ channel: "D1", ts: "1.1" }));
-    await sendSlackDelivery(
-      {
-        delivery: delivery({ audience: "actor", kind: "status" }),
-        destination: destination({ externalConversationId: "D1", externalUserId: "U1" }),
-        lease: lease(),
-        signal: AbortSignal.timeout(1_000),
-      },
-      fetch_,
-    );
-    expect(calls[0]?.url).toBe("https://slack.com/api/chat.postMessage");
+    const fetch_ = respond(calls, () => ok({ channel: "C1", ts: "1.1" }));
+    await expect(send(fetch_)).resolves.toEqual({ receipt: { channel: "C1", ts: "1.1" } });
+    expect(calls.map(({ url }) => url)).toEqual(["https://slack.com/api/chat.postMessage"]);
   });
 
   it("gives up on refusals that will never change", async () => {
     for (const code of ["channel_not_found", "not_in_channel", "is_archived", "missing_scope"]) {
       const fetch_ = respond([], () => ok({}, { error: code, ok: false }));
-      await expect(
-        sendSlackDelivery(
-          {
-            delivery: delivery(),
-            destination: destination(),
-            lease: lease(),
-            signal: AbortSignal.timeout(1_000),
-          },
-          fetch_,
-        ),
-      ).rejects.toMatchObject({ kind: "dead" });
+      await expect(send(fetch_)).rejects.toMatchObject({ kind: "dead" });
     }
   });
-});
 
-describe("reconcileSlackDelivery", () => {
-  it("will not take an unstamped message for this delivery, however alike it looks", async () => {
-    const fetch_ = respond([], () =>
-      ok({
-        messages: [
-          { bot_id: "B1", text: "hello", ts: "1786320000.000100" },
-          { text: "unrelated", ts: "1786320000.000200", user: "U1" },
-        ],
-      }),
-    );
+  it("retries only a rate limit, after the delay Slack names", async () => {
     await expect(
-      reconcileSlackDelivery(
-        {
-          delivery: delivery(),
-          destination: destination(),
-          lease: lease(),
-          signal: AbortSignal.timeout(1_000),
-        },
-        fetch_,
+      send(
+        respond([], () => slack(429, { error: "ratelimited", ok: false }, { "retry-after": "7" })),
       ),
-    ).resolves.toEqual({ kind: "unknown" });
+    ).rejects.toMatchObject({ kind: "retryable", retryAfterSeconds: 7 });
+    await expect(
+      send(respond([], () => ok({}, { error: "ratelimited", ok: false }))),
+    ).rejects.toMatchObject({ kind: "retryable" });
   });
 
-  it("cannot reconcile an ephemeral message, which Slack never stores", async () => {
-    const fetch_: typeof fetch = async () => {
-      throw new Error("no Slack call should be made");
-    };
+  it("leaves Slack's own trouble unknown, since the message may already be posted", async () => {
+    const answers: Array<() => Response> = [
+      () => slack(500, { error: "internal_error", ok: false }),
+      () => slack(503, { ok: false }),
+      () => ok({}, { error: "internal_error", ok: false }),
+      () => ok({}, { error: "fatal_error", ok: false }),
+      () => ok({}, { error: "request_timeout", ok: false }),
+      () => ok({}, { error: "service_unavailable", ok: false }),
+      () => new Response("<html>gateway</html>", { status: 504 }),
+    ];
+    for (const answer of answers)
+      await expect(send(respond([], answer))).rejects.toMatchObject({ kind: "unknown" });
+    // A request that never got an answer at all.
     await expect(
-      reconcileSlackDelivery(
-        {
-          delivery: delivery({ audience: "actor", kind: "status" }),
-          destination: destination({ externalUserId: "U1" }),
-          lease: lease(),
-          signal: AbortSignal.timeout(1_000),
-        },
-        fetch_,
-      ),
-    ).resolves.toEqual({ kind: "unknown" });
+      send(async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }),
+    ).rejects.toMatchObject({ kind: "unknown" });
   });
 });
 
 function ok(result: Record<string, unknown>, override?: Record<string, unknown>): Response {
-  return new Response(JSON.stringify({ ok: true, ...result, ...override }), {
-    headers: { "content-type": "application/json" },
-    status: 200,
+  return slack(200, { ok: true, ...result, ...override });
+}
+
+function slack(
+  status: number,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json", ...headers },
+    status,
   });
 }
 

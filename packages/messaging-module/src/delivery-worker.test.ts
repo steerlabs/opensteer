@@ -27,16 +27,18 @@ describe("ChannelDeliveryWorker", () => {
     await worker.close();
   });
 
-  it("sends when reconciliation cannot find the message", async () => {
-    const outbound = adapter({ reconcile: vi.fn(async () => ({ kind: "unknown" as const })) });
+  it("never sends again what an earlier attempt may have sent", async () => {
+    const outbound = adapter();
     const client = host({ claim: claimed({ mayHaveBeenSent: true }) });
 
     await run(client, outbound);
 
-    expect(outbound.outbound.reconcile).toHaveBeenCalledOnce();
-    expect(outbound.outbound.send).toHaveBeenCalledOnce();
+    expect(outbound.outbound.send).not.toHaveBeenCalled();
     expect(client.finishDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: "sent", receipt: { ts: "2.2" } }),
+      expect.objectContaining({
+        error: "An earlier attempt may already have sent this, so it is not sent again.",
+        outcome: "unknown",
+      }),
     );
   });
 
@@ -105,7 +107,6 @@ function adapter(outbound: Partial<ChannelAdapter["outbound"]> = {}): ChannelAda
     connection: { inspect: vi.fn(), run: vi.fn() },
     manifest: slackChannelProviderManifest,
     outbound: {
-      reconcile: vi.fn(async () => ({ kind: "unknown" as const })),
       send: vi.fn(async () => ({ receipt: { ts: "2.2" } })),
       ...outbound,
     },
