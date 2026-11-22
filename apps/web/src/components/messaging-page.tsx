@@ -302,7 +302,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
               setError(null);
               setView("providers");
             }}
-            onChatAdded={() => agents.refresh?.()}
+            onChatAdded={() => void agents.refresh?.()}
             onCheck={(id, displayName) => void check(id, displayName)}
             onLinkMe={(accountId) => void linkMe(accountId)}
             onRepair={startRepair}
