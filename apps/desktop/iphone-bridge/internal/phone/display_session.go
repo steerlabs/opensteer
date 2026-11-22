@@ -256,7 +256,7 @@ func (s *screenSession) stopDisplay(ref *wire.DisplayRef) error {
 
 func (s *screenSession) monitorDisplay(life context.Context, d *displaySession, guard func() error) {
 	defer close(d.monitorDone)
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
@@ -277,7 +277,7 @@ func (s *screenSession) monitorDisplay(life context.Context, d *displaySession, 
 		s.displayMu.Lock()
 		sample := s.privacyRevision
 		s.displayMu.Unlock()
-		ctx, cancel := context.WithTimeout(life, 750*time.Millisecond)
+		ctx, cancel := context.WithTimeout(life, 2*time.Second)
 		state, err := s.backend.State(ctx)
 		var f *Foreground
 		fgKnown := false
@@ -285,10 +285,9 @@ func (s *screenSession) monitorDisplay(life context.Context, d *displaySession, 
 			var foregroundErr error
 			f, foregroundErr = s.backend.Foreground(ctx)
 			fgKnown = foregroundErr == nil
-			if foregroundErr != nil {
-				// Fail closed when foreground app identity cannot be verified.
-				state = unknownState()
-			}
+			// Leave state intact when foreground fails: displayPrivacy still fails
+			// closed via !fgKnown ("target-unavailable") without misreporting
+			// an awake, unlocked phone as "locked-screen".
 		}
 		cancel()
 		if err != nil {

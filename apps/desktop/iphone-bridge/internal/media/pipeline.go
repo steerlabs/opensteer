@@ -9,6 +9,7 @@ import (
 	"net"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios/display"
@@ -18,7 +19,8 @@ import (
 const (
 	negotiationDeadline = 12 * time.Second
 	scopedStopDeadline  = 2 * time.Second
-	pollInterval        = 10 * time.Millisecond
+	ingressPollInterval = 50 * time.Millisecond
+	auQueueCapacity     = 8
 )
 
 type DisplayEvent struct {
@@ -67,17 +69,30 @@ type phoneStream struct {
 	feedback  rtcpController
 }
 
+type queuedAccessUnit struct {
+	epoch uint64
+	codec string
+	unit  accessUnit
+	at    time.Time
+}
+
 type Pipeline struct {
 	udp     UDPTransport
 	svc     DisplayService
 	cfg     PipelineConfig
+	codecMu sync.Mutex
 	decoder videoDecoder
 	encoder videoEncoder
 
+	// Lock ordering: codecMu may acquire mu; mu must never acquire codecMu.
 	mu                   sync.Mutex
 	done                 chan struct{}
+	codecDone            chan struct{}
 	cancel               context.CancelFunc
 	wake                 chan struct{}
+	encodeWake           chan struct{}
+	auCh                 chan queuedAccessUnit
+	needInboundKey       atomic.Bool
 	stopping, hidden     bool
 	stopErr              error
 	listener             *net.UnixListener
@@ -89,6 +104,7 @@ type Pipeline struct {
 	firstFrameAt         time.Time
 	nextEncode           time.Time
 	forceKey             bool
+	keyframeSeq          uint64
 	latest               *VideoFrame
 	picture              decodedPicture
 	pictureAt            time.Time
@@ -127,12 +143,46 @@ func newPipeline(cfg PipelineConfig, udp UDPTransport, svc DisplayService, codec
 	return &Pipeline{
 		cfg: cfg, udp: udp, svc: svc,
 		decoder: codecs.decoder(), encoder: codecs.encoder(),
-		wake: make(chan struct{}, 1), generation: 1, forceKey: true,
+		wake: make(chan struct{}, 1), encodeWake: make(chan struct{}, 1),
+		auCh:       make(chan queuedAccessUnit, auQueueCapacity),
+		generation: 1, forceKey: true,
 	}, nil
 }
 
 func constrainDemand(longSide, fps int) (int, int) {
 	return max(320, min(1920, longSide)), max(1, min(60, fps))
+}
+
+func (p *Pipeline) signalEncode() {
+	select {
+	case p.encodeWake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Pipeline) drainAccessUnits() {
+	for {
+		select {
+		case item := <-p.auCh:
+			clear(item.unit.annexB)
+		default:
+			return
+		}
+	}
+}
+
+func (p *Pipeline) closeCodecs() {
+	p.drainAccessUnits()
+	p.codecMu.Lock()
+	p.decoder.close()
+	p.encoder.close()
+	p.codecMu.Unlock()
+}
+
+func (p *Pipeline) closeEncoder() {
+	p.codecMu.Lock()
+	p.encoder.close()
+	p.codecMu.Unlock()
 }
 
 func (p *Pipeline) Start(ctx context.Context) (string, error) {
@@ -180,15 +230,39 @@ func (p *Pipeline) Start(ctx context.Context) (string, error) {
 		p.stream = stream
 	} else if stream != nil {
 		_ = stream.conn.Close()
+		if stream.audioConn != nil {
+			_ = stream.audioConn.Close()
+		}
 	}
 	stopping := p.stopping
+	if !stopping {
+		p.codecDone = make(chan struct{})
+	}
+	codecDone := p.codecDone
 	p.mu.Unlock()
+	if codecDone != nil {
+		go p.runCodec(lifetime, codecDone)
+	}
 	go p.acceptSockets(listener)
-	go p.run(lifetime, stream, epoch)
+	go p.runIngress(lifetime, stream, epoch)
 	if stopping {
 		return "", context.Canceled
 	}
 	return cfg.SocketPath, nil
+}
+
+func drainAudioConn(conn net.PacketConn) {
+	buf := make([]byte, 4096)
+	defer clear(buf)
+	for {
+		n, _, err := conn.ReadFrom(buf)
+		if n > 0 {
+			clear(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 func (p *Pipeline) openStream(parent context.Context, cfg PipelineConfig) (_ *phoneStream, err error) {
@@ -270,6 +344,7 @@ func (p *Pipeline) openStream(parent context.Context, cfg PipelineConfig) (_ *ph
 		if err != nil {
 			return nil, err
 		}
+		go drainAudioConn(audioConn)
 	}
 	req := display.VideoStreamRequest{
 		ReceiverIP: local.String(), ReceiverPort: address.Port,
@@ -314,7 +389,9 @@ func (p *Pipeline) closeStream(stream *phoneStream) error {
 	return p.svc.StopMediaStreamScoped(ctx, stream.id, false)
 }
 
-func (p *Pipeline) run(ctx context.Context, stream *phoneStream, epoch uint64) {
+// runIngress exclusively owns RTP/RTCP UDP I/O so codec work never stalls
+// packet reception or causes gVisor UDP queue drops.
+func (p *Pipeline) runIngress(ctx context.Context, stream *phoneStream, epoch uint64) {
 	var err error
 	defer func() { p.finish(stream, err, "capture-failed") }()
 	packet := make([]byte, 65536)
@@ -339,6 +416,7 @@ func (p *Pipeline) run(ctx context.Context, stream *phoneStream, epoch uint64) {
 		}
 		if stream == nil {
 			epoch = current
+			p.needInboundKey.Store(false)
 			stream, err = p.openStream(ctx, cfg)
 			if err != nil {
 				return
@@ -346,12 +424,17 @@ func (p *Pipeline) run(ctx context.Context, stream *phoneStream, epoch uint64) {
 			p.mu.Lock()
 			if p.epoch == epoch && !p.stopping {
 				p.stream = stream
+			} else {
+				_ = stream.conn.Close()
+				if stream.audioConn != nil {
+					_ = stream.audioConn.Close()
+				}
 			}
 			p.mu.Unlock()
 			continue
 		}
 
-		if err = stream.conn.SetReadDeadline(time.Now().Add(pollInterval)); err == nil {
+		if err = stream.conn.SetReadDeadline(time.Now().Add(ingressPollInterval)); err == nil {
 			var n int
 			var source net.Addr
 			n, source, err = stream.conn.ReadFrom(packet)
@@ -373,13 +456,10 @@ func (p *Pipeline) run(ctx context.Context, stream *phoneStream, epoch uint64) {
 				}
 			}
 			now := time.Now()
-			p.mu.Lock()
-			currentSession := p.epoch == epoch && !p.hidden && !p.stopping
-			if currentSession {
-				p.receiveLocked(stream, packet[:n], now)
-				p.tryEncodeLocked(now)
+			if p.needInboundKey.Swap(false) {
+				stream.feedback.needKey = true
 			}
-			p.mu.Unlock()
+			p.receiveIngress(stream, epoch, packet[:n], now)
 			clear(received)
 		}
 		if err != nil {
@@ -396,34 +476,32 @@ func (p *Pipeline) run(ctx context.Context, stream *phoneStream, epoch uint64) {
 	}
 }
 
-func (p *Pipeline) receiveLocked(stream *phoneStream, datagram []byte, now time.Time) {
+func (p *Pipeline) receiveIngress(stream *phoneStream, epoch uint64, datagram []byte, now time.Time) {
 	emit := func(unit accessUnit) {
-		picture, err := p.decoder.decode(unit, stream.answer.Codec)
-		if err != nil {
-			p.decoder.close()
-			stream.receiver.synced = false
-			stream.feedback.needKey = true
-			return
-		}
 		if unit.key {
 			stream.feedback.gotKeyframe()
 		}
-		if !validDimensions(picture.width, picture.height) || len(picture.rgba) != picture.width*picture.height*4 {
-			clear(picture.rgba)
-			return
+		queued := queuedAccessUnit{
+			epoch: epoch,
+			codec: stream.answer.Codec,
+			unit:  accessUnit{annexB: bytes.Clone(unit.annexB), timestamp: unit.timestamp, key: unit.key},
+			at:    now,
 		}
-		if p.picture.width != picture.width || p.picture.height != picture.height {
-			if p.picture.width != 0 {
-				p.generation++
-				p.width, p.height = 0, 0
-				p.clearLatestLocked()
+		select {
+		case p.auCh <- queued:
+		default:
+			if unit.key {
+				p.drainAccessUnits()
+				select {
+				case p.auCh <- queued:
+					return
+				default:
+				}
 			}
-			p.encoder.close()
-			p.forceKey = true
+			clear(queued.unit.annexB)
+			stream.receiver.synced = false
+			stream.feedback.needKey = true
 		}
-		clear(p.picture.rgba)
-		p.picture, p.pictureAt = picture, now
-		p.updateSnapshotLocked()
 	}
 	if isRTCP(datagram) {
 		stream.feedback.receive(datagram, now)
@@ -440,83 +518,225 @@ func (p *Pipeline) receiveLocked(stream *phoneStream, datagram []byte, now time.
 	}
 	if stream.remote.Port != 0 {
 		if feedback := stream.feedback.tick(now); len(feedback) != 0 {
-			_ = stream.conn.SetWriteDeadline(time.Now().Add(pollInterval))
+			_ = stream.conn.SetWriteDeadline(time.Now().Add(ingressPollInterval))
 			_, _ = stream.conn.WriteTo(feedback, stream.remote)
 		}
 	}
 }
 
-func (p *Pipeline) updateSnapshotLocked() {
-	if p.latest != nil && p.pictureAt.Sub(p.latest.CapturedAt) < 100*time.Millisecond {
-		return
+// runCodec decodes queued access units and hardware-encodes output frames
+// independently of UDP reception.
+func (p *Pipeline) runCodec(ctx context.Context, done chan struct{}) {
+	defer close(done)
+	defer p.closeCodecs()
+
+	var paceTimer *time.Timer
+	var paceCh <-chan time.Time
+	armPace := func(wait time.Duration) {
+		if wait <= 0 {
+			wait = time.Millisecond
+		}
+		if paceTimer == nil {
+			paceTimer = time.NewTimer(wait)
+		} else {
+			if !paceTimer.Stop() {
+				select {
+				case <-paceTimer.C:
+				default:
+				}
+			}
+			paceTimer.Reset(wait)
+		}
+		paceCh = paceTimer.C
 	}
-	width, height := scaledDimensions(p.picture.width, p.picture.height, 1920, false)
-	snapshot := scalePicture(p.picture, width, height)
-	if width == p.picture.width && height == p.picture.height {
-		snapshot.rgba = bytes.Clone(snapshot.rgba)
+	stopPace := func() {
+		if paceTimer != nil {
+			if !paceTimer.Stop() {
+				select {
+				case <-paceTimer.C:
+				default:
+				}
+			}
+		}
+		paceCh = nil
 	}
-	jpeg, err := snapshotJPEG(snapshot)
-	if err != nil {
-		clear(snapshot.rgba)
-		return
+	defer stopPace()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item := <-p.auCh:
+			p.handleAccessUnit(item)
+			if wait := p.tryEncode(time.Now()); wait > 0 {
+				armPace(wait)
+			} else {
+				stopPace()
+			}
+		case <-p.encodeWake:
+			if wait := p.tryEncode(time.Now()); wait > 0 {
+				armPace(wait)
+			} else {
+				stopPace()
+			}
+		case <-paceCh:
+			paceCh = nil
+			if wait := p.tryEncode(time.Now()); wait > 0 {
+				armPace(wait)
+			}
+		}
 	}
-	p.clearLatestLocked()
-	p.latest = &VideoFrame{JPEG: jpeg, RGBA: snapshot.rgba, Width: width, Height: height,
-		DisplayID: p.cfg.DisplayID, Rotation: p.cfg.Rotation, CapturedAt: p.pictureAt}
 }
 
-func (p *Pipeline) tryEncodeLocked(now time.Time) {
-	if p.socket == nil || !p.socket.credit(now) || now.Before(p.nextEncode) ||
-		!p.pictureAt.After(p.lastEncodedAt) || now.Sub(p.pictureAt) >= maxUnackedAge {
+func (p *Pipeline) handleAccessUnit(item queuedAccessUnit) {
+	defer clear(item.unit.annexB)
+	p.codecMu.Lock()
+	defer p.codecMu.Unlock()
+
+	p.mu.Lock()
+	stale := p.epoch != item.epoch || p.hidden || p.stopping
+	p.mu.Unlock()
+	if stale {
 		return
 	}
-	p.nextEncode = now.Add(time.Second / time.Duration(p.cfg.MaxFPS))
-	p.lastEncodedAt = p.pictureAt
-	if p.firstFrameAt.IsZero() {
-		p.firstFrameAt = p.pictureAt
+
+	picture, err := p.decoder.decode(item.unit, item.codec)
+	if err != nil {
+		p.decoder.close()
+		p.needInboundKey.Store(true)
+		return
 	}
-	pts := uint64(p.pictureAt.Sub(p.firstFrameAt).Microseconds())
-	if p.sequence > 0 {
+	if !picture.valid() {
+		picture.release()
+		return
+	}
+
+	p.mu.Lock()
+	if p.epoch != item.epoch || p.hidden || p.stopping {
+		p.mu.Unlock()
+		picture.release()
+		return
+	}
+	dimChanged := p.picture.width != picture.width || p.picture.height != picture.height
+	if dimChanged {
+		if p.picture.width != 0 {
+			p.generation++
+			p.width, p.height = 0, 0
+			p.clearLatestLocked()
+		}
+		p.forceKey = true
+	}
+	oldPic := p.picture
+	p.picture, p.pictureAt = picture, item.at
+	p.mu.Unlock()
+	oldPic.release()
+	if dimChanged {
+		p.encoder.close()
+	}
+}
+
+// tryEncode returns a positive duration when an unencoded frame is ready and
+// only waiting on FPS pacing.
+func (p *Pipeline) tryEncode(now time.Time) time.Duration {
+	p.codecMu.Lock()
+	defer p.codecMu.Unlock()
+
+	p.mu.Lock()
+	if p.hidden || p.stopping || p.socket == nil || !p.socket.credit(now) ||
+		!p.picture.valid() || !p.pictureAt.After(p.lastEncodedAt) || now.Sub(p.pictureAt) >= maxUnackedAge {
+		p.mu.Unlock()
+		return 0
+	}
+	if now.Before(p.nextEncode) {
+		wait := p.nextEncode.Sub(now)
+		p.mu.Unlock()
+		return wait
+	}
+	pic := p.picture.retain()
+	if !pic.valid() {
+		p.mu.Unlock()
+		return 0
+	}
+	epoch := p.epoch
+	sock := p.socket
+	cfg := p.cfg
+	generation := p.generation
+	sequence := p.sequence
+	forceKey := p.forceKey
+	keyframeSeq := p.keyframeSeq
+	pictureAt := p.pictureAt
+	if p.firstFrameAt.IsZero() {
+		p.firstFrameAt = pictureAt
+	}
+	pts := uint64(pictureAt.Sub(p.firstFrameAt).Microseconds())
+	if sequence > 0 {
 		pts = max(p.lastPTS+1, pts)
 	}
-	width, height := scaledDimensions(p.picture.width, p.picture.height, p.cfg.MaxLongSide, true)
-	picture := scalePicture(p.picture, width, height)
-	encoded, err := p.encoder.encode(picture, p.cfg.MaxFPS, pts, p.forceKey)
-	if picture.width != p.picture.width || picture.height != p.picture.height {
-		clear(picture.rgba)
-	}
+	p.mu.Unlock()
+	defer pic.release()
+
+	width, height := scaledDimensions(pic.width, pic.height, cfg.MaxLongSide, true)
+	encoded, err := p.encoder.encode(pic, width, height, cfg.MaxFPS, pts, forceKey)
 	defer clear(encoded.annexB)
-	if err != nil || (p.forceKey && !encoded.key) {
-		p.resetEncoderLocked()
-		if err != nil && p.width == 0 {
+	if err != nil || (forceKey && !encoded.key) {
+		p.encoder.close()
+		p.mu.Lock()
+		p.forceKey = true
+		if err != nil && p.width == 0 && p.epoch == epoch && !p.hidden && !p.stopping {
 			p.publishLocked("failed", "encoder-failed")
 		}
-		return
+		p.mu.Unlock()
+		return 0
 	}
 	envelope, err := encodeDisplayMediaFrame(mediaFrameHeader{
-		StreamID: p.cfg.StreamID, Generation: p.generation, Sequence: p.sequence,
+		StreamID: cfg.StreamID, Generation: generation, Sequence: sequence,
 		PTSUs: pts, Key: encoded.key, Codec: encoded.codec, Width: width, Height: height,
 	}, encoded.annexB)
 	if err != nil {
-		p.resetEncoderLocked()
-		return
+		p.encoder.close()
+		p.mu.Lock()
+		p.forceKey = true
+		p.mu.Unlock()
+		return 0
 	}
 	defer clear(envelope)
-	if p.socket.totalBytes+len(envelope) > maxUnackedBytes {
-		p.resetEncoderLocked()
-		return
+
+	p.mu.Lock()
+	if p.epoch != epoch || p.hidden || p.stopping || p.socket != sock ||
+		p.generation != generation || p.cfg.MaxLongSide != cfg.MaxLongSide || p.cfg.MaxFPS != cfg.MaxFPS {
+		p.mu.Unlock()
+		return 0
 	}
-	if err := p.socket.send(p.sequence, envelope); err != nil {
+	if sock.totalBytes+len(envelope) > maxUnackedBytes {
+		p.forceKey = true
+		p.mu.Unlock()
+		p.encoder.close()
+		return 0
+	}
+	if err := sock.send(sequence, envelope); err != nil {
 		p.dropSocketLocked()
-		return
+		p.mu.Unlock()
+		p.encoder.close()
+		return 0
 	}
+	p.nextEncode = now.Add(time.Second / time.Duration(cfg.MaxFPS))
 	p.sequence++
 	p.lastPTS = pts
-	p.forceKey = false
+	// Preserve any RequestKeyframe that arrived while this frame was encoding.
+	pendingRefresh := p.keyframeSeq != keyframeSeq
+	if !pendingRefresh {
+		p.lastEncodedAt = pictureAt
+		p.forceKey = false
+	}
 	if p.width != width || p.height != height {
 		p.width, p.height = width, height
 		p.publishLocked("live", "")
 	}
+	p.mu.Unlock()
+	if pendingRefresh {
+		p.signalEncode()
+	}
+	return 0
 }
 
 func (p *Pipeline) acceptSockets(listener *net.UnixListener) {
@@ -533,12 +753,15 @@ func (p *Pipeline) acceptSockets(listener *net.UnixListener) {
 		}
 		socket := &mediaSocket{conn: conn}
 		p.socket = socket
-		p.resetEncoderLocked()
+		p.forceKey = true
 		p.lastEncodedAt = time.Time{}
-		if p.stream != nil && !p.hidden {
-			p.stream.feedback.needKey = true
-		}
+		needKey := p.pictureAt.IsZero() && !p.hidden
 		p.mu.Unlock()
+		p.closeEncoder()
+		if needKey {
+			p.needInboundKey.Store(true)
+		}
+		p.signalEncode()
 		go p.readACKs(socket)
 	}
 }
@@ -554,10 +777,12 @@ func (p *Pipeline) readACKs(socket *mediaSocket) {
 		if err != nil {
 			p.dropSocketLocked()
 			p.mu.Unlock()
+			p.closeEncoder()
 			return
 		}
 		socket.ack(seq)
 		p.mu.Unlock()
+		p.signalEncode()
 	}
 }
 
@@ -566,18 +791,13 @@ func (p *Pipeline) dropSocketLocked() {
 		_ = p.socket.conn.Close()
 		p.socket = nil
 	}
-	p.resetEncoderLocked()
-}
-
-func (p *Pipeline) resetEncoderLocked() {
-	p.encoder.close()
 	p.forceKey = true
 }
 
 func (p *Pipeline) UpdateDemand(maxLongSide, maxFPS int) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.stopping {
+		p.mu.Unlock()
 		return
 	}
 	if maxLongSide <= 0 {
@@ -594,52 +814,123 @@ func (p *Pipeline) UpdateDemand(maxLongSide, maxFPS int) {
 			p.width, p.height = 0, 0
 		}
 	}
-	if longSide != p.cfg.MaxLongSide || fps != p.cfg.MaxFPS {
+	changed := longSide != p.cfg.MaxLongSide || fps != p.cfg.MaxFPS
+	if changed {
 		p.cfg.MaxLongSide, p.cfg.MaxFPS = longSide, fps
-		p.resetEncoderLocked()
-		p.lastEncodedAt = time.Time{}
-	}
-}
-
-func (p *Pipeline) RequestKeyframe() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if !p.stopping {
 		p.forceKey = true
 		p.lastEncodedAt = time.Time{}
-		if p.stream != nil && !p.hidden {
-			p.stream.feedback.needKey = true
-		}
+	}
+	p.mu.Unlock()
+	if changed {
+		p.closeEncoder()
+		p.signalEncode()
 	}
 }
 
+// RequestKeyframe forces a fresh outbound H.264 IDR locally without requesting
+// an inbound iPhone PLI/FIR whenever a healthy decoded frame is already held.
+func (p *Pipeline) RequestKeyframe() {
+	p.mu.Lock()
+	if p.stopping {
+		p.mu.Unlock()
+		return
+	}
+	p.keyframeSeq++
+	p.forceKey = true
+	p.lastEncodedAt = time.Time{}
+	needInbound := p.pictureAt.IsZero() && !p.hidden
+	p.mu.Unlock()
+	if needInbound {
+		p.needInboundKey.Store(true)
+	}
+	p.signalEncode()
+}
+
+// LatestFrame materializes RGBA and JPEG only on demand for agent observation,
+// keeping normal Live View streaming completely free of CPU pixel conversions.
 func (p *Pipeline) LatestFrame(maxAge time.Duration) (*VideoFrame, bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.latest == nil || p.hidden || p.stopping || time.Since(p.latest.CapturedAt) > maxAge {
+	if p.hidden || p.stopping {
+		p.mu.Unlock()
 		return nil, false
 	}
-	latest := *p.latest
-	latest.RGBA = bytes.Clone(latest.RGBA)
-	latest.JPEG = bytes.Clone(latest.JPEG)
-	return &latest, true
+	if p.latest != nil && time.Since(p.latest.CapturedAt) <= maxAge &&
+		!p.pictureAt.After(p.latest.CapturedAt.Add(100*time.Millisecond)) {
+		latest := *p.latest
+		latest.RGBA = bytes.Clone(latest.RGBA)
+		latest.JPEG = bytes.Clone(latest.JPEG)
+		p.mu.Unlock()
+		return &latest, true
+	}
+	if !p.picture.valid() || time.Since(p.pictureAt) > maxAge {
+		p.mu.Unlock()
+		return nil, false
+	}
+	pic := p.picture.retain()
+	if !pic.valid() {
+		p.mu.Unlock()
+		return nil, false
+	}
+	epoch := p.epoch
+	capturedAt := p.pictureAt
+	displayID := p.cfg.DisplayID
+	rotation := p.cfg.Rotation
+	p.mu.Unlock()
+	defer pic.release()
+
+	width, height := scaledDimensions(pic.width, pic.height, 1920, false)
+	rgba, err := pic.materializeRGBA(width, height)
+	if err != nil {
+		return nil, false
+	}
+	jpeg, err := snapshotJPEG(decodedPicture{rgba: rgba, width: width, height: height})
+	if err != nil {
+		clear(rgba)
+		return nil, false
+	}
+
+	p.mu.Lock()
+	if p.hidden || p.stopping || p.epoch != epoch {
+		p.mu.Unlock()
+		clear(rgba)
+		clear(jpeg)
+		return nil, false
+	}
+	p.clearLatestLocked()
+	p.latest = &VideoFrame{
+		JPEG: jpeg, RGBA: rgba, Width: width, Height: height,
+		DisplayID: displayID, Rotation: rotation, CapturedAt: capturedAt,
+	}
+	out := &VideoFrame{
+		JPEG: bytes.Clone(jpeg), RGBA: bytes.Clone(rgba), Width: width, Height: height,
+		DisplayID: displayID, Rotation: rotation, CapturedAt: capturedAt,
+	}
+	p.mu.Unlock()
+	return out, true
 }
 
 func (p *Pipeline) SetPrivacyHidden(state, reason string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.stopping {
+		p.mu.Unlock()
 		return
 	}
 	if state != "screen-off" {
 		state = "protected"
 	}
-	if !p.hidden {
+	var oldPic decodedPicture
+	changed := !p.hidden
+	if changed {
 		p.hidden = true
 		p.generation++
-		p.resetStreamLocked()
+		oldPic = p.resetStreamLocked()
 	}
 	p.publishLocked(state, reason)
+	p.mu.Unlock()
+	oldPic.release()
+	if changed {
+		p.closeCodecs()
+	}
 }
 
 func (p *Pipeline) ResumeVisible(displayID uint64, rotation int) {
@@ -647,30 +938,36 @@ func (p *Pipeline) ResumeVisible(displayID uint64, rotation int) {
 		displayID = display.DefaultDisplayID
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.stopping || displayID > uint64(^uint(0)>>1) ||
 		(!p.hidden && displayID == p.cfg.DisplayID && rotation == p.cfg.Rotation) {
+		p.mu.Unlock()
 		return
 	}
 	p.cfg.DisplayID, p.cfg.Rotation, p.hidden = displayID, rotation, false
 	p.generation++
-	p.resetStreamLocked()
+	oldPic := p.resetStreamLocked()
 	if p.done != nil {
 		p.publishLocked("starting", "")
 	}
+	p.mu.Unlock()
+	oldPic.release()
+	p.closeCodecs()
 }
 
-func (p *Pipeline) resetStreamLocked() {
+func (p *Pipeline) resetStreamLocked() decodedPicture {
 	p.clearLatestLocked()
-	clear(p.picture.rgba)
+	oldPic := p.picture
 	p.picture = decodedPicture{}
 	p.pictureAt, p.lastEncodedAt = time.Time{}, time.Time{}
 	p.width, p.height = 0, 0
-	p.decoder.close()
-	p.resetEncoderLocked()
+	p.forceKey = true
 	p.epoch++
 	if p.stream != nil {
-		p.stream.receiver.reset()
+		// Only close the sockets here; runIngress owns stream.receiver and resets
+		// it in closeStream once ReadFrom unblocks, avoiding concurrent map access.
+		if p.stream.audioConn != nil {
+			_ = p.stream.audioConn.Close()
+		}
 		_ = p.stream.conn.Close()
 		p.stream = nil
 	}
@@ -678,6 +975,7 @@ func (p *Pipeline) resetStreamLocked() {
 	case p.wake <- struct{}{}:
 	default:
 	}
+	return oldPic
 }
 
 func (p *Pipeline) clearLatestLocked() {
@@ -694,9 +992,10 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 	if unstarted {
 		p.done = make(chan struct{})
 	}
+	var oldPic decodedPicture
 	if !p.stopping {
 		p.stopping = true
-		p.resetStreamLocked()
+		oldPic = p.resetStreamLocked()
 		p.dropSocketLocked()
 		if p.listener != nil {
 			_ = p.listener.Close()
@@ -707,6 +1006,7 @@ func (p *Pipeline) Stop(ctx context.Context) error {
 	}
 	done := p.done
 	p.mu.Unlock()
+	oldPic.release()
 	if unstarted {
 		go p.finish(nil, nil, "")
 	}
@@ -722,7 +1022,7 @@ func (p *Pipeline) finish(stream *phoneStream, err error, reason string) {
 	p.mu.Lock()
 	stopped := p.stopping
 	p.stopping = true
-	p.resetStreamLocked()
+	oldPic := p.resetStreamLocked()
 	p.dropSocketLocked()
 	if p.listener != nil {
 		_ = p.listener.Close()
@@ -730,7 +1030,14 @@ func (p *Pipeline) finish(stream *phoneStream, err error, reason string) {
 	if p.cancel != nil {
 		p.cancel()
 	}
+	codecDone := p.codecDone
 	p.mu.Unlock()
+	oldPic.release()
+	if codecDone != nil {
+		<-codecDone
+	} else {
+		p.closeCodecs()
+	}
 	cleanupErr := errors.Join(p.closeStream(stream), p.svc.Close())
 	p.mu.Lock()
 	p.stopErr = cleanupErr

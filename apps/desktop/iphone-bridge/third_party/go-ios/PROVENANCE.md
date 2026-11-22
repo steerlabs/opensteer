@@ -31,10 +31,11 @@ Opensteer patches:
   system usbmux socket, and explicit transfer of a service connection from setup
   to session lifetime. In-process service dialers return net.Conn; no localhost
   forwarder or kernel-tunnel fallback is retained.
-- A userspace TCP+UDP stack built with gVisor's public channel endpoint, restricted
-  to the negotiated IPv6 peer. Strict CDTunnel header/address/MTU/port validation;
-  stream packet framing retained from upstream; cancellation/EOF/corruption/write
-  failure closes both packet pumps and the stack.
+- A userspace TCP+UDP stack built with gVisor's public channel endpoint (512-packet
+  queue for RTP video burst headroom), restricted to the negotiated IPv6 peer. Strict
+  CDTunnel header/address/MTU/port validation; stream packet framing retained from
+  upstream; cancellation/EOF/corruption/write failure closes both packet pumps and the
+  stack.
 - The upstream rwcendpoint.go is deliberately excluded: its header acknowledges
   copying GPL tun2socks code. The channel-based packet pump in userspace.go is
   independently implemented against gVisor's Apache-2.0 public API.

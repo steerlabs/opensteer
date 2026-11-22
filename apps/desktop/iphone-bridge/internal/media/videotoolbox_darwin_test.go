@@ -41,7 +41,7 @@ func renderAndDecodeTestPicture(t *testing.T) decodedPicture {
 
 	encoder := &vtEncoder{}
 	defer encoder.close()
-	encoded, err := encoder.encode(decodedPicture{picture.Pix, width, height}, 30, 0, true)
+	encoded, err := encoder.encode(decodedPicture{rgba: picture.Pix, width: width, height: height}, width, height, 30, 0, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,11 +50,11 @@ func renderAndDecodeTestPicture(t *testing.T) decodedPicture {
 		encoded.codec != "avc1."+hex.EncodeToString(nals[0][1:4]) {
 		t.Fatal("missing SPS/PPS, key flag or SPS-derived codec")
 	}
-	second, err := encoder.encode(decodedPicture{picture.Pix, width, height}, 30, 33333, false)
+	second, err := encoder.encode(decodedPicture{rgba: picture.Pix, width: width, height: height}, width, height, 30, 33333, false)
 	if err != nil || second.key || second.codec != "" {
 		t.Fatalf("second frame should be a delta: key=%v codec=%q err=%v", second.key, second.codec, err)
 	}
-	forced, err := encoder.encode(decodedPicture{picture.Pix, width, height}, 30, 66666, true)
+	forced, err := encoder.encode(decodedPicture{rgba: picture.Pix, width: width, height: height}, width, height, 30, 66666, true)
 	if err != nil || !forced.key || forced.codec != encoded.codec {
 		t.Fatalf("forced frame was not an IDR: key=%v codec=%q err=%v", forced.key, forced.codec, err)
 	}
@@ -62,13 +62,27 @@ func renderAndDecodeTestPicture(t *testing.T) decodedPicture {
 	decoder := &vtDecoder{}
 	defer decoder.close()
 	decoded, err := decoder.decode(accessUnit{annexB: encoded.annexB, key: true}, "avc")
-	if err != nil || decoded.width != width || decoded.height != height || len(decoded.rgba) != width*height*4 {
-		t.Fatalf("decoded %dx%d, %d bytes: %v", decoded.width, decoded.height, len(decoded.rgba), err)
+	if err != nil || decoded.width != width || decoded.height != height || decoded.surface == nil || len(decoded.rgba) != 0 {
+		t.Fatalf("expected GPU surface decode %dx%d: %+v, err=%v", width, height, decoded, err)
 	}
-	if _, err := decoder.decode(accessUnit{annexB: second.annexB}, "avc"); err != nil {
+	defer decoded.release()
+	// Exercise GPU-to-GPU scaled re-encode directly from the decoded NV12 surface.
+	scaledEncoder := &vtEncoder{}
+	defer scaledEncoder.close()
+	reencoded, err := scaledEncoder.encode(decoded, 320, 180, 30, 0, true)
+	if err != nil || !reencoded.key || reencoded.codec == "" {
+		t.Fatalf("GPU surface scaled encode failed: %+v, err=%v", reencoded, err)
+	}
+	next, err := decoder.decode(accessUnit{annexB: second.annexB}, "avc")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return decoded
+	next.release()
+	rgba, err := decoded.materializeRGBA(width, height)
+	if err != nil || len(rgba) != width*height*4 {
+		t.Fatalf("materializeRGBA failed: len=%d err=%v", len(rgba), err)
+	}
+	return decodedPicture{rgba: rgba, width: width, height: height}
 }
 
 func TestVideoToolboxEncodeDecodeJPEG(t *testing.T) {

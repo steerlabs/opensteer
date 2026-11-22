@@ -1305,3 +1305,81 @@ it("advertises live navigation and lock/wake controls before any agent observati
     ]),
   });
 });
+
+it("does not fail a live display stream when a best-effort display.refresh request rejects", async () => {
+  const host = await listenForDisplay();
+  const desktop = await listenForDisplay();
+  const f = fixture({ hostOrigin: new URL(host.origin), mode: "development" });
+  try {
+    const ref = {
+      deviceId: f.a.deviceId,
+      driverGeneration: 1,
+      streamId: DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`),
+    };
+    const source = {
+      kind: "owner-view" as const,
+      viewId: ComputerViewIdSchema.parse(`cvw_${randomUUID()}`),
+      generation: 1,
+    };
+    let refreshCalls = 0;
+    let demandCalls = 0;
+    f.bridge.replies.set("iphone.display.start", async () => ({
+      attachmentToken: "synthetic-token",
+    }));
+    f.bridge.replies.set("iphone.display.refresh", async () => {
+      refreshCalls++;
+      throw new Error("transient refresh error");
+    });
+    f.bridge.replies.set("iphone.display.demand", async () => {
+      demandCalls++;
+      return {};
+    });
+    f.bridge.replies.set("iphone.display.stop", async () => ({}));
+    f.bridge.openVideoAttachment.mockImplementation(() => new WebSocket(desktop.origin));
+    const hostConnected = once(host.server, "connection");
+    const desktopConnected = once(desktop.server, "connection");
+    f.connection.display({
+      ...ref,
+      type: "host.integrations.display.start",
+      display: "main",
+      revision: 1,
+      sources: [source],
+      inputSources: [source],
+      phoneOwnerControl: 1,
+      dataTicket: "synthetic.data.ticket",
+      maxFps: 30,
+      maxLongSide: 1280,
+    });
+    await Promise.all([hostConnected, desktopConnected]);
+    f.connection.display({ ...ref, display: "main", type: "host.integrations.display.refresh" });
+    f.connection.display({
+      ...ref,
+      display: "main",
+      type: "host.integrations.display.demand",
+      revision: 2,
+      sources: [source],
+      inputSources: [source],
+      maxLongSide: 960,
+    });
+    await vi.waitFor(() => {
+      expect(refreshCalls).toBe(1);
+      expect(demandCalls).toBe(1);
+    });
+    expect(
+      f.events.filter(
+        (event) =>
+          event.type === "runner.integrations.display.state" &&
+          event.state === "failed" &&
+          event.reason === "capture-failed",
+      ),
+    ).toEqual([]);
+  } finally {
+    await f.driver.shutdown();
+    await Promise.all(
+      [host.server, desktop.server].map((server) => {
+        for (const client of server.clients) client.terminate();
+        return new Promise<void>((resolve) => server.close(() => resolve()));
+      }),
+    );
+  }
+});

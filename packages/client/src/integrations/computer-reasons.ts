@@ -229,11 +229,17 @@ export function computerReasonWords(
     case "capacity":
       return "Close another live view, then open this window again.";
     case "capture-timeout":
-      return "macOS couldn’t start sharing this window.";
+      return names.phone
+        ? `Couldn’t start showing ${names.machine}’s screen.`
+        : "macOS couldn’t start sharing this window.";
     case "sharing-stopped":
-      return "macOS stopped sharing this window.";
+      return names.phone
+        ? `${names.machine} stopped sharing its screen.`
+        : "macOS stopped sharing this window.";
     case "capture-failed":
-      return `${names.target}’s window couldn’t be captured.`;
+      return names.phone
+        ? `${names.machine}’s screen couldn’t be captured.`
+        : `${names.target}’s window couldn’t be captured.`;
     case "native-unavailable":
     case "computer-view-unavailable":
       return `${names.machine} is unavailable.`;

@@ -33,9 +33,63 @@ type OCRBox struct {
 	Confidence          float64
 }
 
+// pictureSurface is an optional GPU-backed pixel buffer (CVPixelBuffer on
+// macOS) that can be hardware-scaled and encoded without CPU pixel copies,
+// and converted to RGBA only on demand for agent observation.
+type pictureSurface interface {
+	retain() pictureSurface
+	release()
+	toRGBA(width, height int) ([]byte, error)
+}
+
 type decodedPicture struct {
 	rgba          []byte
+	surface       pictureSurface
 	width, height int
+}
+
+func (p decodedPicture) valid() bool {
+	if !validDimensions(p.width, p.height) {
+		return false
+	}
+	if p.surface != nil {
+		return true
+	}
+	return len(p.rgba) == p.width*p.height*4
+}
+
+func (p decodedPicture) retain() decodedPicture {
+	if p.surface != nil {
+		surf := p.surface.retain()
+		if surf == nil {
+			return decodedPicture{}
+		}
+		return decodedPicture{surface: surf, width: p.width, height: p.height}
+	}
+	return decodedPicture{rgba: bytes.Clone(p.rgba), width: p.width, height: p.height}
+}
+
+func (p *decodedPicture) release() {
+	if p.surface != nil {
+		p.surface.release()
+		p.surface = nil
+	}
+	if len(p.rgba) != 0 {
+		clear(p.rgba)
+		p.rgba = nil
+	}
+	p.width, p.height = 0, 0
+}
+
+func (p decodedPicture) materializeRGBA(width, height int) ([]byte, error) {
+	if p.surface != nil {
+		return p.surface.toRGBA(width, height)
+	}
+	scaled := scalePicture(p, width, height)
+	if width == p.width && height == p.height {
+		return bytes.Clone(scaled.rgba), nil
+	}
+	return scaled.rgba, nil
 }
 
 type encodedPicture struct {
@@ -52,7 +106,7 @@ type videoDecoder interface {
 }
 
 type videoEncoder interface {
-	encode(picture decodedPicture, fps int, ptsUs uint64, force bool) (encodedPicture, error)
+	encode(picture decodedPicture, width, height, fps int, ptsUs uint64, force bool) (encodedPicture, error)
 	close()
 }
 
@@ -84,7 +138,7 @@ func scalePicture(input decodedPicture, width, height int) decodedPicture {
 	src := &image.RGBA{Pix: input.rgba, Stride: input.width * 4, Rect: image.Rect(0, 0, input.width, input.height)}
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
-	return decodedPicture{dst.Pix, width, height}
+	return decodedPicture{rgba: dst.Pix, width: width, height: height}
 }
 
 func snapshotJPEG(picture decodedPicture) ([]byte, error) {
