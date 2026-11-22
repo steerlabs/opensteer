@@ -253,7 +253,7 @@ export function DesktopWelcome({
     return (
       <OnboardingCard
         bare
-        description="Opensteer keeps your sign-in in this Mac’s keychain, and the keychain isn’t letting it in. Unlock it in Keychain Access, or log in at the Mac itself instead of from another computer, then try again."
+        description="Opensteer keeps your sign-in in this Mac’s keychain, and the keychain isn’t letting it in. Unlock the login keychain in Keychain Access, or log in at the Mac itself instead of from another computer, then try again."
         live
         title="Opensteer can’t use this Mac’s keychain"
       >

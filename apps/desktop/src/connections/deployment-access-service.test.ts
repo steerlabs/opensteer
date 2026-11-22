@@ -1880,7 +1880,7 @@ describe("DeploymentAccessService", () => {
       const refused = await service.signIn().catch((error: unknown) => error);
       expect(refused).toEqual(
         new DeploymentAccessRefusal(
-          "Opensteer still can’t use this Mac’s keychain. Unlock it, then try again.",
+          "Opensteer still can’t use this Mac’s keychain. Unlock the login keychain, then try again.",
         ),
       );
       service.dispose();

@@ -83,7 +83,7 @@ it("says Opensteer can't use this Mac's keychain, what to do, and offers to try 
   await mount(async () => undefined);
   expect(document.querySelector("h1")?.textContent).toBe("Opensteer can’t use this Mac’s keychain");
   expect(document.body.textContent).toContain(
-    "Opensteer keeps your sign-in in this Mac’s keychain, and the keychain isn’t letting it in. Unlock it in Keychain Access, or log in at the Mac itself instead of from another computer, then try again.",
+    "Opensteer keeps your sign-in in this Mac’s keychain, and the keychain isn’t letting it in. Unlock the login keychain in Keychain Access, or log in at the Mac itself instead of from another computer, then try again.",
   );
   // Not the welcome of a build without an account, and no words a person doesn't use.
   expect(document.body.textContent).not.toContain("Welcome to Opensteer");
@@ -101,12 +101,14 @@ it("tries again through the account's own sign-in", async () => {
 it("says so plainly when the keychain still refuses", async () => {
   await mount(async () =>
     Promise.reject(
-      desktopRefusal("Opensteer still can’t use this Mac’s keychain. Unlock it, then try again."),
+      desktopRefusal(
+        "Opensteer still can’t use this Mac’s keychain. Unlock the login keychain, then try again.",
+      ),
     ),
   );
   await act(async () => button("Try again")!.click());
   await act(async () => undefined);
   expect(document.querySelector('[role="alert"]')?.textContent).toBe(
-    "Opensteer still can’t use this Mac’s keychain. Unlock it, then try again.",
+    "Opensteer still can’t use this Mac’s keychain. Unlock the login keychain, then try again.",
   );
 });

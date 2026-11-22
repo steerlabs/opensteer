@@ -1421,7 +1421,7 @@ export class DeploymentAccessRefusal extends Error {
 
 /** Said when signing in again finds this Mac's keychain still refusing Opensteer. */
 export const keychainStillRefusedSentence =
-  "Opensteer still can’t use this Mac’s keychain. Unlock it, then try again.";
+  "Opensteer still can’t use this Mac’s keychain. Unlock the login keychain, then try again.";
 
 /** Said of a Home the ask named that was gone by the time its turn came. */
 export function homeGoneSentence(name: string | null): string {
