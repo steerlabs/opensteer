@@ -258,6 +258,20 @@ export const browserPoolAgentSignatureHeader = "x-opensteer-pool-signature";
 
 export class BrowserPoolAgentUnavailable extends Error {
   override readonly name = "BrowserPoolAgentUnavailable";
+  /**
+   * Round G: set only when the pool host answered and its host key's signature over that
+   * answer verified. It is that answer's code. `conflict` and `unknown-slot` mean the call did
+   * nothing. A signed `unavailable` means the host answered but could not finish, so the effect
+   * may be partial; read the slot with `list`. Absent means no verified answer, so the effect is
+   * unknown. The host answers `bad-request`, `unauthenticated` and `stale-request` without a
+   * signature, so those arrive absent too.
+   */
+  readonly refusal?: BrowserPoolAgentRefusal | "conflict";
+
+  constructor(message: string, refusal?: BrowserPoolAgentRefusal | "conflict") {
+    super(message);
+    if (refusal !== undefined) this.refusal = refusal;
+  }
 }
 
 /**
@@ -357,7 +371,7 @@ export async function callBrowserPoolAgentAdmin(
     )
   )
     throw new BrowserPoolAgentUnavailable("The pool host's reply is not signed by its host key.");
-  if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message);
+  if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message, reply.code);
   return reply;
 }
 
