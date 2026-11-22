@@ -575,3 +575,42 @@ it("hands off a popup that closes while its name is being read, so its end is de
   held.resolve();
   await vi.waitFor(() => expect(f.handedOff).toContain(popup), { timeout: 3_000, interval: 10 });
 });
+
+it("keeps a closed opener's handle strongly held while it is among the last 64 closes, then only weakly, and keeps each target's opener record until it arrives or ends (Q1)", async () => {
+  const f = await launchWith();
+  const handles = f.internals as unknown as {
+    recentlyClosed: unknown[];
+    handleByTarget: Map<string, WeakRef<object>>;
+    openerByTarget: Map<string, string>;
+    noteOpener(targetId: string, openerId: string): void;
+    forgetOpener(targetId: string): void;
+  };
+  // An opener the runtime opened, which closes; the test keeps no reference to its handle.
+  f.nextPages.push(fakePage("target-opener", "https://opener.test/"));
+  const raw = (await f.launched.context.createPage()) as unknown as {
+    rawPage: ReturnType<typeof fakePage>;
+  };
+  raw.rawPage.markClosed();
+  const held = () => handles.handleByTarget.get("target-opener")?.deref();
+  expect(held()).toBeDefined();
+  expect(handles.recentlyClosed).toContain(held());
+  // 64 more closes push it out of the ring: it is then held only weakly, as before.
+  for (let i = 0; i < 64; i++) {
+    f.nextPages.push(fakePage(`target-later-${i}`, "about:blank"));
+    const later = (await f.launched.context.createPage()) as unknown as {
+      rawPage: ReturnType<typeof fakePage>;
+    };
+    later.rawPage.markClosed();
+  }
+  expect(handles.recentlyClosed).toHaveLength(64);
+  expect(handles.recentlyClosed).not.toContain(held());
+  // Opener records: removed when their target ends; past the cap only the oldest go.
+  handles.noteOpener("target-child", "target-opener");
+  handles.forgetOpener("target-child");
+  expect(handles.openerByTarget.has("target-child")).toBe(false);
+  for (let i = 0; i <= 4_096; i++) handles.noteOpener(`target-n-${i}`, "target-opener");
+  expect(handles.openerByTarget.size).toBe(4_096);
+  expect(handles.openerByTarget.has("target-n-0")).toBe(false);
+  expect(handles.openerByTarget.has("target-n-1")).toBe(true);
+  expect(handles.openerByTarget.has("target-n-4096")).toBe(true);
+});

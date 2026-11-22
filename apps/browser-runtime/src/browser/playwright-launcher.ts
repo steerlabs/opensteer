@@ -962,6 +962,10 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
       if (typeof info?.targetId === "string" && typeof info.openerId === "string")
         this.contextHandle.noteOpener(info.targetId, info.openerId);
     });
+    untypedCdp(browserCdp).on("Target.targetDestroyed", (event) => {
+      const targetId = (event as { targetId?: unknown }).targetId;
+      if (typeof targetId === "string") this.contextHandle.forgetOpener(targetId);
+    });
     this.cdp = new PlaywrightBrowserCdpBackend(
       browserCdp,
       this.contextHandle,
@@ -1061,6 +1065,14 @@ const arrivalIdentifyMs = 2_000;
 const openPageMs = 10_000;
 /** Background removal attempts per sleeping tab, since it was given up, before it is reported. */
 const removalRetryBound = 8;
+/**
+ * How many closed pages' handles stay strongly held. A successor is announced within moments of
+ * its opener's close; 64 closes is more than a 46-tab burst closes in that time, at the cost of
+ * 64 handle objects.
+ */
+const recentlyClosedHandles = 64;
+/** The most opener records kept for targets not yet arrived; a guard, not a working limit. */
+const openerRecordCap = 4_096;
 /** The group title a tab carries while it sleeps, and only then (L2). */
 const sleepTitlePrefix = "opensteer-sleep:";
 
@@ -1223,7 +1235,13 @@ class PlaywrightContextHandle implements BrowserContext {
   private readonly forgetTarget = new FinalizationRegistry<string>((targetId) => {
     if (!this.handleByTarget.get(targetId)?.deref()) this.handleByTarget.delete(targetId);
   });
-  /** Each target's opener as Chromium named it when it was created. */
+  /**
+   * The handles of the last pages that closed, held strongly: a child announced after its
+   * opener closed finds that opener's handle whatever the collector did meanwhile (a short-lived
+   * interstitial's handle is young, so the first scavenge would take it). Older ones stay weak.
+   */
+  private readonly recentlyClosed: PlaywrightPageHandle[] = [];
+  /** Each target's opener as Chromium named it when it was created, until it arrives or ends. */
   private readonly openerByTarget = new Map<string, string>();
   /** Pages being looked up by name: a child of one is handed off after its opener (Q1). */
   private readonly classifying = new WeakMap<Page, Promise<void>>();
@@ -1490,8 +1508,17 @@ class PlaywrightContextHandle implements BrowserContext {
 
   /** Chromium created `targetId` from `openerId` (Q1). */
   noteOpener(targetId: string, openerId: string): void {
-    if (this.openerByTarget.size > 4_096) this.openerByTarget.clear();
     this.openerByTarget.set(targetId, openerId);
+    // A guard only: entries go as their targets arrive or end; past the cap, the oldest go.
+    for (const oldest of this.openerByTarget.keys()) {
+      if (this.openerByTarget.size <= openerRecordCap) break;
+      this.openerByTarget.delete(oldest);
+    }
+  }
+
+  /** Chromium destroyed `targetId`: its opener record goes with it. */
+  forgetOpener(targetId: string): void {
+    this.openerByTarget.delete(targetId);
   }
 
   /** A page's later close attempt, on the lane of the sleep it was put to (M3). */
@@ -1968,7 +1995,12 @@ class PlaywrightContextHandle implements BrowserContext {
         this.forgetTarget.register(handle, targetId);
       }
       this.pagesByPlaywrightPage.set(page, handle);
-      page.once("close", () => this.pagesByPlaywrightPage.delete(page));
+      const closed = handle;
+      page.once("close", () => {
+        this.pagesByPlaywrightPage.delete(page);
+        this.recentlyClosed.push(closed);
+        if (this.recentlyClosed.length > recentlyClosedHandles) this.recentlyClosed.shift();
+      });
     }
     return handle;
   }
