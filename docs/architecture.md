@@ -413,6 +413,12 @@ identity linked to the person on that account, by a code the person sends from t
 linking another replaces it, and nothing is said in the chat), or **anyone** who can write in that
 one channel, whose tasks run without the person's personal context (`lineageHasPersonalContext`).
 
+What a chat may hold follows from who may speak, in one rule: `chatGrantShape` and
+`chatGrantRefusal` (`packages/core/src/agent-grants.ts`). A chat always holds tasks; an anyone chat
+holds no more than tasks and plugins, never everything. The Home refuses any other grant
+(`assertBridgeGrant`) and sends the shape with each chat (`bridge.grantShape`, optional), so the
+grant editors offer only what it allows and check it before they create anything.
+
 ### Three states, one function
 
 `connectionState` (`packages/database/src/connection-liveness.ts`) answers live, waiting or ended
