@@ -1,13 +1,16 @@
 /* A transparent window with no shadow of its own: the panel draws its lift
    inside the window's inset. It stays opaque, as a blur here would have only
-   this empty document to blur, and the page would show through as words. */
-:root {
+   this empty document to blur, and the page would show through as words.
+   The build may link this sheet before the shared one (Vite puts a shared
+   chunk of only CSS last), so the attribute autofill.html sets on <html>
+   wins over tokens.css and base.css, not the order. */
+html[data-panel="autofill"] {
   --fill-glass: var(--fill-float);
   --blur-glass: none;
 }
-html,
-body,
-#root {
+html[data-panel="autofill"],
+html[data-panel="autofill"] body,
+html[data-panel="autofill"] #root {
   background: transparent;
   overflow: hidden;
 }
