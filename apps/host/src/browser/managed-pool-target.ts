@@ -44,18 +44,20 @@ export interface ManagedBrowserPoolAccount {
 /** The Home's link to its account for its pooled browser, over HTTPS with its host credential. */
 export class ManagedBrowserPoolAccountClient implements ManagedBrowserPoolAccount {
   readonly #origin: URL;
-  readonly #credential: string;
+  readonly #credential: () => Promise<string | null>;
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
 
   constructor(options: {
     readonly controlApiOrigin: URL;
-    readonly hostCredential: string;
+    /** The account link's credential; none before the Home was claimed. */
+    readonly hostCredential: string | (() => Promise<string | null>);
     readonly fetch?: typeof fetch;
     readonly timeoutMs?: number;
   }) {
     this.#origin = options.controlApiOrigin;
-    this.#credential = options.hostCredential;
+    const credential = options.hostCredential;
+    this.#credential = typeof credential === "string" ? async () => credential : credential;
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#timeoutMs = options.timeoutMs ?? 15_000;
   }
@@ -69,10 +71,12 @@ export class ManagedBrowserPoolAccountClient implements ManagedBrowserPoolAccoun
   }
 
   async #send(method: "GET" | "PUT", path: string, body?: unknown) {
+    const credential = await this.#credential();
+    if (!credential) throw new Error("This Home is not linked to its account yet.");
     const response = await this.#fetch(new URL(path, this.#origin), {
       method,
       headers: {
-        authorization: `Bearer ${this.#credential}`,
+        authorization: `Bearer ${credential}`,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -209,8 +213,9 @@ export class ManagedBrowserPoolTargetService {
           failures = 0;
           const key = JSON.stringify(response.target);
           if (key !== this.#delivered) {
-            this.#delivered = key;
+            // Delivered once it has been taken: one that failed is delivered again.
             await this.#options.onTarget(response.target);
+            this.#delivered = key;
           }
           this.#settled = true;
         } else {

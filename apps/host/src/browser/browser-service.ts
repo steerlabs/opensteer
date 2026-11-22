@@ -796,6 +796,11 @@ interface BrowserServiceOptions {
   readonly targetResolver?: BrowserRuntimeTargetResolver;
   /** Each pooled Cloud Computer's coordinator, by its Runner; empty for an ordinary Home. */
   readonly pools?: ReadonlyMap<RunnerId, BrowserPoolCoordinator>;
+  /**
+   * A pooled Cloud Computer's Runner, before its coordinator is chosen: the startup sweep keeps
+   * that Runner's sessions for the coordinator to reattach or end with their notes.
+   */
+  readonly pooledRunner?: RunnerId;
 }
 
 /**
@@ -991,7 +996,8 @@ export class BrowserService {
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
-  readonly #pools: ReadonlyMap<RunnerId, BrowserPoolCoordinator>;
+  readonly #pools: Map<RunnerId, BrowserPoolCoordinator>;
+  readonly #pooledRunner: RunnerId | undefined;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
   readonly #poolAgentWaiters = new Map<string, Set<AbortController>>();
   readonly #closing = new AbortController();
@@ -1000,7 +1006,8 @@ export class BrowserService {
   #operationTail = Promise.resolve();
 
   constructor(options: BrowserServiceOptions) {
-    this.#pools = options.pools ?? new Map();
+    this.#pools = new Map(options.pools ?? []);
+    this.#pooledRunner = options.pooledRunner;
     // A personal Home has one pooled Cloud Computer at most: the startup sweep keeps its rows.
     if (this.#pools.size > 1) throw new Error("A Home serves at most one pooled browser.");
     this.#requireAgentAccess = options.requireAgentAccess ?? (async () => {});
@@ -1125,9 +1132,40 @@ export class BrowserService {
     return JSON.stringify([tab.profileId, tab.generation, tab.pageBinding.lineageId, documentId]);
   }
 
+  /**
+   * A pooled Cloud Computer's coordinator, chosen by its Home's target service for the target it
+   * read (phase B, W6): nothing else adds one, and a Home with no target has none.
+   */
+  async adoptPool(runnerId: RunnerId, coordinator: BrowserPoolCoordinator): Promise<void> {
+    if (this.#closed) throw unavailable("The Host browser service is shutting down.");
+    if (this.#pools.size && !this.#pools.has(runnerId))
+      throw new Error("A Home serves at most one pooled browser.");
+    if (this.#pools.has(runnerId)) throw new Error("This pooled browser already has a coordinator.");
+    this.#pools.set(runnerId, coordinator);
+    coordinator.setAdopter(this.#poolAdopter(runnerId));
+    // Its first recovery is not awaited here: a pool host that does not answer holds this
+    // browser's gate closed, never the Home's start.
+    void coordinator.recover().catch((error: unknown) => this.#onError(error));
+  }
+
+  /**
+   * A different target replaces this one: everything in flight on it ends (each with its
+   * outcome or its note), and the coordinator goes. The next one is adopted on its own.
+   */
+  async retirePool(runnerId: RunnerId, reason: string): Promise<void> {
+    const coordinator = this.#pools.get(runnerId);
+    if (!coordinator) return;
+    try {
+      await coordinator.retire(reason);
+    } finally {
+      this.#pools.delete(runnerId);
+    }
+    this.#onTabsChanged();
+  }
+
   async initialize(): Promise<void> {
     if (this.#personal) {
-      const pooled = [...this.#pools.keys()][0];
+      const pooled = [...this.#pools.keys()][0] ?? this.#pooledRunner;
       if (pooled) await this.#repository.failActiveBrowserSessions(undefined, pooled);
       else await this.#repository.failActiveBrowserSessions();
     }

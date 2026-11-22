@@ -139,6 +139,13 @@ export interface BrowserPoolCoordinatorOptions {
   /** How often finished bookkeeping past its retention is removed, idle or not. */
   readonly pruneEveryMs?: number;
   readonly onError?: (error: unknown) => void;
+  /**
+   * The target may be over: it answered so, signed, or this target's calls have gone unanswered
+   * (or been refused unsigned) for `unansweredMs`. The Home asks its account for its target.
+   */
+  readonly onSuspect?: () => void;
+  /** How long calls may go unanswered before the target is suspected (two minutes). */
+  readonly unansweredMs?: number;
   /** Tests lose a commit's reply, a read, or a journal acknowledgement. */
   readonly testHooks?: {
     readonly beginPark?: typeof beginBrowserPoolPark;
@@ -412,6 +419,9 @@ export class BrowserPoolCoordinator {
     let failures = 0;
     let failing: string | undefined;
     let refusals = 0;
+    /** Since when this target's steps have failed, and when it was last suspected for it. */
+    let failingSince: number | undefined;
+    let suspectedAt: number | undefined;
     while (!this.#closed && !this.#ended) {
       const changed = this.#changed.signal;
       let step: Step | undefined;
@@ -475,10 +485,26 @@ export class BrowserPoolCoordinator {
         }
         if (failing === step.name) failures = 0;
         refusals = 0;
+        failingSince = undefined;
+        suspectedAt = undefined;
         if (step.name !== "end" && step.name !== "reconnect") this.#refused = undefined;
         this.#publish(this.#slot);
       } catch (error) {
         this.#options.onError?.(error);
+        // Unanswered, or refused unsigned, for long: the account may have a new target (a term
+        // superseded is answered by the old host only with an unsigned refusal).
+        if (!(error instanceof BrowserPoolNotStarted)) {
+          const at = Date.now();
+          failingSince ??= at;
+          const bound = this.#options.unansweredMs ?? unansweredMs;
+          if (
+            at - failingSince >= bound &&
+            (suspectedAt === undefined || at - suspectedAt >= bound)
+          ) {
+            suspectedAt = at;
+            this.#options.onSuspect?.();
+          }
+        }
         const over = targetOver(error);
         if (over && !this.#released) {
           await this.#endOver(over).catch((failure: unknown) => this.#options.onError?.(failure));
@@ -680,6 +706,7 @@ export class BrowserPoolCoordinator {
     // The gate holds first: a caller is refused from now on.
     this.#publish(this.#slot);
     this.#settlePark("vetoed");
+    this.#options.onSuspect?.();
     this.#recovered = true;
     this.#recovering.resolve();
     try {
@@ -692,6 +719,41 @@ export class BrowserPoolCoordinator {
       this.#restartWanted = undefined;
       await announceBrowserPool(this.#options.database).catch(() => undefined);
     }
+  }
+
+  /**
+   * A different target replaces this one (a new term, or a replaced pool host: S7). What is in
+   * flight ends, never silently and never carried to the new guest: callers are refused at once
+   * (the gate's hold); a holder is asked to stop and, if it does not in time, gets its recorded
+   * outcome (unknown when something was sent, refused when nothing was); every channel, ticket
+   * and viewer of this runtime is closed; every session ends with its note (a ready one failed, a
+   * closing one closed: the target that held its guest is over). Then the loop ends.
+   */
+  async retire(reason: string): Promise<void> {
+    if (this.#released || this.#ended) return;
+    this.#over = reason;
+    this.#refused = { reason, since: new Date() };
+    this.#display = { phase: "failed", since: new Date() };
+    this.#publish(this.#slot);
+    this.#step?.preempt.abort(new BrowserPoolAdmissionClosed("This browser is not ready."));
+    this.#selecting?.abort(new BrowserPoolAdmissionClosed("This browser is not ready."));
+    this.#settlePark("vetoed");
+    await this.#adopter?.quiesce().catch((error: unknown) => this.#options.onError?.(error));
+    const idle = await withTimeout(this.gate.idle(), this.#options.quiesceMs ?? quiesceMs, {
+      timeoutError: () => new Error("A send still holds the browser."),
+    }).then(
+      () => true,
+      () => false,
+    );
+    if (!idle) await this.gate.settleHolders();
+    await this.#endOverSessions(reason);
+    this.#restartWanted?.done.reject(new BrowserPoolAdmissionClosed("This browser is not ready."));
+    this.#restartWanted = undefined;
+    this.#recovered = true;
+    this.#recovering.resolve();
+    await announceBrowserPool(this.#options.database).catch(() => undefined);
+    this.close();
+    await this.#running?.catch(() => undefined);
   }
 
   async #endOverSessions(reason: string): Promise<void> {
@@ -1677,6 +1739,8 @@ export class BrowserPoolCoordinator {
 }
 
 const discardAfterAttempts = 6;
+/** How long a target's calls may go unanswered before the Home asks its account again. */
+const unansweredMs = 120_000;
 /** How long choosing the next step may read before it is tried again. */
 const selectionMs = 30_000;
 const refusedRetryMs = 5_000;

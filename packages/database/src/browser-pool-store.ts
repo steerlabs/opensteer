@@ -1029,3 +1029,59 @@ export async function recordBrowserPoolTargetAnswer(
     )
     .execute(databaseOperationOptions());
 }
+
+/**
+ * A pooled target replaced by a different one (a new term, a replaced host): its slot row goes,
+ * its open calls are closed as unknown (never sent to the new target), and its relays go. The
+ * sessions already ended with their notes (`BrowserPoolCoordinator.retire`).
+ */
+export async function retireBrowserPoolTarget(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<void> {
+  await commitPersonalMutation(
+    database,
+    async (tx, mutation) => {
+      mutation.bumpResource("browser-placement");
+      await tx
+        .deleteFrom("browserPoolSlots")
+        .where("runnerId", "=", runnerId)
+        .execute(databaseOperationOptions());
+      const open = await tx
+        .selectFrom("browserPoolControllerCalls")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .where("settledAt", "is", null)
+        .orderBy("id")
+        .forUpdate()
+        .execute(databaseOperationOptions());
+      for (const { id } of open)
+        await tx
+          .updateTable("browserPoolControllerCalls")
+          .set({
+            result: { id, outcome: "unknown", reason: "target-replaced" },
+            settledAt: new Date(),
+          })
+          .where("id", "=", id)
+          .execute(databaseOperationOptions());
+      const relays = await tx
+        .selectFrom("browserPoolRelays")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .orderBy("id")
+        .forUpdate()
+        .execute(databaseOperationOptions());
+      if (relays.length)
+        await tx
+          .deleteFrom("browserPoolRelays")
+          .where(
+            "id",
+            "in",
+            relays.map(({ id }) => id),
+          )
+          .execute(databaseOperationOptions());
+    },
+    undefined,
+    "non-retrying",
+  );
+}
