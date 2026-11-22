@@ -348,8 +348,12 @@ On Linux and Opensteer Cloud Computers, a native browser profile keeps Chromium'
 restarts and crashes with scroll, standard form controls, navigation history and `sessionStorage`.
 Which Home tab a Chromium tab is, Chromium carries itself: each saved tab is in its own tab group
 whose title is its Home id, kept through discard and session restore, out of every page's reach and
-out of every streamed picture. A restored tab is the Home tab its title names or is closed with
-evidence; Opensteer keeps no second record to match tabs by address or position. Each restore
+out of every streamed picture. A restored tab is the Home tab its title alone names or is closed;
+a page reaches a session only as the runtime's own new page, a page opened by one already handed
+off, or the tab a claim or wake took by its name, and every other page is classified like a
+restored tab. Without a read of Chromium's tabs that agrees with itself at launch, Chromium starts
+again without its last session. Opensteer keeps no second record to match tabs by address or
+position. Each restore
 session reconciles against its own lineage's saved tab list, closing every restored tab outside it
 that no session has claimed (the latest restore session decides; no tab crosses to another
 surface), parking the rest and giving them up in the background if reconciliation passes its
