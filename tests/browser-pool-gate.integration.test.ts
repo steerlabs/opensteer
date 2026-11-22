@@ -49,6 +49,7 @@ type FastifyLike = {
   readonly server: { address(): unknown };
 };
 import { BrowserLocalProfiles } from "../apps/host/src/browser/browser-local-profiles.js";
+import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
 import {
   before,
   dyingAfter,
@@ -780,6 +781,69 @@ async function queuedInput(key: string) {
   };
   return { j, home, tabId, page, counts, size, viewer, busy, keys };
 }
+
+it("refuses a pooled broker's send at its write when a restart hold began after it was queued", async () => {
+  const q = await queuedInput("write-hold");
+  try {
+    // Two producers: each viewer sends its own messages in order, so the queued key is the
+    // other viewer's, waiting in the broker behind the first.
+    const { send } = await q.viewer();
+    const { send: other } = await q.viewer();
+    // Only this test sets the gate's facts from here on: the loop's own publications are ignored.
+    const gate = q.home.coordinator.gate;
+    const facts = gate.set.bind(gate);
+    q.home.coordinator.close();
+    const pinned = vi.spyOn(gate, "set").mockImplementation(() => {});
+    const key = (text: string) => ({
+      type: "input.key",
+      surfaceId: q.tabId,
+      key: text,
+      code: `Key${text.toUpperCase()}`,
+      modifiers: [],
+      text,
+      action: "down",
+    });
+    const written: string[] = [];
+    const first = Promise.withResolvers<void>();
+    let holding = false;
+    const relay = LocalBrowserRuntimeBridge.prototype.send;
+    const spy = vi
+      .spyOn(LocalBrowserRuntimeBridge.prototype, "send")
+      .mockImplementation(async function (this: LocalBrowserRuntimeBridge, channel, message) {
+        if (message.type === "input.key") {
+          written.push(message.key);
+          // The first key is held on its way out: the next one queues behind it.
+          if (message.key === "a" && !holding) {
+            holding = true;
+            await first.promise;
+          }
+        }
+        return relay.call(this, channel, message);
+      });
+    try {
+      const before = gate.held;
+      void send(key("a")).catch(() => undefined);
+      await vi.waitFor(() => expect(holding).toBe(true));
+      // Admitted at queue time, before any hold: its reservation is held while it waits.
+      void other(key("b")).catch(() => undefined);
+      await vi.waitFor(() => expect(gate.held).toBe(before + 2));
+      // The restart's hold begins after that, while "b" waits behind "a".
+      facts({ hold: "restart" });
+      first.resolve();
+      await vi.waitFor(() => expect(gate.held).toBe(before));
+      // The hold ends; a later key is written, and "b" never was.
+      facts({ hold: null });
+      void other(key("c")).catch(() => undefined);
+      await vi.waitFor(() => expect(written).toContain("c"));
+      expect(written).toEqual(["a", "c"]);
+    } finally {
+      spy.mockRestore();
+      pinned.mockRestore();
+    }
+  } finally {
+    await q.j.close();
+  }
+});
 
 it("delivers no pointer or wheel event aimed at a size the page no longer has, from a peer without capture revisions", async () => {
   const q = await queuedInput("queued-geometry");
