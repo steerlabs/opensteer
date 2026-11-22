@@ -99,6 +99,13 @@ export type BrowserPoolAgentReply =
 export type BrowserPoolAgentRefusal =
   "unauthenticated" | "unknown-slot" | "stale-request" | "bad-request" | "unavailable";
 
+/**
+ * An administration refusal's code. `profile-disk-missing`: the host's profile disk is not the
+ * mount it was told to expect, so it makes and erases no profile until an operator mounts it.
+ */
+export type BrowserPoolAgentAdminRefusal =
+  BrowserPoolAgentRefusal | "conflict" | "profile-disk-missing";
+
 /** The slot administration interface, for the provisioner only. */
 export type BrowserPoolAgentAdminRequest =
   | {
@@ -217,7 +224,7 @@ export type BrowserPoolAgentAdminReply =
   | { readonly op: "list"; readonly slots: readonly BrowserPoolAgentSlotSummary[] }
   | {
       readonly op: "refused";
-      readonly code: BrowserPoolAgentRefusal | "conflict";
+      readonly code: BrowserPoolAgentAdminRefusal;
       readonly message: string;
     };
 
@@ -267,15 +274,17 @@ export class BrowserPoolAgentUnavailable extends Error {
   override readonly name = "BrowserPoolAgentUnavailable";
   /**
    * Round G: set only when the pool host answered and its host key's signature over that
-   * answer verified. It is that answer's code. `conflict` and `unknown-slot` mean the call did
-   * nothing. A signed `unavailable` means the host answered but could not finish, so the effect
+   * answer verified. It is that answer's code. `conflict`, `profile-disk-missing` and
+   * `unknown-slot` mean the call did nothing, except that a delete refused with
+   * `profile-disk-missing` may have ended the guest and erased its credentials before the
+   * profile; the profile is kept, and the same delete repeated once the disk is back finishes. A signed `unavailable` means the host answered but could not finish, so the effect
    * may be partial; read the slot with `list`. Absent means no verified answer, so the effect is
    * unknown. The host answers `bad-request`, `unauthenticated` and `stale-request` without a
    * signature, so those arrive absent too.
    */
-  readonly refusal?: BrowserPoolAgentRefusal | "conflict";
+  readonly refusal?: BrowserPoolAgentAdminRefusal;
 
-  constructor(message: string, refusal?: BrowserPoolAgentRefusal | "conflict") {
+  constructor(message: string, refusal?: BrowserPoolAgentAdminRefusal) {
     super(message);
     if (refusal !== undefined) this.refusal = refusal;
   }
