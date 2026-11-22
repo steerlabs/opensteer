@@ -32,6 +32,7 @@ import {
 import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
 
 type Operation =
+  | "ensureHost"
   | "boot"
   | "sync"
   | "pause"
@@ -278,6 +279,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   hostRepairs = 0;
 
   async ensureHost(): Promise<boolean> {
+    await this.#enter("ensureHost", "host");
     if (!this.hostTableGone) return false;
     this.hostTableGone = false;
     this.hostRepairs += 1;
