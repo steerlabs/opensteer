@@ -332,6 +332,8 @@ export async function journey(
         reconcileStandardCdpAttempt: (attempt) =>
           guest.reconcileStandardCdpAttempt(attempt).then(({ runtimeBootId }) => runtimeBootId),
         wholeContextCdp: true,
+        // The loopback runtime follows a target without pictures too.
+        targetControl: true,
       } satisfies BrowserRuntimeTarget;
     }
   };

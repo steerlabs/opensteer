@@ -679,12 +679,9 @@ for (const change of ["same tab, other picture options", "the viewer leaves the 
           await send({ type: "stream.unsubscribe", surfaceId: tabId });
         // Other region and pacing options on the same tab, and back again.
         else {
-          await send({
-            type: "stream.subscribe",
-            surfaceId: tabId,
-            captureRegion: true,
-            frameWindow: 1,
-          });
+          // A region change, then a window change, then back.
+          await send({ type: "stream.subscribe", surfaceId: tabId, captureRegion: true });
+          await send({ type: "stream.subscribe", surfaceId: tabId, frameWindow: 1 });
           await send({ type: "stream.subscribe", surfaceId: tabId });
         }
         if (change === "same tab, other picture options") {
@@ -717,6 +714,174 @@ for (const change of ["same tab, other picture options", "the viewer leaves the 
       }
     } finally {
       await j.close();
+    }
+  });
+
+/** A control viewer of the journey's first page, with a busy page to queue input behind. */
+async function queuedInput(key: string) {
+  const j = await journey(key);
+  const home = await j.startHome();
+  const { sessionId, tabId } = await home.service.openTab(j.task.userId, j.command(key));
+  const page = await j.draft();
+  // The page counts the clicks and wheel events it receives.
+  await page.cdp.send("Runtime.evaluate", {
+    expression: `window.__clicks = 0; window.__wheels = 0;
+      addEventListener("click", () => window.__clicks++, true);
+      addEventListener("wheel", () => window.__wheels++, true);`,
+  });
+  const counts = async () =>
+    (
+      await page.cdp.send<{ result: { value: string } }>("Runtime.evaluate", {
+        expression: "JSON.stringify([window.__clicks, window.__wheels])",
+        returnByValue: true,
+      })
+    ).result.value;
+  const size = async () =>
+    JSON.parse(
+      (
+        await page.cdp.send<{ result: { value: string } }>("Runtime.evaluate", {
+          expression: "JSON.stringify([innerWidth, innerHeight])",
+          returnByValue: true,
+        })
+      ).result.value,
+    ) as [number, number];
+  const viewer = async () => {
+    const watching = j.viewer(home, sessionId, "control");
+    const attached = await watching.attaching;
+    const send = (message: Record<string, unknown>) =>
+      attached.handle(Buffer.from(JSON.stringify(message)), false);
+    await send({ type: "stream.subscribe", surfaceId: tabId });
+    await watching.next(0);
+    const refused = (reason: string) =>
+      watching.messages.some(
+        (message) => (message.error as { reason?: string } | undefined)?.reason === reason,
+      );
+    return { attached, send, watching, refused };
+  };
+  // The page is busy: the first input waits on it, the rest queue behind it in the runtime.
+  const busy = () =>
+    void page.cdp
+      .send("Runtime.evaluate", {
+        expression: "{ const until = Date.now() + 1500; while (Date.now() < until) {} }",
+      })
+      .catch(() => undefined);
+  const keys = async (send: (message: Record<string, unknown>) => Promise<void>, text: string) => {
+    for (const key of text)
+      for (const action of ["down", "up"])
+        await send({
+          type: "input.key",
+          surfaceId: tabId,
+          key,
+          code: `Key${key.toUpperCase()}`,
+          modifiers: [],
+          text: key,
+          action,
+        });
+  };
+  return { j, home, tabId, page, counts, size, viewer, busy, keys };
+}
+
+it("delivers no pointer or wheel event aimed at a size the page no longer has, from a peer without capture revisions", async () => {
+  const q = await queuedInput("queued-geometry");
+  try {
+    const { send, refused, attached } = await q.viewer();
+    const [width, height] = await q.size();
+    // Aimed at the picture before a resize: the size it names is not the page's now. Like an
+    // older peer, it names no capture or geometry revision.
+    const aimed = { surfaceId: q.tabId, viewportWidth: width + 13, viewportHeight: height + 7 };
+    q.busy();
+    await send({ type: "input.pointer", ...aimed, action: "down", button: "left", x: 0.5, y: 0.5 });
+    await send({ type: "input.pointer", ...aimed, action: "up", button: "left", x: 0.5, y: 0.5 });
+    await send({ type: "input.wheel", ...aimed, x: 0.5, y: 0.5, deltaX: 0, deltaY: 120 });
+    // A key after them is the barrier: once it reached the page, the lane passed them. For a
+    // peer without revisions on a page without capture, a stale point is dropped unannounced
+    // (`controller.ts`, dispatchPointer); with revisions it is refused as stale geometry.
+    await q.keys(send, "z");
+    await until(async () => expect(await q.page.value()).toBe('["unsent draftz",99]'));
+    expect(await q.counts()).toBe("[0,0]");
+    expect(refused("browser-input-canceled")).toBe(false);
+    attached.close();
+  } finally {
+    await q.j.close();
+  }
+});
+
+it("keeps keys queued before a resize in order, and refuses a pointer aimed at the old size", async () => {
+  const q = await queuedInput("queued-resize");
+  try {
+    const { send, attached } = await q.viewer();
+    const [width, height] = await q.size();
+    q.busy();
+    await q.keys(send, "ab");
+    // The resize waits behind what is queued on the page, so the keys meet the size they were
+    // typed at.
+    await send({
+      type: "viewport.set",
+      surfaceId: q.tabId,
+      width: width - 40,
+      height: height - 30,
+    });
+    await until(async () => expect(await q.page.value()).toBe('["unsent draftab",99]'));
+    await until(async () => expect((await q.size())[0]).toBe(width - 40));
+    await send({
+      type: "input.pointer",
+      surfaceId: q.tabId,
+      viewportWidth: width,
+      viewportHeight: height,
+      action: "down",
+      button: "left",
+      x: 0.5,
+      y: 0.5,
+    });
+    await q.keys(send, "z");
+    await until(async () => expect(await q.page.value()).toBe('["unsent draftabz",99]'));
+    expect(await q.counts()).toBe("[0,0]");
+    attached.close();
+  } finally {
+    await q.j.close();
+  }
+});
+
+it("ends the first viewer's queued keys when a second viewer takes over and the first goes, never the second's", async () => {
+  const q = await queuedInput("queued-takeover");
+  try {
+    const first = await q.viewer();
+    q.busy();
+    await q.keys(first.send, "abcd");
+    // A second viewer joins the same page: its own queue, which the first one's does not end.
+    const second = await q.viewer();
+    await q.keys(second.send, "x");
+    // Taken over, the first viewer's socket closes: what it had queued and not begun ends.
+    first.attached.close();
+    await until(async () => expect(await q.page.value()).toMatch(/^\["unsent draft[a]?x",99\]$/u));
+    expect(second.refused("browser-input-canceled")).toBe(false);
+    second.attached.close();
+  } finally {
+    await q.j.close();
+  }
+});
+
+for (const then of ["stays", "leaves"] as const)
+  it(`${then === "stays" ? "keeps a viewer's queued keys when it drops its pictures on the same tab" : "cancels a viewer's queued keys when it drops its pictures and then leaves"}`, async () => {
+    const q = await queuedInput(`queued-control-${then}`);
+    try {
+      const { send, refused, attached } = await q.viewer();
+      q.busy();
+      await q.keys(send, "abcd");
+      await send({ type: "stream.subscribe", surfaceId: q.tabId, frames: false });
+      if (then === "leaves") await send({ type: "stream.unsubscribe", surfaceId: q.tabId });
+      if (then === "stays") {
+        await until(async () => expect(await q.page.value()).toBe('["unsent draftabcd",99]'));
+        expect(refused("browser-input-canceled")).toBe(false);
+      } else {
+        await until(() => expect(refused("browser-input-canceled")).toBe(true));
+        await until(async () =>
+          expect(await q.page.value()).toMatch(/^\["unsent draft[a]?",99\]$/u),
+        );
+      }
+      attached.close();
+    } finally {
+      await q.j.close();
     }
   });
 
