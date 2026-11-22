@@ -1416,11 +1416,14 @@ describe("the mock Home's page through the native picture view", () => {
       host.mockAgentWork({ question: false });
       await host.load();
       const tabId = "mock-tab-1-0";
-      const viewer = host.tabViewer(tabId);
-      if (viewer?.kind !== "page") throw new Error("The mock tab is not a page");
+      // The mock's session summaries carry the surfaces they hold.
       const page = host
         .getSnapshot()
-        .browserSessions.find((candidate) => candidate.id === viewer.sessionId)!;
+        .browserSessions.find((candidate) =>
+          (candidate as unknown as { surfaces?: readonly { id: string }[] }).surfaces?.some(
+            (surface) => surface.id === tabId,
+          ),
+        )!;
       const container = document.createElement("div");
       document.body.append(container);
       root = createRoot(container);
