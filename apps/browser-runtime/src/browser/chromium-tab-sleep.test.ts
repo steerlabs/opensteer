@@ -9,6 +9,7 @@ import {
   type StandardCdpAttachment,
 } from "@opensteer/browser-runtime-core";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -2300,3 +2301,46 @@ it("stops a look for the tab helper that ran out: no target poll and no navigati
   }
   expect({ polls, navigations }).toEqual(after);
 }, 60_000);
+
+const brandedChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+it.skipIf(!existsSync(brandedChrome))(
+  "ends the look at once on a browser that refused the helper, so a tab asked to sleep a second in sleeps by closing (R9)",
+  async () => {
+    const server = await startFixtureServer();
+    const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-no-helper-"));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    // Branded Chrome ignores --load-extension: the helper is never there.
+    const launcher = new PlaywrightChromiumLauncher({
+      executablePath: brandedChrome,
+      chromiumSandbox: false,
+      headless: true,
+    });
+    const launched = await launcher.launch(nativeProfileRequest(directory));
+    const launchedAt = performance.now();
+    cleanup.push(() => launched.close());
+    const internal = launched as unknown as {
+      contextHandle: { lifecycle: unknown; lifecycleSettled: Promise<void> };
+    };
+    await internal.contextHandle.lifecycleSettled;
+    const lookMs = performance.now() - launchedAt;
+    process.stdout.write(`${JSON.stringify({ event: "r9.look-ended", lookMs })}\n`);
+    expect(internal.contextHandle.lifecycle).toBeUndefined();
+    expect(lookMs).toBeLessThan(1_000);
+    const ledger = new SurfaceLedger(launched.context);
+    await ledger.start();
+    cleanup.push(() => ledger.close());
+    const tab = await ledger.openSurface();
+    const cdp = ledger.binding(tab.id)!.cdp;
+    await cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article?id=no-helper` });
+    await waitLoaded(cdp, "/article");
+    // About a second after launch: the sleep is accepted, and the tab sleeps by closing.
+    expect(await ledger.sleep(tab.id, () => null)).toBe(true);
+    const sleptMs = performance.now() - launchedAt;
+    process.stdout.write(`${JSON.stringify({ event: "r9.slept", sleptMs })}\n`);
+    expect(sleptMs).toBeLessThan(3_000);
+    const woken = await ledger.wake(tab.id);
+    expect((woken.page as unknown as { openedFresh?: boolean }).openedFresh).toBe(true);
+  },
+  60_000,
+);

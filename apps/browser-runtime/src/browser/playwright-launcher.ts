@@ -65,6 +65,7 @@ import {
 import {
   ChromiumTabLifecycleBridge,
   ensureTabLifecycleExtension,
+  tabLifecycleExtensionIds,
   isInternalExtensionUrl,
   type ChromiumTabEntry,
 } from "./tab-lifecycle-extension.js";
@@ -699,6 +700,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     timing("prepare");
     await initializeNativePreferences(directory);
     const lifecycleExtensionDir = await ensureTabLifecycleExtension(directory);
+    const lifecycleExtensionIds = await tabLifecycleExtensionIds(lifecycleExtensionDir);
     timing("preferences");
     signal?.throwIfAborted();
     const context = await chromium.launchPersistentContext(
@@ -875,7 +877,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
       timing("target-discovery");
       signal?.throwIfAborted();
-      launched.establishTabLifecycle(this.tabLifecycleProbeMs);
+      launched.establishTabLifecycle(this.tabLifecycleProbeMs, lifecycleExtensionIds);
       // The runtime now owns the host; ending its first attachment must not
       // tear down sibling sessions or the native warm host.
       signal?.removeEventListener("abort", abort);
@@ -978,8 +980,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
   }
 
   /** Looks for the tab-lifecycle helper once, in the background. */
-  establishTabLifecycle(probeMs: number): void {
-    this.contextHandle.establishLifecycle(probeMs);
+  establishTabLifecycle(probeMs: number, extensionIds: readonly string[]): void {
+    this.contextHandle.establishLifecycle(probeMs, extensionIds);
   }
 
   onClose(listener: () => void): void {
@@ -1799,11 +1801,17 @@ class PlaywrightContextHandle implements BrowserContext {
    * it must stay awake, so the sleeper asks again later); then a tab sleeps by discard if the
    * helper answered, by closing if not. The only caller of a sleep is the sleeper's own pass.
    */
-  establishLifecycle(probeMs: number): void {
+  establishLifecycle(probeMs: number, extensionIds: readonly string[] = []): void {
     const candidate = this.lifecycleCandidate;
     if (!candidate) return;
     this.lifecyclePending = true;
-    this.lifecycleSettled = readRows(candidate, performance.now() + probeMs).then(async (rows) => {
+    const deadline = performance.now() + probeMs;
+    // R9: a browser that refused the helper says so at once; only one that serves it is waited for.
+    const look = candidate
+      .served(extensionIds)
+      .catch(() => true)
+      .then((served) => (served ? readRows(candidate, deadline) : null));
+    this.lifecycleSettled = look.then(async (rows) => {
       // A look that ran out stops before it is over: no poll or navigation follows it (R6).
       if (!rows) await candidate.stop();
       this.lifecyclePending = false;

@@ -1,5 +1,6 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   BrowserContext as PlaywrightBrowserContext,
@@ -211,6 +212,24 @@ export async function ensureTabLifecycleExtension(profileDirectory: string): Pro
   return extensionDir;
 }
 
+/**
+ * The ids Chromium gives the unpacked helper at `extensionDir`: its path's SHA-256, first 16 bytes,
+ * each hex digit as a letter from a to p. Both the path as given and as resolved, since Chromium
+ * may resolve links and a wrong id would read as an absent helper.
+ */
+export async function tabLifecycleExtensionIds(extensionDir: string): Promise<readonly string[]> {
+  const idFor = (dir: string) =>
+    [...createHash("sha256").update(dir).digest("hex").slice(0, 32)]
+      .map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16)))
+      .join("");
+  const resolved = await realpath(extensionDir).catch(() => extensionDir);
+  return [...new Set([idFor(extensionDir), idFor(resolved)])];
+}
+
+/** How a browser that refused the helper is told apart: asks, and the wait between them. */
+const servedChecks = 3;
+const servedCheckGapMs = 250;
+
 const workerWaitMs = 5_000;
 const inventoryReadAttempts = 3;
 const workerCallMs = 5_000;
@@ -248,6 +267,37 @@ export class ChromiumTabLifecycleBridge {
     this.context = context;
     this.browserCdp = browserCdp;
     this.privatePage = privatePage;
+  }
+
+  /**
+   * R9: whether the browser serves the helper's own manifest at one of `ids`. A browser that
+   * loaded it serves it from the moment the launch returns (20 of 20 starts of the pinned
+   * Chromium, before its worker ran); one that refused `--load-extension` (branded Chrome) answers
+   * ERR_BLOCKED_BY_CLIENT at once. Asked a few times before it is called absent.
+   */
+  async served(ids: readonly string[]): Promise<boolean> {
+    const page = this.privatePage;
+    if (!page || ids.length === 0) return true;
+    try {
+      for (let check = 0; check < servedChecks && !this.stopped; check++) {
+        if (check > 0) await new Promise((resolve) => setTimeout(resolve, servedCheckGapMs));
+        for (const id of ids) {
+          if (page.isClosed()) return true;
+          const response = await withTimeout(
+            page.goto(`chrome-extension://${id}/manifest.json`),
+            cdpStepMs,
+            { timeoutError: () => new Error("Helper manifest check timed out.") },
+          ).catch(() => null);
+          if (response?.ok()) return true;
+        }
+      }
+      return false;
+    } finally {
+      if (!page.isClosed())
+        await withTimeout(page.goto("about:blank"), 500, {
+          timeoutError: () => new Error("Helper anchor reset timed out."),
+        }).catch(() => undefined);
+    }
   }
 
   private async runningServiceWorkerTarget(timeoutMs = cdpStepMs): Promise<string | null> {
