@@ -260,8 +260,12 @@ export function chromeSignInAvailability(
  */
 export type BrowserSignInContext = "browser" | "request" | "page";
 
-/** What is wrong, then the single action that fixes it, when there is one. */
+/**
+ * What is wrong, then the single action that fixes it, when there is one, with the addresses its
+ * words hold: the site's domain, which a client draws as an address inside the sentence.
+ */
 export interface BrowserSignInProblemCopy {
+  readonly addresses: readonly string[];
   readonly fix: string | null;
   readonly title: string;
 }
@@ -285,6 +289,7 @@ export function browserSignInProblemCopy(
   switch (problem) {
     case "no-chrome":
       return {
+        addresses: [],
         fix:
           input.connectHere === false
             ? "Connect Chrome from Opensteer on your computer."
@@ -293,25 +298,33 @@ export function browserSignInProblemCopy(
       };
     case "chrome-offline":
       return input.sourceName
-        ? { fix: "Open that browser on its computer.", title: `${input.sourceName} is offline` }
-        : { fix: "Open Chrome on that computer.", title: "Chrome is offline" };
+        ? {
+            addresses: [],
+            fix: "Open that browser on its computer.",
+            title: `${input.sourceName} is offline`,
+          }
+        : { addresses: [], fix: "Open Chrome on that computer.", title: "Chrome is offline" };
     case "choose-source":
       return {
+        addresses: [domain],
         fix: "Choose one.",
         title: `More than one Chrome profile is signed in to ${domain}`,
       };
     case "session-closed":
       return input.context === "request"
         ? {
+            addresses: [domain],
             fix: `Your agent signs in to ${domain} the next time it needs it.`,
             title: "The agent’s browser closed",
           }
         : {
+            addresses: [],
             fix: "Open it again to sign in.",
             title: input.context === "page" ? "This page was closed" : "This browser closed",
           };
     case "runtime-outdated":
       return {
+        addresses: [],
         fix:
           input.context === "page"
             ? "Update Opensteer on the computer it runs on, then open the page again."
@@ -323,6 +336,7 @@ export function browserSignInProblemCopy(
       };
     case "unsupported-operation":
       return {
+        addresses: [domain],
         fix: `Sign in to ${domain} on the page itself.`,
         title:
           input.context === "page"
@@ -332,29 +346,42 @@ export function browserSignInProblemCopy(
     case "no-state":
       return input.sourceName
         ? {
+            addresses: [domain],
             fix: `Sign in to ${domain} in that Chrome.`,
             title: `${chrome} isn’t signed in to ${domain}`,
           }
-        : { fix: `Sign in to ${domain} in Chrome.`, title: `Chrome isn’t signed in to ${domain}` };
+        : {
+            addresses: [domain],
+            fix: `Sign in to ${domain} in Chrome.`,
+            title: `Chrome isn’t signed in to ${domain}`,
+          };
     case "stopped":
       return {
+        addresses: [domain],
         fix: "Open the Opensteer extension in Chrome and choose Share again.",
         title: `Sharing ${domain} is stopped in ${chrome}`,
       };
     case "chrome-blocked":
       return {
+        addresses: [domain],
         fix: "In Chrome, right-click the extension’s icon and set “This can read and change site data” to On all sites.",
         title: `Chrome doesn’t let the Opensteer extension read ${domain}`,
       };
     case "limit":
       return {
+        addresses: [],
         fix: "Open the Opensteer extension in Chrome and choose Allow more today.",
         title: `${chrome} reached today’s limit of new sites`,
       };
     case "not-allowed":
-      return { fix: null, title: "Opensteer can’t sign in to itself or to sites on this computer" };
+      return {
+        addresses: [],
+        fix: null,
+        title: "Opensteer can’t sign in to itself or to sites on this computer",
+      };
     case "site-removed":
       return {
+        addresses: [domain],
         fix:
           input.context === "request" ? "Allow it again to sign in." : "Sign in again to allow it.",
         title: `${domain} was removed from your allowed sites`,
@@ -362,6 +389,7 @@ export function browserSignInProblemCopy(
     case "unsupported":
     case "too-large":
       return {
+        addresses: [domain],
         fix:
           input.context === "request"
             ? `Sign in to ${domain} yourself in the agent’s browser instead.`

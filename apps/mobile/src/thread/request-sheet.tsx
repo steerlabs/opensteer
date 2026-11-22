@@ -1167,7 +1167,7 @@ function BrowserSignInBody(props: {
         accessibilityLabel={
           status.detail === null
             ? plainSentence(title)
-            : `${plainSentence(title)}. ${status.detail}`
+            : `${plainSentence(title)}. ${plainSentence(status.detail)}`
         }
         style={styles.signInStatus}
       >
@@ -1176,9 +1176,7 @@ function BrowserSignInBody(props: {
           <AddressSentence parts={title} role="secondaryMedium" style={styles.shrink} />
         </View>
         {status.detail === null ? null : (
-          <AppText role="caption" tone="soft">
-            {status.detail}
-          </AppText>
+          <AddressSentence parts={status.detail} role="caption" tone="soft" />
         )}
       </View>
       {candidates.length > 1 && session.allowed === null ? (

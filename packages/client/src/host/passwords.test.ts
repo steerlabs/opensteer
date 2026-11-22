@@ -358,6 +358,7 @@ describe("agent sign-in steps in the transcript", () => {
     expect(
       chromeCookiesStep({ status: "copied", site, sourceName: "Work", profileName: null }),
     ).toEqual({
+      addresses: ["example.com"],
       hint: "From Work",
       label: "Copied your Chrome sign-in for example.com",
       succeeded: true,

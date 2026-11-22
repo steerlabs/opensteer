@@ -253,13 +253,15 @@ export function readChromeCookiesResult(text: string): ChromeCookiesResult | nul
 }
 
 export interface SignInStep {
+  /** The addresses its label and hint hold, so a client draws each as one in its sentence. */
+  readonly addresses: readonly string[];
   readonly hint: string;
   readonly label: string;
   /** Whether the step did what it asked; null while it is still on its way. */
   readonly succeeded: boolean | null;
 }
 
-const notAllowed: SignInStep = { hint: "", label: "Not allowed", succeeded: false };
+const notAllowed: SignInStep = { addresses: [], hint: "", label: "Not allowed", succeeded: false };
 
 /** What one `saved_login_request` call came to, in the words its Request card uses. */
 export function savedLoginStep(result: SavedLoginResult): SignInStep {
@@ -267,12 +269,14 @@ export function savedLoginStep(result: SavedLoginResult): SignInStep {
   switch (result.status) {
     case "ready":
       return {
+        addresses: [domain, result.account],
         hint: `As ${result.account}`,
         label: `Ready to sign in to ${domain}`,
         succeeded: true,
       };
     case "pending":
       return {
+        addresses: [domain],
         hint: "Waiting for you",
         label: `Asked to use your saved login for ${domain}`,
         succeeded: null,
@@ -281,6 +285,7 @@ export function savedLoginStep(result: SavedLoginResult): SignInStep {
       return notAllowed;
     case "unavailable":
       return {
+        addresses: [domain],
         hint: savedLoginUnavailableMessage(result.reason, result.site),
         label: `Couldn’t use a saved login for ${domain}`,
         succeeded: false,
@@ -294,6 +299,7 @@ export function chromeCookiesStep(result: ChromeCookiesResult): SignInStep {
   switch (result.status) {
     case "copied":
       return {
+        addresses: [domain],
         hint:
           result.profileName === null
             ? `From ${result.sourceName}`
@@ -303,6 +309,7 @@ export function chromeCookiesStep(result: ChromeCookiesResult): SignInStep {
       };
     case "pending":
       return {
+        addresses: [domain],
         hint: "Waiting for you",
         label: `Asked to copy your Chrome sign-in for ${domain}`,
         succeeded: null,
@@ -311,6 +318,7 @@ export function chromeCookiesStep(result: ChromeCookiesResult): SignInStep {
       return notAllowed;
     case "unavailable":
       return {
+        addresses: [domain],
         hint: chromeCookiesUnavailableMessage(result.reason, result.site),
         label: `Couldn’t copy your Chrome sign-in for ${domain}`,
         succeeded: false,

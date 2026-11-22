@@ -1056,7 +1056,10 @@ describe("RequestSheetContent external requests", () => {
     await render(surface(signInRequest()), vi.fn(), { inspect });
     await settle();
 
-    expect(text()).toContain("Sharing github.com is stopped in Chrome on Mac");
+    // The site drawn as an address, in the sentence: read without the characters that hold it whole.
+    expect(text().replace(/[\u2060\u200B]/gu, "")).toContain(
+      "Sharing github.com is stopped in Chrome on Mac",
+    );
     expect(text()).toContain("Open the Opensteer extension in Chrome and choose Share again.");
     expect(button("Allow").disabled).toBe(true);
   });

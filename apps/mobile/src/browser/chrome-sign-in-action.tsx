@@ -19,11 +19,18 @@ import { color, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { ChromeChoice, ChromeChoices } from "./chrome-sign-in-parts.js";
 import { AddressSentence } from "../ui/address-text.js";
+import { sentenceWith } from "../ui/sentence-addresses.js";
 import { plainSentence, sentence, type SentencePart } from "../ui/sentence-parts.js";
 
 type Result =
   | { readonly kind: "signed-in"; readonly message: readonly SentencePart[] }
-  | { readonly kind: "problem"; readonly fix: string | null; readonly title: string }
+  | {
+      readonly kind: "problem";
+      /** The addresses its words hold, drawn as addresses in them. */
+      readonly addresses: readonly string[];
+      readonly fix: string | null;
+      readonly title: string;
+    }
   | {
       readonly kind: "choose";
       readonly candidates: BrowserSourceInspection["candidates"];
@@ -166,6 +173,7 @@ export function ChromeSignInAction(props: {
         clientIssue(error, { operation: "action", label: "sign in" })?.code !== "rejected";
       show(
         {
+          addresses: [],
           fix: "Try again.",
           kind: "problem",
           title: unconfirmed ? "Couldn’t confirm the sign-in" : "Sign-in didn’t finish",
@@ -252,11 +260,17 @@ export function ChromeSignInAction(props: {
         <AddressSentence parts={result.message} role="caption" tone="soft" />
       ) : result.kind === "problem" ? (
         <View style={styles.problem}>
-          <AppText role="secondaryMedium">{result.title}</AppText>
+          {/* Signing in to a site is a decision: the site is drawn whole, in its sentence. */}
+          <AddressSentence
+            parts={sentenceWith(result.title, result.addresses)}
+            role="secondaryMedium"
+          />
           {result.fix === null ? null : (
-            <AppText role="caption" tone="soft">
-              {result.fix}
-            </AppText>
+            <AddressSentence
+              parts={sentenceWith(result.fix, result.addresses)}
+              role="caption"
+              tone="soft"
+            />
           )}
         </View>
       ) : (

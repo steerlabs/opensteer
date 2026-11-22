@@ -8,6 +8,7 @@ import type {
   BrowserSignInOutcome,
   BrowserSourceInspection,
 } from "@opensteer/protocol/browser-sources";
+import { sentenceWith } from "../ui/sentence-addresses.js";
 import { sentence, type SentencePart } from "../ui/sentence-parts.js";
 
 export type DotTone = "green" | "amber" | "red" | "muted" | "ember";
@@ -27,30 +28,44 @@ export function signInSummaryLine(
   availability: ChromeSignInAvailability | null,
   allowed: boolean,
   site: string,
-): { readonly live: boolean; readonly text: string; readonly tone: DotTone } | null {
+): {
+  readonly live: boolean;
+  /** Its words, the site they name drawn as an address. */
+  readonly text: readonly SentencePart[];
+  readonly tone: DotTone;
+} | null {
   if (allowed)
-    return { live: true, text: "Allowed. Finishes when that browser is back.", tone: "amber" };
+    return { live: true, text: ["Allowed. Finishes when that browser is back."], tone: "amber" };
   if (availability === null) return null;
   switch (availability.kind) {
     case "no-chrome":
-      return { live: false, text: signInCopy("no-chrome", site, null).title, tone: "muted" };
+      return { live: false, text: copyTitle(signInCopy("no-chrome", site, null)), tone: "muted" };
     case "choices": {
       const [first] = availability.choices;
       const name = availability.choices.length === 1 ? (first?.name ?? null) : null;
       if (first?.online !== true) {
-        return { live: false, text: signInCopy("chrome-offline", site, name).title, tone: "amber" };
+        return {
+          live: false,
+          text: copyTitle(signInCopy("chrome-offline", site, name)),
+          tone: "amber",
+        };
       }
       return name === null
-        ? { live: false, text: "Choose which Chrome to use", tone: "green" }
-        : { live: false, text: `Ready in ${name}`, tone: "green" };
+        ? { live: false, text: ["Choose which Chrome to use"], tone: "green" }
+        : { live: false, text: [`Ready in ${name}`], tone: "green" };
     }
     case "problem":
       return {
         live: false,
-        text: signInCopy(availability.problem, site, availability.sourceName).title,
+        text: copyTitle(signInCopy(availability.problem, site, availability.sourceName)),
         tone: availability.problem === "chrome-offline" ? "amber" : "red",
       };
   }
+}
+
+/** A problem's title as words and the site it names, drawn as an address. */
+function copyTitle(copy: ReturnType<typeof browserSignInProblemCopy>): readonly SentencePart[] {
+  return sentenceWith(copy.title, copy.addresses);
 }
 
 export function signInCopy(
@@ -72,7 +87,8 @@ export function signInStatus(input: {
   readonly error: string | null;
   readonly site: string;
 }): {
-  readonly detail: string | null;
+  /** What happens next; one that names the site comes as parts too. */
+  readonly detail: readonly SentencePart[] | null;
   readonly live: boolean;
   /** Its words; one that names the site comes as parts, the site drawn as an address. */
   readonly title: string | readonly SentencePart[];
@@ -82,8 +98,9 @@ export function signInStatus(input: {
   const domain = browserSiteLabel(site);
   if (input.allowed !== null) {
     const name = input.allowed.status === "problem" ? input.allowed.sourceName : null;
+    const offline = signInCopy("chrome-offline", site, name);
     return {
-      detail: `${signInCopy("chrome-offline", site, name).fix} This finishes by itself.`,
+      detail: sentenceWith(`${offline.fix} This finishes by itself.`, offline.addresses),
       live: true,
       title: `Allowed. Waiting for ${name ?? "Chrome"}`,
       tone: "amber",
@@ -93,7 +110,7 @@ export function signInStatus(input: {
     return input.error === null
       ? { detail: null, live: true, title: "Checking Chrome…", tone: "muted" }
       : {
-          detail: `${input.error} It checks again by itself.`,
+          detail: [`${input.error} It checks again by itself.`],
           live: false,
           title: "Chrome couldn’t be checked",
           tone: "muted",
@@ -102,7 +119,12 @@ export function signInStatus(input: {
   switch (availability.kind) {
     case "no-chrome": {
       const copy = signInCopy("no-chrome", site, null);
-      return { detail: copy.fix, live: false, title: copy.title, tone: "muted" };
+      return {
+        detail: copy.fix === null ? null : sentenceWith(copy.fix, copy.addresses),
+        live: false,
+        title: copyTitle(copy),
+        tone: "muted",
+      };
     }
     case "choices": {
       const [first] = availability.choices;
@@ -110,21 +132,24 @@ export function signInStatus(input: {
       if (first?.online !== true) {
         const copy = signInCopy("chrome-offline", site, single?.name ?? null);
         return {
-          detail: `${copy.fix ?? ""} Allow now; this finishes by itself when it opens.`.trim(),
+          detail: sentenceWith(
+            `${copy.fix ?? ""} Allow now; this finishes by itself when it opens.`.trim(),
+            copy.addresses,
+          ),
           live: false,
-          title: copy.title,
+          title: copyTitle(copy),
           tone: "amber",
         };
       }
       return single !== null
         ? {
-            detail: "Allow signs your agent in now.",
+            detail: ["Allow signs your agent in now."],
             live: false,
             title: [`${single.name} is signed in to `, { address: domain }],
             tone: "green",
           }
         : {
-            detail: "Choose which one to use.",
+            detail: ["Choose which one to use."],
             live: false,
             title: sentence`Several Chrome profiles are signed in to ${domain}`,
             tone: "green",
@@ -133,9 +158,9 @@ export function signInStatus(input: {
     case "problem": {
       const copy = signInCopy(availability.problem, site, availability.sourceName);
       return {
-        detail: `${copy.fix ?? ""} This updates by itself.`.trim(),
+        detail: sentenceWith(`${copy.fix ?? ""} This updates by itself.`.trim(), copy.addresses),
         live: false,
-        title: copy.title,
+        title: copyTitle(copy),
         tone: availability.problem === "chrome-offline" ? "amber" : "red",
       };
     }

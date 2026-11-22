@@ -483,18 +483,16 @@ export function joinedSentencesIn(file: string, source: string): Finding[] {
 }
 
 /**
- * The joined sentences rule 4 found in `packages/client` when it came, each drawn raw by a client
- * today: to be made parts, one by one. A new one is a failure; one made parts leaves this list.
+ * The joined sentences rule 4 found in `packages/client` that are still drawn raw, each with why
+ * it may be for now: none is a decision about a site. A new one is a failure; one made parts must
+ * leave this list. Signing in and saving a password, decisions, were made parts (F14).
  */
-export const knownJoinedSentences: readonly string[] = [
-  "packages/client/src/host/agent-activity-model.ts: activeLabel",
-  "packages/client/src/host/agent-activity-model.ts: label",
-  "packages/client/src/host/browser-sign-in.ts: fix",
-  "packages/client/src/host/browser-sign-in.ts: title",
-  "packages/client/src/host/password-save.ts: title",
-  "packages/client/src/host/passwords.ts: label",
-];
-
+export const knownJoinedSentences: Readonly<Record<string, string>> = {
+  "packages/client/src/host/agent-activity-model.ts: activeLabel":
+    "a transcript's activity line naming the site an agent is working on: a record, not a decision",
+  "packages/client/src/host/agent-activity-model.ts: label":
+    "a transcript's activity line naming the site an agent worked on: a record, not a decision",
+};
 function appFiles(directory: string): string[] {
   return readdirSync(directory, { recursive: true, withFileTypes: true })
     .filter(
@@ -624,9 +622,9 @@ describe("a sentence assembled elsewhere from data says which addresses it holds
     const kinds = new Set(
       found().map(({ file, snippet }) => `${file}: ${snippet.split(":", 1)[0]}`),
     );
-    expect([...kinds].filter((kind) => !knownJoinedSentences.includes(kind))).toEqual([]);
+    expect([...kinds].filter((kind) => !(kind in knownJoinedSentences))).toEqual([]);
     // One made parts leaves the list.
-    expect(knownJoinedSentences.filter((kind) => !kinds.has(kind))).toEqual([]);
+    expect(Object.keys(knownJoinedSentences).filter((kind) => !kinds.has(kind))).toEqual([]);
   });
 
   it("sees the consent build 9 walked, and not one that says its addresses", () => {

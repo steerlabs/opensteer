@@ -23,6 +23,7 @@ import {
   type,
 } from "../theme.js";
 import { AppText, monoFontFamily, StatusDot } from "../ui/primitives.js";
+import { AddressSentence } from "../ui/address-text.js";
 import { ActionLine } from "../ui/action-line.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
@@ -259,9 +260,12 @@ function AnswerCard(props: RequestCardProps): ReactNode {
           {signInLine === null ? null : (
             <View style={styles.signInLine}>
               <StatusDot live={signInLine.live} tone={signInLine.tone} />
-              <AppText role="caption" style={styles.shrink} tone="soft">
-                {signInLine.text}
-              </AppText>
+              <AddressSentence
+                parts={signInLine.text}
+                role="caption"
+                style={styles.shrink}
+                tone="soft"
+              />
             </View>
           )}
           {presentation.detail === undefined ||

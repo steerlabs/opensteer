@@ -15,6 +15,8 @@ export const passwordSavePasswordLabel = "Password";
 export const passwordSaveMask = "••••••••";
 
 export interface PasswordSavePrompt {
+  /** The addresses its title holds: the site, drawn as an address inside the question. */
+  readonly addresses: readonly string[];
   readonly title: string;
   readonly detail: string;
   /** The account being saved; absent for setup. */
@@ -25,6 +27,7 @@ export interface PasswordSavePrompt {
 export function passwordSavePrompt(offer: PersonSaveOffer): PasswordSavePrompt {
   if (offer.kind === "setup")
     return {
+      addresses: [],
       title: "Save logins you type?",
       detail:
         "Set up Opensteer Passwords to keep logins on this Mac, fill them from any device and let agents sign in for you. This one isn’t kept.",
@@ -32,6 +35,7 @@ export function passwordSavePrompt(offer: PersonSaveOffer): PasswordSavePrompt {
       action: passwordSaveSetUpAction,
     };
   return {
+    addresses: [browserSiteLabel(offer.origin)],
     title: `Save password for ${browserSiteLabel(offer.origin)}?`,
     detail:
       "Kept in Opensteer Passwords on your Mac. Fill it later from any device, and let agents use it when you allow them.",
