@@ -143,6 +143,8 @@ export interface BrowserSessionRestore {
     surfaceId: BrowserSurfaceId,
     url?: string,
     own?: (page: BrowserPage) => void,
+    /** Aborted when the creation that asked was abandoned: a queued wake for it does not run. */
+    signal?: AbortSignal,
   ): Promise<BrowserPage | null>;
   /**
    * Reconciles restored tabs against the Home's authoritative saved-tab list,
@@ -168,6 +170,8 @@ export interface BrowserContext {
   createPage(options?: {
     readonly restore?: unknown;
     readonly own?: (page: BrowserPage) => void;
+    /** Aborted when the creation that asked was abandoned: a queued wake for it does not run. */
+    readonly signal?: AbortSignal;
   }): Promise<BrowserPage>;
   /**
    * Releases engine-held resources for a sleeping tab that will not be woken.
@@ -176,6 +180,8 @@ export interface BrowserContext {
   releaseRestore?(restore: unknown): Promise<boolean> | boolean;
   /** Present only on engines that persist and reconcile native session restore. */
   readonly sessionRestore?: BrowserSessionRestore | undefined;
+  /** True on a native profile's context: the runtime never takes a root page from `pages()`. */
+  readonly nativeProfile?: boolean;
   /**
    * Set by the runtime where it reads memory pressure: awaited before `createPage` makes a page,
    * so a burst of opens sheds sleeping-eligible tabs first. It never rejects.

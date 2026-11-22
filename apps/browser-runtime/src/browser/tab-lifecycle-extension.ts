@@ -13,7 +13,8 @@ export const tabLifecycleExtensionDirName = ".opensteer-tab-lifecycle-extension"
 
 /**
  * Minimal MV3 extension bundled with the Linux runtime for native profiles only.
- * Permissions are strictly `tabs`, `tabGroups` and `debugger`: no host permissions, no content
+ * Permissions are strictly `tabs`, `tabGroups`, `storage` (session storage only, for which tab
+ * each named group was made for) and `debugger`: no host permissions, no content
  * scripts, no `externally_connectable`, no network access.
  */
 const extensionManifestJson = JSON.stringify(
@@ -21,7 +22,7 @@ const extensionManifestJson = JSON.stringify(
     manifest_version: 3,
     name: "Opensteer Tab Lifecycle Helper",
     version: "0.1.0",
-    permissions: ["tabs", "debugger", "tabGroups"],
+    permissions: ["tabs", "debugger", "tabGroups", "storage"],
     background: {
       service_worker: "sw.js",
     },
@@ -33,19 +34,63 @@ const extensionManifestJson = JSON.stringify(
 /** The helper's service worker source; exported so its rules can be tested alone. */
 export const extensionServiceWorkerJs = `// Opensteer internal tab lifecycle helper (native profiles only).
 // A saved tab's identity is the title of its own tab group: Chromium keeps it through discard and
-// session restore, and no page can read or change it. The helper keeps no memory of its own.
-// A named group belongs to the one tab it was made for: a tab Chromium adds to it later (a link
-// opened from that tab) is taken out again, so a group title never names two tabs for long.
-async function keepGroupSingle(tabId, groupId) {
-  if (typeof tabId !== "number" || typeof groupId !== "number" || groupId < 0) return;
-  const members = await chrome.tabs.query({ groupId });
-  if (members.length > 1) await chrome.tabs.ungroup(tabId).catch(() => {});
+// session restore, and no page can read or change it.
+// The worker records which tab each group it made was made for (chrome.storage.session: it survives
+// a worker restart and ends with the browser). Any other member of such a group is taken out
+// whenever it is seen, whatever the count, and the named tab leaves its group only in nameTab.
+// After a browser restart the record is empty and nothing in it is read: the runtime decides.
+const OWNERS = "opensteer.groupOwners";
+let ownersWrite = Promise.resolve();
+async function readOwners() {
+  return (await chrome.storage.session.get(OWNERS))[OWNERS] ?? {};
 }
+function updateOwners(change) {
+  ownersWrite = ownersWrite.then(async () => {
+    const owners = await readOwners();
+    change(owners);
+    await chrome.storage.session.set({ [OWNERS]: owners });
+  }).catch(() => {});
+  return ownersWrite;
+}
+async function guardGroup(tabId, groupId) {
+  if (typeof tabId !== "number" || typeof groupId !== "number" || groupId < 0) return;
+  await ownersWrite;
+  const owner = (await readOwners())[groupId];
+  if (owner !== undefined && owner !== tabId) await chrome.tabs.ungroup(tabId).catch(() => {});
+}
+// Chromium discards no tab by itself (memory pressure, Memory Saver): only the runtime does, so a
+// tab's page is never replaced behind it.
+function keepFromAutoDiscard(tabId) {
+  if (typeof tabId === "number") chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+}
+chrome.tabs.query({}).then((tabs) => tabs.forEach((tab) => keepFromAutoDiscard(tab.id)), () => {});
 chrome.tabs.onCreated.addListener((tab) => {
-  void keepGroupSingle(tab.id, tab.groupId);
+  keepFromAutoDiscard(tab.id);
+  void guardGroup(tab.id, tab.groupId);
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if ("groupId" in changeInfo) void keepGroupSingle(tabId, changeInfo.groupId);
+  if ("groupId" in changeInfo) void guardGroup(tabId, changeInfo.groupId);
+});
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  keepFromAutoDiscard(addedTabId);
+  void updateOwners((owners) => {
+    for (const groupId of Object.keys(owners))
+      if (owners[groupId] === removedTabId) owners[groupId] = addedTabId;
+  });
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void ownersWrite.then(async () => {
+    const owners = await readOwners();
+    for (const groupId of Object.keys(owners)) {
+      if (owners[groupId] !== tabId) continue;
+      // The named tab is gone: no tab left in its group inherits its name.
+      const members = await chrome.tabs.query({ groupId: Number(groupId) }).catch(() => []);
+      for (const member of members) await chrome.tabs.ungroup(member.id).catch(() => {});
+      await updateOwners((current) => {
+        delete current[groupId];
+      });
+    }
+  });
 });
 globalThis.__opensteer = {
   async inventory() {
@@ -62,7 +107,11 @@ globalThis.__opensteer = {
         targetByTabId.set(target.tabId, target.id);
       }
     }
-    return tabs
+    // The read agrees with itself only if every tab's group is among the groups read.
+    const consistent = tabs.every(
+      (tab) => typeof tab.groupId !== "number" || tab.groupId < 0 || titleByGroupId.has(tab.groupId),
+    );
+    const rows = tabs
       .sort((a, b) => a.windowId - b.windowId || a.index - b.index)
       .map((tab) => ({
         tabId: tab.id,
@@ -79,16 +128,27 @@ globalThis.__opensteer = {
             ? titleByGroupId.get(tab.groupId) || null
             : null,
       }));
+    return { consistent, rows };
   },
   async nameTab(tabId, name) {
     const tab = await chrome.tabs.get(tabId);
     if (typeof tab.groupId === "number" && tab.groupId >= 0) {
       const group = await chrome.tabGroups.get(tab.groupId);
       const members = await chrome.tabs.query({ groupId: tab.groupId });
-      if (group.title === name && members.length === 1) return true;
+      const owner = (await readOwners())[tab.groupId];
+      if (group.title === name && members.length === 1 && (owner === undefined || owner === tabId)) {
+        // Already this tab's own name (after a restart, the record is taken up again here).
+        await updateOwners((owners) => {
+          owners[tab.groupId] = tabId;
+        });
+        return true;
+      }
       await chrome.tabs.ungroup(tabId);
     }
     const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+    await updateOwners((owners) => {
+      owners[groupId] = tabId;
+    });
     await chrome.tabGroups.update(groupId, { title: name, collapsed: false });
     return true;
   },
@@ -118,6 +178,12 @@ globalThis.__opensteer = {
 };
 `;
 
+/**
+ * The longest name the runtime writes or reads (K10): the smaller of 512 and what Chromium keeps
+ * through a restart (4096 measured). A longer title is that row's problem: it names nothing.
+ */
+export const tabNameBound = 512;
+
 const tabEntrySchema = z.object({
   tabId: z.number().int(),
   windowId: z.number().int(),
@@ -129,12 +195,12 @@ const tabEntrySchema = z.object({
   status: z.string(),
   targetId: z.string().nullable(),
   /** The title of the tab's own group: the Home surface id Opensteer named it with, or null. */
-  identity: z.string().max(256).nullable().optional(),
+  identity: z.string().max(tabNameBound).nullable().optional().catch(null),
 });
 
 export type ChromiumTabEntry = z.infer<typeof tabEntrySchema>;
 
-const inventorySchema = z.array(tabEntrySchema);
+const inventorySchema = z.object({ consistent: z.boolean(), rows: z.array(tabEntrySchema) });
 const discardResultSchema = z.object({
   ok: z.boolean(),
   newTabId: z.number().int().nullable(),
@@ -144,6 +210,9 @@ const activateResultSchema = z.object({
   tabId: z.number().int().nullable(),
   discarded: z.boolean(),
 });
+
+/** Chromium's own answer to activating a tab: which tab it activated, and whether discarded. */
+export type ActivateReply = z.infer<typeof activateResultSchema>;
 
 export function isInternalExtensionUrl(url: string | undefined): boolean {
   return typeof url === "string" && url.startsWith("chrome-extension://");
@@ -170,6 +239,7 @@ export async function ensureTabLifecycleExtension(profileDirectory: string): Pro
 }
 
 const workerWaitMs = 5_000;
+const inventoryReadAttempts = 3;
 const workerCallMs = 5_000;
 const cdpStepMs = 1_500;
 
@@ -349,15 +419,28 @@ export class ChromiumTabLifecycleBridge {
     throw lastError;
   }
 
-  async inventory(): Promise<readonly ChromiumTabEntry[]> {
-    const raw = await this.callWorker((worker) =>
-      worker.evaluate(() =>
-        (
-          globalThis as unknown as { __opensteer: { inventory(): Promise<unknown> } }
-        ).__opensteer.inventory(),
-      ),
-    );
-    return inventorySchema.parse(raw);
+  /**
+   * The one reading of Chromium's tabs (K1): rows only from a read that agrees with itself (every
+   * tab's group among the groups read); otherwise read again, and then throw: "not known".
+   */
+  async inventory(deadline = Number.POSITIVE_INFINITY): Promise<readonly ChromiumTabEntry[]> {
+    for (
+      let attempt = 0;
+      attempt < inventoryReadAttempts && (attempt === 0 || performance.now() < deadline);
+      attempt++
+    ) {
+      const raw = await this.callWorker((worker) =>
+        worker.evaluate(() =>
+          (
+            globalThis as unknown as { __opensteer: { inventory(): Promise<unknown> } }
+          ).__opensteer.inventory(),
+        ),
+      );
+      const read = inventorySchema.parse(raw);
+      if (read.consistent) return read.rows;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("The tab inventory did not agree with itself.");
   }
 
   /** Discards a tab; the id Chromium answers is the tab's id afterwards (it may be new). */
@@ -379,7 +462,7 @@ export class ChromiumTabLifecycleBridge {
     return parsed.ok ? parsed.newTabId : null;
   }
 
-  async activateByTabId(tabId: number): Promise<boolean> {
+  async activateByTabId(tabId: number): Promise<ActivateReply> {
     const raw = await this.callWorker(
       (worker) =>
         worker.evaluate(
@@ -393,7 +476,7 @@ export class ChromiumTabLifecycleBridge {
         ),
       "change",
     );
-    return activateResultSchema.parse(raw).ok;
+    return activateResultSchema.parse(raw);
   }
 
   async nameTab(tabId: number, name: string): Promise<boolean> {

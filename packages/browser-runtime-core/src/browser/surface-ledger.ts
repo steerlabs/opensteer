@@ -637,10 +637,11 @@ export class SurfaceLedger {
         const created = Promise.withResolvers<void>();
         this.creatingPage = created.promise;
         let page: BrowserPage | undefined;
-        const creation = this.pages.create(this.session, id, "wake-failed", (own) =>
+        const creation = this.pages.create(this.session, id, "wake-failed", (own, signal) =>
           this.context.createPage({
             ...(restore.engine === null ? {} : { restore: restore.engine }),
             own,
+            signal,
           }),
         );
         try {
@@ -1291,10 +1292,10 @@ export class SurfaceLedger {
       this.session,
       options.surfaceId ?? null,
       "open-failed",
-      (own) =>
+      (own, signal) =>
         options.surfaceId && this.saveTabs && this.context.sessionRestore
           ? this.context.sessionRestore
-              .claim(options.surfaceId, undefined, own)
+              .claim(options.surfaceId, undefined, own, signal)
               .then((restored) => restored ?? this.context.createPage({ own }))
           : this.context.createPage({ own }),
     );

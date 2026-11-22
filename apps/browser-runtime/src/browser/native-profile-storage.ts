@@ -20,25 +20,31 @@ async function writeFileAtomic(filePath: string, content: string): Promise<void>
  * Prepares Chromium's native profile Preferences while preserving Chromium's own
  * `Default/Sessions/` files for cold-start session restore. When Chromium exited
  * uncleanly (e.g. `SIGKILL` or host crash), resets `profile.exit_type` to
- * `"Normal"` so `--restore-last-session` automatically restores the session
- * instead of pausing on an unclean-exit recovery bubble.
+ * `"Normal"` so `--restore-last-session` restores the session instead of pausing
+ * on an unclean-exit recovery bubble. Without `restoreLastSession` (K4) Chromium
+ * opens a new tab instead of its last session (`restore_on_startup` 5).
  */
-export async function initializeNativePreferences(directory: string): Promise<void> {
+export async function initializeNativePreferences(
+  directory: string,
+  restoreLastSession = true,
+): Promise<void> {
   if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
+  const restoreOnStartup = restoreLastSession ? 1 : 5;
   const defaultDir = path.join(directory, "Default");
   const preferencesPath = path.join(defaultDir, "Preferences");
   await mkdir(defaultDir, { recursive: true, mode: 0o700 });
   try {
-    await writeFile(preferencesPath, JSON.stringify({ session: { restore_on_startup: 1 } }), {
-      flag: "wx",
-      mode: 0o600,
-    });
+    await writeFile(
+      preferencesPath,
+      JSON.stringify({ session: { restore_on_startup: restoreOnStartup } }),
+      { flag: "wx", mode: 0o600 },
+    );
     return;
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
   }
 
-  // Existing Preferences belong to Chromium; only normalize unclean-exit markers.
+  // Existing Preferences belong to Chromium; only unclean-exit markers and the startup choice change.
   let raw: string;
   try {
     raw = await readFile(preferencesPath, "utf8");
@@ -57,19 +63,22 @@ export async function initializeNativePreferences(directory: string): Promise<vo
     prefs.profile && typeof prefs.profile === "object" && !Array.isArray(prefs.profile)
       ? (prefs.profile as Record<string, unknown>)
       : null;
-  const unclean =
-    (typeof profile?.exit_type === "string" && profile.exit_type !== "Normal") ||
-    profile?.exited_cleanly === false;
-  if (!unclean) return;
-
   const session =
     prefs.session && typeof prefs.session === "object" && !Array.isArray(prefs.session)
       ? (prefs.session as Record<string, unknown>)
       : {};
+  const unclean =
+    (typeof profile?.exit_type === "string" && profile.exit_type !== "Normal") ||
+    profile?.exited_cleanly === false;
+  // A launch that restores changes the startup choice only back from the one K4 wrote.
+  const startup = restoreLastSession
+    ? session.restore_on_startup === 5
+    : session.restore_on_startup !== 5;
+  if (!unclean && !startup) return;
   const normalized = {
     ...prefs,
-    profile: { ...profile, exit_type: "Normal", exited_cleanly: true },
-    session: { ...session, restore_on_startup: 1 },
+    ...(unclean ? { profile: { ...profile, exit_type: "Normal", exited_cleanly: true } } : {}),
+    session: { ...session, restore_on_startup: restoreOnStartup },
   };
   await writeFileAtomic(preferencesPath, JSON.stringify(normalized));
 }

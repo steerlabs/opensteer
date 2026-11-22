@@ -33,6 +33,15 @@ async function fixtureServer() {
       );
       return;
     }
+    if (url.pathname === "/noopener") {
+      response.end(
+        `<!doctype html><html><body>
+         <a id="link" href="/child?via=link" target="_blank" rel="noopener">link</a>
+         <button id="open" onclick="window.open('/child?via=open', '_blank', 'noopener')">open</button>
+         </body></html>`,
+      );
+      return;
+    }
     if (url.pathname === "/opener") {
       response.end(
         `<!doctype html><html><body><a id="out" href="/child" target="_blank">out</a></body></html>`,
@@ -389,3 +398,180 @@ it("keeps a named tab's history, history state and form field through discard an
     result.ungrouped && { ...(result.ungrouped as object), draft: "typed-2" },
   );
 }, 120_000);
+
+it("reports the opener of a tab opened with noopener, by a link and by window.open (K3 gate, test 7)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-noopener-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const opener = await running.context.newPage();
+  await opener.goto(url(1, "x").replace("/page?x", "/noopener"));
+  const openerOf = (page: Page) => (page as unknown as { _opener?: Page | null })._opener ?? null;
+  const results: Record<string, unknown> = {};
+  for (const [via, selector] of [
+    ["link", "#link"],
+    ["open", "#open"],
+  ] as const) {
+    const arrived = running.context.waitForEvent("page");
+    await opener.click(selector);
+    const page = await arrived;
+    await page.waitForLoadState();
+    results[via] = {
+      url: new URL(page.url()).search,
+      openerKnown: openerOf(page) === opener,
+      playwrightOpener: (await page.opener()) === opener,
+    };
+  }
+  process.stdout.write(`${JSON.stringify({ event: "k3.noopener", ...results })}\n`);
+  expect(results).toEqual({
+    link: { url: "?via=link", openerKnown: true, playwrightOpener: true },
+    open: { url: "?via=open", openerKnown: true, playwrightOpener: true },
+  });
+}, 60_000);
+
+it("keeps a group title of up to 512 characters through a clean restart (K10)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-title-length-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const lengths = [64, 256, 512, 1024, 4096];
+  const first = await launch(directory);
+  for (const [index, length] of lengths.entries()) {
+    const page = await first.context.newPage();
+    await page.goto(url(index + 1, `len=${length}`));
+    const cdp = await first.context.newCDPSession(page);
+    const targetId = (
+      (await cdp.send("Target.getTargetInfo")) as { targetInfo: { targetId: string } }
+    ).targetInfo.targetId;
+    const row = (await first.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
+    expect(await first.lifecycle.nameTab(row.tabId, `${length}:`.padEnd(length, "x"))).toBe(true);
+  }
+  await vi.waitFor(async () => expect(await sessionFilesHold(directory, "4096:x")).toBe(true), {
+    timeout: 15_000,
+    interval: 250,
+  });
+  await first.context.close();
+  const second = await launch(directory);
+  const survived = await vi.waitFor(
+    async () => {
+      const rows = (await profileTabs(second.lifecycle)).filter((t) => t.url.includes("len="));
+      expect(rows).toHaveLength(lengths.length);
+      return Object.fromEntries(
+        rows.map((t) => [new URL(t.url).searchParams.get("len"), t.identity?.length ?? 0]),
+      );
+    },
+    { timeout: 20_000, interval: 200 },
+  );
+  process.stdout.write(`${JSON.stringify({ event: "k10.title-length", survived })}\n`);
+  for (const length of [64, 256, 512]) expect(survived[String(length)]).toBe(length);
+}, 120_000);
+
+it("marks every tab as not discardable by Chromium itself, and answers an activation with the tab it activated (K3, K2)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-autodiscard-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const page = await running.context.newPage();
+  await page.goto(url(1, "auto"));
+  const worker = running.context.serviceWorkers().find((w) => w.url().endsWith("/sw.js"))!;
+  const flags = () =>
+    worker.evaluate(async () => {
+      const tabs = (
+        globalThis as unknown as {
+          chrome: {
+            tabs: { query(q: object): Promise<{ url?: string; autoDiscardable: boolean }[]> };
+          };
+        }
+      ).chrome.tabs;
+      return (await tabs.query({})).map((tab) => ({ url: tab.url, auto: tab.autoDiscardable }));
+    });
+  await vi.waitFor(
+    async () => expect((await flags()).every((tab) => tab.auto === false)).toBe(true),
+    {
+      timeout: 5_000,
+      interval: 50,
+    },
+  );
+  const row = (await profileTabs(running.lifecycle)).find((t) => t.url.includes("auto"))!;
+  await running.helper.bringToFront();
+  const discarded = await running.lifecycle.discardByTabId(row.tabId);
+  const asleep = (await running.lifecycle.inventory()).find((t) => t.tabId === discarded)!;
+  const reply = await running.lifecycle.activateByTabId(asleep.tabId);
+  const awake = await vi.waitFor(
+    async () => {
+      const now = (await running.lifecycle.inventory()).find((t) => t.url.includes("auto"))!;
+      expect(now.discarded).toBe(false);
+      return now;
+    },
+    { timeout: 10_000, interval: 50 },
+  );
+  process.stdout.write(
+    `${JSON.stringify({ event: "k2.activation-reply", tabs: await flags(), before: row.tabId, discarded, reply, awake: awake.tabId })}\n`,
+  );
+  expect(reply.ok).toBe(true);
+  expect(reply.tabId).toBe(asleep.tabId);
+  expect(awake.tabId).toBe(reply.tabId);
+}, 60_000);
+
+it("leaves the name with the opener, told by its own page, and with no tab when the opener closes at once after opening one (K5, test 1)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-popup-owner-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const targetOf = async (page: Page) =>
+    (
+      (await (await running.context.newCDPSession(page)).send("Target.getTargetInfo")) as {
+        targetInfo: { targetId: string };
+      }
+    ).targetInfo.targetId;
+  const nameOpener = async (name: string) => {
+    const opener = await running.context.newPage();
+    await opener.goto(url(1, "x").replace("/page?x", "/opener"));
+    const targetId = await targetOf(opener);
+    const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId)!;
+    expect(await running.lifecycle.nameTab(row.tabId, name)).toBe(true);
+    return opener;
+  };
+
+  // The opener keeps its name, and the tab carrying it is the opener by its own content.
+  const opener = await nameOpener(surface(1));
+  const popupPromise = running.context.waitForEvent("page");
+  await opener.click("#out");
+  const popup = await popupPromise;
+  await popup.waitForLoadState();
+  const pages = new Map([
+    [await targetOf(opener), opener],
+    [await targetOf(popup), popup],
+  ]);
+  await vi.waitFor(
+    async () => {
+      const carriers = (await running.lifecycle.inventory()).filter(
+        (t) => t.identity === surface(1),
+      );
+      expect(carriers).toHaveLength(1);
+      const carrier = pages.get(carriers[0]!.targetId!)!;
+      expect(await carrier.evaluate(() => document.body.innerText.trim())).toBe("out");
+    },
+    { timeout: 5_000, interval: 50 },
+  );
+
+  // The opener opens a tab and closes itself at once: the new tab ends with no name.
+  const outcomes: (string | null)[] = [];
+  for (let round = 0; round < 10; round++) {
+    const name = surface(100 + round);
+    const closing = await nameOpener(name);
+    const childPromise = running.context.waitForEvent("page");
+    // Chromium refuses a page's own window.close here, so the close follows the open at once.
+    await closing.evaluate((query) => void window.open(`/child?${query}`), `round=${round}`);
+    await closing.close();
+    const child = await childPromise;
+    await child.waitForLoadState();
+    const childTarget = await targetOf(child);
+    // Long enough for every group event of the opener's close to have run.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const rows = await running.lifecycle.inventory();
+    outcomes.push(rows.find((t) => t.targetId === childTarget)?.identity ?? null);
+    expect(rows.filter((t) => t.identity === name)).toHaveLength(0);
+  }
+  process.stdout.write(`${JSON.stringify({ event: "k5.popup-owner", outcomes })}\n`);
+  expect(outcomes).toEqual(Array.from({ length: 10 }, () => null));
+}, 90_000);

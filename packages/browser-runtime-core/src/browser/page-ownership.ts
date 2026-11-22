@@ -323,9 +323,10 @@ export class PageOwnership {
     session: string,
     surfaceId: BrowserSurfaceId | null,
     reason: PageEndReason,
-    start: (own: (page: BrowserPage) => void) => Promise<BrowserPage>,
+    start: (own: (page: BrowserPage) => void, signal: AbortSignal) => Promise<BrowserPage>,
   ): { readonly page: Promise<BrowserPage>; abandon(): void } {
     const creation: Creation = { session, surfaceId, reason, abandoned: false, page: null };
+    const abandoned = new AbortController();
     this.creations.add(creation);
     const own = (page: BrowserPage) => {
       if (creation.page === page) return;
@@ -337,7 +338,7 @@ export class PageOwnership {
     };
     let created: Promise<BrowserPage>;
     try {
-      created = start(own);
+      created = start(own, abandoned.signal);
     } catch (error) {
       created = Promise.reject(error);
     }
@@ -351,6 +352,7 @@ export class PageOwnership {
       },
       (error: unknown) => {
         creation.abandoned = true;
+        abandoned.abort();
         if (creation.page) this.request(this.track(creation.page), reason);
         this.creations.delete(creation);
         this.notify(this.drains);
@@ -362,6 +364,7 @@ export class PageOwnership {
       page,
       abandon: () => {
         creation.abandoned = true;
+        abandoned.abort();
         if (creation.page) this.request(this.track(creation.page), reason);
       },
     };

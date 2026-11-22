@@ -7,6 +7,7 @@ import {
 } from "@opensteer/browser-runtime-core/test-support";
 import { SessionCdpRouter } from "@opensteer/browser-core";
 import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
+import type { BrowserPage } from "@opensteer/browser-runtime-core";
 import type { BrowserSurfaceId } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { gate } from "@opensteer/shared/test-support/observation";
@@ -77,7 +78,7 @@ it.each(["ready", "acquiring"] as const)(
       vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
       f.context.newCDPSession.mockReturnValue(acquired.promise);
       if (state === "ready") acquired.resolve(session);
-      const handle = launched.context.pages()[0]!;
+      const handle = await ownPage(launched, f.context, page);
       attaching = handle.cdp();
       void attaching.catch(() => undefined);
       const channel = state === "ready" ? await attaching : undefined;
@@ -510,7 +511,7 @@ it.each(["page close", "page close after the browser died", "context end"] as co
     try {
       const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
       vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
-      const handle = launched.context.pages()[0]!;
+      const handle = await ownPage(launched, f.context, page);
       const gone = vi.fn();
       const crashed = vi.fn();
       handle.onClose(gone);
@@ -592,7 +593,9 @@ it("hands a popup off with its opener, and finds a target past a page asked to c
       ][])
         if (event === "page") listener(page);
     };
-    announce(opener);
+    // The opener is the runtime's own new page; its popup is published by its opener (K3).
+    await ownPage(launched, f.context, opener);
+    Object.assign(popup, { _opener: opener });
     announce(popup);
     opener.emit("popup", popup);
     await Promise.resolve();
@@ -604,6 +607,8 @@ it("hands a popup off with its opener, and finds a target past a page asked to c
       [handles.wrap(opener), null],
       [handles.wrap(popup), handles.wrap(opener)],
     ]);
+    await ownPage(launched, f.context, closing);
+    await ownPage(launched, f.context, sibling);
     vi.spyOn(f.context, "pages").mockReturnValue([closing, sibling] as unknown as Page[]);
     void (handles.wrap(closing) as { close(): Promise<void> }).close();
     await expect(handles.pageByTargetId("sibling")).resolves.toBe(handles.wrap(sibling));
@@ -633,7 +638,7 @@ it("makes every close a new attempt, and goes around a hung first close to the b
   try {
     const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
     vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
-    const handle = launched.context.pages()[0]!;
+    const handle = await ownPage(launched, f.context, page);
     await handle.targetId();
     void handle.close();
     await vi.waitFor(
@@ -679,7 +684,7 @@ it("reports a page it cannot name to close, instead of rejoining a hung close", 
   try {
     const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
     vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
-    const handle = launched.context.pages()[0]!;
+    const handle = await ownPage(launched, f.context, page);
     void handle.close();
     await expect(handle.close()).rejects.toMatchObject({ reason: "page-unnameable" });
     expect(page.close, "The hung close is never joined again").toHaveBeenCalledOnce();
@@ -742,7 +747,7 @@ describe("native Chromium profiles", () => {
       try {
         const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
         vi.spyOn(f.context, "pages").mockReturnValue([page]);
-        const handle = launched.context.pages()[0]!;
+        const handle = await ownPage(launched, f.context, page);
         expect(await handle.keepAwake?.()).toBe("media");
         playing = false;
         expect(await handle.keepAwake?.()).toBeNull();
@@ -776,7 +781,7 @@ describe("native Chromium profiles", () => {
     try {
       const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
       vi.spyOn(f.context, "pages").mockReturnValue([page]);
-      expect(await launched.context.pages()[0]!.keepAwake?.()).toBe("media");
+      expect(await (await ownPage(launched, f.context, page)).keepAwake?.()).toBe("media");
       expect(main.evaluate).toHaveBeenCalledTimes(2);
       expect(f.context.newCDPSession).not.toHaveBeenCalledWith(child);
       await launched.close();
@@ -1327,7 +1332,7 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("retries failed launch orphan removal with evidence and refuses launch if an orphan survives (R2)", async () => {
+  it("retries failed launch orphan removal with evidence, and reports an orphan it cannot prove removed while keeping its page unpublished (R2, K6)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     let removeCalls = 0;
@@ -1367,16 +1372,34 @@ describe("native Chromium profiles", () => {
       expect(orphanPresent).toBe(false);
       await launched.close();
 
-      // Case 2: orphan keeps refusing removal and Target.closeTarget fails -> launch MUST be refused!
+      // Case 2: the orphan keeps refusing removal and Target.closeTarget fails. A missing proof is
+      // `unknown` (K6): reported, never assumed gone, and the orphan's page is never published.
       orphanPresent = true;
       remSpy.mockResolvedValue(false);
       f.cdp.send.mockImplementation(async (method: string) => {
         if (method === "Target.closeTarget") throw new Error("closeTarget failed");
         return {};
       });
-      await expect(f.launcher.launch(nativeProfileRequest(f.directory))).rejects.toThrow(
-        /could not be removed/i,
-      );
+      const writes: string[] = [];
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+        writes.push(String(chunk));
+        return true;
+      });
+      const orphanPage = Object.assign(new EventEmitter(), {
+        url: () => orphanTab.url,
+        isClosed: () => false,
+        close: vi.fn(async () => undefined),
+        _connection: { toImpl: () => ({ delegate: { _targetId: orphanTab.targetId } }) },
+      });
+      Object.assign(f.context, { pages: () => [orphanPage] });
+      const second = await f.launcher
+        .launch(nativeProfileRequest(f.directory))
+        .finally(() => stderr.mockRestore());
+      expect(
+        writes.some((line) => line.includes('"browser-runtime.tab-removal-unconfirmed"')),
+      ).toBe(true);
+      expect(second.context.pages()).toEqual([]);
+      await second.close();
     } finally {
       invSpy.mockRestore();
       remSpy.mockRestore();
@@ -1385,7 +1408,7 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("refuses reconcile when an unclaimed tab cannot be confirmed removed and never hands off its late page (R2)", async () => {
+  it("keeps an unclaimed tab it cannot prove removed guarded, and never hands off its late page (R2, K6)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const sidecarUrl = "https://person-private.test/";
@@ -1422,10 +1445,9 @@ describe("native Chromium profiles", () => {
     let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
     try {
       launched = await f.launcher.launch(nativeProfileRequest(f.directory));
-      // Reconcile with empty saved set (e.g. agent session first) MUST fail closed!
-      await expect(launched.context.sessionRestore!.reconcile(new Set())).rejects.toThrow(
-        /could not be removed/i,
-      );
+      // Reconcile with an empty saved set gives the tab up; its removal is not proven, so it
+      // stays guarded and is retried in the background (K6), and the session goes on.
+      await expect(launched.context.sessionRestore!.reconcile(new Set())).resolves.toBeUndefined();
       // Even if a late Playwright page event arrives for target-restored-88, handOff MUST NEVER see it!
       const handedOff: unknown[] = [];
       launched.context.handOff((page) => handedOff.push(page));
@@ -1673,7 +1695,7 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("wakes a restored tab by its own name without stealing an unrelated page that arrives meanwhile (R9)", async () => {
+  it("wakes a restored tab by its own name, and closes an unrelated page that arrives meanwhile instead of handing it off (R9, K3)", async () => {
     const f = await nativeCloseFixture();
     const { ChromiumTabLifecycleBridge } = await import("./tab-lifecycle-extension.js");
     const pageHandlers: Array<(page: Page) => void> = [];
@@ -1759,7 +1781,7 @@ describe("native Chromium profiles", () => {
             for (const h of pageHandlers) h(realWoken.page);
           }, 15);
         });
-        return true;
+        return { ok: true, tabId, discarded: false };
       });
 
     // Restored with its name and no target yet (unloaded at launch).
@@ -1790,8 +1812,10 @@ describe("native Chromium profiles", () => {
         undefined,
       );
       expect(claimed?.url()).toBe("https://woken.test/");
-      await vi.waitFor(() => expect(handedOff).toContain("https://unrelated.test/"));
-      expect(handedOff).not.toContain("https://woken.test/");
+      // K3: an opener-less page no open of ours made and no kept name names is nobody's: never
+      // taken by the wake, never handed off, closed with evidence.
+      await vi.waitFor(() => expect(unrelated.page.close).toHaveBeenCalled());
+      expect(handedOff).toEqual([]);
     } finally {
       invSpy.mockRestore();
       actSpy.mockRestore();
@@ -1920,7 +1944,7 @@ describe("native Chromium profiles", () => {
         );
         const woken = makePage(targetId, "https://unloaded.test/");
         for (const handler of pageHandlers) handler(woken.page);
-        return true;
+        return { ok: true, tabId, discarded: false };
       });
 
     let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
@@ -2342,8 +2366,9 @@ describe("native Chromium profiles", () => {
       );
       expect(listReply?.type).toBe("cdp.result");
       // Restored pages stay out of pages() and handOff, and claim returns null (opens by address).
+      // Only the runtime's own root page was handed off (K3 (a)).
       expect(launched.context.pages().every((p) => !p.url().includes("b3.test"))).toBe(true);
-      expect(handedOff).toEqual([]);
+      expect(handedOff).toEqual([rootPage]);
       expect(await launched.context.sessionRestore!.claim(surfKept, "https://kept-b3.test/")).toBe(
         null,
       );
@@ -2716,7 +2741,6 @@ describe("native Chromium profiles", () => {
               ? {
                   ...t,
                   tabId: 951,
-                  replacedFromTabIds: [901],
                   discarded: true,
                   status: "unloaded",
                   targetId: null,
@@ -2748,7 +2772,8 @@ describe("native Chromium profiles", () => {
 
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const claiming = launched.context.sessionRestore!.claim(surfS, "https://c1.test/");
-        await vi.advanceTimersByTimeAsync(6_050);
+        // Past the claim's one deadline (K8), which bounds its wait on the tab's lane.
+        await vi.advanceTimersByTimeAsync(10_050);
         vi.useRealTimers();
         const claimed = await claiming;
         // The claim gave up the tab: the session opens it by address instead.
@@ -2858,7 +2883,6 @@ describe("native Chromium profiles", () => {
             ? {
                 ...t,
                 tabId: 951,
-                replacedFromTabIds: [901],
                 discarded: true,
                 status: "unloaded",
                 targetId: null,
@@ -3028,7 +3052,7 @@ describe("native Chromium profiles", () => {
           // The woken tab's page arrives while the helper cannot answer once.
           failInventory = 1;
           setTimeout(arrive, 0);
-          return true;
+          return { ok: true, tabId: 701, discarded: false };
         });
       const remSpy = vi
         .spyOn(ChromiumTabLifecycleBridge.prototype, "removeByTabId")
@@ -3170,7 +3194,8 @@ describe("native Chromium profiles", () => {
         .sessionRestore!.reconcile(new Set())
         .catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(await reconciling).toBeInstanceOf(Error);
+      // Not proven removed is not an error of the reconcile: the name stays guarded (K6).
+      expect(await reconciling).toBeUndefined();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(unconfirmed()).toHaveLength(1);
       const callsAtBound = removeCalls;
@@ -3419,6 +3444,18 @@ describe("native Chromium profiles", () => {
     }
   });
 });
+
+/** A page published as the runtime's own new page (K3 (a)), as every open of a native page is. */
+async function ownPage(
+  launched: { context: { createPage(): Promise<BrowserPage> } },
+  context: { newPage: { mockResolvedValueOnce(value: unknown): unknown } },
+  page: unknown,
+): Promise<BrowserPage> {
+  const raw = page as { isClosed?: () => boolean };
+  raw.isClosed ??= () => false;
+  context.newPage.mockResolvedValueOnce(page);
+  return launched.context.createPage();
+}
 
 async function nativeCloseFixture(
   options: Pick<
