@@ -1015,6 +1015,21 @@ describe("native browser picture presenter", () => {
     expect(hostClient.browserFrames.claim).toHaveBeenCalledOnce();
   });
 
+  // The review's note 10: the view says it can show again while the page is hidden; the page
+  // shown later waits for a new delivery rather than drawing one it returned while hidden.
+  it("waits for a new delivery after the view could show again while the page was hidden", async () => {
+    const { decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    await decode();
+    // Hidden: not drawn, so a delivery is returned at once.
+    render("synchronized", false);
+    emit(surfaceId, { frameId: 2, watchToken: tokenB });
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    render("synchronized");
+    expect(native.presented).toHaveLength(0);
+  });
+
   // A page opened while the app comes to the foreground, or before its view has its window:
   // the view drops the first picture, and a still page sends no other.
   it("offers a picture the view dropped again once the view can show it", async () => {

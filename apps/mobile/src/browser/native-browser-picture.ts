@@ -118,7 +118,12 @@ export function useNativeBrowserPicture(input: {
     return clear;
   }, [enabled, frames, identity, invalidation, shown]);
   useLayoutEffect(() => {
-    if (!enabled || !shown) return;
+    // The view could draw again while this page was hidden: nothing to draw again. Shown later,
+    // the page waits for a new delivery; the one it returned while hidden stays returned.
+    if (!enabled || !shown) {
+      replay.current = false;
+      return;
+    }
     const owned = new Set<BrowserFrameView>();
     const current = generation.current;
     let disposed = false;

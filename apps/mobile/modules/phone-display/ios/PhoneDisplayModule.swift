@@ -240,9 +240,8 @@ final class PhoneDisplayPictureView: ExpoView {
   private var shown: PictureRequest?
   /// Counts every change of what is shown, so a commit learns whether its picture is still the one on screen.
   private var shownVersion = 0
-  /// The shown picture's receipt until its commit completes. Anything that
-  /// replaces or removes the picture settles it at once: a commit's completion
-  /// may wait indefinitely while the view is off screen or the app is inactive.
+  /// The shown picture's receipt until it settles after its commit. Anything that
+  /// replaces or removes the picture first settles it at once, as dropped.
   private var undrawn: PictureReceipt?
   private var observers: [NSObjectProtocol] = []
   required init(appContext: AppContext? = nil) {
@@ -358,9 +357,11 @@ final class PhoneDisplayPictureView: ExpoView {
       }
     }
   }
-  /// Settles as presented only once the picture's transaction has committed
-  /// and it is still the one shown, so input never aims at a picture that was
-  /// replaced or cleared before it reached the screen.
+  /// Settles as presented once the picture is drawn and committed, on the main queue's next turn,
+  /// if it is still the one shown: a clear or a newer draw queued before then drops it, so input
+  /// never aims at a picture that was replaced or cleared. Not Core Animation's completion block:
+  /// that waits for every animation committed with it, and a sheet dismissing as the page opened
+  /// held the first picture hidden for seconds.
   private func draw(_ image: CGImage, _ request: PictureRequest, _ receipt: PictureReceipt) {
     undrawn?(.dropped)
     undrawn = receipt
@@ -369,7 +370,10 @@ final class PhoneDisplayPictureView: ExpoView {
     let version = shownVersion
     CATransaction.begin()
     CATransaction.setDisableActions(true)
-    CATransaction.setCompletionBlock { [weak self] in
+    picture.contents = image
+    place()
+    CATransaction.commit()
+    DispatchQueue.main.async { [weak self] in
       let current = self?.shownVersion == version
       let showing = self?.showing == true
       self?.trace(
@@ -380,9 +384,6 @@ final class PhoneDisplayPictureView: ExpoView {
       receipt(current && showing ? .presented : .dropped)
       if self?.undrawn === receipt { self?.undrawn = nil }
     }
-    picture.contents = image
-    place()
-    CATransaction.commit()
   }
   private func place() {
     guard let shown, let rect = shown.rect(in: bounds.size) else {
