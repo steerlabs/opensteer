@@ -338,6 +338,7 @@ The connection is confined (`packages/browser-core/src/portable-session-cdp-rout
 - It closes on Stop, Disconnect, expiry, a lowered mode or any grant change.
 
 Through the browser, in `browser_use`, `browser_connect` or a Run in its lineage, a connected agent
+sends only the CDP methods a standard client may, reads a shared Chrome tab's own cookies only, and
 cannot read the clipboard or change a browser permission; a page it operates can replace what is on
 the clipboard, as any page can when it is clicked.
 
