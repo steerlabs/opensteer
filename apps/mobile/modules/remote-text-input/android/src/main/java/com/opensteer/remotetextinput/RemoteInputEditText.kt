@@ -3,6 +3,17 @@ package com.opensteer.remotetextinput
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
+import android.os.Build
+import android.os.Bundle
+import android.text.Selection
+import android.view.ContextMenu
+import android.view.DragEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.inputmethod.HandwritingGesture
+import android.view.inputmethod.PreviewableHandwritingGesture
+import android.os.CancellationSignal
+import java.util.concurrent.Executor
+import java.util.function.IntConsumer
 import android.text.InputType
 import android.text.TextWatcher
 import android.text.Editable
@@ -35,6 +46,7 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   private var composingStart = -1
   private var composingEnd = -1
   private var contextId: String? = null
+  private val selection = RemoteInputSelection()
   private val touch = RemoteInputTouch(ViewConfiguration.getLongPressTimeout().toLong(), ViewConfiguration.get(context).scaledTouchSlop.toFloat())
   private val longPress = Runnable { if (touch.longPress(android.os.SystemClock.uptimeMillis()) != null) offerPaste() }
   var deliver: ((Map<String, Any?>) -> Unit)?
@@ -56,6 +68,10 @@ class RemoteInputEditText(context: Context) : EditText(context) {
       }
     })
     onFocusChangeListener = View.OnFocusChangeListener { _, focused -> if (!focused) gate.notify(mapOf("type" to "blur")) }
+    // No stylus handwriting starts on the hidden field: its gestures select and edit in place.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) isAutoHandwritingEnabled = false
+    // Autofill would set the text outside the gate.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
     initialized = true
   }
   /**
@@ -75,6 +91,28 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     if (action == RemoteInputTouch.Action.UP || action == RemoteInputTouch.Action.CANCEL) removeCallbacks(longPress)
     if (touch.onTouch(action, event.eventTime, event.x, event.y) == RemoteInputTouch.Outcome.FOCUS) performClick()
     return true
+  }
+  /** A long click (an accessibility service's, or the system's) offers Paste and selects nothing. */
+  override fun performLongClick(): Boolean {
+    offerPaste()
+    return true
+  }
+  override fun performLongClick(x: Float, y: Float): Boolean = performLongClick()
+  /** A secondary click or a stylus button offers Paste too; TextView's own menu moves the caret. */
+  override fun performContextClick(): Boolean = performLongClick()
+  override fun performContextClick(x: Float, y: Float): Boolean = performLongClick()
+  override fun onCreateContextMenu(menu: ContextMenu) {}
+  /** Nothing is dragged into or over the hidden field: a drag over it moves its selection. */
+  override fun onDragEvent(event: DragEvent): Boolean = false
+  /** Accessibility moves no caret and selects nothing in a field whose text nobody sees. */
+  override fun performAccessibilityAction(action: Int, arguments: Bundle?): Boolean {
+    if (action in refusedAccessibilityActions) return false
+    return super.performAccessibilityAction(action, arguments)
+  }
+  override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+    super.onInitializeAccessibilityNodeInfo(info)
+    for (action in refusedAccessibilityActions) info.removeAction(AccessibilityNodeInfo.AccessibilityAction(action, null))
+    info.movementGranularities = 0
   }
   override fun performClick(): Boolean {
     super.performClick()
@@ -157,9 +195,21 @@ class RemoteInputEditText(context: Context) : EditText(context) {
       }
     }
   }
+  /** The one place every selection change is seen: only the gate changes it (RemoteInputSelection). */
   override fun onSelectionChanged(start: Int, end: Int) {
     super.onSelectionChanged(start, end)
-    if (initialized && !mutating) gate.notify(mapOf("type" to "selection", "proxy" to snapshot()))
+    if (!initialized) return
+    when (selection.changed(start, end, gate.inTurn, mutating)) {
+      RemoteInputSelection.Outcome.REPORT -> gate.notify(mapOf("type" to "selection", "proxy" to snapshot()))
+      RemoteInputSelection.Outcome.QUIET -> {}
+      RemoteInputSelection.Outcome.UNDO -> {
+        val (keptStart, keptEnd) = selection.restore(length())
+        val wasMutating = mutating
+        mutating = true
+        Selection.setSelection(text, keptStart, keptEnd)
+        mutating = wasMutating
+      }
+    }
   }
   override fun onCreateInputConnection(info: EditorInfo): InputConnection? {
     val connection = super.onCreateInputConnection(info) ?: return null
@@ -227,6 +277,11 @@ class RemoteInputEditText(context: Context) : EditText(context) {
         }; return true
       }
       override fun performContextMenuAction(id: Int): Boolean = this@RemoteInputEditText.onTextContextMenuItem(id)
+      // A stylus gesture selects or edits in place, outside the gate: refused.
+      override fun performHandwritingGesture(gesture: HandwritingGesture, executor: Executor?, consumer: IntConsumer?) {
+        if (executor != null && consumer != null) executor.execute { consumer.accept(InputConnection.HANDWRITING_GESTURE_RESULT_UNSUPPORTED) }
+      }
+      override fun previewHandwritingGesture(gesture: PreviewableHandwritingGesture, cancellationSignal: CancellationSignal?): Boolean = false
       override fun sendKeyEvent(event: KeyEvent): Boolean = this@RemoteInputEditText.dispatchKeyEvent(event)
       override fun performEditorAction(actionCode: Int): Boolean {
         dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
@@ -269,16 +324,21 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   }
   /** No suggestions popup on a tap in text nobody sees; the keyboard's own autocorrect stays. */
   override fun isSuggestionsEnabled(): Boolean = false
+  /**
+   * The text menu's items, whichever door asks (a menu, a Ctrl or Meta shortcut, an accessibility
+   * service, the input method): copy, cut and paste go to the page, and the keyboard picker is
+   * the system's. Nothing else runs on the hidden field: Select All, start selecting, replace,
+   * share, text assist, autofill and undo would select or edit text nobody sees, outside the
+   * gate. The page's own selectAll is reached through the reducer's binding instead.
+   */
   override fun onTextContextMenuItem(id: Int): Boolean {
     when (id) {
-      // Nothing selects in the hidden field, whether a menu or a Ctrl or Meta shortcut asks:
-      // the page's own selectAll is reached through the reducer's binding instead.
-      android.R.id.selectAll -> return true
       android.R.id.copy -> { gate.notify(mapOf("type" to "copy")); return true }
       android.R.id.cut -> { gate.notify(mapOf("type" to "cut")); return true }
       android.R.id.paste, android.R.id.pasteAsPlainText -> { gate.enqueue { paste() }; return true }
+      android.R.id.switchInputMethod -> return super.onTextContextMenuItem(id)
     }
-    return super.onTextContextMenuItem(id)
+    return true
   }
   private fun paste() {
     val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
@@ -360,5 +420,12 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     } else if (isFocused || focusChanged) {
       clearFocus()
     }
+  }
+  private companion object {
+    val refusedAccessibilityActions = setOf(
+      AccessibilityNodeInfo.ACTION_SET_SELECTION,
+      AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY,
+      AccessibilityNodeInfo.ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY,
+    )
   }
 }

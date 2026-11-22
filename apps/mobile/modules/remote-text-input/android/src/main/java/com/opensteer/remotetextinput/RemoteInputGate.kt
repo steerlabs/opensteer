@@ -8,6 +8,8 @@ internal class RemoteInputGate {
   private var next = 0
   private var waiting: Pair<Int, () -> Unit>? = null
   private var running = false
+  /** Whether a job or an answered event's default is running: a change now came through the gate. */
+  val inTurn: Boolean get() = running
   private var insertion = 0
   fun enqueue(job: () -> Unit) {
     if (running) jobs.add(insertion++, job) else jobs.add(job)
