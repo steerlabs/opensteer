@@ -90,6 +90,8 @@ export class AgentPoolController implements PoolControllerUnderTest {
     freshGuests?: boolean;
   }) {
     const agent = await startTestPoolAgent({
+      // Its host check (which slots' proxies are down) runs often enough for a test to see it.
+      hostCheckMs: 200,
       ...(options.now ? { now: options.now } : {}),
       ...(options.freshGuests ? { driver: new FakeHypervisorDriver({ startsEmpty: true }) } : {}),
     });
@@ -137,6 +139,12 @@ export class AgentPoolController implements PoolControllerUnderTest {
    * leaves nothing behind.
    */
   observe(change: Partial<BrowserPoolPhysicalStatus>): void {
+    // A slot's egress proxy past its restarts, or back: the agent's host check reads it.
+    if (Object.keys(change).length === 1 && "proxy" in change) {
+      if (change.proxy === "down") this.#agent.driver.proxyDown.add(this.#slotId);
+      else this.#agent.driver.proxyDown.delete(this.#slotId);
+      return;
+    }
     const { phase, savedState, epoch, ...rest } = change;
     if (phase === "stopped" && savedState === null) {
       this.#agent.driver.loseGuest(this.#slotId);

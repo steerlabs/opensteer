@@ -698,33 +698,30 @@ it("keeps a parked browser whose wake the host refused for a down egress proxy, 
   }
 });
 
-// The pool agent on this branch does not report its proxy yet (it does from the overhaul at
-// 3aa134d3e on): until that merge this runs against the fake controller only.
-it.skipIf(poolControllerKind() === "agent")(
-  "reports a running browser whose egress proxy is down, parks it once to bring the proxy back, and shows it paused if that did not",
-  async () => {
-    const f = await poolFixture("proxy-down");
-    try {
-      const home = f.home(undefined, f.controller, { statusEveryMs: 50 });
-      await home.recover();
-      expect(home.report()).toBeUndefined();
-      f.controller.observe({ proxy: "down" });
-      await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
-      // Nothing holds it: the Home parks it once, which is what brings a proxy back.
-      await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause"]));
-      (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
-      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
-      // Still down after that wake: shown paused, and not parked again for it.
-      await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
-      await vi.waitFor(async () => expect((await f.slot())?.phase).toBe("running"));
-      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
-      f.controller.observe({ proxy: "up" as never });
-      await vi.waitFor(() => expect(home.report()).toBeUndefined());
-    } finally {
-      await f.close();
-    }
-  },
-);
+it("reports a running browser whose egress proxy is down, parks it once to bring the proxy back, and shows it paused if that did not", async () => {
+  const f = await poolFixture("proxy-down");
+  try {
+    const home = f.home(undefined, f.controller, { statusEveryMs: 50 });
+    await home.recover();
+    expect(home.report()).toBeUndefined();
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+    // Nothing holds it: the Home parks it once, which is what brings a proxy back.
+    await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause"]));
+    (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
+    expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    // Down again after that wake (a real agent's wake brings it back once): shown paused, and
+    // not parked again for it.
+    f.controller.observe({ proxy: "down" });
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+    await vi.waitFor(async () => expect((await f.slot())?.phase).toBe("running"));
+    expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+    f.controller.observe({ proxy: "up" as never });
+    await vi.waitFor(() => expect(home.report()).toBeUndefined());
+  } finally {
+    await f.close();
+  }
+});
 
 it("takes a stored, signed fenced answer to the park's retire as final too", async () => {
   const f = await poolFixture("over-fenced-retire");
