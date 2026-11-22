@@ -26,12 +26,21 @@ async function host(
 ) {
   const bridge = await storeFixture.createBridgeFixture(suffix, options);
   await serveMcp(storeFixture);
+  // Something that happens after a message is decided and before your own agents get it.
+  let race: (() => Promise<unknown>) | undefined;
   const service = new ChannelService({
     channels: new ChannelStore(storeFixture.database),
     credentials: {} as never,
     relay: { connectedRunnerIds: () => [] } as never,
     store: storeFixture.store,
-    bridgeTools: () => lastService!,
+    bridgeTools: () => ({
+      callTool: async (...call: Parameters<NonNullable<typeof lastService>["callTool"]>) => {
+        const next = race;
+        race = undefined;
+        await next?.();
+        return lastService!.callTool(...call);
+      },
+    }),
     onError: (error) => {
       throw error;
     },
@@ -73,7 +82,81 @@ async function host(
       .where("threadId", "=", ThreadIdSchema.parse(threadId))
       .orderBy("createdAt")
       .execute();
-  return { ...bridge, service, send, tasks, runsOf };
+  const raceNext = (hook: () => Promise<unknown>) => {
+    race = hook;
+  };
+  /** The one-line notices the chat was sent, in order. */
+  const lines = async () =>
+    (
+      await storeFixture.database
+        .selectFrom("bridgeDeliveries")
+        .select("content")
+        .where("bridgeId", "=", bridge.bridge.id)
+        .where("kind", "=", "status")
+        .orderBy("createdAt")
+        .execute()
+    ).map(({ content }) => (content as { text: string }[])[0]!.text);
+  /** A Run started on the person's computer, as a Runner would start it; `emit` reports on it. */
+  const beginRun = async (runId: string, threadId: string, key: string) => {
+    const { store, database } = storeFixture;
+    const execute = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", runId as never)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await store.claimCommand(execute.id, `${key}-dispatcher`);
+    const { harnessInstanceId } = await database
+      .selectFrom("runs")
+      .select("harnessInstanceId")
+      .where("id", "=", runId as never)
+      .executeTakeFirstOrThrow();
+    const binding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity: testContinuationIdentity,
+      harnessInstanceId,
+      leaseTokenHash: `${key}-lease`,
+      runnerBootId: `${key}-boot`,
+      runnerId: bridge.fixture.runnerId,
+      runId: runId as never,
+      threadId: threadId as never,
+    });
+    let ordinal = 0;
+    const emit = (type: string, data: unknown) =>
+      store.commitRunnerEvent({
+        environmentId: bridge.fixture.environmentId,
+        runnerId: bridge.fixture.runnerId,
+        runnerBootId: `${key}-boot`,
+        event: pendingEvent({
+          bindingGeneration: binding.bindingGeneration,
+          environmentId: bridge.fixture.environmentId,
+          runId: runId as never,
+          threadId: threadId as never,
+          ordinal: ordinal++,
+          type,
+          data,
+        } as never),
+      });
+    await emit("run.started", { status: "running" });
+    // As an engine does once it holds a native session, so the task's next Run continues it.
+    const { providerSessionId } = await database
+      .selectFrom("runs")
+      .select("providerSessionId")
+      .where("id", "=", runId as never)
+      .executeTakeFirstOrThrow();
+    await store.bindProviderSession({
+      bindingGeneration: binding.bindingGeneration,
+      harnessInstanceId,
+      providerSessionId: providerSessionId!,
+      providerSessionReference: `native-session-${threadId}`,
+      runId: runId as never,
+      runnerBootId: `${key}-boot`,
+      runnerId: bridge.fixture.runnerId,
+      threadId: threadId as never,
+    });
+    return emit;
+  };
+  return { ...bridge, service, send, tasks, runsOf, raceNext, lines, beginRun };
 }
 
 describe("a message from a chat reaches your own agents only as its bridge", () => {
@@ -448,6 +531,115 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
           .where("originConnectionId", "=", onlyMe.id)
           .execute(),
       ).toEqual([]);
+    } finally {
+      await f.service.close();
+      await storeFixture.close();
+    }
+  });
+  it("takes a message while the computer is off: its task is made and its Run waits", async () => {
+    const storeFixture = await createStoreFixture();
+    // Nothing here is connected to run it: no Runner claims a command.
+    const f = await host(storeFixture, {}, "offline");
+    try {
+      expect(await f.send({ eventId: "o1", text: "When you can" })).toMatchObject({
+        status: "adopted",
+      });
+      // It was not held back for the computer: taken once, its task made, its Run queued.
+      expect(
+        await storeFixture.database
+          .selectFrom("channelIngressEvents")
+          .select("attempts")
+          .where("providerEventId", "=", "o1")
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ attempts: 1 });
+      const [task] = await f.tasks();
+      expect(await f.runsOf(task!.id)).toEqual([expect.objectContaining({ status: "queued" })]);
+      // And nothing is said in the chat about waiting.
+      expect(await f.lines()).toEqual([]);
+    } finally {
+      await f.service.close();
+      await storeFixture.close();
+    }
+  });
+
+  it("tells the chat a Run failed or was stopped, with the task's link and nothing else", async () => {
+    const storeFixture = await createStoreFixture();
+    const f = await host(storeFixture, {}, "run-ends");
+    try {
+      expect(await f.send({ eventId: "e1", text: "Check the deploy" })).toMatchObject({
+        status: "adopted",
+      });
+      const [task] = await f.tasks();
+      const [first] = await f.runsOf(task!.id);
+      const failing = await f.beginRun(first!.id, task!.id, "failing");
+      await failing("run.failed", {
+        status: "failed",
+        code: "harness_unavailable",
+        message: "The AI engine stopped responding",
+        retryable: false,
+      });
+      const [failed] = await f.lines();
+      expect(failed).toMatch(
+        /^Something went wrong and the agent could not finish\. The AI engine stopped responding\. Open the task in Opensteer: \S+$/u,
+      );
+      expect(failed).toContain(task!.id);
+      // The next message runs again; "stop" from the chat stops it, and the chat hears so.
+      expect(await f.send({ eventId: "e2", text: "Try again" })).toMatchObject({
+        status: "adopted",
+      });
+      const second = (await f.runsOf(task!.id))[1]!;
+      const stopping = await f.beginRun(second.id, task!.id, "stopping");
+      expect(await f.send({ eventId: "e3", text: "stop" })).toMatchObject({ status: "adopted" });
+      await stopping("run.interrupted", { status: "interrupted" });
+      const stopped = (await f.lines())[1];
+      expect(stopped).toMatch(/^The agent was stopped\. Open the task in Opensteer: \S+$/u);
+      expect(stopped).toContain(task!.id);
+    } finally {
+      await f.service.close();
+      await storeFixture.close();
+    }
+  });
+
+  it("refuses a message whose bridge changed or ended while it was on its way", async () => {
+    const storeFixture = await createStoreFixture();
+    const f = await host(storeFixture, {}, "races");
+    const connections = new AgentConnectionStore(storeFixture.database);
+    try {
+      // The person changes what the bridge may do after the message was decided: it was
+      // admitted under the old revision, so it starts nothing, and its sender hears one line.
+      f.raceNext(() =>
+        connections.update(f.fixture.userId, {
+          connectionId: f.bridge.id,
+          expectedRevision: f.bridge.grantRevision!,
+          accessMode: "auto",
+        }),
+      );
+      expect(await f.send({ eventId: "g1", text: "Start" })).toMatchObject({ status: "ignored" });
+      expect(await f.tasks()).toEqual([]);
+      expect(await f.lines()).toEqual([
+        "Opensteer couldn't start this. Open Opensteer to see why.",
+      ]);
+      // Sent again, it is decided under what the bridge holds now.
+      expect(await f.send({ eventId: "g2", text: "Start" })).toMatchObject({ status: "adopted" });
+      const [task] = await f.tasks();
+      expect(task).toMatchObject({ accessMode: "auto" });
+      const inputs = () =>
+        storeFixture.database
+          .selectFrom("threadInputs")
+          .select("messageId")
+          .where("threadId", "=", task!.id)
+          .execute();
+      const before = (await inputs()).length;
+      // The person disconnects it while the next message is on its way: nothing reaches the
+      // task, and an ended bridge says nothing.
+      f.raceNext(() => connections.revoke(f.fixture.userId, f.bridge.id));
+      expect(await f.send({ eventId: "g3", text: "And this" })).toMatchObject({
+        status: "ignored",
+      });
+      expect(await inputs()).toHaveLength(before);
+      expect(await f.lines()).toEqual([
+        "Opensteer couldn't start this. Open Opensteer to see why.",
+      ]);
     } finally {
       await f.service.close();
       await storeFixture.close();

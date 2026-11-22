@@ -174,7 +174,12 @@ export function toolOperationKey(caller: AgentCaller, input: object, fallback: s
 export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthority {
   const base = { userId: caller.userId, accessMode: caller.accessMode };
   if (caller.kind === "connection")
-    return { ...base, kind: "connection", connectionId: caller.connectionId };
+    return {
+      ...base,
+      kind: "connection",
+      connectionId: caller.connectionId,
+      ...(caller.chat ? { admittedRevision: caller.chat.revision } : {}),
+    };
   if (caller.kind === "run") return { ...base, kind: "run", scope: caller.claims };
   return caller.program.kind === "trigger"
     ? { ...base, kind: "trigger", scope: caller.program }

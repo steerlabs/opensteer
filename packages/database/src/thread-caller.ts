@@ -47,6 +47,8 @@ export type ThreadCallerAuthority = {
   | {
       readonly kind: "connection";
       readonly connectionId: string;
+      /** A chat's message: the bridge's revision it was admitted under, and no other. */
+      readonly admittedRevision?: number;
     }
 );
 /** The connection a caller works for, read from its immutable binding; null for owner work. */
@@ -153,6 +155,12 @@ export async function assertThreadCaller(
       );
     }
     if (!agentGrantAllowsTasks(lineage.grant)) throw forbidden(tasksWithdrawnMessage);
+    if (
+      caller.kind === "connection" &&
+      caller.admittedRevision !== undefined &&
+      lineage.grantRevision !== caller.admittedRevision
+    )
+      throw forbidden("This chat may no longer ask your agents to work.");
   }
   let runMode: ThreadAccessMode | null = null;
   if (caller.kind === "run") {

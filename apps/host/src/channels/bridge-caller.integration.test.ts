@@ -193,7 +193,7 @@ describe("a bridge asks your own agents to work through the task tools' own entr
           } as never,
         }),
       ).rejects.toMatchObject({ code: "forbidden" });
-      // The inbox refuses a message admitted under an earlier revision of the bridge.
+      // A message admitted under an earlier revision of the bridge makes no task at all.
       const caller = await resolveBridgeCaller(f.storeFixture.store, {
         ownerUserId: f.fixture.userId,
         bridgeId: f.bridge.id,
@@ -206,7 +206,17 @@ describe("a bridge asks your own agents to work through the task tools' own entr
       });
       await expect(
         f.call(caller, "opensteer_task_create", { message: "Hi" }, "stale-revision"),
-      ).rejects.toMatchObject({ code: "forbidden", message: "Connected agent source is invalid" });
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This chat may no longer ask your agents to work.",
+      });
+      expect(
+        await f.storeFixture.database
+          .selectFrom("threads")
+          .select("id")
+          .where("originConnectionId", "=", f.bridge.id)
+          .execute(),
+      ).toEqual([]);
       // A paused account hands nothing off: the hand-off reads the same liveness.
       await f.storeFixture.database
         .updateTable("channelAccounts")
