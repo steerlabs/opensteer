@@ -242,7 +242,18 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       throw new CommandDispatchError("Unsupported durable Runner command", "failed");
     }
     if (command.type === "trigger.execute") {
-      await this.#dispatchTrigger(command, signal);
+      try {
+        await this.#dispatchTrigger(command, signal);
+      } catch (error) {
+        // An automation of a paused chat is held with the chat's work: it neither fails nor
+        // counts as a failure, and runs once when the chat is back.
+        if (
+          !(error instanceof CommandDispatchError && error.disposition === "held") &&
+          (await this.#triggers.commandChatWaiting(command.id))
+        )
+          throw chatRunHeld();
+        throw error;
+      }
       return;
     }
     if (command.type !== "run.execute") {

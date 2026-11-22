@@ -28,6 +28,12 @@ export type BridgeSenderAdmission =
  * admitted under one revision is refused under another.
  */
 /**
+ * Why a chat's queued Run ended when its message's sender stopped being "me" before it was
+ * claimed. The person reads it in Opensteer; the chat hears nothing (run-finalization).
+ */
+export const senderUnlinkedFailure =
+  "Its message came from an account that is no longer linked as you.";
+/**
  * Said by every layer that finds a chat paused while it handles a message: the message is given
  * back to wait, never dropped. Only the Home's own chat calls ever hear it.
  */

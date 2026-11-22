@@ -5860,7 +5860,7 @@ async function delegationListsThread(
  * the chat's senders no longer include them, it is cancelled, silently. A paused chat holds it
  * (its own check holds the queue first); anything not from a chat is not asked.
  */
-async function chatSenderMaySpeak(
+export async function chatSenderMaySpeak(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly authoritySource: Readonly<Record<string, unknown>>;

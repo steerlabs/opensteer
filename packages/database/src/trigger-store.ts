@@ -83,7 +83,8 @@ import { admitThreadExecution } from "./execution-authority.js";
 import { isFinalScheduledOccurrence, recordAutomationFailure } from "./automation-failure-store.js";
 import { runFromRow } from "./thread-row-mappers.js";
 import { createThreadInTransaction, readTask } from "./thread-store.js";
-import { readerSees, type TaskReader } from "./task-reader.js";
+import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js";
+import { connectionState } from "./connection-liveness.js";
 import { assertDelegationDepth } from "./thread-lineage.js";
 import type { Thread } from "@opensteer/core";
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
@@ -815,6 +816,16 @@ export class TriggerStore {
       return triggerFromRow(updated);
     });
   }
+  /** The command runs an automation whose chat is paused: its work is held until it is back. */
+  async commandChatWaiting(commandId: CommandId): Promise<boolean> {
+    const trigger = await this.#database
+      .selectFrom("triggerOccurrences")
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .select(["triggers.anchorThreadId", "triggers.originConnectionId"])
+      .where("triggerOccurrences.commandId", "=", commandId)
+      .executeTakeFirst();
+    return trigger ? triggerChatWaiting(this.#database, trigger) : false;
+  }
   async listForOwner(input: {
     readonly anchorThreadId?: ThreadId;
     readonly limit?: number;
@@ -1280,9 +1291,11 @@ export class TriggerStore {
       .selectFrom("triggers")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .selectAll("triggers")
-      // The author is named only when the reader could reach that Thread itself.
+      // The author is named only when the reader could reach that Thread itself, by the one rule.
       .leftJoin("threads as authorThread", (join) =>
-        join.onRef("authorThread.id", "=", "triggers.createdByThreadId"),
+        join
+          .onRef("authorThread.id", "=", "triggers.createdByThreadId")
+          .on(readerSees(reader, sql.ref("authorThread.origin_connection_id"))),
       )
       .select(["threads.title as anchorThreadTitle", "authorThread.title as createdByThreadTitle"])
       .where("triggers.id", "=", triggerId)
@@ -1324,6 +1337,9 @@ export class TriggerStore {
               "triggerOccurrences.causalChainId",
               "runs.causalChainId",
             )
+            .$if(reader.kind === "work", (q) =>
+              q.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
+            )
             .selectAll("runs")
             .select(["threads.title as threadTitle", "triggerOccurrences.id as occurrenceId"])
             .distinct()
@@ -1349,6 +1365,9 @@ export class TriggerStore {
               "triggerOccurrences",
               "triggerOccurrences.causalChainId",
               "threadInputs.causalChainId",
+            )
+            .$if(reader.kind === "work", (q) =>
+              q.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
             )
             .selectAll("runs")
             .select(["threads.title as threadTitle", "triggerOccurrences.id as occurrenceId"])
@@ -1660,7 +1679,12 @@ export class TriggerStore {
       ): Promise<TriggerOccurrence | undefined> => {
         if (!trigger.nextFireAt) return undefined;
         let occurrence: TriggerOccurrence | undefined;
-        if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
+        // A chat that is only paused keeps its automation: the tick is enqueued and held with the
+        // chat's work (ticks collapse while one waits), and runs once when the chat is back.
+        if (
+          !(await triggerExecutionAuthorityAvailable(transaction, trigger)) &&
+          !(await triggerChatWaiting(transaction, trigger))
+        ) {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
           // condition.
@@ -2438,11 +2462,19 @@ async function lockTriggerForMutation(
   },
   requiredAccess: "control" | "define",
 ): Promise<TriggerRow> {
+  // Work acting from a task reads its automations as it reads them anywhere: one it may not
+  // read (a memory worker's own task tree, an automation without personal context) is missing.
+  const reader: TaskReader =
+    input.actorThreadId === null
+      ? personTaskReader
+      : { kind: "work", threadId: input.actorThreadId };
   const observed = await transaction
     .selectFrom("triggers")
-    .select("anchorThreadId")
-    .where("id", "=", input.triggerId)
-    .where("createdBy", "=", input.ownerId)
+    .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+    .select("triggers.anchorThreadId")
+    .where("triggers.id", "=", input.triggerId)
+    .where("triggers.createdBy", "=", input.ownerId)
+    .$if(reader.kind === "work", (q) => q.where(automationReaderSees(reader)))
     .executeTakeFirst();
   if (!observed) throw notFound();
   const authority = await lockTriggerAuthorityThreads(
@@ -2621,6 +2653,24 @@ async function automationHandoffWitness(
  * A new occurrence, dispatch or program call: its anchor's environment and, for an automation a
  * connection made, that connection still live and still granted Tasks.
  */
+/**
+ * The automation works for a chat that is paused (its own lineage, or its anchor task's), asked
+ * of the one state function. Its work is held, not failed and not paused.
+ */
+export async function triggerChatWaiting(
+  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "originConnectionId">,
+): Promise<boolean> {
+  const { rows } = await sql<{ waiting: boolean }>`
+    select ${connectionState(database)} = 'waiting' as waiting
+    from agent_connections
+    where agent_connections.bridge_account_id is not null
+      and agent_connections.id = coalesce(${trigger.originConnectionId}::text,
+        (select origin_connection_id from threads where id = ${trigger.anchorThreadId}))`.execute(
+    database,
+  );
+  return rows[0]?.waiting === true;
+}
 async function triggerExecutionAuthorityAvailable(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,

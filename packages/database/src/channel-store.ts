@@ -626,26 +626,29 @@ export class ChannelStore {
     readonly back: boolean;
   }> {
     const status = input.status === "connecting" ? "pending" : input.status;
-    const result = await this.#database
-      .updateTable("integrationConnections")
-      .set({
-        status,
-        statusDetail: input.detail,
-        statusReason: input.reason,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", input.connectionId)
-      .where("connectionKind", "=", "channel")
-      .where("runnerId", "=", input.runnerId)
-      .where("status", "not in", ["paused", "revoked"])
-      .executeTakeFirst();
-    if (result.numUpdatedRows !== 1n) {
-      throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
-    }
-    const accountStatus = status === "needs-attention" ? "needs-attention" : "connected";
-    // Once connected, the transport keeps its own position: where setup said to start no longer
-    // applies (`accountInitialCursor`). The row as it was before is read in the same statement.
-    const { rows } = await sql<{ was: string }>`
+    // Both rows in one transaction, the channel first then its account: two reports in flight
+    // never leave the channel and its account saying different things.
+    return this.#database.transaction().execute(async (transaction) => {
+      const result = await transaction
+        .updateTable("integrationConnections")
+        .set({
+          status,
+          statusDetail: input.detail,
+          statusReason: input.reason,
+          updatedAt: new Date(),
+        })
+        .where("id", "=", input.connectionId)
+        .where("connectionKind", "=", "channel")
+        .where("runnerId", "=", input.runnerId)
+        .where("status", "not in", ["paused", "revoked"])
+        .executeTakeFirst();
+      if (result.numUpdatedRows !== 1n) {
+        throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
+      }
+      const accountStatus = status === "needs-attention" ? "needs-attention" : "connected";
+      // Once connected, the transport keeps its own position: where setup said to start no longer
+      // applies (`accountInitialCursor`). The row as it was before is read in the same statement.
+      const { rows } = await sql<{ was: string }>`
       update channel_accounts as account set
         metadata = ${
           status === "connected" ? sql`account.metadata - 'initialCursor'` : sql`account.metadata`
@@ -656,10 +659,11 @@ export class ChannelStore {
       where before.id = account.id
         and account.connection_id = ${input.connectionId}
         and account.status not in ('paused', 'revoked')
-      returning before.status as was`.execute(this.#database);
-    return {
-      back: accountStatus === "connected" && rows.some(({ was }) => was !== "connected"),
-    };
+      returning before.status as was`.execute(transaction);
+      return {
+        back: accountStatus === "connected" && rows.some(({ was }) => was !== "connected"),
+      };
+    });
   }
 
   async commitIngress(
@@ -783,7 +787,11 @@ export class ChannelStore {
           eb.and([
             eb("status", "=", "pending"),
             eb.or([
-              eb.and([eb("nextAttemptAt", "<=", now), atIngressLaneHead]),
+              eb.and([
+                eb("nextAttemptAt", "<=", now),
+                atIngressLaneHead,
+                eb.not(ingressWaiting(this.#database)),
+              ]),
               eb("attempts", ">=", ingressAttemptCeiling),
             ]),
           ]),

@@ -1452,8 +1452,53 @@ describeStore("managed memory passes", (it) => {
       },
     });
     const hiddenTasks = [fromStrangers, under, legacy, strangersWorker.thread];
-    // Work the pass started reads as the pass: a worker it delegated to, and a task it created
-    // and sent work into.
+    // A person's automation on their own task, one of whose downstream Runs is in the chat's task.
+    const ownAutomation = await new TriggerStore(f.database).create({
+      actorThreadId: null,
+      anchorThreadId: own.id,
+      createdBy: base.userId,
+      idempotencyKey: "tools-own-automation",
+      name: "My briefing",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default () => {}",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const ownOccurrence = await new TriggerStore(f.database).enqueueManual({
+      actorThreadId: null,
+      ownerId: base.userId,
+      triggerId: ownAutomation.trigger.id,
+    });
+    const chainId = createId("causalChain");
+    await f.database
+      .insertInto("causalChains")
+      .values({
+        id: chainId,
+        maxDelegations: 10,
+        maxAutonomousRuns: 10,
+        rootMessageId: null,
+        rootOccurrenceId: ownOccurrence.id,
+        usedDelegations: 0,
+        usedAutonomousRuns: 0,
+      })
+      .execute();
+    await f.database
+      .updateTable("triggerOccurrences")
+      .set({ causalChainId: chainId })
+      .where("id", "=", ownOccurrence.id)
+      .execute();
+    await f.database
+      .updateTable("runs")
+      .set({ causalChainId: chainId })
+      .where("id", "=", turn.run.id)
+      .execute();
+    // The pass's own task tree reads as the pass: a worker it delegated to. A task it created for
+    // the person is an ordinary task of theirs, and reads as one (below).
     const passWorker = await f.store.delegateThread({
       accessMode: "approval-required",
       createdBy: base.userId,
@@ -1488,14 +1533,8 @@ describeStore("managed memory passes", (it) => {
         passWorker.command.id,
         passWorker.thread.id,
       ),
-      "a task the pass created": await runCaller(
-        f,
-        base,
-        sent.run.id,
-        sent.command.id,
-        passTask.id,
-      ),
     };
+    const passTaskCaller = await runCaller(f, base, sent.run.id, sent.command.id, passTask.id);
     const outcome = (promise: Promise<unknown>) =>
       promise.then(
         (value) => ({ value }),
@@ -1555,7 +1594,38 @@ describeStore("managed memory passes", (it) => {
       expect
         .soft(await ask("opensteer_automation_read", { automationId: automation.trigger.id }), who)
         .toEqual(await ask("opensteer_automation_read", { automationId: createId("trigger") }));
+      // Every automation door reads a hidden one as missing, the controls among them.
+      for (const action of ["pause", "resume", "archive", "run_now", "cancel_pending"] as const)
+        expect
+          .soft(
+            await ask("opensteer_automation_control", {
+              automationId: automation.trigger.id,
+              action,
+            }),
+            `${who} ${action}`,
+          )
+          .toEqual(
+            await ask("opensteer_automation_control", {
+              automationId: createId("trigger"),
+              action,
+            }),
+          );
+      // A visible automation's work in a hidden task is not shown: neither its Run nor its title.
+      const read = (await ask("opensteer_automation_read", {
+        automationId: ownAutomation.trigger.id,
+      })) as { value?: unknown };
+      expect.soft(read.value, who).toBeDefined();
+      expect.soft(JSON.stringify(read.value), who).not.toContain(turn.run.id);
+      expect.soft(JSON.stringify(read.value), who).not.toContain("From the channel");
     }
+    // A task the pass created for the person reads as any task of theirs: nothing is hidden.
+    const ordinary = (await lastService!.callTool(
+      "",
+      "opensteer_task_list",
+      { limit: 50 },
+      { caller: passTaskCaller, operationKey: "tools-pass-task-list" },
+    )) as { readonly tasks: readonly { readonly id: string }[] };
+    expect(ordinary.tasks.map(({ id }) => id)).toContain(fromStrangers.id);
     // The person's own agents still see their tasks as before.
     const ownRun = await f.enqueueHumanTrigger({
       content: [{ type: "text", text: "Look around" }],

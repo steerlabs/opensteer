@@ -29,7 +29,7 @@ interface TriggerServiceOptions {
   readonly publicUrl: URL;
   readonly store: TriggerStore;
   readonly runnerStore: TriggerProgramRunnerStore;
-  readonly threads: Pick<OpensteerStore, "getThreadForOwner">;
+  readonly threads: Pick<OpensteerStore, "readTask">;
   readonly tokens: Pick<SignedTokenService, "deriveSecret">;
 }
 export class TriggerService {
@@ -69,6 +69,7 @@ export class TriggerService {
       input.ownerId,
       input.anchorThreadId,
       input.program.toolContractVersion,
+      actorReader(actorThreadId),
     );
     const webhookRouteKey =
       input.source.kind === "webhook" ? `wh_${randomBytes(24).toString("base64url")}` : undefined;
@@ -159,6 +160,7 @@ export class TriggerService {
       ownerId,
       current.trigger.anchorThreadId,
       (input.program ?? current.revision.program).toolContractVersion,
+      actorReader(actorThreadId),
     );
     const updated = await this.#store.update({
       ...input,
@@ -396,8 +398,9 @@ export class TriggerService {
     ownerId: UserId,
     anchorThreadId: ThreadId,
     version: number,
+    reader: TaskReader,
   ): Promise<void> {
-    const anchor = await this.#threads.getThreadForOwner(anchorThreadId, ownerId);
+    const anchor = await this.#threads.readTask(reader, anchorThreadId, ownerId);
     if (!anchor)
       throw new OpensteerError({
         code: "not_found",

@@ -21,6 +21,7 @@ import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
+import { senderUnlinkedFailure } from "./bridge-admission.js";
 import {
   OpensteerError,
   MessageContentSchema,
@@ -573,6 +574,8 @@ async function finalizeRunOutcome(
     }
   } else if (
     replyTarget?.kind === "channel" &&
+    // A message whose sender stopped being "me" ends without a word to the chat.
+    input.failure?.message !== senderUnlinkedFailure &&
     (input.status !== "interrupted" ||
       !(await transaction
         .selectFrom("commands")

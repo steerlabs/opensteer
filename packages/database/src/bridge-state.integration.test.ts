@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
 import { sql } from "kysely";
+import { createChannelId, type ChannelConversationId } from "@opensteer/channel-core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
@@ -181,6 +182,84 @@ describeStore("a chat is live, waiting or ended, and every layer reads which", (
     await new AgentConnectionStore(database).revoke(fixture.userId, bridge.bridge.id);
     await store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });
     expect(await state()).toBe("cancelled");
+  });
+
+  it('cancels, silently, a queued Run whose sender stopped being "me" before it was claimed', async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("state-relink-run");
+    const { database, store } = storeFixture;
+    const { fixture } = bridge;
+    const conversationId = createChannelId("conversation") as ChannelConversationId;
+    await database
+      .insertInto("bridgeConversations")
+      .values({
+        id: conversationId,
+        bridgeId: bridge.bridge.id,
+        accountId: bridge.configured.account.id,
+        externalScopeId: null,
+        externalConversationId: "D-state-relink-run",
+        externalThreadId: null,
+        conversationType: "dm",
+        displayName: null,
+        threadId: null,
+      })
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    // The old phone's message reserves a Run at once.
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the old phone" }],
+      source: {
+        kind: "connection",
+        connectionId: bridge.bridge.id,
+        chat: {
+          conversationId,
+          revision: bridge.bridge.grantRevision!,
+          sender: { displayName: "Tim", externalUserId: bridge.owner },
+        },
+      },
+      policy: "queue",
+      idempotencyKey: "state-relink-run",
+    });
+    if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+    // The person links "me" to their new phone before that Run is sent.
+    const { startBridgeOwnerLink } = await import("./bridge-ingress.js");
+    const { code } = await startBridgeOwnerLink(database, {
+      userId: fixture.userId,
+      accountId: bridge.configured.account.id,
+    });
+    expect(
+      (await bridge.decide({ eventId: "relink", text: code, externalUserId: "U-NEW-PHONE" }))
+        .decision,
+    ).toEqual({ kind: "linked" });
+    const claimed = await store.claimCommand(queued.command.id, "state-relink-run");
+    expect(claimed?.terminalFailure).toBeDefined();
+    await store.failCommand(queued.command.id, claimed!.terminalFailure!, "seed-input");
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["state", "cancelReason"])
+        .where("messageId", "=", queued.input.messageId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "cancelled" });
+    expect(claimed!.terminalFailure).toBe(
+      "Its message came from an account that is no longer linked as you.",
+    );
+    // The chat hears nothing about it.
+    expect(
+      await database
+        .selectFrom("bridgeDeliveries")
+        .select("id")
+        .where("bridgeId", "=", bridge.bridge.id)
+        .where("kind", "=", "status")
+        .execute(),
+    ).toEqual([]);
   });
 
   it("ends when the organization's work Home is offboarding: nothing more is enqueued, sent or handed off", async ({

@@ -4,9 +4,8 @@ import { lineageHasPersonalContext } from "./resource-access.js";
 
 /**
  * Who reads a task. The person, and a connected agent, read what their own rules allow. Work
- * running in a task (a Run, or an automation's program anchored there) reads as that task: if the
- * task is in a managed memory pass's lineage, it reads only tasks that ran with the person's
- * personal context.
+ * running in a task (a Run, or an automation's program anchored there) reads as that task: in a
+ * memory worker's own task tree, it reads only tasks that ran with the person's personal context.
  */
 export type TaskReader =
   | { readonly kind: "person" }
@@ -16,32 +15,29 @@ export type TaskReader =
 export const personTaskReader: TaskReader = { kind: "person" };
 
 /**
- * The reader works in a managed memory pass's lineage: its task sits under a task a memory
- * automation is anchored to, or a Run in its task was started by a memory pass (a task the pass
- * created, a worker it delegated to, a task it sent work into). What the pass starts carries its
- * causal chain, so nothing it makes reads wider than it does.
+ * The reader is a memory worker's own task tree: its task's lineage root is the task a memory
+ * automation is anchored to (the pass itself, and the workers it delegates to). A task the pass
+ * creates for the person (opensteer_task_create) is an ordinary task of theirs, and reads as one.
  */
 function memoryLineage(threadId: ThreadId): RawBuilder<boolean> {
-  return sql<boolean>`(exists (
+  return sql<boolean>`exists (
       select 1 from threads memory_reader
       join triggers memory_role
         on memory_role.anchor_thread_id = memory_reader.lineage_root_thread_id
-      where memory_reader.id = ${threadId} and memory_role.system_role is not null)
-    or exists (
-      select 1 from runs memory_run
-      join causal_chains memory_chain on memory_chain.id = memory_run.causal_chain_id
-      join trigger_occurrences memory_occurrence
-        on memory_occurrence.id = memory_chain.root_occurrence_id
-      join triggers memory_role on memory_role.id = memory_occurrence.trigger_id
-      where memory_run.thread_id = ${threadId} and memory_role.system_role is not null))`;
+      where memory_reader.id = ${threadId} and memory_role.system_role is not null)`;
 }
 
 /**
  * The one rule for what a reader may see of something derived from a task, in the statement
- * that reads it: everything, unless the reader is in a memory pass's lineage, which sees only
- * what every named lineage (the task's, and an automation's own) gives personal context. What it
- * may not see reads exactly like what does not exist: callers filter by this, never refuse
- * differently.
+ * that reads it: everything, unless the reader is a memory worker's own task tree, which sees
+ * only what every named lineage (the task's, and an automation's own) gives personal context.
+ * What it may not see reads exactly like what does not exist: callers filter by this, never
+ * refuse differently.
+ *
+ * What it is for: a memory pass reads tasks as the person's own conversations, and a chat that
+ * other people can speak in is not that, so their words are not taken as the person's. It is
+ * not a wall: a pass still reads the person's mail and messages, which other people write, and
+ * its tab list may name a task it cannot read.
  */
 export function readerSees(
   reader: TaskReader,

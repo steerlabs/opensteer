@@ -100,8 +100,15 @@ import {
   endStoppedUnconfirmedRun,
   finalizeRunTransaction,
 } from "./run-finalization.js";
-import { liveAgentConnection, meetsConnectionFloor, sendEligible } from "./resource-access.js";
+import {
+  connectionWaiting,
+  liveAgentConnection,
+  meetsConnectionFloor,
+  sendEligible,
+} from "./resource-access.js";
 import { lockLineageConnection } from "./thread-caller.js";
+import { senderUnlinkedFailure } from "./bridge-admission.js";
+import { chatSenderMaySpeak } from "./thread-inbox.js";
 import { isWorkHomeDatabase } from "./work-home-context.js";
 
 export type RunnerControlInput =
@@ -312,6 +319,14 @@ async function claimObservedCommand(
         throw error;
       },
     );
+    // A chat paused after this command was listed: its Run is held, pending and queued, with its
+    // message kept, and is listed again when the chat is back. Only an end is terminal.
+    if (
+      !connection &&
+      observed.type === "run.execute" &&
+      (await connectionWaiting(transaction, observed.requestedBy, lineage))
+    )
+      return null;
     if (
       !connection ||
       !agentGrantAllowsTasks(connection.grant) ||
@@ -321,6 +336,20 @@ async function claimObservedCommand(
     ) {
       terminalFailure = "The connected agent's access ended before this work could be delivered.";
       if (observed.type === "run.execute") terminalFailureInput = "seed-input";
+    }
+  }
+  // A Run whose message's sender may no longer speak (the person linked "me" to another
+  // identity) ends at its claim, as a queued message is cancelled at its turn: its message is
+  // cancelled with it, and the chat hears nothing (run-finalization reads this failure).
+  if (lineage && run && observed.type === "run.execute" && !terminalFailure && workIsAvailable) {
+    const seed = await transaction
+      .selectFrom("threadInputs")
+      .select(["authoritySource", "connectionId", "requestedBy", "state"])
+      .where("messageId", "=", run.seedInputId)
+      .executeTakeFirst();
+    if (seed && seed.state === "pending" && !(await chatSenderMaySpeak(transaction, seed))) {
+      terminalFailure = senderUnlinkedFailure;
+      terminalFailureInput = "seed-input";
     }
   }
   if (observed.type === "run.execute" && !terminalFailure && !workIsAvailable) {
@@ -1189,6 +1218,7 @@ export async function claimNextCommand(
       ])
       .where("commands.environmentId", "=", environmentId)
       .where("commands.status", "=", "pending")
+      .where((expression) => expression.not(chatWorkHeld(transaction)))
       .where((expression) =>
         expression.or([
           expression("commands.type", "!=", "run.execute"),
@@ -1449,26 +1479,36 @@ export async function listPendingCommands(
           ),
         ]),
       )
-      // A Run of a paused chat waits for the chat, not for time: it is not listed until it is back.
-      .where((expression) =>
-        expression.or([
-          expression("commands.type", "!=", "run.execute"),
-          expression("runs.connectionId", "is", null),
-          expression.not(chatRunHeld(database)),
-        ]),
-      )
+      // A paused chat's work waits for the chat, not for time: it is not listed until it is back.
+      .where((expression) => expression.not(chatWorkHeld(database)))
       .orderBy("commands.createdAt", "asc")
       .limit(Math.min(Math.max(limit, 1), 20_000))
       .execute()
   );
 }
-/** The Run works for a chat that is paused: asked of the one state function. */
-function chatRunHeld(database: object) {
-  return sql<boolean>`exists (
-    select 1 from agent_connections
-    where agent_connections.id = runs.connection_id
-      and agent_connections.bridge_account_id is not null
-      and ${connectionState(database)} = 'waiting')`;
+/**
+ * The command is a paused chat's work, held until the chat is back (asked of the one state
+ * function): a Run in the chat's lineage, or an automation's run whose lineage is the chat. A
+ * schedule's ticks collapse while one waits (`pendingScheduleOccurrenceExists`), so a pause of
+ * any length keeps at most one. Reads `commands` and the left-joined `runs`.
+ */
+function chatWorkHeld(database: object) {
+  return sql<boolean>`((commands.type = 'run.execute' and runs.connection_id is not null
+      and exists (
+        select 1 from agent_connections
+        where agent_connections.id = runs.connection_id
+          and agent_connections.bridge_account_id is not null
+          and ${connectionState(database)} = 'waiting'))
+    or (commands.type = 'trigger.execute' and exists (
+        select 1 from trigger_occurrences held_occurrence
+        join triggers held_trigger on held_trigger.id = held_occurrence.trigger_id
+        join threads held_anchor on held_anchor.id = held_trigger.anchor_thread_id
+        join agent_connections
+          on agent_connections.id = coalesce(held_occurrence.connection_id,
+            held_trigger.origin_connection_id, held_anchor.origin_connection_id)
+        where held_occurrence.command_id = commands.id
+          and agent_connections.bridge_account_id is not null
+          and ${connectionState(database)} = 'waiting')))`;
 }
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,
