@@ -96,12 +96,13 @@ decide_profile_disk() {
             esac
         done <<< "$blkid_out"
 
-        # Every non-empty wipefs signature line must be ext4 (no partition table, RAID, or LUKS).
+        # Every non-empty wipefs signature line (`DEVICE OFFSET TYPE [UUID] [LABEL]`) must be ext4
+        # (no partition table, RAID, or LUKS).
         local wipefs_only_ext4=true wipefs_count=0
         while IFS= read -r line || [[ -n $line ]]; do
             [[ -z $(printf '%s' "$line" | tr -d '[:space:]') ]] && continue
             wipefs_count=$(( wipefs_count + 1 ))
-            if ! printf '%s\n' "$line" | awk '{exit !($2 == "ext4")}'; then
+            if ! printf '%s\n' "$line" | awk '{exit !($2 ~ /^0x[0-9a-fA-F]+$/ && $3 == "ext4")}'; then
                 wipefs_only_ext4=false
                 break
             fi

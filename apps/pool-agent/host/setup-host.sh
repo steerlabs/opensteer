@@ -379,6 +379,9 @@ kernel_settings() {
     swapoff -a
     # And no swap after a reboot either.
     sed -i -E 's/^([^#].*[[:space:]]swap[[:space:]].*)$/# disabled by opensteer-pool: \1/' /etc/fstab
+    # Ubuntu enables apport.service by default, which overwrites kernel.core_pattern on boot.
+    systemctl disable --now apport.service 2>/dev/null || true
+    systemctl mask apport.service 2>/dev/null || true
     cat > /etc/sysctl.d/90-opensteer-pool.conf <<'EOF'
 kernel.core_pattern=|/bin/false
 fs.suid_dumpable=0

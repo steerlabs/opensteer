@@ -65,7 +65,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
       "USAGE=filesystem",
     ].join("\n");
     const validWipefs =
-      "0x438      ext4     11111111-2222-3333-4444-555555555555 osp-profiles";
+      "google-opensteer-profiles 0x438  ext4 11111111-2222-3333-4444-555555555555 osp-profiles";
 
     it("formats and mounts a blank disk only when everEnrolled=false", () => {
       const res = runEnroll([
@@ -161,7 +161,8 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
 
     it("refuses an unlabeled ext4 disk or an ext4 disk with any other label", () => {
       const unlabeledBlkid = "DEVNAME=/dev/sdb\nTYPE=ext4\nUSAGE=filesystem";
-      const unlabeledWipefs = "0x438      ext4     11111111-2222-3333-4444-555555555555";
+      const unlabeledWipefs =
+        "google-opensteer-profiles 0x438  ext4 11111111-2222-3333-4444-555555555555";
       for (const everEnrolled of ["false", "true"]) {
         const unlabeled = runEnroll([
           "decide-profile-disk",
@@ -209,7 +210,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
         "--wipefs-rc",
         "0",
         "--wipefs-out",
-        "0x0        xfs      11111111-2222-3333-4444-555555555555 osp-profiles",
+        "google-opensteer-profiles 0x0    xfs  11111111-2222-3333-4444-555555555555 osp-profiles",
       ]);
       expect(xfs.status).toBe(1);
       expect(xfs.stdout).toBe("refuse:foreign-disk-signature");
@@ -225,7 +226,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
         "--wipefs-rc",
         "0",
         "--wipefs-out",
-        `${validWipefs}\n0x200      gpt`,
+        `${validWipefs}\ngoogle-opensteer-profiles 0x200  gpt`,
       ]);
       expect(gpt.status).toBe(1);
       expect(gpt.stdout).toBe("refuse:foreign-disk-signature");
@@ -241,7 +242,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
         "--wipefs-rc",
         "0",
         "--wipefs-out",
-        `${validWipefs}\n0x0        crypto_LUKS`,
+        `${validWipefs}\ngoogle-opensteer-profiles 0x0    crypto_LUKS`,
       ]);
       expect(multiSig.status).toBe(1);
       expect(multiSig.stdout).toBe("refuse:foreign-disk-signature");
@@ -292,7 +293,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
         "--wipefs-rc",
         "0",
         "--wipefs-out",
-        "0x1fe      dos",
+        "google-opensteer-profiles 0x1fe  dos",
       ]);
       expect(disagree.status).toBe(1);
       expect(disagree.stdout).toBe("refuse:foreign-disk-signature");
