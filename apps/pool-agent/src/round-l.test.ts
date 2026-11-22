@@ -1,11 +1,11 @@
 /**
- * E2 & E4: "no upstream, no start" holds for the egress proxy process too. On a host that requires
- * an upstream (`pullsEgress`), `start` and wake (`resume` from memory or from disk) confirm the
+ * "No upstream, no start" holds for the egress proxy process too. On a host that requires an
+ * upstream (`pullsEgress`), `start` and wake (`resume` from memory or from disk) confirm the
  * slot's proxy is serving within a bounded wait before answering applied.
  *
- * E4: On a resume, host and proxy readiness (and closing the guest network gate) are confirmed
- * BEFORE the right to resume is consumed (`consumed`). A refusal known before anything is loaded
- * or thawed (`egress-proxy-down`, or a failed host/network/proxy prepare step) returns a stored,
+ * On a resume, host and proxy readiness (and closing the guest network gate) are confirmed before
+ * the right to resume is consumed (`consumed`). A refusal known before anything is loaded or
+ * thawed (`egress-proxy-down`, or a failed host/network/proxy prepare step) returns a stored,
  * signed refusal that leaves the slot `paused` with its saved state intact so a later resume
  * succeeds and keeps the guest's pages.
  */
@@ -145,7 +145,7 @@ async function setup(options: {
   };
 }
 
-describe("E2 & E4: start and wake confirm the slot proxy is serving when upstream is required", () => {
+describe("start and wake confirm the slot proxy is serving when upstream is required", () => {
   it("refuses start with stored, signed egress-proxy-down and boots nothing when proxy is down", async () => {
     const h = await setup({ pullsEgress: true });
     await h.create("bps-e2-start");
@@ -175,7 +175,7 @@ describe("E2 & E4: start and wake confirm the slot proxy is serving when upstrea
     expect(h.driver.boots).toHaveLength(1);
   });
 
-  it("E4: refuses wake from memory with egress-proxy-down, keeps savedState paused, and succeeds when proxy returns", async () => {
+  it("refuses wake from memory with egress-proxy-down, keeps savedState paused, and succeeds when proxy returns", async () => {
     const h = await setup({ pullsEgress: true });
     await h.create("bps-e4-mem");
     const started = (await h.apply("bps-e4-mem", "start")).result;
@@ -229,7 +229,7 @@ describe("E2 & E4: start and wake confirm the slot proxy is serving when upstrea
     expect(h.driver.violations).toEqual([]);
   });
 
-  it("E4: refuses wake from disk with egress-proxy-down, keeps savedState on disk, and succeeds when proxy returns", async () => {
+  it("refuses wake from disk with egress-proxy-down, keeps savedState on disk, and succeeds when proxy returns", async () => {
     const h = await setup({ pullsEgress: true });
     await h.create("bps-e4-disk");
     const started = (await h.apply("bps-e4-disk", "start")).result;
@@ -284,7 +284,7 @@ describe("E2 & E4: start and wake confirm the slot proxy is serving when upstrea
     expect(h.driver.violations).toEqual([]);
   });
 
-  it("E4: other pre-consumed failures (ensureHost, prepareSlot, reviveProxy, closeNetwork) keep savedState intact", async () => {
+  it("keeps savedState intact when host, network, proxy revive or gate close fails before resume is consumed", async () => {
     for (const fault of ["ensureHost", "prepareSlot", "reviveProxy", "closeNetwork"] as const) {
       const slotId = `bps-e4-${fault}`;
       const h = await setup({ pullsEgress: false });
@@ -335,7 +335,7 @@ describe("E2 & E4: start and wake confirm the slot proxy is serving when upstrea
   });
 
   for (const tier of ["memory", "disk"] as const) {
-    it(`E4 crash point: crash between proxy check and consumed (resume:prepared, ${tier}) recovers paused and accepts retry`, async () => {
+    it(`recovers paused and accepts retry after a crash between proxy check and consumed (${tier})`, async () => {
       let armed = false;
       const h = await setup({
         pullsEgress: true,
@@ -389,7 +389,7 @@ describe("E2 & E4: start and wake confirm the slot proxy is serving when upstrea
       expect(h.driver.violations).toEqual([]);
     });
 
-    it(`E4 crash point: crash between consumed and first load (resume:consumed, ${tier}) settles stopped with interrupted`, async () => {
+    it(`settles stopped with interrupted after a crash between consumed and first load (${tier})`, async () => {
       let armed = false;
       const h = await setup({
         pullsEgress: true,

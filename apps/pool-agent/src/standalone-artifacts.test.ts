@@ -1,5 +1,5 @@
 /**
- * E1: Every single-file artifact `enroll-host.sh` delivers onto a pool host (`egress-main.js`,
+ * Every single-file artifact `enroll-host.sh` delivers onto a pool host (`egress-main.js`,
  * `main.js`, `relay.mjs`) must be completely self-contained: built fresh from current source into
  * a temporary output directory (never reading or writing the checkout's `dist`), then copied alone
  * into an empty directory outside the repository (no sibling chunks, no `node_modules`), bare
