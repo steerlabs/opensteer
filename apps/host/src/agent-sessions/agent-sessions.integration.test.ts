@@ -32,6 +32,7 @@ import {
 } from "@opensteer/database";
 import { createStoreFixture, describeStore } from "@opensteer/database/test-support/store";
 import { expect, vi } from "vitest";
+import { sql } from "kysely";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { createAgentReviewer } from "./agent-reviewer.js";
@@ -527,6 +528,87 @@ describeStore("an external agent's direct work through sessions", (it) => {
       gate.set({ hold: null });
       expect(gate.held).toBe(0);
     });
+
+  it("gives a holder whose hand-off commits while a restart settles it a durable outcome before the restart goes on", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-handoff-window");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const gate = new BrowserPoolGate();
+    gate.set({ recovered: true, away: null, hold: null });
+    const database = storeFixture.database;
+    // The operation's row is locked by another session just before the hand-off's write, so that
+    // write waits: the holder is between its reservation and the execution's own settler.
+    const locked = Promise.withResolvers<void>();
+    const unlock = Promise.withResolvers<void>();
+    let holder: Promise<unknown> | undefined;
+    const s = await setUp(storeFixture, "pool-handoff-window", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async (signal) => {
+          const { id } = await database
+            .selectFrom("agentOperations")
+            .select("id")
+            .where("tool", "=", "browser_use")
+            .executeTakeFirstOrThrow();
+          holder = database.transaction().execute(async (tx) => {
+            await tx
+              .selectFrom("agentOperations")
+              .select("id")
+              .where("id", "=", id)
+              .forUpdate()
+              .execute();
+            locked.resolve();
+            await unlock.promise;
+          });
+          await locked.promise;
+          return gate.reserve(signal);
+        },
+      }),
+    });
+    s.runBrowserScript.mockResolvedValueOnce({ content: [{ type: "text", text: "ran" }] });
+    const call = s.call("browser_use", script);
+    const waiting = async () =>
+      Number(
+        (
+          await sql<{ count: string }>`
+            select count(*)::text as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+          `.execute(database)
+        ).rows[0]?.count ?? 0,
+      );
+    // The hand-off's write waits on the lock; the restart begins and settles every holder.
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(0), { timeout: 10_000 });
+    gate.set({ hold: "restart" });
+    const settled = gate.settleHolders();
+    await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(1), { timeout: 10_000 });
+    // The hand-off commits first, then the settlement's own write.
+    unlock.resolve();
+    await holder;
+    await settled;
+    // Before the restart may stop the guest, the handed-off operation has its outcome: refused,
+    // since nothing can have been sent while the hold stood.
+    expect(
+      await database
+        .selectFrom("agentOperations")
+        .select(["state", "outcome"])
+        .where("tool", "=", "browser_use")
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ state: "refused", outcome: "refused" });
+    await call;
+    gate.set({ hold: null });
+    expect(gate.held).toBe(0);
+  });
 
   it("records a fake background model's allow decision before executing an Auto effect", async ({
     storeFixture,

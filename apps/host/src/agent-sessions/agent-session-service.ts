@@ -793,16 +793,29 @@ export class AgentSessionService {
       // a restart that can wait no longer records this holder too: refused while nothing is
       // handed off, and refused as unsent once it is, since no command can have left before the
       // execution began. Both writes apply only to the row in the state they name.
+      // The hand-off may commit while this runs (its write waits on the row, then lands before
+      // the refusal's): the row is read again after each write until it has an outcome.
       reservation.onForcedEnd?.(async () => {
-        const current = await readAgentOperation(this.#store.database, row.id);
-        if (current?.state === "handed-off")
-          await refuseUnsentHandedOffAgentOperation(
-            this.#store.database,
-            row.id,
-            "This browser restarted before anything was sent.",
-            "changed",
-          );
-        else await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const current = await readAgentOperation(this.#store.database, row.id);
+          if (current?.state === "handed-off")
+            await refuseUnsentHandedOffAgentOperation(
+              this.#store.database,
+              row.id,
+              "This browser restarted before anything was sent.",
+              "changed",
+            );
+          else if (
+            current &&
+            (current.state === "admitted" ||
+              current.state === "pending" ||
+              current.state === "approved")
+          )
+            await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
+          else return;
+        }
+        // Still without an outcome after three writes: the restart must not go on to Stop.
+        throw new Error("The pooled operation's outcome could not be recorded.");
       });
       // A restart or a removal asks every holder to stop: the work ends and records its outcome.
       const held = reservation.ended
