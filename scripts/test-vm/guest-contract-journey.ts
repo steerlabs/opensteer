@@ -202,13 +202,18 @@ const s=fs.existsSync(st)?JSON.parse(fs.readFileSync(st,'utf8')):{default:home+'
 const save=()=>fs.writeFileSync(st,JSON.stringify(s));
 if(a[0]==='list-keychains'){if(a.includes('-s')){s.list=a.slice(a.indexOf('-s')+1);save()}else s.list.forEach(k=>console.log('    "'+k+'"'));process.exit(0)}
 if(a[0]==='default-keychain'){if(a.includes('-s')){s.default=a[a.indexOf('-s')+1];save()}else console.log('    "'+s.default+'"');process.exit(0)}
+if(a[0]==='find-generic-password'&&a.includes('-w')){console.log('probe');process.exit(0)}
 process.exit(0);
 `;
 const sysctlGuest = '#!/bin/sh\n[ "$2" = kern.hv_vmm_present ] && echo 1\n';
 function keychainCase(
   name: string,
   setup: { readonly guest: boolean; readonly marker: string | null },
-  run: (step: (action: string) => number | null, root: string) => void,
+  run: (
+    step: (action: string) => number | null,
+    root: string,
+    diagnose: (job: string | null) => { status: number | null; output: string },
+  ) => void,
 ) {
   try {
     const root = path.join(out, name);
@@ -238,7 +243,20 @@ function keychainCase(
       assert.equal(r.error, undefined);
       return r.status;
     };
-    run(step, root);
+    const diagnose = (job: string | null) => {
+      const r = spawnSync("/bin/bash", ["scripts/test-vm/keychain-diagnostic.sh"], {
+        env: {
+          HOME: root,
+          PATH: `${tools}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          ...(job === null ? {} : { OPENSTEER_TEST_GUEST_JOB: job }),
+        },
+        encoding: "utf8",
+        timeout: 15_000,
+      });
+      assert.equal(r.error, undefined);
+      return { output: r.stdout + r.stderr, status: r.status };
+    };
+    run(step, root, diagnose);
     results.push({ name, passed: true });
   } catch (e) {
     results.push({ name, passed: false, error: String(e) });
@@ -257,13 +275,31 @@ for (const [name, setup] of [
   ["keychain-refuses-without-marker", { guest: true, marker: null }],
   ["keychain-refuses-another-job", { guest: true, marker: "opensteer-gui-job-other" }],
 ] as const)
-  keychainCase(name, setup, (step, root) => {
-    for (const action of ["begin", "end"]) {
+  keychainCase(name, setup, (step, root, diagnose) => {
+    for (const action of ["begin", "unlock", "probe", "lock", "guard", "end"]) {
       assert.equal(step(action), 77, `${action} must refuse`);
       assert.deepEqual(calls(root), [], `${action} touched a keychain`);
       assert.equal(existsSync(path.join(root, "opensteer-job/fixture-keychain.state")), false);
     }
+    // The diagnostic refuses by the same guard, before it runs anything.
+    const diagnosed = diagnose("opensteer-gui-job-contract");
+    assert.equal(diagnosed.status, 77, `the diagnostic must refuse: ${diagnosed.output}`);
+    assert.match(diagnosed.output, /^fixture keychain: refused: /u);
+    assert.doesNotMatch(diagnosed.output, /session manager|electron/u);
+    assert.deepEqual(calls(root), [], "the diagnostic touched a keychain");
+    assert.equal(existsSync(path.join(root, "opensteer-job/keychain-diagnostic")), false);
   });
+// In the guest, but the suite was not handed the job's VM: the diagnostic refuses.
+keychainCase(
+  "keychain-diagnostic-refuses-without-job",
+  { guest: true, marker: "opensteer-gui-job-contract" },
+  (_step, root, diagnose) => {
+    const diagnosed = diagnose(null);
+    assert.equal(diagnosed.status, 77, diagnosed.output);
+    assert.deepEqual(calls(root), []);
+    assert.equal(existsSync(path.join(root, "opensteer-job/keychain-diagnostic")), false);
+  },
+);
 keychainCase(
   "keychain-in-the-guest-and-back",
   { guest: true, marker: "opensteer-gui-job-contract" },
@@ -271,6 +307,9 @@ keychainCase(
     const fixture = path.join(root, "Library/Keychains/opensteer-journey-fixture.keychain-db");
     const login = path.join(root, "Library/Keychains/login.keychain-db");
     const other = path.join(root, "Library/Keychains/other.keychain-db");
+    // Nothing to unlock before `begin`: refused, and no keychain touched.
+    assert.equal(step("unlock"), 77);
+    assert.deepEqual(calls(root), []);
     assert.equal(step("begin"), 0);
     const state = () =>
       JSON.parse(readFileSync(path.join(root, "security-state.json"), "utf8")) as {
@@ -293,6 +332,29 @@ keychainCase(
         `touched the login keychain: ${call.join(" ")}`,
       );
     assert.notEqual(step("begin"), 0, "a second begin must refuse");
+    // The suite's own session: it says whether the keychain was usable there, then unlocks it.
+    const before = calls(root).length;
+    assert.equal(step("unlock"), 0);
+    const unlocked = calls(root).slice(before);
+    assert.match(
+      readFileSync(path.join(root, "unlock.log"), "utf8"),
+      /in this session before unlock: write and read ok\n.*in this session after unlock: write and read ok/su,
+    );
+    assert.ok(
+      unlocked.some(
+        (c) => c.join(" ") === `unlock-keychain -p opensteer-journey-fixture ${fixture}`,
+      ),
+    );
+    assert.equal(step("lock"), 0);
+    assert.ok(calls(root).some((c) => c.join(" ") === `lock-keychain ${fixture}`));
+    for (const call of calls(root)) {
+      assert.ok(
+        !call.includes(login) || call[0] === "list-keychains",
+        `touched the login keychain: ${call.join(" ")}`,
+      );
+      // Every item it writes, reads or deletes is in the fixture keychain, named.
+      if (call[0]?.endsWith("generic-password")) assert.equal(call.at(-1), fixture);
+    }
     assert.equal(step("end"), 0);
     assert.deepEqual(state(), { default: login, list: [login, other] });
     assert.ok(calls(root).some((c) => c.join(" ") === `delete-keychain ${fixture}`));
