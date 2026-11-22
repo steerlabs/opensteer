@@ -563,4 +563,3 @@ export function coveringOf(container: Element, frames: Frames, element: Element)
     return over !== null && overlaps(over, seen);
   });
 }
-
