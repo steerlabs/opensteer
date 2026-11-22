@@ -644,7 +644,7 @@ export class SurfaceLedger {
           });
           if (this.records.get(id) !== record || this.closing)
             throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-          if (restore.engine === null && isLive(record))
+          if ((restore.engine === null || page.openedFresh) && isLive(record))
             await this.navigateLive(record, restore.url);
           if (this.records.get(id) !== record || !record.live)
             throw new BrowserRuntimeError("not_found", "The browser tab closed.");

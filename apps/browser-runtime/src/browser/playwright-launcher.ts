@@ -939,9 +939,13 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     }
     this.context = this.contextHandle;
     this.contextHandle.closeTarget = async (targetId) => {
-      await withTimeout(browserCdp.send("Target.closeTarget", { targetId }), nameTargetMs, {
-        timeoutError: () => new Error("Target.closeTarget timed out."),
-      });
+      const reply = (await withTimeout(
+        browserCdp.send("Target.closeTarget", { targetId }),
+        nameTargetMs,
+        { timeoutError: () => new Error("Target.closeTarget timed out.") },
+      )) as { success?: unknown } | undefined;
+      // A resolved answer that says it did not close is no evidence of a close.
+      if (reply?.success === false) throw new Error("Chromium did not close the target.");
     };
     this.contextHandle.browserAlive = () =>
       withTimeout(browserCdp.send("Browser.getVersion"), nameTargetMs, {
@@ -1043,7 +1047,7 @@ function parseChromiumDiscardRestore(value: unknown): ChromiumDiscardRestore | n
 
 /** One bound for a wake: its lane wait, the activation and the arrival together. */
 const wakeDiscardedTabMs = 10_000;
-/** How long a page with no provenance is classified, once no open of ours can be its creator. */
+/** How long an arriving page's tab name is looked up while some tab is asleep. */
 const arrivalIdentifyMs = 2_000;
 /** How long the runtime's own new page may take; a page with no opener waits inside it (K3). */
 const openPageMs = 10_000;
@@ -1241,6 +1245,8 @@ class PlaywrightContextHandle implements BrowserContext {
   /** `newPage` calls in flight; a page they create is published by their answer. */
   private readonly openingPages = new Set<Promise<Page>>();
   private readonly laneTails = new Map<string, Promise<void>>();
+  /** Discard-and-name calls in flight: until each is answered, its tab may be discarded unnamed. */
+  private discarding = 0;
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -1271,34 +1277,48 @@ class PlaywrightContextHandle implements BrowserContext {
     context.on("page", (page) => this.arrive(page));
   }
 
-  /** K3: published with provenance (b) at once; with none, hidden and classified by its name. */
+  /**
+   * M1: a page whose tab carries no sleep name is an ordinary page, handed off as the base does,
+   * opener or not. While some tab is asleep, its tab's name is read first, so a sleeping tab's
+   * page is never handed out, also not as a popup; while none is, an arrival reads nothing.
+   */
   private arrive(page: Page): void {
     if (this.isHiddenPage(page) || this.published.has(page) || this.ending.has(page)) return;
+    const handle = this.wrap(page);
     const known = (page as unknown as { _opener?: Page | null })._opener;
-    const opener = known && !known.isClosed() ? known : null;
-    if (opener && (this.published.has(opener) || !this.nativeProfile)) {
-      const handle = this.wrap(page);
-      handle.openerHandle ??= this.wrap(opener);
-      this.publish(page, true);
-      return;
-    }
-    if (opener) {
-      // A tab opened by a page nobody holds (a sleeping or unknown tab's) is nobody's.
-      void this.closePageWithEvidence(page);
-      return;
-    }
-    if (!this.nativeProfile) {
-      // A fresh context sleeps no tab by name: every page in it is its sessions' own.
-      const handle = this.wrap(page);
-      this.published.add(page);
-      queueMicrotask(() => {
-        if (!page.isClosed()) for (const listener of this.handOffs) listener(handle, null);
-      });
-      for (const listener of this.pageListeners) listener(handle);
+    if (known && !known.isClosed() && this.published.has(known))
+      handle.openerHandle ??= this.wrap(known);
+    if (!this.nativeProfile || !this.lifecycle || this.sleeping.size === 0) {
+      this.handOutOrdinary(page);
       return;
     }
     this.identifyingPages.add(page);
-    void this.classify(page).catch(() => undefined);
+    void this.classify(page).catch(() => this.settleUnknown(page));
+  }
+
+  /** As the base hands off a page: listeners at once, handoff one microtask later. */
+  private handOutOrdinary(page: Page): void {
+    if (this.closed || this.ending.has(page) || this.published.has(page)) return;
+    this.identifyingPages.delete(page);
+    this.published.add(page);
+    const handle = this.wrap(page);
+    // Playwright reports a popup to its opener right after the context's page event, in the
+    // same turn; one microtask later both are known.
+    queueMicrotask(() => {
+      if (!page.isClosed())
+        for (const listener of this.handOffs) listener(handle, handle.openerHandle);
+    });
+    for (const listener of this.pageListeners) listener(handle);
+  }
+
+  /**
+   * A page whose tab's name could not be read: ordinary, unless a wake is armed, when it may be
+   * the waking tab's own page and is closed rather than handed out (lost, never wrong).
+   */
+  private settleUnknown(page: Page): void {
+    if (this.closed || page.isClosed() || !this.identifyingPages.has(page)) return;
+    if (this.wakes.size > 0) void this.closePageWithEvidence(page);
+    else this.handOutOrdinary(page);
   }
 
   /** The one publication of a page with provenance. */
@@ -1326,15 +1346,15 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
-   * K3 for a page with no provenance. One the runtime's own open may have made waits for that
-   * open to settle, inside that open's deadline, and is published if it is its answer. Otherwise
-   * its tab's row in a read that agrees with itself decides; past the bound it is closed.
+   * While some tab is asleep, an arriving page's tab is looked up by its name, after any open of
+   * the runtime's own settled (its answer publishes its page). A sleep name decides; no name is
+   * an ordinary page; a name that cannot be read within the bound is settled as unknown.
    */
   private async classify(page: Page): Promise<void> {
     const taken = () => this.closed || page.isClosed() || !this.identifyingPages.has(page);
     if (this.openingPages.size > 0) await Promise.allSettled(this.openingPages);
     const deadline = performance.now() + arrivalIdentifyMs;
-    for (let attempt = 0; this.lifecycle; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       if (taken()) return;
       const targetId = await lookupTargetId(this.context, page, deadline);
       const rows = targetId && !taken() ? await this.read(deadline) : null;
@@ -1344,18 +1364,22 @@ class PlaywrightContextHandle implements BrowserContext {
       if (performance.now() + 25 >= deadline) break;
       await delay(Math.min(100 * (attempt + 1), remainingMs(deadline)));
     }
-    if (taken()) return;
-    if (await this.closePageWithEvidence(page))
-      process.stderr.write('{"event":"browser-runtime.unidentified-page-closed"}\n');
+    this.settleUnknown(page);
   }
 
-  /** The classifier's answer for a page whose tab's row is known. */
+  /** The answer for a page whose tab's row is known. */
   private place(page: Page, row: ChromiumTabEntry, rows: readonly ChromiumTabEntry[]): void {
-    this.identifyingPages.delete(page);
     const title = row.identity ?? null;
-    if (title !== null) this.pageTitles.set(page, title);
-    const one = title !== null && findNamed(rows, title).kind === "one";
     const wake = title === null ? undefined : this.wakes.get(title);
+    const tokenId = title === null ? undefined : this.sleepingTitles.get(title);
+    if (!wake && !tokenId) {
+      // No sleep name: an ordinary page (M1).
+      this.handOutOrdinary(page);
+      return;
+    }
+    this.identifyingPages.delete(page);
+    this.pageTitles.set(page, title!);
+    const one = findNamed(rows, title!).kind === "one";
     if (wake) {
       // K2, L4: the wake takes only the one tab carrying its name, seen once; a second carrier
       // or a second arrival makes it give up. The page stays hidden either way.
@@ -1363,27 +1387,39 @@ class PlaywrightContextHandle implements BrowserContext {
       else wake.spoil();
       return;
     }
-    const tokenId = title === null ? undefined : this.sleepingTitles.get(title);
-    if (tokenId && one && !this.removals.has(tokenId) && !this.unremovable.has(tokenId)) {
+    if (one && !this.removals.has(tokenId!) && !this.unremovable.has(tokenId!)) {
       // A sleeping tab Chromium loaded by itself goes back to sleep, unseen, on its own lane.
       if (!row.discarded && row.status !== "unloaded")
-        void this.onLane(tokenId, () => this.sleepAgain(tokenId)).catch(() => undefined);
+        void this.onLane(tokenId!, () => this.sleepAgain(tokenId!)).catch(() => undefined);
       return;
     }
+    // A page of a sleeping tab given up, or of a name two tabs carry: closed with evidence.
     void this.closePageWithEvidence(page);
   }
 
-  /** On the tab's lane: still this token's sleep, still loaded, and no wake for it, it sleeps again. */
+  /**
+   * On the tab's lane: still this token's sleep, still loaded, and no wake for it, it sleeps again
+   * under its name, verified; a tab that does not is removed with evidence (or stays guarded).
+   */
   private async sleepAgain(tokenId: string): Promise<void> {
     const record = this.sleeping.get(tokenId);
     if (!record || this.closed || this.wakes.has(record.title)) return;
-    const rows = await this.read(performance.now() + nameTargetMs);
+    const deadline = performance.now() + 2 * nameTargetMs;
+    const rows = await this.read(deadline);
     const named = rows ? findNamed(rows, record.title) : null;
     if (this.sleeping.get(tokenId) !== record || this.wakes.has(record.title)) return;
-    if (named?.kind === "one" && !named.row.discarded && named.row.status !== "unloaded") {
-      const discardedId = await this.lifecycle?.discardByTabId(named.row.tabId).catch(() => null);
-      if (discardedId != null) record.tabId = discardedId;
+    if (named?.kind !== "one" || named.row.discarded || named.row.status === "unloaded") return;
+    const discardedId = await this.lifecycle?.discardByTabId(named.row.tabId).catch(() => null);
+    const after = await this.read(deadline);
+    const again = after ? findNamed(after, record.title) : null;
+    if (again?.kind === "one" && again.row.discarded) {
+      record.tabId = again.row.tabId;
+      record.targetId = again.row.targetId;
+      return;
     }
+    if (discardedId != null) record.tabId = discardedId;
+    if (await this.removeSleeping(record, 1)) this.forget(tokenId, record);
+    else this.giveUp(tokenId);
   }
 
   /**
@@ -1417,6 +1453,11 @@ class PlaywrightContextHandle implements BrowserContext {
     return readRows(this.lifecycle, deadline);
   }
 
+  /** A page's later close attempt, on the lane of the sleep it was put to (M3). */
+  onSleepLane(tokenId: string, fn: () => Promise<void>): Promise<void> {
+    return this.onLane(tokenId, fn);
+  }
+
   /** Runs `fn` after every earlier task of the same sleeping tab; they never overlap. */
   private onLane<T>(tokenId: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.laneTails.get(tokenId) ?? Promise.resolve();
@@ -1434,22 +1475,35 @@ class PlaywrightContextHandle implements BrowserContext {
 
   /**
    * K6, on the tab's lane: a sleeping tab is removed only on evidence, a read that agrees with
-   * itself in which no tab carries its name and none has its target, after a remove resolved
-   * when it was never named. Its hidden pages close first; `many` is not removed by name.
+   * itself in which no tab carries its name and none has its id or target, after a remove
+   * resolved when it was never named. M3: Opensteer alone discards and names in the same call, so
+   * a discarded tab with no name is nobody's; every such tab is removed too, and the sleep counts
+   * as removed only when none is left (never while another tab's discard is in flight). Its
+   * hidden pages close first; `many` is not removed by name.
    */
   private async removeSleeping(record: SleepingTab, attempts: number): Promise<boolean> {
     const lifecycle = this.lifecycle;
     if (!lifecycle) return false;
     const deadline = performance.now() + attempts * nameTargetMs;
+    const ours = (row: ChromiumTabEntry) =>
+      row.tabId === record.tabId || (record.targetId !== null && row.targetId === record.targetId);
+    const nobodys = (row: ChromiumTabEntry) => row.discarded && !row.identity;
     const gone = (rows: readonly ChromiumTabEntry[] | null) =>
       rows !== null &&
       findNamed(rows, record.title).kind === "none" &&
-      !rows.some(
-        (row) =>
-          row.tabId === record.tabId ||
-          (record.targetId !== null && row.targetId === record.targetId),
-      ) &&
-      (record.named || record.removeAsked);
+      !rows.some(ours) &&
+      (record.named || record.removeAsked) &&
+      this.discarding === 0 &&
+      !rows.some(nobodys);
+    const remove = async (tab: ChromiumTabEntry) => {
+      let resolved = await lifecycle.removeByTabId(tab.tabId).catch(() => false);
+      if (!resolved && tab.targetId && this.closeTarget)
+        resolved = await this.closeTarget(tab.targetId).then(
+          () => true,
+          () => false,
+        );
+      return resolved;
+    };
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (this.closed) return false;
       for (const page of this.context.pages())
@@ -1458,25 +1512,12 @@ class PlaywrightContextHandle implements BrowserContext {
       const rows = await this.read(deadline);
       if (this.closed) return false;
       if (gone(rows)) return true;
-      const named = rows ? findNamed(rows, record.title) : null;
-      const tab =
-        named?.kind === "one"
-          ? named.row
-          : named?.kind === "none"
-            ? rows!.find(
-                (row) =>
-                  row.tabId === record.tabId ||
-                  (record.targetId !== null && row.targetId === record.targetId),
-              )
-            : undefined;
-      if (tab) {
-        let resolved = await lifecycle.removeByTabId(tab.tabId).catch(() => false);
-        if (!resolved && tab.targetId && this.closeTarget)
-          resolved = await this.closeTarget(tab.targetId).then(
-            () => true,
-            () => false,
-          );
-        record.removeAsked ||= resolved;
+      if (rows) {
+        const named = findNamed(rows, record.title);
+        const tab =
+          named.kind === "one" ? named.row : named.kind === "none" ? rows.find(ours) : undefined;
+        if (tab && (await remove(tab))) record.removeAsked = true;
+        if (this.discarding === 0) for (const orphan of rows.filter(nobodys)) await remove(orphan);
         if (gone(await this.read(deadline))) return true;
       }
       if (attempt < attempts - 1) await delay(40);
@@ -1634,7 +1675,11 @@ class PlaywrightContextHandle implements BrowserContext {
         // L2 in one helper call: discard first, then name the tab Chromium returns. Asked, it may
         // be named even when the answer is lost, so the name must be gone too for a removal.
         record.named = true;
-        const asleepId = await lifecycle.discardAndName(row.tabId, record.title).catch(() => null);
+        this.discarding++;
+        const asleepId = await lifecycle
+          .discardAndName(row.tabId, record.title)
+          .catch(() => null)
+          .finally(() => this.discarding--);
         if (asleepId !== null) record.tabId = asleepId;
         const check = await this.read(deadline);
         const named = check ? findNamed(check, record.title) : null;
@@ -1645,8 +1690,8 @@ class PlaywrightContextHandle implements BrowserContext {
         }
         // Not asleep under its name: closed and removed with evidence, it wakes by address. Its
         // page still open proves the tab was not discarded, so closing it closes the tab.
-        if (!page.isClosed())
-          record.removeAsked ||= await this.closePageWithEvidence(page, deadline);
+        if (!page.isClosed() && (await this.closePageWithEvidence(page, deadline)))
+          record.removeAsked = true;
         if (await this.removeSleeping(record, 1)) this.forget(tokenId, record);
         else this.giveUp(tokenId);
       });
@@ -1677,33 +1722,45 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
-   * Wakes the one tab carrying the sleep's name, on that sleep's lane, inside one deadline. The
-   * page is taken only after a last check that the name is still on exactly one tab and it is
-   * this page's; then the name is removed (L2). An abandoned wake leaves the tab asleep under its
-   * name (L4).
+   * M2: the lane owns a wake to its end. It wakes the one tab carrying the sleep's name, inside
+   * one deadline, and takes its page (ownership and publication) only right after checking that
+   * the wake is still wanted, the name is still on exactly one tab, and that tab is this live
+   * page's exact target; nothing is awaited between that check and the take. Then the name goes.
+   * Abandoned, the tab is left asleep under its name (put back to sleep if it loaded). Failed, the
+   * tab is removed with evidence and `null` returned, so the caller opens it by address; a removal
+   * not proven throws instead, and the tab stays guarded. No wake leaves a page nobody owns.
    */
   private async wakeOnLane(
     tokenId: string,
     record: SleepingTab,
     deadline: number,
     signal: AbortSignal | undefined,
-  ): Promise<Page> {
+    own: ((page: BrowserPage) => void) | undefined,
+  ): Promise<BrowserPage | null> {
     const lifecycle = this.lifecycle!;
-    const wanted = () =>
+    const current = () =>
       this.sleeping.get(tokenId) === record &&
       !this.removals.has(tokenId) &&
       !this.unremovable.has(tokenId) &&
-      !signal?.aborted &&
-      !this.closed &&
-      performance.now() < deadline;
-    if (!wanted() || !record.named) throw notWanted();
-    const rows = await this.read(deadline);
-    const named = rows ? findNamed(rows, record.title) : null;
-    if (named?.kind !== "one") throw new Error("The named tab is not exactly one tab.");
-    const { row } = named;
+      !this.closed;
+    const abandoned = () => signal?.aborted === true || this.closed;
+    if (abandoned()) throw notWanted();
+    if (!current()) {
+      // A sleep already given up: opened by address only once its tab is proven removed.
+      if (this.sleeping.get(tokenId) !== record) return null;
+      if (!(await this.removeSleeping(record, 1)))
+        throw new Error("The sleeping tab is not proven removed yet.");
+      this.forget(tokenId, record);
+      return null;
+    }
     const wake = armWake();
-    this.wakes.set(record.title, wake);
     try {
+      if (!record.named || performance.now() >= deadline) throw new Error("The wake ran out.");
+      const rows = await this.read(deadline);
+      const named = rows ? findNamed(rows, record.title) : null;
+      if (named?.kind !== "one") throw new Error("The named tab is not exactly one tab.");
+      const { row } = named;
+      this.wakes.set(record.title, wake);
       const candidate = row.targetId
         ? this.context
             .pages()
@@ -1717,14 +1774,12 @@ class PlaywrightContextHandle implements BrowserContext {
             )
         : undefined;
       if (candidate) wake.arrive(candidate, row);
-      if (!wanted()) throw notWanted();
+      if (abandoned() || !current()) throw notWanted();
       if (!candidate || row.discarded || row.status === "unloaded") {
         const reply = await withTimeout(
           lifecycle.activateByTabId(row.tabId),
           remainingMs(deadline),
-          {
-            timeoutError: () => new Error("Activating sleeping Chromium tab timed out."),
-          },
+          { timeoutError: () => new Error("Activating sleeping Chromium tab timed out.") },
         );
         // K2: Chromium's own answer names the tab the read named, loaded (seen on real Chromium).
         if (!reply.ok || reply.tabId !== row.tabId || reply.discarded)
@@ -1735,21 +1790,46 @@ class PlaywrightContextHandle implements BrowserContext {
       });
       const arrived = wake.arrived;
       if (!arrived || wake.spoiled) throw new Error("The woken tab was not the one tab named.");
-      // L4: the last check at the take, on the candidate shortcut too.
       const targetId = await lookupTargetId(this.context, arrived.page, deadline);
       const last = await this.read(deadline);
       const now = last ? findNamed(last, record.title) : null;
-      if (wake.spoiled || now?.kind !== "one" || now.row.targetId !== targetId)
+      if (abandoned() || !current()) throw notWanted();
+      // The last check at the take, on the candidate shortcut too; the take follows at once.
+      if (
+        wake.spoiled ||
+        now?.kind !== "one" ||
+        targetId === null ||
+        now.row.targetId !== targetId ||
+        now.row.tabId !== row.tabId ||
+        arrived.page.isClosed() ||
+        this.ending.has(arrived.page) ||
+        performance.now() >= deadline
+      )
         throw new Error("The woken tab was not the one tab named.");
-      if (!wanted()) {
-        // Abandoned after it loaded: it goes back to sleep under its name.
-        const discardedId = await lifecycle.discardByTabId(now.row.tabId).catch(() => null);
-        if (discardedId !== null) record.tabId = discardedId;
-        throw notWanted();
-      }
-      await lifecycle.unnameTab(now.row.tabId).catch(() => false);
       this.forget(tokenId, record);
-      return arrived.page;
+      this.publish(arrived.page, false);
+      const handle = this.wrap(arrived.page);
+      own?.(handle);
+      // L2: the name goes once the tab is taken. Kept, it is harmless: the tab is awake and named
+      // until its next sleep names it anew.
+      if (!(await lifecycle.unnameTab(now.row.tabId).catch(() => false)))
+        process.stderr.write('{"event":"browser-runtime.sleep-name-kept"}\n');
+      return handle;
+    } catch (error) {
+      if (this.wakes.get(record.title) === wake) this.wakes.delete(record.title);
+      if (!current()) throw error;
+      if (abandoned()) {
+        // Left asleep under its name; a tab that loaded meanwhile is put back to sleep.
+        await this.sleepAgain(tokenId);
+        throw error;
+      }
+      // Failed: the tab is removed with evidence before anything opens it by address.
+      if (await this.removeSleeping(record, 3)) {
+        this.forget(tokenId, record);
+        return null;
+      }
+      this.giveUp(tokenId);
+      throw error;
     } finally {
       if (this.wakes.get(record.title) === wake) this.wakes.delete(record.title);
     }
@@ -1805,33 +1885,19 @@ class PlaywrightContextHandle implements BrowserContext {
       const { tokenId } = discardRestore;
       const record = this.sleeping.get(tokenId);
       if (record) {
+        // M2: this waits for the lane's own outcome; it opens nothing while the lane may take.
         const deadline = performance.now() + wakeDiscardedTabMs;
-        try {
-          const woken = await withTimeout(
-            this.onLane(tokenId, () => this.wakeOnLane(tokenId, record, deadline, signal)),
-            remainingMs(deadline),
-            { timeoutError: () => new Error("Waking sleeping Chromium tab timed out.") },
-          );
-          if (!this.publish(woken, false)) throw new Error("The woken tab closed.");
-          const handle = this.wrap(woken);
-          options?.own?.(handle);
-          return handle;
-        } catch (error) {
-          // L4: an open nobody wants starts no fresh page, and its tab stays asleep under its name.
-          if (signal?.aborted || this.closed) throw error;
-          // Rule B: the wake gave its tab up. The token stays for its release, and the tab is
-          // removed in the background on evidence (K6).
-          if (this.sleeping.get(tokenId) === record) this.giveUp(tokenId);
-        }
+        const woken = await this.onLane(tokenId, () =>
+          this.wakeOnLane(tokenId, record, deadline, signal, options?.own),
+        );
+        if (woken) return woken;
       }
+      if (signal?.aborted) throw notWanted();
+      // The tab could not be woken and is proven gone: a fresh page, which the ledger navigates
+      // to the tab's address on its awaited path.
       const fallback = this.wrap(await this.openFreshPage(signal));
+      fallback.openedFresh = true;
       options?.own?.(fallback);
-      if (discardRestore.url && discardRestore.url !== "about:blank") {
-        void fallback
-          .cdp()
-          .then((cdp) => cdp.send("Page.navigate", { url: discardRestore.url }))
-          .catch(() => undefined);
-      }
       return fallback;
     }
     const handle = this.wrap(await this.openFreshPage(signal));
@@ -1923,6 +1989,10 @@ class PlaywrightPageHandle implements BrowserPage {
   private readonly goneListeners = new Set<(cause?: PageGoneCause) => void>();
   /** The page whose script opened this one, from Playwright's popup event. */
   openerHandle: PlaywrightPageHandle | null = null;
+  /** A wake could not bring the tab back; this fresh page is navigated to its address. */
+  openedFresh = false;
+  /** The sleep this page was put to, whose lane a later close attempt waits on. */
+  private sleepToken: string | null = null;
   private targetIdPromise: Promise<string> | null = null;
   private readonly context: PlaywrightBrowserContext;
   private readonly contextHandle: PlaywrightContextHandle;
@@ -2199,6 +2269,7 @@ class PlaywrightPageHandle implements BrowserPage {
     const first = this.closeAttempts++ === 0;
     const sleepDiscard = first && options?.reason === "slept" ? this.pendingDiscard : null;
     this.pendingDiscard = null;
+    if (sleepDiscard && this.contextHandle.lifecycle) this.sleepToken = sleepDiscard.tokenId;
     const operation = (async () => {
       if (sleepDiscard && this.contextHandle.lifecycle) {
         await this.contextHandle.sleepTab(this, this.page, sleepDiscard, async () => {
@@ -2212,21 +2283,29 @@ class PlaywrightPageHandle implements BrowserPage {
         if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
         return;
       }
-      await this.cdpChannel?.detach().catch(() => undefined);
-      if (this.page.isClosed()) return;
-      const closeTarget = this.contextHandle.closeTarget;
-      if (!closeTarget) {
-        if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
-        return;
-      }
-      const targetId = this.knownTargetId ?? (await this.nameTarget());
-      if (!targetId)
-        throw new BrowserRuntimeError("conflict", "This page cannot be named to close it.", {
-          reason: pageUnnameableReason,
-        });
-      await closeTarget(targetId);
+      // M3: a page put to sleep is closed again only on its sleep's lane, after the sleep.
+      if (this.sleepToken)
+        return this.contextHandle.onSleepLane(this.sleepToken, () => this.closeAround());
+      await this.closeAround();
     })();
     return operation;
+  }
+
+  /** A later close attempt goes around Playwright, to the browser's own target close. */
+  private async closeAround(): Promise<void> {
+    await this.cdpChannel?.detach().catch(() => undefined);
+    if (this.page.isClosed()) return;
+    const closeTarget = this.contextHandle.closeTarget;
+    if (!closeTarget) {
+      if (!this.page.isClosed()) await this.page.close({ runBeforeUnload: false });
+      return;
+    }
+    const targetId = this.knownTargetId ?? (await this.nameTarget());
+    if (!targetId)
+      throw new BrowserRuntimeError("conflict", "This page cannot be named to close it.", {
+        reason: pageUnnameableReason,
+      });
+    await closeTarget(targetId);
   }
 
   /** This exact page's target, read through a debugger opened for it alone; null if it cannot be named. */

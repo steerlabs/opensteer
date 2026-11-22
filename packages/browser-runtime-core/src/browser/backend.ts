@@ -113,6 +113,8 @@ export interface BrowserPage {
   observeHumanInput?(listener: (observation: HumanInputObservation) => void): () => void;
   /** Opened behind its opener, as a ⌘-click opens a tab: nobody asked to look at it yet. */
   readonly openedInBackground?: boolean;
+  /** A wake could not bring its tab back: a fresh page the ledger navigates to the tab's address. */
+  readonly openedFresh?: boolean;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */

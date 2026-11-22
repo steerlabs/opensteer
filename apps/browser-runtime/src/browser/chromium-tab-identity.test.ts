@@ -236,3 +236,52 @@ it("names a tab after Chromium discarded it: no page arrives while it sleeps, it
     })}\n`,
   );
 }, 60_000);
+
+it("PROBE M1: what Chromium reports as the opener of a woken tab that another page opened", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-m1-probe-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const openerOf = (page: Page) => (page as unknown as { _opener?: Page | null })._opener ?? null;
+  const opener = await running.context.newPage();
+  await opener.goto(url(1, "x").replace("/page?x", "/opener"));
+  const childPromise = running.context.waitForEvent("page");
+  await opener.click("#out");
+  const child = await childPromise;
+  await child.waitForLoadState();
+  const before = {
+    opener: openerOf(child) === opener,
+    playwright: (await child.opener()) === opener,
+  };
+  const targetId = (
+    (await (await running.context.newCDPSession(child)).send("Target.getTargetInfo")) as {
+      targetInfo: { targetId: string; openerId?: string };
+    }
+  ).targetInfo;
+  const row = (await running.lifecycle.inventory()).find((t) => t.targetId === targetId.targetId)!;
+  await running.helper.bringToFront();
+  const asleep = await running.lifecycle.discardAndName(row.tabId, "opensteer-sleep:m1");
+  const arrived = running.context.waitForEvent("page");
+  await running.lifecycle.activateByTabId(asleep!);
+  const woken = await arrived;
+  await woken.waitForLoadState();
+  const info = (
+    (await (await running.context.newCDPSession(woken)).send("Target.getTargetInfo")) as {
+      targetInfo: { targetId: string; openerId?: string };
+    }
+  ).targetInfo;
+  const after = {
+    syncOpenerIsOriginalOpener: openerOf(woken) === opener,
+    syncOpenerPresent: openerOf(woken) !== null,
+    playwrightOpener: (await woken.opener()) === opener,
+    cdpOpenerId: info.openerId ?? null,
+    openerTarget: (
+      (await (await running.context.newCDPSession(opener)).send("Target.getTargetInfo")) as {
+        targetInfo: { targetId: string };
+      }
+    ).targetInfo.targetId,
+  };
+  process.stdout.write(
+    `${JSON.stringify({ event: "m1.woken-opener", before, beforeCdp: targetId.openerId ?? null, after })}\n`,
+  );
+}, 60_000);

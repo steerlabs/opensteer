@@ -1630,7 +1630,7 @@ describe("native Chromium profiles", () => {
     }
   });
 
-  it("closes a popup whose opener is no published page, and bounds closeTarget and bringToFront (F4)", async () => {
+  it("hands off a popup whose opener is gone as the base does, bounds closeTarget and bringToFront, and takes no closeTarget answer of success: false as a close (F4, M1)", async () => {
     const f = await nativeCloseFixture();
     const pageHandlers: Array<(page: Page) => void> = [];
     Object.assign(f.context, {
@@ -1663,8 +1663,10 @@ describe("native Chromium profiles", () => {
         _connection: { toImpl: () => ({ delegate: { _targetId: "target-f4-popup" } }) },
       } as unknown as Page;
       for (const handler of pageHandlers) handler(popup);
-      await vi.waitFor(() => expect(popup.close).toHaveBeenCalled(), { timeout: 2_000 });
-      expect(handedOff).toEqual([]);
+      await vi.waitFor(() => expect(handedOff).toEqual(["https://popup-f4.test/"]), {
+        timeout: 2_000,
+      });
+      expect(popup.close).not.toHaveBeenCalled();
       const handle = (
         launched as unknown as {
           contextHandle: {
@@ -1682,6 +1684,11 @@ describe("native Chromium profiles", () => {
       vi.useRealTimers();
       await closeRejected;
       await anchorDone;
+      // A resolved answer that says it did not close is no evidence of a close.
+      f.cdp.send.mockImplementation(async (method: string) =>
+        method === "Target.closeTarget" ? { success: false } : {},
+      );
+      await expect(handle.closeTarget!("target-refused")).rejects.toThrow(/did not close/);
     } finally {
       vi.useRealTimers();
       f.exit();
