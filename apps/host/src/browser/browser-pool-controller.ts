@@ -74,6 +74,17 @@ export interface BrowserPoolControllerResult {
 /**
  * The narrow port a pool agent implements. The Home never holds the controller's key: the
  * runtime accepts only controls the controller signed for the fence it issued.
+ *
+ * What an implementation must guarantee, because the coordinator acts on what it returns
+ * (a mismatch discards live state; a stopped status lets a removal finish):
+ * - every answer (`status`, `result`, `apply`) is authenticated by the controller client: it
+ *   comes from the controller this Home was given, not from anything on the way;
+ * - every answer is bound to the slot and the term it was asked for, and to the request it
+ *   answers: a status for another slot, one from an older term, or a replayed earlier reply is
+ *   refused by the client and never returned here. A refused answer is not knowing (a throw).
+ * The loopback fake answers in process. The real client (the pool agent's) signs its requests
+ * and verifies signed replies; its suite holds the cases for another slot, an older term and a
+ * replayed reply.
  */
 export interface BrowserPoolPhysicalController {
   status(slotId: string, term: number): Promise<BrowserPoolPhysicalStatus>;
