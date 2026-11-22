@@ -3,7 +3,7 @@ import {
   admitExecution,
   authorizeTarget,
   ChannelStore,
-  runAllowsPersonalContext,
+  lineagePersonalContext,
 } from "@opensteer/database";
 import { createStoreFixture, testMessagingRunnerId } from "@opensteer/database/test-support/store";
 import { describe, expect, it, vi } from "vitest";
@@ -129,7 +129,7 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
       ).toMatchObject({ status: "adopted" });
       const [task] = await f.tasks();
       const [run] = await f.runsOf(task!.id);
-      expect(await runAllowsPersonalContext(storeFixture.database, run!.id)).toBe(false);
+      expect(await lineagePersonalContext(storeFixture.database, run!.connectionId)).toBe(false);
       // A message nobody addressed to the bot in a thread it never joined starts nothing.
       expect(
         await f.send({ eventId: "a2", trigger: "conversation-followup", threadId: "999.000" }),

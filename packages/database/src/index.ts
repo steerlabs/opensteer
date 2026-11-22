@@ -95,7 +95,6 @@ export {
 export * from "./personal-settings-store.js";
 export * from "./personal-transaction.js";
 export * from "./needs-you-store.js";
-export * from "./run-personal-context.js";
 export { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
 export { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 export { readTranscriptOverlays } from "./personal-overlay-store.js";

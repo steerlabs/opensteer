@@ -226,26 +226,23 @@ describeStore("a bridge is made on the same consent as a connected agent", (it) 
 });
 
 describeStore("work from a bridge anyone may speak to has no personal context", (it) => {
-  it("is decided by the lineage's own row, for the Run and for every task under it", async ({
+  it("is decided by the lineage's own row, and the person's own work reads nothing", async ({
     storeFixture,
   }) => {
     const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-ctx");
     const { database } = storeFixture;
-    const { runAllowsPersonalContext, threadAllowsPersonalContext } =
-      await import("./run-personal-context.js");
-    // A task of the person's that no chat ever wrote to.
-    const task = await storeFixture.createTaskForOwner(fixture.userId, "bridge-ctx-task");
-    const queued = await storeFixture.store.enqueueThreadInput({
-      requestedBy: fixture.userId,
-      threadId: task.id,
-      content: [{ type: "text", text: "Work" }],
-      source: { kind: "human" },
-      policy: "queue",
-      idempotencyKey: "bridge-ctx-run",
+    const { lineagePersonalContext } = await import("./resource-access.js");
+    // The person's own work has no connection: it has personal context, with no query at all.
+    const issued: string[] = [];
+    const counted = database.withPlugin({
+      transformQuery: (args) => {
+        issued.push(args.node.kind);
+        return args.node;
+      },
+      transformResult: async (args) => args.result,
     });
-    const run = queued.run!.id;
-    // The person's own Run.
-    expect(await runAllowsPersonalContext(database, run)).toBe(true);
+    expect(await lineagePersonalContext(counted, null)).toBe(true);
+    expect(issued).toEqual([]);
     const connections = new AgentConnectionStore(database);
     const onlyMe = await connections.createBridge({
       userId: fixture.userId,
@@ -262,18 +259,9 @@ describeStore("work from a bridge anyone may speak to has no personal context", 
       accessMode: "approval-required",
       grant: tasksOnly,
     });
-    const lineage = async (connectionId: string) => {
-      await database
-        .updateTable("threads")
-        .set({ originConnectionId: connectionId })
-        .where("id", "=", task.id)
-        .execute();
-      await database.updateTable("runs").set({ connectionId }).where("id", "=", run).execute();
-    };
-    await lineage(onlyMe.id);
-    expect(await runAllowsPersonalContext(database, run)).toBe(true);
-    await lineage(anyone.id);
-    expect(await runAllowsPersonalContext(database, run)).toBe(false);
-    expect(await threadAllowsPersonalContext(database, task.id, fixture.userId)).toBe(false);
+    expect(await lineagePersonalContext(database, onlyMe.id)).toBe(true);
+    expect(await lineagePersonalContext(database, anyone.id)).toBe(false);
+    // A lineage whose connection cannot be read is never given the person's context.
+    expect(await lineagePersonalContext(database, `mcn_${randomUUID()}`)).toBe(false);
   });
 });

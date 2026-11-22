@@ -20,7 +20,7 @@ import {
   executionAccess,
   type AgentConnectionAuthority,
   requirePersonalOwner,
-  runAllowsPersonalContext,
+  lineageAllowsPersonalContext,
   type TabDatabase,
   type TabRecord,
   type TabWrite,
@@ -109,13 +109,15 @@ async function admitTabActor(
   }
   if (actor.kind === "run") {
     await new OpensteerStore(database).assertActiveGrant(actor.claims);
-    if (!(await runAllowsPersonalContext(database, actor.claims.runId))) deny();
   }
   const execution = await admitExecution(database, {
     ownerUserId: tabOwner(actor),
     subject: authoritySubject(scope(actor)),
     ...(actor.kind === "browser-binding" ? { threadId: actor.threadId } : {}),
   });
+  // Work from a bridge anyone may speak to never sees the person's tabs; it is read from the
+  // connection row this admission already read, and the person's own Run reads nothing more.
+  if (actor.kind === "run" && !lineageAllowsPersonalContext(execution.agentConnection)) deny();
   requireAccess(executionAccess(execution), required);
   return execution.agentConnection;
 }

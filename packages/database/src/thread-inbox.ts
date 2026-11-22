@@ -26,7 +26,7 @@ import {
 } from "./waiting-inputs.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { threadAllowsPersonalContext } from "./run-personal-context.js";
+import { lineagePersonalContext } from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
@@ -1528,7 +1528,7 @@ export async function claimRunInputBatch(
   if (seed.freshContext) {
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
-      personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
+      personalContext: await lineagePersonalContext(transaction, run.connectionId),
     });
     await transaction
       .updateTable("runs")
@@ -3871,17 +3871,13 @@ export async function ensureQueuedRun(
     }
   }
   if (!seed) return { command: null, run: null };
+  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const selectedSession = options.maintenance
     ? options.maintenance.providerSessionId
     : await ensureSelectedProviderSession(transaction, thread, {
-        personalContext: await threadAllowsPersonalContext(
-          transaction,
-          thread.id,
-          thread.createdBy,
-        ),
+        personalContext: await lineagePersonalContext(transaction, connectionId),
       });
   const runId = createId("run");
-  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const runRow = await transaction
     .insertInto("runs")
     .values({

@@ -58,6 +58,23 @@ export function lineageAllowsPersonalContext(
   return connection?.bridgeSenders !== "anyone";
 }
 
+/**
+ * Whether work in this lineage may use the person's personal context, from its connection's own
+ * row. The person's own work reads nothing: it has no connection, and always has it.
+ */
+export async function lineagePersonalContext(
+  database: Kysely<DatabaseSchema>,
+  connectionId: string | null,
+): Promise<boolean> {
+  if (connectionId === null) return true;
+  const row = await database
+    .selectFrom("agentConnections")
+    .select("bridgeSenders")
+    .where("id", "=", connectionId)
+    .executeTakeFirst();
+  return row !== undefined && lineageAllowsPersonalContext(row);
+}
+
 /** One execution as the Home resolved it: whom it works for and every mode in its lineage. */
 export interface ExecutionAuthority {
   readonly ownerUserId: UserId;
