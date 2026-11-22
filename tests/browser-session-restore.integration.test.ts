@@ -696,10 +696,54 @@ integration("Linux cold-start session restore through Home BrowserService", () =
     const profileDir = stack1.getDirectory();
     await waitSessionFilesContain(profileDir, ["tab=person", "/agent-page"]);
 
-    // End the agent session through Home's real BrowserService.stop().
-    // This must remove the sleeping tab from Chromium IMMEDIATELY in run 1 while Chromium is still alive (R6).
+    // End the agent session through Home's real BrowserService.stop(). When it resolves no session
+    // can reach the tab: it is unpublished and nothing can attach to it, at once.
+    const agentTarget = (await lifecycle1.inventory()).find((t) => t.url === agentUrl)?.targetId;
+    const writes: string[] = [];
+    const stderrWrite = process.stderr.write.bind(process.stderr);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk, ...rest) => {
+      writes.push(String(chunk));
+      return stderrWrite(chunk as string, ...(rest as []));
+    });
+    cleanups.push(async () => stderr.mockRestore());
     await stack1.browser.stop(f.userId, openedAgent.session.id);
-    expect((await lifecycle1.inventory()).some((t) => t.url === agentUrl)).toBe(false);
+    expect(
+      stack1
+        .getBrowser()
+        .context.pages()
+        .some((p) => p.url() === agentUrl),
+    ).toBe(false);
+    if (agentTarget)
+      await expect(stack1.getBrowser().cdp.attach(agentTarget)).rejects.toThrow(/not an attachable/);
+    // Its removal is `removed` or `unknown`, decided by the runtime within the background retry's
+    // bound (K6): removed, with a read that agrees with itself showing no such tab; or reported
+    // unconfirmed, with the name still guarded.
+    const guards = (
+      stack1.getBrowser() as unknown as {
+        contextHandle: {
+          removals: Map<string, unknown>;
+          unremovable: Set<string>;
+          sleepingByToken: Map<string, unknown>;
+        };
+      }
+    ).contextHandle;
+    const unconfirmed = () =>
+      writes.some((line) => line.includes('"browser-runtime.tab-removal-unconfirmed"'));
+    await vi.waitFor(
+      () =>
+        expect(
+          unconfirmed() || (guards.removals.size === 0 && guards.sleepingByToken.size === 0),
+        ).toBe(true),
+      { timeout: 40_000, interval: 100 },
+    );
+    if (unconfirmed()) expect(guards.unremovable.size).toBe(1);
+    else expect((await lifecycle1.inventory()).some((t) => t.url === agentUrl)).toBe(false);
+    expect(
+      stack1
+        .getBrowser()
+        .context.pages()
+        .some((p) => p.url() === agentUrl),
+    ).toBe(false);
 
     await stack1.close();
 
