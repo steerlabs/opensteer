@@ -10,6 +10,8 @@ import {
   type StandardCdpLeaseReconciliation,
 } from "@opensteer/protocol/standard-cdp";
 import { isLoopbackHostname } from "@opensteer/core";
+import { requestOverTunnel } from "@opensteer/shared/poolRelay";
+import type { Duplex } from "node:stream";
 import {
   BrowserAttachPublicKeysSchema,
   BrowserClientMessageSchema,
@@ -89,6 +91,15 @@ export class BrowserRelayError extends Error {
  * else. Attach tickets are passed through untouched — the browser runtime is
  * what verifies them.
  */
+/**
+ * How a pooled target's bridge is reached (pool-runtime-in-guest.md, decision 6): each request
+ * and each channel gets its own tunnel, and that tunnel's bridge token. The bridge protocol
+ * inside is unchanged.
+ */
+export interface BrowserBridgeTransport {
+  open(): Promise<{ readonly socket: Duplex; readonly bridgeToken: string }>;
+}
+
 export class LocalBrowserRuntimeBridge {
   readonly #channels = new Map<BrowserChannelId, { readonly socket: WebSocket }>();
   readonly #bridgeToken: string;
@@ -130,6 +141,23 @@ export class LocalBrowserRuntimeBridge {
     input?: object,
     signal = AbortSignal.timeout(120_000),
   ): Promise<unknown> {
+    if (this.#transport) {
+      const { socket, bridgeToken } = await this.#transport.open();
+      const answer = await requestOverTunnel(socket, {
+        method: input ? "POST" : "GET",
+        path: pathname,
+        signal,
+        maximumBytes: 16 * 1024 * 1024,
+        headers: {
+          "x-opensteer-browser-bridge-token": bridgeToken,
+          ...(input ? { "content-type": "application/json" } : {}),
+        },
+        ...(input ? { body: JSON.stringify(input) } : {}),
+      });
+      if (answer.status < 200 || answer.status > 299)
+        throw new BrowserRelayError("Local browser profile maintenance failed.");
+      return JSON.parse(answer.text);
+    }
     const response = await fetch(new URL(pathname, this.#url), {
       method: input ? "POST" : "GET",
       redirect: "error",
@@ -148,18 +176,36 @@ export class LocalBrowserRuntimeBridge {
   }
   #attachKeysHeader: string | undefined;
 
-  constructor(options: {
-    readonly bridgeToken: string;
-    readonly maxBufferedBytes?: number;
-    readonly runtimeId: string;
-    readonly url: URL;
-  }) {
+  readonly #transport: BrowserBridgeTransport | undefined;
+
+  constructor(
+    options:
+      | {
+          readonly bridgeToken: string;
+          readonly maxBufferedBytes?: number;
+          readonly runtimeId: string;
+          readonly url: URL;
+        }
+      | {
+          /** A pooled target: every connection is a tunnel with its own token. */
+          readonly transport: BrowserBridgeTransport;
+          readonly maxBufferedBytes?: number;
+          readonly runtimeId: string;
+        },
+  ) {
+    this.#maxBufferedBytes = options.maxBufferedBytes ?? 8 * 1_024 * 1_024;
+    this.#runtimeId = options.runtimeId;
+    if ("transport" in options) {
+      this.#transport = options.transport;
+      this.#bridgeToken = "";
+      this.#url = new URL("http://pool-guest/");
+      return;
+    }
+    this.#transport = undefined;
     if (options.bridgeToken.length < 32 || options.bridgeToken.length > 4_096) {
       throw new BrowserRelayError("The local browser bridge token is invalid.");
     }
     this.#bridgeToken = options.bridgeToken;
-    this.#maxBufferedBytes = options.maxBufferedBytes ?? 8 * 1_024 * 1_024;
-    this.#runtimeId = options.runtimeId;
     this.#url = new URL(options.url);
     if (
       this.#url.protocol !== "http:" ||
@@ -192,16 +238,30 @@ export class LocalBrowserRuntimeBridge {
     this.#attachKeysHeader = encoded;
   }
 
-  async #readHealth() {
+  async #healthText(): Promise<string> {
+    if (this.#transport) {
+      const { socket } = await this.#transport.open();
+      const answer = await requestOverTunnel(socket, {
+        method: "GET",
+        path: "/health",
+        headers: { accept: "application/json" },
+        maximumBytes: 32 * 1_024,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (answer.status !== 200) throw new BrowserRelayError("Browser health is unavailable.");
+      return answer.text;
+    }
     const response = await fetch(new URL("/health", this.#url), {
       headers: { accept: "application/json" },
       redirect: "error",
       signal: AbortSignal.timeout(2_000),
     });
     if (!response.ok) throw new BrowserRelayError("Browser health is unavailable.");
-    const health = LocalHealthSchema.parse(
-      JSON.parse(await readBoundedText(response, { maximumBytes: 32 * 1_024 })),
-    );
+    return readBoundedText(response, { maximumBytes: 32 * 1_024 });
+  }
+
+  async #readHealth() {
+    const health = LocalHealthSchema.parse(JSON.parse(await this.#healthText()));
     if (health.runtimeId !== this.#runtimeId)
       throw new BrowserRelayError("Browser runtime identity does not match configuration.");
     return health;
@@ -271,6 +331,12 @@ export class LocalBrowserRuntimeBridge {
     }
     const url = new URL(standardCdp ? standardCdpPath : "/v1/browser", this.#url);
     url.protocol = "ws:";
+    // A pooled target: the channel is its own tunnel, with that tunnel's token.
+    const tunnel = this.#transport ? await this.#transport.open() : undefined;
+    if (this.#channels.has(channelId)) {
+      tunnel?.socket.destroy();
+      throw new BrowserRelayError("The browser relay channel already exists.");
+    }
     const socket = new WebSocket(url, {
       followRedirects: false,
       headers: {
@@ -278,11 +344,13 @@ export class LocalBrowserRuntimeBridge {
         authorization: `Bearer ${attachTicket}`,
         ...(standardCdp ? { "x-opensteer-browser-cdp-bridge": "1" } : {}),
         "x-opensteer-browser-attach-keys": attachKeysHeader,
-        "x-opensteer-browser-bridge-token": this.#bridgeToken,
+        "x-opensteer-browser-bridge-token": tunnel?.bridgeToken ?? this.#bridgeToken,
       },
       maxPayload: standardCdp ? standardCdpMessageMaxBytes : this.#maxBufferedBytes,
       perMessageDeflate: false,
+      ...(tunnel ? { createConnection: () => tunnel.socket as never } : {}),
     });
+    tunnel?.socket.resume();
     this.#channels.set(channelId, { socket });
     let attached = false;
     const readiness = Promise.withResolvers<BrowserBridgeAttached>();

@@ -13,6 +13,18 @@ export interface BrowserPoolRuntimeOptions {
   readonly adoptionWindowMs?: number;
   /** How long a session whose Runner channel was lost waits for its Home to reattach. */
   readonly channelDeadlineMs?: number;
+  /**
+   * A runtime in a pool guest: the identity the guest was booted with, from outside it. Every
+   * control for another slot is refused, and so is every one at or below the floor, from the
+   * first control on (an old install replayed into a freshly started guest included).
+   */
+  readonly boot?: BrowserPoolRuntimeBoot;
+}
+
+export interface BrowserPoolRuntimeBoot {
+  readonly slot: string;
+  /** The (term, sequence) high-water mark the guest starts with. */
+  readonly floor: { readonly term: number; readonly sequence: number };
 }
 
 export interface BrowserPoolIntent {
@@ -184,13 +196,32 @@ export class BrowserPoolRuntimeControl {
   };
   private expiry: ReturnType<typeof setTimeout> | undefined;
   private high: { readonly term: number; readonly sequence: number } | null = null;
+  private readonly slot: string | undefined;
 
-  constructor(key: KeyObject, hooks: BrowserPoolRuntimeHooks, windowMs = 30_000) {
+  constructor(
+    key: KeyObject,
+    hooks: BrowserPoolRuntimeHooks,
+    windowMs = 30_000,
+    boot?: BrowserPoolRuntimeBoot,
+  ) {
     if (key.type !== "public" || key.asymmetricKeyType !== "ed25519")
       throw new TypeError("The browser pool controller requires an Ed25519 public key.");
     this.key = key;
     this.hooks = hooks;
     this.windowMs = windowMs;
+    if (boot) {
+      const { term, sequence } = boot.floor;
+      if (
+        !boot.slot ||
+        !Number.isSafeInteger(term) ||
+        term < 1 ||
+        !Number.isSafeInteger(sequence) ||
+        sequence < 0
+      )
+        throw new TypeError("The browser pool boot identity is invalid.");
+      this.slot = boot.slot;
+      this.high = { term, sequence };
+    }
   }
 
   state(): BrowserPoolRuntimeState {
@@ -234,6 +265,9 @@ export class BrowserPoolRuntimeControl {
   private async transition(request: BrowserPoolControl): Promise<BrowserPoolRuntimeState> {
     const current = this.current;
     const { fence } = request;
+    // A pool guest serves its own slot only, whatever the key signed.
+    if (this.slot !== undefined && fence.slot !== this.slot)
+      throw new BrowserRuntimeError("conflict", "The browser pool control names another slot.");
     // Ordered by (term, sequence): a control already applied, or an older one, never applies.
     const high = this.high;
     if (

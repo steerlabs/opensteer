@@ -1,0 +1,7 @@
+{"at":"2026-11-21T14:37:30.770Z","kind":"proof-start","ms":4840,"state":"running"}
+{"at":"2026-11-21T14:37:34.398Z","kind":"proof-pages","person":"{\"id\":\"surface_ad4312a8-dd47-42a1-876d-641e5a4bdc54\",\"state\":\"live\",\"title\":\"Pool proof form\",\"url\":\"http://example.com/opensteer-pool-proof\",\"icon\":null,\"order\":0,\"openerId\":null,\"documentId\":\"0505cc8d-7b56-4876-9e75-087738e7e9ba\",\"geometryRevision\":2,\"loading\":false,\"navigationFailed\":false,\"canGo"}
+{"at":"2026-11-21T14:37:35.481Z","kind":"proof-park","ms":759}
+{"at":"2026-11-21T14:37:59.711Z","kind":"proof-wake","from":"disk","attach_ms":1583,"first_frame_ms":1790,"edited_frame_ms":16945,"same_documents":true,"draft_and_new_key_visible":false,"outcome":{"lost":[],"adopted":["bsn_7285bed6-3f8d-4c39-a0d6-998693015289","bsn_98c9e9bd-7606-413a-a86a-a5181032c412"]}}
+{"at":"2026-11-21T14:38:00.747Z","kind":"proof-https","page":"{\"id\":\"surface_d14adbf1-2934-4052-a4cd-4510bee9155b\",\"state\":\"live\",\"title\":\"Example Domain\",\"url\":\"https://example.com/?after-wake\",\"icon\":null,\"order\":1,\"openerId\":null,\"documentId\":\"f5bf38e7-cca3-49ce-b58e-504703ff16fa\",\"geometryRevision\":2,\"loading\":false,\"navigationFailed\":false,\"canGoBack\":true,\"canGoForward\":false,\"sizedByAgent\":false}"}
+{"at":"2026-11-21T14:38:05.919Z","kind":"proof-replay","replay":"The browser pool control was superseded.","state":"uninstalled"}
+{"at":"2026-11-21T14:38:05.919Z","kind":"proof-errors","errors":[]}

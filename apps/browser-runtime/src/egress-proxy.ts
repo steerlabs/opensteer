@@ -9,7 +9,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { connect as connectTcp, isIP, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { connect as connectTls } from "node:tls";
-import { resolvePublicAddress, tlsServerName, type ResolvedPublicAddress } from "@opensteer/access";
+import {
+  connectInOrder,
+  resolvePublicAddresses,
+  tlsServerName,
+  type ResolvedPublicAddress,
+} from "@opensteer/access";
 import { refused } from "@opensteer/core";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import type { BrowserEgressUpstream } from "./egress-config.js";
@@ -31,6 +36,7 @@ const upstreamUnavailable = refused("internal", "Browser egress upstream is unav
 const maxConnectHeaderBytes = 16 * 1024;
 
 type ResolveAddress = (hostname: string) => Promise<ResolvedPublicAddress>;
+type ResolveAddresses = (hostname: string) => Promise<readonly ResolvedPublicAddress[]>;
 type TrackSocket = (socket: Socket) => void;
 
 interface EgressTransport {
@@ -38,18 +44,50 @@ interface EgressTransport {
   connect(address: ResolvedPublicAddress, port: number, signal: AbortSignal): Promise<Socket>;
 }
 
+/** A refused request or tunnel: its kind and a fixed reason, and nothing about its destination. */
+export interface BrowserEgressRefusal {
+  readonly kind: "request" | "tunnel";
+  readonly reason: string;
+}
+
+/** Counts refusals by kind and reason; a diagnostics host prints the counts, never a destination. */
+export class BrowserEgressRefusalCounts {
+  readonly #counts = new Map<string, number>();
+
+  add(event: BrowserEgressRefusal): void {
+    const key = `${event.kind} ${event.reason}`;
+    this.#counts.set(key, (this.#counts.get(key) ?? 0) + 1);
+  }
+
+  /** The counts since the last call, one line each, and starts again. */
+  take(): readonly { readonly kind: string; readonly reason: string; readonly count: number }[] {
+    const lines = [...this.#counts].map(([key, count]) => {
+      const [kind, reason] = key.split(" ") as [string, string];
+      return { kind, reason, count };
+    });
+    this.#counts.clear();
+    return lines;
+  }
+}
+
 interface PublicBrowserEgressProxyOptions {
   readonly host?: string;
+  /** A listening socket handed over by the service manager (socket activation), instead of host and port. */
+  readonly listenFd?: number;
   readonly maxConnections?: number;
   readonly maxRequestBytes?: number;
   readonly maxResponseBytes?: number;
   readonly maxTunnelBytes?: number;
   readonly maxTunnelLifetimeMs?: number;
   readonly port?: number;
+  /** One address per name (tests); `resolveAddresses` gives every public address, in order. */
   readonly resolveAddress?: ResolveAddress;
+  readonly resolveAddresses?: ResolveAddresses;
   readonly timeoutMs?: number;
   readonly upstream?: BrowserEgressUpstream;
   readonly upstreamRequired?: boolean;
+  /** Every request or tunnel refused, and why (diagnostics; off unless asked for). */
+  readonly onRefusal?: (event: BrowserEgressRefusal) => void;
 }
 
 /**
@@ -71,10 +109,12 @@ export class PublicBrowserEgressProxy {
   readonly #maxTunnelBytes: number;
   readonly #maxTunnelLifetimeMs: number;
   readonly #port: number;
-  readonly #resolveAddress: ResolveAddress;
+  readonly #listenFd: number | undefined;
+  readonly #resolveAddresses: ResolveAddresses;
   readonly #server: Server;
   readonly #shutdown = new AbortController();
   readonly #timeoutMs: number;
+  readonly #onRefusal: PublicBrowserEgressProxyOptions["onRefusal"];
   readonly #transport: EgressTransport;
   readonly #upstreamPending: boolean;
   /** CONNECT clients, which leave the server's HTTP connections yet hold its close. */
@@ -85,17 +125,22 @@ export class PublicBrowserEgressProxy {
   constructor(options: PublicBrowserEgressProxyOptions = {}) {
     this.#host = options.host ?? "127.0.0.1";
     this.#port = options.port ?? 4_313;
+    this.#listenFd = options.listenFd;
     this.#maxConnections = positiveInteger(options.maxConnections ?? 512);
     this.#maxRequestBytes = positiveInteger(options.maxRequestBytes ?? 32 * 1_024 * 1_024);
     this.#maxResponseBytes = positiveInteger(options.maxResponseBytes ?? 64 * 1_024 * 1_024);
     this.#maxTunnelBytes = positiveInteger(options.maxTunnelBytes ?? 512 * 1_024 * 1_024);
     this.#maxTunnelLifetimeMs = positiveInteger(options.maxTunnelLifetimeMs ?? 10 * 60_000);
-    this.#resolveAddress = options.resolveAddress ?? resolvePublicAddress;
+    const single = options.resolveAddress;
+    this.#resolveAddresses =
+      options.resolveAddresses ??
+      (single ? async (hostname) => [await single(hostname)] : resolvePublicAddresses);
     this.#timeoutMs = positiveInteger(options.timeoutMs ?? 60_000);
+    this.#onRefusal = options.onRefusal;
     const track: TrackSocket = (socket) => this.#track(socket);
     this.#upstreamPending = options.upstreamRequired === true && options.upstream === undefined;
     this.#transport = options.upstream
-      ? upstreamTransport(options.upstream, this.#resolveAddress, this.#timeoutMs, track)
+      ? upstreamTransport(options.upstream, this.#resolveAddresses, this.#timeoutMs, track)
       : directTransport(this.#timeoutMs, track);
     this.#server = createServer((request, response) => void this.#forward(request, response));
     this.#server.maxConnections = this.#maxConnections;
@@ -117,10 +162,12 @@ export class PublicBrowserEgressProxy {
   async start(): Promise<{ readonly host: string; readonly port: number }> {
     this.#listening = new Promise<void>((resolve, reject) => {
       this.#server.once("error", reject);
-      this.#server.listen(this.#port, this.#host, () => {
+      const ready = () => {
         this.#server.off("error", reject);
         resolve();
-      });
+      };
+      if (this.#listenFd === undefined) this.#server.listen(this.#port, this.#host, ready);
+      else this.#server.listen({ fd: this.#listenFd }, ready);
     });
     await this.#listening;
     const address = this.#server.address();
@@ -140,6 +187,28 @@ export class PublicBrowserEgressProxy {
     for (const socket of [...this.#tunnels, ...this.#upstreams]) socket.destroy();
     this.#transport.agent?.destroy();
     await closed;
+  }
+
+  /**
+   * Round D, D5: a refusal is reported by its kind and a fixed reason only, never by where it
+   * was going: no host name, address, path or message (a message can carry a name).
+   */
+  #refused(kind: "request" | "tunnel", error: unknown): void {
+    if (!this.#onRefusal) return;
+    const code = (error as { code?: unknown } | undefined)?.code;
+    const cause = (error as { cause?: { code?: unknown } } | undefined)?.cause?.code;
+    const system = [code, cause].find(
+      (value): value is string => typeof value === "string" && /^E[A-Z0-9_]{1,30}$/u.test(value),
+    );
+    this.#onRefusal({
+      kind,
+      reason:
+        error === upstreamUnavailable
+          ? "upstream-unavailable"
+          : system
+            ? `error-${system}`
+            : "denied",
+    });
   }
 
   #track(upstream: { destroy(): unknown; once(event: "close", listener: () => void): unknown }) {
@@ -200,50 +269,19 @@ export class PublicBrowserEgressProxy {
         tunnel?.destroy();
       });
       const upstream = await this.#setup(request.socket, async (signal) => {
-        const address = await this.#resolveAddress(target.hostname);
+        const addresses = await this.#resolveAddresses(target.hostname);
         signal.throwIfAborted();
-        const options: RequestOptions = {
-          family: address.family,
-          headers,
-          hostname: address.address,
-          method,
-          path: `${target.pathname}${target.search}`,
-          port,
+        // Each public address in order; the next only after the previous did not connect.
+        return connectInOrder(
+          addresses,
+          (address) =>
+            this.#forwardTo(address, port, method, target, headers, agent, signal, {
+              response,
+              setOutgoing: (value) => (outgoing = value),
+              setTunnel: (value) => (tunnel = value),
+            }),
           signal,
-        };
-        if (agent) {
-          options.agent = agent;
-        } else {
-          const connected = await this.#transport.connect(address, port, signal);
-          tunnel = connected;
-          signal.throwIfAborted();
-          options.createConnection = () => connected;
-        }
-        const upstream = httpRequest(options, (upstreamResponse) => {
-          let responseBytes = 0;
-          response.writeHead(
-            upstreamResponse.statusCode ?? 502,
-            sanitizeHeaders(upstreamResponse.headers),
-          );
-          upstreamResponse.on("data", (chunk: Buffer) => {
-            responseBytes += chunk.byteLength;
-            if (responseBytes > this.#maxResponseBytes) {
-              upstreamResponse.destroy(new Error("Browser response exceeded its byte limit."));
-              response.destroy();
-            }
-          });
-          upstreamResponse.once("error", () => response.destroy());
-          upstreamResponse.pipe(response);
-        });
-        outgoing = upstream;
-        upstream.on("error", () => {
-          if (signal.aborted || response.destroyed || response.writableEnded) return;
-          if (!response.headersSent) response.writeHead(502, { connection: "close" });
-          response.end();
-        });
-        this.#track(upstream);
-        await requestConnected(upstream);
-        return upstream;
+        );
       });
       if (response.destroyed) {
         upstream.destroy();
@@ -265,6 +303,7 @@ export class PublicBrowserEgressProxy {
     } catch (error) {
       tunnel?.destroy();
       outgoing?.destroy();
+      this.#refused("request", error);
       if (response.destroyed || response.headersSent) return;
       if (error === upstreamUnavailable) {
         response.writeHead(502, { connection: "close" }).end();
@@ -273,6 +312,69 @@ export class PublicBrowserEgressProxy {
       response.writeHead(403, { connection: "close", "content-type": "text/plain" });
       response.end("Destination denied.\n");
     }
+  }
+
+  /** One plain request to one address; resolves once connected, rejects if it cannot. */
+  async #forwardTo(
+    address: ResolvedPublicAddress,
+    port: number,
+    method: string,
+    target: URL,
+    headers: RequestOptions["headers"],
+    agent: Agent | undefined,
+    signal: AbortSignal,
+    context: {
+      readonly response: ServerResponse;
+      readonly setOutgoing: (request: ClientRequest) => void;
+      readonly setTunnel: (socket: Socket) => void;
+    },
+  ): Promise<ClientRequest> {
+    const options: RequestOptions = {
+      family: address.family,
+      headers,
+      hostname: address.address,
+      method,
+      path: `${target.pathname}${target.search}`,
+      port,
+      signal,
+    };
+    if (agent) {
+      options.agent = agent;
+    } else {
+      const connected = await this.#transport.connect(address, port, signal);
+      context.setTunnel(connected);
+      signal.throwIfAborted();
+      options.createConnection = () => connected;
+    }
+    const upstream = httpRequest(options, (upstreamResponse) => {
+      let responseBytes = 0;
+      context.response.writeHead(
+        upstreamResponse.statusCode ?? 502,
+        sanitizeHeaders(upstreamResponse.headers),
+      );
+      upstreamResponse.on("data", (chunk: Buffer) => {
+        responseBytes += chunk.byteLength;
+        if (responseBytes > this.#maxResponseBytes) {
+          upstreamResponse.destroy(new Error("Browser response exceeded its byte limit."));
+          context.response.destroy();
+        }
+      });
+      upstreamResponse.once("error", () => context.response.destroy());
+      upstreamResponse.pipe(context.response);
+    });
+    context.setOutgoing(upstream);
+    let connected = false;
+    upstream.on("error", () => {
+      // Before it connects, a failure only moves on to the next address.
+      if (!connected) return;
+      if (signal.aborted || context.response.destroyed || context.response.writableEnded) return;
+      if (!context.response.headersSent) context.response.writeHead(502, { connection: "close" });
+      context.response.end();
+    });
+    this.#track(upstream);
+    await requestConnected(upstream);
+    connected = true;
+    return upstream;
   }
 
   async #connect(request: IncomingMessage, client: Duplex, head: Buffer): Promise<void> {
@@ -297,9 +399,14 @@ export class PublicBrowserEgressProxy {
       client.once("end", onEnd);
       try {
         upstream = await this.#setup(client, async (signal) => {
-          const address = await this.#resolveAddress(target.hostname);
+          const addresses = await this.#resolveAddresses(target.hostname);
           signal.throwIfAborted();
-          const socket = await this.#transport.connect(address, target.port, signal);
+          // Each public address in order; the next only after the previous did not connect.
+          const socket = await connectInOrder(
+            addresses,
+            (address) => this.#transport.connect(address, target.port, signal),
+            signal,
+          );
           if (signal.aborted) socket.destroy();
           return socket;
         });
@@ -341,6 +448,7 @@ export class PublicBrowserEgressProxy {
       client.pipe(upstream).pipe(client);
     } catch (error) {
       upstream?.destroy();
+      this.#refused("tunnel", error);
       if (client.destroyed) return;
       if (error === upstreamUnavailable) {
         refuseConnection(client, 502, "Bad Gateway");
@@ -379,67 +487,72 @@ function directTransport(timeoutMs: number, track: TrackSocket): EgressTransport
 
 function upstreamTransport(
   upstream: BrowserEgressUpstream,
-  resolveAddress: ResolveAddress,
+  resolveAddresses: ResolveAddresses,
   timeoutMs: number,
   track: TrackSocket,
 ): EgressTransport {
   const servername = tlsServerName(upstream.hostname);
   return {
     async connect(address, port, signal) {
-      const resolved = await resolveAddress(upstream.hostname).catch(() => {
+      const candidates = await resolveAddresses(upstream.hostname).catch(() => {
         throw upstreamUnavailable;
       });
       signal.throwIfAborted();
       const host = address.family === 6 ? `[${address.address}]` : address.address;
       const authority = `${host}:${port}`;
-      return new Promise((resolve, reject) => {
-        const tls = connectTls({
-          host: resolved.address,
-          port: upstream.port,
-          ...(servername ? { servername } : {}),
-          secureContext: upstream.secureContext,
-          rejectUnauthorized: true,
-        });
-        track(tls);
-        const abort = () => tls.destroy();
-        signal.addEventListener("abort", abort, { once: true });
-        tls.once("error", abort);
-        const onClose = () => {
-          signal.removeEventListener("abort", abort);
-          reject(upstreamUnavailable);
-        };
-        tls.once("close", onClose);
-        tls.once("secureConnect", () => {
-          tls.write(
-            `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\nProxy-Authorization: ${upstream.authorization}\r\n\r\n`,
-          );
-          const headers = Buffer.allocUnsafe(maxConnectHeaderBytes);
-          let headerBytes = 0;
-          const readHeaders = (chunk: Buffer) => {
-            const previousBytes = headerBytes;
-            headerBytes += chunk.copy(headers, previousBytes);
-            const end = headers
-              .subarray(0, headerBytes)
-              .indexOf("\r\n\r\n", Math.max(0, previousBytes - 3));
-            if (end === -1) {
-              if (headerBytes === maxConnectHeaderBytes) abort();
-              return;
-            }
-            if (!validConnectResponse(headers.subarray(0, end))) {
-              abort();
-              return;
-            }
-            tls.pause();
-            tls.off("data", readHeaders);
-            tls.unshift(chunk.subarray(end + 4 - previousBytes));
-            signal.removeEventListener("abort", abort);
-            tls.off("close", onClose);
-            tls.setTimeout(timeoutMs, abort);
-            resolve(tls);
-          };
-          tls.on("data", readHeaders);
-        });
-      });
+      return connectInOrder(
+        candidates,
+        (resolved) =>
+          new Promise<Socket>((resolve, reject) => {
+            const tls = connectTls({
+              host: resolved.address,
+              port: upstream.port,
+              ...(servername ? { servername } : {}),
+              secureContext: upstream.secureContext,
+              rejectUnauthorized: true,
+            });
+            track(tls);
+            const abort = () => tls.destroy();
+            signal.addEventListener("abort", abort, { once: true });
+            tls.once("error", abort);
+            const onClose = () => {
+              signal.removeEventListener("abort", abort);
+              reject(upstreamUnavailable);
+            };
+            tls.once("close", onClose);
+            tls.once("secureConnect", () => {
+              tls.write(
+                `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\nProxy-Authorization: ${upstream.authorization}\r\n\r\n`,
+              );
+              const headers = Buffer.allocUnsafe(maxConnectHeaderBytes);
+              let headerBytes = 0;
+              const readHeaders = (chunk: Buffer) => {
+                const previousBytes = headerBytes;
+                headerBytes += chunk.copy(headers, previousBytes);
+                const end = headers
+                  .subarray(0, headerBytes)
+                  .indexOf("\r\n\r\n", Math.max(0, previousBytes - 3));
+                if (end === -1) {
+                  if (headerBytes === maxConnectHeaderBytes) abort();
+                  return;
+                }
+                if (!validConnectResponse(headers.subarray(0, end))) {
+                  abort();
+                  return;
+                }
+                tls.pause();
+                tls.off("data", readHeaders);
+                tls.unshift(chunk.subarray(end + 4 - previousBytes));
+                signal.removeEventListener("abort", abort);
+                tls.off("close", onClose);
+                tls.setTimeout(timeoutMs, abort);
+                resolve(tls);
+              };
+              tls.on("data", readHeaders);
+            });
+          }),
+        signal,
+      );
     },
   };
 }
