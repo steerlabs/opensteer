@@ -288,9 +288,19 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
             </View>
           )}
         </ScrollView>
-        {/* More below: the last rows fade rather than ending at the card's edge as if they were all. */}
-        {scroll.content - scroll.box - scroll.offset > 4 ? (
-          <View pointerEvents="none" style={styles.fade} />
+        {/* More below: said under the rows, never over them. A fade over the last row made a
+            choice that works look disabled. The edge stays while the rows scroll, so the card
+            keeps its height; it shows its mark only while there is more below. */}
+        {scroll.content - scroll.box > 4 ? (
+          <View
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={styles.moreEdge}
+          >
+            <View style={scroll.content - scroll.box - scroll.offset > 4 ? null : styles.spent}>
+              <Symbol name="chevron.down" size={11} tint={color.muted} weight="semibold" />
+            </View>
+          </View>
         ) : null}
       </View>
       {typedHere ? (
@@ -405,14 +415,13 @@ const styles = StyleSheet.create({
   cardHighlighted: { backgroundColor: material.selected.backgroundColor },
   detail: { gap: space[2], paddingHorizontal: inset, paddingTop: space[2] },
   dimmed: { opacity: 0.35 },
+  spent: { opacity: 0 },
   end: { height: space[12] },
-  fade: {
-    backgroundImage: `linear-gradient(rgba(20, 20, 20, 0), ${String(material.attention.backgroundColor)})`,
-    bottom: 0,
-    height: 36,
-    left: 0,
-    position: "absolute",
-    right: 0,
+  moreEdge: {
+    alignItems: "center",
+    borderTopColor: color.line,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingVertical: space[2],
   },
   foot: { paddingBottom: 2, paddingLeft: space[4], paddingRight: 6 },
   head: {
