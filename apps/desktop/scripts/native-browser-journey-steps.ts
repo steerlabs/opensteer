@@ -10,6 +10,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { app, clipboard, Menu } from "electron";
 import { z } from "zod";
+import type { CdpParameters } from "@opensteer/browser-core";
 import { DesktopDownloadsSnapshotSchema } from "@opensteer/protocol/desktop";
 import { electronPagePresentation } from "../src/browser/electron-browser-launcher.js";
 import type { NativeBrowserE2EKit } from "./electron-native-browser-kit.js";
@@ -327,16 +328,19 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
         };
       });
       try {
-        for (const [key, code, modifiers] of [
-          ["w", "KeyW", 4],
-          ["q", "KeyQ", 4],
-          [",", "Comma", 4],
-          ["l", "KeyL", 4],
-          ["t", "KeyT", 4],
-          ["p", "KeyP", 12],
+        // Each chord carries its macOS key code, as a native keyboard event would: the router
+        // strips it, so none of them reaches the app's menus.
+        for (const [key, code, modifiers, nativeVirtualKeyCode] of [
+          ["w", "KeyW", 4, 13],
+          ["q", "KeyQ", 4, 12],
+          [",", "Comma", 4, 43],
+          ["l", "KeyL", 4, 37],
+          ["t", "KeyT", 4, 17],
+          ["p", "KeyP", 12, 35],
         ] as const) {
-          await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, modifiers });
-          await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
+          const chord = { key, code, modifiers, nativeVirtualKeyCode };
+          await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...chord });
+          await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...chord });
         }
       } finally {
         app.off("before-quit", preventQuit);
@@ -362,6 +366,64 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       assert.equal(
         await kit.pageContents().executeJavaScript("document.querySelector('#text').value"),
         sentinel,
+      );
+      assert.equal(await clipboard.readText(), sentinel);
+    } finally {
+      await runFile(kit.inputHelper, ["clipboard-restore", String(process.pid), previous]);
+    }
+  });
+  await step("clipboardConnected", async () => {
+    const previous = path.join(kit.run, "clipboard-connected.json");
+    await runFile(kit.inputHelper, ["clipboard-save", String(process.pid), previous]);
+    const sentinel = `private-${randomUUID()}`;
+    await clipboard.writeText(sentinel);
+    try {
+      const refusal =
+        "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+      const cdp = await kit.connectedAgentCdp();
+      await cdp.send("Runtime.evaluate", {
+        expression:
+          "const text=document.querySelector('#text');text.focus();text.value='';window.pastes=0;window.copies=0;document.addEventListener('paste',()=>window.pastes++);document.addEventListener('copy',()=>window.copies++);document.addEventListener('cut',()=>window.copies++)",
+      });
+      const refused = async (method: string, parameters: CdpParameters, root = false) =>
+        assert.equal(
+          await cdp.send(method, parameters, root).then(
+            () => "sent",
+            (error: unknown) => (error instanceof Error ? error.message : String(error)),
+          ),
+          refusal,
+          `${method} ${JSON.stringify(parameters)}`,
+        );
+      const paste = { type: "keyDown", key: "v", code: "KeyV", modifiers: 4 } as const;
+      await refused("Input.dispatchKeyEvent", { ...paste, nativeVirtualKeyCode: 9 });
+      await refused("Input.dispatchKeyEvent", { ...paste, commands: ["paste"] });
+      await refused("Input.dispatchKeyEvent", { ...paste, commands: ["pasteAndMatchStyle"] });
+      await refused("Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }, true);
+      await cdp.send("Runtime.evaluate", {
+        expression:
+          "const copied=document.querySelector('#text');copied.value='agent-copy';copied.select()",
+      });
+      for (const [key, nativeVirtualKeyCode] of [
+        ["c", 8],
+        ["x", 7],
+      ] as const)
+        await refused("Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key,
+          code: `Key${key.toUpperCase()}`,
+          modifiers: 4,
+          nativeVirtualKeyCode,
+        });
+      assert.equal(await kit.pageContents().executeJavaScript("window.pastes"), 0);
+      assert.equal(await kit.pageContents().executeJavaScript("window.copies"), 0);
+      assert.equal(
+        await kit.pageContents().executeJavaScript("document.querySelector('#text').value"),
+        "agent-copy",
+      );
+      assert(
+        !(
+          await kit.pageContents().executeJavaScript("document.documentElement.outerHTML")
+        ).includes(sentinel),
       );
       assert.equal(await clipboard.readText(), sentinel);
     } finally {
