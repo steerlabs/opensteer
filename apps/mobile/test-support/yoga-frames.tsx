@@ -563,3 +563,26 @@ export function coveringOf(container: Element, frames: Frames, element: Element)
     return over !== null && overlaps(over, seen);
   });
 }
+
+/**
+ * Whether a person can bring an element into view: inside the window when nothing scrolls it,
+ * or inside its scroll view's width and its scrolled content, which never starts above the
+ * scroll view's own top (where nothing could scroll it back down).
+ */
+export function reachable(
+  frames: Frames,
+  element: Element,
+  window: { readonly width: number; readonly height: number },
+): boolean {
+  const frame = frames.frame(element);
+  const content = element.closest('[data-rn="ScrollContent"]');
+  const screen = { height: window.height, width: window.width, x: 0, y: 0 };
+  if (!content?.parentElement) return inside(frame, screen);
+  const box = frames.frame(content);
+  const view = frames.frame(content.parentElement);
+  return (
+    box.y >= view.y - 0.5 &&
+    inside(frame, { height: box.height, width: view.width, x: view.x, y: box.y }) &&
+    reachable(frames, content.parentElement, window)
+  );
+}

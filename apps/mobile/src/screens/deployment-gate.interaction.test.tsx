@@ -7,6 +7,7 @@ const navigation = vi.hoisted(() => ({ reset: vi.fn() }));
 
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26", select: (options: { ios?: unknown }) => options.ios },
+  ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
