@@ -88,8 +88,15 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     return (await readPulledEgress(this.credentialsRoot, slotId)) !== undefined;
   }
 
-  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<void> {
+  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<boolean> {
     return writePulledEgress(this.credentialsRoot, slotId, egress);
+  }
+
+  /** Round I, U3: slots whose proxy unit an earlier agent made without "upstream required". */
+  readonly unrequiredProxies = new Set<string>();
+
+  async proxyRequiresUpstream(slotId: string): Promise<boolean> {
+    return !this.unrequiredProxies.has(slotId);
   }
 
   pulledEgressFiles(slotId: string): readonly string[] {
@@ -107,6 +114,8 @@ export class FakeHypervisorDriver implements HypervisorDriver {
 
   /** Round H: the size of the filesystem the profiles are on (unbounded unless a test sets it). */
   filesystemBytes: number | undefined;
+  /** Round I, U5: what an unprivileged writer can still use there (unbounded unless set). */
+  availableBytes: number | undefined;
 
   /** The next `count` calls of `operation` fail with this error, or never answer. */
   fail(operation: Operation, error: Error | "hang", count = 1): void {
@@ -169,7 +178,11 @@ export class FakeHypervisorDriver implements HypervisorDriver {
    * uses; only `mkfs.ext4` is stood in for (it writes a marker), and it can be made to fail.
    */
   readonly profilesRoot = mkdtempSync(join(tmpdir(), "opensteer-pool-profiles-"));
-  readonly credentialsRoot = mkdtempSync(join(tmpdir(), "opensteer-pool-credentials-"));
+  /** Round I, U4: not made by the fake; only a write of credentials makes it, as on a host. */
+  readonly credentialsRoot = join(
+    mkdtempSync(join(tmpdir(), "opensteer-pool-credentials-")),
+    "credentials",
+  );
 
   eraseCredentials(files: readonly string[]): Promise<void> {
     return eraseFilesUnder(this.credentialsRoot, files);
@@ -194,7 +207,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
         this.formatted += 1;
         writeFileSync(file, "fake-ext4\n", { flag: "r+" });
       },
-      async () => this.filesystemBytes ?? Number.MAX_SAFE_INTEGER,
+      async () => this.availableBytes ?? Number.MAX_SAFE_INTEGER,
     );
   }
 

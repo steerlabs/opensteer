@@ -167,25 +167,42 @@ export async function defineEgress(
  * Round H: what a slot's proxy unit was defined with, as systemd holds it: its upstream (or
  * none) and whether it requires one. Undefined when the unit is not loaded.
  */
-export async function egressDefinition(
-  index: number,
-): Promise<{ readonly upstream: string | null; readonly required: boolean } | undefined> {
+export async function egressDefinition(index: number): Promise<
+  | {
+      readonly upstream: string | null;
+      readonly required: boolean;
+      /** Round I, U3: where it loads its credentials from (systemd's LoadCredential). */
+      readonly credentials: { readonly username?: string; readonly password?: string };
+    }
+  | undefined
+> {
+  const loaded = await run("systemctl", ["show", "-p", "LoadState", "--value", egressUnit(index)], {
+    allow: [1],
+  });
+  if (loaded.trim() !== "loaded") return undefined;
   const environment = await run(
     "systemctl",
     ["show", "-p", "Environment", "--value", egressUnit(index)],
     { allow: [1] },
   );
-  const loaded = await run("systemctl", ["show", "-p", "LoadState", "--value", egressUnit(index)], {
-    allow: [1],
-  });
-  if (loaded.trim() !== "loaded") return undefined;
+  const loads = await run(
+    "systemctl",
+    ["show", "-p", "LoadCredential", "--value", egressUnit(index)],
+    { allow: [1] },
+  );
   const entries = environment.trim().split(/\s+/u);
   const upstream = entries
     .find((entry) => entry.startsWith("OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL="))
     ?.slice("OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL=".length);
+  const credentials: { username?: string; password?: string } = {};
+  for (const entry of loads.trim().split(/\s+/u)) {
+    const [name, ...source] = entry.split(":");
+    if (name === "username" || name === "password") credentials[name] = source.join(":");
+  }
   return {
     upstream: upstream ?? null,
     required: entries.includes("OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true"),
+    credentials,
   };
 }
 

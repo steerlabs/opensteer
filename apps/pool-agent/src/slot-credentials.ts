@@ -8,9 +8,9 @@
  * renames leaves a set that is fetched again whole, and a temporary file is never read.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { lstat, open, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { setFileMode, syncDirectory } from "@opensteer/shared/privateFiles";
+import { ensurePrivateDirectory, syncDirectory } from "@opensteer/shared/privateFiles";
 import type { SlotEgress } from "./driver.js";
 import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
 
@@ -43,19 +43,33 @@ export async function readPulledEgress(
   };
 }
 
-/** The credentials root, made root-only. */
+/** The credentials root, made root-only; a symlink in its place is refused (round I, U8). */
 export async function secureCredentialsRoot(root: string): Promise<void> {
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  await setFileMode(root, 0o700);
+  await ensurePrivateDirectory(root, "The credentials root must be a real directory.");
 }
 
+/**
+ * Writes the slot's credentials as the account service gave them, unless they are already
+ * there exactly (round I, U1: the host's are a copy, replaced when the answer changes).
+ * True if anything was written.
+ */
 export async function writePulledEgress(
   root: string,
   slotId: string,
   egress: SlotEgressAnswer,
-): Promise<void> {
-  await secureCredentialsRoot(root);
+): Promise<boolean> {
   const files = credentialFiles(root, slotId);
+  const read = (file: string) => readFile(file, "utf8").catch(() => undefined);
+  if (
+    (await read(files.url)) === egress.upstreamUrl &&
+    (await read(files.username)) === egress.username &&
+    (await read(files.password)) === egress.password
+  )
+    return false;
+  await secureCredentialsRoot(root);
+  // A replaced set stops counting as present first, so a crash mid-way never leaves an old
+  // address with new credentials; the URL goes back last.
+  await rm(files.url, { force: true });
   // The URL last: until it is in place the set does not count as present.
   for (const [file, text] of [
     [files.username, egress.username],
@@ -77,4 +91,5 @@ export async function writePulledEgress(
     }
   }
   await syncDirectory(root);
+  return true;
 }

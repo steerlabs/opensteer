@@ -84,10 +84,11 @@ describe("a slot with no credentials on a host that pulls them", () => {
     const defined = ops.indexOf(`defineProxy:bps-1:${answer.upstreamUrl}`);
     expect(defined).toBeGreaterThan(ops.indexOf("defineProxy:bps-1:none"));
     expect(defined).toBeLessThan(ops.indexOf("boot:bps-1"));
-    // Present credentials are used as they are: the next start fetches nothing.
+    // Round I, U1 (superseding "present credentials are used as they are"): the host's are a
+    // copy, and the next cold start asks again.
     await h.agent.agent.apply(callFor(await h.agent.agent.status("bps-1", 1), "stop"));
     await h.start("bps-1");
-    expect(h.fetched).toEqual(["bps-1"]);
+    expect(h.fetched).toEqual(["bps-1", "bps-1"]);
   });
 
   it("answers egress-required, signed and stored, and boots nothing, when none is assigned", async () => {
@@ -122,7 +123,7 @@ describe("a slot with no credentials on a host that pulls them", () => {
       expect(await h.agent.agent.result("bps-3", 1, call.id)).toBeNull();
       expect(h.agent.agent.effects("bps-3")).toEqual([]);
       expect(h.agent.driver.boots).toHaveLength(0);
-      expect(await readdir(h.agent.driver.credentialsRoot)).toEqual([]);
+      expect(await readdir(h.agent.driver.credentialsRoot).catch(() => [])).toEqual([]);
     }
   });
 
@@ -130,6 +131,7 @@ describe("a slot with no credentials on a host that pulls them", () => {
     const h = await pulling(async () => answer);
     await h.create("bps-4");
     const files = h.files("bps-4");
+    await mkdir(h.agent.driver.credentialsRoot, { recursive: true });
     // A crash after two of the three were renamed into place, and a third half-written.
     await writeFile(files.url, answer.upstreamUrl, { mode: 0o600 });
     await writeFile(files.username, answer.username, { mode: 0o600 });
@@ -147,6 +149,7 @@ describe("a slot with no credentials on a host that pulls them", () => {
   it("removes a leftover slot's credentials on a delete for a slot it does not know", async () => {
     const h = await pulling(async () => answer);
     const files = h.files("bps-gone");
+    await mkdir(h.agent.driver.credentialsRoot, { recursive: true });
     for (const file of [files.url, files.username, files.password])
       await writeFile(file, "left over\n", { mode: 0o600 });
     expect(await h.agent.agent.deleteSlotWithEvidence("bps-gone", 9)).toMatchObject({
@@ -180,7 +183,8 @@ describe("a slot with no credentials on a host that pulls them", () => {
 describe("the free-space guard at create", () => {
   it("refuses a profile that would make the profiles exceed their filesystem, making nothing", async () => {
     const driver = new FakeHypervisorDriver();
-    driver.filesystemBytes = 100 * 1024 * 1024;
+    // Round I, U5: what an unprivileged writer can still use.
+    driver.availableBytes = 100 * 1024 * 1024;
     const agent = await startTestPoolAgent({ saveAfterMs: null, driver });
     open.push(agent);
     const create = (slotId: string, profileMib: number) =>
@@ -271,7 +275,7 @@ describe("credentialsErased whenever the credentials are proven gone (W10)", () 
     await h.create("bps-stuck");
     const files = h.files("bps-stuck");
     // Not a plain file: the agent will not remove it.
-    await mkdir(files.password);
+    await mkdir(files.password, { recursive: true });
     await expect(h.agent.agent.deleteSlotWithEvidence("bps-stuck", 1)).rejects.toThrow();
     expect(h.agent.agent.slotIds()).toContain("bps-stuck");
     await rmdir(files.password);
