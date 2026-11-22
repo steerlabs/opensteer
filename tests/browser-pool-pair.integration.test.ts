@@ -184,8 +184,10 @@ class Crash {
 }
 
 /** The agent on a fake hypervisor whose profile disk can go and come back. */
-async function mountedAgentController(slotId: string) {
-  const driver = new FakeHypervisorDriver({ startsEmpty: true, profilesMount: {} });
+async function mountedAgentController(
+  slotId: string,
+  driver = new FakeHypervisorDriver({ startsEmpty: true, profilesMount: {} }),
+) {
   driver.profilesMounted = true;
   const agent = await startTestPoolAgent({ driver });
   const home = homeKeyPair();
@@ -208,16 +210,22 @@ async function mountedAgentController(slotId: string) {
     hostKey: agent.hostPublicKey,
   });
   const visible = new Set(["start", "pause", "resume", "stop"]);
+  /** The ids the Home asked the result of: it does so when a call's answer did not come. */
+  const asked: string[] = [];
   return {
     driver,
     agent,
+    asked,
     controller: {
       publicKey,
       get effects() {
         return agent.agent.effects(slotId).filter((effect) => visible.has(effect));
       },
       status: (slot: string, term: number) => client.status(slot, term),
-      result: (slot: string, term: number, id: string) => client.result(slot, term, id),
+      result: (slot: string, term: number, id: string) => {
+        asked.push(id);
+        return client.result(slot, term, id);
+      },
       apply: (call: BrowserPoolControllerCall) => client.apply(call),
       hold: () => {
         throw new Error("Not held here.");
@@ -735,4 +743,83 @@ it("sends a restart's stop again by its own id after a Home went, and never coun
   expect(marks).toBeGreaterThan(0);
   expect(next.report()).toBeUndefined();
   expect((await p.slot())?.failedStarts).toBe(0);
+});
+
+// ---- P14: a driver slower than the Home's call timeout ----------------------------------------
+
+/**
+ * Boot, restore and kill wait, while slow, until the test lets them go: as Firecracker's do,
+ * longer than the Home's call timeout (the agent's own deadlines are 30 s; the Home's 10 s).
+ */
+class SlowDriver extends FakeHypervisorDriver {
+  /** The kinds that are slow now; the others go at once (a start's own cleanup kill included). */
+  readonly slow = new Set<string>();
+  #release = Promise.withResolvers<void>();
+  readonly waiting: string[] = [];
+  letGo(): void {
+    this.#release.resolve();
+    this.#release = Promise.withResolvers<void>();
+  }
+  async #wait(kind: string): Promise<void> {
+    if (!this.slow.has(kind)) return;
+    this.waiting.push(kind);
+    await withTimeout(this.#release.promise, 60_000, {
+      timeoutError: () => new Error(`The slow ${kind} was never let go.`),
+    });
+  }
+  override async boot(...args: Parameters<FakeHypervisorDriver["boot"]>): Promise<void> {
+    await this.#wait("boot");
+    return super.boot(...args);
+  }
+  override async restore(...args: Parameters<FakeHypervisorDriver["restore"]>): Promise<void> {
+    await this.#wait("restore");
+    return super.restore(...args);
+  }
+  override async kill(...args: Parameters<FakeHypervisorDriver["kill"]>): Promise<void> {
+    await this.#wait("kill");
+    return super.kill(...args);
+  }
+}
+
+it("waits out a slow boot, restore and kill by asking for the result by id, and neither starts twice nor discards", async () => {
+  const driver = new SlowDriver({ startsEmpty: true, profilesMount: {} });
+  driver.profilesMounted = true;
+  const mounted = await mountedAgentController("slot-slow-driver", driver);
+  const p = await pair("slow-driver", mounted);
+  const home = p.home(undefined, { extra: { callTimeoutMs: 400 } });
+  const slowly = async (kind: string, work: () => Promise<unknown>) => {
+    const asked = mounted.asked.length;
+    const waits = driver.waiting.filter((entry) => entry === kind).length;
+    driver.slow.add(kind);
+    const done = work();
+    // The Home's call timed out and it asked for the result by its id; only then is it let go.
+    await vi.waitFor(
+      () => {
+        expect(driver.waiting.filter((entry) => entry === kind).length).toBe(waits + 1);
+        expect(mounted.asked.length).toBeGreaterThan(asked);
+      },
+      { timeout: 15_000 },
+    );
+    driver.slow.delete(kind);
+    driver.letGo();
+    await done;
+  };
+  // A cold start whose boot is slower than the call timeout.
+  await slowly("boot", () => home.recover());
+  expect(p.controller.effects).toEqual(["start"]);
+  // A wake from disk whose restore is slower.
+  expect(await home.tryPark()).toBe("parked");
+  const saved = (await p.status()).savedState!;
+  await mounted.agent.agent.saveToDisk("slot-slow-driver", saved.id);
+  await slowly("restore", async () => {
+    const held = await home.gate.reserve(AbortSignal.timeout(30_000));
+    held.release();
+  });
+  expect(p.controller.effects).toEqual(["start", "pause", "resume"]);
+  // A restart whose stop's kill is slower.
+  await slowly("kill", () => home.restart({ key: "slow" }));
+  expect(p.controller.effects).toEqual(["start", "pause", "resume", "stop", "start"]);
+  expect(driver.boots.length).toBe(3);
+  expect((await p.slot())?.failedStarts).toBe(0);
+  expect(home.gate.phase).toBe("open");
 });
