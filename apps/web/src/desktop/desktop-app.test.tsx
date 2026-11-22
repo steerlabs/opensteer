@@ -640,6 +640,63 @@ describe("the front door", () => {
     await app.close();
   });
 
+  it("ends following checkout when its account signs out, so the next account sees both choices", async () => {
+    vi.useFakeTimers();
+    try {
+      const accountA = {
+        available: true,
+        issuer: "https://accounts.opensteer.test",
+        portalOrigin: "https://app.opensteer.example",
+        status: "signed-in",
+        subject: "acct_a",
+      } as never;
+      const app = await door({ account: accountA });
+      await vi.waitFor(() => expect(app.button("On an Opensteer Cloud Computer")).toBeTruthy());
+      await act(async () => app.button("On an Opensteer Cloud Computer").click());
+      await vi.waitFor(() =>
+        expect(app.container.textContent).toContain("Finish checkout in your browser"),
+      );
+      // A signs out in this window, and B, whose account has no Opensteer, signs in.
+      const personalSetup = personalStatus({
+        canStart: true,
+        deploymentId: null,
+        name: "Studio Mac",
+        state: "stopped",
+        step: null,
+      });
+      await app.emit(
+        snapshot({
+          account: { available: true, status: "signed-out" },
+          personalSetup,
+          revision: 7,
+        }),
+      );
+      await app.emit(
+        snapshot({
+          personalSetup,
+          account: {
+            available: true,
+            issuer: "https://accounts.opensteer.test",
+            portalOrigin: "https://app.opensteer.example",
+            status: "signed-in",
+            subject: "acct_b",
+          } as never,
+          revision: 8,
+        }),
+      );
+      await vi.waitFor(() => expect(app.button("On this Mac")).toBeTruthy());
+      expect(app.container.textContent).not.toContain("Finish checkout in your browser");
+      expect(app.button("On an Opensteer Cloud Computer")).toBeTruthy();
+      // Nothing keeps reading for A's checkout.
+      const reads = app.bridge.cloudComputerRead.mock.calls.length;
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      expect(app.bridge.cloudComputerRead.mock.calls.length).toBe(reads);
+      await app.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("waits on nothing when the system browser refuses the address", async () => {
     const app = await door({
       account: {

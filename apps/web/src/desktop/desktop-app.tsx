@@ -53,7 +53,11 @@ import { createBrowserHostClient } from "../host/browser-host-client.js";
 import { disposeMessageOutbox } from "@opensteer/client/host";
 import { UnreachableHomeLine } from "../components/asleep-moment.js";
 import { ConnectionGateView } from "../components/connection-shell.js";
-import { useClientConnectionEverReady, useCloudComputer } from "@opensteer/client/react";
+import {
+  cloudComputerStore,
+  useClientConnectionEverReady,
+  useCloudComputer,
+} from "@opensteer/client/react";
 import { currentCloudComputer } from "@opensteer/client/computers";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { cloudComputerAccountFor } from "../components/settings/sections/cloud-computer.js";
@@ -372,6 +376,26 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       .select({ deploymentId: DeploymentIdSchema.parse(awaitedId) })
       .catch(() => undefined);
   }, [awaitedId, bridge, stopFollowingCheckout]);
+
+  // Checkout is followed for the account that opened it. When that account signs out, or
+  // another signs in, by any path, following ends here, where the account is observed: the
+  // next account never lands on someone else's checkout, and nothing keeps reading for it.
+  const signedInAs =
+    snapshot?.account.status === "signed-in"
+      ? `${snapshot.account.issuer ?? ""}\u0000${snapshot.account.subject ?? ""}`
+      : snapshot?.account.status === "signed-out"
+        ? null
+        : undefined;
+  const followedFor = useRef<string | null>(null);
+  useEffect(() => {
+    // Signing in, or an error, says nothing yet about who; wait for the settled state.
+    if (signedInAs === undefined) return;
+    const previous = followedFor.current;
+    followedFor.current = signedInAs;
+    const account = cloudComputerAccountFor(placesBridge);
+    if (account && previous !== null && previous !== signedInAs)
+      cloudComputerStore(account).stopFollowingCheckout();
+  }, [placesBridge, signedInAs]);
 
   const places = useMemo<DesktopPlaces | null>(
     () =>
