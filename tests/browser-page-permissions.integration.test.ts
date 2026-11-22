@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { expect, it, vi } from "vitest";
 import { journey } from "./browser-pool-journey.test-support.js";
 
@@ -77,26 +78,22 @@ async function probeLaunch(path: "guest" | "profile") {
     await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
     const pagesBefore = j.launched()!.context.pages().length;
     // A page that stops answering gave its script nothing either.
-    const evaluate = async (expression: string) => {
-      let timer: NodeJS.Timeout | undefined;
-      try {
-        return await Promise.race([
-          cdp
-            .send<{ result: { value: string } }>("Runtime.evaluate", {
-              expression,
-              awaitPromise: true,
-              userGesture: true,
-              returnByValue: true,
-            })
-            .then(({ result }) => result.value),
-          new Promise<string>((resolve) => {
-            timer = setTimeout(() => resolve("pending"), 4_000);
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
-    };
+    const evaluate = (expression: string) =>
+      withTimeout(
+        cdp
+          .send<{ result: { value: string } }>("Runtime.evaluate", {
+            expression,
+            awaitPromise: true,
+            userGesture: true,
+            returnByValue: true,
+          })
+          .then(({ result }) => result.value),
+        4_000,
+        { timeoutError: () => new Error("pending") },
+      ).catch((error: unknown) => {
+        if (error instanceof Error && error.message === "pending") return "pending";
+        throw error;
+      });
     const seen: Record<string, string> = {};
     for (const [name, request] of Object.entries(requests))
       seen[name] = await evaluate(`(() => { ${settle} return settle(() => ${request}); })()`);
