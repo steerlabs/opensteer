@@ -187,6 +187,10 @@ export const RunnerCapabilitySchema = z.enum([
   // Accepts `host.shell.probe-full-disk-access`; an older Runner's strict
   // frame parser drops its connection on an unknown Host frame.
   "full-disk-access-probe-v1",
+  // Parses what a connected agent's session adds to an integrations frame: `alwaysAsk` on
+  // `login.authorize` and `noLaunch` on computer-use windows and bind. An older Runner's
+  // strict schemas refuse those frames, so the Home never sends them to one.
+  "agent-session-guards-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 
