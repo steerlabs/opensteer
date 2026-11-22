@@ -246,6 +246,29 @@ export function DesktopWelcome({
     );
   }
 
+  // macOS refused Opensteer this Mac's keychain (locked, a login from another computer, a
+  // managed Mac): the account can't keep a sign-in, so it reads as unavailable with an error.
+  // Saying so, and how to try again, rather than a welcome with Sign in silently gone.
+  if (!account.available && account.status === "error") {
+    return (
+      <OnboardingCard
+        bare
+        description="Opensteer keeps your sign-in in this Mac’s keychain, and the keychain isn’t letting it in. Unlock it in Keychain Access, or log in at the Mac itself instead of from another computer, then try again."
+        live
+        title="Opensteer can’t use this Mac’s keychain"
+      >
+        <ErrorNotice message={actionError ?? error} />
+        <button
+          className="btn btn--primary onboarding__primary"
+          onClick={() => run(() => bridge.signIn())}
+          type="button"
+        >
+          Try again
+        </button>
+      </OnboardingCard>
+    );
+  }
+
   // A build with no Opensteer account to sign in to: the welcome as it always was.
   if (!account.available) {
     return (

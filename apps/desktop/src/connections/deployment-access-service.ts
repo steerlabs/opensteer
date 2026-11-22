@@ -635,8 +635,11 @@ export class DeploymentAccessService {
 
   async signIn(): Promise<void> {
     this.#assertActive();
+    // The keychain refused the account's storage: the account reads as unavailable with an
+    // error, and signing in is how the person tries again (it reads the storage afresh).
+    const keychainRefused = !this.#account.available && this.#account.status === "error";
     if (
-      !this.#account.available ||
+      !(this.#account.available || keychainRefused) ||
       (this.#account.status !== "signed-out" && this.#account.status !== "error")
     ) {
       throw operationUnavailable("signIn");
@@ -648,6 +651,7 @@ export class DeploymentAccessService {
       );
     } catch (error) {
       this.#signInStarted = false;
+      if (keychainRefused) throw new DeploymentAccessRefusal(keychainStillRefusedSentence);
       throw error;
     }
   }
@@ -1414,6 +1418,10 @@ export class DeploymentAccessRefusal extends Error {
     this.words = words;
   }
 }
+
+/** Said when signing in again finds this Mac's keychain still refusing Opensteer. */
+export const keychainStillRefusedSentence =
+  "Opensteer still can’t use this Mac’s keychain. Unlock it, then try again.";
 
 /** Said of a Home the ask named that was gone by the time its turn came. */
 export function homeGoneSentence(name: string | null): string {

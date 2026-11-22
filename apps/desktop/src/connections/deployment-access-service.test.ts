@@ -1845,6 +1845,67 @@ describe("DeploymentAccessService", () => {
     });
   });
 
+  describe("signing in when this Mac's keychain refuses Opensteer", () => {
+    const keychainRefused: DesktopAccountAuthState = {
+      account: {
+        available: false,
+        detail:
+          "macOS Keychain is not accepting protected storage. In Keychain Access, lock and unlock the login keychain, then try again.",
+        identity: null,
+        status: "error",
+      },
+      schemaVersion: 2,
+    };
+
+    it("lets the person try again, which reads the keychain afresh through the account's own sign-in", async () => {
+      const fixture = fakePorts();
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      fixture.emitAccount(keychainRefused);
+      await settle();
+      await service.signIn();
+      expect(fixture.beginSignIn).toHaveBeenCalledOnce();
+      service.dispose();
+    });
+
+    it("says plainly that the keychain still refuses, when it does", async () => {
+      const fixture = fakePorts();
+      fixture.beginSignIn.mockRejectedValueOnce(
+        new Error("macOS Keychain is not accepting protected storage."),
+      );
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      fixture.emitAccount(keychainRefused);
+      await settle();
+      const refused = await service.signIn().catch((error: unknown) => error);
+      expect(refused).toEqual(
+        new DeploymentAccessRefusal(
+          "Opensteer still can’t use this Mac’s keychain. Unlock it, then try again.",
+        ),
+      );
+      service.dispose();
+    });
+
+    it("still refuses a build with no account to sign in to", async () => {
+      const fixture = fakePorts();
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      fixture.emitAccount({
+        account: {
+          available: false,
+          detail: "Opensteer account sign-in isn't available yet.",
+          identity: null,
+          status: "signed-out",
+        },
+        schemaVersion: 2,
+      });
+      await settle();
+      await expect(service.signIn()).rejects.toThrow("not available now: signIn");
+      expect(fixture.beginSignIn).not.toHaveBeenCalled();
+      service.dispose();
+    });
+  });
+
   /*
    * Whether two asks are the same is what they ask for, not what kind of change they are. The
    * same ask twice runs once and both hear its outcome; the same kind for another target waits
