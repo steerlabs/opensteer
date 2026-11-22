@@ -25,6 +25,12 @@ async function load() {
   return import("./view-functions.js");
 }
 
+interface Calls {
+  [name: string]: (...args: unknown[]) => Promise<unknown>;
+  present: (...args: unknown[]) => Promise<unknown>;
+  clear: (...args: unknown[]) => Promise<unknown>;
+}
+
 function view(tag: number | null) {
   return {
     nativeTag: tag,
@@ -40,10 +46,14 @@ describe("a native view's functions", () => {
     modules.set("PhoneDisplay", { viewTagFunctions: 1, presentForView, clearForView });
     const { viewFunctionsOf, viewTagModule } = await load();
     const instance = view(42);
-    const calls = viewFunctionsOf(viewTagModule("PhoneDisplay"), instance, ["present", "clear"])!;
+    const calls = viewFunctionsOf<Calls>(
+      viewTagModule("PhoneDisplay"),
+      instance as unknown as Calls,
+      ["present", "clear"],
+    )!;
     const bytes = new Uint8Array([1]);
-    await calls.present(bytes as never, { generation: 3 } as never);
-    await calls.clear(4 as never);
+    await calls.present(bytes, { generation: 3 });
+    await calls.clear(4);
     expect(presentForView).toHaveBeenCalledExactlyOnceWith(42, bytes, { generation: 3 });
     expect(clearForView).toHaveBeenCalledExactlyOnceWith(42, 4);
     expect(instance.present).not.toHaveBeenCalled();
@@ -55,7 +65,11 @@ describe("a native view's functions", () => {
     modules.set("PhoneDisplay", { viewTagFunctions: 1, presentForView });
     const { viewFunctionsOf, viewTagModule } = await load();
     const instance = view(null);
-    const calls = viewFunctionsOf(viewTagModule("PhoneDisplay"), instance, ["present"])!;
+    const calls = viewFunctionsOf<Calls>(
+      viewTagModule("PhoneDisplay"),
+      instance as unknown as Calls,
+      ["present"],
+    )!;
     await expect(calls.present()).rejects.toThrow("not mounted");
     expect(presentForView).not.toHaveBeenCalled();
     expect(instance.present).not.toHaveBeenCalled();
@@ -69,7 +83,11 @@ describe("a native view's functions", () => {
     modules.set("PhoneDisplay", { ...module, presentForView: vi.fn() });
     const { viewFunctionsOf, viewTagModule } = await load();
     const instance = view(42);
-    const calls = viewFunctionsOf(viewTagModule("PhoneDisplay"), instance, ["present"])!;
+    const calls = viewFunctionsOf<Calls>(
+      viewTagModule("PhoneDisplay"),
+      instance as unknown as Calls,
+      ["present"],
+    )!;
     await calls.present();
     expect(instance.present).toHaveBeenCalledOnce();
   });
