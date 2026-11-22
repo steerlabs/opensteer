@@ -1,9 +1,5 @@
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
-import {
-  connectionClipboardRefusal,
-  usesBrowserClipboard,
-  type BrowserRuntime,
-} from "@opensteer/browser-runtime-core";
+import { cdpCommandRefusal, type BrowserRuntime } from "@opensteer/browser-runtime-core";
 import type {
   StandardCdpAttemptReconciliation,
   StandardCdpLeaseReconciliation,
@@ -5631,10 +5627,10 @@ export class BrowserService {
       command: BrowserCdpRequest["command"],
       confirmed?: ConfirmedCdpDispatch,
     ): Promise<{ readonly result: Promise<unknown> }> => {
-      // Refused before any effect, whatever runtime the browser runs: the clipboard is in no
-      // grant. The runtime's router refuses the same commands where it holds the fact itself.
-      if (connectionWork && usesBrowserClipboard(command.method, command.parameters))
-        throw new OpensteerError({ code: "forbidden", message: connectionClipboardRefusal });
+      // Refused before any effect, whatever runtime the browser runs: neither the clipboard nor
+      // a browser permission is in any grant. The runtime's router refuses the same commands.
+      const refusal = cdpCommandRefusal(command.method, command.parameters, connectionWork);
+      if (refusal) throw new OpensteerError({ code: "forbidden", message: refusal });
       return this.withRunnerAdmission(record.runnerId, async () => {
         confirmed?.signal?.throwIfAborted();
         if (confirmed && input.expiresAt !== undefined && input.expiresAt <= Date.now())

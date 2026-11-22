@@ -13,8 +13,13 @@ import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
-import { connectionClipboardRefusal, usesBrowserClipboard } from "./connection-clipboard.js";
-export { connectionClipboardRefusal, usesBrowserClipboard } from "./connection-clipboard.js";
+import { cdpCommandRefusal } from "./cdp-command-refusals.js";
+export {
+  cdpCommandRefusal,
+  clipboardPermissionRefusal,
+  connectionClipboardRefusal,
+  connectionPermissionRefusal,
+} from "./cdp-command-refusals.js";
 
 export interface SessionCdpRouterPorts {
   readonly uuid: () => string;
@@ -77,7 +82,7 @@ export interface StandardCdpAttachmentOptions {
   readonly wholeContext: boolean;
   /**
    * The attachment acts under a connected agent's authority, as the Home decided when it was
-   * made: it never uses the clipboard in the browser.
+   * made: it never uses the clipboard in the browser and never changes a browser permission.
    */
   readonly connection?: boolean;
   readonly lineage?: { readonly attachmentId: string; readonly seedTargetId: string };
@@ -762,7 +767,7 @@ export class SessionCdpRouter {
       command.method === "Target.detachFromTarget",
       command.method,
     );
-    this.#assertClipboardFree(state, command);
+    this.#assertAllowed(state, command);
     if (state.standard && command.parameters?.browserContextId !== undefined) {
       const { browserContextId, ...parameters } = command.parameters;
       if (browserContextId !== state.session.sessionId)
@@ -1477,10 +1482,10 @@ export class SessionCdpRouter {
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
 
-  /** A connection's work is refused before any effect when it would use the clipboard. */
-  #assertClipboardFree(state: ConnectionState, command: CdpCommand): void {
-    if (state.connection && usesBrowserClipboard(command.method, command.parameters))
-      throw new SessionCdpRouterError("forbidden", connectionClipboardRefusal);
+  /** Refused before any effect: see `cdp-command-refusals.ts`. */
+  #assertAllowed(state: ConnectionState, command: CdpCommand): void {
+    const refusal = cdpCommandRefusal(command.method, command.parameters, state.connection);
+    if (refusal) throw new SessionCdpRouterError("forbidden", refusal);
   }
 
   #admitAttachedCommand(state: ConnectionState, command: CdpCommand): AttachedChannel {
@@ -1491,7 +1496,7 @@ export class SessionCdpRouter {
     const parameters = command.parameters ?? {};
     this.#assertOwnedTarget(state, attached.physicalTargetId);
     this.#assertScope(state, parameters, false, command.method);
-    this.#assertClipboardFree(state, command);
+    this.#assertAllowed(state, command);
     if (command.method === "Page.navigate") {
       assertSafeNavigationUrl(parameters.url, false, Boolean(state.standard || state.script));
     }

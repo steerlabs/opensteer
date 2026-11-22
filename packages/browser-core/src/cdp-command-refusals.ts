@@ -1,12 +1,22 @@
 /**
- * Work done under a connected agent's authority never uses the clipboard in the browser. The
- * clipboard is in no grant: on a Mac it is the person's own, and in a Home's Chromium it is the
- * browser's, shared by every profile and session in it. Whether work is a connection's is decided
- * by the one authority rule when its attachment is made; this module only refuses what follows
- * from that fact.
+ * CDP commands refused before any effect, by who sends them.
+ *
+ * Work done under a connected agent's authority never uses the clipboard in the browser and never
+ * changes a browser permission: neither the clipboard nor the person's camera, microphone or
+ * location is in any grant. Whether work is a connection's is decided by the one authority rule
+ * when its attachment is made; this module only refuses what follows from that fact.
+ *
+ * Nobody grants a page a clipboard permission through CDP, the person's own agents included: a
+ * grant lasts for the browser context, so it would later serve a connected agent's page script.
  */
 export const connectionClipboardRefusal =
   "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+
+export const connectionPermissionRefusal =
+  "Browser permissions cannot be changed by a connected agent.";
+
+export const clipboardPermissionRefusal =
+  "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
 
 /** Editing commands that read the clipboard or write it, as Blink names them (any case). */
 const clipboardEditingCommands = new Set([
@@ -43,8 +53,10 @@ const windowsKeyCodes: ReadonlyMap<number, string> = new Map([
   [46, "Delete"],
 ]);
 
+type Parameters = Readonly<Record<string, unknown>>;
+
 /** Blink reads `windowsVirtualKeyCode`; the router reads `code` and `key`. Each one counts. */
-function chordKeys(parameters: Readonly<Record<string, unknown>>): string[] {
+function chordKeys(parameters: Parameters): string[] {
   const keys: string[] = [];
   for (const candidate of [parameters.code, parameters.key]) {
     if (typeof candidate !== "string") continue;
@@ -58,7 +70,7 @@ function chordKeys(parameters: Readonly<Record<string, unknown>>): string[] {
   return keys;
 }
 
-function clipboardKeyEvent(parameters: Readonly<Record<string, unknown>>): boolean {
+function clipboardKeyEvent(parameters: Parameters): boolean {
   const { commands } = parameters;
   if (Array.isArray(commands))
     for (const command of commands)
@@ -76,10 +88,16 @@ function clipboardKeyEvent(parameters: Readonly<Record<string, unknown>>): boole
   return keys !== undefined && chordKeys(parameters).some((key) => keys.has(key));
 }
 
+const permissionMethods = new Set([
+  "Browser.grantPermissions",
+  "Browser.setPermission",
+  "Browser.resetPermissions",
+]);
 const clipboardPermissionTypes = new Set(["clipboardReadWrite", "clipboardSanitizedWrite"]);
 const clipboardPermissionNames = new Set(["clipboard-read", "clipboard-write"]);
 
-function clipboardPermission(method: string, parameters: Readonly<Record<string, unknown>>) {
+/** A grant of a clipboard permission: anything but a clipboard permission set to denied. */
+function clipboardPermissionGrant(method: string, parameters: Parameters): boolean {
   if (method === "Browser.grantPermissions")
     return (
       Array.isArray(parameters.permissions) &&
@@ -92,7 +110,8 @@ function clipboardPermission(method: string, parameters: Readonly<Record<string,
     return (
       typeof descriptor === "object" &&
       descriptor !== null &&
-      clipboardPermissionNames.has(String((descriptor as { name?: unknown }).name))
+      clipboardPermissionNames.has(String((descriptor as { name?: unknown }).name)) &&
+      parameters.setting !== "denied"
     );
   }
   return false;
@@ -102,37 +121,40 @@ function clipboardPermission(method: string, parameters: Readonly<Record<string,
 const maximumNesting = 8;
 
 /**
- * Whether a connection's command would use the clipboard in the browser: a key event that
- * copies, cuts or pastes, stated or by its chord, or a grant of a clipboard permission that would
- * let page script read it. A nested `Target.sendMessageToTarget` message is read the same way.
+ * The sentence that refuses this command for its sender, or undefined when it may be sent.
+ * `connection` is whether the command is sent under a connection's authority. A nested
+ * `Target.sendMessageToTarget` message is read as the command it carries.
  */
-export function usesBrowserClipboard(
+export function cdpCommandRefusal(
   method: string,
-  parameters: Readonly<Record<string, unknown>> | undefined,
+  parameters: Parameters | undefined,
+  connection: boolean,
   depth = 0,
-): boolean {
+): string | undefined {
   const values = parameters ?? {};
-  if (method === "Input.dispatchKeyEvent") return clipboardKeyEvent(values);
-  if (clipboardPermission(method, values)) return true;
-  if (method !== "Target.sendMessageToTarget" || typeof values.message !== "string") return false;
-  if (depth >= maximumNesting) return true;
+  if (connection && permissionMethods.has(method)) return connectionPermissionRefusal;
+  if (clipboardPermissionGrant(method, values)) return clipboardPermissionRefusal;
+  if (method === "Input.dispatchKeyEvent")
+    return connection && clipboardKeyEvent(values) ? connectionClipboardRefusal : undefined;
+  if (method !== "Target.sendMessageToTarget" || typeof values.message !== "string")
+    return undefined;
+  if (depth >= maximumNesting)
+    return connection ? connectionPermissionRefusal : clipboardPermissionRefusal;
   let nested: unknown;
   try {
     nested = JSON.parse(values.message);
   } catch {
     // The router refuses a message it cannot read.
-    return false;
+    return undefined;
   }
-  if (typeof nested !== "object" || nested === null) return false;
+  if (typeof nested !== "object" || nested === null) return undefined;
   const { method: nestedMethod, params } = nested as { method?: unknown; params?: unknown };
-  return (
-    typeof nestedMethod === "string" &&
-    usesBrowserClipboard(
-      nestedMethod,
-      typeof params === "object" && params !== null
-        ? (params as Readonly<Record<string, unknown>>)
-        : undefined,
-      depth + 1,
-    )
-  );
+  return typeof nestedMethod === "string"
+    ? cdpCommandRefusal(
+        nestedMethod,
+        typeof params === "object" && params !== null ? (params as Parameters) : undefined,
+        connection,
+        depth + 1,
+      )
+    : undefined;
 }

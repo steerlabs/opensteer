@@ -8959,9 +8959,20 @@ describe("a connected agent's selected grant admits the exact profile before any
   });
 });
 
-describe("work under a connection's authority never uses the clipboard in the browser", () => {
+describe("work under a connection's authority never uses the clipboard or changes a browser permission", () => {
   const sentence =
     "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const permissionSentence = "Browser permissions cannot be changed by a connected agent.";
+  const clipboardGrantSentence =
+    "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
+  const permissionChanges = [
+    ["Browser.grantPermissions", { permissions: ["audioCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["videoCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["geolocation"] }],
+    ["Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }],
+    ["Browser.setPermission", { permission: { name: "camera" }, setting: "granted" }],
+    ["Browser.resetPermissions", {}],
+  ] as const;
   const cmdV = {
     type: "rawKeyDown",
     modifiers: 4,
@@ -8997,7 +9008,7 @@ describe("work under a connection's authority never uses the clipboard in the br
     return { cdp, runtime, forwarded };
   }
 
-  it("refuses a lineage Run's paste, copy, cut and clipboard grant before anything leaves the Home", async () => {
+  it("refuses a lineage Run's paste, copy, cut and permission changes before anything leaves the Home", async () => {
     const ownerId = createId("user");
     const repository = new SelectedGrantRepository(ownerId);
     repository.scope = "everything";
@@ -9007,7 +9018,6 @@ describe("work under a connection's authority never uses the clipboard in the br
       ["Input.dispatchKeyEvent", { ...cmdV, commands: ["paste"] }],
       ["Input.dispatchKeyEvent", { ...cmdV, key: "c", code: "KeyC", windowsVirtualKeyCode: 67 }],
       ["Input.dispatchKeyEvent", { ...cmdV, modifiers: 2, key: "x", code: "KeyX" }],
-      ["Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }],
       [
         "Target.sendMessageToTarget",
         {
@@ -9015,7 +9025,21 @@ describe("work under a connection's authority never uses the clipboard in the br
           message: JSON.stringify({ id: 1, method: "Input.dispatchKeyEvent", params: cmdV }),
         },
       ],
+      ...permissionChanges,
+      [
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({
+            id: 2,
+            method: "Browser.grantPermissions",
+            params: { permissions: ["audioCapture"] },
+          }),
+        },
+      ],
     ] as const;
+    const expected = (method: string, index: number) =>
+      method === "Input.dispatchKeyEvent" || index === 4 ? sentence : permissionSentence;
     const settled = refused.map(([method, parameters]) =>
       cdp.request({ method, parameters, sessionId: "cdp-page-1" }).then(
         () => "answered",
@@ -9036,19 +9060,49 @@ describe("work under a connection's authority never uses the clipboard in the br
     runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
     await next;
     for (const [index, outcome] of (await Promise.all(settled)).entries())
-      expect(outcome, refused[index]![0]).toMatchObject({ code: "forbidden", message: sentence });
+      expect(outcome, refused[index]![0]).toMatchObject({
+        code: "forbidden",
+        message: expected(refused[index]![0], index),
+      });
   });
 
-  it("forwards the person's own Run's paste exactly as before", async () => {
+  it("forwards the person's own Run's paste and permissions as before, but no clipboard grant", async () => {
     const ownerId = createId("user");
-    const { forwarded } = await attached(new MemoryBrowserRepository(ownerId), ownerId, "run:own");
+    const { cdp, runtime, forwarded } = await attached(
+      new MemoryBrowserRepository(ownerId),
+      ownerId,
+      "run:own",
+    );
     await expect(forwarded("Input.dispatchKeyEvent", cmdV)).resolves.toEqual({
       method: "Input.dispatchKeyEvent",
       parameters: cmdV,
       sessionId: "cdp-page-1",
     });
-    await expect(
-      forwarded("Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }),
-    ).resolves.toMatchObject({ method: "Browser.grantPermissions" });
+    for (const [method, parameters] of permissionChanges.filter(
+      ([, parameters]) => !JSON.stringify(parameters).includes("clipboard"),
+    ))
+      await expect(forwarded(method, parameters), method).resolves.toMatchObject({ method });
+    // A clipboard grant would outlast the Run and serve a connected agent's page script.
+    const grants = [
+      { permissions: ["clipboardReadWrite"] },
+      { permissions: ["geolocation", "clipboardSanitizedWrite"] },
+    ].map((parameters) =>
+      cdp.request({ method: "Browser.grantPermissions", parameters }).then(
+        () => "answered",
+        (error: unknown) => error,
+      ),
+    );
+    const next = cdp.request({
+      method: "Input.dispatchKeyEvent",
+      parameters: { type: "rawKeyDown", code: "KeyA" },
+    });
+    const first = await runtime.nextCommand();
+    expect(first.command, "the first command to reach the runtime").toMatchObject({
+      parameters: { code: "KeyA" },
+    });
+    runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+    await next;
+    for (const outcome of await Promise.all(grants))
+      expect(outcome).toMatchObject({ code: "forbidden", message: clipboardGrantSentence });
   });
 });

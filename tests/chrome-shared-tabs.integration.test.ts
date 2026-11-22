@@ -647,6 +647,21 @@ async function proveChromeShares(
         ).rejects.toThrow(
           "The clipboard is not available to a connected agent. Use Input.insertText to enter text.",
         );
+      // Nor the person's camera, microphone or location: no browser permission changes.
+      for (const [method, parameters] of [
+        ["Browser.grantPermissions", { permissions: ["audioCapture"] }],
+        ["Browser.grantPermissions", { permissions: ["videoCapture"] }],
+        ["Browser.grantPermissions", { permissions: ["geolocation"] }],
+        ["Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }],
+        ["Browser.resetPermissions", {}],
+      ] as const)
+        await expect(
+          (cdp as unknown as { send(m: string, p: object): Promise<unknown> }).send(
+            method,
+            parameters,
+          ),
+          method,
+        ).rejects.toThrow("Browser permissions cannot be changed by a connected agent.");
       const attempts = async () => {
         const row = await fixture.database
           .selectFrom("agentConnections")

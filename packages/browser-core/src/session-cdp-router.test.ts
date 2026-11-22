@@ -1900,9 +1900,12 @@ function asContext(event: import("./session-cdp-router.js").CdpEvent) {
     : null;
 }
 
-describe("SessionCdpRouter clipboard under a connection", () => {
+describe("SessionCdpRouter clipboard and browser permissions", () => {
   const sentence =
     "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const permissionSentence = "Browser permissions cannot be changed by a connected agent.";
+  const clipboardGrantSentence =
+    "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
   const cmdV = {
     type: "rawKeyDown",
     modifiers: 4,
@@ -1930,11 +1933,21 @@ describe("SessionCdpRouter clipboard under a connection", () => {
     ],
     ["a Cocoa selector", { type: "keyDown", key: "c", commands: ["Copy:"] }],
   ] as const;
-  const permissions = [
+  /** Grants of a clipboard permission: nobody sends them. */
+  const clipboardGrants = [
     ["Browser.grantPermissions", { permissions: ["geolocation", "clipboardReadWrite"] }],
     ["Browser.grantPermissions", { permissions: ["clipboardSanitizedWrite"] }],
     ["Browser.setPermission", { permission: { name: "clipboard-read" }, setting: "granted" }],
-    ["Browser.setPermission", { permission: { name: "clipboard-write" }, setting: "granted" }],
+    ["Browser.setPermission", { permission: { name: "clipboard-write" }, setting: "prompt" }],
+  ] as const;
+  /** Every other permission change: a person's own agent keeps them, a connection does not. */
+  const otherPermissions = [
+    ["Browser.grantPermissions", { permissions: ["audioCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["videoCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["geolocation"] }],
+    ["Browser.setPermission", { permission: { name: "geolocation" }, setting: "granted" }],
+    ["Browser.setPermission", { permission: { name: "clipboard-read" }, setting: "denied" }],
+    ["Browser.resetPermissions", {}],
   ] as const;
 
   async function attached(connection: boolean, kind: "standard" | "script") {
@@ -1996,17 +2009,27 @@ describe("SessionCdpRouter clipboard under a connection", () => {
           },
         }),
       ).rejects.toMatchObject({ message: sentence });
-      for (const [method, parameters] of permissions) {
+      for (const [method, parameters] of [...clipboardGrants, ...otherPermissions]) {
         for (const scope of [{}, { sessionId: f.sessionId }])
           await expect(f.send({ method, parameters, ...scope }), method).rejects.toMatchObject({
             code: "forbidden",
-            message: sentence,
+            message: permissionSentence,
           });
+        await expect(
+          f.send({
+            method: "Target.sendMessageToTarget",
+            parameters: {
+              sessionId: f.sessionId,
+              message: JSON.stringify({ id: 2, method, params: parameters }),
+            },
+          }),
+          `nested ${method}`,
+        ).rejects.toMatchObject({ message: permissionSentence });
       }
       expect(f.channel.commands.filter(({ method }) => method.startsWith("Input."))).toEqual([]);
       expect(f.backend.commands.filter(({ method }) => method.startsWith("Browser."))).toEqual([]);
 
-      // A chord that maps to no clipboard command, text and other permissions are untouched.
+      // A chord that maps to no clipboard command, and text, are untouched.
       await f.key({ type: "rawKeyDown", modifiers: 4, key: "a", code: "KeyA" });
       await f.key({ type: "keyDown", key: "v", code: "KeyV", text: "v" });
       await f.key({ type: "keyUp", modifiers: 4, key: "v", code: "KeyV" });
@@ -2014,10 +2037,6 @@ describe("SessionCdpRouter clipboard under a connection", () => {
         method: "Input.insertText",
         parameters: { text: "typed" },
         sessionId: f.sessionId,
-      });
-      await f.send({
-        method: "Browser.grantPermissions",
-        parameters: { permissions: ["geolocation"] },
       });
       expect(f.channel.commands.filter(({ method }) => method.startsWith("Input."))).toEqual([
         {
@@ -2044,10 +2063,16 @@ describe("SessionCdpRouter clipboard under a connection", () => {
     });
 
   for (const kind of ["standard", "script"] as const)
-    it(`forwards the person's own agent's ${kind} copy, cut and paste exactly as before`, async () => {
+    it(`forwards the person's own agent's ${kind} copy, cut, paste and permissions, but no clipboard grant`, async () => {
       const f = await attached(false, kind);
       for (const [, parameters] of refused) await f.key(parameters);
-      for (const [method, parameters] of permissions) await f.send({ method, parameters });
+      for (const [method, parameters] of clipboardGrants)
+        for (const scope of [{}, { sessionId: f.sessionId }])
+          await expect(f.send({ method, parameters, ...scope }), method).rejects.toMatchObject({
+            code: "forbidden",
+            message: clipboardGrantSentence,
+          });
+      for (const [method, parameters] of otherPermissions) await f.send({ method, parameters });
       const { nativeVirtualKeyCode: _native, ...inferredPaste } = refused[1][1];
       expect(f.channel.commands.map(({ parameters }) => parameters)).toEqual([
         refused[0][1],
@@ -2057,9 +2082,14 @@ describe("SessionCdpRouter clipboard under a connection", () => {
         { ...refused[4][1], commands: ["cut"] },
         ...refused.slice(5).map(([, parameters]) => parameters),
       ]);
-      expect(f.backend.commands.filter(({ method }) => method.startsWith("Browser."))).toHaveLength(
-        permissions.length,
+      expect(f.backend.commands.filter(({ method }) => method.startsWith("Browser."))).toEqual(
+        otherPermissions.map(([method]) => expect.objectContaining({ method })),
       );
+      expect(
+        f.backend.commands
+          .filter(({ method }) => method.startsWith("Browser."))
+          .map(({ parameters }) => parameters),
+      ).toEqual(otherPermissions.map(([, parameters]) => expect.objectContaining(parameters)));
       await f.router.close();
     });
 });

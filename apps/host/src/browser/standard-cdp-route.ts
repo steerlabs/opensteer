@@ -10,7 +10,7 @@ import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { unversionedRoute } from "../server/unversioned-route.js";
 import { OpensteerError } from "@opensteer/core";
-import { connectionClipboardRefusal, usesBrowserClipboard } from "@opensteer/browser-runtime-core";
+import { cdpCommandRefusal } from "@opensteer/browser-runtime-core";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import {
@@ -299,15 +299,15 @@ function relayStandardCdp(
           end(1008, "Browser attachment refused");
           return;
         }
-        // Refused here for every runtime, before anything reaches the browser: the clipboard
-        // is in no grant.
-        if (connectionWork && usesBrowserClipboard(request.method, request.params)) {
+        // Refused here for every runtime, before anything reaches the browser.
+        const refusal = cdpCommandRefusal(request.method, request.params, connectionWork);
+        if (refusal) {
           await send(
             Buffer.from(
               JSON.stringify({
                 id: request.id,
                 sessionId: request.sessionId,
-                error: { code: -32000, message: connectionClipboardRefusal },
+                error: { code: -32000, message: refusal },
               }),
             ),
           );
