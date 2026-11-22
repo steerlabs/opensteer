@@ -120,14 +120,18 @@ export function messageFromRow(row: Selectable<MessageTable>): Message {
   return MessageSchema.parse(messageValueFromRow(row));
 }
 /**
- * A message a teammate wrote, kept by a database from before team removal, is left out: it is
- * neither shown nor an error.
+ * A message a teammate wrote, kept by a database from before team removal. A Message has no way
+ * to say it without its author, so every read of Messages leaves it out: neither shown nor an
+ * error. A transcript item keeps its text without the author.
  */
+export function isRetiredMessageRow(row: Pick<Selectable<MessageTable>, "author">): boolean {
+  return (row.author as { readonly kind?: unknown }).kind === "team-member";
+}
+/** The same rule as `isRetiredMessageRow`, for a query that pages or counts messages. */
+export const keptMessageSql = sql<boolean>`messages.author->>'kind' is distinct from 'team-member'`;
 export function messagesFromRows(rows: readonly Selectable<MessageTable>[]): Message[] {
   return MessageSchema.array().parse(
-    rows
-      .filter((row) => (row.author as { readonly kind: string }).kind !== "team-member")
-      .map(messageValueFromRow),
+    rows.filter((row) => !isRetiredMessageRow(row)).map(messageValueFromRow),
   );
 }
 /** A reply target of a kind this release no longer has (a team thread) reads as none. */

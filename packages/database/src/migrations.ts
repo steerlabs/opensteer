@@ -635,6 +635,17 @@ export function migrationProvider(options?: {
               },
               [workHomeMigrationName]: { up: applyWorkHome },
               [browserPoolMigrationName]: { up: applyBrowserPool },
+              "0051_needs_you_counts_requests": {
+                /**
+                 * A Home that used teams counted its teammates' asks in Needs you, and those
+                 * rows no longer list: the count is what the list shows, Requests alone.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`update client_sync_state set needs_you_count=listed.count
+                    from (select count(*)::integer as count from personal_attention where kind='request') listed
+                    where needs_you_count is distinct from listed.count`.execute(database);
+                },
+              },
             }
           : {}),
       };
