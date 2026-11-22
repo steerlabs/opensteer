@@ -130,6 +130,8 @@ it.skipIf(Boolean(reportPath))(
     const database = await cloneTestDatabase("host");
     const close: (() => unknown | Promise<unknown>)[] = [() => database.drop()];
     const own = new AsyncLocalStorage<string[]>();
+    // A later local names the agent's own tab; the traces keep a name of their own.
+    const traces = own;
     const trace = traceQueries((statement) => own.getStore()?.push(statement));
     const recorded: Record<string, string[]> = {};
     // A path's first shell read refreshes the owner's name in the background, and that
@@ -163,22 +165,26 @@ it.skipIf(Boolean(reportPath))(
         return own.exit(() => Reflect.apply(reconcile, this, []) as ReturnType<typeof reconcile>);
       });
     close.unshift(() => reconciling.mockRestore());
-    // The execution coordinator's dispatch loop (`ExecutionCoordinator` reading
-    // `OpensteerStore.listPendingCommands`) is work the start leaves running too: counted on no
-    // path. The fixture once held its three reads at the start, which usually, not always, landed
-    // inside it; they are deliberately not listed, so a raw trace of a start shows them.
-    // Its cost is pinned on a path of its own, "execution dispatch pass": one pass the test asks
-    // for (the coordinator's `wake()`) and records by itself.
+    // The execution coordinator's dispatch loop (`ExecutionCoordinator`, reading
+    // `OpensteerStore.listPendingCommands` each pass) is work the start leaves running too: a
+    // pass runs where it was woken, and its read is counted on no path of the start. The fixture once held
+    // its three reads at the start, which usually, not always, landed inside it; they are
+    // deliberately not listed, so a raw trace of a start shows them. Its cost is pinned on a path
+    // of its own, "execution dispatch pass": one pass the test asks for (the coordinator's
+    // `wake()`, made inside that path's own trace), every statement of it.
+    const dispatchSql: string[] = [];
+    let passRead: PromiseWithResolvers<void> | undefined;
     const listPending = OpensteerStore.prototype.listPendingCommands;
-    let armed: { readonly sql: string[]; readonly done: PromiseWithResolvers<void> } | undefined;
-    const claiming = vi
+    const reading = vi
       .spyOn(OpensteerStore.prototype, "listPendingCommands")
       .mockImplementation(function (this: OpensteerStore, ...args) {
-        const read = () => Reflect.apply(listPending, this, args) as ReturnType<typeof listPending>;
-        const pass = armed;
-        if (!pass) return own.exit(read);
-        armed = undefined;
-        return own.run(pass.sql, read).finally(() => pass.done.resolve());
+        const run = () => Reflect.apply(listPending, this, args) as ReturnType<typeof listPending>;
+        if (own.getStore() !== dispatchSql) return own.exit(run);
+        const read = run();
+        const pass = passRead;
+        passRead = undefined;
+        if (pass) void read.finally(() => pass.resolve());
+        return read;
       });
     const dispatchers = new Set<ExecutionCoordinator>();
     const start = ExecutionCoordinator.prototype.start;
@@ -189,7 +195,7 @@ it.skipIf(Boolean(reportPath))(
       Reflect.apply(start, this, []);
     });
     close.unshift(() => starting.mockRestore());
-    close.unshift(() => claiming.mockRestore());
+    close.unshift(() => reading.mockRestore());
     const record = async <T>(path: string, action: () => Promise<T>): Promise<T> => {
       const sql: string[] = [];
       try {
@@ -211,8 +217,19 @@ it.skipIf(Boolean(reportPath))(
     // A tab's runtime frames mark it changed in the tab catalog when their work ends, which is
     // sometimes while a tab command's own catalog refresh is in flight: the command then
     // refreshes once more. On the paths that open or activate a tab, the order is fixed to the
-    // fixture's: a mark naming tabs is applied once the command has answered. A mark issues no
-    // statement; none is dropped.
+    // fixture's: a mark from the runtime's background frames is applied once the command has
+    // answered. A mark issues no statement; none is dropped, and the command's own marks are
+    // never deferred.
+    // A mark from the runtime's background frames starts in the broker's socket handler: no
+    // frame of the command is in its stack. The command's own marks (activation's before its
+    // read, the open's through its awaited admission) carry the command and stay in the path.
+    const fromBackgroundFrame = () => {
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 200;
+      const stack = new Error().stack ?? "";
+      Error.stackTraceLimit = limit;
+      return !/TabService\.(open|activate)\b|executeCoreCommand/u.test(stack);
+    };
     const marksAfter = async <T>(command: () => Promise<T>): Promise<T> => {
       const changed = TabService.prototype.changed;
       const marks: { service: TabService; args: Parameters<TabService["changed"]> }[] = [];
@@ -220,7 +237,7 @@ it.skipIf(Boolean(reportPath))(
         this: TabService,
         ...args
       ) {
-        if (args[1]) marks.push({ service: this, args });
+        if (args[1] && fromBackgroundFrame()) marks.push({ service: this, args });
         else Reflect.apply(changed, this, args);
       });
       try {
@@ -443,11 +460,16 @@ it.skipIf(Boolean(reportPath))(
       const [dispatcher] = dispatchers;
       const [memoryPass] = memoryPasses;
       if (!dispatcher || !memoryPass) throw new Error("A background pass never started.");
-      const pass = { sql: [] as string[], done: Promise.withResolvers<void>() };
-      armed = pass;
-      dispatcher.wake();
-      await pass.done.promise;
-      recorded["execution dispatch pass"] = [...pass.sql].sort();
+      // A pass with nothing pending ends with its read: what it issues is in this trace by two
+      // turns of the event loop after that read.
+      dispatchSql.length = 0;
+      passRead = Promise.withResolvers<void>();
+      const read = passRead.promise;
+      traces.run(dispatchSql, () => dispatcher.wake());
+      await read;
+      for (let turn = 0; turn < 2; turn++)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      recorded["execution dispatch pass"] = [...dispatchSql].sort();
       const memory = memoryPass;
       await record("memory provisioning pass", () => Reflect.apply(reconcile, memory, []));
       if (parityReport)
