@@ -74,7 +74,8 @@ new tab still opens.
 When the browser itself restarts on a Linux Home or a Cloud Computer (a Home update, a crash, a cold
 start), each tab reopens at its address. What was typed into a page and not sent, its scroll
 position and its back history are not kept across that restart; sign-ins are kept, since they live
-in the profile. On a Cloud Computer the browser pool keeps the exact state through idle time, so a
+in the profile, except that a sign-in made in the last half minute before the browser is killed may
+not be (Chromium writes its cookies to disk on its own timer). On a Cloud Computer the browser pool keeps the exact state through idle time, so a
 restart is the rare case there. Before each launch the launcher deletes the last session's records
 in the profile directory Opensteer owns, so Chromium has no tabs to bring back while it still keeps
 the profile's session cookies; a launch that finds a page anyway refuses to start.

@@ -679,6 +679,89 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("does not judge a reclaim ineffective while the pages just opened are still growing, and keeps sleeping after a burst while over the threshold (backoff after the Linux run)", async () => {
+    const mib = 1024 ** 2;
+    const limit = 2048 * mib;
+    const baseBytes = 600 * mib;
+    const settleMs = 500;
+    // A heavy page takes 20 MiB as it opens and 25 MiB more over the next 1.5 s while it loads;
+    // a slept page gives all of it back once its settle time has passed.
+    const openedAt = new Map<string, number>();
+    const suspendedAt = new Map<string, number>();
+    let ledgerRef: SurfaceLedger | undefined;
+    const used = () => {
+      let bytes = baseBytes;
+      const now = Date.now();
+      for (const record of ledgerRef?.policyRecords() ?? []) {
+        const age = now - (openedAt.get(record.id) ?? now - 60_000);
+        const pageBytes = 20 * mib + Math.min(1, age / 1_500) * 25 * mib;
+        if (record.live) bytes += pageBytes;
+        else {
+          const since = suspendedAt.get(record.id) ?? now;
+          suspendedAt.set(record.id, since);
+          if (now - since < settleMs) bytes += pageBytes;
+        }
+      }
+      return bytes;
+    };
+    const samples: { at: number; ratio: number }[] = [];
+    const f = await fixture({
+      memoryPressure: () => {
+        const usedBytes = used();
+        samples.push({ at: Date.now(), ratio: usedBytes / limit });
+        return Promise.resolve({ usedBytes, limitBytes: limit });
+      },
+    });
+    ledgerRef = f.ledger;
+    const internals = f.sleeper as unknown as { pressureBackoffUntil: number };
+    try {
+      const ids = [f.record.id];
+      let backedOff = 0;
+      const burst = (async () => {
+        for (let i = 0; i < 46; i++) {
+          await f.sleeper.beforePageOpen();
+          const id = (await f.ledger.openSurface()).id;
+          openedAt.set(id, Date.now());
+          ids.push(id);
+          f.sleeper.setSessionState("session", {
+            runs: 0,
+            personUsed: ids,
+            viewed: [],
+            pinned: [],
+          });
+        }
+      })();
+      let done = false;
+      void burst.finally(() => (done = true));
+      for (let step = 0; step < 20_000 && !done; step++) {
+        await vi.advanceTimersByTimeAsync(5);
+        if (internals.pressureBackoffUntil > Date.now()) backedOff++;
+      }
+      await burst;
+      const burstEnded = Date.now();
+      // After the burst nobody opens anything: over the threshold, with tabs that can sleep, the
+      // sleeper goes on until the memory is under the threshold.
+      for (let step = 0; step < 2_000; step++) {
+        await vi.advanceTimersByTimeAsync(5);
+        if (internals.pressureBackoffUntil > Date.now()) backedOff++;
+      }
+      const after = samples.filter((sample) => sample.at > burstEnded + 5_000);
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "k9.burst-growing",
+          peak: Math.max(...samples.map((sample) => sample.ratio)),
+          backedOffSteps: backedOff,
+          tenSecondsAfter: after.at(-1)?.ratio ?? null,
+          asleep: ids.filter((id) => f.ledger.stateOf(id) === "suspended").length,
+        })}\n`,
+      );
+      expect(backedOff).toBe(0);
+      expect(after.at(-1)!.ratio).toBeLessThanOrEqual(0.7);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("releases several opens waiting on one pass one check at a time: each reads again and waits out the settle before it goes (M4)", async () => {
     const mib = 1024 ** 2;
     const limit = 2048 * mib;

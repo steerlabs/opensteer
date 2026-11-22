@@ -30,6 +30,8 @@ const linuxPressureSettleMs = 500;
 const openPressureReadMs = 250;
 /** Under pressure, how long an open waits for the sleeps it started. */
 const openPressureWaitMs = 2_000;
+/** How long a page goes on taking memory after it opens, while it loads. */
+const pageGrowthMs = 5_000;
 const restoreBudgetBytes = 64 * 1024 ** 2;
 const sleepsPerPass = 8;
 const concurrentSleeps = 4;
@@ -118,9 +120,13 @@ export class TabSleeper {
     usage: BrowserRendererUsage | null;
     pressureUsedBytes: number | null;
     settledAt: number;
+    /** When it began: pages opened shortly before or since still grow, and confound it. */
+    startedAt: number;
     /** Its sample waits once, for the slept pages' confirmation or a cutoff. */
     waiting: boolean;
   } | null = null;
+  /** When the last open went ahead past the pressure gate. */
+  private lastOpenAt = Number.NEGATIVE_INFINITY;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
   private ineffectiveReclaims = 0;
   private pressureBackoffUntil = 0;
@@ -440,8 +446,17 @@ export class TabSleeper {
    * the pass that sheds other tabs, so a burst is paced by sleeping rather than by the kernel.
    */
   async beforePageOpen(): Promise<void> {
-    const measure = this.options.memoryPressure;
-    if (!measure || !this.usesLinuxMemoryPressure() || this.closed) return;
+    if (!this.options.memoryPressure || !this.usesLinuxMemoryPressure() || this.closed) return;
+    try {
+      await this.admitOpen(this.options.memoryPressure);
+    } finally {
+      this.lastOpenAt = Date.now();
+    }
+  }
+
+  private async admitOpen(
+    measure: () => BrowserMemoryPressure | null | Promise<BrowserMemoryPressure | null>,
+  ): Promise<void> {
     /** A fresh reading: true while the open is at or over the start threshold. */
     const over = async (): Promise<boolean> => {
       let reading: BrowserMemoryPressure | null;
@@ -595,6 +610,9 @@ export class TabSleeper {
     this.reclaimFrom = null;
     // A reclaim with no sample before it is unmeasured, never ineffective (K9).
     if (reclaim.pressureUsedBytes === null) return;
+    // A page keeps taking memory for seconds after it opens, while it loads. A reclaim whose
+    // window overlaps that growth is unmeasured, never ineffective: it may well have worked.
+    if (this.lastOpenAt >= reclaim.startedAt - pageGrowthMs) return;
     if (reclaim.pressureUsedBytes - reading.usedBytes >= minimumReclaimBytes) {
       this.ineffectiveReclaims = 0;
     } else if (++this.ineffectiveReclaims >= ineffectiveReclaimsBeforeBackoff) {
@@ -874,6 +892,7 @@ export class TabSleeper {
       usage: this.rendererUsage,
       pressureUsedBytes: this.memoryPressureState.reading?.usedBytes ?? null,
       settledAt,
+      startedAt: Date.now(),
       waiting: false,
     };
     this.reclaimFrom.settledAt = settledAt;
