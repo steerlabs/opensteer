@@ -2171,7 +2171,7 @@ describe("SessionCdpRouter under a connection: the standard lists, one tab's coo
     const confined = await standard(true);
     await expect(confined.page("Storage.getCookies")).resolves.toMatchObject({
       code: "forbidden",
-      message: "Storage.getCookies requires a whole browser context grant.",
+      message: outside("Storage.getCookies"),
     });
     await whole.router.close();
     await confined.router.close();

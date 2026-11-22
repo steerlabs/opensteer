@@ -596,6 +596,8 @@ export interface BrowserRuntimeTarget {
   connect(ticket: string, reconnect?: PersonBrowserReconnect): BrowserRuntimeConnection;
   readonly wholeContextCdp?: boolean;
   readonly standardCdpLineage?: boolean;
+  /** The runtime holds a connected agent's CDP rules itself for a command marked as one's. */
+  readonly connectionCommands?: boolean;
   readonly standardCdpRecovery?: {
     readonly relayId: string;
     boot(): Promise<string>;
@@ -5530,6 +5532,10 @@ export class BrowserService {
         if (facts.agentConnectionId !== null) connectionWork = true;
       },
     );
+    // A runtime that says it can hold the rules itself is told the work is a connection's, so a
+    // command it unpacks is checked where it is unpacked; the Home's gate stays for any other.
+    const runtimeHoldsConnection =
+      connectionWork && this.#resolveTarget(placementOf(record))?.connectionCommands === true;
     const pool = input.browserSend && this.#pool(record.runnerId);
     const pageWitness = (tabId: TabId) =>
       this.pooledScriptPageWitness(input.ownerId, record.id, tabId);
@@ -5803,6 +5809,7 @@ export class BrowserService {
             command,
             ...(actorToken ? { actorToken } : {}),
             ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
+            ...(runtimeHoldsConnection ? { connection: true as const } : {}),
             requestId: globalThis.crypto.randomUUID(),
             type: "cdp.command",
           },

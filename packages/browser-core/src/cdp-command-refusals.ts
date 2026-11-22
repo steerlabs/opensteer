@@ -125,6 +125,39 @@ function clipboardPermissionGrant(method: string, parameters: Parameters): boole
 /** How deep `Target.sendMessageToTarget` may nest before a command is refused unread. */
 const maximumNesting = 8;
 
+export const invalidNestedMessageRefusal = "Invalid nested CDP message.";
+export const nestedTooDeepRefusal = `CDP messages may be nested at most ${maximumNesting} deep.`;
+
+/** One nested CDP command, as the one decoder reads it. */
+export interface NestedCdpMessage {
+  readonly id: unknown;
+  readonly method: string;
+  readonly params: Parameters | undefined;
+}
+
+function plainObject(value: unknown): value is Parameters {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The one decoder of a `Target.sendMessageToTarget` message, used by every guard and by the
+ * router: a JSON string holding an object with a string `method` and, if any, object `params`.
+ * Anything else is not valid CDP and is refused; nothing is ever coerced into a string, so two
+ * layers can never read the same bytes differently.
+ */
+export function decodeNestedCdpMessage(message: unknown): NestedCdpMessage | undefined {
+  if (typeof message !== "string") return undefined;
+  let nested: unknown;
+  try {
+    nested = JSON.parse(message);
+  } catch {
+    return undefined;
+  }
+  if (!plainObject(nested) || typeof nested.method !== "string") return undefined;
+  if (nested.params !== undefined && !plainObject(nested.params)) return undefined;
+  return { id: nested.id, method: nested.method, params: nested.params as Parameters | undefined };
+}
+
 /**
  * The sentence that refuses this command for its sender, or undefined when it may be sent.
  * `connection` is whether the command is sent under a connection's authority. A nested
@@ -141,27 +174,11 @@ export function cdpCommandRefusal(
   if (clipboardPermissionGrant(method, values)) return clipboardPermissionRefusal;
   if (method === "Input.dispatchKeyEvent")
     return connection && clipboardKeyEvent(values) ? connectionClipboardRefusal : undefined;
-  if (method !== "Target.sendMessageToTarget" || typeof values.message !== "string")
-    return undefined;
-  if (depth >= maximumNesting)
-    return connection ? connectionPermissionRefusal : clipboardPermissionRefusal;
-  let nested: unknown;
-  try {
-    nested = JSON.parse(values.message);
-  } catch {
-    // The router refuses a message it cannot read.
-    return undefined;
-  }
-  if (typeof nested !== "object" || nested === null) return undefined;
-  const { method: nestedMethod, params } = nested as { method?: unknown; params?: unknown };
-  return typeof nestedMethod === "string"
-    ? cdpCommandRefusal(
-        nestedMethod,
-        typeof params === "object" && params !== null ? (params as Parameters) : undefined,
-        connection,
-        depth + 1,
-      )
-    : undefined;
+  if (method !== "Target.sendMessageToTarget") return undefined;
+  const nested = decodeNestedCdpMessage(values.message);
+  if (!nested) return invalidNestedMessageRefusal;
+  if (depth >= maximumNesting) return nestedTooDeepRefusal;
+  return cdpCommandRefusal(nested.method, nested.params, connection, depth + 1);
 }
 
 /**
@@ -177,13 +194,25 @@ export function connectionMethodRefusal(method: string): string {
   return `${method} is not available to a connected agent. Its CDP acts on its own pages through the ${pageDomains} domains, and at the browser root only through Target and Browser.getVersion.`;
 }
 
+/**
+ * Opensteer's own methods a connection's work may send, each with its own admission (tab binding,
+ * file staging, saved login and card fills), and only at the top level.
+ */
+const connectionOpensteerMethods: ReadonlySet<string> = new Set([
+  "Opensteer.listTabs",
+  "Opensteer.resumeTab",
+  "Opensteer.stageFile",
+  "Opensteer.fillLogin",
+  "Opensteer.fillCard",
+]);
+
 export const connectionNestedAutoAttachRefusal =
   "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget.";
 
 /**
  * Work under a connection's authority may send only what a standard `browser_connect` client may:
- * the standard root list and the standard page list. Opensteer's own methods (`Opensteer.*`) are
- * not Chromium's and keep their own admission. A nested `Target.sendMessageToTarget` message is
+ * the standard root list and the standard page list, plus Opensteer's own listed methods at the
+ * top level, which keep their own admission. A nested `Target.sendMessageToTarget` message is
  * read as the page command it carries; a nested auto-attach is refused, since its children could
  * not be limited before they attach.
  */
@@ -193,31 +222,20 @@ export function connectionCdpRefusal(
   onPage: boolean,
   depth = 0,
 ): string | undefined {
-  if (method.startsWith("Opensteer.")) return undefined;
+  if (method.startsWith("Opensteer."))
+    return depth === 0 && connectionOpensteerMethods.has(method)
+      ? undefined
+      : connectionMethodRefusal(method);
   const listed = onPage
     ? standardCdpPageMethods.has(method)
     : method === "Browser.getVersion" || standardCdpRootTargetMethods.has(method);
   if (!listed) return connectionMethodRefusal(method);
   if (method === "Target.setAutoAttach" && depth > 0) return connectionNestedAutoAttachRefusal;
-  const message = parameters?.message;
-  if (method !== "Target.sendMessageToTarget" || typeof message !== "string") return undefined;
-  if (depth >= maximumNesting) return connectionMethodRefusal(method);
-  let nested: unknown;
-  try {
-    nested = JSON.parse(message);
-  } catch {
-    // The router refuses a message it cannot read.
-    return undefined;
-  }
-  if (typeof nested !== "object" || nested === null) return undefined;
-  const { method: nestedMethod, params } = nested as { method?: unknown; params?: unknown };
-  if (typeof nestedMethod !== "string") return undefined;
-  return connectionCdpRefusal(
-    nestedMethod,
-    typeof params === "object" && params !== null ? (params as Parameters) : undefined,
-    true,
-    depth + 1,
-  );
+  if (method !== "Target.sendMessageToTarget") return undefined;
+  const nested = decodeNestedCdpMessage(parameters?.message);
+  if (!nested) return invalidNestedMessageRefusal;
+  if (depth >= maximumNesting) return nestedTooDeepRefusal;
+  return connectionCdpRefusal(nested.method, nested.params, true, depth + 1);
 }
 
 /** The only children a connection's auto-attach reaches: frames in other processes and workers. */
@@ -259,23 +277,9 @@ export function nestsAutoAttach(
   depth = 0,
 ): boolean {
   if (method === "Target.setAutoAttach") return depth > 0;
-  const message = parameters?.message;
-  if (method !== "Target.sendMessageToTarget" || typeof message !== "string") return false;
-  if (depth >= maximumNesting) return true;
-  let nested: unknown;
-  try {
-    nested = JSON.parse(message);
-  } catch {
-    return false;
-  }
-  if (typeof nested !== "object" || nested === null) return false;
-  const { method: nestedMethod, params } = nested as { method?: unknown; params?: unknown };
-  return (
-    typeof nestedMethod === "string" &&
-    nestsAutoAttach(
-      nestedMethod,
-      typeof params === "object" && params !== null ? (params as Parameters) : undefined,
-      depth + 1,
-    )
-  );
+  if (method !== "Target.sendMessageToTarget") return false;
+  const nested = decodeNestedCdpMessage(parameters?.message);
+  // A message the decoder refuses is refused whole, by cdpCommandRefusal, before this reads it.
+  if (!nested || depth >= maximumNesting) return false;
+  return nestsAutoAttach(nested.method, nested.params, depth + 1);
 }

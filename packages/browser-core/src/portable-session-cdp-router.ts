@@ -19,9 +19,15 @@ import { utf8Size } from "./bytes.js";
 import {
   cdpCommandRefusal,
   connectionAutoAttachParameters,
+  connectionCdpRefusal,
   connectionMethodRefusal,
+  decodeNestedCdpMessage,
+  invalidNestedMessageRefusal,
 } from "./cdp-command-refusals.js";
 export {
+  decodeNestedCdpMessage,
+  invalidNestedMessageRefusal,
+  nestedTooDeepRefusal,
   cdpCommandRefusal,
   connectionAutoAttachParameters,
   connectionCdpRefusal,
@@ -50,6 +56,11 @@ export interface CdpCommand {
   readonly scriptAttachmentId?: string;
   readonly parameters?: CdpParameters;
   readonly sessionId?: string;
+  /**
+   * The command is sent under a connected agent's authority, as the Home decided it for this
+   * command's attachment; nested commands carry it on.
+   */
+  readonly connection?: true;
 }
 
 export interface CdpEvent {
@@ -800,7 +811,9 @@ export class SessionCdpRouter {
     )
       throw new SessionCdpRouterError(
         "forbidden",
-        `${command.method} would reach the shared browser engine or runtime control channel.`,
+        state.connection
+          ? connectionMethodRefusal(command.method)
+          : `${command.method} would reach the shared browser engine or runtime control channel.`,
       );
     if (
       command.method === "Target.attachToBrowserTarget" &&
@@ -817,7 +830,9 @@ export class SessionCdpRouter {
       if (command.method === "Opensteer.fillLogin" || command.method === "Opensteer.fillCard")
         throw new SessionCdpRouterError(
           "forbidden",
-          "Saved login and card fills use browser_use on the personal hosting Mac. Open the approved tab there and call page.cdp.",
+          state.connection
+            ? connectionMethodRefusal(command.method)
+            : "Saved login and card fills use browser_use on the personal hosting Mac. Open the approved tab there and call page.cdp.",
         );
       // A shared tab is one tab: a connection reads only that page's own cookies, never the
       // profile's.
@@ -833,7 +848,9 @@ export class SessionCdpRouter {
         if (!state.standard.wholeContext)
           throw new SessionCdpRouterError(
             "forbidden",
-            `${command.method} requires a whole browser context grant.`,
+            state.connection
+              ? connectionMethodRefusal(command.method)
+              : `${command.method} requires a whole browser context grant.`,
           );
         if (command.method === "Browser.setDownloadBehavior") {
           if (
@@ -844,13 +861,17 @@ export class SessionCdpRouter {
             return {};
           throw new SessionCdpRouterError(
             "forbidden",
-            "Remote CDP cannot configure browser download destinations.",
+            state.connection
+              ? connectionMethodRefusal(command.method)
+              : "Remote CDP cannot configure browser download destinations.",
           );
         }
         if (command.method === "Browser.cancelDownload")
           throw new SessionCdpRouterError(
             "forbidden",
-            "Remote CDP does not manage browser downloads.",
+            state.connection
+              ? connectionMethodRefusal(command.method)
+              : "Remote CDP does not manage browser downloads.",
           );
         const result = await this.#backend.send(command.method, command.parameters);
         this.#assertResultSize(
@@ -875,12 +896,16 @@ export class SessionCdpRouter {
       if (command.method === "Browser.setDownloadBehavior")
         throw new SessionCdpRouterError(
           "forbidden",
-          "Remote CDP cannot configure browser download destinations.",
+          state.connection
+            ? connectionMethodRefusal(command.method)
+            : "Remote CDP cannot configure browser download destinations.",
         );
       if (command.method === "Browser.cancelDownload")
         throw new SessionCdpRouterError(
           "forbidden",
-          "Remote CDP does not manage browser downloads.",
+          state.connection
+            ? connectionMethodRefusal(command.method)
+            : "Remote CDP does not manage browser downloads.",
         );
     }
     if (this.#backend.scopeParameters && command.sessionId) {
@@ -944,16 +969,13 @@ export class SessionCdpRouter {
         const attached = state.channels.get(virtualSessionId);
         if (!attached || (root.aliasId && attached.rootAlias !== root))
           throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
-        let nested: Record<string, unknown>;
-        try {
-          nested = asRecord(JSON.parse(String(parameters.message)));
-        } catch {
-          throw new SessionCdpRouterError("bad_command", "Invalid nested CDP message.");
-        }
+        const nested = decodeNestedCdpMessage(parameters.message);
+        if (!nested) throw new SessionCdpRouterError("bad_command", invalidNestedMessageRefusal);
         const result = await this.#send(state, {
-          method: this.#nestedMethod(state, nested),
-          parameters: asRecord(nested.params),
+          method: this.#nestedMethod(state, nested.method),
+          parameters: nested.params ?? {},
           ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
+          ...(command.connection ? { connection: true as const } : {}),
           sessionId: virtualSessionId,
         });
         if (!root.aliasId || state.aliases.has(root.aliasId))
@@ -1422,7 +1444,7 @@ export class SessionCdpRouter {
         (owner && !this.#canReach(state, targetId)) ||
         (!owner && this.#workByTarget.has(targetId)) ||
         (state.standard && state.channels.size + state.aliases.size >= standardCdpMaxPending) ||
-        (isWorkerShared(info.type) && this.#exclusive !== state)
+        (isWorkerShared(info.type) && (this.#exclusive !== state || state.connection))
       ) {
         void attached.channel
           .send("Target.detachFromTarget", { sessionId: physicalSessionId })
@@ -1491,9 +1513,16 @@ export class SessionCdpRouter {
     parameters: CdpParameters | undefined,
   ): Promise<void> {
     const entryId = parameters?.entryId;
+    const claim = this.#assertOwnedTarget(state, attached.physicalTargetId);
     const { entries } = asRecord(await attached.channel.send("Page.getNavigationHistory", {})) as {
       entries?: unknown;
     };
+    // The read awaited the page: the session and its target must still be the caller's.
+    state.closed.signal.throwIfAborted();
+    attached.ended.signal.throwIfAborted();
+    if (state.channels.get(attached.virtualSessionId) !== attached)
+      throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
+    this.#assertCurrentClaim(state, attached.physicalTargetId, claim);
     const entry = Array.isArray(entries)
       ? entries.find((candidate: unknown) => asRecord(candidate).id === entryId)
       : undefined;
@@ -1503,7 +1532,14 @@ export class SessionCdpRouter {
 
   /** Refused before any effect: see `cdp-command-refusals.ts`. */
   #assertAllowed(state: ConnectionState, command: CdpCommand): void {
-    const refusal = cdpCommandRefusal(command.method, command.parameters, state.connection);
+    const connection = state.connection || command.connection === true;
+    const refusal =
+      cdpCommandRefusal(command.method, command.parameters, connection) ??
+      // Where the Home said a command is a connection's, the runtime holds the standard lists
+      // itself; a standard client holds them in its own admission below.
+      (connection && !state.standard
+        ? connectionCdpRefusal(command.method, command.parameters, command.sessionId !== undefined)
+        : undefined);
     if (refusal) throw new SessionCdpRouterError("forbidden", refusal);
   }
 
@@ -1596,7 +1632,9 @@ export class SessionCdpRouter {
     let parameters = command.parameters;
     if (command.method === "Target.setAutoAttach")
       parameters = {
-        ...(state.connection ? connectionAutoAttachParameters(parameters) : parameters),
+        ...(state.connection || command.connection
+          ? connectionAutoAttachParameters(parameters)
+          : parameters),
         flatten: false,
       };
     if (command.method === "Page.navigateToHistoryEntry")
@@ -1609,19 +1647,15 @@ export class SessionCdpRouter {
       if (!(child?.channel instanceof ChildCdpChannel) || child.channel.parent !== attached.channel)
         throw new SessionCdpRouterError("forbidden", "CDP attachment is outside this page.");
       if (command.method === "Target.sendMessageToTarget") {
-        let nested: unknown;
-        try {
-          nested = JSON.parse(String(parameters?.message));
-        } catch {
-          throw new SessionCdpRouterError("bad_command", "Invalid nested CDP message.");
-        }
-        const message = asRecord(nested);
+        const message = decodeNestedCdpMessage(parameters?.message);
+        if (!message) throw new SessionCdpRouterError("bad_command", invalidNestedMessageRefusal);
         const result = await this.#send(
           state,
           {
-            method: this.#nestedMethod(state, message),
-            parameters: asRecord(message.params),
+            method: this.#nestedMethod(state, message.method),
+            parameters: message.params ?? {},
             ...(command.replyBudget ? { replyBudget: command.replyBudget } : {}),
+            ...(command.connection ? { connection: true as const } : {}),
             sessionId: child.virtualSessionId,
           },
           beforeActivity,
@@ -2054,8 +2088,7 @@ export class SessionCdpRouter {
     }
   }
 
-  #nestedMethod(state: ConnectionState, message: CdpParameters): string {
-    const method = requiredString(message, "method");
+  #nestedMethod(state: ConnectionState, method: string): string {
     if (state.script && method === "Page.captureScreenshot")
       throw new SessionCdpRouterError("bad_command", "Capture a screenshot on an attached page.");
     return method;

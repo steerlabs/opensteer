@@ -3414,6 +3414,7 @@ export class BrowserController {
       method: requested.method,
       ...(message.replyBudget ? { replyBudget: message.replyBudget } : {}),
       ...(message.scriptAttachmentId ? { scriptAttachmentId: message.scriptAttachmentId } : {}),
+      ...(message.connection ? { connection: true as const } : {}),
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
       ...(requested.sessionId === undefined ? {} : { sessionId: requested.sessionId }),
     };
@@ -3863,6 +3864,8 @@ export class BrowserController {
           (event) => {
             void this.send({ event, type: "cdp.event" }).catch(() => undefined);
           },
+          // A connected agent's script attachment, as the Home said when it opened it.
+          message.connection ? { connection: true } : {},
         );
       }
       await this.send({ type: "cdp.result", requestId: message.requestId, result });
