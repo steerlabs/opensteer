@@ -191,13 +191,10 @@ describe("the journey's own check of the fixture's files, before it launches any
 
   // The script as run 20261122T221025Z-d20c2ea7 had it: both certificates "CN=placeholder".
   it("stops on the pair the guest had, with Node's reason", async () => {
-    const old = path.join(mkdtempSync(path.join(tmpdir(), "first-run-old-script-")), "old.sh");
-    writeFileSync(
-      old,
-      execFileSync("git", ["show", "5d197dfbc:scripts/test-vm/fixture-authority-files.sh"], {
-        cwd: path.resolve(import.meta.dirname, "../.."),
-        encoding: "utf8",
-      }),
+    // Kept as a file: a test never reads the repository's history, which a shallow clone lacks.
+    const old = path.resolve(
+      import.meta.dirname,
+      "fixtures/authority-files-as-run-20261122T221025Z.sh",
     );
     await expect(assertAccountTlsAccepted(make(old))).rejects.toThrow(
       /refuses the fixture authority's certificate for account\.first-run\.opensteer\.example: self-signed certificate/u,
