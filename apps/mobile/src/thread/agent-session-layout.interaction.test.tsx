@@ -3,8 +3,10 @@ import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { layoutPhones, layoutTextSizes } from "../../test-support/layout-phones.js";
 import {
   coveringOf,
+  reachable,
   inside,
   layout,
   layoutWindow,
@@ -131,25 +133,8 @@ afterEach(() => {
   layoutWindow.fontScale = 1;
 });
 
-/** The phones the app runs on, as their safe area and the bar's height leave them. */
-const phones = [
-  {
-    // The smallest phone width the app supports, with its status bar and a plain bar.
-    name: "the smallest phone",
-    window: { height: 568, width: 320 },
-    header: 64,
-    insets: { bottom: 0, left: 0, right: 0, top: 20 },
-  },
-  {
-    // iPhone Duo's inner screen as the walk measured it: the vertical bar, with the bar's
-    // controls standing in it, takes 84 points on the right; the task's title floats at the top.
-    name: "iPhone Duo beside its vertical bar",
-    window: { height: 678, width: 466 },
-    header: 72,
-    insets: { bottom: 20, left: 0, right: 84, top: 0 },
-  },
-] as const;
-const textSizes = [1, 3.1] as const;
+const phones = layoutPhones;
+const textSizes = layoutTextSizes;
 
 function Pane(props: { readonly client: MockHostClient; readonly threadId: string }) {
   const view = useSessionTask(props.client, props.threadId)!;
@@ -263,6 +248,40 @@ describe("what a person reads and presses in a connected agent's task", () => {
           expect(frames.cut(text), `"${words}" is cut`).toBe(false);
           expectClear(container, frames, phone, text, `"${words}"`);
         }
+        // The place's words wrap rather than being cut to a stub.
+        const placeWords = [...using.querySelectorAll('[data-rn="Text"]')].at(-1)!;
+        expect(frames.cut(placeWords), "the place the agent is using is cut").toBe(false);
+        // Each choice scrolls with the task, not in a box of its own, and is a touch high.
+        const pane = container.querySelector(
+          '[data-testid="agent-session"] [data-rn="ScrollView"]',
+        );
+        for (const words of ["allow", "deny"]) {
+          const text = textElement(container, words);
+          // Any scroll view between the choice and the task's own holds it whole: none hides it.
+          for (
+            let box = text.closest('[data-rn="ScrollView"]');
+            box !== null && box !== pane;
+            box = box.parentElement?.closest('[data-rn="ScrollView"]') ?? null
+          )
+            expect(
+              inside(frames.frame(text), frames.frame(box)),
+              `"${words}" scrolls in a box`,
+            ).toBe(true);
+          expect(reachable(frames, text, phone.window), `"${words}" can't be reached`).toBe(true);
+          const control = text.closest("[data-pressable]")!;
+          expect(
+            frames.frame(control).height,
+            `"${words}" is smaller than a touch`,
+          ).toBeGreaterThanOrEqual(43.5);
+        }
+        // The footer stands where a composer would: it says the agent's state whole and leaves
+        // the task most of the screen.
+        const state = textElement(container, "Claude is working");
+        expect(frames.cut(state), "the agent's state is cut").toBe(false);
+        const footer = container.querySelector('[data-testid="agent-session-footer"]')!;
+        expect(frames.frame(footer).height, "the footer takes the task's room").toBeLessThanOrEqual(
+          phone.window.height * 0.4,
+        );
         // The agent's state and its Stop, above the screen's own bottom edge.
         const stop = container.querySelector('[aria-label="Stop Claude"]');
         if (!stop) throw new Error("No Stop");

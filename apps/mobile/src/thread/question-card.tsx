@@ -169,8 +169,15 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
           }}
           ref={scroller}
           scrollEventThrottle={32}
-          // Bounded so the composer and keyboard stay in view; long options scroll here.
-          style={{ maxHeight: Math.max(160, Math.min(height * 0.32, 320)) }}
+          // Bounded above a composer, so it and the keyboard stay in view; long options
+          // scroll here. With no composer under it the card stands in a scrolling page of its
+          // own, which scrolls it whole: a box scrolling inside a scrolling page hid choices
+          // under the page's title at a large text size.
+          style={
+            props.composer === null
+              ? undefined
+              : { maxHeight: Math.max(160, Math.min(height * 0.32, 320)) }
+          }
         >
           {detail === "" ? null : (
             <View style={styles.detail}>

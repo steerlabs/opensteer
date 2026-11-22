@@ -17,7 +17,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
 import { useShowTab } from "../tabs/viewer-open.js";
-import { color, radius, space, touchTarget } from "../theme.js";
+import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { ActionLine } from "../ui/action-line.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useGutter } from "../ui/screen.js";
@@ -140,7 +140,10 @@ export function AgentSessionPane(props: {
           <OperationRequestCard hostClient={hostClient} item={item} key={item.request.id} />
         ))}
       </ScrollView>
-      <View style={[styles.bar, sides, { paddingBottom: space[12] + insets.bottom }]}>
+      <View
+        style={[styles.bar, sides, { paddingBottom: space[12] + insets.bottom }]}
+        testID="agent-session-footer"
+      >
         <View style={styles.barRow}>
           <ExternalAgentMark
             initial={view.agent.initial}
@@ -148,8 +151,10 @@ export function AgentSessionPane(props: {
             size={24}
           />
           <View accessibilityLiveRegion="polite" style={styles.grow}>
+            {/* The footer is the composer's place: its words stop growing where a control's
+                do, and wrap rather than being cut, so the task above keeps its room. */}
             <AppText
-              numberOfLines={1}
+              maxFontSizeMultiplier={controlFontScaleLimit}
               role="secondaryMedium"
               tone={view.state === "stopped" || view.state === "ended" ? "muted" : "default"}
             >
@@ -168,7 +173,7 @@ export function AgentSessionPane(props: {
             />
           )}
         </View>
-        <AppText role="caption" tone="muted">
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
           {view.noComposer}
         </AppText>
         {stop.line === null ? null : <ActionLine line={stop.line} onDismiss={stop.dismiss} />}
@@ -336,7 +341,8 @@ function PlaceLink(props: {
         <AppText role="caption" tone="muted">
           {props.title}
         </AppText>
-        <AppText numberOfLines={1} role="secondaryMedium" tone="ember">
+        {/* Its words wrap: a place cut to "Open Frida…" can't be told from another. */}
+        <AppText role="secondaryMedium" tone="ember">
           {props.label}
         </AppText>
       </View>
