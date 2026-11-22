@@ -7,34 +7,22 @@ import { useShell } from "../app-shell.js";
 import { phoneConnectUrl, useNewPhoneSignIn } from "./phone-setup.js";
 import {
   ActionPanel,
-  AddressPanel,
-  addressAction,
   ArrivedRow,
-  ModeRow,
   Panel,
   PhoneActionButton,
   ScanPanel,
-  TailscalePanel,
-  tailscaleAction,
-  useTailscaleStatus,
   type PhoneAction,
 } from "./phone-panels.js";
-import {
-  initialPhoneMode,
-  sameOrigin,
-  usePrivatePhoneSetup,
-  type PhoneConnectionMode,
-} from "./private-phone-setup.js";
+import { PrivateNetworkSetup } from "./private-network.js";
 import { SetupFooter, SetupFrame } from "./setup-frame.js";
 import { SetupList } from "./setup-list.js";
 
 /**
- * Step three: the person chooses how their phone reaches this computer —
- * Opensteer Connect, their own Tailscale network, or an HTTPS address they
- * run — and scans one code. Choosing changes nothing until they press the
- * footer's one action, which is always the next thing the chosen way needs;
- * replacing a way that is already on asks first, because it disconnects the
- * devices using it.
+ * Step three: the phone, through the person's Opensteer account. Remote access on shows one
+ * code to scan; off, one action turns it on (signing in and adding this Mac to the account
+ * first when needed). There is no choice of transport here: a private network lives under
+ * Remote access › Advanced, and a Home without an account opens it from one link, "Use a
+ * private network instead". A Home already on a private network shows that.
  */
 export function SetupPhoneStep({
   bridge,
@@ -59,98 +47,47 @@ export function SetupPhoneStep({
     connect.view.state !== "unreadable" &&
     connect.view.state !== "connect-unavailable";
   const signedIn = deploymentAccess?.account.status === "signed-in";
-  const { refresh: refreshTailscale, status: tailscale } = useTailscaleStatus(bridge);
-  const share = useCallback(
-    () => bridge.tailscaleShare().finally(refreshTailscale),
-    [bridge, refreshTailscale],
-  );
-  const [mode, setMode] = useState<PhoneConnectionMode | null>(null);
-  const [editingAddress, setEditingAddress] = useState(false);
-  const ready = remote.status !== null && tailscale !== null;
-  const chosen: PhoneConnectionMode =
-    mode ??
-    initialPhoneMode({
-      connectAvailable,
-      status: remote.status,
-      tailscaleOrigin: tailscale?.state === "ready" ? tailscale.sharedOrigin : null,
-    });
-  const privately = usePrivatePhoneSetup({
-    hostClient,
-    remote,
-    share,
-    showing: ready && chosen !== "connect",
-  });
-  const activeMode = remote.status?.access.mode ?? "off";
-  const tailnetOrigin =
-    privately.sharedOrigin ??
-    (tailscale?.state === "ready" ? sameOrigin(tailscale.sharedOrigin ?? "") : null);
-  const tailscaleActive =
-    privately.activeOrigin !== null && privately.activeOrigin === tailnetOrigin;
-  const addressActive = privately.activeOrigin !== null && !tailscaleActive;
-
-  /** Replacing a way that is on disconnects whoever uses it, so it asks. */
-  const confirmReplacing = (next: PhoneConnectionMode, origin?: string): boolean => {
-    // A different address is a new route too: the Host ends the sessions
-    // that used the old one, so it asks exactly as a different kind would.
-    const replacing =
-      activeMode === "connect"
-        ? next !== "connect"
-        : activeMode === "private"
-          ? next === "connect" ||
-            (next === "tailscale"
-              ? !tailscaleActive
-              : tailscaleActive || sameOrigin(origin ?? "") !== privately.activeOrigin)
-          : false;
-    return !replacing || window.confirm(remoteAccessDisconnectWarning);
-  };
-
-  const scanning =
-    (chosen === "connect" && connectUrl !== null) ||
-    (chosen === "tailscale" && tailscaleActive && privately.link !== null) ||
-    (chosen === "address" && addressActive && privately.link !== null && !editingAddress);
+  const name = snapshot.identityConfig?.deployment.name ?? "this Mac";
+  // A Home that no Opensteer account holds yet: the private network is one link away.
+  const withoutAccount = remote.status !== null && remote.status.access.accountLink === null;
+  const privateOn = remote.status?.access.mode === "private";
+  const [privateChosen, setPrivateChosen] = useState(false);
+  const [privateConnected, setPrivateConnected] = useState(false);
+  const showPrivate = !connectAvailable || privateOn || privateChosen;
+  const scanning = !showPrivate && connectUrl !== null;
   const arrived = useNewPhoneSignIn(hostClient, scanning);
-
-  const choose = (next: PhoneConnectionMode) => {
-    setMode(next);
-    setEditingAddress(false);
-    privately.reset();
-    connect.stop();
-  };
-  const startTailscale = () => {
-    if (confirmReplacing("tailscale")) privately.turnOnTailscale();
-  };
+  const onPrivateConnected = useCallback(
+    (connected: boolean) => setPrivateConnected(connected),
+    [],
+  );
 
   const finish: PhoneAction = { done: true, label: "Finish", run: onFinish };
-  // A status that can't be read is said under the choices; it must never
-  // leave the step with no way forward but Skip.
-  const action: PhoneAction = !ready
-    ? remote.error
+  const action: PhoneAction | null = showPrivate
+    ? privateConnected
       ? finish
-      : { busy: true, label: "Checking…" }
-    : arrived || scanning
-      ? finish
-      : chosen === "connect"
-        ? connectAction(connect, signedIn, () => {
-            if (confirmReplacing("connect")) connect.act("turn-on");
-          })
-        : chosen === "tailscale"
-          ? tailscaleAction({
-              active: tailscaleActive,
-              bridge,
-              privately,
-              start: startTailscale,
-              status: tailscale,
-            })
-          : addressAction({ active: addressActive, editing: editingAddress, privately });
+      : null
+    : remote.status === null
+      ? remote.error
+        ? finish
+        : { busy: true, label: "Checking…" }
+      : arrived || scanning
+        ? finish
+        : connectAction(connect, signedIn, () => {
+            if (
+              remote.status?.access.mode !== "private" ||
+              window.confirm(remoteAccessDisconnectWarning)
+            )
+              connect.act("turn-on");
+          });
 
   return (
     <SetupFrame
       description="Check in on your agents and answer them from anywhere."
       footer={
         <SetupFooter
-          action={<PhoneActionButton action={action} />}
+          action={action ? <PhoneActionButton action={action} /> : null}
           onBack={onBack}
-          onSkip={action.done ? undefined : onFinish}
+          onSkip={action?.done ? undefined : onFinish}
           skipLabel="Skip for now"
         />
       }
@@ -158,71 +95,47 @@ export function SetupPhoneStep({
       stepKey="phone"
       title="Connect your phone"
     >
-      <span className="setup-label" id="setup-phone-choice">
-        How your phone connects
-      </span>
-      <SetupList label="How your phone connects">
-        {connectAvailable ? (
-          <ModeRow
-            checked={chosen === "connect"}
-            detail="Works on any network. Nothing to set up."
-            onChoose={() => choose("connect")}
-            title="Opensteer Connect"
-            trailing={<span className="setup-tag">Recommended</span>}
-          />
-        ) : null}
-        <ModeRow
-          checked={chosen === "tailscale"}
-          detail="Use your own private Tailscale network."
-          onChoose={() => choose("tailscale")}
-          title="Tailscale"
-          trailing={
-            tailscale?.state === "ready" ? (
-              <span className="setup-found">
-                <span aria-hidden className="setup-found__dot" />
-                On this computer
-              </span>
-            ) : null
-          }
-        />
-        <ModeRow
-          checked={chosen === "address"}
-          detail="Use an HTTPS address you already run."
-          onChoose={() => choose("address")}
-          title="Your own address"
-        />
-      </SetupList>
-      {!ready ? null : arrived ? (
-        <SetupList label="Your phone">
-          <ArrivedRow phone={arrived} />
-        </SetupList>
-      ) : chosen === "connect" ? (
-        <ConnectPanel connect={connect} url={connectUrl} />
-      ) : chosen === "tailscale" ? (
-        <TailscalePanel
-          active={tailscaleActive}
-          link={privately.link}
-          privately={privately}
-          status={tailscale}
-        />
+      {showPrivate ? (
+        <>
+          <PrivateNetworkSetup bridge={bridge} onConnected={onPrivateConnected} />
+          {connectAvailable && !privateOn ? (
+            <p className="setup-frame__note">
+              <button className="link-btn" onClick={() => setPrivateChosen(false)} type="button">
+                Use your Opensteer account instead
+              </button>
+            </p>
+          ) : null}
+        </>
       ) : (
-        <AddressPanel
-          active={addressActive}
-          editing={editingAddress}
-          link={privately.link}
-          onEditing={setEditingAddress}
-          onStart={(origin) => {
-            if (confirmReplacing("address", origin)) privately.turnOnAddress(origin);
-          }}
-          origin={addressActive ? privately.activeOrigin : null}
-          privately={privately}
-        />
+        <>
+          {remote.status === null ? null : arrived ? (
+            <SetupList label="Your phone">
+              <ArrivedRow phone={arrived} />
+            </SetupList>
+          ) : (
+            <ConnectPanel connect={connect} name={name} url={connectUrl} />
+          )}
+          {withoutAccount && !scanning && !arrived ? (
+            <p className="setup-frame__note">
+              <button
+                className="link-btn"
+                onClick={() => {
+                  connect.stop();
+                  setPrivateChosen(true);
+                }}
+                type="button"
+              >
+                Use a private network instead
+              </button>
+            </p>
+          ) : null}
+          {remote.error && !remote.status ? (
+            <p className="setup-frame__note" role="alert">
+              {remote.error}
+            </p>
+          ) : null}
+        </>
       )}
-      {remote.error && !remote.status ? (
-        <p className="setup-frame__note" role="alert">
-          {remote.error}
-        </p>
-      ) : null}
     </SetupFrame>
   );
 }
@@ -236,11 +149,14 @@ function connectAction(
   if (view.state === "on-connect") return { done: true, label: "Finish" };
   if (view.state === "loading") return { busy: true, label: "Checking…" };
   if (view.tone === "busy")
-    return { busy: true, label: view.state === "turning-on" ? "Connecting…" : view.title };
+    return { busy: true, label: view.state === "turning-on" ? "Turning on…" : view.title };
   // A private network in use is replaced only because the person chose
   // Connect and confirmed it; this action is that choice.
   if (view.state === "off" || view.state === "off-signed-out" || view.state === "on-private")
-    return { label: signedIn ? "Turn on Connect" : "Sign in and connect", run: turnOn };
+    return {
+      label: signedIn ? "Turn on Remote access" : "Sign in and turn on Remote access",
+      run: turnOn,
+    };
   const primary = view.primary;
   if (!primary) return { busy: true, label: view.title };
   return {
@@ -253,9 +169,11 @@ function connectAction(
 
 function ConnectPanel({
   connect,
+  name,
   url,
 }: {
   readonly connect: RemoteAccessController;
+  readonly name: string;
   readonly url: string | null;
 }) {
   const { view } = connect;
@@ -277,7 +195,7 @@ function ConnectPanel({
       <Panel>
         {view.steps ? (
           <>
-            <ol aria-label="Turning on Connect" className="setup-checks">
+            <ol aria-label="Turning on Remote access" className="setup-checks">
               {view.steps.map((step) => (
                 <li
                   aria-current={step.state === "active" ? "step" : undefined}
@@ -313,7 +231,13 @@ function ConnectPanel({
   if (view.tone === "attention") return <ActionPanel tone="attention">{view.sentence}</ActionPanel>;
   if (view.state === "off-signed-out")
     return (
-      <p className="setup-frame__note">You’ll sign in to your Opensteer account in your browser.</p>
+      <p className="setup-frame__note">
+        Your phone reaches {name} through your Opensteer account. You’ll sign in in your browser.
+      </p>
+    );
+  if (view.state === "off" || view.state === "on-private")
+    return (
+      <p className="setup-frame__note">Your phone reaches {name} through your Opensteer account.</p>
     );
   return null;
 }

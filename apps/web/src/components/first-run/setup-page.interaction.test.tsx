@@ -480,14 +480,15 @@ it("connects a phone through Opensteer Connect and names the phone that signed i
     type: "personal.remoteAccess.request",
   });
   await mount();
-  expect(radio("Opensteer Connect").getAttribute("aria-checked")).toBe("true");
-  await act(async () => button("Turn on Connect").click());
+  // No choice of transport: the account is the way, and one action turns it on.
+  expect(container.querySelector('[role="radio"]')).toBeNull();
+  await act(async () => button("Turn on Remote access").click());
   // The Desktop answers "linked" before the app's own snapshot catches up;
   // that gap must never start a second browser sign-in.
   for (let flush = 0; flush < 5; flush += 1) await act(async () => undefined);
   expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
   expect(container.textContent).toContain("Add Studio Mac to your account");
-  expect(button("Connecting…").disabled).toBe(true);
+  expect(button("Turning on…").disabled).toBe(true);
 
   const linked = { ...access, personalAccountLink: { status: "linked" } };
   shell.deploymentAccess = linked;
@@ -560,8 +561,10 @@ it("signs in through the browser first when Connect is turned on signed out", as
   onThisMac(bridge, current);
   localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
   await mount();
-  expect(container.textContent).toContain("sign in to your Opensteer account in your browser");
-  await act(async () => button("Sign in and connect").click());
+  expect(container.textContent).toContain(
+    "Your phone reaches Studio Mac through your Opensteer account. You’ll sign in in your browser.",
+  );
+  await act(async () => button("Sign in and turn on Remote access").click());
   for (let flush = 0; flush < 5; flush += 1) await act(async () => undefined);
   expect(bridge.signIn).toHaveBeenCalledTimes(1);
   // Linking needs the Account session the browser is still making.
@@ -577,68 +580,6 @@ it("signs in through the browser first when Connect is turned on signed out", as
   expect(bridge.signIn).toHaveBeenCalledTimes(1);
 });
 
-it("shares this Mac on the tailnet, then shows a one-time pairing code for the phone", async () => {
-  const origin = "https://studio.tail2f9.ts.net";
-  const { access, bridge } = desktopBridge({
-    tailscaleShare: vi.fn(async () => ({ ok: true, origin })),
-    tailscaleStatus: vi.fn(async () => ({
-      dnsName: "studio.tail2f9.ts.net",
-      sharedOrigin: null,
-      state: "ready",
-    })),
-  });
-  onThisMac(bridge, access);
-  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
-  shell.hostClient.dispatch.mockImplementation(async (command: { type: string }) =>
-    command.type === "personal.remoteAccess.pairing.create"
-      ? {
-          pairing: {
-            code: `osp_${"a".repeat(43)}`,
-            expiresAt: new Date(Date.now() + 600_000).toISOString(),
-            generation: 2,
-            schemaVersion: 1,
-          },
-          type: "personal.remoteAccess.pairing.create",
-        }
-      : {
-          operation: { id: "8f0b6c6e-2a4b-4f6d-9e1a-444444444444", state: "pending" },
-          type: "personal.remoteAccess.request",
-        },
-  );
-  await mount();
-  await act(async () => radio("Tailscale").click());
-  expect(container.textContent).toContain("studio.tail2f9.ts.net");
-  await act(async () => button("Turn on").click());
-  expect(bridge.tailscaleShare).toHaveBeenCalledTimes(1);
-  expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
-    expect.objectContaining({
-      intent: { action: "configure", mode: "private", privateOrigin: origin },
-      type: "personal.remoteAccess.request",
-    }),
-  );
-  // Tailscale's own status still says nothing is shared; the code must show
-  // as soon as the Host answers at the address this visit shared.
-  await remoteChanged({
-    ...remoteStatus,
-    access: {
-      ...(remoteStatus.access as object),
-      generation: 2,
-      mode: "private",
-      route: { document: { route: { origin } } },
-    },
-    revision: 2,
-  });
-  expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "personal.remoteAccess.pairing.create" }),
-  );
-  expect(container.querySelector(".setup-scan__svg")?.getAttribute("aria-label")).toContain(
-    "over Tailscale",
-  );
-  // A phone that cannot scan gets the same two things to type.
-  expect(container.querySelector(".setup-manual")?.textContent).toContain(origin);
-  expect(container.querySelector(".setup-manual")?.textContent).toContain(`osp_${"a".repeat(43)}`);
-});
-
 it("never undoes a mode another device chose after Connect came on", async () => {
   const { access, bridge } = desktopBridge();
   onThisMac(bridge, access);
@@ -652,7 +593,7 @@ it("never undoes a mode another device chose after Connect came on", async () =>
     type: "personal.remoteAccess.request",
   });
   await mount();
-  await act(async () => button("Turn on Connect").click());
+  await act(async () => button("Turn on Remote access").click());
   expect(shell.hostClient.dispatch).toHaveBeenCalledTimes(1);
   await remoteChanged({
     ...remoteStatus,
@@ -722,35 +663,6 @@ it("offers to try again when the phone's code could not be made", async () => {
   expect(container.querySelector(".setup-scan__svg")?.getAttribute("aria-label")).toContain(
     "at your address",
   );
-});
-
-it("asks before replacing a way phones already connect", async () => {
-  const { access, bridge } = desktopBridge({
-    tailscaleStatus: vi.fn(async () => ({
-      dnsName: "studio.tail2f9.ts.net",
-      sharedOrigin: null,
-      state: "ready",
-    })),
-  });
-  onThisMac(bridge, access);
-  remoteStatus = {
-    ...remoteStatus,
-    access: {
-      accountLink: { state: "active" },
-      generation: 1,
-      mode: "connect",
-      route: { document: { route: { origin: "https://studio.connect.test" } } },
-      schemaVersion: 2,
-    },
-  };
-  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
-  const confirm = vi.fn(() => false);
-  Object.defineProperty(window, "confirm", { configurable: true, value: confirm });
-  await mount();
-  await act(async () => radio("Tailscale").click());
-  await act(async () => button("Turn on").click());
-  expect(confirm).toHaveBeenCalled();
-  expect(bridge.tailscaleShare).not.toHaveBeenCalled();
 });
 
 it("adds a plan's account with only the plan's own way in, under StrictMode as the app runs", async () => {
@@ -845,6 +757,7 @@ it.each(["Skip for now", "Back", "choice", "generation"])(
     onThisMac(bridge, access);
     localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
     await mount();
+    await act(async () => button("Use a private network instead").click());
     await act(async () => radio("Tailscale").click());
     await act(async () => button("Turn on").click());
     expect(bridge.tailscaleShare).toHaveBeenCalledTimes(1);
@@ -866,78 +779,60 @@ it.each(["Skip for now", "Back", "choice", "generation"])(
   },
 );
 
-it.each(["fails", "succeeds"])(
-  "follows a switch from Connect through Connect turning off until it %s",
-  async (outcome) => {
-    const origin = "https://mac.example.com";
-    const operationId = "8f0b6c6e-2a4b-4f6d-9e1a-666666666666";
-    const { access, bridge } = desktopBridge();
-    onThisMac(bridge, access);
-    remoteStatus = {
-      ...remoteStatus,
-      access: {
-        ...(remoteStatus.access as object),
-        accountLink: { state: "active" },
-        mode: "connect",
-        route: { document: { route: { origin: "https://studio.connect.test" } } },
-      },
-    };
-    localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
-    shell.hostClient.dispatch.mockImplementation(async (command: { type: string }) =>
-      command.type === "personal.remoteAccess.request"
-        ? { operation: { id: operationId, state: "pending" }, type: command.type }
-        : pairingCreated(),
-    );
-    Object.defineProperty(window, "confirm", { configurable: true, value: vi.fn(() => true) });
-    await mount();
-    await act(async () => radio("Your own address").click());
-    type(container.querySelector('input[aria-label="Your HTTPS address"]')!, origin);
-    await act(async () => button("Turn on").click());
-    // The desktop turns Connect off first; that step is this request's own.
-    await remoteChanged({
-      ...remoteStatus,
-      access: { ...(remoteStatus.access as object), generation: 2, mode: "off", route: null },
-      operation: {
-        intent: { action: "configure", mode: "private", privateOrigin: origin },
-        detail: null,
-        id: operationId,
-        state: "running",
-      },
-      revision: 2,
-    });
-    expect(button("Turning on…").disabled).toBe(true);
-    if (outcome === "fails") {
-      await remoteChanged({
-        ...remoteStatus,
-        operation: {
-          intent: { action: "configure", mode: "private", privateOrigin: origin },
-          detail: "The address didn’t answer.",
-          id: operationId,
-          state: "failed",
-        },
-        revision: 3,
-      });
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-        "The address didn’t answer.",
-      );
-      return;
-    }
-    await remoteChanged({
-      ...remoteStatus,
-      access: {
-        ...(remoteStatus.access as object),
-        generation: 3,
-        mode: "private",
-        route: { document: { route: { origin } } },
-      },
-      operation: {
-        intent: { action: "configure", mode: "private", privateOrigin: origin },
-        detail: null,
-        id: operationId,
-        state: "succeeded",
-      },
-      revision: 3,
-    });
-    expect(container.querySelector(".setup-manual")?.textContent).toContain(origin);
-  },
-);
+it("offers no choice of transport to a Home in an account, and no private network link", async () => {
+  const { access, bridge } = desktopBridge();
+  onThisMac(bridge, access);
+  remoteStatus = {
+    ...remoteStatus,
+    access: { ...(remoteStatus.access as object), accountLink: { state: "active" } },
+  };
+  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+  await mount();
+  expect(container.querySelector('[role="radio"]')).toBeNull();
+  expect(container.textContent).not.toContain("Tailscale");
+  expect(container.textContent).not.toContain("Use a private network instead");
+  expect(container.textContent).toContain(
+    "Your phone reaches Studio Mac through your Opensteer account.",
+  );
+  expect(button("Turn on Remote access")).toBeTruthy();
+});
+
+it("leads a Home without an account with sign-in, and opens a private network from one link without any account call", async () => {
+  const signedOut = {
+    account: { available: true, status: "signed-out" },
+    personalAccountLink: { status: "unlinked" },
+  };
+  const { bridge } = desktopBridge({ getDeploymentAccessSnapshot: vi.fn(async () => signedOut) });
+  onThisMac(bridge, signedOut);
+  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+  shell.hostClient.dispatch.mockResolvedValue({
+    operation: { id: "8f0b6c6e-2a4b-4f6d-9e1a-777777777777", state: "pending" },
+    type: "personal.remoteAccess.request",
+  });
+  await mount();
+  expect(button("Sign in and turn on Remote access")).toBeTruthy();
+  await act(async () => button("Use a private network instead").click());
+  // The same two private networks as before, now one link away.
+  expect(radio("Tailscale")).toBeTruthy();
+  await act(async () => radio("Your own address").click());
+  type(
+    container.querySelector('input[aria-label="Your HTTPS address"]')!,
+    "https://mac.example.com",
+  );
+  await act(async () => button("Turn on").click());
+  expect(shell.hostClient.dispatch).toHaveBeenCalledWith(
+    expect.objectContaining({
+      intent: { action: "configure", mode: "private", privateOrigin: "https://mac.example.com" },
+      type: "personal.remoteAccess.request",
+    }),
+  );
+  // Nothing on this path reaches the Opensteer account unless the person presses Sign in.
+  expect(bridge.signIn).not.toHaveBeenCalled();
+  expect(bridge.linkPersonal).not.toHaveBeenCalled();
+  expect(shell.hostClient.dispatch).not.toHaveBeenCalledWith(
+    expect.objectContaining({ intent: expect.objectContaining({ mode: "connect" }) }),
+  );
+  // And back to the account, which is still one press.
+  await act(async () => button("Use your Opensteer account instead").click());
+  expect(button("Sign in and turn on Remote access")).toBeTruthy();
+});
