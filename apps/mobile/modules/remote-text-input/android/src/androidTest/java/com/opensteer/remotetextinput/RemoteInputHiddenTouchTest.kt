@@ -126,6 +126,14 @@ class RemoteInputHiddenTouchTest {
       connection.commitText("!", 1)
       drain()
       assertEquals("hel!loab", view.text.toString())
+      // Undo and redo, from a menu or an input method, are the far page's chords; the hidden
+      // text does not change.
+      val beforeUndo = packets.size
+      assertTrue(view.onTextContextMenuItem(android.R.id.undo))
+      assertTrue(view.onTextContextMenuItem(android.R.id.redo))
+      drain()
+      assertEquals("hel!loab", view.text.toString())
+      assertEquals(listOf("z", "z", "Z", "Z"), packets.drop(beforeUndo).map { (it["event"] as Map<*, *>)["key"] })
     }
   }
 }

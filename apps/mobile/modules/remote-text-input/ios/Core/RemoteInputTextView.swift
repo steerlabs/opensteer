@@ -22,6 +22,20 @@ import UniformTypeIdentifiers
   private var traits: RemoteInputTraits?
   private let noKeyboard = UIView(frame: .zero)
   public override var canBecomeFirstResponder: Bool { true }
+  /// Undo and redo are the far page's (RemoteInputUndo).
+  private lazy var remoteUndo = RemoteInputUndo(enabled: { [weak self] in self?.isEditable == true }) { [weak self] redo in
+    self?.forwardUndo(redo: redo)
+  }
+  public override var undoManager: UndoManager? { remoteUndo }
+  /// The far page's own undo or redo chord, through the gate like a key: the reducer sends the
+  /// page's command and resets the mirror from what comes back.
+  private func forwardUndo(redo: Bool) {
+    for type in ["keydown", "keyup"] {
+      gate.enqueue {
+        self.gate.event(["type": type, "key": redo ? "Z" : "z", "code": "KeyZ", "alt": false, "control": false, "meta": true, "shift": redo, "altGraph": false, "location": 0, "repeat": false, "composing": self.markedTextRange != nil])
+      }
+    }
+  }
   public var deliver: (([String: Any]) -> Void)? { didSet { gate.deliver = deliver } }
   public override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)

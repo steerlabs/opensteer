@@ -559,6 +559,22 @@ import UIKit
     XCTAssertEqual(text.utf16.count, (text as NSString).length)
   }
 
+  // CS4: undo and redo are the far page's. Whatever asks the hidden field's undo manager (Cmd+Z
+  // through the responder chain, the three-finger gestures, shake) sends the far page's own undo
+  // or redo chord through the gate; the hidden text never changes outside it.
+  func testUndoAndRedoAreTheFarPagesAndChangeNothingHere() {
+    let field = Field(settled: "hello")
+    let before = field.packets.count
+    XCTAssertEqual(field.view.undoManager?.canUndo, true)
+    XCTAssertEqual(field.view.undoManager?.canRedo, true)
+    field.view.undoManager?.undo()
+    field.view.undoManager?.redo()
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "hello")
+    let keys = field.packets[before...].compactMap { $0["event"] as? [String: Any] }.filter { $0["type"] as? String == "keydown" }
+    XCTAssertEqual(keys.map { "\($0["key"]!) meta \($0["meta"]!) shift \($0["shift"]!)" }, ["z meta true shift false", "Z meta true shift true"])
+  }
+
   // Found by the person oracle (third generator, seed 750 and others): a replacement UIKit names
   // elsewhere (autocorrect) moved the caret to the replaced word, so the person's next keystroke
   // went in there. The person's caret is carried over it instead.

@@ -326,9 +326,9 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   override fun isSuggestionsEnabled(): Boolean = false
   /**
    * The text menu's items, whichever door asks (a menu, a Ctrl or Meta shortcut, an accessibility
-   * service, the input method): copy, cut and paste go to the page, and the keyboard picker is
-   * the system's. Nothing else runs on the hidden field: Select All, start selecting, replace,
-   * share, text assist, autofill and undo would select or edit text nobody sees, outside the
+   * service, the input method): copy, cut, paste, undo and redo go to the page, and the keyboard
+   * picker is the system's. Nothing else runs on the hidden field: Select All, start selecting,
+   * replace, share, text assist and autofill would select or edit text nobody sees, outside the
    * gate. The page's own selectAll is reached through the reducer's binding instead.
    */
   override fun onTextContextMenuItem(id: Int): Boolean {
@@ -336,6 +336,11 @@ class RemoteInputEditText(context: Context) : EditText(context) {
       android.R.id.copy -> { gate.notify(mapOf("type" to "copy")); return true }
       android.R.id.cut -> { gate.notify(mapOf("type" to "cut")); return true }
       android.R.id.paste, android.R.id.pasteAsPlainText -> { gate.enqueue { paste() }; return true }
+      // Undo and redo are the far page's own (RemoteInputUndo), through the gate.
+      android.R.id.undo, android.R.id.redo -> {
+        for (packet in RemoteInputUndo.chord(redo = id == android.R.id.redo)) gate.enqueue { gate.event(packet + ("composing" to composing())) }
+        return true
+      }
       android.R.id.switchInputMethod -> return super.onTextContextMenuItem(id)
     }
     return true

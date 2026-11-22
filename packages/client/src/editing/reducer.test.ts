@@ -270,6 +270,43 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       { kind: "paste", items: [{ type: "text/plain", bytes }] },
     ]);
   });
+  // CS4: the hidden field's undo and redo arrive as the far page's own chords (iOS's undo manager,
+  // Android's menu or input method): each is the page's command, the mirror reset from the far
+  // side, nothing applied in the hidden field.
+  it.each([
+    ["ios", { meta: true }],
+    ["android", { control: true }],
+  ] as const)(
+    "sends the hidden field's undo and redo on %s as the page's own",
+    (platform, modifier) => {
+      let state = createEditingState(platform, abilities);
+      state = reduceEditing(state, { type: "context", context }).state;
+      state = reduceEditing(state, {
+        type: "beforeinput",
+        inputType: "insertText",
+        data: "ab",
+      }).state;
+      state = reduceEditing(state, input("ab")).state;
+      const results = [
+        key("z", modifier),
+        { ...key("z", modifier), type: "keyup" } as const,
+        key("Z", { ...modifier, shift: true }),
+        { ...key("Z", { ...modifier, shift: true }), type: "keyup" } as const,
+      ].map((event) => {
+        const step = reduceEditing(state, event);
+        state = step.state;
+        return step;
+      });
+      expect(results.flatMap((step) => step.operations)).toEqual([
+        { kind: "command", command: "undo" },
+        { kind: "command", command: "redo" },
+      ]);
+      expect(results[0]!.instruction).toEqual({
+        preventDefault: true,
+        set: { value: "", selectionStart: 0, selectionEnd: 0 },
+      });
+    },
+  );
   // CR6: an input that arrives alone ends Enter's suppression too. No recorded trace puts an
   // input that is not a composition's between an Enter key and its own line break (the inputs
   // there are IME commits, which never reach the suppression), so a later line break that
