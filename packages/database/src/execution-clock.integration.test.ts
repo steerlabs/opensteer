@@ -243,6 +243,36 @@ describeStore("execution lease clock", (it) => {
       .where("id", "=", grant.id)
       .execute();
 
+    // Ambiguous active grants sharing the same Run and binding generation refuse when grantId is omitted.
+    const { grantId: _omittedGrantId, ...withoutGrantId } = authority;
+    await expect(store.assertActiveGrant(withoutGrantId)).resolves.toEqual({
+      agentConnectionId: null,
+      taskOriginConnectionId: null,
+    });
+    const duplicateGrantId = createId("grant");
+    const existingGrant = await database
+      .selectFrom("grants")
+      .select(["attemptId"])
+      .where("id", "=", grant.id)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("grants")
+      .values({
+        id: duplicateGrantId,
+        runId: f.run.id,
+        attemptId: existingGrant.attemptId,
+        bindingGeneration: authority.bindingGeneration,
+        runnerId: f.runnerId,
+        runnerBootId: `rbt_${crypto.randomUUID()}`,
+        status: "active",
+      })
+      .execute();
+    await expect(store.assertActiveGrant(withoutGrantId)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
+    await database.deleteFrom("grants").where("id", "=", duplicateGrantId).execute();
+
     // Disabled owner refuses binding.
     await database
       .updateTable("users")

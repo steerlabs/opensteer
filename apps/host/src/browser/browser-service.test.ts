@@ -9733,4 +9733,104 @@ describe("work under a connection's authority never uses the clipboard or change
     cdpA.close();
     cdpB.close();
   });
+
+  it("refuses bindPage and openAgentTab when the Run's mode is lowered while #holdForAgent awaits attachBrowserSession", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const keptTwo = await repository.createBrowserProfile({ ownerId, name: "Kept Two" });
+    repository.granted = [kept.id, keptTwo.id];
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+    cleanups.push(async () => service.close());
+
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", profileId: kept.id, url: "https://example.com/" },
+      "mode-lower-bind",
+    );
+    await memory.add(descriptor);
+
+    // 1. bindPage: lower mode during #holdForAgent's attachBrowserSession await.
+    const enteredBind = Promise.withResolvers<void>();
+    const releaseBind = Promise.withResolvers<void>();
+    const originalAttach = repository.attachBrowserSession.bind(repository);
+    vi.spyOn(repository, "attachBrowserSession").mockImplementationOnce(async (input) => {
+      enteredBind.resolve();
+      await releaseBind.promise;
+      return originalAttach(input);
+    });
+    const claims = {
+      requestedBy: ownerId,
+      runId: createId("run"),
+      threadId: createId("thread"),
+    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+    const binding = service.bindPage(claims, memory.rows.get(descriptor.id)!);
+    await enteredBind.promise;
+    repository.mode = "approval-required";
+    releaseBind.resolve();
+    await expect(binding).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+
+    // 2. openAgentTab: lower mode during #holdForAgent's attachBrowserSession await.
+    repository.mode = "full-access";
+    const enteredOpen = Promise.withResolvers<void>();
+    const releaseOpen = Promise.withResolvers<void>();
+    vi.spyOn(repository, "attachBrowserSession").mockImplementationOnce(async (input) => {
+      enteredOpen.resolve();
+      await releaseOpen.promise;
+      return originalAttach(input);
+    });
+    const opening = service.openAgentTab(
+      {
+        ownerId,
+        agentBindingId: `run:${createId("run")}`,
+        threadId: createId("thread"),
+      },
+      {
+        identity: { kind: "profile", profile: keptTwo.id },
+        operationKey: "mode-lower-open-agent-tab",
+      },
+    );
+    await enteredOpen.promise;
+    repository.mode = "approval-required";
+    releaseOpen.resolve();
+    await expect(opening).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+  });
+
+  it("records usage again when the same Run revisits an earlier session after holding another session", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profileOne = await repository.createBrowserProfile({ ownerId, name: "First" });
+    const profileTwo = await repository.createBrowserProfile({ ownerId, name: "Second" });
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const runBinding = { agentBindingId: `run:${createId("run")}`, ownerId };
+
+    const first = await service.openAgentSession({ ...runBinding, profileId: profileOne.id });
+    const second = await service.openAgentSession({ ...runBinding, profileId: profileTwo.id });
+    await service.openAgentSession({ ...runBinding, sessionId: first.session.id });
+
+    expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+      first.session.id,
+      second.session.id,
+      first.session.id,
+    ]);
+  });
 });

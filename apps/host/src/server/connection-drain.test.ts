@@ -126,6 +126,40 @@ describe("closing a server with connections in use", () => {
       partial.resetAndDestroy();
     }
   });
+
+  it("handles a pre-connected socket whose first request is written right as listening stops without hanging shutdown", async () => {
+    const port = await listen((_request, response) => response.end("ok"));
+    const server = servers[0]!;
+    const accepted = once(server, "connection");
+    const preconnected = connect(port, "127.0.0.1");
+    await Promise.all([once(preconnected, "connect"), accepted]);
+    const outcome = new Promise<string>((resolve) => {
+      preconnected.once("data", (chunk) =>
+        resolve(`response:${chunk.toString("latin1").split("\r\n")[0]}`),
+      );
+      preconnected.once("error", (error: NodeJS.ErrnoException) =>
+        resolve(`error:${error.code ?? error.message}`),
+      );
+      preconnected.once("close", () => resolve("close"));
+    });
+    try {
+      drainConnectionsWithin(server, 3_000);
+      const closing = closed(server);
+      // Right after server.close() sets listening=false, the peer writes its first request on the
+      // pre-connected socket. Depending on whether poll reads the bytes before the sweep fires,
+      // the socket either gets its 200 response, a clean close, or ECONNRESET (same race as
+      // Node's closeIdleConnections on keep-alive sockets); in every case shutdown finishes fast.
+      expect(server.listening).toBe(false);
+      preconnected.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+      const result = await withTimeout(outcome, 2_000, {
+        timeoutError: () => new Error("Pre-connected socket never settled during shutdown"),
+      });
+      expect(result).toMatch(/^(response:HTTP\/1\.1 200 |close|error:ECONNRESET)/);
+      expect(await closing).toBeLessThan(1_000);
+    } finally {
+      preconnected.resetAndDestroy();
+    }
+  });
 });
 
 describe("closing the Host's WebSockets", () => {

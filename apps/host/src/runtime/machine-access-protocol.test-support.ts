@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
 import {
@@ -61,7 +62,6 @@ import { execFile, spawn } from "node:child_process";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import { vi } from "vitest";
@@ -98,18 +98,29 @@ export const builtPluginEngine = {
 const builtReplWorkerPath = fileURLToPath(
   new URL("../../dist/computer-repl-worker.js", import.meta.url),
 );
-const replWorkerSourceDir = fileURLToPath(
-  new URL("../computer-use/computer-repl", import.meta.url),
-);
-export function builtReplWorkerEntry(
-  builtPath = builtReplWorkerPath,
-  sourceDir = replWorkerSourceDir,
-): URL | undefined {
-  if (!existsSync(builtPath)) return undefined;
+export function builtReplWorkerEntry(builtPath = builtReplWorkerPath): URL | undefined {
+  const manifestPath = `${builtPath}.inputs.json`;
+  if (!existsSync(builtPath) || !existsSync(manifestPath)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const inputs =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "inputs" in parsed &&
+    Array.isArray(parsed.inputs)
+      ? parsed.inputs
+      : null;
+  if (!inputs || inputs.length === 0) return undefined;
   const builtMtimeMs = statSync(builtPath).mtimeMs;
-  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
-    if (statSync(join(sourceDir, entry.name)).mtimeMs > builtMtimeMs) return undefined;
+  const baseDir = dirname(builtPath);
+  for (const input of inputs) {
+    if (typeof input !== "string") return undefined;
+    const inputPath = resolve(baseDir, input);
+    if (!existsSync(inputPath) || statSync(inputPath).mtimeMs > builtMtimeMs) return undefined;
   }
   return pathToFileURL(builtPath);
 }

@@ -873,6 +873,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       refusedOrDisconnected,
       owner,
       pending,
+      transcript,
       setLoseOpenReply,
     } = fixture;
     try {
@@ -1155,6 +1156,14 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         .where("id", "=", AgentOperationIdSchema.parse(unknown.operationId))
         .executeTakeFirstOrThrow();
       expect(lostRow.state).toBe("unknown");
+
+      const traffic = JSON.stringify(transcript);
+      for (const value of [
+        passwordFixture.username,
+        passwordFixture.password,
+        passwordFixture.code,
+      ])
+        expect(traffic).not.toContain(value);
     } finally {
       await fixture.dispose();
     }

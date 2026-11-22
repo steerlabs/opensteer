@@ -988,7 +988,7 @@ export class BrowserService {
     if (detached?.length) {
       for (const sessionId of detached) {
         this.#holdings.delete(sessionId);
-        this.#lastHeldBindingBySession.delete(sessionId);
+        this.#forgetLastHeldSession(sessionId);
         this.#forgetActing(sessionId);
         for (const actor of this.#actors.values())
           if (actor.sessionId === sessionId) this.#clearActor(actor);
@@ -1001,6 +1001,7 @@ export class BrowserService {
   readonly #eraseLocalProfiles: BrowserServiceOptions["eraseLocalProfiles"];
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
   readonly #lastHeldBindingBySession = new Map<BrowserSessionId, string>();
+  readonly #lastHeldSessionByBinding = new Map<string, BrowserSessionId>();
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
@@ -1699,7 +1700,7 @@ export class BrowserService {
       this.#onTabsChanged(input.ownerId);
     }
     if (input.threadId) {
-      this.#lastHeldBindingBySession.delete(result.session.id);
+      this.#forgetLastHeldSession(result.session.id);
       this.announceUsage(
         await this.#repository.recordBrowserSessionUse({
           ownerId: input.ownerId,
@@ -3724,6 +3725,7 @@ export class BrowserService {
       undefined,
       true,
     );
+    await this.admitAgentBrowser(agent, "read-write", [record]);
     await this.#recordAgentTabPlace(agent, record, opened.tabId);
     return { tabId: opened.tabId, sessionId: opened.sessionId, backend };
   }
@@ -4158,6 +4160,7 @@ export class BrowserService {
         true,
       );
       const fresh = await this.#requireWorkspaceGeneration(agent.ownerId, row);
+      await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.pageTabs.admitted!(fresh);
       await this.#recordAgentTabPlace(agent, session, row.id);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
@@ -4382,6 +4385,8 @@ export class BrowserService {
     record: BrowserSessionRecord,
     tabId: BrowserSurfaceId,
   ) {
+    if (this.#endedBindings.has(agent.agentBindingId))
+      throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
     const actorKey = `${record.id}:${agent.agentBindingId}`;
     const existingToken = this.#actorKeys.get(actorKey);
     const existingActor = existingToken ? this.#actors.get(existingToken) : undefined;
@@ -4409,6 +4414,8 @@ export class BrowserService {
         page: data ? { title: data.title, site: data.site ?? "" } : null,
       }),
     );
+    this.#lastHeldBindingBySession.set(record.id, agent.agentBindingId);
+    this.#lastHeldSessionByBinding.set(agent.agentBindingId, record.id);
     await this.#restoreHoldings(record.id);
     if (key !== undefined) {
       const token = this.#actorKeys.get(actorKey);
@@ -7092,7 +7099,7 @@ export class BrowserService {
               this.#shadows.delete(sessionId);
               this.#sessionProfiles.delete(sessionId);
               this.#holdings.delete(sessionId);
-              this.#lastHeldBindingBySession.delete(sessionId);
+              this.#forgetLastHeldSession(sessionId);
               this.#announcedPresence.delete(sessionId);
               this.#onTabsChanged();
               if (!tabRestore) this.#endPersonUse(groupId);
@@ -7594,7 +7601,8 @@ export class BrowserService {
         : undefined;
       try {
         // Run attachment and usage sequentially so they never contend on client_sync_state,
-        // and skip repeat session-only usage writes when this binding already holds the head.
+        // and skip repeat session-only usage writes only when this binding's last recorded
+        // session and this session's last recorded binding are both unchanged.
         const attached = await this.#repository.attachBrowserSession({
           agentBindingId: input.agentBindingId,
           ownerId: input.ownerId,
@@ -7602,7 +7610,11 @@ export class BrowserService {
           ...(pool ? { pool: pool.identity() } : {}),
         });
         if (attached) this.#onSessionsChanged([record.id]);
-        if (attached || this.#lastHeldBindingBySession.get(record.id) !== input.agentBindingId) {
+        if (
+          attached ||
+          this.#lastHeldSessionByBinding.get(input.agentBindingId) !== record.id ||
+          this.#lastHeldBindingBySession.get(record.id) !== input.agentBindingId
+        ) {
           const credits = await this.#repository.recordAgentBrowserUse({
             agentBindingId: input.agentBindingId,
             ownerId: input.ownerId,
@@ -7611,6 +7623,7 @@ export class BrowserService {
             tabId: null,
           });
           this.#lastHeldBindingBySession.set(record.id, input.agentBindingId);
+          this.#lastHeldSessionByBinding.set(input.agentBindingId, record.id);
           this.announceUsage(credits);
         }
       } finally {
@@ -7673,7 +7686,15 @@ export class BrowserService {
     this.#actingTimers.set(sessionId, cancel);
   }
 
+  #forgetLastHeldSession(sessionId: BrowserSessionId): void {
+    this.#lastHeldBindingBySession.delete(sessionId);
+    for (const [binding, lastSessionId] of this.#lastHeldSessionByBinding) {
+      if (lastSessionId === sessionId) this.#lastHeldSessionByBinding.delete(binding);
+    }
+  }
+
   #forgetAgentBinding(agentBindingId: string): void {
+    this.#lastHeldSessionByBinding.delete(agentBindingId);
     for (const waiter of this.#poolAgentWaiters.get(agentBindingId) ?? [])
       waiter.abort(new BrowserCdpConnectionEnded("The browser task ended."));
     this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");

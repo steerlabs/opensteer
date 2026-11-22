@@ -172,32 +172,29 @@ export async function assertActiveGrant(
       "runners.revokedAt",
       "executionEnvironments.id as availableEnvironmentId",
       eb
-        .exists(
-          eb
-            .selectFrom("grants")
-            .select("grants.id")
-            .where("grants.runId", "=", input.runId)
-            .where("grants.status", "=", "active")
-            .where("grants.bindingGeneration", "=", input.bindingGeneration)
-            .where("grants.runnerId", "=", input.runnerId)
-            .where("grants.runnerBootId", "=", input.runnerBootId)
-            .$if(input.grantId !== undefined, (query) =>
-              query.where("grants.id", "=", input.grantId!),
-            )
-            .where((geb) =>
-              geb.not(
-                geb.exists(
-                  geb
-                    .selectFrom("runAttempts")
-                    .select("id")
-                    .whereRef("runAttempts.runId", "=", "grants.runId")
-                    .whereRef("runAttempts.bindingGeneration", "=", "grants.bindingGeneration")
-                    .whereRef("runAttempts.runnerId", "=", "grants.runnerId")
-                    .whereRef("runAttempts.runnerBootId", "=", "grants.runnerBootId")
-                    .where("runAttempts.terminalEvidenceAt", "is not", null),
-                ),
-              ),
+        .selectFrom("grants")
+        .select(
+          sql<boolean>`count(*) = 1 and coalesce(bool_and(grants.runner_id = ${input.runnerId} and grants.runner_boot_id = ${input.runnerBootId}), false)`.as(
+            "matched",
+          ),
+        )
+        .where("grants.runId", "=", input.runId)
+        .where("grants.status", "=", "active")
+        .where("grants.bindingGeneration", "=", input.bindingGeneration)
+        .$if(input.grantId !== undefined, (query) => query.where("grants.id", "=", input.grantId!))
+        .where((geb) =>
+          geb.not(
+            geb.exists(
+              geb
+                .selectFrom("runAttempts")
+                .select("id")
+                .whereRef("runAttempts.runId", "=", "grants.runId")
+                .whereRef("runAttempts.bindingGeneration", "=", "grants.bindingGeneration")
+                .whereRef("runAttempts.runnerId", "=", "grants.runnerId")
+                .whereRef("runAttempts.runnerBootId", "=", "grants.runnerBootId")
+                .where("runAttempts.terminalEvidenceAt", "is not", null),
             ),
+          ),
         )
         .as("hasActiveGrant"),
     ])

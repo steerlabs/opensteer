@@ -178,14 +178,22 @@ export function registerAgentPageBindingRoute(
  */
 export async function runBrowserCapability(
   store: Pick<OpensteerStore, "database" | "admitExecution">,
-  claims: Pick<RunToolScope, "runId" | "requestedBy">,
+  claims: Pick<RunToolScope, "runId" | "requestedBy"> &
+    Partial<Pick<RunToolScope, "threadId" | "environmentId">>,
 ): Promise<{ driverKind: string; accessMode: ThreadAccessMode }> {
   const run = await store.database
     .selectFrom("runs")
     .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
+    .innerJoin("threads", "threads.id", "runs.threadId")
     .select(["harnessInstances.driverKind", "runs.accessMode"])
     .where("runs.id", "=", claims.runId)
     .where("runs.requestedBy", "=", claims.requestedBy)
+    .where("threads.createdBy", "=", claims.requestedBy)
+    .where("threads.removedAt", "is", null)
+    .$if(claims.threadId !== undefined, (query) => query.where("threads.id", "=", claims.threadId!))
+    .$if(claims.environmentId !== undefined, (query) =>
+      query.where("threads.environmentId", "=", claims.environmentId!),
+    )
     .executeTakeFirst();
   if (!run)
     throw new OpensteerError({
