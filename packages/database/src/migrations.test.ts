@@ -71,7 +71,6 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0050_browser_pool",
     "0051_bridge_connections",
     "0052_bridge_conversion",
-    "0053_bridge_sender_audit",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

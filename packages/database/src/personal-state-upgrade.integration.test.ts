@@ -23,7 +23,6 @@ import { workHomeMigrationName } from "./work-home-migration.js";
 import { browserPoolMigrationName } from "./browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
 import { bridgeConversionMigrationName } from "./bridge-conversion-migration.js";
-import { bridgeSenderAuditMigrationName } from "./bridge-sender-audit-migration.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -104,7 +103,6 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         browserPoolMigrationName,
         bridgeConnectionsMigrationName,
         bridgeConversionMigrationName,
-        bridgeSenderAuditMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`
