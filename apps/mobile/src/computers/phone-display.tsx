@@ -48,6 +48,7 @@ import {
 import {
   NativeDisplay,
   macWindowVideoSupported,
+  decoderFunctions,
   phoneDisplayBinary,
   type DisplayFrameMetadata,
   type NativeDecoder,
@@ -192,7 +193,8 @@ export function ComputerDisplay({
     };
   }, []);
   const resetDecoder = useCallback((next: number, keepPicture = false) => {
-    const native = decoder.current;
+    const instance = decoder.current;
+    const native = decoderFunctions(instance);
     if (!native) return;
     if (keepPicture && !native.resetKeepingPicture) {
       setPicture(null);
@@ -205,7 +207,7 @@ export function ComputerDisplay({
     void reset.catch(() => {
       // Native teardown already clears its surface. A bridge call queued before
       // removal can reject after that view's tag is gone.
-      if (!mounted.current || decoder.current !== native || epoch.current !== next) return;
+      if (!mounted.current || decoder.current !== instance || epoch.current !== next) return;
       setShown(false);
       setWords("Video sharing is unavailable");
     });
@@ -368,7 +370,7 @@ export function ComputerDisplay({
         const { frame, epoch: current } = queued.shift()!;
         if (current !== epoch.current) continue;
         submitting++;
-        const native = decoder.current;
+        const native = decoderFunctions(decoder.current);
         const { width, height, ptsUs, key } = frame.header;
         decodingPicture.current = { generation: frame.header.generation, width, height };
         let result: Promise<boolean>;

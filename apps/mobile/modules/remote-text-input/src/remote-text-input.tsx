@@ -3,10 +3,21 @@ import type { EditingContext } from "@opensteer/protocol/editing";
 import { requireNativeView } from "expo";
 import { useCallback, useEffect, useRef, useState, type Ref, type ReactNode } from "react";
 import type { ViewProps } from "react-native";
+import { viewFunctionsOf, viewTagModule } from "../../../src/platform/view-functions.js";
 import { decodeNativeEvent, nativeInstruction } from "./events.js";
 interface NativeProxy {
   finishComposition(): Promise<void>;
   respond(instruction: EditingProxyInstruction & { id: number }): Promise<void>;
+}
+/**
+ * The input's functions, called so the JavaScript thread never waits for the main thread: by its
+ * tag on an iOS binary that offers it, as its own functions elsewhere (`viewFunctionsOf`).
+ */
+function proxyFunctions(instance: NativeProxy | null): NativeProxy | null {
+  return viewFunctionsOf(viewTagModule("RemoteTextInput"), instance as never, [
+    "finishComposition",
+    "respond",
+  ]) as NativeProxy | null;
 }
 const NativeInput = requireNativeView<
   ViewProps & {
@@ -58,12 +69,16 @@ export function RemoteTextInput(
   useEffect(() => {
     const view = ref.current;
     if (ready && view && instruction?.set)
-      void view.respond(nativeInstruction(0, instruction)).catch(() => failed(view));
+      void proxyFunctions(view)
+        ?.respond(nativeInstruction(0, instruction))
+        .catch(() => failed(view));
   }, [ready, instruction, failed]);
   useEffect(() => {
     const view = ref.current;
     if (ready && view && finishCompositionRequest)
-      void view.finishComposition().catch(() => failed(view));
+      void proxyFunctions(view)
+        ?.finishComposition()
+        .catch(() => failed(view));
   }, [ready, finishCompositionRequest, failed]);
   return (
     <NativeInput
@@ -90,7 +105,9 @@ export function RemoteTextInput(
             !["compositionend", "keyup", "blur"].includes(packet.event.type)
               ? { preventDefault: true }
               : onEvent(packet.event);
-          void view.respond(nativeInstruction(packet.id, instruction)).catch(() => failed(view));
+          void proxyFunctions(view)
+            ?.respond(nativeInstruction(packet.id, instruction))
+            .catch(() => failed(view));
         } catch {
           failed(view);
         }

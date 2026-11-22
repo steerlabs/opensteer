@@ -71,7 +71,13 @@ final class PictureQueue<Payload> {
   private var pending: Job?
 
   /// Takes a delivery and returns the job to decode now, if the decoder is free.
+  ///
+  /// Generations only grow. A picture from an older one is dropped. A picture for a newer one
+  /// means the clear that would have said so never arrived (sent before the view existed, or
+  /// lost on the way): the queue takes the newer generation as that clear would have, rather
+  /// than dropping every picture for good.
   func submit(_ request: PictureRequest, _ payload: Payload, _ receipt: PictureReceipt) -> Job? {
+    if request.generation > generation { clear(request.generation) }
     guard request.generation == generation else { receipt(.dropped); return nil }
     let job = Job(request: request, payload: payload, receipt: receipt)
     guard !running else {

@@ -50,6 +50,8 @@ const native = vi.hoisted(() => ({
     settle: (outcome: PictureOutcome) => void;
   }[],
   generation: -1,
+  /** Whether the native view exists yet: a call by its tag before then finds no view. */
+  mounted: true,
   cleared: null as null | ((event: { nativeEvent: { generation: number } }) => void),
   /** The view's word that it can draw again, after leaving its window or the foreground. */
   shown: null as null | ((event: { nativeEvent: { generation: number } }) => void),
@@ -79,22 +81,37 @@ vi.mock("../computers/phone-display-native.js", async () => {
       native.cleared = props.onCleared ?? null;
       native.shown = props.onShown ?? null;
       native.renders++;
+      // As PhoneDisplayModule.swift's clearForView and presentForView answer, with
+      // PictureQueue.swift's generation rule: no view yet, nothing cleared and the picture
+      // dropped; an older generation dropped; a newer one taken as its clear would have.
       React.useImperativeHandle(ref, () => ({
         clear: async (generation: number) => {
+          if (!native.mounted) return;
           native.generation = generation;
           for (const { settle } of native.presented.splice(0)) settle("dropped");
         },
         present: (bytes: Uint8Array, metadata: PictureMetadata) =>
           new Promise<PictureOutcome>((settle) => {
-            if (metadata.generation !== native.generation) settle("dropped");
-            else native.presented.push({ bytes, metadata, settle });
+            if (!native.mounted || metadata.generation < native.generation) {
+              settle("dropped");
+              return;
+            }
+            if (metadata.generation > native.generation) {
+              native.generation = metadata.generation;
+              for (const { settle: earlier } of native.presented.splice(0)) earlier("dropped");
+            }
+            native.presented.push({ bytes, metadata, settle });
           }),
       }));
       // Something is on screen exactly while the view says what it shows.
       return props.accessibilityLabel ? <img alt={props.accessibilityLabel} /> : null;
     },
   );
-  return { nativePictureView: () => (native.presenter === "picture" ? Picture : null) };
+  return {
+    nativePictureView: () => (native.presenter === "picture" ? Picture : null),
+    // The binary's calls by tag are the view's own here: the handle above answers as they do.
+    pictureFunctions: (instance: unknown) => instance,
+  };
 });
 
 vi.mock("react-native", () => ({
@@ -168,6 +185,7 @@ afterEach(() => {
   native.presenter = "image";
   native.presented = [];
   native.generation = -1;
+  native.mounted = true;
   native.cleared = null;
   native.shown = null;
   native.renders = 0;
@@ -992,6 +1010,28 @@ describe("native browser picture presenter", () => {
     } finally {
       setPictureTraceSink(previous);
     }
+  });
+
+  // The walk's page that never painted: the view's clear came before the view existed, so the
+  // view still stood at an older generation and said so when it joined its window.
+  it("paints once a view that missed its clear can show, taking the generation with the picture", async () => {
+    native.presenter = "picture";
+    native.mounted = false;
+    const { container, decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    // No view to take it: the picture is dropped at once.
+    await act(async () => undefined);
+    expect(native.presented).toHaveLength(0);
+    expect(container.textContent).toContain("Loading the page…");
+    expect(native.generation).toBe(-1);
+    native.mounted = true;
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    expect(native.presented).toHaveLength(1);
+    // The picture carries the generation the page is at, which the view takes.
+    expect(native.generation).toBe(native.presented[0]!.metadata.generation);
+    await decode();
+    expect(container.textContent).not.toContain("Loading the page…");
   });
 
   it("draws its picture again when the view drops it and can show again in one batch", async () => {

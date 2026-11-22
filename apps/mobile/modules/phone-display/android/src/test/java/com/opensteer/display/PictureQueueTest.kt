@@ -57,6 +57,24 @@ class PictureQueueTest {
     assertEquals(listOf(PictureOutcome.DROPPED), outcomes["late"])
   }
 
+  // As on iOS: a picture for a generation the queue was never told takes it, as its clear would
+  // have; one from an older generation is still dropped.
+  @Test fun aPictureForANewerGenerationTakesItAsItsClearWouldHave() {
+    val queue = PictureQueue<String>()
+    assertEquals("new", queue.submit(request(3), "new", receipt("new"))?.payload)
+    assertEquals(3, queue.generation)
+    assertEquals("new", queue.complete(true).first?.payload)
+    assertNull(outcomes["new"])
+  }
+
+  @Test fun aPictureFromAnOlderGenerationIsStillDropped() {
+    val queue = PictureQueue<String>()
+    queue.clear(3)
+    assertNull(queue.submit(request(2), "old", receipt("old")))
+    assertEquals(listOf(PictureOutcome.DROPPED), outcomes["old"])
+    assertEquals(3, queue.generation)
+  }
+
   @Test fun laysOutLikeTheSharedBrowserPresentation() {
     assertArrayEquals(doubleArrayOf(0.0, 150.0, 400.0, 450.0), request().rect(400.0, 600.0), 0.0)
     assertArrayEquals(doubleArrayOf(196.0, 297.0, 204.0, 303.0), request(upscale = false).rect(400.0, 600.0), 0.0)

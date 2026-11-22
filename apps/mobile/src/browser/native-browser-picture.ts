@@ -8,7 +8,11 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import type { NativePicture, PictureMetadata } from "../computers/phone-display-native.js";
+import {
+  pictureFunctions,
+  type NativePicture,
+  type PictureMetadata,
+} from "../computers/phone-display-native.js";
 import { mobileBrowserFrameMaxBytes } from "./browser-frame.js";
 import { emptyPictureTally, tracePicture, type PictureTally } from "./picture-trace.js";
 
@@ -102,7 +106,12 @@ export function useNativeBrowserPicture(input: {
   const identity = preserveLastFrame ? tabId : `${sessionId}:${tabId}`;
   useLayoutEffect(() => {
     const clear = () => {
-      void view.current?.clear(++generation.current).catch(() => undefined);
+      // Never a call that waits for the main thread (pictureFunctions). A clear that cannot
+      // reach a view not mounted yet is made good by the next picture, whose newer generation
+      // the view takes as this clear would have.
+      void pictureFunctions(view.current)
+        ?.clear(++generation.current)
+        .catch(() => undefined);
       setDrawn(null);
     };
     clear();
@@ -130,7 +139,7 @@ export function useNativeBrowserPicture(input: {
       owned.add(latest);
       if (latest.header.watchToken && latest !== returned)
         frames.claim?.(sessionId, tabId, latest.header.watchToken);
-      const native = view.current;
+      const native = pictureFunctions(view.current);
       const size = latest.data.byteLength;
       const picture = ++counter.current;
       const { rasterHeight, rasterWidth } = latest.header;
@@ -224,7 +233,9 @@ export function useNativeBrowserPicture(input: {
       tracePicture(
         `shown-again surface=${tabId} generation=${event.nativeEvent.generation} current=${generation.current} drawn=${drawnNow.current !== null}`,
       );
-      if (event.nativeEvent.generation !== generation.current || drawnNow.current !== null) return;
+      // The view may not have been told the current generation (its clear came before it was
+      // mounted): it is behind, never ahead, and takes the current one with the next picture.
+      if (event.nativeEvent.generation > generation.current || drawnNow.current !== null) return;
       replay.current = true;
       setReplays((count) => count + 1);
     },

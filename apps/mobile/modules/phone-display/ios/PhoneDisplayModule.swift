@@ -8,28 +8,53 @@ public final class PhoneDisplayModule: Module {
     // JavaScript reads this before using decodeBytes or the picture view: an
     // older binary has neither, and keeps the base64 and Image paths.
     Constant("binaryPresentationVersion") { 1 }
+    // JavaScript reads this to call the views' functions below by their tag. A function whose
+    // argument is a view makes Expo resolve that view on the JavaScript thread by waiting for
+    // the main thread (DynamicViewType.cast -> AppContext.findView -> DispatchQueue.main.sync),
+    // which deadlocks while React holds the main thread in a synchronous event beat waiting for
+    // JavaScript. These take the tag, a number, and find the view on the main queue they run on.
+    Constant("viewTagFunctions") { 1 }
+    AsyncFunction("resetForView") { (tag: Int, epoch: String) in
+      self.view(tag, PhoneDisplayView.self)?.reset(epoch)
+    }.runOnQueue(.main)
+    AsyncFunction("resetKeepingPictureForView") { (tag: Int, epoch: String) in
+      self.view(tag, PhoneDisplayView.self)?.reset(epoch, keepPicture: true)
+    }.runOnQueue(.main)
+    AsyncFunction("decodeForView") { (tag: Int, frame: FramePacket) -> Bool in
+      guard let view = self.view(tag, PhoneDisplayView.self) else { return false }
+      guard frame.data.utf8.count <= 5_592_408, let bytes = Data(base64Encoded: frame.data) else { view.lost(frame.epoch); return false }
+      return view.decode(bytes, FrameMetadata(frame))
+    }.runOnQueue(.main)
+    // Expo copies the Uint8Array into Data once, on the JavaScript thread.
+    AsyncFunction("decodeBytesForView") { (tag: Int, bytes: Data, metadata: FrameMetadata) -> Bool in
+      self.view(tag, PhoneDisplayView.self)?.decode(bytes, metadata) ?? false
+    }.runOnQueue(.main)
+    AsyncFunction("clearForView") { (tag: Int, generation: Int) in
+      self.view(tag, PhoneDisplayPictureView.self)?.clear(generation)
+    }.runOnQueue(.main)
+    AsyncFunction("presentForView") { (tag: Int, bytes: Data, metadata: PictureMetadata, promise: Promise) in
+      // Not mounted yet: dropped, and offered again when the view joins its window (onShown).
+      guard let view = self.view(tag, PhoneDisplayPictureView.self) else {
+        promise.resolve(PictureOutcome.dropped.rawValue)
+        return
+      }
+      view.present(bytes, metadata.request) { promise.resolve($0.rawValue) }
+    }.runOnQueue(.main)
     // The first view stays the module's default view, which older JavaScript requires by module name.
+    // Its functions are the ones above, by tag: none of ours takes a view as an argument.
     View(PhoneDisplayView.self) {
       Events("onReady", "onNeedsKeyframe")
-      AsyncFunction("reset") { (view: PhoneDisplayView, epoch: String) in view.reset(epoch) }
-      AsyncFunction("resetKeepingPicture") { (view: PhoneDisplayView, epoch: String) in view.reset(epoch, keepPicture: true) }
-      AsyncFunction("decode") { (view: PhoneDisplayView, frame: FramePacket) -> Bool in
-        guard frame.data.utf8.count <= 5_592_408, let bytes = Data(base64Encoded: frame.data) else { view.lost(frame.epoch); return false }
-        return view.decode(bytes, FrameMetadata(frame))
-      }
-      // Expo copies the Uint8Array into Data once, on the JavaScript thread.
-      AsyncFunction("decodeBytes") { (view: PhoneDisplayView, bytes: Data, metadata: FrameMetadata) -> Bool in
-        view.decode(bytes, metadata)
-      }
     }
     View(PhoneDisplayPictureView.self) {
       ViewName("PhoneDisplayPicture")
       Events("onCleared", "onShown")
-      AsyncFunction("clear") { (view: PhoneDisplayPictureView, generation: Int) in view.clear(generation) }
-      AsyncFunction("present") { (view: PhoneDisplayPictureView, bytes: Data, metadata: PictureMetadata, promise: Promise) in
-        view.present(bytes, metadata.request) { promise.resolve($0.rawValue) }
-      }
     }
+  }
+
+  /// The view with this tag, found on the main queue these functions run on: never by waiting for it.
+  private func view<ViewType: UIView>(_ tag: Int, _ type: ViewType.Type) -> ViewType? {
+    dispatchPrecondition(condition: .onQueue(.main))
+    return appContext?.findView(withTag: tag, ofType: type)
   }
 }
 
@@ -294,6 +319,14 @@ final class PhoneDisplayPictureView: ExpoView {
       return
     }
     trace("offered generation=\(request.generation) size=\(request.width)x\(request.height) bytes=\(bytes.count) queue-generation=\(queue.generation)")
+    if request.generation < queue.generation {
+      trace("dropped generation=\(request.generation) reason=generation queue=\(queue.generation) offered=\(request.generation)")
+    } else if request.generation > queue.generation {
+      // The clear that would have said so never arrived: take it as that clear would have,
+      // pixels and all, and draw this picture.
+      trace("adopted generation=\(request.generation) queue=\(queue.generation)")
+      clear(request.generation)
+    }
     if let job = queue.submit(request, bytes, receipt) { decode(job) }
   }
   private func decode(_ job: PictureQueue<Data>.Job) {
