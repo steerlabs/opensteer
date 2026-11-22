@@ -337,25 +337,38 @@ export function DevicesSettingsController(): ReactNode {
         <NativeSettingsPage
           sections={[
             {
-              key: "sign-in",
-              title: "Sign in on it",
+              key: "mac",
+              title: "A Mac",
               rows: [
                 {
                   key: "instructions",
                   kind: "text",
                   label:
-                    "Install Opensteer on the Mac or phone, then sign in with this account. It shows up here, and you choose what your agent can use.",
+                    "Install Opensteer on the Mac and sign in with the same Opensteer account. It shows up here, and you choose what your agent can use.",
                 },
               ],
             },
             {
-              key: "server",
-              title: "Server",
+              key: "phone",
+              title: "A phone",
               rows: [
                 {
                   key: "instructions",
                   kind: "text",
-                  label: "Create a command above, then run it on the server you want to add.",
+                  label:
+                    "Get the Opensteer app on the phone and sign in with the same Opensteer account.",
+                },
+              ],
+            },
+            {
+              key: "chrome",
+              title: "Chrome",
+              rows: [
+                {
+                  key: "instructions",
+                  kind: "text",
+                  label:
+                    "Share tabs from your Chrome: connect it in Opensteer on your Mac, in Settings › Chrome.",
                 },
               ],
             },
@@ -392,13 +405,24 @@ export function DevicesSettingsController(): ReactNode {
             },
             {
               key: "phone",
-              title: "Agent Phone",
+              title: "Android Agent Phone",
               rows: [
                 {
                   key: "instructions",
                   kind: "text",
                   label:
                     "Connect your Android phone by USB to one of your Macs. Open Devices there and choose Set up Agent Phone.",
+                },
+              ],
+            },
+            {
+              key: "server",
+              title: "Linux server",
+              rows: [
+                {
+                  key: "instructions",
+                  kind: "text",
+                  label: "Create a command above, then run it on the server you want to add.",
                 },
               ],
             },

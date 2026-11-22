@@ -759,7 +759,7 @@ export function DesktopConnect({
       bare
       description={
         kind === "pairing"
-          ? "On the Mac your Opensteer runs on, create a pairing code in Settings › Devices › Add a device."
+          ? "On the Mac your Opensteer runs on, create a pairing code in Settings › Devices › Add a device › Advanced."
           : "The address of an Opensteer you run on your own server."
       }
       live
