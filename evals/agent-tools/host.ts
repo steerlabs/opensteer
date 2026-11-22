@@ -211,7 +211,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     },
     store: {
       requests: { get: async () => null },
-      getThreadForOwner: async (id) => ({ ...thread, id }),
+      readTask: async (_reader, id) => ({ ...thread, id }),
       threadOrigins: async () => new Map(),
     },
   });
