@@ -1509,3 +1509,127 @@ it("keeps a server's recorded home when the publishing computer can no longer be
     { appId: server },
   ]);
 });
+
+it("applies 0055_automation_scripts expand-only without breaking legacy v5 rows", async () => {
+  await migrateToLatest(database, migrationsBefore("0055_automation_scripts"));
+  const fixture = await seedPersonalFixture(database, "/tmp/automation-scripts-migration");
+  const task = await legacyTask(fixture, "Automation migration anchor");
+  const principalId =
+    (await sql<{ id: string }>`select id from principals limit 1`.execute(database)).rows[0]?.id ??
+    `usr:${fixture.userId}`;
+  const triggerId = `trg_${crypto.randomUUID()}`;
+  const legacyRevisionId = `trv_${crypto.randomUUID()}`;
+  const legacyProgram = {
+    language: "javascript",
+    source: "export default async function () { return { ok: true }; }",
+    toolContractVersion: 5,
+  };
+  await database.transaction().execute(async (tx) => {
+    await sql`insert into triggers(
+      id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
+      current_revision_id, consecutive_failures
+    ) values (
+      ${triggerId}, ${task.id}, ${fixture.userId}, 'legacy-key', 'fp-1', 'Legacy v5',
+      'schedule', 'active', ${legacyRevisionId}, 0
+    )`.execute(tx);
+    await sql`insert into trigger_revisions(id, trigger_id, ordinal, source, program, created_by)
+      values (
+        ${legacyRevisionId}, ${triggerId}, 1,
+        ${JSON.stringify({ kind: "schedule", schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" } })}::jsonb,
+        ${JSON.stringify(legacyProgram)}::jsonb,
+        ${fixture.userId}
+      )`.execute(tx);
+  });
+
+  await migrateToLatest(database);
+
+  // Legacy v5 automation stays untouched and active (Y16: pausing old programs lands when old runtime is removed).
+  const legacyTrigger = (
+    await sql<{ status: string; pausedBy: string | null; wakeLimitPerHour: number | null }>`
+      select status, paused_by, wake_limit_per_hour from triggers where id = ${triggerId}
+    `.execute(database)
+  ).rows[0];
+  expect(legacyTrigger).toEqual({ pausedBy: null, status: "active", wakeLimitPerHour: null });
+
+  // New script revision keeps non-null stub program in trigger_revisions (leaving its columns
+  // untouched so previous-release strict readers stay valid) and stores the script in
+  // trigger_revision_scripts (Y8).
+  const scriptRevisionId = `trv_${crypto.randomUUID()}`;
+  await sql`insert into trigger_revisions(id, trigger_id, ordinal, source, program, created_by)
+    values (
+      ${scriptRevisionId}, ${triggerId}, 2,
+      ${JSON.stringify({ kind: "webhook" })}::jsonb,
+      ${JSON.stringify({ language: "javascript", source: "console.log('hi')", toolContractVersion: 6 })}::jsonb,
+      ${fixture.userId}
+    )`.execute(database);
+  await sql`insert into trigger_revision_scripts(revision_id, script)
+    values (
+      ${scriptRevisionId},
+      ${JSON.stringify({ interpreter: null, text: "console.log('hi')" })}::jsonb
+    )`.execute(database);
+
+  // Outcome column allows 'unknown' while status remains within its 5 legacy values (Y8).
+  const commandId = `cmd_${crypto.randomUUID()}`;
+  const occurrenceId = `toc_${crypto.randomUUID()}`;
+  await sql`insert into commands(
+    id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
+    idempotency_key, type, payload, status, frame_sent_at
+  ) values (
+    ${commandId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
+    '{"kind":"person"}'::jsonb, 'occ-cmd-1', 'trigger.execute', '{}'::jsonb, 'dispatched', now()
+  )`.execute(database);
+  await sql`insert into trigger_occurrences(
+    id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, outcome, stdout, stderr, webhook_body
+  ) values (
+    ${occurrenceId}, ${triggerId}, ${scriptRevisionId}, ${commandId}, ${fixture.environmentId},
+    'webhook:1', '{}'::jsonb, 'failed', 'unknown', '', '', ${Buffer.from("raw-bytes")}
+  )`.execute(database);
+  await expect(
+    sql`insert into trigger_occurrences(
+      id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, outcome, stdout, stderr
+    ) values (
+      ${`toc_${crypto.randomUUID()}`}, ${triggerId}, ${scriptRevisionId}, ${commandId}, ${fixture.environmentId},
+      'webhook:2', '{}'::jsonb, 'failed', 'bogus', '', ''
+    )`.execute(database),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Widened automation_failure_notices reason check accepts new reasons.
+  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+    values (${crypto.randomUUID()}, ${triggerId}, 'started-failing', 'exited 1')`.execute(database);
+  await sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+    values (${crypto.randomUUID()}, ${triggerId}, 'outcome-unknown', 'computer rebooted')`.execute(
+    database,
+  );
+
+  // Per-computer watch limit lives on execution_environments (Y14).
+  await sql`update execution_environments set max_active_watches = 48 where id = ${fixture.environmentId}`.execute(
+    database,
+  );
+  await expect(
+    sql`update execution_environments set max_active_watches = -1 where id = ${fixture.environmentId}`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // Secrets envelope constraint enforces paired encrypted_secrets and secrets_key_version.
+  await expect(
+    sql`update triggers set encrypted_secrets = ${Buffer.from("cipher")}, secrets_key_version = null where id = ${triggerId}`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
+
+  // automation_wakes cascades cleanly if a trigger is deleted (and indexes trigger_id, created_at).
+  const wakeId = `awk_${crypto.randomUUID()}`;
+  await sql`insert into automation_wakes(id, trigger_id, occurrence_id, tool_name)
+    values (${wakeId}, ${triggerId}, ${occurrenceId}, 'opensteer_task_send')`.execute(database);
+  expect(
+    (await sql`select id from automation_wakes where trigger_id = ${triggerId}`.execute(database))
+      .rows,
+  ).toHaveLength(1);
+
+  // Fresh catalog matches upgraded catalog.
+  const upgraded = await catalog();
+  await sql`drop schema public cascade;create schema public`.execute(database);
+  await migrateToLatest(database);
+  expect(await catalog()).toEqual(upgraded);
+});

@@ -46,6 +46,11 @@ import {
   bridgeConversionMigrationName,
 } from "./bridge-conversion-migration.js";
 import {
+  applyAutomationScripts,
+  automationScriptsMigrationName,
+} from "./automation-scripts-migration.js";
+export { automationScriptsMigrationName } from "./automation-scripts-migration.js";
+import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
   withPersonalStateStartupLock,
@@ -681,6 +686,7 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
+              [automationScriptsMigrationName]: { up: applyAutomationScripts },
             }
           : {}),
       };

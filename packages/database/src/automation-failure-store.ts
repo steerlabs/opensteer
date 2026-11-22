@@ -13,7 +13,14 @@ import type { DatabaseSchema } from "./schema.js";
 import { nearestListedThread } from "./thread-lineage.js";
 
 export type AutomationFailureReason =
-  "final-occurrence-failed" | "final-occurrence-interrupted" | "paused";
+  | "final-occurrence-failed"
+  | "final-occurrence-interrupted"
+  | "paused"
+  | "started-failing"
+  | "overran-schedule"
+  | "watch-crash-loop"
+  | "wake-limit-reached"
+  | "outcome-unknown";
 
 /**
  * Records, in the transaction that ended it, that an automation stopped

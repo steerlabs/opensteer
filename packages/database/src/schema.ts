@@ -117,7 +117,14 @@ import type {
   ShellCloseReason,
   ShellSessionId,
 } from "@opensteer/protocol";
-import type { StoredTriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
+import type {
+  AutomationOutcome,
+  AutomationPausedBy,
+  AutomationScript,
+  StoredTriggerProgram,
+  TriggerProgramEvent,
+  TriggerSource,
+} from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
 import type {
   ClientChangesTable,
@@ -608,6 +615,7 @@ interface ExecutionEnvironmentTable {
   kind: "main" | "local" | "managed";
   runnerId: RunnerId | null;
   capabilities: JsonColumn<readonly string[]>;
+  maxActiveWatches: Generated<number | null>;
   createdAt: Timestamp;
 }
 
@@ -1146,6 +1154,16 @@ interface TriggerTable {
   nextFireAt: NullableTimestamp;
   consecutiveFailures: number;
   pauseReason: string | null;
+  pausedBy: Generated<AutomationPausedBy | null>;
+  pausedByThreadId: Generated<ThreadId | null>;
+  pausedAt: Generated<Date | null>;
+  failingSince: Generated<Date | null>;
+  failureNotifiedAt: Generated<Date | null>;
+  overrunNotifiedAt: Generated<Date | null>;
+  watchCrashNotifiedAt: Generated<Date | null>;
+  wakeLimitPerHour: Generated<number | null>;
+  encryptedSecrets: Generated<Buffer | null>;
+  secretsKeyVersion: Generated<number | null>;
   waitingReason: Generated<string | null>;
   webhookRouteKey: string | null;
   webhookSecretHash: string | null;
@@ -1164,6 +1182,11 @@ interface TriggerRevisionTable {
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
+}
+
+export interface TriggerRevisionScriptTable {
+  revisionId: TriggerRevisionId;
+  script: JsonColumn<AutomationScript>;
 }
 
 export interface TriggerWatchActivationTable {
@@ -1201,6 +1224,16 @@ export interface TriggerWatchActivationTable {
   updatedAt: Timestamp;
 }
 
+export interface AutomationWakeTable {
+  id: string;
+  triggerId: TriggerId;
+  occurrenceId: TriggerOccurrenceId | null;
+  activationId: TriggerWatchActivationId | null;
+  toolName: string;
+  requestId: string | null;
+  createdAt: Generated<Date>;
+}
+
 export interface TriggerOccurrenceTable {
   connectionId: Generated<string | null>;
   admittedGrantRevision: Generated<number | null>;
@@ -1216,6 +1249,9 @@ export interface TriggerOccurrenceTable {
   sourceKey: string;
   event: JsonColumn<TriggerProgramEvent>;
   status: "pending" | "running" | "succeeded" | "failed" | "canceled";
+  outcome: Generated<AutomationOutcome | null>;
+  outputPrunedAt: Generated<Date | null>;
+  webhookBody: Generated<Buffer | null>;
   executionGeneration: Generated<number>;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
@@ -1279,6 +1315,7 @@ export interface CommandTable {
   requestResponseKeyVersion: Generated<number | null>;
   workOwnerStop: Generated<boolean | null>;
   status: CommandStatus;
+  frameSentAt: Generated<Date | null>;
   attempts: Generated<number>;
   dispatcherId: string | null;
   lastError: JsonColumn<unknown> | null;
@@ -1369,7 +1406,15 @@ export interface AutomationFailureNoticeTable {
   triggerId: TriggerId;
   occurrenceId: TriggerOccurrenceId | null;
   activationId: TriggerWatchActivationId | null;
-  reason: "final-occurrence-failed" | "final-occurrence-interrupted" | "paused";
+  reason:
+    | "final-occurrence-failed"
+    | "final-occurrence-interrupted"
+    | "paused"
+    | "started-failing"
+    | "overran-schedule"
+    | "watch-crash-loop"
+    | "wake-limit-reached"
+    | "outcome-unknown";
   detail: string;
   attempts: Generated<number>;
   nextAttemptAt: Generated<Date>;
@@ -2314,8 +2359,10 @@ export interface DatabaseSchema {
   requestContinuations: RequestContinuationTable;
   triggers: TriggerTable;
   triggerRevisions: TriggerRevisionTable;
+  triggerRevisionScripts: TriggerRevisionScriptTable;
   triggerWatchActivations: TriggerWatchActivationTable;
   watchControlRequests: WatchControlRequestTable;
+  automationWakes: AutomationWakeTable;
   triggerOccurrences: TriggerOccurrenceTable;
   triggerOccurrenceAttempts: TriggerOccurrenceAttemptTable;
   providerSessions: ProviderSessionTable;
@@ -2477,7 +2524,7 @@ export type DeploymentRow = Selectable<DeploymentTable>;
 export type ThreadRow = Selectable<ThreadTable>;
 export type RunRow = Selectable<RunTable>;
 export type RequestRow = Selectable<RequestTable>;
-export type CommandRow = Omit<Selectable<CommandTable>, "workOwnerStop">;
+export type CommandRow = Omit<Selectable<CommandTable>, "workOwnerStop" | "frameSentAt">;
 /** A command awaiting dispatch, with the AI account of the Run it names. */
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;
