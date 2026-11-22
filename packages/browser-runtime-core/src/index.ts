@@ -24,6 +24,18 @@ export { normalizeElectronCursor } from "./browser/cursor-hints.js";
 export { pageWithTarget } from "./browser/target-lookup.js";
 
 export {
+  cdpCommandRefusal,
+  decodeNestedCdpMessage,
+  invalidNestedMessageRefusal,
+  nestedTooDeepRefusal,
+  connectionAutoAttachParameters,
+  connectionCdpRefusal,
+  connectionMethodRefusal,
+  connectionNestedAutoAttachRefusal,
+  nestsAutoAttach,
+  clipboardPermissionRefusal,
+  connectionClipboardRefusal,
+  connectionPermissionRefusal,
   SessionCdpRouter,
   SessionCdpRouterError,
   type BrowserCdpBackend,

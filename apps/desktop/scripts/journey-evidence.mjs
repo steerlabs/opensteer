@@ -45,20 +45,22 @@ try {
   if (name === "native-browser" && read(path.join(root, "result.json")).status !== "PASS")
     throw Error("Native browser journey did not pass");
   if (name === "electron") {
+    // The order journey-command.sh runs them in.
     const expected = [
       "cdp-boundary",
       "passwords",
       "attachments",
       "downloads",
-      "profile-restore",
       "focus",
       "host-transport",
       "browser",
       "idle",
       "quit",
-      "cookies",
+      "menu-bar",
       "passkeys",
       "usb",
+      "profile-restore",
+      "cookies",
     ];
     const rows = fs
       .readFileSync(path.join(root, "results.jsonl"), "utf8")

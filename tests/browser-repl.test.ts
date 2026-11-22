@@ -162,6 +162,8 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
         url.searchParams.has("tag", "two words"), url.searchParams.get("missing")];
       return url.pathname === "/journey" && url.searchParams.get("source") === "repl";
     });
+    if (await page.evaluate(() => document.querySelector('[role="status"]') !== null))
+      throw new Error("The journey began on a document an earlier run had used.");
     await page.getByRole("button", { name: "Activate" }).click();
     await page.getByLabel("Name").fill("Ada Lovelace");
     await page.getByRole("button", { name: "Submit" }).click();
@@ -223,6 +225,12 @@ it("runs the native Page API inside the REPL against a managed Chromium session"
     data: expect.stringMatching(/^iVBORw0KGgo/u),
   });
 
+  // The program's address carries a fragment, so going to it again from the
+  // same address is a same-document navigation that keeps this run's status.
+  // Another address first gives the harness run a document of its own.
+  expect(await execute(`await page.goto(${JSON.stringify(`${origin}/between-runs`)})`)).toEqual({
+    content: [],
+  });
   const harness = await native(`${program} console.log(JSON.stringify(result));`);
   expect(JSON.parse(harness.stdout)).toEqual(JSON.parse(output.text));
 

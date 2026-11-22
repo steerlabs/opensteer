@@ -31,8 +31,9 @@ const grantedPermissions = new Set([
   "sensors",
 ]);
 // Clipboard stays denied: this browser shares the person's own clipboard,
-// and page script must not write it without the person copying. The agent
-// CDP policy refuses agent copy/cut for the same reason.
+// and page script must not write it without the person copying. The CDP
+// router refuses a connected agent's copy, cut, paste and clipboard
+// permission grants for the same reason.
 /** Expands each preferred language with its base language, as Chrome does. */
 export function browserAcceptLanguages(preferred: readonly string[]): string {
   const languages: string[] = [];

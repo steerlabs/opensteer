@@ -941,6 +941,9 @@ export async function createHostRuntime(
     await deviceDrivers.refresh();
     const computerApps = new ComputerAppHub({
       drivers: deviceDrivers,
+      recordRunnerOutdated: async (runner) => {
+        await store.recordRunnerUpdateRequired({ ...runner, reason: "runner-outdated" });
+      },
       requireDeviceAgentAccess: async (deviceId) => {
         const binding = deviceDrivers.binding(deviceId);
         await requireDeviceAccess(

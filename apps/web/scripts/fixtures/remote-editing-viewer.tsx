@@ -256,6 +256,11 @@ const render = () =>
           "synchronized"
       }
       occluded={false}
+      // As BrowserView does: each picture shown is the credit for the next.
+      onFramePresented={(frame) => {
+        const token = frame.header.watchToken;
+        if (token) client.acceptBrowserWatchFrame(session.id, token, surfaceId);
+      }}
       onOpenLink={(url) => {
         void client.openTab({ kind: "page", url, guest: true }).then(() => openedLinks.push(url));
       }}

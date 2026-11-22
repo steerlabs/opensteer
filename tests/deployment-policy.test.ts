@@ -56,6 +56,11 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: { "machine.kind": 1 },
     reason: "Device presentation kind labels headless hardware, not a Deployment.",
   },
+  "packages/database/src/migrations.ts": {
+    counts: { kind: 1 },
+    reason:
+      "A team server's database is refused by its stored shape before any migration touches it.",
+  },
   "packages/browser-source-wire/src/frozen/personal-access-route.ts": {
     counts: {
       "authority.deploymentShape.kind": 1,

@@ -65,6 +65,42 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
+  it("opens a connected agent's lineage attachment without the clipboard, and the person's own as before", async () => {
+    const controller = createController();
+    await controller.start();
+    const targetId = await page.targetId();
+    const seedSurfaceId = ledger.surfaceIdForTarget(targetId)!;
+    const paste = async (scope?: { attachmentId: string; seedSurfaceId: typeof seedSurfaceId }) => {
+      const client = controller.openStandardCdp(false, () => undefined, scope);
+      try {
+        const { sessionId } = (await client.send({
+          method: "Target.attachToTarget",
+          parameters: { targetId, flatten: true },
+        })) as { sessionId: string };
+        return await client
+          .send({
+            method: "Input.dispatchKeyEvent",
+            parameters: { type: "rawKeyDown", modifiers: 4, key: "v", code: "KeyV" },
+            sessionId,
+          })
+          .then(
+            () => "forwarded",
+            (error: unknown) => error,
+          );
+      } finally {
+        client.close();
+      }
+    };
+    // The Home issues a lineage only for a connected agent's own direct work.
+    await expect(paste({ attachmentId: randomUUID(), seedSurfaceId })).resolves.toMatchObject({
+      code: "forbidden",
+      message:
+        "The clipboard is not available to a connected agent. Use Input.insertText to enter text.",
+    });
+    await expect(paste()).resolves.toBe("forwarded");
+    await controller.close();
+  });
+
   it("emits the released ordinary close frames byte for byte", async () => {
     const controller = createController();
     await controller.start();

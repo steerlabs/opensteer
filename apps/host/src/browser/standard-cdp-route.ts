@@ -10,6 +10,12 @@ import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { unversionedRoute } from "../server/unversioned-route.js";
 import { OpensteerError } from "@opensteer/core";
+import {
+  cdpCommandRefusal,
+  connectionAutoAttachParameters,
+  connectionNestedAutoAttachRefusal,
+  nestsAutoAttach,
+} from "@opensteer/browser-runtime-core";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import {
@@ -30,6 +36,7 @@ const ticketParams = z.object({ ticket: z.string() });
 const replyId = z.object({
   id: z.number().int().nonnegative().optional(),
   sessionId: z.string().optional(),
+  result: z.object({ sessionId: z.string().optional() }).loose().optional(),
 });
 const commandKey = (id: number, sessionId?: string) => JSON.stringify([id, sessionId]);
 
@@ -122,7 +129,12 @@ function relayStandardCdp(
   pool?: StandardCdpPoolReservation,
 ): void {
   const stopping = new AbortController();
+  // Settled when the ticket was issued, from the one authority rule's resolution of its binding.
+  const connectionWork = claims.facts.agentConnectionId !== null;
   const pending = new Map<string, number>();
+  // Sessions the router opened as aliases of the browser root: their auto-attach is the root's.
+  const rootAliases = new Set<string>();
+  const aliasRequests = new Set<string>();
   let inBytes = 0;
   let outBytes = 0;
   let outCount = 0;
@@ -207,8 +219,10 @@ function relayStandardCdp(
         void authorize(attached.reauthorize)
           .then(async () => {
             if (stopping.signal.aborted) return;
-            const { id, sessionId } = replyId.parse(JSON.parse(frame.toString("utf8")));
+            const { id, sessionId, result } = replyId.parse(JSON.parse(frame.toString("utf8")));
             const key = id === undefined ? undefined : commandKey(id, sessionId);
+            if (key !== undefined && aliasRequests.delete(key) && result?.sessionId)
+              rootAliases.add(result.sessionId);
             await send(frame);
             if (key !== undefined && pending.has(key)) {
               inBytes -= pending.get(key)!;
@@ -280,6 +294,12 @@ function relayStandardCdp(
     }
     pending.set(key, frame.length);
     inBytes += frame.length;
+    if (request.method === "Target.attachToBrowserTarget" && !request.sessionId)
+      aliasRequests.add(key);
+    if (request.method === "Target.detachFromTarget") {
+      const detached = request.params?.sessionId;
+      if (typeof detached === "string") rootAliases.delete(detached);
+    }
     sending = sending
       .then(async () => {
         const attached = await ready;
@@ -296,8 +316,46 @@ function relayStandardCdp(
           end(1008, "Browser attachment refused");
           return;
         }
+        // Refused here for every runtime, before anything reaches the browser.
+        // The method list itself is the runtime router's, whose standard client also admits the
+        // whole-context branch; a connection's page auto-attach is limited here as well, so a
+        // runtime of any version receives it limited.
+        const refusal =
+          cdpCommandRefusal(request.method, request.params, connectionWork) ??
+          (connectionWork && nestsAutoAttach(request.method, request.params)
+            ? connectionNestedAutoAttachRefusal
+            : undefined);
+        if (refusal) {
+          await send(
+            Buffer.from(
+              JSON.stringify({
+                id: request.id,
+                sessionId: request.sessionId,
+                error: { code: -32000, message: refusal },
+              }),
+            ),
+          );
+          if (pending.has(key)) {
+            inBytes -= pending.get(key)!;
+            pending.delete(key);
+          }
+          return;
+        }
         await authorize(attached.reauthorize);
-        if (!stopping.signal.aborted) await attached.send(frame);
+        const sent =
+          connectionWork &&
+          request.method === "Target.setAutoAttach" &&
+          request.sessionId &&
+          !rootAliases.has(request.sessionId)
+            ? Buffer.from(
+                JSON.stringify({
+                  ...request,
+                  params: connectionAutoAttachParameters(request.params),
+                }),
+                "utf8",
+              )
+            : frame;
+        if (!stopping.signal.aborted) await attached.send(sent);
       })
       .catch(() => end(1008, "Browser authority or runtime ended"));
   });

@@ -1181,6 +1181,8 @@ export const runnerRestartingCloseCode = 4012;
  * and when they resume. Sent only to a Home whose welcome accepts it.
  */
 export const runnerAgentStopCapability = "runner-agent-stop-v1" as const;
+/** A Runner that parses a connected agent session's `alwaysAsk` and `noLaunch` fields. */
+export const agentSessionGuardsCapability = "agent-session-guards-v1" as const;
 
 /** The person stopped agents on this computer; nothing new starts until they resume. */
 export const RunnerAgentsStoppedSchema = z.strictObject({
@@ -1253,6 +1255,8 @@ export const RunnerBrowserModuleSchema = z
   .object({
     standardCdp: z.literal(1).optional().catch(undefined),
     standardCdpLineage: z.literal(1).optional().catch(undefined),
+    /** The runtime enforces a connected agent's CDP itself when a command says it is one's. */
+    connectionCommands: z.literal(1).optional().catch(undefined),
     wholeContextCdp: z.literal(1).optional().catch(undefined),
     standardCdpLeaseRecovery: z.literal(1).optional().catch(undefined),
     standardCdpAttemptRecovery: z.literal(1).optional().catch(undefined),
