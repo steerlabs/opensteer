@@ -84,7 +84,8 @@ async function world(key: string) {
   const slotId = `slot-${key}`;
   const driver = new FakeHypervisorDriver({ startsEmpty: true, profilesMount: {} });
   driver.profilesMounted = true;
-  const agent = await startTestPoolAgent({ driver });
+  // The host's own check reads each slot's egress proxy (as the pair harness runs it).
+  const agent = await startTestPoolAgent({ driver, hostCheckMs: 200 });
   cleanup.push(() => agent.close());
   const homeKey = homeKeyPair();
   const summary = await agent.agent.createSlot({
@@ -235,6 +236,8 @@ async function world(key: string) {
       // Unknown is asked again later each time; capped short here so that a schedule's rest,
       // which starts as the host answers again, is reached within the settle bound.
       unansweredRetryMaxMs: 2_000,
+      // A running guest's status is read this often (its egress proxy can go down under it).
+      statusEveryMs: 200,
       onError: () => errors.push(Date.now()),
     });
     const service = new BrowserService({
@@ -300,6 +303,8 @@ async function world(key: string) {
     guestState: () => guestState,
     replaceGuest,
     dropChannels,
+    /** The slot's egress proxy goes down past its restarts; only a pause and a resume revive it. */
+    proxyDown: () => driver.proxyDown.add(slotId),
     answer: (mode: typeof hostAnswers) => {
       hostAnswers = mode;
     },
@@ -325,7 +330,10 @@ type Action =
   | "restart-home"
   | "host-unreachable"
   | "host-unsigned"
-  | "host-back";
+  | "host-back"
+  | "open-two"
+  | "park-stop"
+  | "proxy-down";
 
 /** Weighted: what a person does most (open, stop, park and wake) comes up most. */
 const actions: readonly Action[] = [
@@ -347,6 +355,9 @@ const actions: readonly Action[] = [
   "host-unreachable",
   "host-unsigned",
   "host-back",
+  "open-two",
+  "park-stop",
+  "proxy-down",
 ];
 
 /**
@@ -393,26 +404,58 @@ async function schedule(
         say(`closed row ${id} while the running guest holds ${holds.pages} page(s)`);
     }
   };
+  const open = async (home: ReturnType<typeof w.home>, idempotencyKey: string) => {
+    const opening = await home.service
+      .openTab(w.task.userId, {
+        type: "browser.tab.open",
+        identity: { kind: "guest" },
+        placement: { kind: "runner", runnerId: w.task.runnerId },
+        idempotencyKey,
+      })
+      .catch(() => undefined);
+    // A person's next tab opens in their browser session when one is open: it is the same
+    // session, still theirs.
+    if (opening && !opened.has(opening.sessionId))
+      opened.set(opening.sessionId, { tabId: opening.tabId, stopped: false });
+  };
   for (let index = 0; index < count; index++) {
     const action = typeof steps === "number" ? rng.pick(actions) : steps[index]!;
     log.push(action);
     const home = w.home();
     switch (action) {
       case "open":
-        await bounded("open", async () => {
-          const opening = await home.service
-            .openTab(w.task.userId, {
-              type: "browser.tab.open",
-              identity: { kind: "guest" },
-              placement: { kind: "runner", runnerId: w.task.runnerId },
-              idempotencyKey: `open-${seed}-${index}`,
-            })
-            .catch(() => undefined);
-          // A person's next tab opens in their browser session when one is open: it is the
-          // same session, still theirs.
-          if (opening && !opened.has(opening.sessionId))
-            opened.set(opening.sessionId, { tabId: opening.tabId, stopped: false });
-        });
+        await bounded("open", () => open(home, `open-${seed}-${index}`));
+        break;
+      case "open-two":
+        // Two tabs asked for at once.
+        await bounded("open-two", () =>
+          Promise.all([
+            open(home, `open-${seed}-${index}-a`),
+            open(home, `open-${seed}-${index}-b`),
+          ]),
+        );
+        break;
+      case "park-stop": {
+        // A park and a person's Stop at once.
+        const live = [...opened].filter(([, entry]) => !entry.stopped);
+        const park = home.coordinator.tryPark().catch(() => undefined);
+        if (live.length) {
+          const [sessionId, entry] = rng.pick(live);
+          entry.stopped = true;
+          await bounded(
+            "stop",
+            () =>
+              home.service
+                .stop(w.task.userId, BrowserSessionIdSchema.parse(sessionId))
+                .catch(() => undefined),
+            true,
+          );
+        }
+        await bounded("park", () => park);
+        break;
+      }
+      case "proxy-down":
+        w.proxyDown();
         break;
       case "stop": {
         const live = [...opened].filter(([, entry]) => !entry.stopped);
@@ -790,7 +833,13 @@ it.each(only ? named.filter(({ seed }) => String(seed) === only) : named)(
   },
 );
 
-/** Schedules the suite runs every time: modest, and bounded by `stepBoundMs` per step. */
+/**
+ * Schedules the suite runs every time: modest, bounded by `stepBoundMs` per step, and fixed (seeds
+ * 1 to 6), so a gate never fails for a reason unrelated to the change under test. The longer
+ * exploration runs by hand from another first seed, for example
+ * `OPENSTEER_POOL_SEARCH_NAMED=none OPENSTEER_POOL_SEARCH_SEED=1000 OPENSTEER_POOL_SEARCH_SCHEDULES=500
+ * OPENSTEER_POOL_SEARCH_STEPS=20`.
+ */
 const suiteSchedules = Number(process.env.OPENSTEER_POOL_SEARCH_SCHEDULES ?? 6);
 const suiteSteps = Number(process.env.OPENSTEER_POOL_SEARCH_STEPS ?? 14);
 const firstSeed = Number(process.env.OPENSTEER_POOL_SEARCH_SEED ?? 1);
