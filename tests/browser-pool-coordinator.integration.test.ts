@@ -12,6 +12,7 @@ import type {
 } from "../apps/host/src/browser/browser-pool-controller.js";
 import {
   createPoolController,
+  AgentPoolController,
   poolControllerKind,
 } from "./browser-pool-controller-under-test.test-support.js";
 import { type BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
@@ -795,6 +796,48 @@ it("counts no failed start for a fresh start into a target that is over, and end
     await f.close();
   }
 });
+
+// Against the real agent only: the host's own resume, after it consumed the right to resume.
+it.skipIf(poolControllerKind() === "fake")(
+  "wakes a parked browser whose saved state the host lost after consuming its resume as a cold start, paced, said as expired",
+  async () => {
+    const f = await poolFixture("resume-lost");
+    try {
+      const calls: string[] = [];
+      const physical: BrowserPoolPhysicalController = {
+        status: (slot, term) => f.controller.status(slot, term),
+        result: (slot, term, id) => f.controller.result(slot, term, id),
+        apply: async (call) => {
+          if (call.kind !== "sign") calls.push(call.kind);
+          return f.controller.apply(call);
+        },
+      };
+      const home = f.home(undefined, physical, { refusedRetryMs: 60_000 });
+      await home.recover();
+      await f.openSession(home);
+      expect(await home.tryPark()).toBe("parked");
+      // The host consumes the resume, then its hypervisor fails it: the saved state is gone.
+      (f.controller as AgentPoolController).failNext("resume", new Error("resume failed"));
+      const waiting = home.gate.reserve(AbortSignal.timeout(30_000));
+      await vi.waitFor(() => expect(home.report()?.refused).toBeDefined(), { timeout: 10_000 });
+      // A refusal all the same: no start at once, no failed start, still parked.
+      expect(calls).toEqual(["start", "pause", "resume"]);
+      expect(await f.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
+      // Asked again, it is a cold start, said as what it is: the live state expired.
+      (await home.gate.reserve(AbortSignal.timeout(30_000))).release();
+      (await waiting).release();
+      expect(calls).toEqual(["start", "pause", "resume", "start"]);
+      expect(await f.slot()).toMatchObject({
+        phase: "running",
+        failedStarts: 0,
+        lastStart: { reason: "expired" },
+      });
+      await vi.waitFor(async () => expect((await f.row())?.state).toBe("failed"));
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 /** The fixture's controller, counting the host's status reads: the loop's turns, with no clock. */
 function countingStatus(f: Awaited<ReturnType<typeof poolFixture>>) {

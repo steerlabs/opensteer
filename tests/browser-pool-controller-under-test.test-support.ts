@@ -142,6 +142,11 @@ export class AgentPoolController implements PoolControllerUnderTest {
     this.#holds.set(kind, until);
   }
 
+  /** The next call of the driver's `operation` fails, as a host's hypervisor can. */
+  failNext(operation: Parameters<FakeHypervisorDriver["fail"]>[0], error: Error): void {
+    this.#agent.driver.fail(operation, error);
+  }
+
   refuseProxy(refusing: boolean): void {
     if (refusing) this.#agent.driver.proxyUnhealthy.add(this.#slotId);
     else this.#agent.driver.proxyUnhealthy.delete(this.#slotId);
