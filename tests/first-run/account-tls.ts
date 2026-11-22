@@ -1,5 +1,6 @@
 import { createHash, X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { createServer, request } from "node:https";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -51,4 +52,37 @@ export function journeyAccountTls(
 export function journeyAccountSpki(certificate: string): string {
   const key = new X509Certificate(certificate).publicKey.export({ format: "der", type: "spki" });
   return createHash("sha256").update(key).digest("base64");
+}
+
+/**
+ * What the journey's own sign-in client does with the fixture's files, done before anything is
+ * launched: a TLS handshake with a server holding the account service's pair, on loopback under
+ * the account host's name, trusting only the authority. A pair it refuses stops the journey here,
+ * with Node's reason, not later as a sign-in that never finishes.
+ */
+export async function assertAccountTlsAccepted(tls: JourneyAccountTls): Promise<void> {
+  const server = createServer({ cert: tls.cert, key: tls.key }, (_incoming, outgoing) =>
+    outgoing.end("ok"),
+  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    const refused = await new Promise<string | null>((resolve) => {
+      const outgoing = request(
+        { ca: tls.ca, host: "127.0.0.1", path: "/", port, servername: tls.name },
+        (incoming) => {
+          incoming.resume();
+          resolve(null);
+        },
+      );
+      outgoing.on("error", (error) => resolve(error.message));
+      outgoing.end();
+    });
+    if (refused !== null)
+      throw new Error(
+        `Node's client refuses the fixture authority's certificate for ${tls.name}: ${refused}`,
+      );
+  } finally {
+    server.close();
+  }
 }

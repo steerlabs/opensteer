@@ -40,7 +40,11 @@ import {
   phoneStepSettled,
   quitApp,
 } from "./remote.js";
-import { journeyAccountTls, type JourneyAccountTls } from "./account-tls.js";
+import {
+  assertAccountTlsAccepted,
+  journeyAccountTls,
+  type JourneyAccountTls,
+} from "./account-tls.js";
 import { journeyAppEnvironment } from "./app-environment.js";
 import { presentedCertificate, presentedCertificateLine } from "./tls-evidence.js";
 import { phoneStepTitle, setupMoves } from "./setup-walk.js";
@@ -75,6 +79,8 @@ function required(name: string): string {
 // The Host takes only a bare public HTTPS origin as its issuer: the account service is served
 // under the guest's fixture name with the fixture authority's certificate (`account-tls.ts`).
 const accountTls = requiredAccountTls();
+// The journey's own client accepts it, before anything is launched (run 20261122T221025Z-d20c2ea7).
+await assertAccountTlsAccepted(accountTls);
 
 function requiredAccountTls(): JourneyAccountTls {
   const tls = journeyAccountTls();
