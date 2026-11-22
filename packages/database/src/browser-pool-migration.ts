@@ -6,6 +6,21 @@ import { sql, type Kysely } from "kysely";
  */
 export const browserPoolMigrationName = "0050_browser_pool";
 
+/**
+ * A restart's keys on its Start, and when the slot held that Start's guest (P1). A migration of
+ * its own, expand-only: builds made from a branch that carried 0050 before these columns may
+ * have run it.
+ */
+export const browserPoolCallKeysMigrationName = "0050_browser_pool_call_keys";
+
+export async function applyBrowserPoolCallKeys(database: Kysely<unknown>): Promise<void> {
+  await sql`
+    alter table browser_pool_controller_calls
+      add column if not exists restart_keys jsonb,
+      add column if not exists installed_at timestamptz
+  `.execute(database);
+}
+
 export async function applyBrowserPool(database: Kysely<unknown>): Promise<void> {
   await sql`
     create table browser_pool_slots (
@@ -40,9 +55,7 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       request jsonb not null,
       result jsonb,
       created_at timestamptz not null default now(),
-      settled_at timestamptz,
-      restart_keys jsonb,
-      installed_at timestamptz
+      settled_at timestamptz
     )
   `.execute(database);
   await sql`
