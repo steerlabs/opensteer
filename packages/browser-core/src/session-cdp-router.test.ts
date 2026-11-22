@@ -2095,7 +2095,7 @@ describe("SessionCdpRouter clipboard and browser permissions", () => {
 });
 
 describe("SessionCdpRouter under a connection: the standard lists, one tab's cookies, history and children", () => {
-  async function standard(connection: boolean, cookieReads = false) {
+  async function standard(connection: boolean, cookieReads = false, wholeContext = false) {
     const backend = new FakeBackend();
     backend.dedicatedContext = true;
     Object.assign(backend, { allowsProfileCookieReads: cookieReads });
@@ -2103,7 +2103,7 @@ describe("SessionCdpRouter under a connection: the standard lists, one tab's coo
     const router = new SessionCdpRouter(backend);
     router.registerSession("a", "seed", async () => true, "/files/a");
     const client = router.openStandardClient("a", {
-      wholeContext: false,
+      wholeContext,
       ...(connection
         ? { connection, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
         : {}),
@@ -2158,6 +2158,23 @@ describe("SessionCdpRouter under a connection: the standard lists, one tab's coo
       await expect(own.page(method, {}), method).resolves.toEqual({ method });
     await connected.router.close();
     await own.router.close();
+  });
+
+  it("keeps a granted profile's cookies through the whole-context branch only", async () => {
+    const whole = await standard(true, false, true);
+    for (const scope of [{}, { sessionId: whole.sessionId }])
+      await expect(whole.client.send({ method: "Storage.getCookies", ...scope })).resolves.toEqual({
+        ok: true,
+      });
+    for (const method of ["Network.getAllCookies", "Network.getCookies"])
+      await expect(whole.page(method), method).resolves.toMatchObject({ code: "forbidden" });
+    const confined = await standard(true);
+    await expect(confined.page("Storage.getCookies")).resolves.toMatchObject({
+      code: "forbidden",
+      message: "Storage.getCookies requires a whole browser context grant.",
+    });
+    await whole.router.close();
+    await confined.router.close();
   });
 
   it("traverses history only to an entry whose address passes the navigation rule", async () => {
