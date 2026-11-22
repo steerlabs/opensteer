@@ -52,6 +52,7 @@ it("says a card use the Home ended is no longer running, never beside the time i
       expect(container.textContent).toContain("This card use is no longer running."),
     );
     expect(container.textContent).not.toMatch(/Expires in/u);
+    expect(container.textContent).not.toMatch(/can use it on \S+ until/u);
   } finally {
     await act(async () => root.unmount());
     container.remove();

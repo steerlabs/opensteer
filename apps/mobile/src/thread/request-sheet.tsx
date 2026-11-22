@@ -486,6 +486,9 @@ export function RequestSheetContent(props: {
   const { session } = responder;
   const answers = requestCardAnswers(request, surface.denied !== null);
   const title = requestTitle(request);
+  // The sheet's own safe area at each side, as iPhone Duo's vertical bar takes one; the
+  // gutter stands inside it.
+  const sides = { marginLeft: insets.left, marginRight: insets.right };
   // The agent's reason is labelled as the agent's in the password body below.
   const detail =
     presentation.detail === undefined ||
@@ -556,23 +559,26 @@ export function RequestSheetContent(props: {
       stickyHeaderIndices={[0]}
       style={styles.sheet}
     >
-      <View style={styles.bar}>
+      <View style={[styles.bar, sides]}>
         <SheetBarButton icon="xmark" label={`Close ${title}`} onPress={close} />
         <View accessibilityRole="header" style={styles.barTitle}>
-          <AppText maxFontSizeMultiplier={controlFontScaleLimit} numberOfLines={1} role="title">
-            {askingWhy ? "Tell the agent why" : title}
-          </AppText>
+          {/* The bar holds one line, which a title can outgrow at any text size: the title
+              is said once, whole, under it. */}
+          {askingWhy ? (
+            <AppText maxFontSizeMultiplier={controlFontScaleLimit} numberOfLines={1} role="title">
+              Tell the agent why
+            </AppText>
+          ) : null}
         </View>
         {send ?? <View style={styles.barSpace} />}
       </View>
-      <View style={styles.body}>
+      <View style={[styles.body, sides]}>
         {presentation.kind === "choice" && presentation.risk === "high" ? <HighRisk /> : null}
-        {/* The bar holds one line of a title that may run to several. */}
-        {!askingWhy && title.length > barTitleLength ? (
-          <AppText role="bodyMedium" selectable>
+        {askingWhy ? null : (
+          <AppText accessibilityRole="header" role="title" selectable>
             {title}
           </AppText>
-        ) : null}
+        )}
         {presentation.agentProposed === true ? (
           <AppText accessibilityHint={requestAgentProposedDetail} role="caption" tone="muted">
             {requestAgentProposedLabel}
@@ -656,7 +662,7 @@ export function RequestSheetContent(props: {
   return (
     <View style={styles.sheet}>
       {list}
-      <View style={[styles.pinned, { paddingBottom: insets.bottom + space[6] }]}>
+      <View style={[styles.pinned, sides, { paddingBottom: insets.bottom + space[6] }]}>
         <ResponseStatus failure={session.failure} reason={blocked} />
         <AnswerRow
           leading={
@@ -708,9 +714,6 @@ export function RequestSheetContent(props: {
     </View>
   );
 }
-
-/** About what a sheet's bar shows on the narrowest phone before it cuts a title off. */
-const barTitleLength = 30;
 
 function HighRisk(): ReactNode {
   return (
@@ -1413,11 +1416,15 @@ function CardUseBody(props: {
     cards.length === 1 ? cards[0] : cards.find(({ id }) => id === props.chosenId);
   const locked = session.pendingId !== null;
   const expired = Date.parse(props.payload.expiresAt) <= props.now.getTime();
+  // An ended card use says only what is true now: no deadline it no longer has.
+  const gone = card?.stage === "gone";
   return (
     <View style={styles.section}>
-      <AppText role="secondary" tone="soft">
-        {cardUseConsent(props.payload.site, props.payload.expiresAt)}
-      </AppText>
+      {gone ? null : (
+        <AppText role="secondary" tone="soft">
+          {cardUseConsent(props.payload.site, props.payload.expiresAt)}
+        </AppText>
+      )}
       <View>
         <AppText role="caption" tone="muted">
           Agent’s reason

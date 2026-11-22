@@ -147,7 +147,8 @@ export function CardUseRequestBody({
               : "Loading cards…"}
         </p>
       )}
-      <p>{cardUseConsent(payload.site, payload.expiresAt)}</p>
+      {/* An ended card use says only what is true now: no deadline it no longer has. */}
+      {stage === "gone" ? null : <p>{cardUseConsent(payload.site, payload.expiresAt)}</p>}
       {/* Gone has no time left on it: never "no longer running" beside "Expires in". */}
       {stage === "gone" ? null : (
         <span className="sign-in-card__expiry">{passwordSignInExpiry(payload.expiresAt, now)}</span>

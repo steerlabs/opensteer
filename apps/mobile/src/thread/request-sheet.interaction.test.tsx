@@ -458,6 +458,15 @@ describe("a saved login or card that is no longer running", () => {
     await render(surface(requestOf(kind)), vi.fn(), { passwordRead });
     await vi.waitFor(() => expect(text()).toContain(gone[kind]));
     expect(text()).not.toMatch(/Expires in/u);
+    // Nor a deadline it no longer has.
+    expect(text()).not.toMatch(/can use it on \S+ until/u);
+  });
+
+  it("names a saved card's request once, however long its title", async () => {
+    const passwordRead = vi.fn(async () => ({ ok: true, data: approval.card }));
+    await render(surface(requestOf("card")), vi.fn(), { passwordRead });
+    await vi.waitFor(() => expect(passwordRead).toHaveBeenCalled());
+    expect(text().split("Use a saved card on shop.example.com?").length - 1).toBe(1);
   });
 
   it.each(["login", "card"] as const)("says how long a running %s has left", async (kind) => {
