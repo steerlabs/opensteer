@@ -71,12 +71,15 @@ describe("Desktop launch policy", () => {
 
   // A certificate switch reaches every network context of the process, the person's browser
   // profiles and tabs among them: no launch takes one, a development launch neither.
-  it.each([
-    ["--ignore-certificate-errors"],
-    ["--ignore-certificate-errors-spki-list=abc"],
-    ["--ignore-urlfetcher-cert-requests"],
-    ["--allow-insecure-localhost"],
-  ])("refuses %s in a development launch too", (argument) => {
+  // Chromium on a Mac and Linux takes a switch with one dash as well as two.
+  it.each(
+    [
+      "ignore-certificate-errors",
+      "ignore-certificate-errors-spki-list=abc",
+      "ignore-urlfetcher-cert-requests",
+      "allow-insecure-localhost",
+    ].flatMap((name) => [[`--${name}`], [`-${name}`], [`--${name.toUpperCase()}`]]),
+  )("refuses %s in a development launch too", (argument) => {
     expect(() => launch([argument], {}, false)).toThrow(/certificate/u);
   });
 

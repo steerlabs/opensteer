@@ -27,8 +27,12 @@ export function assertDesktopLaunch(input: {
   readonly packaged: boolean;
 }): void {
   for (const argument of input.argv.slice(1)) {
-    const name = argument.split("=", 1)[0]!.toLowerCase();
-    if (certificateSwitches.includes(name))
+    // Chromium on a Mac and Linux takes a switch with one dash or two, in any case.
+    const name = `--${argument
+      .split("=", 1)[0]!
+      .toLowerCase()
+      .replace(/^-{1,2}/u, "")}`;
+    if (argument.startsWith("-") && certificateSwitches.includes(name))
       throw new Error(
         `Opensteer doesn’t accept the launch option ${describeArgument(argument)}, because it would change how certificates are checked in every browser profile.`,
       );
