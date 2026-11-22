@@ -1,13 +1,16 @@
 import { rmSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "tsup";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
 
-export default defineConfig(() => {
+export default defineConfig((cliOptions) => {
+  const outDir = cliOptions.outDir ?? fileURLToPath(new URL("dist", import.meta.url));
   // Clean once before both parallel entries build so stale chunks are removed without racing.
-  rmSync(new URL("dist", import.meta.url), { recursive: true, force: true });
+  rmSync(outDir, { recursive: true, force: true });
   return [
     nodeApp({
       entry: ["src/main.ts"],
+      outDir,
       clean: false,
       external: [
         // Loads platform-specific native file-lock prebuilds relative to its package.
@@ -24,6 +27,7 @@ export default defineConfig(() => {
     // sibling chunks and no node_modules directory (E1).
     nodeApp({
       entry: ["src/egress-main.ts"],
+      outDir,
       clean: false,
       splitting: false,
       external: [],

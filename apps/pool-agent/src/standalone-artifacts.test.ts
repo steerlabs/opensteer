@@ -1,25 +1,29 @@
 /**
  * E1: Every single-file artifact `enroll-host.sh` delivers onto a pool host (`egress-main.js`,
- * `main.js`, `relay.mjs`) must be completely self-contained: copied alone into an empty directory
- * outside the repository (no sibling chunks, no `node_modules`), bare `node` must load and start
- * it without `ERR_MODULE_NOT_FOUND`.
+ * `main.js`, `relay.mjs`) must be completely self-contained: built fresh from current source into
+ * a temporary output directory (never reading or writing the checkout's `dist`), then copied alone
+ * into an empty directory outside the repository (no sibling chunks, no `node_modules`), bare
+ * `node` must load and start it without `ERR_MODULE_NOT_FOUND`.
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
-const egressArtifact = join(repoRoot, "apps/browser-runtime/dist/egress-main.js");
-const agentArtifact = join(repoRoot, "apps/pool-agent/dist/main.js");
-const relayArtifact = join(repoRoot, "apps/pool-agent/dist/relay.mjs");
+const browserRuntimeDir = join(repoRoot, "apps/browser-runtime");
+const poolAgentDir = join(repoRoot, "apps/pool-agent");
 
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
+let buildRoot = "";
+let egressArtifact = "";
+let agentArtifact = "";
+let relayArtifact = "";
 
 function isolatedDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -67,10 +71,57 @@ function waitForOutput(
   });
 }
 
-function ensureBuilt(artifactPath: string, filter: string): void {
-  if (existsSync(artifactPath)) return;
-  execFileSync("pnpm", ["--filter", filter, "build"], { cwd: repoRoot, stdio: "pipe" });
+function relayBuildArgs(outFile: string): readonly string[] {
+  const manifest = JSON.parse(readFileSync(join(poolAgentDir, "package.json"), "utf8")) as {
+    readonly scripts?: Readonly<Record<string, string>>;
+  };
+  const buildScript = manifest.scripts?.build ?? "";
+  const relayStep = buildScript
+    .split("&&")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("esbuild src/relay-main.ts "));
+  if (!relayStep) {
+    throw new Error("apps/pool-agent/package.json build script is missing the relay-main.ts step.");
+  }
+  const tokens = relayStep.split(/\s+/u);
+  const replaced = tokens.map((token) =>
+    token === "--outfile=dist/relay.mjs" ? `--outfile=${outFile}` : token,
+  );
+  if (!replaced.includes(`--outfile=${outFile}`)) {
+    throw new Error(
+      "apps/pool-agent/package.json relay-main.ts step did not target dist/relay.mjs.",
+    );
+  }
+  return replaced;
 }
+
+beforeAll(() => {
+  buildRoot = mkdtempSync(join(tmpdir(), "opensteer-standalone-build-"));
+  const browserRuntimeOut = join(buildRoot, "browser-runtime");
+  const poolAgentOut = join(buildRoot, "pool-agent");
+
+  execFileSync(
+    "pnpm",
+    ["exec", "tsup", "--config", "tsup.config.ts", "--out-dir", browserRuntimeOut],
+    {
+      cwd: browserRuntimeDir,
+      stdio: "pipe",
+    },
+  );
+  execFileSync("pnpm", ["exec", "tsup", "--out-dir", poolAgentOut], {
+    cwd: poolAgentDir,
+    stdio: "pipe",
+  });
+  const relayOut = join(poolAgentOut, "relay.mjs");
+  execFileSync("pnpm", ["exec", ...relayBuildArgs(relayOut)], {
+    cwd: poolAgentDir,
+    stdio: "pipe",
+  });
+
+  egressArtifact = join(browserRuntimeOut, "egress-main.js");
+  agentArtifact = join(poolAgentOut, "main.js");
+  relayArtifact = relayOut;
+}, 60_000);
 
 afterEach(async () => {
   for (const child of children.splice(0)) {
@@ -93,9 +144,12 @@ afterEach(async () => {
   }
 });
 
+afterAll(() => {
+  if (buildRoot) rmSync(buildRoot, { recursive: true, force: true });
+});
+
 describe("enrolled pool host single-file artifacts run standalone with bare node", () => {
   it("starts egress-main.js alone in an empty directory without node_modules and answers /health", async () => {
-    ensureBuilt(egressArtifact, "@opensteer/browser-runtime");
     const dir = isolatedDir("opensteer-egress-standalone-");
     const target = join(dir, "egress-main.js");
     copyFileSync(egressArtifact, target);
@@ -130,12 +184,10 @@ describe("enrolled pool host single-file artifacts run standalone with bare node
   });
 
   it("starts relay.mjs alone in an empty directory without node_modules and reaches relay.ready", async () => {
-    ensureBuilt(relayArtifact, "@opensteer/pool-agent");
     const dir = isolatedDir("opensteer-relay-standalone-");
     const target = join(dir, "relay.mjs");
     copyFileSync(relayArtifact, target);
 
-    const credsDir = join(dir, "creds");
     const { privateKey } = generateKeyPairSync("ed25519");
     const keyPem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
     const keyPath = join(dir, "relay-key.pem");
@@ -185,11 +237,9 @@ describe("enrolled pool host single-file artifacts run standalone with bare node
     const result = await waitForOutput(child, (out) => out.includes('"relay.ready"'));
     expect(result.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND/u);
     expect(result.stdout).toContain('"relay.ready"');
-    void credsDir;
   });
 
   it("loads pool-agent main.js alone in an empty directory without node_modules", async () => {
-    ensureBuilt(agentArtifact, "@opensteer/pool-agent");
     const dir = isolatedDir("opensteer-agent-standalone-");
     const target = join(dir, "main.js");
     copyFileSync(agentArtifact, target);
