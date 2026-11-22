@@ -13,7 +13,8 @@ import {
   X509Certificate,
   type KeyObject,
 } from "node:crypto";
-import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
 import type { ManagedBrowserPoolHomeKeys } from "./managed-pool.js";
@@ -54,7 +55,7 @@ export async function loadOrCreateManagedBrowserPoolKeys(
     }
     text = await readFile(path, "utf8");
   }
-  await chmod(path, 0o600);
+  await setPrivateFileMode(path);
   const stored = StoredKeysSchema.parse(JSON.parse(text));
   const keys: ManagedBrowserPoolHomeKeys = {
     homeKey: createPrivateKey(stored.homeKey),

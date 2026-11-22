@@ -1202,17 +1202,17 @@ it("keeps a pooled row closing when the runtime said closing and its channel clo
     // The runtime's closing status reaches the Home; then its channel closes with 1000, before
     // the runtime said closed.
     const emit = EventEmitter.prototype.emit;
-    let dropping: TestRuntimeConnection | undefined;
+    const closingSeen: TestRuntimeConnection[] = [];
     const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
       this: TestRuntimeConnection,
       event,
       ...args
     ) {
-      if (event === "message" && dropping) return true;
+      if (event === "message" && closingSeen.length) return true;
       const sent = emit.call(this, event, ...args);
       const [data, binary] = args as [Buffer, boolean];
       if (event === "message" && !binary && /"state":"closing"/u.test(data.toString()))
-        dropping = this;
+        closingSeen.push(this);
       return sent;
     });
     try {
@@ -1230,10 +1230,10 @@ it("keeps a pooled row closing when the runtime said closing and its channel clo
           subject: j.task.userId,
         }),
       );
-      await until(() => expect(dropping).toBeDefined());
+      await until(() => expect(closingSeen).toHaveLength(1));
       // The Home took the closing status; then the channel closes cleanly.
       await until(async () => expect((await j.row(sessionId))?.state).toBe("closing"));
-      dropping!.lose(1000, "closed");
+      closingSeen[0]!.lose(1000, "closed");
       await ending;
       // Closing is not closed: nothing the channel did is the runtime's word that it ended; the
       // end step asks the runtime, which cannot be reached yet.
