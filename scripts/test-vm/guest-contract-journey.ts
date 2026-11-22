@@ -207,24 +207,35 @@ if(a[0]==='find-generic-password'&&a.includes('-w')){console.log('probe');proces
 process.exit(0);
 `;
 // sudo, recorded and never run: what the step asks of root, with what it pipes in.
-// The hosts file ends in a newline unless the case says otherwise (SUDO_HOSTS_TAIL). The case may
-// make one command fail (SUDO_FAIL), or have the step interrupted while one runs (SUDO_KILL: TERM
-// to the step, as a dropped connection or a timeout would).
+// Of the hosts file it runs the real tail, tee and sed, as root would, on the case's own copy
+// ($HOME/etc-hosts for /etc/hosts), so the step's exact commands are run, never only read. The case
+// may make one command fail (SUDO_FAIL), or have the step interrupted while one runs (SUDO_KILL:
+// TERM to the step, as a dropped connection or a timeout would).
 const sudoStandIn = String.raw`#!/usr/bin/env node
-const fs=require('node:fs'),a=process.argv.slice(2),home=process.env.HOME;
+const fs=require('node:fs'),{spawnSync}=require('node:child_process'),a=process.argv.slice(2),home=process.env.HOME;
 let input='';try{if(a.includes('tee'))input=fs.readFileSync(0,'utf8')}catch{}
 fs.appendFileSync(home+'/sudo-calls.jsonl',JSON.stringify({args:a,input})+'\n');
-if(a.includes('tail'))process.stdout.write(process.env.SUDO_HOSTS_TAIL??'\n');
 if(process.env.SUDO_KILL&&a.includes(process.env.SUDO_KILL))process.kill(process.ppid,'SIGTERM');
-process.exit(process.env.SUDO_FAIL&&a.includes(process.env.SUDO_FAIL)?1:0);
+if(process.env.SUDO_FAIL&&a.includes(process.env.SUDO_FAIL))process.exit(1);
+const command=a.filter((word)=>word!=='-n');
+if(['tail','tee','sed'].includes(command[0])){
+  const run=spawnSync('/usr/bin/'+command[0],command.slice(1).map((word)=>word==='/etc/hosts'?home+'/etc-hosts':word),{input,stdio:['pipe','pipe','inherit']});
+  process.stdout.write(command[0]==='tee'?'':run.stdout);
+  process.exit(run.status??1);
+}
+process.exit(0);
 `;
+/** A guest's hosts file as macOS writes it. */
+const guestHosts =
+  "##\n# Host Database\n##\n127.0.0.1\tlocalhost\n255.255.255.255\tbroadcasthost\n::1             localhost\n";
+const hostsOf = (root: string) => readFileSync(path.join(root, "etc-hosts"), "utf8");
 // What the guest's resolver says of the name once the line is in.
 const dscacheutilStandIn =
   "#!/bin/sh\necho 'name: account.first-run.opensteer.example'\necho 'ip_address: 127.0.0.1'\n";
 const sysctlGuest = '#!/bin/sh\n[ "$2" = kern.hv_vmm_present ] && echo 1\n';
 function keychainCase(
   name: string,
-  setup: { readonly guest: boolean; readonly marker: string | null },
+  setup: { readonly guest: boolean; readonly marker: string | null; readonly hosts?: string },
   run: (
     step: (action: string, extra?: NodeJS.ProcessEnv) => number | null,
     root: string,
@@ -240,6 +251,7 @@ function keychainCase(
     writeFileSync(path.join(tools, "security"), securityStandIn, { mode: 0o700 });
     writeFileSync(path.join(tools, "sudo"), sudoStandIn, { mode: 0o700 });
     writeFileSync(path.join(tools, "dscacheutil"), dscacheutilStandIn, { mode: 0o700 });
+    writeFileSync(path.join(root, "etc-hosts"), setup.hosts ?? guestHosts);
     if (setup.guest) writeFileSync(path.join(tools, "sysctl"), sysctlGuest, { mode: 0o700 });
     if (setup.marker !== null)
       writeFileSync(path.join(root, "opensteer-job/guest-job"), setup.marker);
@@ -363,6 +375,10 @@ keychainCase(
       asked[1]?.input,
       "127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority\n",
     );
+    assert.equal(
+      hostsOf(root),
+      `${guestHosts}127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority\n`,
+    );
     // Recorded before the line was written.
     assert.deepEqual(authorityRecord(root), [
       "hosts 127.0.0.1 account.first-run.opensteer.example # opensteer-job-fixture-authority",
@@ -420,8 +436,9 @@ keychainCase(
     const ended = sudoCalls(root)
       .slice(beforeEnd)
       .map(({ args }) => args.join(" "));
-    // Exactly what it added: the hosts line, matched as itself.
+    // Exactly what it added: the hosts line, matched as itself, and the file as it was.
     assert.deepEqual(ended, [`-n sed -i  ${exactHostsLine} /etc/hosts`]);
+    assert.equal(hostsOf(root), guestHosts);
     assert.equal(existsSync(authority), false);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
     assert.deepEqual(state(), { default: login, list: [login, other] });
@@ -433,9 +450,10 @@ keychainCase(
 // refuses before it changes anything.
 keychainCase(
   "authority-hosts-without-final-newline",
-  { guest: true, marker: "opensteer-gui-job-contract" },
+  { guest: true, marker: "opensteer-gui-job-contract", hosts: guestHosts.trimEnd() },
   (step, root) => {
-    assert.equal(step("begin", { SUDO_HOSTS_TAIL: "t" }), 77);
+    assert.equal(step("begin"), 77);
+    assert.equal(hostsOf(root), guestHosts.trimEnd());
     assert.deepEqual(
       sudoCalls(root).map(({ args }) => args.join(" ")),
       ["-n tail -c 1 /etc/hosts"],
@@ -468,6 +486,7 @@ keychainCase(
         .map(({ args }) => args.join(" ")),
       [`-n sed -i  ${exactHostsLine} /etc/hosts`],
     );
+    assert.equal(hostsOf(root), guestHosts);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority")), false);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
   },
@@ -480,9 +499,11 @@ keychainCase(
   (step, root) => {
     assert.equal(step("begin"), 0);
     assert.equal(step("end", { SUDO_FAIL: "sed" }), 1);
+    assert.match(hostsOf(root), /opensteer-job-fixture-authority\n$/u);
     assert.ok(existsSync(path.join(root, "opensteer-job/fixture-authority.state")));
     assert.ok(existsSync(path.join(root, "opensteer-job/fixture-authority/ca.pem")));
     assert.equal(step("end"), 0);
+    assert.equal(hostsOf(root), guestHosts);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority.state")), false);
     assert.equal(existsSync(path.join(root, "opensteer-job/fixture-authority")), false);
   },
