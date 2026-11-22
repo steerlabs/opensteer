@@ -52,8 +52,6 @@ interface AgentConnectionEdit {
   readonly label?: string;
   readonly accessMode?: AgentConnection["accessMode"];
   readonly grant?: AgentGrant;
-  /** A bridge's sender rule. Any change of who may speak stops what is running. */
-  readonly senders?: BridgeSenders;
 }
 
 /** What a new messaging bridge covers and who may speak to it, chosen on its consent. */
@@ -476,23 +474,10 @@ export class AgentConnectionStore {
       grant,
       input.accessMode ?? current.accessMode,
     );
-    if (input.senders !== undefined && current.bridgeSenders === null)
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Only a chat has people who may message it.",
-      });
-    const senders = input.senders ?? current.bridgeSenders;
-    if (senders !== null) assertBridgeGrant(senders, current.bridgeConversationId !== null, grant);
-    // Who may speak changed, in either direction: what runs was admitted under the old rule.
-    const sendersChanged = senders !== current.bridgeSenders;
     const narrowed =
       agentGrantNarrowed(current.grant, grant) ||
-      !threadAccessModeAtMost(current.accessMode, accessMode) ||
-      sendersChanged;
-    const changed =
-      !isDeepStrictEqual(current.grant, grant) ||
-      current.accessMode !== accessMode ||
-      sendersChanged;
+      !threadAccessModeAtMost(current.accessMode, accessMode);
+    const changed = !isDeepStrictEqual(current.grant, grant) || current.accessMode !== accessMode;
     const row = await tx
       .updateTable("agentConnections")
       .set({
@@ -500,7 +485,6 @@ export class AgentConnectionStore {
         accessMode,
         grant: jsonValue(grant),
         grantRevision: current.grantRevision + Number(changed),
-        ...(sendersChanged ? { bridgeSenders: senders } : {}),
         ...(narrowed
           ? {
               cleanupReason: "narrowed" as const,
