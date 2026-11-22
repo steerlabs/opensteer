@@ -177,7 +177,12 @@ export const layoutReanimated = {
   FadeOut: { duration: () => ({}) },
   LayoutAnimationConfig: (props: { readonly children?: ReactNode }) => props.children,
   LinearTransition: { duration: () => ({}) },
+  cancelAnimation: () => undefined,
+  Easing: { inOut: () => undefined, ease: undefined, linear: undefined },
   useAnimatedStyle: () => ({}),
+  useReducedMotion: () => false,
+  withRepeat: (value: unknown) => value,
+  withSequence: (value: unknown) => value,
   useSharedValue: (value: unknown) => ({ value }),
   withTiming: (value: unknown) => value,
 };
@@ -192,7 +197,7 @@ interface Laid {
   readonly node: YogaNode;
   readonly children: Laid[];
   /** For text: the lines its words needed, and the lines it may show. */
-  text?: { needed: number; shown: number };
+  text?: { needed: number; shown: number; chars: number };
 }
 
 const alignOf: Record<string, Align> = {
@@ -314,32 +319,40 @@ function applyStyle(node: YogaNode, style: Style): void {
   if (style["overflow"] === "scroll") node.setOverflow(Overflow.Scroll);
 }
 
+/** A line of text: how wide it is, and how many characters it holds. */
+interface Line {
+  readonly width: number;
+  readonly chars: number;
+}
+
 /** A text's words, wrapped greedily into lines at a width, as a line breaker would. */
-function wrap(words: readonly string[], charWidth: number, available: number): number[] {
+function wrap(words: readonly string[], charWidth: number, available: number): Line[] {
   // Narrower than one character still holds one character a line.
   const width = Math.max(available, charWidth);
-  const lines: number[] = [];
-  let line = 0;
+  const perLine = Math.max(1, Math.floor((width + 0.01) / charWidth));
+  const lines: Line[] = [];
+  let chars = 0;
+  const push = () => {
+    lines.push({ chars, width: chars * charWidth });
+    chars = 0;
+  };
   for (const word of words) {
-    const wordWidth = word.length * charWidth;
-    const next = line === 0 ? wordWidth : line + charWidth + wordWidth;
-    if (line > 0 && next > width + 0.01) {
-      lines.push(line);
-      line = 0;
-    }
-    if (line === 0 && wordWidth > width + 0.01) {
+    const next = chars === 0 ? word.length : chars + 1 + word.length;
+    if (chars > 0 && next > perLine) push();
+    if (chars === 0 && word.length > perLine) {
       // A word longer than the line breaks where it must.
-      let rest = wordWidth;
-      while (rest > width + 0.01) {
-        lines.push(width);
-        rest -= width;
+      let rest = word.length;
+      while (rest > perLine) {
+        chars = perLine;
+        push();
+        rest -= perLine;
       }
-      line = rest;
+      chars = rest;
       continue;
     }
-    line = line === 0 ? wordWidth : line + charWidth + wordWidth;
+    chars = chars === 0 ? word.length : chars + 1 + word.length;
   }
-  if (line > 0 || lines.length === 0) lines.push(line);
+  if (chars > 0 || lines.length === 0) push();
   return lines;
 }
 
@@ -361,8 +374,17 @@ function textMeasure(laid: Laid, style: Style) {
     const unbounded = mode === MeasureMode.Undefined || !Number.isFinite(width);
     const lines = wrap(words, charWidth, unbounded ? Infinity : width);
     const shown = Math.min(lines.length, shownLimit);
-    laid.text = { needed: lines.length, shown };
-    const widest = Math.max(0, ...lines.slice(0, shown));
+    laid.text = {
+      needed: lines.length,
+      shown,
+      // A cut line gives its last character to the ellipsis.
+      // Lines meet at the space the break took.
+      chars:
+        lines.slice(0, shown).reduce((sum, line) => sum + line.chars, 0) +
+        Math.max(0, shown - 1) -
+        (shown < lines.length ? 1 : 0),
+    };
+    const widest = Math.max(0, ...lines.slice(0, shown).map((line) => line.width));
     return {
       height: shown * lineHeight,
       width: unbounded ? widest : Math.min(width, Math.ceil(widest)),
@@ -407,6 +429,8 @@ export interface Frames {
   readonly visible: (element: Element) => Rect | null;
   /** Whether a text had to be cut to its lines. */
   readonly cut: (element: Element) => boolean;
+  /** The characters of a text a person sees: all of them, or those before its ellipsis. */
+  readonly shown: (element: Element) => string;
   /** Every text drawn, with its words. */
   readonly texts: () => readonly { readonly element: Element; readonly words: string }[];
 }
@@ -487,6 +511,11 @@ function once(container: Element, window: { width: number; height: number }) {
     cut: (element) => {
       const laid = texts.get(element);
       return laid?.text !== undefined && laid.text.needed > laid.text.shown;
+    },
+    shown: (element) => {
+      const words = (element.textContent ?? "").split(/\s+/u).filter(Boolean).join(" ");
+      const laid = texts.get(element);
+      return laid?.text === undefined ? words : words.slice(0, laid.text.chars);
     },
     frame: (element) => {
       const found = absolute.get(element);

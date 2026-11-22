@@ -92,7 +92,7 @@ const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus
   "signed-in",
 ]);
 
-const DeploymentListRow = memo(function DeploymentListRow(props: {
+export const DeploymentListRow = memo(function DeploymentListRow(props: {
   /** This computer's one read when the list opened; undefined until it answers. */
   readonly attention: ComputerAttention | null | undefined;
   readonly current: boolean;
@@ -143,9 +143,8 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
           </AppText>
         </View>
         <View style={styles.copy}>
-          <AppText numberOfLines={1} role="title">
-            {row.name}
-          </AppText>
+          {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
+          <AppText role="title">{row.name}</AppText>
           {props.work ? (
             <AppText numberOfLines={1} role="caption" tone="muted">
               {props.work}
