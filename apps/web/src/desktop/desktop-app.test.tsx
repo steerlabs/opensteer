@@ -21,6 +21,10 @@ import { describe, expect, it, vi } from "vitest";
 // Preload the lazy app bundle outside per-test timeouts so fake-timer gate checks run immediately.
 import "../app.js";
 import {
+  forgetRemoteAccessOnStart,
+  remoteAccessWishHeld,
+} from "../components/first-run/remote-access-on-start.js";
+import {
   DesktopApp,
   chooserNotice,
   desktopAccessPresentationFromSnapshot,
@@ -252,7 +256,7 @@ it("carries setup from creating this computer straight into the app it opens", a
   container.remove();
 });
 
-it("remembers to turn Remote access on for an Opensteer started here while signed in, and only then", async () => {
+it("wishes Remote access on only for On this Mac while signed in, and answers the card Not now for a Home without an account", async () => {
   const personalId = createId("deployment");
   const run = async (account: DeploymentAccessSnapshot["account"]) => {
     localStorage.clear();
@@ -318,13 +322,94 @@ it("remembers to turn Remote access on for an Opensteer started here while signe
     await act(async () => {
       for (const listener of listeners) listener(access);
     });
-    const remembered = localStorage.getItem(`opensteer.setup.remote-access.v1:${personalId}`);
+    const outcome = {
+      wish: remoteAccessWishHeld(),
+      card: localStorage.getItem(`opensteer.sign-in-invite.v1:${personalId}`),
+    };
     await act(async () => root.unmount());
     container.remove();
-    return remembered;
+    forgetRemoteAccessOnStart();
+    return outcome;
   };
-  expect(await run({ available: true, status: "signed-in" } as never)).toBe("wanted");
-  expect(await run({ available: true, status: "signed-out" } as never)).toBeNull();
+  expect(
+    await run({
+      available: true,
+      issuer: "https://accounts.opensteer.test",
+      status: "signed-in",
+      subject: "acct_a",
+    } as never),
+  ).toEqual({ wish: true, card: null });
+  // Started without an account: no wish, and not asked to sign in on the next screen.
+  expect(await run({ available: true, status: "signed-out" } as never)).toEqual({
+    wish: false,
+    card: "not-now",
+  });
+});
+
+it("never wishes Remote access on for a separate Opensteer started from the list", async () => {
+  localStorage.clear();
+  const listed: DeploymentAccessDeployment = {
+    ...accessDeployment("idle"),
+    name: "Studio",
+    source: "account",
+  };
+  const account = {
+    available: true,
+    issuer: "https://accounts.opensteer.test",
+    status: "signed-in",
+    subject: "acct_a",
+  } as never;
+  let access = snapshot({
+    account,
+    deployments: [listed],
+    personalSetup: personalStatus({ canStart: true, state: "stopped", step: null }),
+  });
+  const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
+  const createPersonalDeployment = vi.fn(async () => undefined);
+  const bridge = {
+    checkDeployments: async () => undefined,
+    createPersonalDeployment,
+    getDeploymentAccessSnapshot: async () => access,
+    onHostWebSocketEvent: () => () => undefined,
+    onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    onNotificationActivated: () => () => undefined,
+    onLocalExecutionStatusChanged: () => () => undefined,
+  } as unknown as OpensteerDesktopBridge;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.startsWith(label),
+    );
+  await act(async () => root.render(<DesktopApp bridge={bridge} />));
+  await vi.waitFor(() => expect(container.textContent).toContain("Studio"));
+  await act(async () => button("Other ways in")!.click());
+  await act(async () => button("Start a separate Opensteer on this")!.click());
+  await act(async () =>
+    [...document.querySelectorAll("button")]
+      .find((candidate) => candidate.textContent === "Start separate Opensteer")!
+      .click(),
+  );
+  expect(createPersonalDeployment).toHaveBeenCalledTimes(1);
+  const personalId = createId("deployment");
+  access = snapshot({
+    account,
+    deployments: [listed, { ...accessDeployment("connecting"), ...personalSummary(personalId) }],
+    personalSetup: personalStatus({ deploymentId: personalId, name: "Workshop", step: "ready" }),
+    revision: 5,
+    selectedDeploymentId: personalId,
+  });
+  await act(async () => {
+    for (const listener of listeners) listener(access);
+  });
+  expect(remoteAccessWishHeld()).toBe(false);
+  expect(localStorage.getItem(`opensteer.setup.remote-access.v1:${personalId}`)).toBeNull();
+  await act(async () => root.unmount());
+  container.remove();
 });
 
 describe("the front door", () => {
@@ -454,7 +539,7 @@ describe("the front door", () => {
     expect(app.bridge.linkPersonal).not.toHaveBeenCalled();
     expect(app.bridge.cloudComputerRead).not.toHaveBeenCalled();
     expect(app.bridge.openExternalUrl).not.toHaveBeenCalled();
-    expect(localStorage.getItem(`opensteer.setup.remote-access.v1:${personalId}`)).toBeNull();
+    expect(remoteAccessWishHeld()).toBe(false);
     await app.close();
   });
 

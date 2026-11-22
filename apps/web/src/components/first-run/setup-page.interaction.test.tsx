@@ -6,6 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostClientRequestError, type ThreadPlacementOption } from "@opensteer/client/host";
 import type { AddHarnessAccount } from "../account-sign-in-dialog.js";
 import { SetupPage } from "./setup-page.js";
+import {
+  bindRemoteAccessOnStart,
+  forgetRemoteAccessOnStart,
+  remoteAccessWishHeld,
+  wishRemoteAccessOnStart,
+} from "./remote-access-on-start.js";
 
 type Listener = () => void;
 
@@ -840,11 +846,18 @@ it("leads a Home without an account with sign-in, and opens a private network fr
 });
 
 describe("Remote access on start", () => {
-  const wanted = () => `opensteer.setup.remote-access.v1:${shell.snapshot.deploymentId}`;
-  const unlinkedSignedIn = () => {
+  const accountA = { issuer: "https://accounts.opensteer.test", subject: "acct_a" };
+  const accountB = { issuer: "https://accounts.opensteer.test", subject: "acct_b" };
+  /** "On this Mac", chosen while signed in as `who`, for the Home setup then named. */
+  const wish = (who = accountA) => {
+    wishRemoteAccessOnStart({ ...who, status: "signed-in" });
+    bindRemoteAccessOnStart(shell.snapshot.deploymentId);
+  };
+  const unlinkedSignedIn = (who = accountA) => {
     const { bridge } = desktopBridge();
     const access = {
-      account: { available: true, status: "signed-in" },
+      account: { available: true, status: "signed-in", ...who },
+      deployments: [],
       personalAccountLink: { status: "unlinked" },
     };
     onThisMac(bridge, access);
@@ -857,16 +870,23 @@ describe("Remote access on start", () => {
   const settle = async () => {
     for (let flush = 0; flush < 6; flush += 1) await act(async () => undefined);
   };
+  const requests = () =>
+    shell.hostClient.dispatch.mock.calls.filter(
+      ([command]) => (command as { type: string }).type === "personal.remoteAccess.request",
+    );
+  afterEach(() => forgetRemoteAccessOnStart());
 
-  it("links and turns Remote access on by itself, once, for an Opensteer started while signed in", async () => {
+  it("links and turns Remote access on by itself, once, for the Home started by On this Mac", async () => {
     const { access, bridge } = unlinkedSignedIn();
-    localStorage.setItem(wanted(), "wanted");
+    wish();
     await mount();
     await settle();
     // On the first step already: nothing to press.
     expect(container.textContent).toContain("Your AI");
     expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
     expect(bridge.signIn).not.toHaveBeenCalled();
+    // Sent, and so forgotten: nothing is kept for later.
+    expect(remoteAccessWishHeld()).toBe(false);
 
     const linked = { ...access, personalAccountLink: { status: "linked" } };
     shell.deploymentAccess = linked;
@@ -879,36 +899,50 @@ describe("Remote access on start", () => {
       revision: 2,
     });
     await settle();
-    const requests = shell.hostClient.dispatch.mock.calls.filter(
-      ([command]) => (command as { type: string }).type === "personal.remoteAccess.request",
-    );
-    expect(requests).toEqual([
+    expect(requests()).toEqual([
       [
         expect.objectContaining({
           intent: { action: "configure", mode: "connect", privateOrigin: null },
         }),
       ],
     ]);
-    await remoteChanged({
-      ...remoteStatus,
-      access: {
-        ...(remoteStatus.access as object),
-        accountLink: { state: "active" },
-        mode: "connect",
-        route: { document: { route: { origin: "https://studio.connect.test" } } },
-      },
-      revision: 3,
-    });
-    await settle();
-    // Done: never asked again, even on the next launch.
-    expect(localStorage.getItem(wanted())).toBeNull();
-    act(() => root?.unmount());
+  });
+
+  it("keeps Remote access off when Setup was left while it turned on, then reopened after it was turned off", async () => {
+    const { bridge } = unlinkedSignedIn();
+    wish();
     await mount();
     await settle();
     expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
+    // Setup is left while it is turning on.
+    act(() => root?.unmount());
+    root = undefined;
+    await act(async () => new Promise((done) => setTimeout(done, 0)));
+    // The person turns Remote access off; later Setup is opened again from the menu.
+    await remoteChanged({
+      ...remoteStatus,
+      access: { ...(remoteStatus.access as object), accountLink: { state: "active" }, mode: "off" },
+      revision: 5,
+    });
+    await mount();
+    await settle();
+    expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
+    expect(requests()).toHaveLength(0);
+    expect(remoteAccessWishHeld()).toBe(false);
   });
 
-  it("turns nothing on for an Opensteer started without that wish", async () => {
+  it("does nothing for another account that signed in before the link was made", async () => {
+    const { bridge } = unlinkedSignedIn(accountB);
+    wish(accountA);
+    await mount();
+    await settle();
+    expect(bridge.linkPersonal).not.toHaveBeenCalled();
+    expect(bridge.signIn).not.toHaveBeenCalled();
+    expect(requests()).toHaveLength(0);
+    expect(remoteAccessWishHeld()).toBe(false);
+  });
+
+  it("turns nothing on for a Home started any other way", async () => {
     const { bridge } = unlinkedSignedIn();
     await mount();
     await settle();
@@ -916,9 +950,9 @@ describe("Remote access on start", () => {
     expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
   });
 
-  it("leaves a private network someone chose as it is, and forgets the wish", async () => {
+  it("leaves a private network someone chose as it is, and drops the wish", async () => {
     const { bridge } = unlinkedSignedIn();
-    localStorage.setItem(wanted(), "wanted");
+    wish();
     remoteStatus = {
       ...remoteStatus,
       access: {
@@ -930,7 +964,7 @@ describe("Remote access on start", () => {
     await mount();
     await settle();
     expect(bridge.linkPersonal).not.toHaveBeenCalled();
-    expect(localStorage.getItem(wanted())).toBeNull();
+    expect(remoteAccessWishHeld()).toBe(false);
   });
 });
 

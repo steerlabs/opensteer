@@ -108,7 +108,7 @@ it("invites an Opensteer with no account to sign in, once, and signs in only whe
   await mount();
   expect(container.textContent).toContain("Use Opensteer from anywhere");
   expect(container.textContent).toContain(
-    "Sign in with your Opensteer account so your phone and connected agents can reach Studio Mac. Nothing else changes.",
+    "Sign in with your Opensteer account to add Studio Mac to it and turn on Remote access, so your phone and connected agents can reach it. You can turn Remote access off in Settings.",
   );
   // Showing it calls nothing.
   expect(bridge.signIn).not.toHaveBeenCalled();
@@ -144,6 +144,28 @@ it.each([
 it("asks nothing from a Mac that doesn't run this Opensteer", async () => {
   home({ available: true, status: "signed-out" });
   shell.desktopDeployment = { id, kind: "personal", name: "Studio Mac", onThisComputer: false };
+  await mount();
+  expect(container.textContent).toBe("");
+});
+
+it("is not shown on an Opensteer that already reaches its devices over a private network", async () => {
+  home({ available: true, status: "signed-out" });
+  shell.hostClient.rpc["personal.remoteAccess.get"].mockResolvedValue({
+    data: {
+      access: {
+        accountLink: null,
+        generation: 1,
+        mode: "private",
+        route: { document: { route: { origin: "https://mac.tail2f9.ts.net" } } },
+        schemaVersion: 2,
+      },
+      accountIssuer: "https://accounts.opensteer.test",
+      executorConnected: true,
+      operation: null,
+      revision: 1,
+    },
+    ok: true,
+  });
   await mount();
   expect(container.textContent).toBe("");
 });

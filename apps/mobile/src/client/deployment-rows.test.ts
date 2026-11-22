@@ -112,7 +112,7 @@ describe("the door a row that needs a credential opens", () => {
 
     expect(row.signIn).toBe("account-grant");
     expect(deploymentSignInLabel("account-grant")).toBe("Sign in");
-    expect(deploymentStatusDetail(row)).toBe("Sign in to this deployment to see your work.");
+    expect(deploymentStatusDetail(row)).toBe("Sign in to this Opensteer to see your work.");
   });
 
   it("asks for a pairing code where only the operator can supply one", () => {

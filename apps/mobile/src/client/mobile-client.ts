@@ -2860,7 +2860,7 @@ function sameConnectionSource(
 function verificationFailureDetail(verification: HostVerification): string {
   switch (verification) {
     case "identity-mismatch":
-      return "Sign-in was not started because this address answers as a different deployment.";
+      return "Sign-in was not started because this address answers as a different Opensteer.";
     case "host-too-old":
       return "Sign-in was not started because this deployment must be updated first.";
     case "client-too-old":

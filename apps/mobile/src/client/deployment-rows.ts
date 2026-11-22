@@ -226,17 +226,17 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
       }
       return row.signIn === "pairing-code"
         ? "Enter a new pairing code from the computer that hosts it."
-        : "Sign in to this deployment to see your work.";
+        : "Sign in to this Opensteer to see your work.";
     case "unavailable":
       return isMacHomeRow(row)
         ? "That computer is asleep or off its network."
-        : "This deployment has no address this app can reach.";
+        : "This Opensteer has no address this app can reach.";
     case "unverified":
-      return "The address this phone uses answers as a different deployment.";
+      return "The address this phone uses answers as a different Opensteer.";
     case "update-required":
       // The Home by name needs the update, in the Mac's words.
       return row.verification === "host-too-old"
         ? (placeStatus.unavailable("host-too-old", row.name).reason ?? null)
-        : "This deployment speaks a newer Opensteer protocol than this app. Update this app.";
+        : "This Opensteer speaks a newer protocol than this app. Update this app.";
   }
 }

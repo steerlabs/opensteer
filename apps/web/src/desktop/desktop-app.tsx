@@ -20,6 +20,7 @@ import {
   DesktopConnect,
   DesktopWelcome,
   type ConnectKind,
+  type StartedFrom,
 } from "../components/places/desktop-entry.js";
 import { DeviceRemovedScreen, DeviceSignInScreen } from "../components/devices/device-removed.js";
 import { membershipRecord } from "../components/devices/this-device.js";
@@ -27,10 +28,13 @@ import { observeLocalExecutionStatus } from "./local-execution-status.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
 import { ComputerFactsStore, readComputerFacts } from "./computer-facts.js";
 import { thisComputerLabel } from "./places.js";
+import { pendingSetupStep } from "../components/first-run/setup-memory.js";
 import {
-  pendingSetupStep,
-  rememberRemoteAccessOnStart,
-} from "../components/first-run/setup-memory.js";
+  bindRemoteAccessOnStart,
+  forgetRemoteAccessOnStart,
+  wishRemoteAccessOnStart,
+} from "../components/first-run/remote-access-on-start.js";
+import { declineSignInInvite } from "../components/sign-in-invite.js";
 import { remoteAccessOnWhenSignedInStart } from "@opensteer/client/host";
 import { SetupOpening } from "../components/first-run/setup-opening.js";
 import { StartupFailure } from "../components/onboarding-card.js";
@@ -162,9 +166,9 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // opens. A later launch resumes only a setup left unfinished; after that,
   // setup stays one menu away.
   const [settingUpHere, setSettingUpHere] = useState(false);
-  // Started while signed in: once this computer's Opensteer is known, its setup turns
-  // Remote access on (remoteAccessOnWhenSignedInStart).
-  const [remoteAccessOnStart, setRemoteAccessOnStart] = useState(false);
+  // Started through "Use without an account": once this computer's setup names the Home, its
+  // sign-in card is answered "Not now" for it (N9).
+  const [withoutAccount, setWithoutAccount] = useState(false);
 
   // Data an earlier Opensteer left, which this one can't open: offered a fresh
   // start until the person chooses another way on ("Not now").
@@ -231,12 +235,17 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     ({ id }) => id === snapshot.selectedDeploymentId,
   );
   const selected = selectedConnection ? desktopSummaryFromAccess(selectedConnection) : undefined;
-  const startedHereId = remoteAccessOnStart && selected?.onThisComputer ? selected.id : null;
+  // The Home this computer's setup is creating, once named: what a choice made before it
+  // existed is bound to.
+  const creatingId = snapshot?.personalSetup?.deploymentId ?? null;
   useEffect(() => {
-    if (startedHereId === null) return;
-    rememberRemoteAccessOnStart(startedHereId);
-    setRemoteAccessOnStart(false);
-  }, [startedHereId]);
+    if (creatingId === null) return;
+    bindRemoteAccessOnStart(creatingId);
+    if (withoutAccount) {
+      declineSignInInvite(creatingId);
+      setWithoutAccount(false);
+    }
+  }, [creatingId, withoutAccount]);
   // A Mac removed from the Opensteer on screen shows that before anything
   // signs in again, whichever arrived first: the session ending or the 4010.
   const [membership, setMembership] = useState<DesktopLocalExecutionStatus | null>(null);
@@ -657,12 +666,14 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       const canSetUpHere =
         setup?.deploymentId === null && setup.state === "stopped" && setup.canStart;
       const setUpHere = canSetUpHere
-        ? (name?: string) => {
+        ? (name: string | undefined, from: StartedFrom) => {
             setScreen(null);
             setSettingUpHere(true);
-            setRemoteAccessOnStart(
-              remoteAccessOnWhenSignedInStart && snapshot.account.status === "signed-in",
-            );
+            // Only "Where should your Opensteer live? › On this Mac" turns Remote access on.
+            if (from === "on-this-mac" && remoteAccessOnWhenSignedInStart)
+              wishRemoteAccessOnStart(snapshot.account);
+            else forgetRemoteAccessOnStart();
+            setWithoutAccount(from === "without-account");
             runBridgeOperation(bridge.createPersonalDeployment(name ? { name } : {}));
           }
         : null;

@@ -61,35 +61,3 @@ export function resumeStep(
   const from = steps.indexOf(remembered);
   return applicable.find((step) => steps.indexOf(step) >= from) ?? applicable.at(-1)!;
 }
-
-function remoteAccessKey(deploymentId: string): string {
-  return `opensteer.setup.remote-access.v1:${deploymentId}`;
-}
-
-/**
- * The person started this Opensteer while signed in, so setup turns Remote access on for it.
- * Remembered until that is done or has failed once, so quitting in the middle carries on.
- */
-export function rememberRemoteAccessOnStart(deploymentId: string): void {
-  try {
-    localStorage.setItem(remoteAccessKey(deploymentId), "wanted");
-  } catch {
-    // Without storage the person turns it on in the phone step or in Settings.
-  }
-}
-
-export function remoteAccessWantedOnStart(deploymentId: string): boolean {
-  try {
-    return localStorage.getItem(remoteAccessKey(deploymentId)) === "wanted";
-  } catch {
-    return false;
-  }
-}
-
-export function forgetRemoteAccessOnStart(deploymentId: string): void {
-  try {
-    localStorage.removeItem(remoteAccessKey(deploymentId));
-  } catch {
-    // Nothing to forget.
-  }
-}

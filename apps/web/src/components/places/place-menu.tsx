@@ -25,10 +25,24 @@ export function PlaceMenuPlaces({
   readonly places: DesktopPlaces;
   readonly severalOnly?: boolean;
 }) {
+  const computers = places.snapshot.deployments.filter((row) => row.kind === "personal");
+  // Nothing to switch between: nothing is mounted, read or listened for.
+  if (severalOnly && computers.length <= 1) return null;
+  return <PlaceMenuBody computers={computers} onClose={onClose} places={places} />;
+}
+
+function PlaceMenuBody({
+  computers,
+  onClose,
+  places,
+}: {
+  readonly computers: DesktopPlaces["snapshot"]["deployments"];
+  readonly onClose: () => void;
+  readonly places: DesktopPlaces;
+}) {
   const { bridge, facts: factsStore, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const computers = snapshot.deployments.filter((row) => row.kind === "personal");
   const facts = useComputerFacts(factsStore, computers);
   const work = usePlaceWorkBadges(bridge);
   const cloud = usePlaceCloudComputers(bridge);
@@ -58,7 +72,6 @@ export function PlaceMenuPlaces({
       .finally(() => setPending(false));
   };
   const signedIn = snapshot.account.status === "signed-in";
-  if (severalOnly && rows.length <= 1) return null;
   return (
     <div className="picker__section place-menu__places">
       {/* A failed refresh says so on this line, so it never moves the menu open above it. */}

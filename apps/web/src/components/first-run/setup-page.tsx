@@ -14,7 +14,7 @@ import { HomeSetupStep } from "../devices/home-setup-step.js";
 import { SetupPhoneStep } from "./setup-phone-step.js";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useWebRemoteAccess } from "../../account/remote-access-port.js";
-import { useRemoteAccessOnStart } from "./remote-access-on-start.js";
+import { forgetRemoteAccessOnStart, useRemoteAccessOnStart } from "./remote-access-on-start.js";
 
 /**
  * Setup, in up to three short steps: the AI that does the work, Set up this
@@ -25,7 +25,7 @@ import { useRemoteAccessOnStart } from "./remote-access-on-start.js";
  * the computer menu any time after.
  */
 export function SetupPage() {
-  const { desktopBridge, desktopDeployment, hostClient, snapshot } = useShell();
+  const { deploymentAccess, desktopBridge, desktopDeployment, hostClient, snapshot } = useShell();
   const navigate = useNavigate();
   const onThisComputer =
     desktopBridge !== null &&
@@ -38,7 +38,7 @@ export function SetupPage() {
   // is doing, rather than starting a second one beside it.
   const remote = usePersonalRemoteAccess(onThisComputer ? hostClient : null);
   const connect = useWebRemoteAccess(remote);
-  useRemoteAccessOnStart(deploymentId, connect);
+  useRemoteAccessOnStart(deploymentId, deploymentAccess?.account ?? null, connect);
   const [step, setStep] = useState<SetupStepId>(() =>
     resumeStep(steps, deploymentId ? pendingSetupStep(deploymentId) : null),
   );
@@ -51,6 +51,7 @@ export function SetupPage() {
   }, [current, deploymentId]);
 
   const finish = () => {
+    forgetRemoteAccessOnStart();
     if (deploymentId) forgetSetup(deploymentId);
     void navigate("/", { replace: true });
   };

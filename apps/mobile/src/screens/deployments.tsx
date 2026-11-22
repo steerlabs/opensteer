@@ -754,7 +754,7 @@ function UnavailableAccountDeployments(props: {
       <AppText role="secondaryMedium">Some Opensteers in your account need attention</AppText>
       {props.hasAvailableRows ? (
         <AppText role="secondary" tone="muted">
-          Deployments this phone could verify are still shown above.
+          Opensteers this phone could verify are still shown above.
         </AppText>
       ) : null}
       {props.entries.map((entry) => {

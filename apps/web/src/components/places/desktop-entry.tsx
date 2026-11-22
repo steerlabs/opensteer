@@ -26,6 +26,14 @@ import { cloudComputerAccountFor } from "../settings/sections/cloud-computer.js"
 
 export type ConnectKind = "pairing" | "address";
 
+/**
+ * Which question started this Mac's Opensteer: "Where should your Opensteer live? › On this
+ * Mac" (its setup turns Remote access on), "Use without an account" (it is never asked to sign
+ * in), or anything else, such as a separate Opensteer (neither).
+ */
+export type StartedFrom = "on-this-mac" | "without-account" | "other";
+export type SetUpHere = (name: string | undefined, from: StartedFrom) => void;
+
 function EntryRow({
   detail,
   disabled = false,
@@ -187,7 +195,7 @@ export function DesktopWelcome({
 }: {
   readonly error: string | null;
   readonly onConnect: (kind: ConnectKind) => void;
-  readonly onSetUpHere: ((name?: string) => void) | null;
+  readonly onSetUpHere: SetUpHere | null;
   readonly places: DesktopPlaces;
 }) {
   const { bridge, snapshot } = places;
@@ -203,14 +211,13 @@ export function DesktopWelcome({
       setActionError(failureWords(reason)),
     );
   };
-  const start = () => onSetUpHere?.(chosenName ?? undefined);
-  const startHere = (detail: string, title?: string) => (
+  const startHere = (from: StartedFrom, detail: string, title?: string) => (
     <StartHere
       detail={detail}
       disabled={onSetUpHere === null}
       name={macName}
       onRename={setChosenName}
-      onStart={start}
+      onStart={() => onSetUpHere?.(chosenName ?? undefined, from)}
       {...(title ? { title } : {})}
     />
   );
@@ -226,7 +233,9 @@ export function DesktopWelcome({
         places={places}
         run={run}
         startHere={
-          onSetUpHere ? startHere("Free. Works while this Mac is awake.", "On this Mac") : null
+          onSetUpHere
+            ? startHere("on-this-mac", "Free. Works while this Mac is awake.", "On this Mac")
+            : null
         }
       />
     );
@@ -243,7 +252,7 @@ export function DesktopWelcome({
       >
         <ErrorNotice message={actionError ?? error} />
         <div className="desktop-entry__rows">
-          {startHere("Your agent lives and works here. No account needed.")}
+          {startHere("other", "Your agent lives and works here. No account needed.")}
           <EntryRow
             detail="It’s already running on another computer. Use its pairing code."
             icon="devices"
@@ -266,7 +275,7 @@ export function DesktopWelcome({
       >
         <ErrorNotice message={actionError ?? error} />
         <div className="desktop-entry__rows">
-          {startHere("Your agent lives and works here. No account needed.")}
+          {startHere("without-account", "Your agent lives and works here. No account needed.")}
         </div>
         <button
           className="btn btn--ghost onboarding__back"
@@ -551,7 +560,7 @@ export function DesktopChooser({
     readonly title: string;
   } | null;
   readonly onConnect: (kind: ConnectKind) => void;
-  readonly onSetUpHere: ((name?: string) => void) | null;
+  readonly onSetUpHere: SetUpHere | null;
   readonly places: DesktopPlaces;
 }) {
   const { bridge, snapshot } = places;
@@ -593,7 +602,7 @@ export function DesktopChooser({
       }
       disabled={pending}
       icon="laptop"
-      onClick={() => (others.length > 0 ? setConfirmingStart(true) : startHere())}
+      onClick={() => (others.length > 0 ? setConfirmingStart(true) : startHere(undefined, "other"))}
       title={
         others.length > 0
           ? `Start a separate Opensteer on ${thisMac}`
@@ -697,7 +706,7 @@ export function DesktopChooser({
           onClose={() => setConfirmingStart(false)}
           onStart={() => {
             setConfirmingStart(false);
-            startHere();
+            startHere(undefined, "other");
           }}
           others={others}
         />
