@@ -25,7 +25,8 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       phase_since timestamptz not null default now(),
       last_start jsonb,
       failed_starts integer not null default 0,
-      restart_keys jsonb not null default '[]'::jsonb
+      restart_keys jsonb not null default '[]'::jsonb,
+      restart_wanted jsonb not null default '[]'::jsonb
     )
   `.execute(database);
   await sql`
@@ -55,7 +56,7 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       surface_id text not null,
       document_id text,
       reason text not null,
-      typed boolean not null default false,
+      typed boolean,
       lost_at timestamptz not null default now(),
       noticed_at timestamptz,
       primary key (intent_id, surface_id)

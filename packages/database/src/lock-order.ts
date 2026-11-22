@@ -74,6 +74,7 @@ export const databaseLockOrder = [
   "advisory:cloud",
   "advisory:account-capacity",
   "advisory:cloud-computer-backup-pool",
+  "advisory:browser-pool-capacity",
   "advisory:cloud-computer-billing-reconcile",
   "advisory:deployment",
   "advisory:origin",
@@ -323,6 +324,8 @@ export const databaseLockOrder = [
   "control-plane:oauth_clients",
   "control-plane:cloud_computer_checkouts",
   "control-plane:cloud_computers",
+  "control-plane:browser_pool_hosts",
+  "control-plane:browser_pool_slots",
   "control-plane:cloud_computer_egress_endpoints",
   "control-plane:cloud_computer_backup_targets",
   "control-plane:cloud_computer_backup_namespaces",
@@ -346,6 +349,7 @@ export function advisoryLockResource(key: string, seed: number): string {
     return "advisory:cloud-computer-billing-reconcile";
   if (seed === 0 && key === "cloud-computer-backup-pool")
     return "advisory:cloud-computer-backup-pool";
+  if (seed === 0 && key === "browser-pool-capacity") return "advisory:browser-pool-capacity";
   if (seed === 2) return "advisory:adoption-proof";
   if (seed === 1) return "advisory:origin";
   if (seed !== 0) throw new Error(`Undeclared advisory hash seed: ${seed}`);

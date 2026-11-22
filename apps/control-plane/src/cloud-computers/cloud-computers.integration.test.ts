@@ -1782,7 +1782,7 @@ integration("Cloud Computer Account service", () => {
       expect(initial).not.toHaveProperty(key);
 
     const endpoint = await cloud.addEgressEndpoint({
-      url: "https://proxy.example.test",
+      url: "https://proxy.example.test:8443",
       username: "user",
       password: "test-password",
     });
@@ -2567,7 +2567,7 @@ integration("Cloud Computer Account service", () => {
     expect((await read(credentials(oidc.clientSecret))).json()).toEqual({});
     await expect(run("egress-assign", id)).rejects.toThrow("No browser egress endpoint");
     const proxy = {
-      url: "https://late.example.test",
+      url: "https://late.example.test:8443",
       username: "late-user",
       password: "late-password",
     };
@@ -2747,7 +2747,7 @@ integration("Cloud Computer Account service", () => {
 
   it("assigns egress exclusively and releases it only upon a confirmed tombstone", async () => {
     const endpoint = {
-      url: "https://proxy.example.test",
+      url: "https://proxy.example.test:8443",
       username: "egress-user",
       password: "egress-password",
     };
@@ -3948,7 +3948,7 @@ integration("Cloud Computer Account service", () => {
   it("reissues a never-ready boot-completed Home with a clean pin and fresh credentials", async () => {
     const { id } = await buy();
     await cloud.addEgressEndpoint({
-      url: "https://old.example.test",
+      url: "https://old.example.test:8443",
       username: "first-user",
       password: "first-secret",
     });
@@ -3956,7 +3956,7 @@ integration("Cloud Computer Account service", () => {
     const first = await bootable(original);
     expect((await complete(original)).statusCode).toBe(200);
     await cloud.addEgressEndpoint({
-      url: "https://new.example.test",
+      url: "https://new.example.test:8443",
       username: "next-user",
       password: "next-secret",
     });

@@ -1,4 +1,6 @@
 import type {
+  BrowserPoolHostId,
+  BrowserPoolHostProviderWrite,
   CloudComputerId,
   CloudComputerProviderWrite,
   GoogleComputeServerRef,
@@ -20,6 +22,7 @@ export interface VmServer<Id extends VmServerId = VmServerId> extends Addresses 
   readonly id: Id;
   readonly generation: number;
   readonly status: "running" | "off" | "transitioning" | "deleting";
+  readonly internalIpv4?: string | null;
   readonly firewalls: readonly { id: number; status: "applied" | "pending" }[];
   readonly bootstrapMetadata?: "pending" | "enabled" | "absent";
 }
@@ -115,4 +118,113 @@ export interface DnsProvider {
   ): Promise<void>;
   observeWrites?(hostname: string, signal: AbortSignal): Promise<readonly string[]>;
   listManaged(signal: AbortSignal): Promise<readonly { id: CloudComputerId; hostname: string }[]>;
+}
+
+export interface PoolFirewallConfig {
+  readonly provisionerCidr: string;
+  readonly agentPort: number;
+  readonly adminPort: number;
+  readonly relayPort: number;
+}
+
+export interface PoolProfileDisk {
+  readonly name: string;
+  readonly ref: string;
+  readonly hostId: BrowserPoolHostId;
+}
+
+export interface EnsurePoolProfileDisk {
+  readonly hostId: BrowserPoolHostId;
+  readonly diskName: string;
+  readonly sizeGb: number;
+  readonly diskType: string;
+  readonly requestId?: string;
+}
+
+export interface PoolHostVm {
+  readonly id: GoogleComputeServerRef;
+  readonly generation: number;
+  readonly status: "running" | "off" | "transitioning" | "deleting";
+  readonly internalIpv4: string | null;
+  readonly bootstrapMetadata?: "pending" | "enabled" | "absent";
+}
+
+export interface CreatePoolHostVm {
+  readonly id: BrowserPoolHostId;
+  readonly generation: number;
+  readonly machineType: string;
+  readonly image: string;
+  readonly bootDiskSizeGb: number;
+  readonly profileDiskName: string;
+  readonly localSsdCount: number;
+  readonly userData: string;
+  readonly requestId?: string;
+}
+
+export interface ExpectedPoolHostVm {
+  readonly generation: number;
+  readonly providerServerRef?: GoogleComputeServerRef | undefined;
+  readonly previousProviderServerRef?: GoogleComputeServerRef | undefined;
+  readonly pendingProviderWrites?: readonly BrowserPoolHostProviderWrite[] | undefined;
+}
+
+export interface PoolHostProvider {
+  beginPass?(signal: AbortSignal): Promise<void>;
+  ensurePoolFirewalls(
+    config: PoolFirewallConfig,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<void>;
+  ensurePoolProfileDisk(
+    input: EnsurePoolProfileDisk,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<PoolProfileDisk>;
+  findPoolProfileDisk(diskName: string, signal: AbortSignal): Promise<PoolProfileDisk | undefined>;
+  deletePoolProfileDisk(
+    diskName: string,
+    hostId: BrowserPoolHostId,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<boolean>;
+  listManagedPoolDisks(signal: AbortSignal): Promise<readonly PoolProfileDisk[]>;
+  findPoolHost(
+    id: BrowserPoolHostId,
+    signal: AbortSignal,
+    expected?: ExpectedPoolHostVm,
+  ): Promise<readonly PoolHostVm[]>;
+  listManagedPoolHosts(
+    signal: AbortSignal,
+  ): Promise<readonly { id: BrowserPoolHostId; server: PoolHostVm }[]>;
+  createPoolHost(
+    input: CreatePoolHostVm,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<PoolHostVm>;
+  describePoolHost(
+    id: GoogleComputeServerRef,
+    signal: AbortSignal,
+    knownGeneration?: number,
+  ): Promise<PoolHostVm | undefined>;
+  powerOnPoolHost(
+    id: GoogleComputeServerRef,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+    requestId?: string,
+  ): Promise<void>;
+  deletePoolHost(
+    id: GoogleComputeServerRef,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<void>;
+  updatePoolHostBootstrap?(
+    id: GoogleComputeServerRef,
+    enrolled: boolean,
+    signal: AbortSignal,
+    check?: () => Promise<void>,
+  ): Promise<boolean>;
+  canRecoverPoolHostWrite?(
+    write: BrowserPoolHostProviderWrite,
+    signal: AbortSignal,
+  ): Promise<boolean>;
 }

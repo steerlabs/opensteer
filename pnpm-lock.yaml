@@ -680,6 +680,9 @@ importers:
 
   apps/home-provisioner:
     dependencies:
+      '@opensteer/browser-runtime-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-runtime-core
       '@opensteer/control-plane-protocol':
         specifier: workspace:*
         version: link:../../packages/control-plane-protocol
@@ -1152,6 +1155,37 @@ importers:
       yoga-layout:
         specifier: 3.2.1
         version: 3.2.1
+
+  apps/pool-agent:
+    dependencies:
+      '@opensteer/access':
+        specifier: workspace:*
+        version: link:../../packages/access
+      '@opensteer/browser-runtime-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-runtime-core
+      '@opensteer/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.2.0
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      tsup:
+        specifier: 'catalog:'
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.26)(tsx@4.23.11)(typescript@7.0.2)(yaml@2.9.1)
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.1)
 
   apps/runner:
     dependencies:

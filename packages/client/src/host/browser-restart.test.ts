@@ -126,8 +126,8 @@ it("tells the Home of a seen note it gave an id, and of no other", async () => {
   const withNotice = (runnerId: string): BrowserPoolReport => ({
     ...mockBrowserPoolReport("awake", runnerId, "srf_page"),
     pages: [
-      { surfaceId: "srf_page", noticeId: "notice-1", outcome: "reloaded", typed: false },
-      { surfaceId: "srf_other", outcome: "lost", typed: false },
+      { surfaceId: "srf_page", noticeId: "notice-1", outcome: "reloaded", typed: "no" },
+      { surfaceId: "srf_other", outcome: "lost", typed: "no" },
     ],
   });
   const { client, seen } = home("rnr_cloud", () => undefined, withNotice);

@@ -12,6 +12,7 @@ import {
   cloudComputerGoogleServerRefMigration,
   cloudComputersMigration,
 } from "../cloud-computers/migration.js";
+import { browserPoolMigration } from "../cloud-computers/pool-migration.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 
@@ -529,6 +530,7 @@ const migrationProvider = {
       "0033_cloud_computer_backup_report": cloudComputerBackupReportMigration,
       "0034_cloud_computer_google_server_ref": cloudComputerGoogleServerRefMigration,
       "0035_cloud_computer_billing_settled": cloudComputerBillingSettledMigration,
+      "0036_browser_pool": browserPoolMigration,
     };
   },
 };
