@@ -559,6 +559,38 @@ import UIKit
     XCTAssertEqual(text.utf16.count, (text as NSString).length)
   }
 
+  // Found by the person oracle (third generator, seed 750 and others): a replacement UIKit names
+  // elsewhere (autocorrect) moved the caret to the replaced word, so the person's next keystroke
+  // went in there. The person's caret is carried over it instead.
+  func testAnAutocorrectElsewhereLeavesTheCaretWhereThePersonLeftIt() {
+    let field = Field(settled: "teh cat")
+    let start = field.view.beginningOfDocument
+    let range = field.view.textRange(from: start, to: field.view.position(from: start, offset: 3)!)!
+    field.view.replace(range, withText: "the")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "the cat")
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 7, length: 0))
+    field.view.insertText("s")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "the cats")
+  }
+
+  // Found by the person oracle (third generator, seed 988): the person moved the caret after a
+  // composition's commit was typed; when the composition was applied, UIKit's selection went into
+  // it, and a keystroke typed then was named there instead of at the caret the person chose.
+  func testAKeystrokeTypedWhileAnAppliedCompositionHidesThePersonsCaretGoesThere() {
+    let field = Field(settled: "a")
+    field.view.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0))
+    field.view.insertText("b")
+    field.select(NSRange(location: 0, length: 0))
+    // The composition's turn comes: UIKit's selection is in it, the commit still waits.
+    field.answerOne()
+    XCTAssertNotNil(field.view.markedTextRange)
+    field.view.insertText("x")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "xab")
+  }
+
   // Found by the random sequences (second generator, seeds 4021, 15915 and 16868): a tap during a
   // composition commits it (unmarkText) and moves the caret, both before the composition's turn.
   // The commit left the native caret at the end of the composition while the selection reported

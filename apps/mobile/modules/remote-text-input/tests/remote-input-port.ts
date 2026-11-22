@@ -163,7 +163,7 @@ export class NativeField {
   // RemoteInputGate.swift
   private jobs: { run: () => void; report: boolean }[] = [];
   private next = 0;
-  private waiting: [number, () => void] | null = null;
+  private waiting: [number, () => void, boolean] | null = null;
   private running = false;
   private insertion = 0;
   contextId: string | null = null;
@@ -175,6 +175,18 @@ export class NativeField {
   private mutating = false;
   /** The selection the view itself last left (RemoteInputTextView.ownSelection). */
   private ownSelection: Span | null = null;
+  /**
+   * The selection the person chose after an edit that has since been applied inside a
+   * composition (RemoteInputTextView.held): UIKit's selection is in the composition until it
+   * ends, the person's is here, and what they type meanwhile is named here.
+   */
+  private held: Place | null = null;
+  /**
+   * For the typing test's oracle: told when a call's job takes its turn ("action", answered or
+   * prevented), when a selection report runs ("report"), when an answer clears the field
+   * ("reset") and when a new context clears it ("context"). Nothing in the view depends on it.
+   */
+  onTurn: ((turn: "action" | "report" | "reset" | "context" | "finish") => void) | null = null;
 
   private readonly deliver: (packet: Packet) => void;
   constructor(deliver: (packet: Packet) => void) {
@@ -198,9 +210,13 @@ export class NativeField {
     else this.jobs.push({ run, report });
     this.drain();
   }
-  private event(event: Record<string, unknown>, action: () => void = () => undefined) {
+  private event(
+    event: Record<string, unknown>,
+    action: () => void = () => undefined,
+    turn = false,
+  ) {
     this.next += 1;
-    this.waiting = [this.next, action];
+    this.waiting = [this.next, action, turn];
     this.deliver({
       id: this.next,
       ...(this.contextId === null ? {} : { contextId: this.contextId }),
@@ -221,6 +237,7 @@ export class NativeField {
     this.running = true;
     this.insertion = 0;
     if (instruction.preventDefault !== true) current[1]();
+    if (current[2]) this.onTurn?.("action");
     this.apply(instruction);
     this.running = false;
     this.drain();
@@ -233,7 +250,10 @@ export class NativeField {
       this.jobs.shift()!.run();
       this.running = false;
     }
-    if (this.waiting === null && this.jobs.length === 0) this.edits.settle();
+    if (this.waiting === null && this.jobs.length === 0) {
+      this.edits.settle();
+      this.held = null;
+    }
   }
 
   // The view.
@@ -257,13 +277,20 @@ export class NativeField {
       ...(this.marked ? { markedRange: { ...this.marked } } : {}),
     };
   }
-  /** UITextView's own replacement: the caret ends after the new text. */
+  /**
+   * A replacement the view applies. The selection is carried over it (RemoteInputTextView.edit):
+   * at the caret that is where UIKit leaves it (after typed text, at a deletion's start, after a
+   * selection typed over); a replacement elsewhere (autocorrect, a mark UIKit names for
+   * deletion) leaves the person's caret where it was, where UIKit would move it to the
+   * replacement.
+   */
   private replace(target: Span, text: string) {
+    const kept = this.place(this.selection);
     const before = this.text.length;
     this.text = this.text.slice(0, target.start) + text + this.text.slice(target.end);
     const removed = target.end - target.start;
     this.edits.record(target.start, removed, this.text.length - before + removed);
-    this.selection = { start: target.start + text.length, end: target.start + text.length };
+    this.selection = this.range(kept);
   }
   private apply(instruction: Answer) {
     const set = instruction.set;
@@ -272,12 +299,25 @@ export class NativeField {
     this.replace({ start: 0, end: this.text.length }, set.value);
     this.selection = { start: set.selectionStart, end: set.selectionEnd };
     this.ownSelection = { ...this.selection };
+    this.held = null;
     this.mutating = false;
+    this.onTurn?.("reset");
   }
   private keepChosen(typed: Place | null) {
-    if (!typed || this.marked) return;
+    if (!typed) return;
     const chosen = this.edits.chosenAfter(typed);
+    // Inside a composition UIKit's selection stays in it; the person's choice is held for what
+    // they type meanwhile, and put back once the composition ends.
+    if (this.marked) {
+      if (chosen) this.held = chosen;
+      return;
+    }
+    this.held = null;
     if (chosen) this.selection = this.range(chosen);
+  }
+  /** Where the person's selection is: the one held while a composition hides it, or UIKit's. */
+  private personSelection(): Span {
+    return this.held ? this.range(this.held) : this.selection;
   }
   private change(
     named: string | (() => string),
@@ -287,30 +327,34 @@ export class NativeField {
   ) {
     this.enqueue(() => {
       const inputType = typeof named === "string" ? named : named();
-      this.event({ type: "beforeinput", inputType, data }, () => {
-        const wasComposing = this.marked !== null;
-        this.mutating = true;
-        action();
-        // The state right after this edit, before the chosen selection is put back.
-        const composing = this.marked !== null;
-        const proxy = this.snapshot();
-        const marked = this.marked ? this.text.slice(this.marked.start, this.marked.end) : "";
-        this.keepChosen(typed);
-        this.ownSelection = { ...this.selection };
-        this.mutating = false;
-        if (!wasComposing && composing) this.notify({ type: "compositionstart", proxy });
-        if (composing) this.notify({ type: "compositionupdate", data: marked, proxy });
-        if (wasComposing && !composing)
-          this.notify({ type: "compositionend", data: data ?? "", proxy });
-        this.notify({ type: "input", inputType, composing, proxy });
-      });
+      this.event(
+        { type: "beforeinput", inputType, data },
+        () => {
+          const wasComposing = this.marked !== null;
+          this.mutating = true;
+          action();
+          // The state right after this edit, before the chosen selection is put back.
+          const composing = this.marked !== null;
+          const proxy = this.snapshot();
+          const marked = this.marked ? this.text.slice(this.marked.start, this.marked.end) : "";
+          this.keepChosen(typed);
+          this.ownSelection = { ...this.selection };
+          this.mutating = false;
+          if (!wasComposing && composing) this.notify({ type: "compositionstart", proxy });
+          if (composing) this.notify({ type: "compositionupdate", data: marked, proxy });
+          if (wasComposing && !composing)
+            this.notify({ type: "compositionend", data: data ?? "", proxy });
+          this.notify({ type: "input", inputType, composing, proxy });
+        },
+        true,
+      );
     });
   }
 
   // What UIKit calls, naming places in the text as it stands at that moment.
 
   insertText(text: string) {
-    const typed = this.place(this.selection);
+    const typed = this.place(this.personSelection());
     // Named when its turn comes, as the field then stands (RemoteInputTextView.change).
     const inputType = () =>
       this.marked ? "insertFromComposition" : text === "\n" ? "insertLineBreak" : "insertText";
@@ -321,14 +365,19 @@ export class NativeField {
   }
   /** textView(_:shouldChangeTextIn:replacementText:). */
   shouldChangeText(named: Span, replacement: string) {
-    if (replacement === "" && Edits.isBackspace(named, this.selection, this.text)) {
-      const caret = this.place(this.selection);
+    // UIKit names what it does at its own selection; while a composition hides the person's,
+    // typing over the selection or a Backspace is the person's, at theirs.
+    const uikit = this.selection;
+    const selection = this.personSelection();
+    if (replacement === "" && Edits.isBackspace(named, uikit, this.text)) {
+      const caret = this.place(selection);
       this.change("deleteContentBackward", replacement, caret, () =>
         this.replace(this.edits.backspace(caret, this.text), ""),
       );
       return;
     }
-    const again = replacement === "" && Edits.deletesSelection(named, this.selection);
+    if (this.held && named.start === uikit.start && named.end === uikit.end) named = selection;
+    const again = replacement === "" && Edits.deletesSelection(named, selection);
     const typed = this.place(named);
     this.change(
       replacement ? "insertReplacementText" : "deleteContentBackward",
@@ -362,7 +411,7 @@ export class NativeField {
     );
   }
   deleteBackward() {
-    const typed = this.place(this.selection);
+    const typed = this.place(this.personSelection());
     this.change("deleteContentBackward", null, typed, () => {
       this.select(typed);
       const selection = { ...this.selection };
@@ -385,18 +434,20 @@ export class NativeField {
     });
   }
   setMarkedText(text: string) {
-    const typed = this.place(this.selection);
+    const typed = this.place(this.personSelection());
     this.change("insertCompositionText", text, typed, () => {
       const target = this.select(typed);
       this.replace(target, text);
       this.marked = text ? { start: target.start, end: target.start + text.length } : null;
     });
   }
-  unmarkText() {
+  /** `person`: the input method's commit; false when the app ends the composition. */
+  unmarkText(person = true) {
     // A tap during a composition commits it, then moves the caret, both before the commit's turn:
     // once the composition ends, the caret goes back where the person put it.
     const named = this.place(this.selection);
     this.enqueue(() => {
+      if (person) this.onTurn?.("action");
       if (!this.marked) return;
       const data = this.text.slice(this.marked.start, this.marked.end);
       this.marked = null;
@@ -404,6 +455,7 @@ export class NativeField {
       const proxy = this.snapshot();
       this.keepChosen(named);
       this.ownSelection = { ...this.selection };
+      if (!person) this.onTurn?.("finish");
       this.notify({ type: "compositionend", data, proxy });
     });
   }
@@ -425,12 +477,15 @@ export class NativeField {
         this.replace({ start: 0, end: this.text.length }, "");
         this.selection = { start: 0, end: 0 };
         this.ownSelection = { ...this.selection };
+        this.held = null;
         this.mutating = false;
+        this.onTurn?.("context");
       });
     });
   }
   paste(text: string) {
     this.enqueue(() => {
+      this.onTurn?.("action");
       const data = Buffer.from(text, "utf8").toString("base64");
       this.notify({ type: "paste", items: [{ type: "text/plain", data }] });
     });
@@ -438,12 +493,16 @@ export class NativeField {
   /** UIKit or the person moves the selection, then UIKit tells the delegate. */
   moveSelection(start: number, end = start) {
     this.selection = { start, end };
+    this.held = null;
     const own = this.ownSelection;
     if (this.mutating || (own !== null && own.start === start && own.end === end)) return;
     this.ownSelection = null;
     const moved = this.place(this.selection);
     this.edits.choose(moved);
-    this.report(() => this.event({ type: "selection", proxy: this.snapshot(this.range(moved)) }));
+    this.report(() => {
+      this.onTurn?.("report");
+      this.event({ type: "selection", proxy: this.snapshot(this.range(moved)) });
+    });
   }
 }
 

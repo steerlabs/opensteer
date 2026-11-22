@@ -13,6 +13,10 @@ import UniformTypeIdentifiers
   /// The selection the view itself last left, so a selection callback UIKit sends about it later
   /// (on another run loop turn, after `mutating` is false again) is not taken for a choice.
   private var ownSelection: NSRange?
+  /// The selection the person chose after an edit that has since been applied inside a
+  /// composition: UIKit's selection is in the composition until it ends, the person's is here,
+  /// and what they type meanwhile is named here.
+  private var heldChoice: RemoteInputEdits.Place?
   private var held = Set<Int>()
   private var contextId: String?
   private var traits: RemoteInputTraits?
@@ -29,7 +33,10 @@ import UniformTypeIdentifiers
     smartQuotesType = .no
     smartDashesType = .no
     gate.apply = { [weak self] in self?.apply($0) }
-    gate.idle = { [weak self] in self?.edits.settle() }
+    gate.idle = { [weak self] in
+      self?.edits.settle()
+      self?.heldChoice = nil
+    }
     installTouch()
   }
   public convenience init() { self.init(frame: .zero, textContainer: nil) }
@@ -125,11 +132,20 @@ import UniformTypeIdentifiers
     if selectedRange != target { selectedRange = target }
     return target
   }
-  /// Applies an edit of `target` and records what it became, for the edits still waiting.
+  /// Applies an edit of `target` and records what it became, for the edits still waiting. The
+  /// selection is carried over it: at the caret that is where UIKit leaves it (after typed text,
+  /// at a deletion's start, after a selection typed over); a replacement elsewhere (autocorrect,
+  /// a mark UIKit names for deletion) leaves the person's caret where it was, where UIKit would
+  /// move it into the replacement. Inside a composition the input method's caret stays.
   private func edit(_ target: NSRange, _ action: () -> Void) {
+    let kept = place(selectedRange)
     let before = length
     action()
     edits.record(start: target.location, removed: target.length, inserted: length - before + target.length)
+    if markedTextRange == nil {
+      let carried = range(kept)
+      if selectedRange != carried { selectedRange = carried }
+    }
   }
   private func apply(_ instruction: [String: Any]) {
     guard markedTextRange == nil, let state = instruction["set"] as? [String: Any],
@@ -139,15 +155,27 @@ import UniformTypeIdentifiers
     edit(NSRange(location: 0, length: length)) { text = value }
     selectedRange = NSRange(location: start, length: end - start)
     ownSelection = selectedRange
+    heldChoice = nil
     mutating = false
   }
   /// The selection UIKit or the person chose after `typed` was named, carried: applying an edit
   /// named earlier moves the native selection, and this puts it back where they last put it.
+  /// Inside a composition UIKit's selection stays in it: the person's choice is held for what they
+  /// type meanwhile, and put back once the composition ends.
   private func keepChosen(after typed: RemoteInputEdits.Place?) {
-    guard let typed, markedRange == nil, let chosen = edits.chosen(after: typed) else { return }
+    guard let typed else { return }
+    let chosen = edits.chosen(after: typed)
+    if markedRange != nil {
+      if let chosen { heldChoice = chosen }
+      return
+    }
+    heldChoice = nil
+    guard let chosen else { return }
     let target = range(chosen)
     if selectedRange != target { selectedRange = target }
   }
+  /// Where the person's selection is: the one held while a composition hides it, or UIKit's.
+  private var personSelection: NSRange { heldChoice.map { range($0) } ?? selectedRange }
   /// `inputType` is named when the edit's turn comes, as the field then stands: a keystroke typed
   /// as a composition commits is a plain insertion by the time it is applied.
   private func change(_ namedType: @escaping @autoclosure () -> String, data: String?, typed: RemoteInputEdits.Place? = nil, _ action: @escaping () -> Void) {
@@ -174,7 +202,7 @@ import UniformTypeIdentifiers
   }
   public override func insertText(_ text: String) {
     if mutating { super.insertText(text); return }
-    let typed = place(selectedRange)
+    let typed = place(personSelection)
     change(self.markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text, typed: typed) {
       self.edit(self.select(typed)) { super.insertText(text) }
     }
@@ -197,7 +225,7 @@ import UniformTypeIdentifiers
   }
   public override func deleteBackward() {
     if mutating { super.deleteBackward(); return }
-    let typed = place(selectedRange)
+    let typed = place(personSelection)
     change("deleteContentBackward", data: nil, typed: typed) {
       _ = self.select(typed)
       // Inside a composition the marked text is not what goes: the character before the caret is.
@@ -211,7 +239,7 @@ import UniformTypeIdentifiers
   }
   public override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
     if mutating { super.setMarkedText(markedText, selectedRange: selectedRange); return }
-    let typed = place(self.selectedRange)
+    let typed = place(personSelection)
     change("insertCompositionText", data: markedText, typed: typed) {
       self.edit(self.select(typed)) { super.setMarkedText(markedText, selectedRange: selectedRange) }
     }
@@ -237,16 +265,21 @@ import UniformTypeIdentifiers
   public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
     if mutating { return true }
     guard isEditable else { return false }
-    if replacement.isEmpty && RemoteInputEdits.isBackspace(named: range, selection: selectedRange, in: text ?? "") {
+    // UIKit names what it does at its own selection; while a composition hides the person's,
+    // typing over the selection or a Backspace is the person's, at theirs.
+    let uikit = selectedRange
+    let selection = personSelection
+    if replacement.isEmpty && RemoteInputEdits.isBackspace(named: range, selection: uikit, in: text ?? "") {
       // A Backspace: the character before the caret, wherever the caret is by its turn.
-      let caret = place(selectedRange)
+      let caret = place(selection)
       change("deleteContentBackward", data: replacement, typed: caret) {
         self.replaceRange(self.edits.backspace(caret, in: self.text ?? ""), with: "")
       }
       return false
     }
-    let again = replacement.isEmpty && RemoteInputEdits.deletesSelection(named: range, selection: selectedRange)
-    let typed = place(range)
+    let named = heldChoice != nil && range == uikit ? selection : range
+    let again = replacement.isEmpty && RemoteInputEdits.deletesSelection(named: named, selection: selection)
+    let typed = place(named)
     change(replacement.isEmpty ? "deleteContentBackward" : "insertReplacementText", data: replacement, typed: typed) {
       self.replaceTyped(typed, with: replacement, selectionAgain: again)
     }
@@ -258,6 +291,7 @@ import UniformTypeIdentifiers
   public func textViewDidChangeSelection(_ textView: UITextView) {
     if mutating || selectedRange == ownSelection { return }
     ownSelection = nil
+    heldChoice = nil
     let moved = place(selectedRange)
     edits.choose(moved)
     gate.report {
@@ -348,6 +382,7 @@ import UniformTypeIdentifiers
       edit(NSRange(location: 0, length: length)) { text = "" }
       selectedRange = NSRange(location: 0, length: 0)
       ownSelection = selectedRange
+      heldChoice = nil
       mutating = false
     }
     let nextTraits = RemoteInputTraits(context, softKeyboard: softKeyboard, keyboardMayReplaceText: keyboardMayReplaceText)
