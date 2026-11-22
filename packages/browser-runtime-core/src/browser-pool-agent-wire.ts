@@ -295,8 +295,9 @@ export class BrowserPoolAgentUnavailable extends Error {
 }
 
 /**
- * The agent answered, signed by the slot's control key, that the slot was deleted. Unlike an
- * unavailable agent this is evidence: the guest has ended and its saved state is erased.
+ * The agent answered, signed by the host key (a deleted slot has no control key any more), that
+ * the slot was deleted. Unlike an unavailable agent this is evidence: the guest has ended and its
+ * saved state is erased.
  */
 export class BrowserPoolAgentSlotDeleted extends Error {
   override readonly name = "BrowserPoolAgentSlotDeleted";
