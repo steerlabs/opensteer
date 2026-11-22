@@ -10,7 +10,7 @@ import {
 import { sha256Base64Url } from "@opensteer/core/crypto";
 import { OpensteerError, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import { channelSourceAllows } from "./channel-deliveries.js";
+import { channelSourceAllows, enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { liveConnection } from "./connection-liveness.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -133,7 +133,12 @@ export async function bridgeOwnerIdentity(
  */
 export async function decideBridgeIngress(
   database: Kysely<DatabaseSchema>,
-  input: { readonly ingressId: ChannelIngressId; readonly claimToken: string },
+  input: {
+    readonly ingressId: ChannelIngressId;
+    readonly claimToken: string;
+    /** Why it is too old to act on, when it is: nothing runs, and an admitted sender is told. */
+    readonly stale?: string;
+  },
 ): Promise<BridgeIngressDecision> {
   return commitPersonalMutation(database, async (tx) => {
     const ingress = await tx
@@ -167,62 +172,17 @@ export async function decideBridgeIngress(
       }
     }
 
-    const covered =
-      event.conversation.type === "dm" ? null : event.conversation.externalConversationId;
-    const bridge = await tx
-      .selectFrom("agentConnections")
-      .select(["id", "userId", "grantRevision", "bridgeSenders"])
-      .where("bridgeAccountId", "=", ingress.accountId)
-      .$call((query) =>
-        covered === null
-          ? query.where("bridgeConversationId", "is", null)
-          : query.where("bridgeConversationId", "=", covered),
-      )
-      .where(liveConnection())
-      .forShare("agentConnections")
-      .executeTakeFirst();
-    if (!bridge) return ignore("No bridge covers this conversation");
-
-    const identity = await tx
-      .selectFrom("channelIdentities")
-      .select(["linkedUserId", "status"])
-      .where("accountId", "=", ingress.accountId)
-      .where("externalUserId", "=", event.actor.externalUserId)
-      .executeTakeFirst();
-    const owner = identity?.status === "linked" && identity.linkedUserId === bridge.userId;
-    if (!owner && bridge.bridgeSenders !== "anyone")
-      return ignore("Only the person may message this bridge");
-
-    const keys = {
-      bridgeId: bridge.id,
-      externalScopeId: event.conversation.externalScopeId,
-      externalConversationId: event.conversation.externalConversationId,
-      externalThreadId: event.conversation.externalThreadId,
-    };
-    let conversation = await tx
-      .selectFrom("bridgeConversations")
-      .select(["id", "threadId"])
-      .where("bridgeId", "=", keys.bridgeId)
-      .where(sql<boolean>`external_scope_id is not distinct from ${keys.externalScopeId}`)
-      .where("externalConversationId", "=", keys.externalConversationId)
-      .where(sql<boolean>`external_thread_id is not distinct from ${keys.externalThreadId}`)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    // Chatter nobody addressed to the bot starts nothing.
-    if (!conversation && event.trigger === "conversation-followup")
-      return ignore("The message was not addressed to the bot");
-    conversation ??= await tx
-      .insertInto("bridgeConversations")
-      .values({
-        id: createChannelId("conversation"),
-        ...keys,
-        accountId: ingress.accountId,
-        conversationType: event.conversation.type,
-        displayName: event.conversation.displayName,
-        threadId: null,
-      })
-      .returning(["id", "threadId"])
-      .executeTakeFirstOrThrow();
+    const admitted = await admitChatMessage(tx, ingress.accountId, event);
+    if (admitted.kind === "refused") return ignore(admitted.reason);
+    const { bridge, conversation, owner } = admitted;
+    // Too old to act on: the person who may speak hears that, and may send it again.
+    if (input.stale) {
+      await enqueueChannelConversationStatus(tx, {
+        conversationId: conversation.id,
+        text: chatNotices.late,
+      });
+      return ignore(input.stale);
+    }
     const task = conversation.threadId
       ? await tx
           .selectFrom("threads")
@@ -239,7 +199,6 @@ export async function decideBridgeIngress(
     const stop = stopWord.test(text);
     if (stop && !open) return ignore("Nothing is running here to stop");
     if (!stop && !text) return ignore("The message had nothing to send");
-    if (!bridge.bridgeSenders) return ignore("No bridge covers this conversation");
     return {
       kind: "work",
       action: stop ? "interrupt" : open ? "send" : "create",
@@ -251,6 +210,154 @@ export async function decideBridgeIngress(
       sender: { displayName: event.actor.displayName, owner },
       text,
     };
+  });
+}
+
+/**
+ * The two lines a sender who may speak is told when their message starts nothing. Neither says
+ * why, so nothing about the Home leaves in them; anyone who may not speak is told nothing.
+ */
+export const chatNotices = {
+  late: "This message arrived too late to act on. Send it again if you still need it.",
+  notStarted: "Opensteer couldn't start this. Open Opensteer to see why.",
+} as const;
+
+type ChatAdmission =
+  | { readonly kind: "refused"; readonly reason: string }
+  | {
+      readonly kind: "admitted";
+      readonly bridge: {
+        readonly id: string;
+        readonly userId: UserId;
+        readonly grantRevision: number;
+      };
+      readonly owner: boolean;
+      readonly conversation: {
+        readonly id: ChannelConversationId;
+        readonly threadId: ThreadId | null;
+      };
+    };
+
+/**
+ * May this message be spoken to the bridge that covers its conversation: the bridge read live
+ * with its sender rule in one statement, then the sender, then the conversation (made on its
+ * first addressed message). The one question every answer in a chat is asked behind.
+ */
+async function admitChatMessage(
+  tx: Transaction<DatabaseSchema>,
+  accountId: ReturnType<typeof ChannelAccountIdSchema.parse>,
+  event: NormalizedChannelEvent,
+): Promise<ChatAdmission> {
+  const covered =
+    event.conversation.type === "dm" ? null : event.conversation.externalConversationId;
+  const bridge = await tx
+    .selectFrom("agentConnections")
+    .select(["id", "userId", "grantRevision", "bridgeSenders"])
+    .where("bridgeAccountId", "=", accountId)
+    .$call((query) =>
+      covered === null
+        ? query.where("bridgeConversationId", "is", null)
+        : query.where("bridgeConversationId", "=", covered),
+    )
+    .where(liveConnection())
+    .forShare("agentConnections")
+    .executeTakeFirst();
+  if (!bridge?.bridgeSenders)
+    return { kind: "refused", reason: "No bridge covers this conversation" };
+  const identity = await tx
+    .selectFrom("channelIdentities")
+    .select(["linkedUserId", "status"])
+    .where("accountId", "=", accountId)
+    .where("externalUserId", "=", event.actor.externalUserId)
+    .executeTakeFirst();
+  const owner = identity?.status === "linked" && identity.linkedUserId === bridge.userId;
+  if (!owner && bridge.bridgeSenders !== "anyone")
+    return { kind: "refused", reason: "Only the person may message this bridge" };
+  const keys = {
+    bridgeId: bridge.id,
+    externalScopeId: event.conversation.externalScopeId,
+    externalConversationId: event.conversation.externalConversationId,
+    externalThreadId: event.conversation.externalThreadId,
+  };
+  const existing = await tx
+    .selectFrom("bridgeConversations")
+    .select(["id", "threadId"])
+    .where("bridgeId", "=", keys.bridgeId)
+    .where(sql<boolean>`external_scope_id is not distinct from ${keys.externalScopeId}`)
+    .where("externalConversationId", "=", keys.externalConversationId)
+    .where(sql<boolean>`external_thread_id is not distinct from ${keys.externalThreadId}`)
+    .forNoKeyUpdate()
+    .executeTakeFirst();
+  // Chatter nobody addressed to the bot starts nothing, and hears nothing.
+  if (!existing && event.trigger === "conversation-followup")
+    return { kind: "refused", reason: "The message was not addressed to the bot" };
+  const conversation =
+    existing ??
+    (await tx
+      .insertInto("bridgeConversations")
+      .values({
+        id: createChannelId("conversation"),
+        ...keys,
+        accountId,
+        conversationType: event.conversation.type,
+        displayName: event.conversation.displayName,
+        threadId: null,
+      })
+      .returning(["id", "threadId"])
+      .executeTakeFirstOrThrow());
+  return { kind: "admitted", bridge, owner, conversation };
+}
+
+/**
+ * A message admitted as its bridge whose task tools refused it: it ends here, and in the same
+ * transaction its conversation hears the one line, as a chat attempt of the live bridge.
+ */
+export async function declineBridgeIngress(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly ingressId: ChannelIngressId;
+    readonly claimToken: string;
+    readonly conversationId: ChannelConversationId;
+    readonly reason: string;
+  },
+): Promise<void> {
+  await commitPersonalMutation(database, async (tx) => {
+    const ingress = await tx
+      .selectFrom("channelIngressEvents")
+      .select("id")
+      .where("id", "=", input.ingressId)
+      .where("status", "=", "leased")
+      .where("claimTokenHash", "=", digest(input.claimToken))
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    if (!ingress)
+      throw new OpensteerError({ code: "conflict", message: "Channel ingress claim is stale" });
+    await finishIngress(tx, ingress.id, "ignored", input.reason);
+    await enqueueChannelConversationStatus(tx, {
+      conversationId: input.conversationId,
+      text: chatNotices.notStarted,
+    });
+  });
+}
+
+/**
+ * A message that ran out of attempts: its sender, if they may speak to the bridge covering it,
+ * hears the one line. Called in the transaction that marks it dead.
+ */
+export async function noticeDeadChatMessage(
+  tx: Transaction<DatabaseSchema>,
+  row: {
+    readonly accountId: ReturnType<typeof ChannelAccountIdSchema.parse>;
+    readonly event: unknown;
+  },
+): Promise<void> {
+  const parsed = NormalizedChannelEventSchema.safeParse(row.event);
+  if (!parsed.success) return;
+  const admitted = await admitChatMessage(tx, row.accountId, parsed.data);
+  if (admitted.kind !== "admitted") return;
+  await enqueueChannelConversationStatus(tx, {
+    conversationId: admitted.conversation.id,
+    text: chatNotices.notStarted,
   });
 }
 

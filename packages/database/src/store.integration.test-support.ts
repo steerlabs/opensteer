@@ -524,6 +524,7 @@ export async function createStoreFixture() {
         readonly text?: string;
         readonly threadId?: string | null;
         readonly trigger?: "mention" | "direct-message" | "conversation-followup";
+        readonly occurredAt?: string;
       }) => ({
         accountExternalId: `T-${suffix}`,
         actor: {
@@ -547,7 +548,7 @@ export async function createStoreFixture() {
               type: "dm" as const,
             },
         eventId: input.eventId,
-        occurredAt: new Date().toISOString(),
+        occurredAt: input.occurredAt ?? new Date().toISOString(),
         provider: "slack" as const,
         providerMessageId: input.eventId,
         trigger:

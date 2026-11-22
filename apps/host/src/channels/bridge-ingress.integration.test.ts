@@ -294,4 +294,75 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
       await storeFixture.close();
     }
   });
+
+  it("tells a sender who may speak, and only them, that a message came too late or could not start", async () => {
+    const storeFixture = await createStoreFixture();
+    const f = await host(storeFixture, {}, "notices");
+    try {
+      const lines = async () =>
+        (
+          await storeFixture.database
+            .selectFrom("bridgeDeliveries")
+            .select("content")
+            .where("bridgeId", "=", f.bridge.id)
+            .where("kind", "=", "status")
+            .orderBy("createdAt")
+            .execute()
+        ).map(({ content }) => (content as { text: string }[])[0]!.text);
+      const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1_000).toISOString();
+      // Too late to act on: the person hears so; a stranger hears nothing.
+      expect(await f.send({ eventId: "late-1", occurredAt: twoHoursAgo })).toMatchObject({
+        status: "ignored",
+      });
+      expect(
+        await f.send({
+          eventId: "late-2",
+          occurredAt: twoHoursAgo,
+          externalUserId: "U-STRANGER",
+          displayName: "Eve",
+        }),
+      ).toMatchObject({ status: "ignored" });
+      expect(await lines()).toEqual([
+        "This message arrived too late to act on. Send it again if you still need it.",
+      ]);
+      // Nothing can start it (no AI account is on): the person hears one line, with no reason.
+      await storeFixture.database.updateTable("harnessInstances").set({ enabled: false }).execute();
+      expect(await f.send({ eventId: "fail-1", text: "Start something" })).toMatchObject({
+        status: "ignored",
+      });
+      expect(
+        await f.send({ eventId: "fail-2", externalUserId: "U-STRANGER", displayName: "Eve" }),
+      ).toMatchObject({ status: "ignored" });
+      expect(await lines()).toEqual([
+        "This message arrived too late to act on. Send it again if you still need it.",
+        "Opensteer couldn't start this. Open Opensteer to see why.",
+      ]);
+      expect(await f.tasks()).toEqual([]);
+      // A message that ran out of attempts: the same, for the person only.
+      await f.service.close();
+      for (const [eventId, externalUserId] of [
+        ["dead-1", undefined],
+        ["dead-2", "U-STRANGER"],
+      ] as const) {
+        const committed = await f.channels.commitIngress(
+          f.configured.connection.id,
+          f.event({ eventId, ...(externalUserId ? { externalUserId } : {}) }),
+        );
+        await storeFixture.database
+          .updateTable("channelIngressEvents")
+          .set({ attempts: 20, status: "pending", nextAttemptAt: new Date(0) })
+          .where("id", "=", committed.ingressId)
+          .execute();
+        expect(await f.channels.claimIngress("dead-worker")).toBeNull();
+      }
+      expect(await lines()).toEqual([
+        "This message arrived too late to act on. Send it again if you still need it.",
+        "Opensteer couldn't start this. Open Opensteer to see why.",
+        "Opensteer couldn't start this. Open Opensteer to see why.",
+      ]);
+    } finally {
+      await f.service.close();
+      await storeFixture.close();
+    }
+  });
 });

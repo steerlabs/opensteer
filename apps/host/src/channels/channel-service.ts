@@ -12,6 +12,7 @@ import {
 } from "@opensteer/channel-core";
 import {
   ChannelStore,
+  declineBridgeIngress,
   decideBridgeIngress,
   recordBridgeIngress,
   startBridgeOwnerLink,
@@ -604,11 +605,14 @@ export class ChannelService {
       claimed += 1;
       const stale = staleIngress(claim, now.getTime());
       if (stale) {
-        await this.#channels
-          .markIngressIgnored(claim.id, claim.claimToken, stale.reason, null)
-          .catch((error: unknown) => {
-            if (!isStaleClaim(error)) throw error;
-          });
+        // Nothing runs; a sender who may speak here is told it arrived too late.
+        await decideBridgeIngress(this.#store.database, {
+          ingressId: claim.id,
+          claimToken: claim.claimToken,
+          stale: stale.reason,
+        }).catch((error: unknown) => {
+          if (!isStaleClaim(error)) throw error;
+        });
         continue;
       }
       try {
@@ -687,7 +691,13 @@ export class ChannelService {
         error instanceof OpensteerError &&
         ["forbidden", "not_found", "bad_request", "unauthorized"].includes(error.code)
       ) {
-        await this.#channels.markIngressIgnored(claim.id, claim.claimToken, error.message, null);
+        // Its sender may speak here (the decision admitted them): they hear one line, no reason.
+        await declineBridgeIngress(this.#store.database, {
+          ingressId: claim.id,
+          claimToken: claim.claimToken,
+          conversationId: decision.conversationId,
+          reason: error.message,
+        });
         return;
       }
       if (error instanceof OpensteerError && error.retryable) {
@@ -814,20 +824,15 @@ const ingressAgeLimitMs = 60 * 60 * 1_000;
 function staleIngress(
   claim: ClaimedChannelIngress,
   now: number,
-): { readonly notice: string; readonly reason: string } | undefined {
+): { readonly reason: string } | undefined {
   const sentAt = Date.parse(claim.event.occurredAt);
   if (now - sentAt < ingressAgeLimitMs) return undefined;
-  return claim.receivedAt.getTime() - sentAt >= ingressAgeLimitMs
-    ? {
-        notice:
-          "This message reached Opensteer more than an hour after it was sent, so it was not run. Send it again if you still need it.",
-        reason: "The message reached Opensteer more than an hour after it was sent",
-      }
-    : {
-        notice:
-          "No computer was available in time to run this, so it was dropped. Send it again once one is online.",
-        reason: "No computer was available within an hour of the message being sent",
-      };
+  return {
+    reason:
+      claim.receivedAt.getTime() - sentAt >= ingressAgeLimitMs
+        ? "The message reached Opensteer more than an hour after it was sent"
+        : "No computer was available within an hour of the message being sent",
+  };
 }
 type ClaimedChannelIngress = NonNullable<Awaited<ReturnType<ChannelStore["claimIngress"]>>>;
 

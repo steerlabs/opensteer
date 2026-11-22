@@ -7,6 +7,7 @@ import {
 } from "./administration-command.js";
 import { jsonValue } from "./store-primitives.js";
 import { liveConnection } from "./connection-liveness.js";
+import { noticeDeadChatMessage } from "./bridge-ingress.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   ChannelAccountSchema,
@@ -797,9 +798,10 @@ export class ChannelStore {
         .where("id", "in", maintenanceIds)
         .where("status", "=", "pending")
         .where("attempts", ">=", ingressAttemptCeiling)
+        .returning(["accountId", "event"])
         .execute();
-      // Nothing is said in the chat: a message that ran out of attempts stays here, dead.
-      void dead;
+      // Only a sender who may speak to the bridge covering it hears that it could not start.
+      for (const row of dead) await noticeDeadChatMessage(transaction, row);
     });
     return commitPersonalMutation(this.#database, async (transaction) => {
       const leasedAt = new Date();
