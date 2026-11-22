@@ -451,3 +451,56 @@ it("caps live websocket attachments per binding and bounds a peer that ignores c
   expect((await closed)[0]).toBe(1000);
   await expect(f.connect()).resolves.toBeInstanceOf(WebSocket);
 });
+
+it("limits a connection's page auto-attach for a runtime of any version, and refuses a nested one", async () => {
+  const f = await fixture();
+  const socket = await f.connect();
+  const replies: Record<string, unknown>[] = [];
+  socket.on("message", (data) => replies.push(JSON.parse(String(data)) as Record<string, unknown>));
+  socket.send(
+    JSON.stringify({
+      id: 7,
+      method: "Target.sendMessageToTarget",
+      params: {
+        sessionId: "child",
+        message: JSON.stringify({
+          id: 1,
+          method: "Target.setAutoAttach",
+          params: { autoAttach: true, waitForDebuggerOnStart: true },
+        }),
+      },
+      sessionId: "page",
+    }),
+  );
+  socket.send(
+    JSON.stringify({
+      id: 8,
+      method: "Target.setAutoAttach",
+      params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+      sessionId: "page",
+    }),
+  );
+  expect(JSON.parse(String(await f.received.promise))).toEqual({
+    id: 8,
+    method: "Target.setAutoAttach",
+    params: {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+      filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+    },
+    sessionId: "page",
+  });
+  expect(f.send).toHaveBeenCalledOnce();
+  await vi.waitFor(() =>
+    expect(replies).toContainEqual({
+      id: 7,
+      sessionId: "page",
+      error: {
+        code: -32000,
+        message:
+          "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget.",
+      },
+    }),
+  );
+});
