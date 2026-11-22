@@ -99,7 +99,7 @@ export class PoolReconciler {
             const portsKey = `${host.agentPort}:${host.relayPort}`;
             const report = await this.#applyHost(
               host,
-              hostsWithSlots.has(host.id),
+              (host.liveSlotCount ?? 0) > 0 || hostsWithSlots.has(host.id),
               (operationSignal, check) => {
                 let promise = firewallsByPorts.get(portsKey);
                 if (!promise) {
@@ -879,10 +879,11 @@ export class PoolReconciler {
       signal.throwIfAborted();
       if (error instanceof Superseded || accountRefused(error)) throw error;
       this.#options.onError?.(error);
-      if (isProfileDiskNotMountedConflict(error)) {
-        // Y1: Agent refused because the durable profile disk is not mounted; nothing was made or erased.
-        // Treat as "not done, host is not ready": never mark ready/deleted, never trigger slot failure
-        // backoff, and never drop deleting slots (so the durable profile disk is never deleted).
+      if (isProfileDiskMissingRefusal(error)) {
+        // Y1 + Z6: Agent refused with signed `profile-disk-missing` because the durable profile
+        // disk is not mounted; create made nothing, and delete kept the profile without answering
+        // `profileErased`. Treat as "not done, host is not ready": never mark ready/deleted, never
+        // trigger slot failure backoff, and keep deleting slots in `deleting` to retry once mounted.
         return slot.state === "deleting"
           ? {
               slotId,
@@ -925,12 +926,8 @@ export class PoolReconciler {
   }
 }
 
-function isProfileDiskNotMountedConflict(error: unknown): boolean {
-  return (
-    isDefiniteAgentRefusal(error) &&
-    error.refusal === "conflict" &&
-    /^The profile disk is not mounted\b/u.test(error.message)
-  );
+function isProfileDiskMissingRefusal(error: unknown): boolean {
+  return isDefiniteAgentRefusal(error) && error.refusal === "profile-disk-missing";
 }
 
 function rateLimited(error: unknown): ProviderRateLimited | undefined {

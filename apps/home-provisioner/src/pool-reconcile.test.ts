@@ -78,23 +78,22 @@ type FakeAgentFaultMode =
   | "forged-signature"
   | "partial-erase-no-erased"
   | "partial-erase-no-profile"
-  | "partial-erase-no-credentials";
+  | "partial-erase-no-credentials"
+  | "lose-mount-before-profile-erase";
 
 /**
- * Signed fake pool agent modeled directly on `apps/pool-agent/src/agent.ts` at head `94c631128`
+ * Signed fake pool agent modeled directly on `apps/pool-agent/src/agent.ts` at head `61af7a845`
  * (a pulling host with `driver.requireEgressUpstream: true` and `driver.profilesMount`):
- * - `create`: enforces `profilesMounted` (`ProfilesNotMounted` -> signed `conflict` "The profile
- *   disk is not mounted: ..."), refuses `guest.profilePath` or `guest.egress`, enforces
- *   `guest.profileMib`, enforces profile filesystem capacity (`ProfilesFull` -> signed `conflict`
- *   with "A <N> MiB profile would make this host's profiles exceed their filesystem."), and reuses
- *   an existing profile for the slot id without reformatting.
+ * - `create`: checks tombstone and identical existing slot BEFORE `profilesMounted` (matching
+ *   `agent.ts:625-645`), refuses unmounted with signed `profile-disk-missing`, refuses
+ *   `guest.profilePath` or `guest.egress`, enforces `guest.profileMib`, enforces profile
+ *   filesystem capacity (`ProfilesFull` -> signed `conflict`), and reuses an existing profile.
  * - `replace-key`: requires strictly higher term (otherwise signed `conflict`), returns `unknown-slot`
  *   if absent.
- * - `delete`: enforces `profilesMounted` before erasing anything (signed `conflict`, never
- *   `profileErased`), checks term match if slot is known, erases slot + derived credential paths +
- *   profile when `eraseProfile` is set, and returns `credentialsErased: true` whenever the slot's
- *   derived credential paths are seen gone (including slots that never pulled egress, repeated
- *   deletes, and unknown slots on a pulling host).
+ * - `delete`: checks `profilesMounted` before acting (signed `profile-disk-missing`, nothing done)
+ *   and AGAIN immediately before erasing the profile (`lose-mount-before-profile-erase`: slot and
+ *   credentials erased + tombstone recorded, profile kept, signed `profile-disk-missing`; repeating
+ *   the same delete once the mount returns erases the profile and answers all three flags).
  */
 class FakePoolAgent {
   readonly slots = new Map<
@@ -124,6 +123,8 @@ class FakePoolAgent {
   profileFilesystemMib = 450_000;
   requireEgressUpstream = true;
   profilesMounted = true;
+  /** Z5: simulates agent startup refusing to serve (`agent.ts:264-266`) when profilesMount fails. */
+  refuseToStart = false;
 
   constructor(options: {
     hostId: string;
@@ -180,6 +181,9 @@ class FakePoolAgent {
     const fault = this.nextReply?.op === op ? this.nextReply : undefined;
     if (fault) this.nextReply = undefined;
 
+    if (this.refuseToStart) {
+      throw new Error("connect ECONNREFUSED 127.0.0.1:7311 (agent refused to start)");
+    }
     if (fault?.mode === "lost-before-apply") {
       throw new Error("socket hang up before agent handled request");
     }
@@ -208,15 +212,45 @@ class FakePoolAgent {
       };
     } else if (envelope.request.op === "create") {
       const req = envelope.request;
-      if (!this.profilesMounted) {
+      // Z5: Match real `agent.ts:625-645` order: check tombstone and identical existing slot BEFORE mount!
+      const tombstonedTerm = this.tombstones.get(req.slotId);
+      if (tombstonedTerm !== undefined && req.term <= tombstonedTerm) {
         return this.#signed(
           hostPrivateKey!,
           reqBytes,
           {
             op: "refused",
             code: "conflict",
-            message:
-              "The profile disk is not mounted: /var/lib/opensteer-pool/profiles is not a mount point.",
+            message: "The slot was deleted at this term or a later one.",
+          },
+          409,
+        );
+      }
+      const existing = this.slots.get(req.slotId);
+      if (existing) {
+        if (existing.term === req.term && FakePoolAgent.#sameKeys(existing, req)) {
+          return this.#signed(
+            hostPrivateKey!,
+            reqBytes,
+            { op: "create", slot: toSummary(existing) },
+            200,
+          );
+        }
+        return this.#signed(
+          hostPrivateKey!,
+          reqBytes,
+          { op: "refused", code: "conflict", message: "slot exists at different term or key" },
+          409,
+        );
+      }
+      if (!this.profilesMounted) {
+        return this.#signed(
+          hostPrivateKey!,
+          reqBytes,
+          {
+            op: "refused",
+            code: "profile-disk-missing",
+            message: "reworded mount failure message (proves reconciler matches code, not text)",
           },
           409,
         );
@@ -258,28 +292,6 @@ class FakePoolAgent {
           409,
         );
       }
-      const tombstonedTerm = this.tombstones.get(req.slotId);
-      if (tombstonedTerm !== undefined && req.term <= tombstonedTerm) {
-        return this.#signed(
-          hostPrivateKey!,
-          reqBytes,
-          {
-            op: "refused",
-            code: "conflict",
-            message: "The slot was deleted at this term or a later one.",
-          },
-          409,
-        );
-      }
-      const existing = this.slots.get(req.slotId);
-      if (existing && (existing.term !== req.term || !FakePoolAgent.#sameKeys(existing, req))) {
-        return this.#signed(
-          hostPrivateKey!,
-          reqBytes,
-          { op: "refused", code: "conflict", message: "slot exists at different term or key" },
-          409,
-        );
-      }
       if (!this.profiles.has(req.slotId)) {
         const usedMib = [...this.profiles.values()].reduce((sum, mib) => sum + mib, 0);
         if (fault?.mode === "profile-disk-full" || usedMib + sizeMib > this.profileFilesystemMib) {
@@ -296,7 +308,7 @@ class FakePoolAgent {
         }
         this.profiles.set(req.slotId, sizeMib);
       }
-      const created = existing ?? {
+      const created = {
         slotId: req.slotId,
         term: req.term,
         homeKey: req.homeKey,
@@ -342,9 +354,8 @@ class FakePoolAgent {
           reqBytes,
           {
             op: "refused",
-            code: "conflict",
-            message:
-              "The profile disk is not mounted: /var/lib/opensteer-pool/profiles is not a mount point.",
+            code: "profile-disk-missing",
+            message: "reworded mount failure message (proves reconciler matches code, not text)",
           },
           409,
         );
@@ -358,6 +369,27 @@ class FakePoolAgent {
             op: "refused",
             code: "conflict",
             message: "The slot is at another term than this delete names.",
+          },
+          409,
+        );
+      }
+      if (fault?.mode === "lose-mount-before-profile-erase") {
+        // Z2 + Z6 row 3: mount disappears between delete's first check and its profile erase.
+        // Guest, saved state, network, and credentials are gone and the slot is tombstoned,
+        // while the profile is KEPT and `profile-disk-missing` is returned (never `profileErased`).
+        const deletedTerm = existing?.term ?? req.term ?? 0;
+        if (deletedTerm > (this.tombstones.get(req.slotId) ?? 0)) {
+          this.tombstones.set(req.slotId, deletedTerm);
+        }
+        this.slots.delete(req.slotId);
+        this.profilesMounted = false;
+        return this.#signed(
+          hostPrivateKey!,
+          reqBytes,
+          {
+            op: "refused",
+            code: "profile-disk-missing",
+            message: "reworded mid-delete unmount message",
           },
           409,
         );
@@ -491,6 +523,7 @@ function createHarness(options: { concurrency?: number } = {}) {
   const onError = vi.fn();
 
   const hosts = new Map<BrowserPoolHostId, BrowserPoolHostDesired>();
+  const hostPhases = new Map<BrowserPoolHostId, BrowserPoolHostReport["phase"]>();
   const slots = new Map<BrowserPoolSlotId, BrowserPoolSlotDesired>();
 
   const defaultHost = (id: BrowserPoolHostId = hostId): BrowserPoolHostDesired =>
@@ -542,7 +575,14 @@ function createHarness(options: { concurrency?: number } = {}) {
     | undefined;
 
   const account: PoolAccountApi = {
-    desiredHosts: vi.fn(async () => [...hosts.values()]),
+    desiredHosts: vi.fn(async () =>
+      [...hosts.values()].map((host) => ({
+        ...host,
+        liveSlotCount:
+          host.liveSlotCount ??
+          [...slots.values()].filter((slot) => slot.hostId === host.id).length,
+      })),
+    ),
     checkHost: vi.fn(async (id: BrowserPoolHostId, check: BrowserPoolHostCheck) => {
       events.push(`checkHost:${check.operation}`);
       if (checkHostOverride) return checkHostOverride(id, check);
@@ -596,8 +636,10 @@ function createHarness(options: { concurrency?: number } = {}) {
       }
       if (report.phase === "deleted") {
         hosts.delete(report.id);
+        hostPhases.delete(report.id);
         return true;
       }
+      hostPhases.set(report.id, report.phase);
       hosts.set(report.id, {
         ...row,
         ...(report.providerServerRef ? { providerServerRef: report.providerServerRef } : {}),
@@ -636,7 +678,23 @@ function createHarness(options: { concurrency?: number } = {}) {
         return { replaced: true, generation: nextGen, revision: nextRev };
       },
     ),
-    desiredSlots: vi.fn(async () => [...slots.values()]),
+    // Z5: Filter desiredSlots exactly like real Account `pool-store.ts:885-896` (host must be ready,
+    // enrolled, with IP and hostKey; slot active with keys or deleting).
+    desiredSlots: vi.fn(async () =>
+      [...slots.values()].filter((slot) => {
+        const host = hosts.get(slot.hostId);
+        if (
+          !host ||
+          hostPhases.get(host.id) !== "ready" ||
+          !host.enrolled ||
+          !host.internalIp ||
+          !host.hostKey
+        ) {
+          return false;
+        }
+        return slot.state === "deleting" || (slot.state === "active" && slot.keys !== undefined);
+      }),
+    ),
     checkSlot: vi.fn(async (id: BrowserPoolSlotId, check: BrowserPoolSlotCheck) => {
       events.push(`checkSlot:${check.operation}`);
       if (checkSlotOverride) return checkSlotOverride(id, check);
@@ -794,11 +852,13 @@ function createHarness(options: { concurrency?: number } = {}) {
     makeReconciler,
     signal,
     hosts,
+    hostPhases,
     slots,
     hostReports,
     slotReports,
     events,
     hostKeys1,
+    provisionerKeys,
     onError,
     defaultHost,
     defaultSlot,
@@ -922,9 +982,17 @@ describe("PoolReconciler — hosts", () => {
       hostKey: h.hostKeys1.spki,
     });
     await h.reconciler.pass(h.signal);
+    // Z1: scrub removes `user-data` (the secret carrier) and leaves `opensteer-bootstrap-ready`
+    // so a re-run after a failure between boot-complete and systemctl enable can still pass the gate.
     expect(vm.metadata.items.some((item) => item.key === "user-data")).toBe(false);
-    expect(vm.metadata.items.some((item) => item.key === "opensteer-bootstrap-ready")).toBe(false);
+    expect(vm.metadata.items.some((item) => item.key === "opensteer-bootstrap-ready")).toBe(true);
     expect(h.hostReports.at(-1)?.phase).toBe("ready");
+
+    // Next pass sees bootstrapMetadata === "absent" (user-data already gone) and makes zero setMetadata writes.
+    const writesBefore = h.compute.requests.filter((r) => r.path.endsWith("/setMetadata")).length;
+    await h.reconciler.pass(h.signal);
+    const writesAfter = h.compute.requests.filter((r) => r.path.endsWith("/setMetadata")).length;
+    expect(writesAfter).toBe(writesBefore);
   });
 
   it("keeps the durable profile disk across an instance replacement, deletes the old VM first so the disk is never attached to two instances, and sets everEnrolled=true (X1)", async () => {
@@ -1263,6 +1331,39 @@ describe("PoolReconciler — hosts", () => {
     expect(h.compute.disks.size).toBe(1);
 
     h.agent.slots.clear();
+    await h.reconciler.pass(h.signal);
+    expect(h.hostReports.at(-1)?.phase).toBe("deleted");
+    expect(h.compute.instances.size).toBe(0);
+    expect(h.compute.disks.size).toBe(0);
+  });
+
+  it("never deletes a host or its durable profile disk when desiredHosts reports liveSlotCount > 0 even if VM is off and desiredSlots is empty (Z8)", async () => {
+    const h = createHarness();
+    const { host } = await h.bringHostReady();
+    const vm = [...h.compute.instances.values()][0]!;
+    vm.status = "TERMINATED";
+    h.hostPhases.set(hostId, "deleting");
+    h.hosts.set(hostId, {
+      ...host,
+      state: "deleted",
+      liveSlotCount: 1,
+      revision: host.revision + 1,
+    });
+    const reqStart = h.compute.requests.length;
+
+    await h.reconciler.pass(h.signal);
+    expect(await h.account.desiredSlots(h.signal)).toEqual([]);
+    expect(h.hostReports.at(-1)?.phase).toBe("deleting");
+    expect(h.compute.instances.size).toBe(1);
+    expect(h.compute.disks.size).toBe(1);
+    expect(h.compute.requests.slice(reqStart).filter((r) => r.method === "DELETE")).toEqual([]);
+
+    // Once Account reports liveSlotCount === 0, the off VM and durable profile disk delete cleanly.
+    h.hosts.set(hostId, {
+      ...h.hosts.get(hostId)!,
+      liveSlotCount: 0,
+      revision: h.hosts.get(hostId)!.revision + 1,
+    });
     await h.reconciler.pass(h.signal);
     expect(h.hostReports.at(-1)?.phase).toBe("deleted");
     expect(h.compute.instances.size).toBe(0);
@@ -2008,15 +2109,14 @@ describe("PoolReconciler — slots", () => {
     expect(h.agent.profiles.has(slotId)).toBe(true);
     expect(h.slotReports.at(-1)?.phase).toBe("ready");
 
-    // 3. Delete while profile disk is not mounted -> signed conflict, nothing erased, NEVER deleted or profileErased,
-    //    and a concurrent host deletion cannot remove the durable profile disk while this slot stays deleting.
+    // 3. Delete while profile disk is not mounted on a ready host -> signed conflict, nothing erased,
+    //    NEVER deleted or profileErased.
     h.slots.set(slotId, {
       ...h.slots.get(slotId)!,
       state: "deleting",
       phase: "deleting",
       revision: h.slots.get(slotId)!.revision + 1,
     });
-    h.hosts.set(hostId, { ...host, state: "deleted", revision: host.revision + 1 });
     h.agent.profilesMounted = false;
     await h.reconciler.pass(h.signal);
     expect(h.agent.slots.has(slotId)).toBe(true);
@@ -2028,9 +2128,48 @@ describe("PoolReconciler — slots", () => {
     expect(afterBlockedDelete.profileErased).toBe(false);
     expect(afterBlockedDelete.credentialsErased).toBe(false);
     expect(afterBlockedDelete.lastError).toBeNull();
+
+    // Z5: Even if Account has zero slots for this host (desiredSlots === [] and liveSlotCount === 0),
+    // the running agent's `list` still returns the live slot so host deletion refuses to remove VM or disk.
+    const savedDeletingSlot = h.slots.get(slotId)!;
+    h.slots.clear();
+    h.hostPhases.set(hostId, "deleting");
+    h.hosts.set(hostId, {
+      ...host,
+      state: "deleted",
+      liveSlotCount: 0,
+      revision: host.revision + 1,
+    });
+    await h.reconciler.pass(h.signal);
+    expect(await h.account.desiredSlots(h.signal)).toEqual([]);
+    expect(h.hostReports.at(-1)?.phase).toBe("deleting");
     expect(h.compute.disks.has(diskName)).toBe(true);
 
-    // 4. Mount returns -> delete now settles with all three erasure proofs.
+    // 4. Restore active/ready host & mount returns, then test Z6 row 3: mount disappears BETWEEN
+    //    delete's first check and the profile erase -> slot is tombstoned, profile is KEPT, signed
+    //    `profile-disk-missing` returned, journal cleared, slot stays `deleting` with profileErased=false.
+    h.hostPhases.set(hostId, "ready");
+    h.hosts.set(hostId, {
+      ...host,
+      state: "active",
+      liveSlotCount: 1,
+      revision: h.hosts.get(hostId)!.revision + 1,
+    });
+    h.slots.set(slotId, savedDeletingSlot);
+    h.agent.profilesMounted = true;
+    h.agent.nextReply = { op: "delete", mode: "lose-mount-before-profile-erase" };
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.slots.has(slotId)).toBe(false);
+    expect(h.agent.tombstones.get(slotId)).toBe(savedDeletingSlot.term);
+    expect(h.agent.profiles.has(slotId)).toBe(true);
+    expect(h.slots.get(slotId)!.pendingAgentWrites).toEqual([]);
+    const afterMidDeleteUnmount = h.slotReports.at(-1)!;
+    expect(afterMidDeleteUnmount.phase).toBe("deleting");
+    expect(afterMidDeleteUnmount.profileErased).toBe(false);
+    expect(afterMidDeleteUnmount.lastError).toBeNull();
+
+    // 5. Mount returns again -> repeated delete on the tombstoned slot erases the kept profile and
+    //    answers all three erasure flags (`erased`, `profileErased`, `credentialsErased`).
     h.agent.profilesMounted = true;
     await h.reconciler.pass(h.signal);
     expect(h.agent.slots.has(slotId)).toBe(false);
@@ -2040,6 +2179,65 @@ describe("PoolReconciler — slots", () => {
     expect(settled.slotErased).toBe(true);
     expect(settled.profileErased).toBe(true);
     expect(settled.credentialsErased).toBe(true);
+  });
+
+  it("moves host to booting -> failed without touching slots or deleting disk when agent refuses to start, and honors tombstone + identical-slot checks before mount check in FakePoolAgent (Z5)", async () => {
+    const h = createHarness();
+    const { host } = await h.bringHostReady();
+    const diskName = host.profileDiskName;
+    const slot = h.defaultSlot(host);
+    h.slots.set(slotId, slot);
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.slots.has(slotId)).toBe(true);
+    const reportsBefore = h.slotReports.length;
+
+    // 1. Agent refuses to start (list fails, as when `agent.ts:264-266` fails profilesMount at startup).
+    h.agent.refuseToStart = true;
+    await h.reconciler.pass(h.signal);
+    expect(h.hostReports.at(-1)?.phase).toBe("booting");
+    // Host is no longer ready, so desiredSlots drops its slots and zero slot mutations or disk deletions happen.
+    expect(await h.account.desiredSlots(h.signal)).toEqual([]);
+    expect(h.slotReports).toHaveLength(reportsBefore);
+    expect(h.compute.disks.has(diskName)).toBe(true);
+    expect(h.compute.instances.size).toBe(1);
+
+    // Past readiness deadline -> host reports failed; still never auto-replaced and disk stays untouched.
+    h.advance(600_001);
+    await h.reconciler.pass(h.signal);
+    expect(h.hostReports.at(-1)?.phase).toBe("failed");
+    expect(h.compute.disks.has(diskName)).toBe(true);
+
+    // 2. FakePoolAgent create check order matches real `agent.ts:625-645`:
+    //    identical existing slot replay succeeds even while unmounted; tombstone conflict beats not-mounted.
+    h.agent.refuseToStart = false;
+    h.agent.profilesMounted = false;
+    const client = httpPoolAgentClient({
+      provisionerKey: h.provisionerKeys.privateKey,
+      fetch: h.agent.fetch,
+      timeoutMs: 2_000,
+    });
+    const target = {
+      hostId,
+      internalIp: host.internalIp!,
+      adminPort: 7311,
+      hostKeySpki: host.hostKey!,
+    };
+    const identicalReply = await client.create(
+      target,
+      { slotId, term: slot.term, keys: slot.keys!, guest: slot.guest },
+      h.signal,
+    );
+    expect(identicalReply.slotId).toBe(slotId);
+
+    const deadSlotId = BrowserPoolSlotIdSchema.parse("bps_88888888-8888-4888-8888-888888888888");
+    h.agent.tombstones.set(deadSlotId, 3);
+    await expect(
+      client.create(
+        target,
+        { slotId: deadSlotId, term: 2, keys: slot.keys!, guest: slot.guest },
+        h.signal,
+      ),
+    ).rejects.toThrow(/deleted at this term or a later one/u);
   });
 
   it("logs structured fatal errors, sets exitCode=1, and resolves main module paths portably (X5)", async () => {

@@ -2991,4 +2991,164 @@ integration("Browser pool Account service", () => {
       await h.app.close();
     }
   });
+
+  it("reports per-host liveSlotCount in desiredHosts and prevents slot placement from interleaving with operatorDeleteHost in both lock orders (Z8)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { computer: ccA, hostId } = await h.setupPooledHomeAndHost();
+
+      // Host now holds 1 active non-tombstoned slot.
+      let hosts = await h.getDesiredHosts();
+      expect(hosts.find((row) => row.id === hostId)?.liveSlotCount).toBe(1);
+
+      // Mark ccA deleted -> slot moves to deleting (still non-tombstoned!) -> liveSlotCount stays 1.
+      await database.db
+        .updateTable("cloudComputers")
+        .set({ state: "deleted", deletionRequestedAt: now })
+        .where("id", "=", ccA.id)
+        .execute();
+      await h.getDesiredSlots();
+      hosts = await h.getDesiredHosts();
+      expect(hosts.find((row) => row.id === hostId)?.liveSlotCount).toBe(1);
+
+      // Tombstone ccA's slot -> liveSlotCount drops to 0.
+      const deletingSlot = (await h.getDesiredSlots())[0]!;
+      const eraseRes = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(deletingSlot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: deletingSlot.slotId,
+          hostGeneration: deletingSlot.hostGeneration,
+          revision: deletingSlot.revision,
+          term: deletingSlot.term,
+          phase: "deleted",
+          controlKey: null,
+          slotErased: true,
+          profileErased: true,
+          credentialsErased: true,
+          lastError: null,
+        },
+      });
+      expect(eraseRes.statusCode).toBe(200);
+      hosts = await h.getDesiredHosts();
+      expect(hosts.find((row) => row.id === hostId)?.liveSlotCount).toBe(0);
+
+      // Order 1 (placement acquires browser_pool_hosts lock first):
+      const { computer: ccB } = await h.provisionComputer("z8-b@example.test");
+      const slotBeforeOrder1 = await database.db
+        .selectFrom("browserPoolSlots")
+        .selectAll()
+        .where("computerId", "=", ccB.id)
+        .executeTakeFirstOrThrow();
+      expect(slotBeforeOrder1.hostId).toBeNull();
+
+      let releaseBarrier1!: () => void;
+      const barrier1Held = new Promise<void>((resolve) => {
+        void database.db.transaction().execute(async (tx) => {
+          await tx
+            .selectFrom("browserPoolHosts")
+            .select("id")
+            .where("id", "=", hostId)
+            .forNoKeyUpdate()
+            .executeTakeFirstOrThrow();
+          resolve();
+          await new Promise<void>((done) => {
+            releaseBarrier1 = done;
+          });
+        });
+      });
+      await barrier1Held;
+      const placementPromise1 = h.cloudStore.desiredPoolSlots();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const deletePromise1 = h.cloudStore
+        .operatorDeletePoolHost(hostId)
+        .then(() => ({ ok: true as const }))
+        .catch((error: unknown) => ({ ok: false as const, error }));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      releaseBarrier1();
+
+      const [, deleteOutcome1] = await Promise.all([placementPromise1, deletePromise1]);
+      const hostAfter1 = await database.db
+        .selectFrom("browserPoolHosts")
+        .selectAll()
+        .where("id", "=", hostId)
+        .executeTakeFirstOrThrow();
+      const slotAfter1 = await database.db
+        .selectFrom("browserPoolSlots")
+        .selectAll()
+        .where("computerId", "=", ccB.id)
+        .executeTakeFirstOrThrow();
+      // Placement won -> slot placed on active host AND operatorDeletePoolHost refused with conflict!
+      expect(slotAfter1.hostId).toBe(hostId);
+      expect(hostAfter1.state).toBe("active");
+      expect(deleteOutcome1.ok).toBe(false);
+      if (!deleteOutcome1.ok) {
+        expect(String(deleteOutcome1.error)).toMatch(
+          /still holds active or deleting browser slots/u,
+        );
+      }
+
+      // Clean up ccB's slot so host is empty again for Order 2.
+      await database.db
+        .updateTable("browserPoolSlots")
+        .set({ state: "deleted", phase: "deleted", tombstonedAt: now })
+        .where("slotId", "=", slotAfter1.slotId)
+        .execute();
+
+      // Order 2 (operatorDeletePoolHost acquires browser_pool_hosts lock first):
+      const { computer: ccC } = await h.provisionComputer("z8-c@example.test");
+      let releaseBarrier2!: () => void;
+      const barrier2Held = new Promise<void>((resolve) => {
+        void database.db.transaction().execute(async (tx) => {
+          await tx
+            .selectFrom("browserPoolHosts")
+            .select("id")
+            .where("id", "=", hostId)
+            .forNoKeyUpdate()
+            .executeTakeFirstOrThrow();
+          resolve();
+          await new Promise<void>((done) => {
+            releaseBarrier2 = done;
+          });
+        });
+      });
+      await barrier2Held;
+      const deletePromise2 = h.cloudStore
+        .operatorDeletePoolHost(hostId)
+        .then(() => ({ ok: true as const }))
+        .catch((error: unknown) => ({ ok: false as const, error }));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const placementPromise2 = h.cloudStore.desiredPoolSlots();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      releaseBarrier2();
+
+      const [deleteOutcome2] = await Promise.all([deletePromise2, placementPromise2]);
+      const hostAfter2 = await database.db
+        .selectFrom("browserPoolHosts")
+        .selectAll()
+        .where("id", "=", hostId)
+        .executeTakeFirstOrThrow();
+      const slotAfter2 = await database.db
+        .selectFrom("browserPoolSlots")
+        .selectAll()
+        .where("computerId", "=", ccC.id)
+        .executeTakeFirstOrThrow();
+      // Delete won -> host is deleted AND ccC's slot was NEVER placed on the deleted host!
+      expect(deleteOutcome2.ok).toBe(true);
+      expect(hostAfter2.state).toBe("deleted");
+      expect(slotAfter2.hostId).not.toBe(hostId);
+      const liveOnDeleted = await database.db
+        .selectFrom("browserPoolSlots")
+        .select("slotId")
+        .where("hostId", "=", hostId)
+        .where("tombstonedAt", "is", null)
+        .execute();
+      expect(liveOnDeleted).toEqual([]);
+      const deletedHostView = (await h.getDesiredHosts()).find((row) => row.id === hostId);
+      expect(deletedHostView?.liveSlotCount).toBe(0);
+    } finally {
+      await h.app.close();
+    }
+  });
 });

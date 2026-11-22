@@ -402,6 +402,21 @@ export class BrowserPoolStore {
     if (after) query = query.where("id", ">", after);
     const rows = await query.execute();
     const page = rows.slice(0, limit);
+    // Z8: Count every non-tombstoned slot referencing each host (active or deleting, regardless of host phase).
+    const pageIds = page.map(({ id }) => id);
+    const liveSlotCounts = new Map<BrowserPoolHostId, number>();
+    if (pageIds.length > 0) {
+      const counts = await this.#db
+        .selectFrom("browserPoolSlots")
+        .select(["hostId", sql<string>`count(*)`.as("count")])
+        .where("tombstonedAt", "is", null)
+        .where("hostId", "in", pageIds)
+        .groupBy("hostId")
+        .execute();
+      for (const entry of counts) {
+        if (entry.hostId) liveSlotCounts.set(entry.hostId, Number(entry.count));
+      }
+    }
     const hosts = await Promise.all(
       page.map(async (snapshot) => {
         let row = snapshot;
@@ -460,6 +475,7 @@ export class BrowserPoolStore {
           ...(row.readinessStartedAt
             ? { readinessStartedAt: row.readinessStartedAt.toISOString() }
             : {}),
+          liveSlotCount: liveSlotCounts.get(row.id) ?? 0,
         });
       }),
     );

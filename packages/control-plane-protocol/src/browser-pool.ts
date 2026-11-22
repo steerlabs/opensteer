@@ -103,6 +103,8 @@ export const BrowserPoolHostDesiredSchema = z
     hostKey: BrowserPoolSpkiBase64Schema.optional(),
     pendingProviderWrites: z.array(BrowserPoolHostProviderWriteSchema).max(4).optional(),
     readinessStartedAt: z.iso.datetime({ offset: true }).optional(),
+    /** Z8: Count of non-tombstoned browser_pool_slots referencing this host (even when host is not ready). */
+    liveSlotCount: z.number().int().min(0).optional(),
   })
   .refine((value) => value.state !== "deleted" || value.bootstrapToken === undefined, {
     path: ["bootstrapToken"],

@@ -61,15 +61,18 @@ export interface PoolAgentClient {
 }
 
 /**
- * Only a verified signed `conflict` or `unknown-slot` proves the agent did not carry out the
- * mutation. A signed `unavailable` means the host answered but could not finish, so the effect
- * may be partial; unsigned refusals (`bad-request`, `unauthenticated`, `stale-request`) and
- * transport/signature errors arrive with no refusal code and stay unknown.
+ * Only a verified signed `conflict`, `unknown-slot`, or `profile-disk-missing` proves the agent
+ * did not complete the mutation (on `profile-disk-missing`, a create made nothing and a delete
+ * never erased the profile or answered `profileErased`, so repeating the same delete once the
+ * mount returns finishes cleanly). A signed `unavailable` means the host answered but could not
+ * finish; unsigned refusals and transport/signature errors arrive with no refusal code and stay unknown.
  */
 export function isDefiniteAgentRefusal(error: unknown): error is BrowserPoolAgentUnavailable {
   return (
     error instanceof BrowserPoolAgentUnavailable &&
-    (error.refusal === "conflict" || error.refusal === "unknown-slot")
+    (error.refusal === "conflict" ||
+      error.refusal === "unknown-slot" ||
+      error.refusal === "profile-disk-missing")
   );
 }
 
