@@ -464,6 +464,70 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(gate.held).toBe(0);
   });
 
+  for (const sent of [true, false])
+    it(`gives a pooled script that ignores a restart its recorded outcome, ${sent ? "unknown after a send" : "refused with nothing sent"}`, async ({
+      storeFixture,
+    }) => {
+      const f = await storeFixture.startRunFixture(`pool-forced-${sent}`);
+      const identity = {
+        runnerId: f.runnerId,
+        runtimeId: "pooled-browser",
+        slotId: "slot",
+        instanceId: randomUUID(),
+        term: 1,
+        epoch: 1,
+      };
+      await installBrowserPoolSlot(storeFixture.database, identity);
+      const gate = new BrowserPoolGate();
+      gate.set({ recovered: true, away: null, hold: null });
+      const s = await setUp(storeFixture, `pool-forced-${sent}`, {
+        run: f,
+        pooledBrowser: () => ({
+          identity: () => identity,
+          pageDocument: () => undefined,
+          reserve: (signal) => gate.reserve(signal),
+        }),
+      });
+      const running = Promise.withResolvers<void>();
+      const hang = Promise.withResolvers<void>();
+      s.runBrowserScript.mockImplementationOnce(async ({ browserSend }) => {
+        if (sent) {
+          await browserSend!.recheck();
+          browserSend!.submitted();
+        }
+        running.resolve();
+        // It ignores its abort.
+        await hang.promise;
+        return { content: [{ type: "text", text: "late" }] };
+      });
+      const call = s.call("browser_use", script);
+      await running.promise;
+      // The restart holds admission, and after its wait records what each holder did.
+      gate.set({ hold: "restart" });
+      await gate.settleHolders();
+      const operation = () =>
+        storeFixture.database
+          .selectFrom("agentOperations")
+          .select(["state", "outcome", "decision"])
+          .where("tool", "=", "browser_use")
+          .executeTakeFirstOrThrow();
+      expect(await operation()).toMatchObject(
+        sent
+          ? { state: "unknown", outcome: "unknown" }
+          : {
+              state: "refused",
+              outcome: "refused",
+              decision: { by: "refused", reason: "changed" },
+            },
+      );
+      // The script returns later: what was recorded stands.
+      hang.resolve();
+      expect((await call).structuredContent).toMatchObject({ status: "unknown" });
+      expect(await operation()).toMatchObject({ state: sent ? "unknown" : "refused" });
+      gate.set({ hold: null });
+      expect(gate.held).toBe(0);
+    });
+
   it("records a fake background model's allow decision before executing an Auto effect", async ({
     storeFixture,
   }) => {

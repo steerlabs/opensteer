@@ -1244,6 +1244,7 @@ export class BrowserService {
       if (!local.initialized) throw new Error("The pooled profile has no storage.");
       identity = local;
     }
+    signal?.throwIfAborted();
     const origin = record.origin === "person" ? "person" : "agent";
     // A Stop that committed during the lookups above wins: the row is read again before attach.
     const stillReady = async () =>
@@ -1251,10 +1252,12 @@ export class BrowserService {
     const adopting = { active: true };
     // Under Stop's own lane: the row is read again, the lineage read, the ticket sent and the
     // broker registered, so a Stop either commits before (nothing is attached) or finds the broker.
+    // The lane is awaited, never abandoned: once the attempt has ended nothing in it is sent.
     const broker = await this.#serialize(async () => {
-      if (!(await stillReady()) || this.#closed) return undefined;
+      if (signal?.aborted || !(await stillReady()) || this.#closed) return undefined;
       // Person use is keyed by the session's persistent lineage, which survives the old broker.
       const groupId = (await readBrowserPoolSessionLineage(database, sessionId)) ?? sessionId;
+      if (signal?.aborted) return undefined;
       const socket = target.connect(
         this.#signer.issue({
           creationOrigin:
@@ -4846,6 +4849,7 @@ export class BrowserService {
         pool = {
           target: pooled.identity(),
           release: reserve.release,
+          ...(reserve.ended ? { ended: reserve.ended } : {}),
           ...(documentId ? { documentId } : {}),
         };
       }
@@ -4899,6 +4903,12 @@ export class BrowserService {
     pool?: StandardCdpPoolReservation,
   ) {
     const id = randomUUID();
+    const heldEnds = (phase: string | undefined) => {
+      if (phase === "restarting" || phase === "released" || pool?.ended?.aborted)
+        throw new BrowserCdpConnectionEnded(
+          "This browser is restarting. Request a new attachment.",
+        );
+    };
     const ending = new AbortController();
     const entry: StandardCdpEntry = {
       claims,
@@ -4959,6 +4969,8 @@ export class BrowserService {
         throw new BrowserCdpConnectionEnded(
           "This browser authority changed. Request a new attachment.",
         );
+      // A restart or a removal holds admission: no ticket is redeemed and no frame passes.
+      if (pool) heldEnds(pooled?.gate.phase);
       checked.throwIfAborted();
       return admitted;
     };
@@ -5199,13 +5211,6 @@ export class BrowserService {
               );
               if (fences.length) return { fences };
               if (pool) {
-                // A restart or a removal holds admission: no frame passes on a connection already
-                // attached either.
-                const phase = this.#pool(record.runnerId!)?.gate.phase;
-                if (phase === "restarting" || phase === "released")
-                  throw new BrowserCdpConnectionEnded(
-                    "This browser is restarting. Request a new attachment.",
-                  );
                 await verify(AbortSignal.timeout(1_000), Date.now() + 1_000, true);
                 // The live document is compared at every frame, as at attach.
                 if (
@@ -5217,6 +5222,8 @@ export class BrowserService {
                     "This browser page changed. Request a new attachment.",
                   );
               }
+              // After the frame's last asynchronous step, immediately before it is written.
+              if (pool) heldEnds(this.#pool(record.runnerId!)?.gate.phase);
               return { work: transport.send(frame) };
             });
             if (next.work) return next.work;
@@ -6452,7 +6459,12 @@ export class BrowserService {
           surfaceId,
           noticeId: intentId,
           outcome: reloaded ? ("reloaded" as const) : ("lost" as const),
-          typed,
+          typed:
+            typed === true
+              ? ("yes" as const)
+              : typed === false
+                ? ("no" as const)
+                : ("unknown" as const),
         };
       }),
     );
