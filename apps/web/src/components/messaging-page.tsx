@@ -209,7 +209,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
         type: "channel.connection.status.set",
       });
       await reload();
-      agents.refresh?.();
+      void agents.refresh?.();
     });
   }
 
