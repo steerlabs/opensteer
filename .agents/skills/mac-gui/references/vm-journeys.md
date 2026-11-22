@@ -44,10 +44,11 @@ The same step makes a fixture authority for the job (`scripts/test-vm/fixture-au
 which checks its certificate verifies and logs both fingerprints) and puts
 `account.first-run.opensteer.example` on loopback in the guest's hosts file, recording the line
 before it writes it. It never changes the guest's trust. The first-run journey serves its account
-service there over HTTPS, hands the authority to the app as `NODE_EXTRA_CA_CERTS` (which the app
-passes to its Host and nothing else), and launches the app's Chromium with
-`--ignore-certificate-errors-spki-list` for the account service's one key, which only a development
-launch accepts. A trial stopped by a certificate leaves `first-run/<trial>/tls-evidence.json`: what
+service there over HTTPS and hands the app, a development launch, two things a released app never
+takes from its environment: the authority as `NODE_EXTRA_CA_CERTS`, which the app passes to its
+Host and nothing else, and the account service's one key as
+`OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY`, which only the app's account session accepts
+(`electron-service-network.ts`). No launch takes a certificate switch. A trial stopped by a certificate leaves `first-run/<trial>/tls-evidence.json`: what
 the name resolved to and which certificate answered. `end` removes exactly the recorded line and
 keeps the record until it has.
 `pnpm exec tsx scripts/test-vm/guest-contract-journey.ts` holds it to that. To see what a suite's

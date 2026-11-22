@@ -41,7 +41,7 @@ import {
   quitApp,
 } from "./remote.js";
 import { journeyAccountTls, type JourneyAccountTls } from "./account-tls.js";
-import { journeyAppArguments, journeyAppEnvironment } from "./app-environment.js";
+import { journeyAppEnvironment } from "./app-environment.js";
 import { presentedCertificate, presentedCertificateLine } from "./tls-evidence.js";
 import { phoneStepTitle, setupMoves } from "./setup-walk.js";
 import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
@@ -122,8 +122,7 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
   let app: ElectronApplication | undefined;
   try {
     app = await electron.launch({
-      // The app's Chromium accepts the account service's certificate by its key, for this launch.
-      args: journeyAppArguments(desktop, accountTls.cert),
+      args: [desktop],
       cwd: desktop,
       env: {
         ...Object.fromEntries(
@@ -134,6 +133,8 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
         ...journeyAppEnvironment({
           accountOrigin: account.origin,
           dataDirectory: data,
+          // The app's account session accepts the account service's one key; nothing else does.
+          accountCertificate: accountTls.cert,
           extraCertificateAuthorities: accountTls.authorityFile,
           portalOrigin: account.portalOrigin,
           runtime,

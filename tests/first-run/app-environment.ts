@@ -15,11 +15,22 @@ export function journeyAppEnvironment(input: {
   readonly runtime: string;
   /** The fixture authority's certificate file, for an account service served over HTTPS. */
   readonly extraCertificateAuthorities?: string;
+  /**
+   * The account service's certificate, whose one key the session that talks to the account
+   * service accepts in this development launch (`electron-service-network.ts`). Nothing else in
+   * the app, the person's browser profiles among it, accepts it.
+   */
+  readonly accountCertificate?: string;
 }): Record<string, string> {
   return {
     ...(input.extraCertificateAuthorities === undefined
       ? {}
       : { NODE_EXTRA_CA_CERTS: input.extraCertificateAuthorities }),
+    ...(input.accountCertificate === undefined
+      ? {}
+      : {
+          OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY: journeyAccountSpki(input.accountCertificate),
+        }),
     OPENSTEER_DESKTOP_ACCOUNT_URL: input.accountOrigin,
     OPENSTEER_DESKTOP_DATA_DIR: input.dataDirectory,
     OPENSTEER_DESKTOP_MODE: "development",
@@ -27,16 +38,4 @@ export function journeyAppEnvironment(input: {
     OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: input.runtime,
     OPENSTEER_DESKTOP_PORTAL_URL: input.portalOrigin,
   };
-}
-
-/**
- * The Mac app's command line as the journey launches it: its source folder, after one Chromium
- * switch that accepts the account service's certificate by its public key, for this process only.
- * A development launch accepts it; a released app refuses it (`launch-policy.ts`).
- */
-export function journeyAppArguments(desktop: string, accountCertificate: string): string[] {
-  return [
-    `--ignore-certificate-errors-spki-list=${journeyAccountSpki(accountCertificate)}`,
-    desktop,
-  ];
 }

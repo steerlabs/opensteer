@@ -31,13 +31,20 @@ export interface DesktopBrowserRuntimeConfig {
 }
 
 export interface DesktopConfiguration {
+  /**
+   * In a development launch only: the one public key (base64 SHA-256 of its SubjectPublicKeyInfo)
+   * the session that talks to the account service accepts for the account host, for a stand-in
+   * account service such as the first-run journey's (`electron-service-network.ts`). Null in a
+   * released app, whatever its environment says.
+   */
+  readonly accountCertificateKey: string | null;
   readonly accountUrl: URL | null;
   readonly browser: DesktopBrowserRuntimeConfig | null;
   readonly dataDirectory: string;
   /**
-   * Certificate authorities the person added for Node (`NODE_EXTRA_CA_CERTS`), handed to this
-   * Mac's Home and to nothing else, so a Home behind a company's TLS inspection can reach the
-   * account service. Null unless someone set it on purpose.
+   * Certificate authorities added for Node (`NODE_EXTRA_CA_CERTS`), handed to this Mac's Home and
+   * to nothing else, in a development launch only (the first-run journey's account service is
+   * one). A released app takes none from its environment. Null unless someone set it on purpose.
    */
   readonly extraCertificateAuthorities: string | null;
   /** Optional source-build bootstrap Host. Signed installs begin with an empty catalog. */
@@ -97,6 +104,7 @@ const EnvironmentSchema = z.object({
   OPENSTEER_DESKTOP_RUNNER_WORKER: z.string().optional(),
   OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: z.string().optional(),
   NODE_EXTRA_CA_CERTS: z.string().optional(),
+  OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY: z.string().optional(),
 });
 
 export function readDesktopConfiguration(
@@ -206,22 +214,43 @@ export function readDesktopConfiguration(
     ),
   };
 
-  // Node's own variable: one the app will not pass on is ignored, never a reason not to open.
+  // Node's own variable: one the app will not pass on is ignored, never a reason not to open. A
+  // released app takes none: any process of the same person can set it (`launchctl setenv`), and
+  // the Home would then trust that authority for every outbound call. As the launch policy refuses
+  // SSLKEYLOGFILE, so this is not a trust input of a released app.
   const extraAuthoritiesValue = optional(parsed.NODE_EXTRA_CA_CERTS);
+  const extraAuthoritiesIgnored = !extraAuthoritiesValue
+    ? null
+    : options.packaged
+      ? "a released app takes no certificate authority from its environment"
+      : path.isAbsolute(extraAuthoritiesValue)
+        ? null
+        : "not an absolute path, so not passed to this Mac's Home";
   const extraAuthorities =
-    extraAuthoritiesValue && path.isAbsolute(extraAuthoritiesValue) ? extraAuthoritiesValue : null;
-  const ignored =
-    extraAuthoritiesValue && extraAuthorities === null
+    extraAuthoritiesValue && extraAuthoritiesIgnored === null ? extraAuthoritiesValue : null;
+  const accountKeyValue = optional(parsed.OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY);
+  if (accountKeyValue && !options.packaged && !/^[A-Za-z0-9+/]{43}=$/u.test(accountKeyValue))
+    throw new Error(
+      "OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY must be the base64 SHA-256 of a certificate's public key.",
+    );
+  const accountCertificateKey = accountKeyValue && !options.packaged ? accountKeyValue : null;
+  const ignored = [
+    ...(extraAuthoritiesIgnored === null
+      ? []
+      : [{ name: "NODE_EXTRA_CA_CERTS", reason: extraAuthoritiesIgnored }]),
+    ...(accountKeyValue && options.packaged
       ? [
           {
-            name: "NODE_EXTRA_CA_CERTS",
-            reason: "not an absolute path, so not passed to this Mac's Home",
+            name: "OPENSTEER_DESKTOP_ACCOUNT_CERTIFICATE_KEY",
+            reason: "a released app takes no certificate trust from its environment",
           },
         ]
-      : [];
+      : []),
+  ];
   return {
     ignored,
     config: {
+      accountCertificateKey,
       accountUrl,
       browser,
       dataDirectory,

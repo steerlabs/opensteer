@@ -69,6 +69,17 @@ describe("Desktop launch policy", () => {
     ).not.toThrow();
   });
 
+  // A certificate switch reaches every network context of the process, the person's browser
+  // profiles and tabs among them: no launch takes one, a development launch neither.
+  it.each([
+    ["--ignore-certificate-errors"],
+    ["--ignore-certificate-errors-spki-list=abc"],
+    ["--ignore-urlfetcher-cert-requests"],
+    ["--allow-insecure-localhost"],
+  ])("refuses %s in a development launch too", (argument) => {
+    expect(() => launch([argument], {}, false)).toThrow(/certificate/u);
+  });
+
   it("leaves development launches to the developer", () => {
     expect(() =>
       launch(["--remote-debugging-port=9222", "--no-sandbox"], { SSLKEYLOGFILE: "/tmp/k" }, false),

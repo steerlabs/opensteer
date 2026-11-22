@@ -10,8 +10,8 @@ import { assertDesktopLaunch } from "../../apps/desktop/src/app/launch-policy.js
 import { readDesktopConfiguration } from "../../apps/desktop/src/config.js";
 import { hostSpec } from "../../apps/desktop/src/supervisor/personal-deployment-supervisor.js";
 import { accountServiceEnvironment } from "./account-service.js";
-import { journeyAccountName } from "./account-tls.js";
-import { journeyAppArguments, journeyAppEnvironment } from "./app-environment.js";
+import { journeyAccountName, journeyAccountSpki } from "./account-tls.js";
+import { journeyAppEnvironment } from "./app-environment.js";
 
 /*
  * Everything the first-run journey hands the product, read by the product's own configuration
@@ -38,12 +38,22 @@ function accountService() {
 }
 
 /** The Mac app's configuration as the journey launches it. */
+/** The fixture authority's files, made by the guest step's own script. */
+const files = path.join(root, "authority-files");
+execFileSync("/bin/bash", [
+  path.resolve(import.meta.dirname, "../../scripts/test-vm/fixture-authority-files.sh"),
+  files,
+  "Opensteer journey fixture authority",
+  journeyAccountName,
+]);
+
 function desktop() {
   const account = accountService();
   return readDesktopConfiguration({
     appDataDirectory: path.join(root, "app-data"),
     defaultMode: "development",
     environment: journeyAppEnvironment({
+      accountCertificate: readFileSync(path.join(files, "account.pem"), "utf8"),
       accountOrigin: account.publicOrigin.origin,
       dataDirectory: path.join(root, "data"),
       extraCertificateAuthorities: authorityFile,
@@ -137,40 +147,24 @@ describe("what the first-run journey hands the product", () => {
     expect(parseHostConfig(host).personalAccountIssuer?.origin).toBe(issuer);
   });
 
-  // The app's Chromium accepts the account service's certificate by its key: a switch a
-  // development launch takes, and a released app refuses.
-  it("is a launch the Mac app accepts, with its Chromium told the account service's key", () => {
-    const files = path.join(root, "authority-files");
-    execFileSync("/bin/bash", [
-      path.resolve(import.meta.dirname, "../../scripts/test-vm/fixture-authority-files.sh"),
-      files,
-      "Opensteer journey fixture authority",
-      journeyAccountName,
-    ]);
-    const args = journeyAppArguments(
+  // The app's account session accepts the account service's one key (`electron-service-network.ts`),
+  // which the app reads from the journey's environment in a development launch; the launch itself
+  // carries no certificate switch, which no launch accepts.
+  it("is a plain launch, with the account service's key for the account session alone", () => {
+    const argv = [
+      "/opensteer/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
       "/opensteer/apps/desktop",
-      readFileSync(path.join(files, "account.pem"), "utf8"),
-    );
-    expect(args).toHaveLength(2);
-    expect(args[0]).toMatch(/^--ignore-certificate-errors-spki-list=[A-Za-z0-9+/]{43}=$/u);
-    expect(args[1]).toBe("/opensteer/apps/desktop");
-    const launch = (packaged: boolean) =>
+    ];
+    expect(() =>
       assertDesktopLaunch({
-        argv: [
-          "/opensteer/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
-          ...args,
-        ],
+        argv,
         callbackScheme: "com.opensteer.opensteer",
-        environment: journeyAppEnvironment({
-          accountOrigin: `https://${journeyAccountName}:45213`,
-          dataDirectory: path.join(root, "data"),
-          extraCertificateAuthorities: authorityFile,
-          portalOrigin: `https://${journeyAccountName}:45213`,
-          runtime: path.join(root, "runtime"),
-        }),
-        packaged,
-      });
-    expect(() => launch(false)).not.toThrow();
-    expect(() => launch(true)).toThrow(/ignore-certificate-errors-spki-list/u);
+        environment: {},
+        packaged: false,
+      }),
+    ).not.toThrow();
+    expect(desktop().config.accountCertificateKey).toBe(
+      journeyAccountSpki(readFileSync(path.join(files, "account.pem"), "utf8")),
+    );
   });
 });
