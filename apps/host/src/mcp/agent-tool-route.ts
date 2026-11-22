@@ -180,6 +180,7 @@ export function registerAgentToolRoute(
         const response = activity.replay
           ? unknownOutcome()
           : await options.service.callToolResult(token, name, input, {
+              ...(caller.agentConnection ? {} : { caller }),
               operationKey: callId,
               signal: controller.signal,
             });

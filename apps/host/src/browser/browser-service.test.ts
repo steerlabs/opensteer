@@ -9691,4 +9691,46 @@ describe("work under a connection's authority never uses the clipboard or change
       message: "Tab not found.",
     });
   });
+
+  it("skips duplicate agent use writes for consecutive holds by the same binding and writes again when another actor intervenes", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Shared" });
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const bindingA = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const bindingB = { agentBindingId: `run:${createId("run")}`, ownerId };
+
+    const opened = await service.openAgentSession({ ...bindingA, profileId: profile.id });
+    const countAfterOpen = recordUse.mock.calls.length;
+    expect(countAfterOpen).toBe(1);
+
+    const cdpA = await service.attachCdpForAgent(
+      { ...bindingA, sessionId: opened.session.id },
+      () => undefined,
+    );
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen);
+
+    const reopened = await service.openAgentSession({
+      ...bindingA,
+      sessionId: opened.session.id,
+    });
+    expect(reopened.session.id).toBe(opened.session.id);
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen);
+
+    const cdpB = await service.attachCdpForAgent(
+      { ...bindingB, sessionId: opened.session.id },
+      () => undefined,
+    );
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen + 1);
+
+    await service.openAgentSession({ ...bindingA, sessionId: opened.session.id });
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen + 2);
+
+    cdpA.close();
+    cdpB.close();
+  });
 });

@@ -988,6 +988,7 @@ export class BrowserService {
     if (detached?.length) {
       for (const sessionId of detached) {
         this.#holdings.delete(sessionId);
+        this.#lastHeldBindingBySession.delete(sessionId);
         this.#forgetActing(sessionId);
         for (const actor of this.#actors.values())
           if (actor.sessionId === sessionId) this.#clearActor(actor);
@@ -999,6 +1000,7 @@ export class BrowserService {
   readonly #localProfiles: BrowserLocalProfiles | undefined;
   readonly #eraseLocalProfiles: BrowserServiceOptions["eraseLocalProfiles"];
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
+  readonly #lastHeldBindingBySession = new Map<BrowserSessionId, string>();
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
@@ -1697,6 +1699,7 @@ export class BrowserService {
       this.#onTabsChanged(input.ownerId);
     }
     if (input.threadId) {
+      this.#lastHeldBindingBySession.delete(result.session.id);
       this.announceUsage(
         await this.#repository.recordBrowserSessionUse({
           ownerId: input.ownerId,
@@ -3901,8 +3904,12 @@ export class BrowserService {
       "profileId" in target ? profiles.find((profile) => profile.id === target.profileId) : null;
     if ("profileId" in target && !profile)
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found." });
-    const placement =
+    const eligibleRunners =
       !profile && actor.kind === "run"
+        ? await this.#repository.listEligibleBrowserRunners(ownerId)
+        : null;
+    const placement =
+      eligibleRunners && actor.kind === "run"
         ? this.#defaultPlacement(
             {
               origin: "agent",
@@ -3911,8 +3918,8 @@ export class BrowserService {
                 ? { chosenRunnerId: await this.#selfRunnerId(target.computerId) }
                 : {}),
             },
-            this.#eligiblePlacements(await this.#repository.listEligibleBrowserRunners(ownerId)),
-            await this.#repository.listEligibleBrowserRunners(ownerId),
+            this.#eligiblePlacements(eligibleRunners),
+            eligibleRunners,
           )
         : undefined;
     if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
@@ -4150,8 +4157,8 @@ export class BrowserService {
         undefined,
         true,
       );
-      await this.#requireWorkspaceGeneration(agent.ownerId, row);
-      await this.pageTabs.admitted!((await this.#workspaceTabs!.get(agent.ownerId, row.id))!);
+      const fresh = await this.#requireWorkspaceGeneration(agent.ownerId, row);
+      await this.pageTabs.admitted!(fresh);
       await this.#recordAgentTabPlace(agent, session, row.id);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
     } finally {
@@ -4375,13 +4382,25 @@ export class BrowserService {
     record: BrowserSessionRecord,
     tabId: BrowserSurfaceId,
   ) {
-    await this.admitAgentBrowser(agent, "read-write", [record]);
-    const [actor] = await this.#repository.resolvePlaceActors({
-      agentBindingIds: [agent.agentBindingId],
-      ownerIds: [agent.ownerId],
-    });
+    const actorKey = `${record.id}:${agent.agentBindingId}`;
+    const existingToken = this.#actorKeys.get(actorKey);
+    const existingActor = existingToken ? this.#actors.get(existingToken) : undefined;
+    const actor = existingActor
+      ? { runId: existingActor.runId, generation: existingActor.generation }
+      : (
+          await this.#repository.resolvePlaceActors({
+            agentBindingIds: [agent.agentBindingId],
+            ownerIds: [agent.ownerId],
+          })
+        )[0];
     const data = this.#placeData(record.id, tabId);
     if (actor && data) this.#enterRunPlace(actor.runId, actor.generation, data);
+    const broker = this.#brokers.get(record.id);
+    const key = broker?.pageKeyOf(tabId);
+    const previous = existingActor?.surfaces.get(tabId);
+    if (key !== undefined && existingActor && previous?.recordedPage?.key === key) {
+      return;
+    }
     this.announceUsage(
       await this.#repository.recordAgentBrowserUse({
         ...agent,
@@ -4391,6 +4410,19 @@ export class BrowserService {
       }),
     );
     await this.#restoreHoldings(record.id);
+    if (key !== undefined) {
+      const token = this.#actorKeys.get(actorKey);
+      const installed = token ? this.#actors.get(token) : undefined;
+      if (installed) {
+        const currentSurface = installed.surfaces.get(tabId);
+        installed.surfaces.set(tabId, {
+          at: 0,
+          seq: 0,
+          ...currentSurface,
+          recordedPage: { key, at: this.#activityClock.now() },
+        });
+      }
+    }
   }
 
   async listAgentSessions(input: {
@@ -7060,6 +7092,7 @@ export class BrowserService {
               this.#shadows.delete(sessionId);
               this.#sessionProfiles.delete(sessionId);
               this.#holdings.delete(sessionId);
+              this.#lastHeldBindingBySession.delete(sessionId);
               this.#announcedPresence.delete(sessionId);
               this.#onTabsChanged();
               if (!tabRestore) this.#endPersonUse(groupId);
@@ -7560,23 +7593,26 @@ export class BrowserService {
           )
         : undefined;
       try {
-        const [attached, credits] = await Promise.all([
-          this.#repository.attachBrowserSession({
-            agentBindingId: input.agentBindingId,
-            ownerId: input.ownerId,
-            sessionId: record.id,
-            ...(pool ? { pool: pool.identity() } : {}),
-          }),
-          this.#repository.recordAgentBrowserUse({
+        // Run attachment and usage sequentially so they never contend on client_sync_state,
+        // and skip repeat session-only usage writes when this binding already holds the head.
+        const attached = await this.#repository.attachBrowserSession({
+          agentBindingId: input.agentBindingId,
+          ownerId: input.ownerId,
+          sessionId: record.id,
+          ...(pool ? { pool: pool.identity() } : {}),
+        });
+        if (attached) this.#onSessionsChanged([record.id]);
+        if (attached || this.#lastHeldBindingBySession.get(record.id) !== input.agentBindingId) {
+          const credits = await this.#repository.recordAgentBrowserUse({
             agentBindingId: input.agentBindingId,
             ownerId: input.ownerId,
             page: null,
             sessionId: record.id,
             tabId: null,
-          }),
-        ]);
-        if (attached) this.#onSessionsChanged([record.id]);
-        this.announceUsage(credits);
+          });
+          this.#lastHeldBindingBySession.set(record.id, input.agentBindingId);
+          this.announceUsage(credits);
+        }
       } finally {
         reservation?.release();
       }
