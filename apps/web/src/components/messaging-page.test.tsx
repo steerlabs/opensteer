@@ -221,6 +221,26 @@ describe("Messaging", () => {
     }
   });
 
+  it("says an account's chats could not be read when that read failed, never that it has none", async () => {
+    const client = chats();
+    try {
+      Object.defineProperty(client.rpc, "connections.list", {
+        value: vi.fn(async () => {
+          throw new Error("down");
+        }),
+        configurable: true,
+      });
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      await vi.waitFor(() =>
+        expect(page.textContent).toContain("Couldn’t read this account’s chats."),
+      );
+      expect(page.textContent).not.toContain("No chat on this account yet.");
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("selects only the Messaging account named by the child route", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));

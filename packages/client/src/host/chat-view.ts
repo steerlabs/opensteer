@@ -83,3 +83,16 @@ export function chatsOfAccount(
 ): readonly AgentConnection[] {
   return (connections ?? []).filter((connection) => connection.bridge?.accountId === accountId);
 }
+
+/**
+ * Where a read of the connected agents stands for a screen that depends on it: still reading,
+ * could not read (offer Try again), or read. Only a read answer may say something is gone or
+ * that there is none.
+ */
+export type ConnectionsRead = "loading" | "failed" | "read";
+export function connectionsRead(agents: {
+  readonly connections: readonly unknown[] | null;
+  readonly error: string | null;
+}): ConnectionsRead {
+  return agents.connections !== null ? "read" : agents.error !== null ? "failed" : "loading";
+}

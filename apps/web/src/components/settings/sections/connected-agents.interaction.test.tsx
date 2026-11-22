@@ -483,6 +483,22 @@ describe("a chat, as a connected agent", () => {
     );
   });
 
+  it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
+    host = chats();
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("Couldn’t read your connected agents."),
+    );
+    expect(page.textContent).not.toContain(agentWords("agent.notFound"));
+    expect(buttonNamed(page, "Try again")).toBeTruthy();
+  });
+
   it("offers an anyone chat only what the Home says it may hold, and keeps Tasks on", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(2)}`);

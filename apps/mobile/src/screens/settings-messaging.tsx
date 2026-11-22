@@ -4,6 +4,7 @@ import {
   agentWords,
   chatsOfAccount,
   connectedAgentRow,
+  connectionsRead,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
@@ -399,23 +400,42 @@ function Messaging({
         rows,
         ...(footer ? { footer } : {}),
       });
+      // Only a read answer says an account has no chat.
+      const read = connectionsRead(agents);
       const chats = chatsOfAccount(agents.connections, account.id);
       sections.push({
         key: `${account.id}:chats`,
         title: agentWords("messaging.chats.title"),
         rows:
-          chats.length === 0
-            ? [text("none", agentWords("messaging.chats.empty"))]
-            : chats.map((chat): NativeSettingsRow => ({
-                key: chat.id,
-                kind: "button",
-                label: chat.label,
-                detail: connectedAgentRow(chat, { profiles: host.getSnapshot().browserProfiles })
-                  .line,
-                opens: true,
-                onPress: () =>
-                  navigation.navigate("ConnectedAgent", { deploymentId, connectionId: chat.id }),
-              })),
+          read === "loading"
+            ? [
+                {
+                  key: "loading",
+                  kind: "placeholder",
+                  label: agentWords("messaging.chats.loading"),
+                },
+              ]
+            : read === "failed"
+              ? [
+                  text("unreadable", agentWords("messaging.chats.readFailed")),
+                  button("retry", agentWords("common.tryAgain"), () => void agents.refresh?.()),
+                ]
+              : chats.length === 0
+                ? [text("none", agentWords("messaging.chats.empty"))]
+                : chats.map((chat): NativeSettingsRow => ({
+                    key: chat.id,
+                    kind: "button",
+                    label: chat.label,
+                    detail: connectedAgentRow(chat, {
+                      profiles: host.getSnapshot().browserProfiles,
+                    }).line,
+                    opens: true,
+                    onPress: () =>
+                      navigation.navigate("ConnectedAgent", {
+                        deploymentId,
+                        connectionId: chat.id,
+                      }),
+                  })),
         footer: { text: agentWords("messaging.phone") },
       });
     }

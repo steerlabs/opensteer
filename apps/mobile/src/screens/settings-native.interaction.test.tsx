@@ -265,6 +265,30 @@ it.each(["ios", "android"])(
   },
 );
 
+it.each(["ios", "android"])(
+  "says an account's chats could not be read when that read failed, never that it has none, on %s",
+  async (os) => {
+    state.os = os;
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    await host.load();
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new Error("down");
+      }),
+      configurable: true,
+    });
+    state.host = host;
+    root = createRoot(document.createElement("div"));
+    await act(async () =>
+      root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+    );
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label === "Couldn’t read this account’s chats.")).toBe(true),
+    );
+    expect(rows().some((r) => r.label === "No chat on this account yet.")).toBe(false);
+  },
+);
+
 it.each(["ios", "android"])("says an account with no chat has none yet, on %s", async (os) => {
   state.os = os;
   host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats-empty") });

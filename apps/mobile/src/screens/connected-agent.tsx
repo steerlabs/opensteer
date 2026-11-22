@@ -7,6 +7,7 @@ import {
   workWords,
   chatFacts,
   connectedAgentConnected,
+  connectionsRead,
   connectedAgentDetail,
   createDedicatedProfile,
   draftFromGrant,
@@ -102,7 +103,8 @@ export function ConnectedAgentController(props: {
     return (
       <NativeSettingsPage
         sections={[
-          agents.connections === null && agents.error === null
+          // Only a read answer may say it is gone: still reading, or a read that failed, says so.
+          connectionsRead(agents) === "loading"
             ? {
                 key: "loading",
                 title: "",
@@ -110,14 +112,25 @@ export function ConnectedAgentController(props: {
                   { key: "placeholder", kind: "placeholder", label: agentWords("common.loading") },
                 ],
               }
-            : {
-                key: "gone",
-                title: "",
-                rows: [{ key: "gone", kind: "text", label: agentWords("agent.notFound") }],
-                ...(agents.error
-                  ? { footer: { text: agents.error, tone: "danger" as const } }
-                  : {}),
-              },
+            : connectionsRead(agents) === "failed"
+              ? {
+                  key: "unreadable",
+                  title: "",
+                  rows: [
+                    { key: "unreadable", kind: "text", label: agentWords("agent.readFailed") },
+                    {
+                      key: "retry",
+                      kind: "button",
+                      label: agentWords("common.tryAgain"),
+                      onPress: () => void agents.refresh?.(),
+                    },
+                  ],
+                }
+              : {
+                  key: "gone",
+                  title: "",
+                  rows: [{ key: "gone", kind: "text", label: agentWords("agent.notFound") }],
+                },
         ]}
       />
     );

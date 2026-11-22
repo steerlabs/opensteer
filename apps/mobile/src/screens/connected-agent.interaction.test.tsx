@@ -492,6 +492,30 @@ describe("a chat on the phone", () => {
     );
   });
 
+  it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
+    const client = chats();
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    host = client;
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () =>
+      root!.render(
+        <ConnectedAgentController
+          connectionId={chat(1)}
+          deploymentId="deployment-a"
+          host={client}
+        />,
+      ),
+    );
+    await vi.waitFor(() => expect(section("unreadable")).toBeDefined());
+    expect(row("unreadable", "unreadable").label).toBe("Couldn’t read your connected agents.");
+    expect(section("gone")).toBeUndefined();
+  });
+
   it("says a reply may have been sent, never that it failed", async () => {
     await open(chat(4), chats());
     expect(row("chat-unknown", "unknown").label).toBe(

@@ -13,6 +13,8 @@ import {
   agentWords,
   chatsOfAccount,
   connectedAgentRow,
+  connectionsRead,
+  type ConnectionsRead,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type CreatedChannelConnection,
@@ -283,6 +285,8 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
         {view === "overview" ? (
           <ChannelOverview
             chats={agents.connections}
+            chatsRead={connectionsRead(agents)}
+            onRetryChats={() => void agents.refresh?.()}
             client={hostClient}
             code={code}
             dashboard={
@@ -421,6 +425,8 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
  */
 export function ChannelOverview({
   chats,
+  chatsRead,
+  onRetryChats,
   client,
   code,
   dashboard,
@@ -437,6 +443,9 @@ export function ChannelOverview({
   readFailed,
 }: {
   readonly chats: readonly AgentConnection[] | null;
+  /** Where the read of the chats stands: only a read answer says an account has none. */
+  readonly chatsRead: ConnectionsRead;
+  readonly onRetryChats: () => void;
   readonly client: Pick<HostClient, "dispatch">;
   readonly code: ShownCode | null;
   readonly dashboard: ChannelDashboard | null;
@@ -587,7 +596,8 @@ export function ChannelOverview({
               {accounts.map((account) => (
                 <AccountChats
                   account={account}
-                  chats={chatsOfAccount(chats, account.id)}
+                  chats={chatsRead === "read" ? chatsOfAccount(chats, account.id) : chatsRead}
+                  onRetryChats={onRetryChats}
                   client={client}
                   code={code?.accountId === account.id ? code : null}
                   key={account.id}
@@ -637,6 +647,7 @@ export function ChannelOverview({
 export function AccountChats({
   account,
   chats,
+  onRetryChats,
   client,
   code,
   manifest,
@@ -648,7 +659,9 @@ export function AccountChats({
   providerLabel,
 }: {
   readonly account: ChannelAccount;
-  readonly chats: readonly AgentConnection[];
+  /** Its chats once read; or that they are still being read, or could not be. */
+  readonly chats: readonly AgentConnection[] | "loading" | "failed";
+  readonly onRetryChats: () => void;
   readonly client: Pick<HostClient, "dispatch">;
   readonly code: ShownCode | null;
   readonly manifest: ChannelProviderManifest | undefined;
@@ -710,7 +723,18 @@ export function AccountChats({
       <div className="card__row messaging-chats">
         <div className="card__row-body">
           <span className="card__row-title">{agentWords("messaging.chats.title")}</span>
-          {chats.length === 0 ? (
+          {chats === "loading" ? (
+            <span className="card__row-detail" role="status">
+              {agentWords("messaging.chats.loading")}
+            </span>
+          ) : chats === "failed" ? (
+            <span className="card__row-detail" role="alert">
+              {agentWords("messaging.chats.readFailed")}{" "}
+              <button className="btn btn--small" onClick={onRetryChats} type="button">
+                {agentWords("common.tryAgain")}
+              </button>
+            </span>
+          ) : chats.length === 0 ? (
             <span className="card__row-detail">{agentWords("messaging.chats.empty")}</span>
           ) : (
             <ul className="messaging-chats__list">

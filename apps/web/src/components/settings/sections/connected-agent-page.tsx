@@ -6,6 +6,7 @@ import {
   agentWords,
   chatFacts,
   connectedAgentConnected,
+  connectionsRead,
   connectedAgentDetail,
   createDedicatedProfile,
   draftFromGrant,
@@ -69,18 +70,35 @@ export function ConnectedAgentPage({
     </Link>
   );
   if (!connection) {
-    if (agents.connections === null && !agents.error)
+    // Only a read answer may say it is gone: still reading, or a read that failed, says so.
+    const read = connectionsRead(agents);
+    if (read === "loading")
       return (
         <>
           {back}
           <p role="status">{agentWords("common.loading")}</p>
         </>
       );
+    if (read === "failed")
+      return (
+        <>
+          {back}
+          <p className="notice notice--error" role="alert">
+            {agentWords("agent.readFailed")}{" "}
+            <button
+              className="btn btn--small"
+              onClick={() => void agents.refresh?.()}
+              type="button"
+            >
+              {agentWords("common.tryAgain")}
+            </button>
+          </p>
+        </>
+      );
     return (
       <>
         {back}
         <SectionHeader title={agentWords("agent.notFound")} />
-        <SettingsError message={agents.error} />
       </>
     );
   }
