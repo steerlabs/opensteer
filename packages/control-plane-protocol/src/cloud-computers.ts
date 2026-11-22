@@ -325,6 +325,7 @@ export const CloudComputerBootResponseSchema = z.strictObject({
   egress: CloudComputerEgressSchema.optional(),
   managedHome: CloudComputerManagedHomeSchema.optional(),
   work: WorkHomeMarkerSchema.optional(),
+  browserPool: z.boolean().optional(),
   ipv6Enabled: z.boolean(),
   restoreSnapshot: CloudComputerSnapshotSchema.optional(),
   backup: z.strictObject({
