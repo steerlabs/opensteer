@@ -10,6 +10,9 @@ import UniformTypeIdentifiers
   /// Where each waiting edit was typed, carried over the edits applied before its turn.
   private var edits = RemoteInputEdits()
   private var mutating = false
+  /// The selection the view itself last left, so a selection callback UIKit sends about it later
+  /// (on another run loop turn, after `mutating` is false again) is not taken for a choice.
+  private var ownSelection: NSRange?
   private var held = Set<Int>()
   private var contextId: String?
   private var traits: RemoteInputTraits?
@@ -70,6 +73,7 @@ import UniformTypeIdentifiers
     mutating = true
     edit(NSRange(location: 0, length: length)) { text = value }
     selectedRange = NSRange(location: start, length: end - start)
+    ownSelection = selectedRange
     mutating = false
   }
   /// The selection UIKit or the person chose after `typed` was named, carried: applying an edit
@@ -85,13 +89,18 @@ import UniformTypeIdentifiers
         let wasComposing = self.markedTextRange != nil
         self.mutating = true
         action()
-        self.keepChosen(after: typed)
-        self.mutating = false
+        // The state right after this edit: its events report its own caret. The selection the
+        // person chose later is put back after, for UIKit's next call, and reported in its turn.
         let composing = self.markedTextRange != nil
-        if !wasComposing && composing { self.gate.notify(["type": "compositionstart", "proxy": self.snapshot()]) }
-        if composing { self.gate.notify(["type": "compositionupdate", "data": self.marked(), "proxy": self.snapshot()]) }
-        if wasComposing && !composing { self.gate.notify(["type": "compositionend", "data": data ?? "", "proxy": self.snapshot()]) }
-        self.gate.notify(["type": "input", "inputType": inputType, "composing": composing, "proxy": self.snapshot()])
+        let proxy = self.snapshot()
+        let markedText = self.marked()
+        self.keepChosen(after: typed)
+        self.ownSelection = self.selectedRange
+        self.mutating = false
+        if !wasComposing && composing { self.gate.notify(["type": "compositionstart", "proxy": proxy]) }
+        if composing { self.gate.notify(["type": "compositionupdate", "data": markedText, "proxy": proxy]) }
+        if wasComposing && !composing { self.gate.notify(["type": "compositionend", "data": data ?? "", "proxy": proxy]) }
+        self.gate.notify(["type": "input", "inputType": inputType, "composing": composing, "proxy": proxy])
       }
     }
   }
@@ -145,6 +154,7 @@ import UniformTypeIdentifiers
       let data = self.marked()
       self.mutating = true
       super.unmarkText()
+      self.ownSelection = self.selectedRange
       self.mutating = false
       self.gate.notify(["type": "compositionend", "data": data, "proxy": self.snapshot()])
     }
@@ -152,13 +162,11 @@ import UniformTypeIdentifiers
   public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
     if mutating { return true }
     guard isEditable else { return false }
-    if replacement.isEmpty && RemoteInputEdits.isBackspace(named: range, selection: selectedRange) {
-      // A Backspace: backward from the caret, wherever the caret is by its turn, as many composed
-      // characters as UIKit named.
+    if replacement.isEmpty && RemoteInputEdits.isBackspace(named: range, selection: selectedRange, in: text ?? "") {
+      // A Backspace: the character before the caret, wherever the caret is by its turn.
       let caret = place(selectedRange)
-      let count = RemoteInputEdits.composedCount(in: text ?? "", range: range)
       change("deleteContentBackward", data: replacement, typed: caret) {
-        self.replaceRange(self.edits.backspace(caret, count: count, in: self.text ?? ""), with: "")
+        self.replaceRange(self.edits.backspace(caret, in: self.text ?? ""), with: "")
       }
       return false
     }
@@ -173,7 +181,8 @@ import UniformTypeIdentifiers
   /// over them. Reporting never writes the native selection: that stays whatever UIKit last set.
   /// A newer report replaces one still queued, so a drag queues one, not one per frame.
   public func textViewDidChangeSelection(_ textView: UITextView) {
-    if mutating { return }
+    if mutating || selectedRange == ownSelection { return }
+    ownSelection = nil
     let moved = place(selectedRange)
     edits.choose(moved)
     gate.report {
@@ -260,6 +269,7 @@ import UniformTypeIdentifiers
       mutating = true
       edit(NSRange(location: 0, length: length)) { text = "" }
       selectedRange = NSRange(location: 0, length: 0)
+      ownSelection = selectedRange
       mutating = false
     }
     let nextTraits = RemoteInputTraits(context, softKeyboard: softKeyboard, keyboardMayReplaceText: keyboardMayReplaceText)

@@ -82,9 +82,19 @@ export class Edits {
     end = Math.min(Math.max(start, end), length);
     return { start, end };
   }
-  static isBackspace(named: Span, selection: Span): boolean {
+  /** One composed character, exactly, ending at a collapsed selection. */
+  static isBackspace(named: Span, selection: Span, text: string): boolean {
+    if (
+      selection.start !== selection.end ||
+      named.end <= named.start ||
+      named.end !== selection.start
+    )
+      return false;
+    const covering = characters(text).filter(
+      ({ start, end }) => start < named.end && end > named.start,
+    );
     return (
-      selection.start === selection.end && named.end > named.start && named.end === selection.start
+      covering.length === 1 && covering[0]!.start === named.start && covering[0]!.end === named.end
     );
   }
   static deletesSelection(named: Span, selection: Span): boolean {
@@ -95,15 +105,13 @@ export class Edits {
     );
   }
   static composedCount(text: string, range: Span): number {
+    if (range.start < 0 || range.end < range.start || range.end > text.length) return 0;
     return characters(text).filter(({ start, end }) => start < range.end && end > range.start)
       .length;
   }
-  backspace(caret: Place, count: number, text: string): Span {
+  backspace(caret: Place, text: string): Span {
     const at = this.current(caret, text.length).start;
-    let start = at;
-    for (let index = 0; index < count && start > 0; index++)
-      start = characterAt(text, start - 1).start;
-    return { start, end: at };
+    return at > 0 ? { start: characterAt(text, at - 1).start, end: at } : { start: at, end: at };
   }
   static deletedStart(selection: Span, removed: number): number {
     return selection.end > selection.start
@@ -156,6 +164,8 @@ export class NativeField {
   selection: Span = { start: 0, end: 0 };
   marked: Span | null = null;
   private mutating = false;
+  /** The selection the view itself last left (RemoteInputTextView.ownSelection). */
+  private ownSelection: Span | null = null;
 
   constructor(private readonly deliver: (packet: Packet) => void) {}
 
@@ -249,6 +259,7 @@ export class NativeField {
     this.mutating = true;
     this.replace({ start: 0, end: this.text.length }, set.value);
     this.selection = { start: set.selectionStart, end: set.selectionEnd };
+    this.ownSelection = { ...this.selection };
     this.mutating = false;
   }
   private keepChosen(typed: Place | null) {
@@ -262,20 +273,18 @@ export class NativeField {
         const wasComposing = this.marked !== null;
         this.mutating = true;
         action();
-        this.keepChosen(typed);
-        this.mutating = false;
+        // The state right after this edit, before the chosen selection is put back.
         const composing = this.marked !== null;
-        if (!wasComposing && composing)
-          this.notify({ type: "compositionstart", proxy: this.snapshot() });
-        if (composing)
-          this.notify({
-            type: "compositionupdate",
-            data: this.text.slice(this.marked!.start, this.marked!.end),
-            proxy: this.snapshot(),
-          });
+        const proxy = this.snapshot();
+        const marked = this.marked ? this.text.slice(this.marked.start, this.marked.end) : "";
+        this.keepChosen(typed);
+        this.ownSelection = { ...this.selection };
+        this.mutating = false;
+        if (!wasComposing && composing) this.notify({ type: "compositionstart", proxy });
+        if (composing) this.notify({ type: "compositionupdate", data: marked, proxy });
         if (wasComposing && !composing)
-          this.notify({ type: "compositionend", data: data ?? "", proxy: this.snapshot() });
-        this.notify({ type: "input", inputType, composing, proxy: this.snapshot() });
+          this.notify({ type: "compositionend", data: data ?? "", proxy });
+        this.notify({ type: "input", inputType, composing, proxy });
       }),
     );
   }
@@ -296,11 +305,10 @@ export class NativeField {
   }
   /** textView(_:shouldChangeTextIn:replacementText:). */
   shouldChangeText(named: Span, replacement: string) {
-    if (replacement === "" && Edits.isBackspace(named, this.selection)) {
+    if (replacement === "" && Edits.isBackspace(named, this.selection, this.text)) {
       const caret = this.place(this.selection);
-      const count = Edits.composedCount(this.text, named);
       this.change("deleteContentBackward", replacement, caret, () =>
-        this.replace(this.edits.backspace(caret, count, this.text), ""),
+        this.replace(this.edits.backspace(caret, this.text), ""),
       );
       return;
     }
@@ -384,7 +392,9 @@ export class NativeField {
   /** UIKit or the person moves the selection, then UIKit tells the delegate. */
   moveSelection(start: number, end = start) {
     this.selection = { start, end };
-    if (this.mutating) return;
+    const own = this.ownSelection;
+    if (this.mutating || (own !== null && own.start === start && own.end === end)) return;
+    this.ownSelection = null;
     const moved = this.place(this.selection);
     this.edits.choose(moved);
     this.report(() => this.event({ type: "selection", proxy: this.snapshot(this.range(moved)) }));

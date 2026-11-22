@@ -23,7 +23,10 @@ class RemoteField {
   caret = 0;
   composition: { start: number; end: number } | null = null;
   refused: EditingOperation[] = [];
+  /** Every operation the field was sent, in order. */
+  sent: EditingOperation[] = [];
   take = (operation: EditingOperation): boolean => {
+    this.sent.push(operation);
     switch (operation.kind) {
       case "edit": {
         const { before = "", after = "", text } = operation.edit;
@@ -114,6 +117,8 @@ vi.mock("expo", async () => {
   };
 });
 const { NativeEditingProxy } = await import("../src/editing-proxy.js");
+// The proxy loads the native input lazily: load it once here, outside any test's act.
+await import("../src/remote-text-input.js");
 
 const context = {
   contextId: "00000000-0000-4000-8000-000000000001",
@@ -131,7 +136,15 @@ afterEach(async () => {
   harness.mounted = false;
 });
 
-async function open() {
+/** A Mac app or a phone screen: no range edits, so a replacement in the middle is refused. */
+const displayAbilities = {
+  composition: true,
+  rangeEdits: false,
+  commands: true,
+  clipboard: "text",
+} as const;
+
+async function open(abilities?: typeof displayAbilities) {
   const remote = new RemoteField();
   let native: NativeField | null = null;
   const pending: Packet[] = [];
@@ -152,7 +165,12 @@ async function open() {
   native.contextId = context.contextId;
   await act(async () =>
     root.render(
-      <NativeEditingProxy context={context} sendOperation={remote.take} onDone={() => undefined} />,
+      <NativeEditingProxy
+        context={context}
+        sendOperation={remote.take}
+        onDone={() => undefined}
+        {...(abilities ? { abilities } : {})}
+      />,
     ),
   );
   await vi.waitFor(() => expect(harness.mounted).toBe(true));
@@ -318,6 +336,43 @@ describe("typing into a remote field", () => {
     expect(native.text).toBe("Xhelloa");
     expect(remote.value).toBe("Xhelloa");
   });
+
+  // The recheck's fault 1: an edit's event carried a caret chosen after it, so the remote caret
+  // moved back before the second character and the second arrived as a rewrite, or was refused.
+  it.each([
+    ["a page (range edits)", undefined],
+    ["a Mac app or phone screen (no range edits)", displayAbilities],
+  ] as const)(
+    "on %s, delivers two characters typed before a tap, then moves once",
+    async (_name, abilities) => {
+      const { remote, native, keyboard, answerAll } = await open(abilities);
+      await keyboard((field) => field.type("hello"));
+      await answerAll();
+      const before = remote.sent.length;
+      await keyboard((field) => field.insertText("a"));
+      await keyboard((field) => field.insertText("b"));
+      await keyboard((field) => field.moveSelection(0));
+      await answerAll();
+      const sent = remote.sent.slice(before);
+      expect(remote.refused).toEqual([]);
+      // A target without range edits keeps no mirror: the field is cleared after each edit.
+      expect(native.text).toBe(abilities ? "" : "helloab");
+      expect(remote.value).toBe("helloab");
+      // Both characters, as plain appends, then the caret's moves, all after the second.
+      const edits = sent.filter((operation) => operation.kind === "edit");
+      expect(edits.map((operation) => operation.kind === "edit" && operation.edit)).toEqual(
+        ["a", "b"].map((text) => ({ contextId: context.contextId, text, before: "", after: "" })),
+      );
+      const lastEdit = sent.lastIndexOf(edits.at(-1)!);
+      expect(sent.slice(0, lastEdit).some((operation) => operation.kind === "command")).toBe(false);
+      expect(sent.slice(lastEdit + 1).every((operation) => operation.kind === "command")).toBe(
+        true,
+      );
+      // A page follows the tap; a target without range edits gets no caret moves from a selection
+      // (the reducer keeps no mirror to measure them against), so it stays after the "b".
+      expect(remote.caret).toBe(abilities ? 7 : 0);
+    },
+  );
 
   it("deletes what was typed last, however late its turn", async () => {
     const { remote, native, keyboard, answerAll } = await open();

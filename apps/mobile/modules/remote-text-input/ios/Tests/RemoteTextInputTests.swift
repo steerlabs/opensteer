@@ -294,11 +294,11 @@ import UIKit
     XCTAssertEqual(field.selections, 1)
   }
 
-  // P3: deleteBackward inside a composition records where the characters actually went. Without
-  // an input method UIKit deletes the whole marked text, so a place named inside it lands where it
-  // began; an IME that deletes one marked character is covered by the shared cases
-  // (deletedStart), since no IME runs here.
-  func testDeletingACompositionCarriesLaterPlacesToWhereItWent() {
+  // A guard, not P3's test: without an input method UIKit deletes the whole marked text, so this
+  // passes with or without P3's fix, here and on a simulator. The real test of P3 is the shared
+  // case "deleteBackward records where the characters actually went" (deletedStart), since no
+  // IME that deletes one marked character runs in a test.
+  func testDeletingAWholeCompositionWithoutAnIMECarriesLaterPlaces() {
     let field = Field()
     field.view.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0))
     field.answerAll()
@@ -307,6 +307,52 @@ import UIKit
     XCTAssertFalse(field.view.textView(field.view, shouldChangeTextIn: NSRange(location: 1, length: 0), replacementText: "X"))
     field.answerAll()
     XCTAssertEqual(field.view.text, "X")
+  }
+
+  // T1: each edit's event reports the state right after that edit, never a caret chosen later.
+  func testEachEditReportsItsOwnCaretWhenATapCameAfterIt() {
+    let field = Field(settled: "hello")
+    let settled = field.packets.count
+    field.view.insertText("a")
+    field.view.insertText("b")
+    field.select(NSRange(location: 0, length: 0))
+    field.answerAll()
+    let events = field.packets[settled...].compactMap { $0["event"] as? [String: Any] }
+    let inputs = events.filter { $0["type"] as? String == "input" }.compactMap { $0["proxy"] as? [String: Any] }
+    XCTAssertEqual(inputs.map { $0["selectionEnd"] as? Int }, [6, 7])
+    let selections = events.filter { $0["type"] as? String == "selection" }.compactMap { $0["proxy"] as? [String: Any] }
+    XCTAssertEqual(selections.map { $0["selectionEnd"] as? Int }, [0])
+    XCTAssertEqual(field.view.text, "helloab")
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 0, length: 0))
+  }
+
+  // T2: a deletion of more than one composed character deletes the text it named.
+  func testAWordDeletionWhileTypingWaitsDeletesTheWordItNamed() {
+    let field = Field(settled: "hello")
+    field.view.insertText(" ")
+    field.view.insertText("a")
+    XCTAssertFalse(field.view.textView(field.view, shouldChangeTextIn: NSRange(location: 0, length: 5), replacementText: ""))
+    field.answerAll()
+    XCTAssertEqual(field.view.text, " a")
+  }
+  func testTwoWordDeletionsNamingOneWordDeleteOneWord() {
+    let field = Field(settled: "one two three")
+    for _ in 0..<2 {
+      XCTAssertFalse(field.view.textView(field.view, shouldChangeTextIn: NSRange(location: 8, length: 5), replacementText: ""))
+    }
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "one two ")
+  }
+
+  // A selection callback UIKit sends on its own after the view moved the selection (on a later
+  // run loop turn, when `mutating` is already false) is not a choice the person made.
+  func testTheViewsOwnSelectionIsNotTakenForAChoice() {
+    let field = Field(settled: "hello")
+    let settled = field.packets.count
+    field.view.textViewDidChangeSelection(field.view)
+    field.answerAll()
+    let types = field.packets[settled...].compactMap { ($0["event"] as? [String: Any])?["type"] as? String }
+    XCTAssertEqual(types, [])
   }
 }
 #endif

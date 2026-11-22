@@ -1,5 +1,5 @@
 {
-  "about": "RemoteInputEdits' arithmetic, run by RemoteInputEditsCasesTests.swift against the Swift and by tests/edits-cases.test.ts against the TypeScript port, so the two cannot drift. Offsets are UTF-16. Steps: place (name a place at [start, end] in the text as it stands), record ([start, removed, inserted]), settle, choose (a named place), and expectations: current (with the text's length), deletion and backspace (with the text, and for backspace how many composed characters it named), composedCount, chosenAfter, isBackspace, deletesSelection and deletedStart.",
+  "about": "RemoteInputEdits' arithmetic, run by RemoteInputEditsCasesTests.swift against the Swift and by tests/edits-cases.test.ts against the TypeScript port, so the two cannot drift. Offsets are UTF-16. Steps: place (name a place at [start, end] in the text as it stands), record ([start, removed, inserted]), settle, choose (a named place), and expectations: current (with the text's length), deletion and backspace (with the text), composedCount, chosenAfter, isBackspace, deletesSelection and deletedStart.",
   "cases": [
     {
       "name": "carets named at 0 before any edit land in typing order",
@@ -167,7 +167,8 @@
         {
           "isBackspace": {
             "named": [0, 1],
-            "selection": [1, 0]
+            "selection": [1, 0],
+            "text": "a"
           },
           "is": true
         },
@@ -270,14 +271,39 @@
       ]
     },
     {
-      "name": "a deletion of two characters ending at the caret deletes two backward from where the caret is",
+      "name": "a Backspace is exactly one composed character ending at the caret",
       "steps": [
         {
           "isBackspace": {
-            "named": [2, 2],
-            "selection": [4, 0]
+            "named": [1, 5],
+            "selection": [6, 0],
+            "text": "a👩‍💻"
           },
           "is": true
+        },
+        {
+          "isBackspace": {
+            "named": [2, 2],
+            "selection": [4, 0],
+            "text": "xyab"
+          },
+          "is": false
+        },
+        {
+          "isBackspace": {
+            "named": [1, 1],
+            "selection": [2, 0],
+            "text": "é"
+          },
+          "is": false
+        },
+        {
+          "isBackspace": {
+            "named": [3, 1],
+            "selection": [4, 0],
+            "text": "ab"
+          },
+          "is": false
         },
         {
           "composedCount": {
@@ -294,17 +320,52 @@
           "is": 1
         },
         {
-          "place": "caret",
-          "at": [4, 4]
+          "composedCount": {
+            "text": "ab",
+            "range": [1, 5]
+          },
+          "is": 0
+        }
+      ]
+    },
+    {
+      "name": "a word deletion named while typing waits deletes the word it named",
+      "steps": [
+        {
+          "place": "word",
+          "at": [0, 5]
         },
         {
-          "record": [4, 0, 1]
+          "record": [5, 0, 1]
         },
         {
-          "backspace": "caret",
-          "count": 2,
-          "text": "xyabc",
-          "is": [3, 2]
+          "record": [6, 0, 1]
+        },
+        {
+          "current": "word",
+          "length": 7,
+          "is": [0, 5]
+        }
+      ]
+    },
+    {
+      "name": "a second deletion naming a word already deleted deletes nothing",
+      "steps": [
+        {
+          "place": "first",
+          "at": [8, 13]
+        },
+        {
+          "place": "second",
+          "at": [8, 13]
+        },
+        {
+          "record": [8, 5, 0]
+        },
+        {
+          "current": "second",
+          "length": 8,
+          "is": [8, 8]
         }
       ]
     },
@@ -321,7 +382,8 @@
         {
           "isBackspace": {
             "named": [1, 3],
-            "selection": [1, 3]
+            "selection": [1, 3],
+            "text": "hello"
           },
           "is": false
         },
@@ -362,7 +424,8 @@
         {
           "isBackspace": {
             "named": [0, 1],
-            "selection": [2, 0]
+            "selection": [2, 0],
+            "text": "abc"
           },
           "is": false
         }

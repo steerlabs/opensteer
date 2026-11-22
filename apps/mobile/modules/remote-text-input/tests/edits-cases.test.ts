@@ -15,9 +15,9 @@ type Step =
   | { choose: string }
   | { current: string; length: number; is: Pair }
   | { deletion: string; text: string; is: Pair }
-  | { backspace: string; text: string; count?: number; is: Pair }
+  | { backspace: string; text: string; is: Pair }
   | { chosenAfter: string; is: string | null }
-  | { isBackspace: { named: Pair; selection: Pair }; is: boolean }
+  | { isBackspace: { named: Pair; selection: Pair; text: string }; is: boolean }
   | { deletesSelection: { named: Pair; selection: Pair }; is: boolean }
   | { composedCount: { text: string; range: Pair }; is: number }
   | { deletedStart: { selection: Pair; removed: number }; is: number };
@@ -52,16 +52,18 @@ describe("RemoteInputEdits' shared cases, in the port", () => {
         } else if ("deletion" in step)
           expect(pair(edits.deletion(named(step.deletion), step.text))).toEqual(step.is);
         else if ("backspace" in step)
-          expect(pair(edits.backspace(named(step.backspace), step.count ?? 1, step.text))).toEqual(
-            step.is,
-          );
+          expect(pair(edits.backspace(named(step.backspace), step.text))).toEqual(step.is);
         else if ("chosenAfter" in step)
           expect(edits.chosenAfter(named(step.chosenAfter))).toEqual(
             step.is === null ? null : named(step.is),
           );
         else if ("isBackspace" in step)
           expect(
-            Edits.isBackspace(span(step.isBackspace.named), span(step.isBackspace.selection)),
+            Edits.isBackspace(
+              span(step.isBackspace.named),
+              span(step.isBackspace.selection),
+              step.isBackspace.text,
+            ),
           ).toBe(step.is);
         else if ("deletesSelection" in step)
           expect(

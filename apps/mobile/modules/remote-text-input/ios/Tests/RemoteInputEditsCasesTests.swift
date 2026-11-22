@@ -33,15 +33,14 @@ final class RemoteInputEditsCasesTests: XCTestCase {
           let deleted = edits.deletion(try XCTUnwrap(places[place], name), in: step["text"] as! String)
           XCTAssertEqual([deleted.location, deleted.length], pair(step["is"]), name)
         } else if let place = step["backspace"] as? String {
-          let count = (step["count"] as? NSNumber)?.intValue ?? 1
-          let deleted = edits.backspace(try XCTUnwrap(places[place], name), count: count, in: step["text"] as! String)
+          let deleted = edits.backspace(try XCTUnwrap(places[place], name), in: step["text"] as! String)
           XCTAssertEqual([deleted.location, deleted.length], pair(step["is"]), name)
         } else if let place = step["chosenAfter"] as? String {
           let chosen = edits.chosen(after: try XCTUnwrap(places[place], name))
           let expected = (step["is"] as? String).flatMap { places[$0] }
           XCTAssertEqual(chosen, expected, name)
         } else if let asked = step["isBackspace"] as? [String: Any] {
-          XCTAssertEqual(RemoteInputEdits.isBackspace(named: range(asked["named"]), selection: range(asked["selection"])), step["is"] as? Bool, name)
+          XCTAssertEqual(RemoteInputEdits.isBackspace(named: range(asked["named"]), selection: range(asked["selection"]), in: asked["text"] as! String), step["is"] as? Bool, name)
         } else if let asked = step["deletesSelection"] as? [String: Any] {
           XCTAssertEqual(RemoteInputEdits.deletesSelection(named: range(asked["named"]), selection: range(asked["selection"])), step["is"] as? Bool, name)
         } else if let asked = step["composedCount"] as? [String: Any] {

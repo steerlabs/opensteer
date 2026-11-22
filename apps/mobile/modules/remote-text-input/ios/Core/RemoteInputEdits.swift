@@ -79,31 +79,34 @@ struct RemoteInputEdits {
   }
 
   /// Whether an empty replacement UIKit asked the delegate for is a Backspace: the selection is a
-  /// caret and the range named ends at it. A Backspace deletes backward from the caret, wherever
-  /// the caret has moved by its turn; it never deletes the text it named, which may by then be a
-  /// character typed before the typo the person meant to erase.
-  static func isBackspace(named range: NSRange, selection: NSRange) -> Bool {
+  /// caret and the range named is exactly the one composed character before it. A Backspace
+  /// deletes the character before the caret, wherever the caret has moved by its turn; it never
+  /// deletes the text it named, which may by then be a character typed before the typo the person
+  /// meant to erase. A longer deletion (a word) is the text it named, carried: the count UIKit
+  /// named belongs to the text it named.
+  static func isBackspace(named range: NSRange, selection: NSRange, in text: String) -> Bool {
     selection.length == 0 && range.length > 0 && range.location + range.length == selection.location
+      && composedCount(in: text, range: range) == 1
+      && (text as NSString).rangeOfComposedCharacterSequences(for: range) == range
   }
   /// Whether an empty replacement deletes the selection itself.
   static func deletesSelection(named range: NSRange, selection: NSRange) -> Bool {
     selection.length > 0 && range == selection
   }
-  /// How many composed characters `range` of `text` holds: what a Backspace named (one, or a
-  /// word's worth when UIKit deletes a word through the delegate).
+  /// How many composed characters `range` of `text` holds; none for a range outside the text.
   static func composedCount(in text: String, range: NSRange) -> Int {
+    let string = text as NSString
+    guard range.location >= 0, range.length >= 0, range.location + range.length <= string.length else { return 0 }
     var count = 0
-    (text as NSString).enumerateSubstrings(in: range, options: [.byComposedCharacterSequences, .substringNotRequired]) { _, _, _, _ in count += 1 }
+    string.enumerateSubstrings(in: range, options: [.byComposedCharacterSequences, .substringNotRequired]) { _, _, _, _ in count += 1 }
     return count
   }
-  /// What a Backspace pressed at `caret` deletes: the `count` composed characters before where the
-  /// caret now stands, as many as there are.
-  func backspace(_ caret: Place, count: Int = 1, in text: String) -> NSRange {
+  /// What a Backspace pressed at `caret` deletes: the composed character before where the caret
+  /// now stands, or nothing at the start of the text.
+  func backspace(_ caret: Place, in text: String) -> NSRange {
     let at = current(caret, length: text.utf16.count).start
-    let string = text as NSString
-    var start = at
-    for _ in 0..<max(0, count) where start > 0 { start = string.rangeOfComposedCharacterSequence(at: start - 1).location }
-    return NSRange(location: start, length: at - start)
+    guard at > 0 else { return NSRange(location: at, length: 0) }
+    return (text as NSString).rangeOfComposedCharacterSequence(at: at - 1)
   }
   /// Where deleteBackward's deletion began: the selection it deleted, or as much just before the
   /// caret (inside a composition too, where the marked text is not what went).
