@@ -763,7 +763,7 @@ export class ChannelStore {
       .limit(1)
       .executeTakeFirst();
     if (!candidate) return null;
-    await commitPersonalMutation(this.#database, async (transaction) => {
+    const exhausted = await commitPersonalMutation(this.#database, async (transaction) => {
       const maintenance = await transaction
         .selectFrom("channelIngressEvents")
         .select("id")
@@ -777,7 +777,7 @@ export class ChannelStore {
         .forNoKeyUpdate()
         .skipLocked()
         .execute();
-      if (!maintenance.length) return;
+      if (!maintenance.length) return [];
       const maintenanceIds = maintenance.map(({ id }) => id);
       await transaction
         .updateTable("channelIngressEvents")
@@ -792,27 +792,40 @@ export class ChannelStore {
         .where("status", "=", "leased")
         .where("claimExpiresAt", "<=", now)
         .execute();
-      // An event that ran out of attempts is the one failure nobody would ever
-      // hear about otherwise: it never adopted, so no Run can report it, and
-      // its last error is an operator's detail rather than an answer. Killing
-      // it and saying so are one write, for the same reason every other
-      // decline is.
-      const dead = await transaction
-        .updateTable("channelIngressEvents")
-        .set({
-          lastError: "Channel ingress retry limit reached",
-          processedAt: now,
-          status: "dead",
-          updatedAt: now,
-        })
-        .where("id", "in", maintenanceIds)
-        .where("status", "=", "pending")
-        .where("attempts", ">=", ingressAttemptCeiling)
-        .returning(["accountId", "event"])
-        .execute();
-      // Only a sender who may speak to the bridge covering it hears that it could not start.
-      for (const row of dead) await noticeDeadChatMessage(transaction, row);
+      return (
+        await transaction
+          .selectFrom("channelIngressEvents")
+          .select("id")
+          .where("id", "in", maintenanceIds)
+          .where("status", "=", "pending")
+          .where("attempts", ">=", ingressAttemptCeiling)
+          .orderBy("id", "asc")
+          .execute()
+      ).map(({ id }) => id);
     });
+    // An event that ran out of attempts is the one failure nobody would ever hear about
+    // otherwise: it never adopted, so no Run can report it, and its last error is an operator's
+    // detail rather than an answer. Killing it and saying so are one write, for the same reason
+    // every other decline is: one event per transaction, so each takes its bridge's rows in the
+    // stable order.
+    for (const id of exhausted)
+      await commitPersonalMutation(this.#database, async (transaction) => {
+        const dead = await transaction
+          .updateTable("channelIngressEvents")
+          .set({
+            lastError: "Channel ingress retry limit reached",
+            processedAt: now,
+            status: "dead",
+            updatedAt: now,
+          })
+          .where("id", "=", id)
+          .where("status", "=", "pending")
+          .where("attempts", ">=", ingressAttemptCeiling)
+          .returning(["accountId", "event"])
+          .executeTakeFirst();
+        // Only a sender who may speak to the bridge covering it hears that it could not start.
+        if (dead) await noticeDeadChatMessage(transaction, dead);
+      });
     return commitPersonalMutation(this.#database, async (transaction) => {
       const leasedAt = new Date();
       // One conversation is one lane: the oldest pending event in it, and only

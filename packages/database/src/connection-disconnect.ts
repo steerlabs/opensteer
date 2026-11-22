@@ -361,7 +361,7 @@ export async function requestExpiredCleanups(
           })
           .where("id", "=", row.id)
           .execute();
-        await endConvertedRoute(tx, row.id, now);
+        await endConvertedRoutes(tx, [row.id], now);
         return;
       }
       if (connectionActive(row, now)) return;
@@ -381,21 +381,37 @@ export async function requestExpiredCleanups(
  * A bridge made from a Messaging route ends that route with it, in the same transaction: the
  * image before this one, which still answers through routes, never answers through it again.
  */
-export async function endConvertedRoute(
+export async function endConvertedRoutes(
   tx: Transaction<DatabaseSchema>,
-  bridgeId: string,
+  bridgeIds: readonly string[],
   now: Date,
 ): Promise<void> {
-  const bridge = await tx
-    .selectFrom("agentConnections")
-    .select("bridgeFromBindingId")
-    .where("id", "=", bridgeId)
-    .executeTakeFirst();
-  if (!bridge?.bridgeFromBindingId) return;
+  if (bridgeIds.length === 0) return;
+  const routes = [
+    ...new Set(
+      (
+        await tx
+          .selectFrom("agentConnections")
+          .select("bridgeFromBindingId")
+          .where("id", "in", bridgeIds)
+          .where("bridgeFromBindingId", "is not", null)
+          .execute()
+      ).map(({ bridgeFromBindingId }) => bridgeFromBindingId as ChannelBindingId),
+    ),
+  ];
+  if (routes.length === 0) return;
+  // The routes in id order, then the change: never one route while holding a later one.
+  await tx
+    .selectFrom("channelBindings")
+    .select("id")
+    .where("id", "in", routes)
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
   await tx
     .updateTable("channelBindings")
     .set({ status: "revoked", updatedAt: now })
-    .where("id", "=", bridge.bridgeFromBindingId as ChannelBindingId)
+    .where("id", "in", routes)
     .where("status", "<>", "revoked")
     .execute();
 }

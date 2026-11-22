@@ -31,7 +31,7 @@ import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
 import {
   connectionAttempts,
-  endConvertedRoute,
+  endConvertedRoutes,
   latestConnectionUncertainty,
   outstandingAttempts,
 } from "./connection-disconnect.js";
@@ -446,15 +446,20 @@ export class AgentConnectionStore {
     await commitPersonalMutation(this.database, async (tx) => {
       const store = new AgentConnectionStore(tx, this.now);
       const changedIds: string[] = [];
+      const revokedIds: string[] = [];
       for (const change of changes.toSorted((a, b) =>
         a.connectionId.localeCompare(b.connectionId),
       )) {
         const changed =
           change.kind === "revoke"
-            ? await store.revoke(change.userId, change.connectionId)
+            ? await store.revoke(change.userId, change.connectionId, { routes: "later" })
             : (await this.#writeUpdate(tx, change.userId, change, "organization")).changed;
         if (changed) changedIds.push(change.connectionId);
+        if (changed && change.kind === "revoke") revokedIds.push(change.connectionId);
       }
+      // Every connection first, in id order; then the old routes of the converted chats among
+      // them, in one ordered statement.
+      await endConvertedRoutes(tx, revokedIds, this.now());
       await closeObsoleteAgentOperationRequests(tx, changedIds, this.now());
     });
   }
@@ -551,7 +556,11 @@ export class AgentConnectionStore {
    * under a row this sweep later locks), so once this commits no new work in the lineage starts.
    * Idempotent and owner-filtered; a foreign ID discloses nothing. Returns whether it was live.
    */
-  async revoke(userId: UserId, id: string): Promise<boolean> {
+  async revoke(
+    userId: UserId,
+    id: string,
+    options: { readonly routes?: "now" | "later" } = {},
+  ): Promise<boolean> {
     return commitPersonalMutation(this.database, async (tx) => {
       await requirePersonalOwner(tx, userId);
       const row = await tx
@@ -576,7 +585,7 @@ export class AgentConnectionStore {
         })
         .where("id", "=", row.id)
         .execute();
-      await endConvertedRoute(tx, row.id, this.now());
+      if (options.routes !== "later") await endConvertedRoutes(tx, [row.id], this.now());
       return true;
     });
   }

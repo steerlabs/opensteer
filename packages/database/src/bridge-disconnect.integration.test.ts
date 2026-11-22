@@ -202,3 +202,162 @@ describeStore("answers leave the Home only through a bridge's Disconnect set", (
     ).toMatchObject({ state: "stopped", revokedAt: expect.any(String) });
   });
 });
+
+describeStore("locks are taken in their stable order when many rows move at once", (it) => {
+  it("tells two senders of dead messages at once, each through its own bridge", async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("dead-two", {
+      conversation: { id: "C-dead", name: "#dead" },
+    });
+    const second = await new AgentConnectionStore(storeFixture.database).createBridge({
+      userId: bridge.fixture.userId,
+      accountId: bridge.configured.account.id,
+      senders: "owner",
+      accessMode: "approval-required",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    // A message to each bridge, both of which ran out of attempts.
+    const events = [
+      bridge.event({ eventId: "dead-channel", trigger: "mention" }),
+      {
+        ...bridge.event({ eventId: "dead-dm" }),
+        conversation: {
+          displayName: null,
+          externalConversationId: "D-dead-two",
+          externalScopeId: "T-dead-two",
+          externalThreadId: null,
+          type: "dm" as const,
+        },
+        trigger: "direct-message" as const,
+      },
+    ];
+    const { declineBridgeIngress, decideBridgeIngress } = await import("./bridge-ingress.js");
+    // Each conversation exists already: a message in it was decided before.
+    for (const [index, event] of events.entries()) {
+      const first = await bridge.channels.commitIngress(bridge.configured.connection.id, {
+        ...event,
+        eventId: `${event.eventId}-first`,
+        providerMessageId: `${event.eventId}-first`,
+      });
+      const claimed = await bridge.channels.claimIngress(`dead-two-${index}`);
+      expect(claimed?.id).toBe(first.ingressId);
+      const decision = await decideBridgeIngress(storeFixture.database, {
+        ingressId: claimed!.id,
+        claimToken: claimed!.claimToken,
+      });
+      if (decision.kind !== "work") throw new Error("Expected the message to be admitted");
+      await declineBridgeIngress(storeFixture.database, {
+        ingressId: claimed!.id,
+        claimToken: claimed!.claimToken,
+        conversationId: decision.conversationId,
+        reason: "settled by the test",
+      });
+    }
+    await storeFixture.database.deleteFrom("bridgeDeliveries").execute();
+    for (const event of events) {
+      const committed = await bridge.channels.commitIngress(bridge.configured.connection.id, event);
+      await storeFixture.database
+        .updateTable("channelIngressEvents")
+        .set({ attempts: 20, status: "pending", nextAttemptAt: new Date(0) })
+        .where("id", "=", committed.ingressId)
+        .execute();
+    }
+    expect(await bridge.channels.claimIngress("dead-two-worker")).toBeNull();
+    expect(
+      await storeFixture.database
+        .selectFrom("bridgeDeliveries")
+        .select("bridgeId")
+        .where("kind", "=", "status")
+        .orderBy("bridgeId")
+        .execute(),
+    ).toEqual([bridge.bridge.id, second.id].sort().map((bridgeId) => ({ bridgeId })));
+  });
+
+  it("revokes two converted chats in one policy change, with their old routes", async ({
+    storeFixture,
+  }) => {
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("policy-two", {
+      bridge: false,
+    });
+    const { database } = storeFixture;
+    const connections = new AgentConnectionStore(database);
+    const made = [];
+    for (const conversation of ["C-a", "C-b"]) {
+      const bridge = await connections.createBridge({
+        userId: fixture.userId,
+        accountId: configured.account.id,
+        conversation: { id: conversation, name: conversation },
+        senders: "owner",
+        accessMode: "approval-required",
+        grant: { scope: "selected", tasks: true, resources: [] },
+      });
+      const bindingId = createChannelId("binding");
+      await database
+        .insertInto("channelBindings")
+        .values({
+          accessPolicy: {} as never,
+          accountId: configured.account.id,
+          createdBy: fixture.userId,
+          executionPolicy: {} as never,
+          id: bindingId,
+          revision: 1,
+          selector: {} as never,
+          status: "active",
+          updatedAt: new Date(),
+        })
+        .execute();
+      await database
+        .updateTable("agentConnections")
+        .set({ bridgeFromBindingId: bindingId })
+        .where("id", "=", bridge.id)
+        .execute();
+      made.push({ bridge, bindingId });
+    }
+    await connections.applyWorkPolicyChanges(
+      made.map(({ bridge }) => ({
+        kind: "revoke" as const,
+        userId: fixture.userId,
+        connectionId: bridge.id,
+      })),
+    );
+    expect(
+      await database
+        .selectFrom("channelBindings")
+        .select("status")
+        .where(
+          "id",
+          "in",
+          made.map(({ bindingId }) => bindingId),
+        )
+        .execute(),
+    ).toEqual([{ status: "revoked" }, { status: "revoked" }]);
+  });
+
+  it("gives back every reply a removed computer held, in order", async ({ storeFixture }) => {
+    const { configured, conversationId, fixture } =
+      await storeFixture.createChannelDeliveryFixture("revoke-two");
+    const { database, insertChannelDelivery, store } = storeFixture;
+    const second = await storeFixture.createChannelDeliveryFixture("revoke-two-b");
+    const ids = [
+      await insertChannelDelivery({
+        accountId: configured.account.id,
+        conversationId,
+        status: "leased",
+      }),
+      await insertChannelDelivery({
+        accountId: second.configured.account.id,
+        conversationId: second.conversationId,
+        status: "leased",
+      }),
+    ];
+    await store.revokeRunner(testMessagingRunnerId, fixture.userId, { allowDeployment: true });
+    expect(
+      await database
+        .selectFrom("bridgeDeliveries")
+        .select("status")
+        .where("id", "in", ids as never)
+        .execute(),
+    ).toEqual([{ status: "pending" }, { status: "pending" }]);
+  });
+});
