@@ -1764,6 +1764,77 @@ describe("DeploymentAccessService", () => {
     service.dispose();
   });
 
+  describe("one foreground operation at a time", () => {
+    const unlinked = {
+      account: null,
+      deploymentId: readyPersonalStatus.deploymentId,
+      displayName: "This computer",
+      status: "unlinked" as const,
+      unlinkStep: null,
+    };
+    /** This Mac's Home is set up and reported ready, while its setup is still finishing. */
+    async function settingUp() {
+      const fixture = fakePorts();
+      const started = deferred<typeof readyPersonalStatus>();
+      vi.mocked(fixture.ports.personal.start).mockReturnValueOnce(started.promise);
+      fixture.personalAccountStatus.mockResolvedValue(unlinked);
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      const creating = service.createPersonalDeployment();
+      await settle();
+      // The supervisor says ready before its start has finished its last steps.
+      fixture.emitPersonal(readyPersonalStatus);
+      await settle();
+      return { creating, fixture, service, started };
+    }
+
+    it("lets a link asked while this Mac is still being set up wait its turn, then run as its own outcome", async () => {
+      const { creating, fixture, service, started } = await settingUp();
+      const linking = service.linkPersonal();
+      await settle();
+      expect(fixture.ports.personalAccount.link).not.toHaveBeenCalled();
+      started.resolve(readyPersonalStatus);
+      await creating;
+      await expect(linking).resolves.toBeUndefined();
+      expect(fixture.ports.personalAccount.link).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("lets a second ask for the link that is running adopt its outcome, in either order of callers", async () => {
+      const { creating, fixture, service, started } = await settingUp();
+      started.resolve(readyPersonalStatus);
+      await creating;
+      const link = deferred<typeof unlinked>();
+      vi.mocked(fixture.ports.personalAccount.link).mockReturnValueOnce(link.promise as never);
+      const first = service.linkPersonal();
+      await settle();
+      const second = service.linkPersonal();
+      link.resolve({ ...unlinked, status: "linked" } as never);
+      await expect(first).resolves.toBeUndefined();
+      await expect(second).resolves.toBeUndefined();
+      expect(fixture.ports.personalAccount.link).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("refuses a turn that never comes in a plain sentence, never as already running", async () => {
+      const { fixture, service } = await settingUp();
+      vi.useFakeTimers();
+      try {
+        const linking = service.linkPersonal();
+        const refused = expect(linking).rejects.toThrow(
+          "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+        );
+        fixture.clock.now += 2 * 60_000;
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+        await refused;
+        expect(fixture.ports.personalAccount.link).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+        service.dispose();
+      }
+    });
+  });
+
   /*
    * What the place list may claim. Every case below is a way the list could
    * tell a person something untrue: a computer that is fine shown as offline,

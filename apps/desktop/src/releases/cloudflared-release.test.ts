@@ -3,7 +3,11 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { arch, platform, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readPackagedCloudflaredRelease } from "./cloudflared-release.js";
+import {
+  packagedCloudflaredOrRefuse,
+  readPackagedCloudflaredRelease,
+  RemoteAccessHelperUnavailableError,
+} from "./cloudflared-release.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -21,6 +25,22 @@ describe("packaged cloudflared release", () => {
     temporaryDirectories.push(resourcesDirectory);
 
     expect(() => readPackagedCloudflaredRelease(resourcesDirectory)).toThrow();
+  });
+
+  it("refuses a missing helper with the one sentence a person reads, keeping the cause for the log", async () => {
+    const resourcesDirectory = await mkdtemp(path.join(tmpdir(), "opensteer-cloudflared-missing-"));
+    temporaryDirectories.push(resourcesDirectory);
+    let refused: unknown;
+    try {
+      packagedCloudflaredOrRefuse(resourcesDirectory);
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(RemoteAccessHelperUnavailableError);
+    expect((refused as Error).message).toBe(
+      "Remote access can’t start because part of Opensteer is missing or damaged on this Mac. Reinstall Opensteer, then turn it on again.",
+    );
+    expect(String((refused as Error).cause)).toMatch(/cloudflared/u);
   });
 
   it("accepts only the pinned executable matching the signed manifest", async () => {

@@ -1159,9 +1159,16 @@ async function runDesktop(
     },
   });
   let personalAccountLinkResumeAttempted = false;
+  // Remote access is brought up once each time this Mac's Home becomes ready, not again on
+  // every later status change: a helper that can't start says so where the person turns
+  // Remote access on, instead of failing over and over in the log.
+  let personalWasReady = false;
   const detachPersonalRemoteInitialization = personal.subscribe((status) => {
+    const becameReady = status.state === "ready" && !personalWasReady;
+    personalWasReady = status.state === "ready";
     if (shutdown.requested || status.state !== "ready") return;
     if (desktopSupervisorReady) void desktopSupervisor.connect();
+    if (!becameReady) return;
     void personalRemote
       .initialize()
       .catch((error: unknown) =>

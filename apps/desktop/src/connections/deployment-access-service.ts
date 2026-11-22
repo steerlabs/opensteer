@@ -172,6 +172,11 @@ export class DeploymentAccessService {
   readonly #now: () => number;
   #initialized = false;
   #operation: { readonly kind: ForegroundOperationKind } | null = null;
+  /** The running operation and what it settles to: what a second ask for the same adopts. */
+  #running: { readonly kind: ForegroundOperationKind; readonly outcome: Promise<void> } | null =
+    null;
+  /** Settles when the slot next frees. */
+  #ended = deferredSignal();
   #operationId = 0;
   #interactiveAttachment = false;
   #pendingAttachmentDeploymentId: string | null = null;
@@ -393,7 +398,7 @@ export class DeploymentAccessService {
       this.#selecting = null;
       this.#commitStagedPersonal();
       this.#operationId += 1;
-      this.#operation = null;
+      this.#endOperation();
       // Cancelling abandons the attempt and its in-flight establishment, and
       // returns the row to plain "not attached" — never to a failure a person
       // then has to clear before they can try again.
@@ -695,7 +700,13 @@ export class DeploymentAccessService {
     kind: ForegroundOperationKind,
     operation: () => Promise<CatalogProjection>,
   ): Promise<void> {
-    const operationId = this.#beginOperation(kind);
+    await this.#exclusive(kind, (operationId) => this.#catalogMutationTurn(operationId, operation));
+  }
+
+  async #catalogMutationTurn(
+    operationId: number,
+    operation: () => Promise<CatalogProjection>,
+  ): Promise<void> {
     try {
       const catalog = await operation();
       if (operationId !== this.#operationId) return;
@@ -705,7 +716,7 @@ export class DeploymentAccessService {
       this.#batchPublish(() => {
         this.#commitStagedPersonal();
         this.#reconcileAttachment();
-        this.#operation = null;
+        this.#endOperation();
         this.#publish();
         this.#requestSelectedAttachment();
       });
@@ -719,14 +730,22 @@ export class DeploymentAccessService {
     kind: ForegroundOperationKind,
     operation: () => Promise<DesktopAccountAuthState>,
   ): Promise<void> {
-    const operationId = this.#beginOperation(kind);
+    await this.#exclusive(kind, (operationId) =>
+      this.#accountOperationTurn(operationId, operation),
+    );
+  }
+
+  async #accountOperationTurn(
+    operationId: number,
+    operation: () => Promise<DesktopAccountAuthState>,
+  ): Promise<void> {
     try {
       const state = await operation();
       // The fence is read before anything is written: a superseded operation
       // must not be able to install its result on the way out.
       if (operationId !== this.#operationId) return;
       this.#account = accountState(state);
-      this.#operation = null;
+      this.#endOperation();
       if (this.#account.status !== "signed-in") this.#forgetAccountList();
       this.#publish();
     } catch (error) {
@@ -740,12 +759,19 @@ export class DeploymentAccessService {
     run: () => Promise<T>,
     commit: (value: T) => void,
   ): Promise<void> {
-    const operationId = this.#beginOperation(kind);
+    await this.#exclusive(kind, (operationId) => this.#simpleTurn(operationId, run, commit));
+  }
+
+  async #simpleTurn<T>(
+    operationId: number,
+    run: () => Promise<T>,
+    commit: (value: T) => void,
+  ): Promise<void> {
     try {
       const value = await run();
       if (operationId !== this.#operationId) return;
       commit(value);
-      this.#operation = null;
+      this.#endOperation();
       this.#publish();
     } catch (error) {
       this.#failOperation(operationId);
@@ -763,8 +789,57 @@ export class DeploymentAccessService {
 
   #failOperation(operationId: number): void {
     if (operationId !== this.#operationId || !this.#operation) return;
-    this.#operation = null;
+    this.#endOperation();
     this.#publish();
+  }
+
+  /** The slot is free: whoever waits for their turn may take it. */
+  #endOperation(): void {
+    this.#operation = null;
+    const ended = this.#ended;
+    this.#ended = deferredSignal();
+    ended.resolve();
+  }
+
+  /**
+   * One foreground operation at a time, and nobody told they collided with the app itself. A
+   * request for what is already running adopts its outcome; any other waits its turn and then
+   * runs. Only a turn that never comes, within the bound, is refused, in a plain sentence.
+   */
+  async #exclusive(
+    kind: ForegroundOperationKind,
+    body: (operationId: number) => Promise<void>,
+  ): Promise<void> {
+    const running = this.#running;
+    if (running && this.#operation?.kind === kind && running.kind === kind) return running.outcome;
+    // A free slot is taken at once, in the same turn as the ask.
+    if (this.#operation) await this.#waitForTurn();
+    const operationId = this.#beginOperation(kind);
+    const entry = { kind, outcome: body(operationId) };
+    this.#running = entry;
+    try {
+      await entry.outcome;
+    } finally {
+      if (this.#running === entry) this.#running = null;
+    }
+  }
+
+  async #waitForTurn(): Promise<void> {
+    if (!this.#operation) return;
+    const deadline = this.#now() + foregroundTurnWaitMilliseconds;
+    while (this.#operation) {
+      const left = deadline - this.#now();
+      if (left <= 0) throw new Error(busyElsewhereSentence);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        this.#ended.promise,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, left);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (this.#operation && this.#now() >= deadline) throw new Error(busyElsewhereSentence);
+    }
   }
 
   /**
@@ -1244,6 +1319,19 @@ export class DeploymentAccessService {
   #assertActive(): void {
     if (this.#disposed) throw new Error("Deployment access service is disposed.");
   }
+}
+
+/** How long a foreground request waits for the one running before it is refused. */
+const foregroundTurnWaitMilliseconds = 2 * 60_000;
+const busyElsewhereSentence =
+  "Opensteer is still finishing another change on this Mac. Try again in a moment.";
+
+function deferredSignal(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 interface AccountIdentity {
