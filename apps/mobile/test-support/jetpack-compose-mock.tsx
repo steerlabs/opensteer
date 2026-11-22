@@ -83,7 +83,18 @@ export const compose = {
     value: boolean;
     onCheckedChange?: (v: boolean) => void;
   }) => <input type="checkbox" checked={value} onChange={() => onCheckedChange?.(!value)} />,
-  Text: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
+  // A text's own semantics description is its accessible name too.
+  Text: ({
+    children,
+    modifiers,
+  }: {
+    readonly children?: ReactNode;
+    readonly modifiers?: readonly Modifier[];
+  }) => (
+    <span aria-label={modifiers?.find((modifier) => modifier.kind === "label")?.label}>
+      {children}
+    </span>
+  ),
   TextButton: view,
   useNativeState: <T,>(initial: T) => {
     const [value, set] = useState(initial);

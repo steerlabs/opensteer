@@ -95,3 +95,56 @@ it("offers the full label for each Android choice and dispatches the selected va
     act(() => root.unmount());
   }
 });
+
+// A clickable row is one node to TalkBack: Compose merges what is inside it, and a merged node
+// with a description is spoken as that description alone. So the row says itself whole, and none
+// of its lines has a description of its own (an address line's would be all that is spoken). A
+// row that does nothing is not merged: each line is its own, the address heard plainly.
+it("has TalkBack hear a row with an address whole, and the address as it is", async () => {
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  try {
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage
+          sections={[
+            {
+              key: "account",
+              title: "Account",
+              rows: [
+                {
+                  addressIn: "detail",
+                  detail: "person@fixture.invalid",
+                  key: "signed-in",
+                  kind: "button",
+                  label: "Signed in as",
+                  onPress: vi.fn(),
+                },
+                {
+                  addressIn: "detail",
+                  detail: "https://studio.tailnet.ts.net",
+                  key: "home",
+                  kind: "text",
+                  label: "This Home",
+                },
+              ],
+            },
+          ]}
+        />,
+      ),
+    );
+    const row = [...element.querySelectorAll("button")].find((button) =>
+      button.textContent?.startsWith("Signed in as"),
+    )!;
+    expect(row.getAttribute("aria-label")).toBe("Signed in as, person@fixture.invalid");
+    expect(row.querySelectorAll("[aria-label]")).toHaveLength(0);
+    // The address as drawn, with the characters that hold it whole taken out.
+    const still = [...element.querySelectorAll("span")].find((span) =>
+      span.textContent?.replace(/[\u2060\u200B]/gu, "").includes("studio"),
+    )!;
+    expect(still.getAttribute("aria-label")).toBe("https://studio.tailnet.ts.net");
+    expect(still.closest("button")).toBeNull();
+  } finally {
+    act(() => root.unmount());
+  }
+});

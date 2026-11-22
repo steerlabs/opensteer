@@ -248,15 +248,19 @@ export function UnknownToggleRow(props: {
 /** A name and the line under it, optionally opening or doing something. */
 /**
  * A line of a row as drawn: an email address, a host or a URL in the characters that keep it whole
- * (`address-text.tsx`), read aloud as it is; anything else as it is.
+ * (`address-text.tsx`), read aloud as it is; anything else as it is. In a row TalkBack hears as
+ * one (`merged`), the row says it, so the line says nothing of its own.
  */
 function drawnLine(
   value: string,
   address: boolean,
+  merged = false,
 ): { readonly modifiers: ReturnType<typeof semantics>[]; readonly text: string } {
-  return address
-    ? { modifiers: [semantics({ contentDescription: value })], text: addressWords(value) }
-    : { modifiers: [], text: value };
+  if (!address) return { modifiers: [], text: value };
+  return {
+    modifiers: merged ? [] : [semantics({ contentDescription: value })],
+    text: addressWords(value),
+  };
 }
 
 export function LinkRow(props: {
@@ -274,10 +278,33 @@ export function LinkRow(props: {
   readonly trailing?: ReactNode;
 }): ReactNode {
   const enabled = props.onPress && props.disabled !== true;
-  const title = drawnLine(props.title, props.addressIn === "title");
-  const detail = props.detail ? drawnLine(props.detail, props.addressIn === "detail") : null;
+  // A clickable row is one node to TalkBack: Compose merges its lines, and a merged node with a
+  // description is spoken as that alone. A row with an address says itself whole, as written, and
+  // its lines have none of their own (the address line's would be all that is heard).
+  const merged = Boolean(enabled) && props.addressIn !== undefined;
+  const title = drawnLine(props.title, props.addressIn === "title", merged);
+  const detail = props.detail
+    ? drawnLine(props.detail, props.addressIn === "detail", merged)
+    : null;
+  const spoken = [
+    props.title,
+    props.detail,
+    typeof props.trailing === "string" ? props.trailing : null,
+  ]
+    .filter((line): line is string => typeof line === "string" && line !== "")
+    .join(", ");
   return (
-    <ListItem colors={rowColors} modifiers={enabled ? [clickable(props.onPress!)] : []}>
+    <ListItem
+      colors={rowColors}
+      modifiers={
+        enabled
+          ? [
+              clickable(props.onPress!),
+              ...(merged ? [semantics({ contentDescription: spoken })] : []),
+            ]
+          : []
+      }
+    >
       <ListItem.HeadlineContent>
         <Text
           color={
