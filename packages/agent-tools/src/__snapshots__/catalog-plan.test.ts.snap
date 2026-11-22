@@ -32,7 +32,7 @@ Needs you:
 Routing:
 - Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
-- Full-access callers manage AI accounts, defaults, computers, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
+- Full-access callers manage AI accounts, defaults, computers, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
@@ -2674,72 +2674,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "local_server_remove",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "List the person's messaging bridges, which bring outside messages into tasks, and the routes each one has.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "opensteer_messaging_bridge_list",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Pause a messaging bridge so its messages stop reaching tasks, or resume it. New bridges, identity links, credentials and route grants need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "bridgeId": {
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "paused": {
-          "type": "boolean",
-        },
-      },
-      "required": [
-        "bridgeId",
-        "paused",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_messaging_bridge_update",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Remove one route of a messaging bridge, so the chats it matched stop reaching tasks. Adding it back needs the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "routeId": {
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "routeId",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_messaging_bridge_remove",
   },
   {
     "access": "read",
