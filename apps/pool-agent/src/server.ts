@@ -102,7 +102,9 @@ const adminSchema = z.strictObject({
       guest: z.strictObject({
         vcpus: z.number().int().min(1).max(32),
         memoryMib: z.number().int().min(256).max(65_536),
-        profilePath: hostFile,
+        // Round G: the agent makes the profile; the earlier path form must name the same file.
+        profileMib: z.number().int().min(64).max(1_048_576).optional(),
+        profilePath: hostFile.optional(),
         egress: z
           .strictObject({
             upstreamUrl: z.string().regex(/^https:\/\/[^\s/?#@]+:[0-9]{1,5}$/u),
@@ -127,6 +129,7 @@ const adminSchema = z.strictObject({
       op: z.literal("delete"),
       slotId: z.string().min(1).max(128),
       term: z.number().int().positive(),
+      eraseProfile: z.boolean().optional(),
     }),
     z.strictObject({ op: z.literal("list") }),
   ]),
@@ -287,7 +290,11 @@ async function administer(
         return {
           op: "delete",
           slotId: request.slotId,
-          erased: await agent.deleteSlot(request.slotId, request.term),
+          erased: await agent.deleteSlot(request.slotId, request.term, {
+            eraseProfile: request.eraseProfile === true,
+          }),
+          // Round G: deleteSlot answers only once the profile is seen gone, or it throws.
+          ...(request.eraseProfile === true ? { profileErased: true as const } : {}),
         };
       case "list":
         return { op: "list", slots: agent.summaries() };

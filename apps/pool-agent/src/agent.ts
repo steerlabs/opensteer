@@ -22,6 +22,7 @@ import {
 } from "@opensteer/browser-runtime-core/browser-pool";
 import type {
   BrowserPoolAgentCall,
+  BrowserPoolAgentGuestRequest,
   BrowserPoolAgentGuestSpec,
   BrowserPoolAgentResult,
   BrowserPoolAgentSlotSummary,
@@ -570,7 +571,7 @@ export class PoolAgent {
     readonly slotId: string;
     readonly term: number;
     readonly homeKey: string;
-    readonly guest: BrowserPoolAgentGuestSpec;
+    readonly guest: BrowserPoolAgentGuestRequest;
     readonly relayKey?: string;
     readonly ticketKey?: { readonly keyId: string; readonly spki: string };
   }): Promise<BrowserPoolAgentSlotSummary> {
@@ -581,7 +582,7 @@ export class PoolAgent {
     readonly slotId: string;
     readonly term: number;
     readonly homeKey: string;
-    readonly guest: BrowserPoolAgentGuestSpec;
+    readonly guest: BrowserPoolAgentGuestRequest;
     readonly relayKey?: string;
     readonly ticketKey?: { readonly keyId: string; readonly spki: string };
   }): Promise<BrowserPoolAgentSlotSummary> {
@@ -603,6 +604,20 @@ export class PoolAgent {
     if (input.ticketKey) parsePublicKey(input.ticketKey.spki);
     if (!Number.isSafeInteger(input.term) || input.term < 1)
       throw new SlotConflict("The term must be a positive integer.");
+    // Round G: the slot's profile is its own. The agent derives its path from the slot id, makes
+    // it when none is there and keeps one that is exactly as it is; a path the provisioner
+    // names must be that same path. A make that failed leaves no slot and no file.
+    const { profileMib, profilePath: named, ...spec } = input.guest;
+    const profilePath = this.#driver.profilePath(input.slotId);
+    if (named !== undefined && named !== profilePath)
+      throw new SlotConflict("A slot's profile is its own: its path is derived from the slot id.");
+    if (named === undefined && profileMib === undefined)
+      throw new SlotConflict("A create names the size of the slot's profile (profileMib).");
+    if (profileMib !== undefined) {
+      const profile = await this.#driver.ensureProfile(input.slotId, profileMib);
+      this.#log({ event: "profile.ready", slotId: input.slotId, made: profile.made });
+    }
+    const guest: BrowserPoolAgentGuestSpec = { ...spec, profilePath };
     const { privateKey } = generateKeyPairSync("ed25519");
     const record: SlotRecord = {
       v: 1,
@@ -613,7 +628,7 @@ export class PoolAgent {
       relayKey: input.relayKey ?? null,
       ticketKey: input.ticketKey ? `${input.ticketKey.keyId}:${input.ticketKey.spki}` : null,
       bridgeToken: null,
-      guest: input.guest,
+      guest,
       createdAt: new Date(this.#now()).toISOString(),
       instance: null,
       epoch: null,
@@ -630,12 +645,10 @@ export class PoolAgent {
       effects: [],
     };
     // Review G9: the host paths a provisioner names stay under their configured roots.
-    await this.#step("verify", () => this.#driver.confineGuest(input.guest)).catch(
-      (error: unknown) => {
-        throw new SlotConflict(messageOf(error));
-      },
-    );
-    await this.#prepareCreated(input.slotId, input.guest);
+    await this.#step("verify", () => this.#driver.confineGuest(guest)).catch((error: unknown) => {
+      throw new SlotConflict(messageOf(error));
+    });
+    await this.#prepareCreated(input.slotId, guest);
     this.#checkpoint("create:prepared");
     await this.#write(record);
     const slot = this.#load(record);
@@ -734,16 +747,35 @@ export class PoolAgent {
   /**
    * Ends the guest, erases its saved state and its network, and forgets the slot. The answer
    * is given only after the VMM's exit was observed and the files are gone. The profile disk
-   * is the provisioner's and is left where it is.
+   * is left where it is, unless `eraseProfile` (round G): then it is removed last, and the
+   * answer is given only once it is seen gone (or the delete fails). For a slot this agent does
+   * not know (deleted, or never known here) a leftover profile at its path is removed the same
+   * way. Nothing else ever removes a profile.
    */
-  async deleteSlot(slotId: string, term?: number): Promise<boolean> {
+  async deleteSlot(
+    slotId: string,
+    term?: number,
+    options: { readonly eraseProfile?: boolean } = {},
+  ): Promise<boolean> {
+    const erase = async (path: string) => {
+      if (!options.eraseProfile) return;
+      await this.#driver.eraseProfile(path);
+      this.#log({ event: "profile.erased", slotId });
+    };
     // Re-check finding 5: the administration lane, then the slot's own run wrapper. A create
     // waits for a delete in progress, and a delete that fails leaves the slot with its timers.
     return this.#admin.run(async () => {
       const slot = this.#slots.get(slotId);
-      if (!slot || slot.deleted) return true;
+      if (!slot || slot.deleted) {
+        await erase(this.#driver.profilePath(slotId));
+        return true;
+      }
+      const profilePath = slot.record.guest.profilePath;
       return this.#run(slot, async () => {
-        if (slot.deleted) return true;
+        if (slot.deleted) {
+          await erase(profilePath);
+          return true;
+        }
         // Review G2: a delete names the term it deletes; a replay after the slot was recreated
         // at a higher term is refused.
         if (term !== undefined && term !== slot.record.term)
@@ -761,6 +793,7 @@ export class PoolAgent {
         this.#slots.delete(slotId);
         this.#keepTombstone(tombstone);
         this.#log({ event: "slot.deleted", slotId });
+        await erase(profilePath);
         return true;
       });
     });

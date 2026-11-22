@@ -37,6 +37,12 @@ import { SpaceLedger } from "./space.js";
 import { SlotNumbers } from "./slot-numbers.js";
 import { withStepSignal } from "../step-signal.js";
 import { guestCharge, hostCapacity, type HostCapacity } from "../capacity.js";
+import {
+  ensureProfile,
+  eraseProfile,
+  profilePathFor,
+  sweepUnfinishedProfiles,
+} from "../profiles.js";
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   defineEgress,
@@ -142,6 +148,9 @@ export class FirecrackerDriver implements HypervisorDriver {
       ? hostCapacity(total, sliceBytes, (this.#config.egress.memoryMib ?? 128) * 1024 * 1024)
       : null;
     await this.openSlotNumbers();
+    // Round G: a profile make that crashed left only a temporary file; it is removed.
+    const swept = await sweepUnfinishedProfiles(this.#config.profilesRoot);
+    if (swept.length) this.#log({ event: "profiles.swept", files: swept.length });
     // Review G3: never write guest memory anywhere but the encrypted array.
     this.#arrayId = await requireEncryptedArray(this.#config);
     this.#hostAddresses = await hostAddresses();
@@ -167,6 +176,20 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   memoryCapacity(): HostCapacity | null {
     return this.#capacity;
+  }
+
+  profilePath(slotId: string): string {
+    return profilePathFor(this.#config.profilesRoot, slotId);
+  }
+
+  ensureProfile(slotId: string, sizeMib: number) {
+    return ensureProfile(this.#config.profilesRoot, slotId, sizeMib, async (file) => {
+      await run("mkfs.ext4", ["-q", "-F", "-m", "0", file], { timeoutMs: 120_000 });
+    });
+  }
+
+  eraseProfile(path: string): Promise<void> {
+    return eraseProfile(this.#config.profilesRoot, path);
   }
 
   /** Review G4(a): the host table is re-applied when a flush or a reload removed it. */

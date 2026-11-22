@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ensureProfile, eraseProfile, profilePathFor } from "./profiles.js";
 import {
   NoSaveRoom,
   type GuestBoot,
@@ -116,6 +120,37 @@ export class FakeHypervisorDriver implements HypervisorDriver {
 
   /** No bound unless a test sets one. */
   capacity: HostCapacity | null = null;
+
+  /**
+   * Round G: profiles are real files under a real root, through the module the real driver
+   * uses; only `mkfs.ext4` is stood in for (it writes a marker), and it can be made to fail.
+   */
+  readonly profilesRoot = mkdtempSync(join(tmpdir(), "opensteer-pool-profiles-"));
+  formatted = 0;
+  formatError: Error | undefined;
+  /** The next erase waits for this before it removes anything. */
+  eraseGate: Promise<void> | undefined;
+  erasing = 0;
+
+  profilePath(slotId: string): string {
+    return profilePathFor(this.profilesRoot, slotId);
+  }
+
+  ensureProfile(slotId: string, sizeMib: number) {
+    return ensureProfile(this.profilesRoot, slotId, sizeMib, async (file) => {
+      if (this.formatError) throw this.formatError;
+      this.formatted += 1;
+      writeFileSync(file, "fake-ext4\n", { flag: "r+" });
+    });
+  }
+
+  async eraseProfile(path: string): Promise<void> {
+    this.erasing += 1;
+    const gate = this.eraseGate;
+    this.eraseGate = undefined;
+    if (gate) await gate;
+    await eraseProfile(this.profilesRoot, path);
+  }
 
   memoryCapacity(): HostCapacity | null {
     return this.capacity;

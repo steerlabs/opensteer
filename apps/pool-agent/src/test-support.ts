@@ -124,5 +124,6 @@ export function homeKeyPair(): { readonly privateKey: KeyObject; readonly spki: 
 export const testGuest = {
   vcpus: 2,
   memoryMib: 2048,
-  profilePath: "/var/lib/opensteer-pool/profiles/test.ext4",
+  // Round G: the agent makes the slot's profile under its root.
+  profileMib: 64,
 };

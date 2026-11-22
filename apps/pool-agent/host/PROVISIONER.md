@@ -40,12 +40,12 @@ reply)` (`browser-pool-agent-wire.ts:202`), i.e. sha256 of the request plus the 
 
 **Calls** (schema: `server.ts:92–131`; handling: `server.ts:275`).
 
-| Call                                                           | Does                                                                                                                                                                          | Idempotency                                                                                                                                                                                                                                      |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `create {slotId, term, homeKey, relayKey?, ticketKey?, guest}` | Makes the slot and its number, namespace and proxy socket. No guest is started. The reply's `slot.controlKey` is the slot's own public key.                                   | A repeat with the same `homeKey` and `term` returns the same slot. Another key or term is `conflict`. A create at or below a deleted slot's last term is `conflict`, for the 30 days its tombstone is kept (`agent.ts:580–600`, `agent.ts:180`). |
-| `replace-key {slotId, term, homeKey, relayKey?, ticketKey?}`   | A new Home key set at a higher term, in one journal write. The old set is refused from then on. **The guest is ended and its saved state discarded; the next start is cold.** | The same term and keys again is a no-op. A lower or equal term is `conflict` (`agent.ts:683–730`).                                                                                                                                               |
-| `delete {slotId, term}`                                        | Ends the guest, erases saved state, the network and the proxy, and writes a tombstone. Answers `{erased: true}` only after the VMM's exit was seen and the files are gone.    | A delete naming another term is `conflict`. A slot already gone, or never known, answers `erased: true` (`agent.ts:739–764`).                                                                                                                    |
-| `list`                                                         | Every live slot: `slotId`, `term`, `controlKey`, `status`, and `parked: {tier, writeMs?}` while paused (`agent.ts:1706`).                                                     | Read only.                                                                                                                                                                                                                                       |
+| Call                                                                                                    | Does                                                                                                                                                                                                                                                                                                                                                                                                                   | Idempotency                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create {slotId, term, homeKey, relayKey?, ticketKey?, guest: {vcpus, memoryMib, profileMib, egress?}}` | Makes the slot and its number, namespace and proxy socket, and its profile disk if none is there (section 4). No guest is started. The reply's `slot.controlKey` is the slot's own public key.                                                                                                                                                                                                                         | A repeat with the same `homeKey` and `term` returns the same slot and touches no file. Another key or term is `conflict`. A create at or below a deleted slot's last term is `conflict`, for the 30 days its tombstone is kept (`agent.ts:594`, `agent.ts:180`). A profile that cannot be made leaves no slot and no file (`agent.ts:607–620`). |
+| `replace-key {slotId, term, homeKey, relayKey?, ticketKey?}`                                            | A new Home key set at a higher term, in one journal write. The old set is refused from then on. **The guest is ended and its saved state discarded; the next start is cold.**                                                                                                                                                                                                                                          | The same term and keys again is a no-op. A lower or equal term is `conflict` (`agent.ts:683–730`).                                                                                                                                                                                                                                              |
+| `delete {slotId, term, eraseProfile?}`                                                                  | Ends the guest, erases saved state, the network and the proxy, and writes a tombstone. Answers `{erased: true}` only after the VMM's exit was seen and the files are gone. With `eraseProfile: true` it then removes the profile disk and adds `profileErased: true` only once the file is seen gone; if it cannot, the delete is refused (`unavailable`) and may be sent again (`agent.ts:755–796`, `server.ts:297`). | A delete naming another term is `conflict` and erases nothing. A slot already gone, or never known, answers `erased: true`; with `eraseProfile` a leftover profile at that slot id's path is removed, with the same evidence (`agent.ts:770`).                                                                                                  |
+| `list`                                                                                                  | Every live slot: `slotId`, `term`, `controlKey`, `status`, and `parked: {tier, writeMs?}` while paused (`agent.ts:1706`).                                                                                                                                                                                                                                                                                              | Read only.                                                                                                                                                                                                                                                                                                                                      |
 
 **Refusals** (`server.ts:296`, and the envelope checks above): `conflict`, `unknown-slot`, `unavailable`, `bad-request`,
 `stale-request`, `unauthenticated`. The client throws `BrowserPoolAgentUnavailable` for any of
@@ -93,27 +93,46 @@ relay of `managed-pool.ts:117`; built by `managedBrowserPool(target, keys)`,
 
 ## 4. The profile disk
 
-- **The provisioner makes it, before `create`.**
-  - It names it in `guest.profilePath`.
-  - It must be a regular file or block device under `driver.profilesRoot`, by default
+The agent makes and erases it, because it is the only party on the host (round G). The
+provisioner never sends a path and never touches the file.
+
+- **Its path is derived from the slot id alone:** `<profilesRoot>/slot-<sha256 of the slot
+id>.ext4` (`apps/pool-agent/src/profiles.ts:20`).
+  - No slot id reaches a file elsewhere or another slot's file. `profilesRoot` defaults to
     `/var/lib/opensteer-pool/profiles`, which setup makes 0711 (`setup-host.sh:143`).
-  - It must not be a link, nor contain `.` or `..` (`apps/pool-agent/src/firecracker/paths.ts:13–28`).
-    This is checked at create and again at every boot (`firecracker/driver.ts:182, 627`).
-- **It must already hold a filesystem.** The guest mounts `/dev/vdb` without formatting it
-  (`apps/pool-agent/guest/init.sh:32`). The bench makes ext4: `truncate` + `mkfs.ext4 -m 0`
-  (`bench/run-gcp.sh` `runtime_mode`).
-- **What the agent does to it.** At each boot it chowns the disk to the slot's uid, sets 0600 and
-  bind-mounts it into the jail (`firecracker/driver.ts:627–631`).
-- **Credential files.** The egress files (`usernameFile`, `passwordFile`, `caFile`) must be
-  under `driver.credentialsRoot` (`firecracker/driver.ts:185`). The proxy reads them as
-  systemd credentials (`firecracker/egress.ts:80`).
-- **What a delete leaves, for the provisioner to remove:**
-  - the profile disk (`agent.ts:736`: "The profile disk is the provisioner's and is left where it
-    is");
+  - The earlier `guest.profilePath` is still accepted on the wire, but only if it is that same
+    path. Anything else is `conflict` (`agent.ts:607–613`).
+  - The boot checks stay: a plain file under the root, not a link (`firecracker/paths.ts:13–28`,
+    `firecracker/driver.ts:182, 627`).
+- **`create` with `profileMib`** (64 MiB to 1 TiB, `server.ts:106`):
+  - **No file there:** the agent makes a sparse file of that size with an ext4 filesystem
+    (`mkfs.ext4 -q -F -m 0`, `firecracker/driver.ts:185–188`). It makes it under a temporary
+    name and links it into place only once it is formatted (`profiles.ts:32–62`). A make that
+    fails leaves nothing under the slot's name, and the create is refused with no slot. A
+    temporary file a crash left behind is removed when the driver opens (`profiles.ts:77`,
+    `firecracker/driver.ts:152`).
+  - **A file there:** kept exactly as it is, never formatted, whatever `profileMib` says. This is
+    what lets a replaced host instance keep every profile: the provisioner creates the slot again
+    at a higher term, and the person's profile is still theirs.
+- **What the agent does to it at each boot:** chowns it to the slot's uid, sets 0600 and
+  bind-mounts it into the jail (`firecracker/driver.ts:627–631`). The guest mounts it as
+  `/dev/vdb` (`apps/pool-agent/guest/init.sh:32`).
+- **Erasing it.** Only `delete` with `eraseProfile: true` removes a profile (section 1).
+  - No other call removes one: not a failed create, not a rollback, not `replace-key`.
+  - Without `eraseProfile` the file stays for the same slot id's next create.
+- **A tombstoned slot's file and a new create.** The tombstone refuses a create at or below the
+  deleted term. A create above it, for the same slot id, finds the kept file and uses it: the
+  slot id is the person's Cloud Computer. A file is never handed to another slot id, because the
+  path is derived from the id.
+- **Credential files: the same gap, not closed in this round.** The egress files
+  (`usernameFile`, `passwordFile`, `caFile`) must still be files under `driver.credentialsRoot`
+  (`firecracker/driver.ts:185`), and the provisioner cannot write them through this interface.
+- **What a delete leaves:**
   - the egress credential files;
-  - the host user `osp-egress-<n>`, which is reused by the next slot on that number
+  - the host user `osp-egress-<n>`, reused by the next slot on that number
     (`firecracker/egress.ts:42`);
-  - a journal tombstone holding no secret, pruned by the agent after 30 days.
+  - a journal tombstone holding no secret, pruned after 30 days;
+  - without `eraseProfile`, the profile.
 - **What the agent removes itself:** the guest, its saved state, its jail, the namespace and
   proxy units, and the slot number. A number is freed only after every piece of work using it
   has ended (`firecracker/slot-numbers.ts`).
@@ -141,6 +160,10 @@ relay of `managed-pool.ts:117`; built by `managedBrowserPool(target, keys)`,
   slot and a new profile disk.
 - **Never reuse a `slotId` at or below a term it was deleted at,** and never let two slots share
   a profile disk or credential files.
+- **Never send a profile path, and never reuse a slot id for another person.** A slot id's
+  profile is found by the id: a create at a higher term for the same id gets the same person's
+  profile. Use `delete` with `eraseProfile: true` when a Cloud Computer is deleted, and settle
+  the deletion only on `erased: true` and `profileErased: true`.
 - **Never delete, move or rewrite a profile disk while its slot exists.** The agent confines and
   mounts it at every boot.
 - **Never hand the Home anything private:**
@@ -155,3 +178,31 @@ relay of `managed-pool.ts:117`; built by `managedBrowserPool(target, keys)`,
   the slot with `list`. A start or wake refused for capacity did not happen.
 - **Never edit `agent.json`, the journal or `slots.json` while the agent runs,** and never open
   the admin port beyond `OSP_PROVISIONER_CIDR`.
+
+## 7. Replacing a host instance: what is on which disk
+
+- **Today it is all one tree.** `setup-host.sh` keeps all of the agent's state in one directory,
+  `/var/lib/opensteer-pool`, described as durable (`setup-host.sh:24`; `HOST-SETUP.md:32`, "on
+  the persistent disk"). That tree holds:
+  - the journal, with slot records and tombstones (`journal`);
+  - the driver's slot numbers (`driver/slots.json`);
+  - the profiles (`profiles`);
+  - the guest images.
+- **What is elsewhere.** Saved guest state lives on the instance's Local SSD array
+  (`/srv/opensteer-pool`), which does not survive the instance. The host and relay keys live
+  on the instance's own disk, under `/etc/opensteer-pool` and `/etc/opensteer-pool-relay`.
+- **Setup mounts no separate disk:** `/var/lib/opensteer-pool` is wherever the boot disk puts it.
+- **The safer arrangement for a replaced instance** is to keep only `profilesRoot` on the durable
+  disk. The journal, `slots.json` and tombstones then stay with the instance, and the new
+  agent comes up with no slots. The provisioner, whose record of slots is the truth, creates
+  each again at a higher term; each finds its kept profile (section 4).
+- **Why carried state is worse.** A journal carried to a new instance describes guests, saved
+  states, namespaces and slot numbers of a machine that is gone, under a host key that is gone
+  too. The agent would reconcile it to stopped slots, but every slot's control key would
+  outlive the host that held it.
+- **The rule this relies on:** a tombstone exists only on the instance that wrote it. So a
+  replaced instance accepts a create at any term; the provisioner must still go above the
+  term it last used.
+- **The profiles root is the durable disk's mount point,** set by `driver.profilesRoot` in
+  `agent.json`. How a provisioned host mounts that disk and enrols is the enrolment's to decide;
+  nothing in the agent assumes it.
