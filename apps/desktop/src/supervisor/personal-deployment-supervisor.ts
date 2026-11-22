@@ -1521,18 +1521,20 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
    * Polls whatever Home this Mac currently hosts until it proves plugin agent
    * work is stopped for `stoppedSince`, keeping up across transient faults and
    * Home restarts, doubling poll intervals up to `#stopProofMaxPollMs`.
-   * Returns immediately when this Mac hosts no Home (nothing more to prove) or
-   * when cancelled/shutting down, and throws on permanent Home refusal.
+   * Resolves `true` when proved or when this Mac hosts no Home (nothing more to
+   * prove), `false` when cancelled or shutting down, and throws on permanent
+   * Home refusal.
    */
-  async waitForStopProof(stoppedSince: string, signal: AbortSignal): Promise<void> {
+  async waitForStopProof(stoppedSince: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted || this.#shutdownRequested) return false;
     const check = this.#host.checkPluginAgentWorkStopped;
-    if (!check) return;
+    if (!check) return true;
     let waitMs = this.#stopProofPollMs;
     for (;;) {
-      if (signal.aborted || this.#shutdownRequested) return;
+      if (signal.aborted || this.#shutdownRequested) return false;
       const manifest = await this.#files.load().catch(() => null);
-      if (signal.aborted || this.#shutdownRequested) return;
-      if (!manifest) return;
+      if (signal.aborted || this.#shutdownRequested) return false;
+      if (!manifest) return true;
       const runtime = this.#runtime;
       if (runtime) {
         try {
@@ -1545,9 +1547,9 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             stoppedSince,
             signal,
           );
-          if (confirmed) return;
+          if (confirmed) return true;
         } catch (error: unknown) {
-          if (signal.aborted || this.#shutdownRequested) return;
+          if (signal.aborted || this.#shutdownRequested) return false;
           if (error instanceof PersonalHostBootstrapRefusedError) throw error;
         }
       }

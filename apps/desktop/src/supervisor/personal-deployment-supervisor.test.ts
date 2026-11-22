@@ -2455,10 +2455,10 @@ it("keeps looking for Home Stop proof across transient faults and Home restarts,
   );
 
   try {
-    // 1. Before any hosted Home exists: resolves immediately (nothing more to prove).
+    // 1. Before any hosted Home exists: resolves true (nothing more to prove).
     await expect(
       fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
 
     // 2. Start Home, begin looking for proof, restart Home mid-look, confirm once restarted.
     await fixture.supervisor.start();
@@ -2466,7 +2466,7 @@ it("keeps looking for Home Stop proof across transient faults and Home restarts,
     await vi.waitFor(() => expect(checks).toBeGreaterThanOrEqual(2));
     // Crash the Host process so the supervisor restarts it mid-look.
     childrenOf(fixture, "host")[0]!.emit("exit", 1, null);
-    await expect(looking).resolves.toBeUndefined();
+    await expect(looking).resolves.toBe(true);
     expect(childrenOf(fixture, "host").length).toBeGreaterThanOrEqual(2);
     expect(seenOrigins.length).toBeGreaterThanOrEqual(3);
 
@@ -2496,11 +2496,11 @@ it("keeps looking for Home Stop proof across transient faults and Home restarts,
     );
     await expect(
       fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
     expect(askedDeployments).toContain(replacementDeploymentId);
     loadSpy.mockRestore();
 
-    // 5. Removed Home (manifest becomes null mid-look): nothing left to prove, resolves cleanly.
+    // 5. Removed Home (manifest becomes null mid-look): nothing left to prove, resolves true.
     mode = "remove";
     let removeCount = 0;
     const removeSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
@@ -2510,7 +2510,7 @@ it("keeps looking for Home Stop proof across transient faults and Home restarts,
     vi.mocked(fixture.host.checkPluginAgentWorkStopped!).mockResolvedValue(false);
     await expect(
       fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(true);
     removeSpy.mockRestore();
   } finally {
     await fixture.supervisor.stop();
@@ -2558,7 +2558,7 @@ it("paces waitForStopProof from 250 ms doubling up to a 5 s cap", async () => {
       expect(checks).toBe(expectedStep);
     }
 
-    await expect(pending).resolves.toBeUndefined();
+    await expect(pending).resolves.toBe(true);
   } finally {
     vi.useRealTimers();
     await fixture.supervisor.stop();
@@ -2615,5 +2615,52 @@ it("reports positive and negative boot containment outcomes under a saved Stop",
       await fixture.supervisor.stop().catch(() => undefined);
       await rm(dir, { recursive: true, force: true });
     }
+  }
+});
+
+it("returns false when shutting down while looking for Stop proof so DesktopLocalStop never logs confirmation without proof", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  const firstCheck = Promise.withResolvers<void>();
+  const releaseCheck = Promise.withResolvers<boolean>();
+  const fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      stopProofPollMs: 5,
+      checkPluginAgentWorkStopped: vi.fn(async () => {
+        firstCheck.resolve();
+        return releaseCheck.promise;
+      }),
+    },
+  );
+  const log = vi.fn();
+  const { DesktopLocalStop } = await import("../app/local-stop.js");
+  const localStop = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {},
+    confirm: (since, signal) => fixture.supervisor.waitForStopProof(since, signal),
+    log,
+    now: () => new Date(stoppedSince),
+  });
+
+  await fixture.supervisor.start();
+  try {
+    await localStop.restore();
+    await localStop.stop();
+    await firstCheck.promise;
+    expect(localStop.confirming).toBe(true);
+
+    // Supervisor begins shutting down BEFORE localStop.dispose() aborts its controller.
+    fixture.supervisor.quiesce();
+    releaseCheck.resolve(false);
+
+    await vi.waitFor(() => expect(localStop.confirming).toBe(false));
+    expect(localStop.stoppedAt).toBeNull();
+    expect(log).not.toHaveBeenCalledWith("desktop.local-stop.home-confirmed", expect.anything());
+  } finally {
+    localStop.dispose();
+    await fixture.supervisor.stop();
   }
 });

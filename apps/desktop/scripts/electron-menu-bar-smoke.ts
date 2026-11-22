@@ -520,7 +520,7 @@ async function homeStop(): Promise<void> {
     confirm: (stoppedSince, signal) =>
       startedHome
         ? startedHome.supervisor.waitForStopProof(stoppedSince, signal)
-        : Promise.resolve(),
+        : Promise.resolve(true),
     store: localStopFileStore(stopFile),
     log,
   });

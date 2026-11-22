@@ -27,10 +27,11 @@ interface DesktopLocalStopOptions {
   readonly restart: () => Promise<void>;
   /**
    * Keeps looking for the hosted Home's Stop proof after local containment
-   * finishes. Resolves once proved or when this Mac hosts no Home, returns on
-   * abort, and rejects only on a permanent Home refusal.
+   * finishes. Resolves `true` once proved or when this Mac hosts no Home,
+   * `false` if looking stopped without proof (abort or shutdown), and rejects
+   * only on a permanent Home refusal.
    */
-  readonly confirm?: (stoppedSince: string, signal: AbortSignal) => Promise<void>;
+  readonly confirm?: (stoppedSince: string, signal: AbortSignal) => Promise<boolean>;
   readonly confirmOverdueMs?: number;
   readonly store: LocalStopStore;
   readonly log: ShutdownLog;
@@ -246,7 +247,7 @@ export class DesktopLocalStop {
     }, this.#confirmOverdueMs);
     this.#overdueTimer.unref();
     void confirm(at, controller.signal).then(
-      () => {
+      (confirmed) => {
         if (
           controller.signal.aborted ||
           generation !== this.#lookGeneration ||
@@ -257,6 +258,10 @@ export class DesktopLocalStop {
         this.#lookAbort = null;
         this.#confirming = false;
         this.#clearOverdueTimer();
+        if (!confirmed) {
+          this.#emit();
+          return;
+        }
         this.#confirmedAt = at;
         this.#options.log("desktop.local-stop.home-confirmed", { stoppedAt: at });
         this.#emit();
