@@ -1,6 +1,12 @@
+import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { openSync, closeSync, fstatSync, readFileSync, constants } from "node:fs";
 import { isBareOrigin, refused } from "@opensteer/core";
-import { CloudComputerLocationSchema } from "@opensteer/control-plane-protocol";
+import {
+  CloudComputerLocationSchema,
+  defaultBrowserPoolAdminPort,
+  defaultBrowserPoolAgentPort,
+  defaultBrowserPoolRelayPort,
+} from "@opensteer/control-plane-protocol";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -44,6 +50,36 @@ const googleSchema = z.object({
   OPENSTEER_HOME_GCP_DISK_SIZE_GB: integer(10, 65_536).default(30),
 });
 
+const ipv4Cidr = z
+  .string()
+  .regex(/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/u);
+
+const poolSchema = z.object({
+  OPENSTEER_POOL_HOME_CIDR: ipv4Cidr,
+  OPENSTEER_POOL_PROVISIONER_CIDR: ipv4Cidr,
+  OPENSTEER_POOL_LOCAL_SSD_COUNT: integer(1, 24).default(1),
+  OPENSTEER_POOL_BOOT_DISK_SIZE_GB: integer(20, 65_536).default(40),
+  OPENSTEER_POOL_PROFILE_DISK_TYPE: z
+    .enum(["pd-ssd", "pd-balanced", "pd-standard"])
+    .default("pd-ssd"),
+  OPENSTEER_POOL_AGENT_PORT: integer(1, 65_535).default(defaultBrowserPoolAgentPort),
+  OPENSTEER_POOL_ADMIN_PORT: integer(1, 65_535).default(defaultBrowserPoolAdminPort),
+  OPENSTEER_POOL_RELAY_PORT: integer(1, 65_535).default(defaultBrowserPoolRelayPort),
+});
+
+export interface PoolProvisionerConfig {
+  readonly provisionerPrivateKey: KeyObject;
+  readonly provisionerPublicKeySpki: string;
+  readonly homeCidr: string;
+  readonly provisionerCidr: string;
+  readonly localSsdCount: number;
+  readonly bootDiskSizeGb: number;
+  readonly profileDiskType: "pd-ssd" | "pd-balanced" | "pd-standard";
+  readonly agentPort: number;
+  readonly adminPort: number;
+  readonly relayPort: number;
+}
+
 function integer(min: number, max: number) {
   return z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(min).max(max));
 }
@@ -60,6 +96,7 @@ function readConfig<T>(schema: z.ZodType<T>, env: NodeJS.ProcessEnv) {
 export function loadConfig(env: NodeJS.ProcessEnv) {
   if (env.OPENSTEER_HOME_PROVIDER === "google") {
     const google = readConfig(envSchema.extend(googleSchema.shape), env);
+    const pool = loadPoolConfig(env);
     return {
       ...sharedConfig(google, env),
       provider: "google" as const,
@@ -72,6 +109,7 @@ export function loadConfig(env: NodeJS.ProcessEnv) {
       region: google.OPENSTEER_HOME_GCP_ZONE,
       serverType: google.OPENSTEER_HOME_GCP_MACHINE_TYPE,
       image: google.OPENSTEER_HOME_GCP_IMAGE,
+      ...(pool ? { pool } : {}),
     };
   }
   const hetzner = readConfig(envSchema.extend(hetznerSchema.shape), env);
@@ -126,4 +164,67 @@ function readSecret(env: NodeJS.ProcessEnv, name: string): string {
     throw refused("bad_request", `Missing or invalid ${name} or ${name}_FILE`);
   }
   return secret!.trim();
+}
+
+function loadPoolConfig(env: NodeJS.ProcessEnv): PoolProvisionerConfig | undefined {
+  const keyName = "OPENSTEER_POOL_PROVISIONER_KEY";
+  if (env[keyName] === undefined && env[`${keyName}_FILE`] === undefined) return undefined;
+  const parsed = readConfig(poolSchema, env);
+  const rawKey = readKeySecret(env, keyName);
+  const provisionerPrivateKey = parseEd25519PrivateKey(rawKey);
+  const provisionerPublicKeySpki = createPublicKey(provisionerPrivateKey)
+    .export({ format: "der", type: "spki" })
+    .toString("base64");
+  return {
+    provisionerPrivateKey,
+    provisionerPublicKeySpki,
+    homeCidr: parsed.OPENSTEER_POOL_HOME_CIDR,
+    provisionerCidr: parsed.OPENSTEER_POOL_PROVISIONER_CIDR,
+    localSsdCount: parsed.OPENSTEER_POOL_LOCAL_SSD_COUNT,
+    bootDiskSizeGb: parsed.OPENSTEER_POOL_BOOT_DISK_SIZE_GB,
+    profileDiskType: parsed.OPENSTEER_POOL_PROFILE_DISK_TYPE,
+    agentPort: parsed.OPENSTEER_POOL_AGENT_PORT,
+    adminPort: parsed.OPENSTEER_POOL_ADMIN_PORT,
+    relayPort: parsed.OPENSTEER_POOL_RELAY_PORT,
+  };
+}
+
+function readKeySecret(env: NodeJS.ProcessEnv, name: string): string {
+  const file = env[`${name}_FILE`];
+  const value = env[name];
+  if (file !== undefined && value !== undefined) {
+    throw refused("bad_request", `Configure exactly one of ${name} or ${name}_FILE`);
+  }
+  let secret = value;
+  if (file !== undefined) {
+    try {
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        const stat = fstatSync(fd);
+        if (!stat.isFile() || stat.size > 4096) throw refused("bad_request", "Invalid secret file");
+        secret = readFileSync(fd, "utf8");
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      throw refused("bad_request", `Could not read ${name}_FILE as a regular secret file`);
+    }
+  }
+  const trimmed = secret?.trim() ?? "";
+  if (!trimmed) throw refused("bad_request", `Missing or invalid ${name} or ${name}_FILE`);
+  return trimmed;
+}
+
+function parseEd25519PrivateKey(raw: string): KeyObject {
+  try {
+    const key = raw.includes("-----BEGIN")
+      ? createPrivateKey({ key: raw, format: "pem" })
+      : createPrivateKey({ key: Buffer.from(raw, "base64"), format: "der", type: "pkcs8" });
+    if (key.asymmetricKeyType !== "ed25519") {
+      throw new Error("Expected Ed25519 private key");
+    }
+    return key;
+  } catch {
+    throw refused("bad_request", "Invalid OPENSTEER_POOL_PROVISIONER_KEY Ed25519 private key");
+  }
 }

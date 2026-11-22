@@ -28,8 +28,25 @@ type Labels = Record<string, string>;
 type Metadata = { fingerprint: string; items: { key: string; value: string }[] };
 type NetworkInterface = {
   name: string;
+  networkIP?: string;
   accessConfigs: { name: string; natIP?: string }[];
   ipv6AccessConfigs?: { externalIpv6?: string }[];
+};
+type Disk = {
+  id: string;
+  name: string;
+  sizeGb: string;
+  type: string;
+  labels: Labels;
+};
+type AttachedDisk = {
+  boot?: boolean;
+  autoDelete?: boolean;
+  source?: string;
+  deviceName?: string;
+  type?: string;
+  interface?: string;
+  mode?: string;
 };
 type Instance = {
   name: string;
@@ -39,6 +56,7 @@ type Instance = {
   lastStartTimestamp?: string;
   tags: { fingerprint: string; items: string[] };
   metadata: Metadata;
+  disks?: AttachedDisk[];
   networkInterfaces: NetworkInterface[];
 };
 type Address = { name: string; labels: Labels; address: string };
@@ -70,6 +88,7 @@ const requestKey = ({ method, path, query, body }: RecordedRequest) => {
 export class ComputeFake {
   readonly requests: RecordedRequest[] = [];
   readonly instances = new Map<string, Instance>();
+  readonly disks = new Map<string, Disk>();
   readonly addresses = new Map<string, Address>();
   readonly firewalls = new Map<string, unknown>();
   readonly operations = new Map<
@@ -106,7 +125,9 @@ export class ComputeFake {
   /** Refuses the first Compute request that matches, once, for the rate quota. */
   rateLimitMatch: ((method: string, path: string) => boolean) | undefined;
   #nextId = BigInt(computeInstanceId);
+  #nextDiskId = 9000n;
   #nextAddress = 21;
+  #nextInternalIp = 10;
   #nextOperation = 0;
   #clock = 0;
   readonly #replays = new Map<string, { request: string; operation: Operation }>();
@@ -199,6 +220,7 @@ export class ComputeFake {
     }
     if (path.startsWith(`${globalPath}/firewalls`)) return this.#firewallRequest(req);
     if (path.startsWith(`${regionPath}/addresses`)) return this.#addressRequest(req);
+    if (path.startsWith(`${zonePath}/disks`)) return this.#diskRequest(req);
     if (path.startsWith(`${zonePath}/instances`)) return this.#instanceRequest(req);
     throw new Error(`Unexpected fake Compute request ${method} ${path}`);
   };
@@ -300,7 +322,7 @@ export class ComputeFake {
       [...this.instances.values()]
         .filter(({ networkInterfaces }) =>
           networkInterfaces.some(({ accessConfigs }) =>
-            accessConfigs.some(({ natIP }) => natIP === address.address),
+            (accessConfigs ?? []).some(({ natIP }) => natIP === address.address),
           ),
         )
         .map(
@@ -345,6 +367,56 @@ export class ComputeFake {
     );
   }
 
+  #diskRequest(req: RecordedRequest) {
+    const name = req.path.slice(`${zonePath}/disks`.length).split("/")[1];
+    const usersOf = (diskName: string) =>
+      [...this.instances.values()]
+        .filter(({ disks }) =>
+          (disks ?? []).some(({ source }) => source?.endsWith(`/disks/${diskName}`)),
+        )
+        .map(
+          ({ name: instanceName }) =>
+            `https://compute.googleapis.com/compute/v1/${zonePath}/instances/${instanceName}`,
+        );
+    const response = (disk: Disk) => ({ ...disk, users: usersOf(disk.name) });
+    if (req.method === "GET" && !name)
+      return this.#page([...this.disks.values()].map(response), req.query);
+    if (req.method === "GET") {
+      const current = this.disks.get(name!);
+      return current ? json(response(current)) : json({}, 404);
+    }
+    if (req.method === "DELETE") {
+      const current = this.disks.get(name!);
+      if (!current) return json({}, 404);
+      if (usersOf(current.name).length) return json({}, 400);
+      return json(
+        this.#start(req, zonePath, () => this.disks.delete(current.name), {
+          targetId: current.id,
+          operationType: "delete",
+        }),
+      );
+    }
+    const body = req.body as { name: string; sizeGb: string; type: string; labels?: Labels };
+    if (this.disks.has(body.name)) return json({}, 409);
+    const id = String(++this.#nextDiskId);
+    return json(
+      this.#start(
+        req,
+        zonePath,
+        () => {
+          this.disks.set(body.name, {
+            id,
+            name: body.name,
+            sizeGb: body.sizeGb,
+            type: body.type,
+            labels: body.labels ?? {},
+          });
+        },
+        { targetId: id, operationType: "insert" },
+      ),
+    );
+  }
+
   #instanceRequest(req: RecordedRequest) {
     const [name, action] = req.path.slice(`${zonePath}/instances`.length).split("/").slice(1);
     if (req.method === "GET" && !name) return this.#page([...this.instances.values()], req.query);
@@ -378,13 +450,14 @@ export class ComputeFake {
   #insertInstance(req: RecordedRequest) {
     const body = req.body as Pick<
       Instance,
-      "name" | "labels" | "tags" | "metadata" | "networkInterfaces"
+      "name" | "labels" | "tags" | "metadata" | "networkInterfaces" | "disks"
     >;
     if (this.instances.has(body.name)) return json({}, 409);
     const behavior = this.nextInsert;
     this.nextInsert = undefined;
     if (behavior === "quota") return json({ message: "quota exceeded" }, 403);
     const id = String(this.#nextId--);
+    const internalIp = `10.40.0.${this.#nextInternalIp++}`;
     const vm: Instance = {
       ...body,
       id,
@@ -393,7 +466,9 @@ export class ComputeFake {
       metadata: { ...body.metadata, fingerprint: "metadata-test" },
       networkInterfaces: body.networkInterfaces.map((nic) => ({
         ...nic,
+        accessConfigs: nic.accessConfigs ?? [],
         name: "nic0",
+        networkIP: internalIp,
         ...(nic.ipv6AccessConfigs ? { ipv6AccessConfigs: [{ externalIpv6: computeIpv6 }] } : {}),
       })),
     };

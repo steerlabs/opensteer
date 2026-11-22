@@ -1,10 +1,30 @@
 import { randomUUID } from "node:crypto";
 import {
+  BrowserPoolHostDesiredResponseSchema,
+  BrowserPoolSlotBumpTermResponseSchema,
+  BrowserPoolSlotDesiredResponseSchema,
+  browserPoolHostCheckPath,
+  browserPoolHostStatusPath,
+  browserPoolHostsDesiredPath,
+  browserPoolSlotBumpTermPath,
+  browserPoolSlotCheckPath,
+  browserPoolSlotStatusPath,
+  browserPoolSlotsDesiredPath,
   CloudComputerDesiredResponseSchema,
   CloudComputerCheckResponseSchema,
   cloudComputerCheckPath,
   cloudComputerLeasePath,
   cloudComputerLeaseHeader,
+  type BrowserPoolHostCheck,
+  type BrowserPoolHostDesired,
+  type BrowserPoolHostId,
+  type BrowserPoolHostReport,
+  type BrowserPoolSlotBumpTermRequest,
+  type BrowserPoolSlotBumpTermResponse,
+  type BrowserPoolSlotCheck,
+  type BrowserPoolSlotDesired,
+  type BrowserPoolSlotId,
+  type BrowserPoolSlotReport,
   type CloudComputerCheck,
   type CloudComputerId,
   CloudComputerReportResponseSchema,
@@ -16,11 +36,34 @@ import {
 import { z } from "zod";
 import { json, RemoteRequestError, request, type HttpOptions } from "./http.js";
 
+export interface PoolAccountApi {
+  desiredHosts(signal: AbortSignal): Promise<readonly BrowserPoolHostDesired[]>;
+  checkHost(
+    id: BrowserPoolHostId,
+    check: BrowserPoolHostCheck,
+    signal: AbortSignal,
+  ): Promise<boolean>;
+  reportHost(report: BrowserPoolHostReport, signal: AbortSignal): Promise<boolean>;
+  desiredSlots(signal: AbortSignal): Promise<readonly BrowserPoolSlotDesired[]>;
+  checkSlot(
+    slotId: BrowserPoolSlotId,
+    check: BrowserPoolSlotCheck,
+    signal: AbortSignal,
+  ): Promise<boolean>;
+  bumpSlotTerm(
+    slotId: BrowserPoolSlotId,
+    input: BrowserPoolSlotBumpTermRequest,
+    signal: AbortSignal,
+  ): Promise<BrowserPoolSlotBumpTermResponse>;
+  reportSlot(report: BrowserPoolSlotReport, signal: AbortSignal): Promise<boolean>;
+}
+
 export interface AccountApi {
   acquire(signal: AbortSignal): Promise<void>;
   check(id: CloudComputerId, check: CloudComputerCheck, signal: AbortSignal): Promise<boolean>;
   desired(signal: AbortSignal): Promise<readonly CloudComputerDesired[]>;
   report(report: CloudComputerReport, signal: AbortSignal): Promise<boolean>;
+  readonly pool?: PoolAccountApi;
 }
 
 export function accountRefused(error: unknown): error is RemoteRequestError {
@@ -132,6 +175,110 @@ export function accountClient(
         },
       );
       return recorded;
+    },
+    pool: {
+      async desiredHosts(signal) {
+        const hosts: BrowserPoolHostDesired[] = [];
+        let after: BrowserPoolHostId | undefined;
+        do {
+          const url = new URL(browserPoolHostsDesiredPath, origin);
+          if (after) url.searchParams.set("after", after);
+          const page = await request(
+            "Account",
+            url,
+            http,
+            signal,
+            json(BrowserPoolHostDesiredResponseSchema),
+            { headers: await headers(signal) },
+          );
+          if (page.next && (page.next <= (after ?? "") || page.next !== page.hosts.at(-1)?.id)) {
+            throw new Error("Account returned an invalid browser pool host cursor");
+          }
+          hosts.push(...page.hosts);
+          after = page.next;
+        } while (after);
+        return hosts;
+      },
+      async checkHost(id, check, signal) {
+        return (
+          await request(
+            "Account",
+            new URL(browserPoolHostCheckPath(id), origin),
+            http,
+            signal,
+            json(CloudComputerCheckResponseSchema),
+            { method: "POST", body: check, headers: await headers(signal) },
+          )
+        ).allowed;
+      },
+      async reportHost(report, signal) {
+        return (
+          await request(
+            "Account",
+            new URL(browserPoolHostStatusPath(report.id), origin),
+            http,
+            signal,
+            json(CloudComputerReportResponseSchema),
+            { method: "POST", body: report, headers: await headers(signal) },
+          )
+        ).recorded;
+      },
+      async desiredSlots(signal) {
+        const slots: BrowserPoolSlotDesired[] = [];
+        let after: BrowserPoolSlotId | undefined;
+        do {
+          const url = new URL(browserPoolSlotsDesiredPath, origin);
+          if (after) url.searchParams.set("after", after);
+          const page = await request(
+            "Account",
+            url,
+            http,
+            signal,
+            json(BrowserPoolSlotDesiredResponseSchema),
+            { headers: await headers(signal) },
+          );
+          if (page.next && (page.next <= (after ?? "") || page.next !== page.slots.at(-1)?.slotId)) {
+            throw new Error("Account returned an invalid browser pool slot cursor");
+          }
+          slots.push(...page.slots);
+          after = page.next;
+        } while (after);
+        return slots;
+      },
+      async checkSlot(slotId, check, signal) {
+        return (
+          await request(
+            "Account",
+            new URL(browserPoolSlotCheckPath(slotId), origin),
+            http,
+            signal,
+            json(CloudComputerCheckResponseSchema),
+            { method: "POST", body: check, headers: await headers(signal) },
+          )
+        ).allowed;
+      },
+      async bumpSlotTerm(slotId, input, signal) {
+        return request(
+          "Account",
+          new URL(browserPoolSlotBumpTermPath(slotId), origin),
+          http,
+          signal,
+          json(BrowserPoolSlotBumpTermResponseSchema),
+          { method: "POST", body: input, headers: await headers(signal) },
+        );
+      },
+      async reportSlot(report, signal) {
+        return (
+          await request(
+            "Account",
+            new URL(browserPoolSlotStatusPath(report.slotId), origin),
+            http,
+            signal,
+            json(CloudComputerReportResponseSchema),
+            { method: "POST", body: report, headers: await headers(signal) },
+          )
+        ).recorded;
+      },
     },
   };
 }
