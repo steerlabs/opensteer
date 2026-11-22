@@ -17,6 +17,7 @@ import {
   tasksWithdrawnMessage,
   type AgentConnectionAuthority,
 } from "./resource-access.js";
+import { admitBridgeSender } from "./bridge-admission.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -47,8 +48,11 @@ export type ThreadCallerAuthority = {
   | {
       readonly kind: "connection";
       readonly connectionId: string;
-      /** A chat's message: the bridge's revision it was admitted under, and no other. */
-      readonly admittedRevision?: number;
+      /**
+       * A chat's message: who wrote it and the bridge's revision it was admitted under. Every
+       * task tool it reaches asks again whether this sender may speak, at the moment it acts.
+       */
+      readonly chat?: { readonly externalUserId: string; readonly revision: number };
     }
 );
 /** The connection a caller works for, read from its immutable binding; null for owner work. */
@@ -157,8 +161,15 @@ export async function assertThreadCaller(
     if (!agentGrantAllowsTasks(lineage.grant)) throw forbidden(tasksWithdrawnMessage);
     if (
       caller.kind === "connection" &&
-      caller.admittedRevision !== undefined &&
-      lineage.grantRevision !== caller.admittedRevision
+      caller.chat &&
+      (
+        await admitBridgeSender(tx, {
+          ownerUserId: caller.userId,
+          bridgeId: caller.connectionId,
+          externalUserId: caller.chat.externalUserId,
+          expectedRevision: caller.chat.revision,
+        })
+      ).kind !== "admitted"
     )
       throw forbidden("This chat may no longer ask your agents to work.");
   }

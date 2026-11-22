@@ -178,7 +178,14 @@ export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthorit
       ...base,
       kind: "connection",
       connectionId: caller.connectionId,
-      ...(caller.chat ? { admittedRevision: caller.chat.revision } : {}),
+      ...(caller.chat
+        ? {
+            chat: {
+              externalUserId: caller.chat.sender.externalUserId,
+              revision: caller.chat.revision,
+            },
+          }
+        : {}),
     };
   if (caller.kind === "run") return { ...base, kind: "run", scope: caller.claims };
   return caller.program.kind === "trigger"

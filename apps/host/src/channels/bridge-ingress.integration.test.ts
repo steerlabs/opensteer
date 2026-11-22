@@ -726,4 +726,52 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
       await storeFixture.close();
     }
   });
+
+  it('lets a sender who stopped being "me" on the way create nothing, stop nothing and hear nothing', async () => {
+    const storeFixture = await createStoreFixture();
+    const { database } = storeFixture;
+    const unlinked = (f: Awaited<ReturnType<typeof host>>) => async () =>
+      database
+        .updateTable("channelIdentities")
+        .set({ status: "unlinked", linkedUserId: null })
+        .where("accountId", "=", f.configured.account.id)
+        .where("externalUserId", "=", f.owner)
+        .execute();
+    const stopping = await host(storeFixture, {}, "unlink-stop");
+    const creating = await host(storeFixture, {}, "unlink-create");
+    try {
+      // A Run is under way; the person's "stop" is decided, then their account is unlinked
+      // before it acts.
+      expect(await stopping.send({ eventId: "u1", text: "Start" })).toMatchObject({
+        status: "adopted",
+      });
+      const [task] = await stopping.tasks();
+      const [run] = await stopping.runsOf(task!.id);
+      await stopping.beginRun(run!.id, task!.id, "unlink-stop");
+      stopping.raceNext(unlinked(stopping));
+      expect(await stopping.send({ eventId: "u2", text: "stop" })).toMatchObject({
+        status: "ignored",
+      });
+      expect(
+        await database
+          .selectFrom("commands")
+          .select("type")
+          .where("threadId", "=", task!.id)
+          .where("type", "=", "run.interrupt")
+          .execute(),
+      ).toEqual([]);
+      expect(await stopping.lines()).toEqual([]);
+      // A first message whose sender is unlinked before it acts makes no task.
+      creating.raceNext(unlinked(creating));
+      expect(await creating.send({ eventId: "u3", text: "Start" })).toMatchObject({
+        status: "ignored",
+      });
+      expect(await creating.tasks()).toEqual([]);
+      expect(await creating.lines()).toEqual([]);
+    } finally {
+      await stopping.service.close();
+      await creating.service.close();
+      await storeFixture.close();
+    }
+  });
 });

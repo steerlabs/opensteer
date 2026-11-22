@@ -347,7 +347,7 @@ export async function declineBridgeIngress(
   await commitPersonalMutation(database, async (tx) => {
     const ingress = await tx
       .selectFrom("channelIngressEvents")
-      .select("id")
+      .select(["id", "event"])
       .where("id", "=", input.ingressId)
       .where("status", "=", "leased")
       .where("claimTokenHash", "=", digest(input.claimToken))
@@ -356,6 +356,26 @@ export async function declineBridgeIngress(
     if (!ingress)
       throw new OpensteerError({ code: "conflict", message: "Channel ingress claim is stale" });
     await finishIngress(tx, ingress.id, "ignored", input.reason);
+    // Only a sender who may still speak here, now, hears the line; anyone else hears nothing.
+    const event = NormalizedChannelEventSchema.safeParse(ingress.event);
+    const bridge = await tx
+      .selectFrom("bridgeConversations")
+      .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+      .select(["agentConnections.id", "agentConnections.userId"])
+      .where("bridgeConversations.id", "=", input.conversationId)
+      .executeTakeFirst();
+    if (
+      !event.success ||
+      !bridge ||
+      (
+        await admitBridgeSender(tx, {
+          ownerUserId: bridge.userId,
+          bridgeId: bridge.id,
+          externalUserId: event.data.actor.externalUserId,
+        })
+      ).kind !== "admitted"
+    )
+      return;
     await enqueueChannelConversationStatus(tx, {
       conversationId: input.conversationId,
       text: chatNotices.notStarted,
