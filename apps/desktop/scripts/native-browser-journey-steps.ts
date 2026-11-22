@@ -385,20 +385,38 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
         expression:
           "const text=document.querySelector('#text');text.focus();text.value='';window.pastes=0;window.copies=0;document.addEventListener('paste',()=>window.pastes++);document.addEventListener('copy',()=>window.copies++);document.addEventListener('cut',()=>window.copies++)",
       });
-      const refused = async (method: string, parameters: CdpParameters, root = false) =>
+      const refused = async (
+        method: string,
+        parameters: CdpParameters,
+        root = false,
+        sentence = refusal,
+      ) =>
         assert.equal(
           await cdp.send(method, parameters, root).then(
             () => "sent",
             (error: unknown) => (error instanceof Error ? error.message : String(error)),
           ),
-          refusal,
+          sentence,
           `${method} ${JSON.stringify(parameters)}`,
         );
       const paste = { type: "keyDown", key: "v", code: "KeyV", modifiers: 4 } as const;
       await refused("Input.dispatchKeyEvent", { ...paste, nativeVirtualKeyCode: 9 });
       await refused("Input.dispatchKeyEvent", { ...paste, commands: ["paste"] });
       await refused("Input.dispatchKeyEvent", { ...paste, commands: ["pasteAndMatchStyle"] });
-      await refused("Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }, true);
+      // Nor the Mac's camera, microphone or location: no browser permission changes.
+      for (const permission of [
+        "clipboardReadWrite",
+        "audioCapture",
+        "videoCapture",
+        "geolocation",
+      ])
+        for (const root of [true, false])
+          await refused(
+            "Browser.grantPermissions",
+            { permissions: [permission] },
+            root,
+            "Browser permissions cannot be changed by a connected agent.",
+          );
       await cdp.send("Runtime.evaluate", {
         expression:
           "const copied=document.querySelector('#text');copied.value='agent-copy';copied.select()",
