@@ -445,6 +445,35 @@ integration("iMessage channel", () => {
       );
       record("permission lost and regained", attention);
 
+      // 9b. The person pauses the chat: the Mac stops reading Messages, and a text sent
+      // meanwhile is read and answered once they resume, from where the Mac had stopped.
+      const setStatus = (status: "paused" | "connected", key: string) =>
+        testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            connectionId,
+            idempotencyKey: key,
+            status,
+            type: "channel.connection.status.set",
+          },
+          { headers: host.ownerHeaders },
+        );
+      await setStatus("paused", "imessage-pause");
+      const pollsAtPause = messages.polls.length;
+      const sentWhilePaused = messages.receive(ownerPhone, "Sent while it was paused");
+      expect(await ingressStatus(sentWhilePaused.guid)).toBeUndefined();
+      const executedAfterResume = waitForExecute(caller.primary.socket);
+      await setStatus("connected", "imessage-resume");
+      await waitForCondition(async () => (await ingressStatus(sentWhilePaused.guid)) === "adopted");
+      expect(messages.polls.length).toBeGreaterThan(pollsAtPause);
+      const resumedRun = await startRun(caller, await executedAfterResume);
+      await resumedRun.reply("Got the one from the pause.");
+      await waitForCondition(async () =>
+        messages.sends.some(({ text }) => text === "Got the one from the pause."),
+      );
+      record("paused, then resumed with what was sent meanwhile", { guid: sentWhilePaused.guid });
+
       // 10. Reading only: the bridge ends with the approval it spoke through. A reply on its
       // way is never sent, texts start nothing, and allowing sending again does not revive it.
       const executed = waitForExecute(caller.primary.socket);

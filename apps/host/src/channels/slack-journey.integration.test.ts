@@ -566,6 +566,34 @@ describe("Slack on bridges, end to end", () => {
     expect(slack.posted.filter(({ text }) => text.includes("x".repeat(100)))).toEqual([]);
   }, 180_000);
 
+  it("6. pausing closes Slack's socket, and nothing sent meanwhile is fetched on resume", async () => {
+    const before = slack.sockets.length;
+    await service.setConnectionStatus(connectionId, personal.userId, "paused");
+    // The transport stops: its socket is closed, so Slack has nowhere to send a message.
+    await vi.waitFor(() => expect(slack.sockets.at(-1)?.readyState).toBe(3), 20_000);
+    await service.setConnectionStatus(connectionId, personal.userId, "connected");
+    const socket = await vi.waitFor(() => {
+      const next = slack.sockets[before];
+      if (!next?.attached) throw new Error("No new socket after resume");
+      return next;
+    }, 20_000);
+    socket.deliver({ connection_info: { app_id: "A1" }, num_connections: 1, type: "hello" });
+    await vi.waitFor(async () => {
+      expect(
+        await storeFixture.database
+          .selectFrom("integrationConnections")
+          .select("status")
+          .where("id", "=", connectionId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status: "connected" });
+    }, 20_000);
+    // Nothing reads the conversation's history to catch up what was sent meanwhile: only what
+    // Slack sends to the new socket arrives.
+    expect(slack.calls.filter((url) => /conversations\.(history|replies)/u.test(url))).toEqual([]);
+    socket.deliver(dm("after-resume", "Back again", 50));
+    await ingressSettled("after-resume", "adopted");
+  }, 120_000);
+
   // ---- helpers ----
 
   /** The Run's command through the real dispatcher, to a Runner that takes it. */
@@ -948,8 +976,11 @@ class FakeSlack {
   #hang: { started: () => void; wait: Promise<void> } | null = null;
   #ts = 1_786_500_000;
 
+  /** Every Web API URL the adapter called. */
+  readonly calls: string[] = [];
   readonly fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
+    this.calls.push(url);
     if (url.includes("bots.info")) return json({ ok: true, bot: { app_id: "A1" } });
     if (url.includes("auth.test"))
       return json(
@@ -980,8 +1011,9 @@ class FakeSlack {
     return socket;
   };
 
+  /** The socket the adapter opened last: the one Slack would send to. */
   socket(): FakeSlackSocket {
-    const socket = this.sockets[0];
+    const socket = this.sockets.at(-1);
     if (!socket) throw new Error("The Slack adapter has not opened a socket");
     return socket;
   }
