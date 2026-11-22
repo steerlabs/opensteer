@@ -224,3 +224,56 @@ describeStore("a bridge is made on the same consent as a connected agent", (it) 
     ).rejects.toMatchObject({ code: "forbidden", message: "Your organization doesn't allow this" });
   });
 });
+
+describeStore("work from a bridge anyone may speak to has no personal context", (it) => {
+  it("is decided by the lineage's own row, for the Run and for every task under it", async ({
+    storeFixture,
+  }) => {
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-ctx");
+    const { database } = storeFixture;
+    const { runAllowsPersonalContext, threadAllowsPersonalContext } =
+      await import("./run-personal-context.js");
+    // A task of the person's that no chat ever wrote to.
+    const task = await storeFixture.createTaskForOwner(fixture.userId, "bridge-ctx-task");
+    const queued = await storeFixture.store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: task.id,
+      content: [{ type: "text", text: "Work" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "bridge-ctx-run",
+    });
+    const run = queued.run!.id;
+    // The person's own Run.
+    expect(await runAllowsPersonalContext(database, run)).toBe(true);
+    const connections = new AgentConnectionStore(database);
+    const onlyMe = await connections.createBridge({
+      userId: fixture.userId,
+      accountId: configured.account.id,
+      senders: "owner",
+      accessMode: "approval-required",
+      grant: tasksOnly,
+    });
+    const anyone = await connections.createBridge({
+      userId: fixture.userId,
+      accountId: configured.account.id,
+      conversation: { id: "C-team", name: "#team" },
+      senders: "anyone",
+      accessMode: "approval-required",
+      grant: tasksOnly,
+    });
+    const lineage = async (connectionId: string) => {
+      await database
+        .updateTable("threads")
+        .set({ originConnectionId: connectionId })
+        .where("id", "=", task.id)
+        .execute();
+      await database.updateTable("runs").set({ connectionId }).where("id", "=", run).execute();
+    };
+    await lineage(onlyMe.id);
+    expect(await runAllowsPersonalContext(database, run)).toBe(true);
+    await lineage(anyone.id);
+    expect(await runAllowsPersonalContext(database, run)).toBe(false);
+    expect(await threadAllowsPersonalContext(database, task.id, fixture.userId)).toBe(false);
+  });
+});

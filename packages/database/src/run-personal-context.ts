@@ -2,17 +2,22 @@ import { channelAllowsPersonalContext } from "@opensteer/channel-core";
 import type { RunId, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { lineageAllowsPersonalContext } from "./resource-access.js";
 
 /** Re-evaluate every sender represented in this task, including later admitted batches. */
 export async function runAllowsPersonalContext(
   database: Kysely<DatabaseSchema>,
   runId: RunId,
 ): Promise<boolean> {
+  // The Run's own lineage, read in the same statement: work for a bridge anyone in its
+  // conversation may speak to never has the person's personal context.
   const run = await database
     .selectFrom("runs")
-    .select(["threadId", "requestedBy"])
-    .where("id", "=", runId)
+    .leftJoin("agentConnections", "agentConnections.id", "runs.connectionId")
+    .select(["runs.threadId", "runs.requestedBy", "agentConnections.bridgeSenders"])
+    .where("runs.id", "=", runId)
     .executeTakeFirstOrThrow();
+  if (!lineageAllowsPersonalContext(run)) return false;
   return threadAllowsPersonalContext(database, run.threadId, run.requestedBy);
 }
 export async function threadAllowsPersonalContext(
@@ -23,7 +28,10 @@ export async function threadAllowsPersonalContext(
   // Reused workers retain every assigning conversation's context restriction, a task linked
   // under another (an automation's own task) retains its parent's, and work an automation's
   // program sends anywhere retains its anchor's.
-  const ancestors = await sql<{ threadId: ThreadId }>`
+  const ancestors = await sql<{
+    threadId: ThreadId;
+    bridgeSenders: "owner" | "anyone" | null;
+  }>`
     with recursive context_threads(id) as (
       select ${threadId}::text
       union
@@ -55,8 +63,13 @@ export async function threadAllowsPersonalContext(
         where id = current.id and parent_thread_id is not null
       ) parent
     )
-    select id as thread_id from context_threads
+    select context_threads.id as "threadId", origin.bridge_senders as "bridgeSenders"
+    from context_threads
+    left join threads task on task.id = context_threads.id
+    left join agent_connections origin on origin.id = task.origin_connection_id
   `.execute(database);
+  // A task in, or under, the lineage of a bridge anyone may speak to has no personal context.
+  if (!ancestors.rows.every(lineageAllowsPersonalContext)) return false;
   const threadIds = ancestors.rows.map((row) => row.threadId);
   const sources = await database
     .selectFrom("threadInputs")
