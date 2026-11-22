@@ -2,17 +2,25 @@ import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/co
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentUnavailableReasonExplanation } from "@opensteer/protocol/deployment-status";
 import type { DeploymentRow } from "../client/deployment-rows.js";
+import { signInStorageSentence } from "../platform/sign-in-storage.js";
 
 type AccountState = DesktopAccountAuthState["account"];
+
+/** Expo's own words for a Keychain or Keystore call the platform refused. */
+const secureStoreException =
+  /Keychain|SecureStore|entitlement|(?:get|set|delete)ValueWithKeyAsync|isAvailableAsync/u;
 
 export function accountDoorPresentation(
   account: AccountState,
   starting: boolean,
+  noun: "iPhone" | "phone" = "phone",
 ): { readonly description: string; readonly disabled: boolean; readonly title: string } {
   const signingIn = starting || account.status === "authorizing";
+  // The sign-in storage says this itself; an exception that still arrives in Expo's words
+  // reads the same, never as the exception.
   const unavailableDetail =
-    account.detail !== null && /Keychain|SecureStore/u.test(account.detail)
-      ? "This app cannot access this device’s secure credential storage. Sign-in is unavailable."
+    account.detail !== null && secureStoreException.test(account.detail)
+      ? signInStorageSentence(noun)
       : account.detail;
   if (signingIn) {
     return {

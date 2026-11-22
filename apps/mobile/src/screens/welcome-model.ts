@@ -1,3 +1,4 @@
+import { thisPhoneNoun } from "../computers/phone-noun.js";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { Share } from "react-native";
 import { accountDoorPresentation } from "./account-door.js";
@@ -87,7 +88,7 @@ export function welcomePresentation(props: WelcomeProps): {
     readonly address: string | null;
   } | null;
 } {
-  const door = accountDoorPresentation(props.account, props.signingIn);
+  const door = accountDoorPresentation(props.account, props.signingIn, thisPhoneNoun);
   const unavailable = !props.account.available;
   const signedIn = props.signedInAs != null;
   const mode: WelcomeMode = unavailable ? "keyless" : signedIn ? "where" : "door";

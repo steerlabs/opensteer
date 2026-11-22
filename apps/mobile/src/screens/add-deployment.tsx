@@ -1,3 +1,4 @@
+import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation } from "@react-navigation/native";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
@@ -220,7 +221,7 @@ export function AddDeploymentDoors(props: {
   readonly onServer: () => void;
   readonly signingIn?: boolean;
 }): ReactNode {
-  const account = accountDoorPresentation(props.account, props.signingIn === true);
+  const account = accountDoorPresentation(props.account, props.signingIn === true, thisPhoneNoun);
   return (
     <RowGroup>
       {[

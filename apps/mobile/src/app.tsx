@@ -1,3 +1,5 @@
+import { signInStorage } from "./platform/sign-in-storage.js";
+import { thisPhoneNoun } from "./computers/phone-noun.js";
 import { createPersonalStreamCache, personalCacheFormat } from "@opensteer/client/host";
 import {
   dropEarlierCheckpointFormats,
@@ -390,7 +392,8 @@ function mobileClient(): MobileRoot {
     randomBytes: (size) => getRandomValues(new Uint8Array(size)),
     records: createSecureRecordStore({
       keyPrefix: `${storeName}.auth`,
-      secureStore: SecureStore,
+      // Sign-in's Keychain: a refused call reads as one sentence, its exception logged.
+      secureStore: signInStorage(SecureStore, thisPhoneNoun),
     }),
     ...(configuration.mock && configuration.mockPhone !== "first-run"
       ? { seed: mockDeploymentConnections() }
