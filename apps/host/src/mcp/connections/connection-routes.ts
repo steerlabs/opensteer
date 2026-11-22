@@ -289,8 +289,13 @@ export function createConnectionRpcHandlers(
         input.includeRevoked
           ? { connections, endedConnections: [] }
           : {
-              connections: connections.filter((connection) => connection.state === "active"),
-              endedConnections: connections.filter((connection) => connection.state !== "active"),
+              // A paused chat is still connected: it waits, and comes back with what it holds.
+              connections: connections.filter(
+                (connection) => connection.state === "active" || connection.state === "paused",
+              ),
+              endedConnections: connections.filter(
+                (connection) => connection.state !== "active" && connection.state !== "paused",
+              ),
             },
       );
     },

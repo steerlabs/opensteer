@@ -20,6 +20,8 @@ import { upsertChannelIdentity } from "./channel-store.js";
 /** What the Home does with one message a chat delivered. */
 export type BridgeIngressDecision =
   | { readonly kind: "ignored"; readonly reason: string }
+  /** Its chat is paused: the message goes back to waiting, untouched, until the chat is back. */
+  | { readonly kind: "waiting" }
   /** The person sent the code Opensteer showed them: their account is "me" now. Nothing is said. */
   | { readonly kind: "linked" }
   | {
@@ -162,8 +164,8 @@ export async function decideBridgeIngress(
       return ignore("The computer's app connection no longer allows this channel");
     const text = chatMessageText(event);
 
-    // A code the person sent from their own account, in a direct message.
-    const code = event.conversation.type === "dm" ? normalizedCode(text) : null;
+    // A code the person sent from their own account, in a direct message, while it is fresh.
+    const code = event.conversation.type === "dm" && !input.stale ? normalizedCode(text) : null;
     if (code) {
       const linked = await redeemLinkCode(tx, ingress.accountId, code, event);
       if (linked) {
@@ -173,6 +175,22 @@ export async function decideBridgeIngress(
     }
 
     const admitted = await admitChatMessage(tx, ingress.accountId, event);
+    if (admitted.kind === "waiting") {
+      // Not taken: its attempt is given back, and it is decided when the chat is back.
+      await tx
+        .updateTable("channelIngressEvents")
+        .set({
+          attempts: sql<number>`greatest(attempts - 1, 0)`,
+          claimExpiresAt: null,
+          claimOwner: null,
+          claimTokenHash: null,
+          status: "pending",
+          updatedAt: new Date(),
+        })
+        .where("id", "=", ingress.id)
+        .executeTakeFirstOrThrow();
+      return { kind: "waiting" };
+    }
     if (admitted.kind === "refused") return ignore(admitted.reason);
     const { bridge, conversation } = admitted;
     // Too old to act on: the person who may speak hears that, and may send it again.
@@ -224,6 +242,7 @@ export const chatNotices = {
 
 type ChatAdmission =
   | { readonly kind: "refused"; readonly reason: string }
+  | { readonly kind: "waiting" }
   | {
       readonly kind: "admitted";
       readonly bridge: {
@@ -270,7 +289,7 @@ async function admitChatMessage(
     externalUserId: event.actor.externalUserId,
     lock: true,
   });
-  if (admission.kind === "refused") return admission;
+  if (admission.kind !== "admitted") return admission;
   const owner = admission.owner;
   const bridge = {
     id: admission.connection.agentConnectionId,

@@ -27,7 +27,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
-import { bridgeAccountEnded, connectionActive, liveConnection } from "./connection-liveness.js";
+import { chatEndedUnrevoked, connectionActive, liveConnection } from "./connection-liveness.js";
 
 export interface ConnectionCleanup {
   readonly connectionId: string;
@@ -324,8 +324,9 @@ export async function requestExpiredCleanups(
       eb.or([
         eb("revokedAt", "is not", null),
         eb.and([eb("bridgeAccountId", "is", null), eb("expiresAt", "<=", now)]),
-        // A bridge ends with the account or app it speaks through; no timer ends it.
-        bridgeAccountEnded,
+        // A chat ends by what it is (its account, its computer, its grant, the organization's
+        // Home), read by the one state; no timer ends it.
+        chatEndedUnrevoked(database, now),
       ]),
     )
     .where((eb) => eb.or([eb("cleanupReason", "is", null), eb("cleanupReason", "=", "narrowed")]))
@@ -342,7 +343,7 @@ export async function requestExpiredCleanups(
           "bridgeAccountId",
           "cleanupReason",
           "grantRevision",
-          bridgeAccountEnded.as("accountEnded"),
+          chatEndedUnrevoked(tx, now).as("accountEnded"),
         ])
         .where("id", "=", candidate.id)
         .forNoKeyUpdate()
@@ -754,7 +755,7 @@ export async function recordConnectionRunHandoff(
       .selectFrom("agentConnections")
       .select("grantRevision")
       .where("id", "=", input.connectionId)
-      .where(liveConnection())
+      .where(liveConnection(tx))
       .forShare()
       .executeTakeFirst();
     if (!connection || connection.grantRevision !== input.grantRevision)

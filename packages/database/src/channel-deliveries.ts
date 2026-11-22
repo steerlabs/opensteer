@@ -12,7 +12,7 @@ import {
 } from "@opensteer/channel-core";
 import type { ContentPart, MessageId, ThreadId } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
-import { liveConnection } from "./connection-liveness.js";
+import { chatNotEnded } from "./connection-liveness.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue, type ChannelLinks } from "./store-primitives.js";
 
@@ -144,9 +144,9 @@ export async function enqueueChannelConversationStatus(
 }
 
 /**
- * The bridge conversation a Run replies to, while its bridge is live. A reply target naming a
- * conversation from before the update, or a bridge that ended, produces nothing: nothing
- * leaves the Home except as an attempt of a live bridge.
+ * The bridge conversation a Run replies to, while its bridge has not ended. A reply target naming
+ * a conversation from before the update, or a bridge that ended, produces nothing: nothing leaves
+ * the Home except as an attempt of a bridge, and only a live one sends it.
  */
 async function liveBridgeConversation(
   transaction: Transaction<DatabaseSchema>,
@@ -154,19 +154,22 @@ async function liveBridgeConversation(
 ) {
   const parsed = ChannelConversationIdSchema.safeParse(conversationId);
   if (!parsed.success) return undefined;
-  return transaction
-    .selectFrom("bridgeConversations")
-    .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
-    .innerJoin("channelAccounts", "channelAccounts.id", "bridgeConversations.accountId")
-    .select([
-      "bridgeConversations.id",
-      "bridgeConversations.bridgeId",
-      "bridgeConversations.accountId",
-      "channelAccounts.provider",
-    ])
-    .where("bridgeConversations.id", "=", parsed.data)
-    .where(liveConnection())
-    .executeTakeFirst();
+  return (
+    transaction
+      .selectFrom("bridgeConversations")
+      .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+      .innerJoin("channelAccounts", "channelAccounts.id", "bridgeConversations.accountId")
+      .select([
+        "bridgeConversations.id",
+        "bridgeConversations.bridgeId",
+        "bridgeConversations.accountId",
+        "channelAccounts.provider",
+      ])
+      .where("bridgeConversations.id", "=", parsed.data)
+      // A paused chat keeps what it makes and sends it when it is back; an ended one makes nothing.
+      .where(chatNotEnded(transaction))
+      .executeTakeFirst()
+  );
 }
 
 /**

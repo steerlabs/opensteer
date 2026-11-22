@@ -16,10 +16,12 @@ export const AgentConnectionIdSchema = z.string().regex(/^mcn_[0-9a-f-]{36}$/);
 /**
  * Where a connection stands. `revoked` holds from the moment authority ends;
  * `stopping` while handed-off work in its lineage has not yet confirmed it
- * ended; `stopped` once every one of them has.
+ * ended; `stopped` once every one of them has. `paused` is a chat whose account
+ * is paused: it holds what it receives and makes until it is back.
  */
 export const AgentConnectionStateSchema = z.enum([
   "active",
+  "paused",
   "expired",
   "revoked",
   "stopping",

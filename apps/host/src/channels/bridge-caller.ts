@@ -21,7 +21,7 @@ export async function resolveBridgeCaller(
     externalUserId: input.chat.sender.externalUserId,
     expectedRevision: input.chat.revision,
   });
-  if (admitted.kind === "refused")
+  if (admitted.kind !== "admitted")
     throw new OpensteerError({
       code: "forbidden",
       message: "This chat may no longer ask your agents to work.",

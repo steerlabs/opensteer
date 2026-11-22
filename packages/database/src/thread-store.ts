@@ -1599,6 +1599,44 @@ export async function updateThreadExecutionSelection(
     }),
   );
 }
+/**
+ * A chat that is back wakes the work it held: each task in its lineage with a message waiting
+ * starts it, in queue order, each in its own transaction (the task first, then what its Run
+ * needs, as any queued Run is started).
+ */
+export async function wakeChatQueues(
+  database: Kysely<DatabaseSchema>,
+  channelConnectionId: string,
+): Promise<void> {
+  const tasks = await database
+    .selectFrom("threads")
+    .innerJoin("agentConnections", "agentConnections.id", "threads.originConnectionId")
+    .innerJoin("channelAccounts", "channelAccounts.id", "agentConnections.bridgeAccountId")
+    .select("threads.id")
+    .where("channelAccounts.connectionId", "=", channelConnectionId as never)
+    .where(({ exists, selectFrom }) =>
+      exists(
+        selectFrom("threadInputs")
+          .select("threadInputs.messageId")
+          .whereRef("threadInputs.threadId", "=", "threads.id")
+          .where("threadInputs.state", "=", "pending")
+          .where("threadInputs.policy", "=", "queue"),
+      ),
+    )
+    .orderBy("threads.id")
+    .execute();
+  for (const task of tasks)
+    await commitPersonalMutation(database, async (transaction) => {
+      await lockThreadRow(transaction, task.id);
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", task.id)
+        .executeTakeFirst();
+      if (thread) await ensureQueuedRun(transaction, thread);
+    });
+}
+
 export async function resumeThreadInputQueue(
   database: Kysely<DatabaseSchema>,
   input: {

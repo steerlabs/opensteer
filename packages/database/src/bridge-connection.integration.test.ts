@@ -300,6 +300,12 @@ describeStore("a bridge is made on the same consent as a connected agent", (it) 
         .where("id", "=", bridge.id)
         .executeTakeFirstOrThrow();
     expect((await row()).grant).toEqual({ ...tasksOnly, tasks: false });
+    // From that statement on it is not live, and the person never reads it as active.
+    expect(
+      (await connections.list(fixture.userId, { includeRevoked: true })).find(
+        ({ id }) => id === bridge.id,
+      )?.state,
+    ).not.toBe("active");
     // A bridge without tasks has no authority from that statement on, and its end is a
     // Disconnect: the worker revokes it and shows the end with evidence.
     await storeFixture.store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });

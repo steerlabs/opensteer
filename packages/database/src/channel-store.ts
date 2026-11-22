@@ -6,7 +6,8 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { jsonValue } from "./store-primitives.js";
-import { bridgeAccountEnded, liveConnection } from "./connection-liveness.js";
+import { connectionState, liveConnection } from "./connection-liveness.js";
+import { wakeChatQueues } from "./thread-store.js";
 import { noticeDeadChatMessage } from "./bridge-ingress.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -114,6 +115,17 @@ const atIngressLaneHead = sql<boolean>`not exists (
       ahead.status = 'leased'
       or (ahead.status = 'pending' and ahead.received_at < claimable.received_at)
     )
+)`;
+/**
+ * The message's chat account is paused (or needs attention), not ended: it waits, unclaimed, and
+ * is decided once the account is back.
+ */
+const ingressAccountWaiting = sql<boolean>`exists (
+  select 1 from channel_accounts held_account
+  join integration_connections held_channel on held_channel.id = held_account.connection_id
+  where held_account.id = claimable.account_id
+    and held_account.status <> 'revoked' and held_channel.status <> 'revoked'
+    and (held_account.status <> 'connected' or held_channel.status = 'paused')
 )`;
 const retentionMs = 7 * 24 * 60 * 60 * 1_000;
 const deliveryAttemptCeiling = 20;
@@ -373,6 +385,8 @@ export class ChannelStore {
           .execute();
       }),
     );
+    // Back on: what its chats held while it waited goes on, each task in queue order.
+    if (status === "connected") await wakeChatQueues(this.#database, connectionId);
   }
 
   /**
@@ -713,7 +727,10 @@ export class ChannelStore {
           eb("status", "=", "leased"),
           eb.and([
             eb("status", "=", "pending"),
-            eb.or([eb("attempts", ">=", ingressAttemptCeiling), atIngressLaneHead]),
+            eb.or([
+              eb("attempts", ">=", ingressAttemptCeiling),
+              eb.and([atIngressLaneHead, eb.not(ingressAccountWaiting)]),
+            ]),
           ]),
         ]),
       )
@@ -808,6 +825,7 @@ export class ChannelStore {
         .where("claimable.status", "=", "pending")
         .where("claimable.nextAttemptAt", "<=", now)
         .where(atIngressLaneHead)
+        .where((eb) => eb.not(ingressAccountWaiting))
         .orderBy("claimable.receivedAt", "asc")
         .orderBy("claimable.id", "asc")
         .limit(1)
@@ -1004,7 +1022,7 @@ export class ChannelStore {
               )
           )`,
         )
-        .where(liveConnection())
+        .where(liveConnection(transaction))
         .where("channelAccounts.status", "=", "connected")
         .where("integrationConnections.status", "=", "connected")
         .where("integrationConnections.runnerId", "=", workerId as RunnerId)
@@ -1079,14 +1097,15 @@ export class ChannelStore {
       // Disconnect holds this row for update: once it commits, nothing more starts.
       const bridge = await transaction
         .selectFrom("agentConnections")
-        .select(["revokedAt", liveConnection().as("live"), bridgeAccountEnded.as("accountEnded")])
+        .select(connectionState(transaction).as("state"))
         .where("id", "=", delivery.bridgeId)
         .forShare("agentConnections")
         .executeTakeFirst();
       const allowed =
-        bridge?.live === true && (await channelSourceAllows(transaction, delivery.accountId));
+        bridge?.state === "live" && (await channelSourceAllows(transaction, delivery.accountId));
       if (!allowed) {
-        const ended = !bridge || bridge.revokedAt !== null || bridge.accountEnded;
+        // Waiting keeps it for when the chat is back; only an end cancels it, known unsent.
+        const ended = bridge?.state !== "waiting";
         const withdrawn = await transaction
           .updateTable("bridgeDeliveries")
           .set({

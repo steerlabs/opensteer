@@ -39,7 +39,8 @@ import { jsonValue } from "./store-primitives.js";
 import { connectionPolicyMode } from "./work-policy.js";
 import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
 import {
-  bridgeAccountEnded,
+  chatEndedUnrevoked,
+  connectionState,
   bridgeStoredExpiry,
   connectionActive,
   expiresByTime,
@@ -306,7 +307,7 @@ export class AgentConnectionStore {
         (select ${retryAt}::timestamptz where exists (
           select 1 from agent_connections
           where removed_at is null and ((cleanup_requested_at is not null
-            and cleanup_completed_at is null) or ${bridgeAccountEnded})
+            and cleanup_completed_at is null) or ${chatEndedUnrevoked(this.database, this.now())})
         )),
         (select ${this.now()}::timestamptz + (min(expires_at) - clock_timestamp())
           from agent_embedder_assertion_claims)
@@ -373,6 +374,7 @@ export class AgentConnectionStore {
     const rows = await this.database
       .selectFrom("agentConnections")
       .selectAll()
+      .select(connectionState(this.database, now).as("connectionState"))
       .where("userId", "=", userId)
       .$if(!options.includeRevoked, (query) =>
         query
@@ -384,20 +386,29 @@ export class AgentConnectionStore {
       .execute();
     // Derived from the durable cleanup record and what its lineage still holds.
     return Promise.all(
-      rows.map(async (row) => {
-        const active = connectionActive(row, now);
+      rows.map(async ({ connectionState: chatState, ...row }) => {
+        const chat = row.bridgeAccountId !== null;
+        // A chat reads as what it is: live is active, waiting is paused, ended is stopping until
+        // nothing in its lineage is outstanding, then stopped. It never reads as active once it
+        // is not live.
+        const active = chat ? chatState === "live" : connectionActive(row, now);
+        if (chat && chatState === "waiting") return view(row, "paused");
         if (active && row.cleanupRequestedAt === null) return view(row, "active");
         const attempts = await connectionAttempts(this.database, row.id);
         const outstanding = outstandingAttempts(attempts);
         const state = active
           ? "active"
-          : outstanding.some((attempt) => attempt.handedOff)
-            ? "stopping"
-            : outstanding.length === 0
+          : chat
+            ? outstanding.length === 0 && row.revokedAt !== null
               ? "stopped"
-              : row.revokedAt === null
-                ? "expired"
-                : "revoked";
+              : "stopping"
+            : outstanding.some((attempt) => attempt.handedOff)
+              ? "stopping"
+              : outstanding.length === 0
+                ? "stopped"
+                : row.revokedAt === null
+                  ? "expired"
+                  : "revoked";
         return view(
           { ...row, ...(await latestConnectionUncertainty(this.database, row, attempts)) },
           state,
@@ -455,18 +466,27 @@ export class AgentConnectionStore {
     by: "person" | "organization" = "person",
   ) {
     await requirePersonalOwner(tx, userId);
-    const current = await tx
+    const found = await tx
       .selectFrom("agentConnections")
       .selectAll()
+      .select(connectionState(tx, this.now()).as("connectionState"))
       .where("id", "=", input.connectionId)
       .where("userId", "=", userId)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!current || !connectionActive(current, this.now()))
+    // A chat that ended is edited no more (the organization may still narrow it); a paused
+    // one may be.
+    if (
+      !found ||
+      (found.bridgeAccountId !== null
+        ? found.revokedAt !== null || (by === "person" && found.connectionState === "ended")
+        : !connectionActive(found, this.now()))
+    )
       throw new OpensteerError({
         code: "not_found",
         message: "This connected agent is no longer connected.",
       });
+    const { connectionState: chatState, ...current } = found;
     // Who may speak is chosen when a bridge is made and never changes on that row.
     if ("senders" in input || "bridgeSenders" in input)
       throw new OpensteerError({
@@ -516,7 +536,14 @@ export class AgentConnectionStore {
       .where("id", "=", current.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    return { connection: view(row, "active"), narrowed, changed };
+    return {
+      connection: view(
+        row,
+        row.bridgeAccountId !== null && chatState === "waiting" ? "paused" : "active",
+      ),
+      narrowed,
+      changed,
+    };
   }
   /**
    * Disconnect's durable decision. Inside the personal fence the owner-filtered row is locked

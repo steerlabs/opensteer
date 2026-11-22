@@ -25,7 +25,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
-import { liveConnection } from "./connection-liveness.js";
+import { connectionState, liveConnection } from "./connection-liveness.js";
 
 /**
  * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
@@ -142,7 +142,7 @@ export async function readLiveAgentConnectionRow(
     ])
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId)
-    .where(liveConnection());
+    .where(liveConnection(database));
   const authority = lock ? query.forShare("agentConnections") : query;
   const workHome = isWorkHomeDatabase(database);
   const work = workHome
@@ -226,6 +226,24 @@ export function connectionTaskRequestScope(
   input: Parameters<typeof connectionTaskReadScope>[1],
 ): Promise<"everything" | "selected"> {
   return connectionTaskReadScope(database, input, "Request is unavailable");
+}
+
+/**
+ * Whether a connection's work waits rather than ends: a chat whose account is paused. What it
+ * would run stays queued until the chat is back; nothing of it is cancelled.
+ */
+export async function connectionWaiting(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<boolean> {
+  const row = await database
+    .selectFrom("agentConnections")
+    .select(connectionState(database).as("state"))
+    .where("id", "=", agentConnectionId)
+    .where("userId", "=", ownerUserId)
+    .executeTakeFirst();
+  return row?.state === "waiting";
 }
 
 /** The connection delegated work may still run for: live, and still granted Tasks. */

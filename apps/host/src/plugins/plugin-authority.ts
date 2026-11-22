@@ -396,7 +396,7 @@ export class PluginAuthority {
         .select("id")
         .where("id", "=", caller.connectionId)
         .where("userId", "=", owner)
-        .where(liveConnection())
+        .where(liveConnection(store.database))
         .executeTakeFirst();
       if (!live || (!discovery.has(input.operation) && input.operation !== "resultAccess"))
         return { allowed: false };

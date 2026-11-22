@@ -1,14 +1,18 @@
 import { AgentGrantSchema, OpensteerError, type UserId } from "@opensteer/core";
 import type { ChannelAccountId } from "@opensteer/channel-core";
 import type { Kysely } from "kysely";
+import { connectionState } from "./connection-liveness.js";
 import { readLiveAgentConnectionRow, type AgentConnectionAuthority } from "./resource-access.js";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 
 export type BridgeSenderAdmission =
   | { readonly kind: "refused"; readonly reason: string }
+  /** The chat has not ended but is paused: nothing it receives is acted on until it is back. */
+  | { readonly kind: "waiting" }
   | {
       readonly kind: "admitted";
       readonly connection: AgentConnectionAuthority & {
+        readonly label: string;
         readonly bridgeSenders: BridgeSenders;
         readonly bridgeAccountId: ChannelAccountId;
       };
@@ -47,7 +51,20 @@ export async function admitBridgeSender(
       return { kind: "refused", reason: error.message };
     throw error;
   }
-  if (!row || row.bridgeAccountId === null || row.bridgeSenders === null)
+  if (!row) {
+    // Not live: only a chat that is paused, rather than ended, keeps what it was sent.
+    const held = await database
+      .selectFrom("agentConnections")
+      .select(connectionState(database).as("state"))
+      .where("id", "=", input.bridgeId)
+      .where("userId", "=", input.ownerUserId)
+      .where("bridgeAccountId", "is not", null)
+      .executeTakeFirst();
+    return held?.state === "waiting"
+      ? { kind: "waiting" }
+      : { kind: "refused", reason: "No bridge covers this conversation" };
+  }
+  if (row.bridgeAccountId === null || row.bridgeSenders === null)
     return { kind: "refused", reason: "No bridge covers this conversation" };
   if (input.expectedRevision !== undefined && row.grantRevision !== input.expectedRevision)
     return { kind: "refused", reason: "The bridge changed since this message was admitted" };
@@ -67,6 +84,7 @@ export async function admitBridgeSender(
     owner,
     connection: {
       agentConnectionId: row.id,
+      label: row.label,
       grant: AgentGrantSchema.parse(row.grant),
       grantRevision: row.grantRevision,
       consentVersion: row.consentVersion,

@@ -1,7 +1,6 @@
 import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
-import { liveConnection } from "./connection-liveness.js";
 import { admitBridgeSender } from "./bridge-admission.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import {
@@ -27,7 +26,11 @@ import {
 } from "./waiting-inputs.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { lineagePersonalContext } from "./resource-access.js";
+import {
+  connectionWaiting,
+  lineagePersonalContext,
+  readLiveAgentConnectionRow,
+} from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
@@ -631,6 +634,13 @@ async function claimFollowUps(
         },
       )
     : null;
+  // A paused chat's follow-ups wait for it, queued; they are not taken, and not cancelled.
+  if (
+    run.connectionId !== null &&
+    connection === null &&
+    (await connectionWaiting(transaction, run.requestedBy, run.connectionId))
+  )
+    return { claimed: 0 };
   const eligible =
     run.connectionId === null ||
     (connection !== null && sendEligible(connection, thread.originConnectionId));
@@ -3205,30 +3215,37 @@ async function resolveThreadInputFacts(
     };
   }
   if (source.kind === "connection") {
-    const connection = await transaction
-      .selectFrom("agentConnections")
-      .selectAll()
-      .where("id", "=", source.connectionId)
-      .where("userId", "=", input.requestedBy)
-      .where(liveConnection())
-      .executeTakeFirst();
+    const chat = source.chat;
+    // A chat's message reads through the one sender admission: the bridge is live, it covers
+    // this conversation, and this sender may speak under the revision the message was admitted
+    // under. Any other connection's message reads its live row with its organization's policy in
+    // the same statement. The task is already locked here, so the row is read, not locked.
+    const admitted = chat
+      ? await admitBridgeSender(transaction, {
+          ownerUserId: input.requestedBy,
+          bridgeId: source.connectionId,
+          externalUserId: chat.sender.externalUserId,
+          expectedRevision: chat.revision,
+        })
+      : null;
+    const connection =
+      admitted?.kind === "admitted"
+        ? { id: admitted.connection.agentConnectionId, label: admitted.connection.label }
+        : chat
+          ? undefined
+          : await readLiveAgentConnectionRow(
+              transaction,
+              input.requestedBy,
+              source.connectionId,
+            ).catch((error: unknown) => {
+              if (error instanceof OpensteerError && error.code === "forbidden") return undefined;
+              throw error;
+            });
     if (!connection)
       throw new OpensteerError({
         code: "forbidden",
         message: "Connected agent source is invalid",
       });
-    const chat = source.chat;
-    // Chat facts only from the bridge itself, for a conversation it covers, from a sender it
-    // admits under the revision the message was admitted under: the one bridge admission. The
-    // task is already locked here, so the bridge row is read, not locked (lock order).
-    const admitted = chat
-      ? await admitBridgeSender(transaction, {
-          ownerUserId: input.requestedBy,
-          bridgeId: connection.id,
-          externalUserId: chat.sender.externalUserId,
-          expectedRevision: chat.revision,
-        })
-      : null;
     if (
       chat &&
       (admitted?.kind !== "admitted" ||
@@ -3838,6 +3855,12 @@ export async function ensureQueuedRun(
           () => false,
         ))
     ) {
+      // A paused chat's work waits: it stays queued, and so does everything behind it.
+      if (
+        candidateConnectionId &&
+        (await connectionWaiting(transaction, candidate.requestedBy, candidateConnectionId))
+      )
+        break;
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({ cancelReason: "authority-revoked", state: "cancelled", updatedAt: new Date() })

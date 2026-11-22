@@ -46,12 +46,16 @@ async function host(
     },
   });
   service.start();
-  const send = async (input: Parameters<typeof bridge.event>[0]) => {
+  /** A message the messaging runtime hands the Home; it may wait before it is decided. */
+  const commit = async (input: Parameters<typeof bridge.event>[0]) => {
     const committed = await service.handleRuntimeRequest(testMessagingRunnerId, {
       operation: "ingress.commit",
       payload: { connectionId: bridge.configured.connection.id, event: bridge.event(input) },
     } as never);
-    const ingressId = (committed as { ingressId: string }).ingressId;
+    return (committed as { ingressId: string }).ingressId;
+  };
+  const send = async (input: Parameters<typeof bridge.event>[0]) => settled(await commit(input));
+  const settled = async (ingressId: string) => {
     await vi.waitFor(
       async () => {
         const row = await storeFixture.database
@@ -156,7 +160,7 @@ async function host(
     });
     return emit;
   };
-  return { ...bridge, service, send, tasks, runsOf, raceNext, lines, beginRun };
+  return { ...bridge, service, send, commit, settled, tasks, runsOf, raceNext, lines, beginRun };
 }
 
 describe("a message from a chat reaches your own agents only as its bridge", () => {
@@ -640,6 +644,83 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
       expect(await f.lines()).toEqual([
         "Opensteer couldn't start this. Open Opensteer to see why.",
       ]);
+    } finally {
+      await f.service.close();
+      await storeFixture.close();
+    }
+  });
+
+  it("holds what a paused chat receives and makes, and delivers each once and in order when it is back", async () => {
+    const storeFixture = await createStoreFixture();
+    const f = await host(storeFixture, {}, "paused");
+    const { database } = storeFixture;
+    try {
+      // A Run is under way, and the person's next message waits behind it.
+      expect(await f.send({ eventId: "p1", text: "Summarize my week" })).toMatchObject({
+        status: "adopted",
+      });
+      const [task] = await f.tasks();
+      const [first] = await f.runsOf(task!.id);
+      const emit = await f.beginRun(first!.id, task!.id, "paused-first");
+      expect(await f.send({ eventId: "p2", text: "Then next week" })).toMatchObject({
+        status: "adopted",
+      });
+      const inputs = () =>
+        database
+          .selectFrom("threadInputs")
+          .innerJoin("messages", "messages.id", "threadInputs.messageId")
+          .select(["threadInputs.state", "messages.content"])
+          .where("threadInputs.threadId", "=", task!.id)
+          .orderBy("threadInputs.createdAt")
+          .execute();
+      // The person pauses the chat.
+      await f.channels.setConnectionStatus(f.configured.connection.id, f.fixture.userId, "paused");
+      // The Run answers while paused: the reply is kept, not dropped, and nothing is sent.
+      const replyId = createId("message");
+      await emit("assistant.message", {
+        content: [{ type: "text", text: "Your week: three meetings." }],
+        messageId: replyId,
+      });
+      await emit("run.completed", { status: "completed" });
+      const replies = () =>
+        database
+          .selectFrom("bridgeDeliveries")
+          .select(["status", "content"])
+          .where("messageId", "=", replyId as never)
+          .execute();
+      expect((await replies()).map(({ status }) => status)).toEqual(["pending"]);
+      expect(await f.channels.claimDelivery(testMessagingRunnerId)).toBeNull();
+      // The waiting message stays waiting: no Run, and not cancelled.
+      expect((await inputs()).map(({ state }) => state)[1]).toBe("pending");
+      expect(await f.runsOf(task!.id)).toHaveLength(1);
+      // Back on: the waiting message runs, and the reply leaves once.
+      await f.channels.setConnectionStatus(
+        f.configured.connection.id,
+        f.fixture.userId,
+        "connected",
+      );
+      await f.channels.setRuntimeConnectionHealth({
+        connectionId: f.configured.connection.id,
+        detail: null,
+        reason: null,
+        runnerId: testMessagingRunnerId,
+        status: "connected",
+      });
+      f.service.wake();
+      await vi.waitFor(async () => expect(await f.runsOf(task!.id)).toHaveLength(2), 20_000);
+      const second = (await f.runsOf(task!.id))[1]!;
+      expect(
+        await database
+          .selectFrom("runs")
+          .innerJoin("messages", "messages.id", "runs.seedInputId")
+          .select("messages.content")
+          .where("runs.id", "=", second.id as never)
+          .executeTakeFirstOrThrow(),
+      ).toMatchObject({ content: [expect.objectContaining({ text: "Then next week" })] });
+      expect((await inputs()).map(({ state }) => state)).not.toContain("cancelled");
+      const claimed = await f.channels.claimDelivery(testMessagingRunnerId);
+      expect(claimed?.delivery.messageId).toBe(replyId);
+      expect(await f.channels.claimDelivery(testMessagingRunnerId)).toBeNull();
     } finally {
       await f.service.close();
       await storeFixture.close();
