@@ -1,3 +1,4 @@
+import { workPolicyAllowsGrant } from "@opensteer/control-plane-protocol";
 import { applyConnectionPolicy } from "./work-policy.js";
 import { isWorkHomeDatabase } from "./work-home-context.js";
 import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
@@ -25,7 +26,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
-import { connectionState, liveConnection } from "./connection-liveness.js";
+import { connectionState } from "./connection-liveness.js";
 
 /**
  * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
@@ -122,12 +123,18 @@ interface ConnectionTargetCheck {
   readonly writeTargetName?: string | undefined;
 }
 
-export async function readLiveAgentConnectionRow(
+/**
+ * The one statement for where a connection stands: its row, its state (`connectionState`) and,
+ * on a work Home, the Work policy joined in the same statement. Every reader of a connection's
+ * standing is a view of this (`readLiveAgentConnectionRow`, `connectionWaiting`,
+ * `delegatingConnectionStanding`), so none can read the grant without the policy. On a personal
+ * Home it names no organization table.
+ */
+async function readConnectionStanding(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
   agentConnectionId: string,
-  lock = false,
-  { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
+  lock: boolean,
 ) {
   const query = database
     .selectFrom("agentConnections")
@@ -142,29 +149,61 @@ export async function readLiveAgentConnectionRow(
       "cleanupMaximumMode",
       "bridgeSenders",
       "bridgeAccountId",
+      connectionState(database).as("connectionState"),
     ])
     .where("id", "=", agentConnectionId)
-    .where("userId", "=", ownerUserId)
-    .where(liveConnection(database));
+    .where("userId", "=", ownerUserId);
   const authority = lock ? query.forShare("agentConnections") : query;
-  const workHome = isWorkHomeDatabase(database);
-  const work = workHome
-    ? await authority
-        .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
-        .select(["workHomePolicy.policy", "workHomePolicy.state"])
-        .executeTakeFirst()
-    : undefined;
-  const row = workHome ? work : await authority.executeTakeFirst();
+  if (!isWorkHomeDatabase(database)) {
+    const row = await authority.executeTakeFirst();
+    if (!row) return undefined;
+    const { connectionState: state, ...connection } = row;
+    return { connection, state, work: null };
+  }
+  const row = await authority
+    .innerJoin("workHomePolicy", (join) => join.on("workHomePolicy.singleton", "=", true))
+    .select(["workHomePolicy.policy", "workHomePolicy.state"])
+    .executeTakeFirst();
   if (!row) return undefined;
+  const { connectionState: state, policy, state: workState, ...connection } = row;
+  return { connection, state, work: { policy, state: workState } };
+}
+
+/**
+ * A connection's standing from that statement: on a work Home a grant the policy does not allow,
+ * or a work Home that is not active, is `ended` before anything else, so a paused chat whose
+ * grant the organization took away is lost, not held.
+ */
+function standingOf(
+  read: Awaited<ReturnType<typeof readConnectionStanding>>,
+): "live" | "waiting" | "ended" {
+  if (!read) return "ended";
+  if (
+    read.work &&
+    (read.work.state !== "active" ||
+      !workPolicyAllowsGrant(read.work.policy, AgentGrantSchema.parse(read.connection.grant)))
+  )
+    return "ended";
+  return read.state;
+}
+
+export async function readLiveAgentConnectionRow(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+  lock = false,
+  { grantTarget, writeTargetName }: ConnectionTargetCheck = {},
+) {
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, lock);
+  if (!read || read.state !== "live") return undefined;
+  const row = read.connection;
   const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
   if (access === null)
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
-  const accessMode = applyConnectionPolicy(work ?? null, row.grant, row.accessMode);
+  const accessMode = applyConnectionPolicy(read.work, row.grant, row.accessMode);
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
-  if (!work) return row;
-  const { policy: _policy, state: _state, ...connection } = work;
-  return { ...connection, accessMode };
+  return read.work ? { ...row, accessMode } : row;
 }
 
 /** The live connection, or a refusal: a revoked or expired connection has no authority. */
@@ -240,13 +279,10 @@ export async function connectionWaiting(
   ownerUserId: UserId,
   agentConnectionId: string,
 ): Promise<boolean> {
-  const row = await database
-    .selectFrom("agentConnections")
-    .select(connectionState(database).as("state"))
-    .where("id", "=", agentConnectionId)
-    .where("userId", "=", ownerUserId)
-    .executeTakeFirst();
-  return row?.state === "waiting";
+  return (
+    standingOf(await readConnectionStanding(database, ownerUserId, agentConnectionId, false)) ===
+    "waiting"
+  );
 }
 
 /**
@@ -260,15 +296,10 @@ export async function delegatingConnectionStanding(
   ownerUserId: UserId,
   agentConnectionId: string,
 ): Promise<"live" | "waiting" | "ended"> {
-  const row = await database
-    .selectFrom("agentConnections")
-    .select(["grant", connectionState(database).as("state")])
-    .where("id", "=", agentConnectionId)
-    .where("userId", "=", ownerUserId)
-    .executeTakeFirst();
-  if (!row || row.state === "ended") return "ended";
-  if (row.state === "waiting") return "waiting";
-  return agentGrantAllowsTasks(AgentGrantSchema.parse(row.grant)) ? "live" : "ended";
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
+  const standing = standingOf(read);
+  if (standing !== "live") return standing;
+  return agentGrantAllowsTasks(AgentGrantSchema.parse(read!.connection.grant)) ? "live" : "ended";
 }
 
 /** The connection delegated work may still run for: live, and still granted Tasks. */
