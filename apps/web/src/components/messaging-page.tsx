@@ -11,6 +11,7 @@ import type {
 } from "@opensteer/channel-core";
 import {
   agentWords,
+  homeFailureText,
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
@@ -1183,6 +1184,7 @@ function statusChip(status: string): string {
         : "";
 }
 
+/** The Home's own sentence when it refused in words for the person; otherwise the app's. */
 function message(reason: unknown): string {
-  return presentFailure(reason, "change messaging settings");
+  return homeFailureText(reason, presentFailure(reason, "change messaging settings"));
 }

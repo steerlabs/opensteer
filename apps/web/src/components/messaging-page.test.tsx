@@ -396,6 +396,25 @@ describe("Messaging", () => {
     }
   });
 
+  it("says the Home's own sentence when it refuses a chat: another chat already answers there", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      // Workshop's direct messages already have a chat.
+      await act(async () =>
+        [...page.querySelectorAll("button")].find((b) => b.textContent === "Add a chat")!.click(),
+      );
+      await act(async () => button(page, "Add chat").click());
+      await vi.waitFor(() =>
+        expect(page.textContent).toContain("Another chat already answers in this conversation."),
+      );
+      expect(page.textContent).not.toContain("Couldn't change messaging settings.");
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("selects only the Messaging account named by the child route", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));
