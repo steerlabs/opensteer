@@ -1,5 +1,6 @@
 import {
   AgentConnectionStore,
+  OpensteerStore,
   TabStore,
   admitAgentOperation,
   beginAgentSession,
@@ -13,6 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import { TabService } from "../tabs/tab-service.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
 import { MemoryPassService } from "../agents/memory-pass-service.js";
 import { createId } from "@opensteer/core";
@@ -157,6 +159,19 @@ it.skipIf(Boolean(reportPath))(
         return own.exit(() => Reflect.apply(reconcile, this, []) as ReturnType<typeof reconcile>);
       });
     close.unshift(() => reconciling.mockRestore());
+    // The execution coordinator's dispatch loop (`ExecutionCoordinator` reading
+    // `OpensteerStore.listPendingCommands`) is work the start leaves running too: counted on no
+    // path. The fixture once held its three reads at the start, which usually, not always, landed
+    // inside it; they are deliberately not listed, so a raw trace of a start shows them.
+    const listPending = OpensteerStore.prototype.listPendingCommands;
+    const claiming = vi
+      .spyOn(OpensteerStore.prototype, "listPendingCommands")
+      .mockImplementation(function (this: OpensteerStore, ...args) {
+        return own.exit(
+          () => Reflect.apply(listPending, this, args) as ReturnType<typeof listPending>,
+        );
+      });
+    close.unshift(() => claiming.mockRestore());
     const record = async <T>(path: string, action: () => Promise<T>): Promise<T> => {
       const sql: string[] = [];
       try {
@@ -173,6 +188,28 @@ it.skipIf(Boolean(reportPath))(
         recorded[path] = counted
           .map((statement) => statement.replace(/\b(\w*timeout) = \d+/gu, "$1 = <ms>"))
           .sort();
+      }
+    };
+    // A tab's runtime frames mark it changed in the tab catalog when their work ends, which is
+    // sometimes while a tab command's own catalog refresh is in flight: the command then
+    // refreshes once more. On the paths that open or activate a tab, the order is fixed to the
+    // fixture's: a mark naming tabs is applied once the command has answered. A mark issues no
+    // statement; none is dropped.
+    const marksAfter = async <T>(command: () => Promise<T>): Promise<T> => {
+      const changed = TabService.prototype.changed;
+      const marks: { service: TabService; args: Parameters<TabService["changed"]> }[] = [];
+      const deferring = vi.spyOn(TabService.prototype, "changed").mockImplementation(function (
+        this: TabService,
+        ...args
+      ) {
+        if (args[1]) marks.push({ service: this, args });
+        else Reflect.apply(changed, this, args);
+      });
+      try {
+        return await command();
+      } finally {
+        deferring.mockRestore();
+        for (const { service, args } of marks) Reflect.apply(changed, service, args);
       }
     };
     try {
@@ -259,7 +296,9 @@ it.skipIf(Boolean(reportPath))(
       });
       const target = { kind: "page", guest: true, url: "about:blank" } as const;
       const opened = (await record("person tab open", () =>
-        rpc(api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
+        marksAfter(() =>
+          rpc(api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
+        ),
       )) as { tab: { tabId: Parameters<TabStore["get"]>[1] } };
       const tabId = opened.tab.tabId;
       const row = await new TabStore(host.store.database).get(host.ownerId, tabId);
@@ -275,12 +314,14 @@ it.skipIf(Boolean(reportPath))(
       );
       close.unshift(() => viewer.close());
       await record("workspace activation", () =>
-        rpc(
-          api["commands.dispatch"]({
-            type: "tab.activate",
-            idempotencyKey: "parity-activate",
-            tabId,
-          }),
+        marksAfter(() =>
+          rpc(
+            api["commands.dispatch"]({
+              type: "tab.activate",
+              idempotencyKey: "parity-activate",
+              tabId,
+            }),
+          ),
         ),
       );
       const run = await dispatchCallerRun(host, runner, { key: "parity", title: "Parity Run" });
