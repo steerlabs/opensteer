@@ -229,6 +229,11 @@ const HostEnvironmentSchema = z.object({
       .optional(),
   ),
   OPENSTEER_MANAGED_HOME_GENERATION: optionalPositiveInteger,
+  /** `browserPool: true` in the Cloud Computer's boot answer, and nothing else, sets it. */
+  OPENSTEER_MANAGED_HOME_BROWSER_POOL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.literal("true").optional(),
+  ),
   OPENSTEER_MANAGED_HOME_WORK_JSON: z.string().optional(),
   OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: optionalUrl,
   OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: z.preprocess(
@@ -343,6 +348,11 @@ export interface HostConfig {
     readonly generation: number;
     readonly work?: WorkHomeMarker;
     readonly oidc: { readonly clientId: string; readonly clientSecret: string };
+    /**
+     * Its browser runs on a pool host: from `browserPool: true` in its boot answer only, never
+     * from a missing egress or anything a page or a connected agent can reach.
+     */
+    readonly browserPool?: true;
   };
   readonly privateKeyPath: string | undefined;
   readonly publicKeyPath: string | undefined;
@@ -688,6 +698,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
 }
 
 function parseManagedHome(parsed: {
+  readonly OPENSTEER_MANAGED_HOME_BROWSER_POOL?: "true" | undefined;
   readonly OPENSTEER_MANAGED_HOME_ID?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_GENERATION?: number | undefined;
   readonly OPENSTEER_MANAGED_HOME_WORK_JSON?: string | undefined;
@@ -706,7 +717,11 @@ function parseManagedHome(parsed: {
   const work = parsed.OPENSTEER_MANAGED_HOME_WORK_JSON
     ? WorkHomeMarkerSchema.parse(JSON.parse(parsed.OPENSTEER_MANAGED_HOME_WORK_JSON))
     : undefined;
-  if (configured === 0 && !work) return undefined;
+  if (configured === 0 && !work) {
+    if (parsed.OPENSTEER_MANAGED_HOME_BROWSER_POOL)
+      throw new Error("OPENSTEER_MANAGED_HOME_BROWSER_POOL is only for a Cloud Computer's Home");
+    return undefined;
+  }
   if (configured !== values.length)
     throw new Error(
       "OPENSTEER_MANAGED_HOME_ID, OPENSTEER_MANAGED_HOME_GENERATION, OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN, OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID and OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET must be configured together",
@@ -723,6 +738,7 @@ function parseManagedHome(parsed: {
       clientId: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID!,
       clientSecret: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET!,
     },
+    ...(parsed.OPENSTEER_MANAGED_HOME_BROWSER_POOL ? { browserPool: true as const } : {}),
   };
 }
 

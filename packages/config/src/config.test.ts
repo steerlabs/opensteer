@@ -962,6 +962,18 @@ describe("networked Personal Home", () => {
         clientSecret: `ocs_${"s".repeat(43)}`,
       },
     });
+    // Pooled only from its boot answer's flag; a Cloud Computer without it is an ordinary Home.
+    expect(config.managedHome?.browserPool).toBeUndefined();
+    expect(
+      parseHostConfig({ ...managed, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" }).managedHome
+        ?.browserPool,
+    ).toBe(true);
+    expect(() =>
+      parseHostConfig({ ...managed, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "yes" }),
+    ).toThrow();
+    expect(() => parseHostConfig({ ...home, OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true" })).toThrow(
+      /only for a Cloud Computer's Home/u,
+    );
     const work = {
       organizationId: "org_0192f4a1-1111-4000-8000-000000000001",
       organizationName: "Workshop",

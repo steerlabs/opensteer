@@ -1,0 +1,6 @@
+# A Cloud Computer whose boot answer said browserPool: true. Its browser runs on a pool host, not
+# here. Only this file changes the shape; compose.yaml is the self-hosted default, unchanged.
+services:
+  host:
+    environment:
+      OPENSTEER_MANAGED_HOME_BROWSER_POOL: "true"
