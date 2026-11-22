@@ -1517,8 +1517,7 @@ describe("the mock Home's page through the native picture view", () => {
       const clears: number[] = [];
       for (let step = 0; step < 5; step += 1) {
         await act(async () => {
-          host.renameThread(thread.id, `Renamed ${step}`);
-          await Promise.resolve();
+          await host.renameThread(thread.id, `Renamed ${step}`);
         });
         for (const { settle } of native.presented.splice(0))
           await act(async () => settle("presented"));
