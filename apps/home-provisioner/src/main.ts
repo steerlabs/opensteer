@@ -6,6 +6,8 @@ import { discoverHome } from "./discovery.js";
 import { GoogleCompute } from "./google-compute.js";
 import { HetznerCloud } from "./hetzner.js";
 import { ProviderRateLimited, provisionerFailure, RemoteRequestError } from "./http.js";
+import { httpPoolAgentClient } from "./pool-agent-client.js";
+import { PoolReconciler } from "./pool-reconcile.js";
 import { Reconciler } from "./reconcile.js";
 
 async function main(): Promise<void> {
@@ -26,28 +28,31 @@ async function main(): Promise<void> {
     undefined,
     config.provider === "google" ? "google" : undefined,
   );
+  const googleProvider =
+    config.provider === "google"
+      ? new GoogleCompute({
+          ...http,
+          project: config.project,
+          zone: config.zone,
+          network: config.network,
+          subnet: config.subnet,
+          diskType: config.diskType,
+          diskSizeGb: config.diskSizeGb,
+          actionTimeoutMs: config.actionTimeoutMs,
+          log: (entry) => console.error(JSON.stringify(entry)),
+        })
+      : undefined;
   const reconciler = new Reconciler({
     account,
     onError: logFailure,
     orphanGraceMs: config.orphanGraceMs,
     provider:
-      config.provider === "google"
-        ? new GoogleCompute({
-            ...http,
-            project: config.project,
-            zone: config.zone,
-            network: config.network,
-            subnet: config.subnet,
-            diskType: config.diskType,
-            diskSizeGb: config.diskSizeGb,
-            actionTimeoutMs: config.actionTimeoutMs,
-            log: (entry) => console.error(JSON.stringify(entry)),
-          })
-        : new HetznerCloud({
-            ...http,
-            token: config.hetznerToken,
-            actionTimeoutMs: config.actionTimeoutMs,
-          }),
+      googleProvider ??
+      new HetznerCloud({
+        ...http,
+        token: config.provider === "hetzner" ? config.hetznerToken : "",
+        actionTimeoutMs: config.actionTimeoutMs,
+      }),
     dns: new CloudflareDns({ ...http, token: config.cloudflareToken, zoneId: config.zoneId }),
     discover: discoverHome(http),
     accountOrigin: config.accountOrigin,
@@ -57,6 +62,26 @@ async function main(): Promise<void> {
     readinessTimeoutMs: config.readinessTimeoutMs,
     concurrency: config.concurrency,
   });
+  // S8: pool reconciliation runs only when pooling is configured.
+  const poolReconciler =
+    config.provider === "google" && config.pool && googleProvider && account.pool
+      ? new PoolReconciler({
+          account: account.pool,
+          provider: googleProvider,
+          agent: httpPoolAgentClient({
+            provisionerKey: config.pool.provisionerPrivateKey,
+            timeoutMs: config.timeoutMs,
+          }),
+          accountOrigin: config.accountOrigin,
+          image: config.image,
+          pool: config.pool,
+          readinessTimeoutMs: config.readinessTimeoutMs,
+          orphanGraceMs: config.orphanGraceMs,
+          concurrency: config.concurrency,
+          sharedInventory: true,
+          onError: logFailure,
+        })
+      : undefined;
   const shutdown = new AbortController();
   const stop = () => shutdown.abort();
   process.on("SIGTERM", stop);
@@ -68,6 +93,7 @@ async function main(): Promise<void> {
       let waitMs = config.intervalMs;
       try {
         await reconciler.pass(shutdown.signal);
+        if (poolReconciler) await poolReconciler.pass(shutdown.signal);
       } catch (error) {
         // A provider rate limit postpones the next pass until the provider accepts requests.
         if (error instanceof ProviderRateLimited)

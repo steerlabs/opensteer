@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@opensteer/browser-runtime-core": "workspace:*",
     "@opensteer/control-plane-protocol": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/deployment-authority": "workspace:*",
