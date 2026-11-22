@@ -158,7 +158,12 @@ function parseAnswer(text: string): SlotEgressAnswer | null {
     throw new SlotEgressUnavailable("The egress address is not an https proxy address.");
   // Never a control character in what becomes a file the proxy reads line by line.
   const plain = (value: string) =>
-    value.length > 0 && value.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(value);
+    value.length > 0 &&
+    value.length <= 1024 &&
+    [...value].every((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 0x20 && code !== 0x7f;
+    });
   if (!plain(username) || username.includes(":"))
     throw new SlotEgressUnavailable("The egress username is malformed.");
   if (!plain(password)) throw new SlotEgressUnavailable("The egress password is malformed.");
