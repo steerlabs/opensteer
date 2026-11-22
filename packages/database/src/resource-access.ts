@@ -249,6 +249,28 @@ export async function connectionWaiting(
   return row?.state === "waiting";
 }
 
+/**
+ * Where a connection stands for new delegated work, read as one fact in one statement: `live`
+ * (its state is live and its grant holds Tasks), `waiting` (a chat whose account is paused or
+ * needs attention: its work is held) or `ended`. The same state and grant rule as
+ * `liveDelegatingConnection`, for a caller that must tell held from lost.
+ */
+export async function delegatingConnectionStanding(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<"live" | "waiting" | "ended"> {
+  const row = await database
+    .selectFrom("agentConnections")
+    .select(["grant", connectionState(database).as("state")])
+    .where("id", "=", agentConnectionId)
+    .where("userId", "=", ownerUserId)
+    .executeTakeFirst();
+  if (!row || row.state === "ended") return "ended";
+  if (row.state === "waiting") return "waiting";
+  return agentGrantAllowsTasks(AgentGrantSchema.parse(row.grant)) ? "live" : "ended";
+}
+
 /** The connection delegated work may still run for: live, and still granted Tasks. */
 export async function liveDelegatingConnection(
   database: Kysely<DatabaseSchema>,

@@ -11,7 +11,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { liveDelegatingConnection } from "./resource-access.js";
+import { delegatingConnectionStanding, liveDelegatingConnection } from "./resource-access.js";
 import { isWorkHomeDatabase } from "./work-home-context.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
@@ -226,6 +226,37 @@ export async function admitLineageExecution(
   ))
     ? admission
     : null;
+}
+/**
+ * The same admission, telling held from lost: the connection's standing is read first, in one
+ * statement, so a chat that is waiting is `waiting` whatever else is true, and one that is live
+ * is never reported lost because its account changed between two reads.
+ */
+export async function lineageExecutionStanding(
+  database: Database,
+  input: {
+    readonly threadId: ThreadId;
+    readonly userId: UserId;
+    readonly agentConnectionId: string | null;
+  },
+): Promise<
+  | { readonly kind: "admitted"; readonly environmentId: EnvironmentId }
+  | { readonly kind: "waiting" }
+  | { readonly kind: "lost" }
+> {
+  if (input.agentConnectionId) {
+    const standing = await delegatingConnectionStanding(
+      database,
+      input.userId,
+      input.agentConnectionId,
+    );
+    if (standing === "waiting") return { kind: "waiting" };
+    if (standing === "ended") return { kind: "lost" };
+  }
+  const admission = await admitThreadExecution(database, input.threadId, input.userId);
+  return admission
+    ? { kind: "admitted", environmentId: admission.environmentId }
+    : { kind: "lost" };
 }
 export async function executionEnvironmentIsAvailableToUser(
   database: Database,

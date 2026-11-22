@@ -820,7 +820,8 @@ describeStore("a connected agent's authority at the send", (it) => {
         });
       },
     });
-    expect(claimed).toMatchObject({ occurrences: [], failures: [] });
+    // Held: nothing created, nothing moved, and nothing changed for the list to read again.
+    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
     expect(
       await database
         .selectFrom("triggers")
@@ -828,6 +829,80 @@ describeStore("a connected agent's authority at the send", (it) => {
         .where("id", "=", trigger.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "active", pauseReason: null, nextFireAt: at });
+  });
+
+  /** A chat automation due a minute ago, for a claim whose seams the test forces. */
+  async function dueChatAutomation(storeFixture: Fixture, suffix: string) {
+    const chat = await anyoneChat(storeFixture, suffix);
+    const triggers = new TriggerStore(storeFixture.database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: chat.thread.id,
+      createdBy: chat.fixture.userId,
+      idempotencyKey: suffix,
+      name: "Every minute",
+      ...everyMinute,
+    });
+    const at = new Date(Date.now() - 60_000);
+    await storeFixture.database
+      .updateTable("triggers")
+      .set({ nextFireAt: at })
+      .where("id", "=", trigger.id)
+      .execute();
+    const health = async (status: "needs-attention" | "connected") => {
+      await chat.channels.setRuntimeConnectionHealth({
+        connectionId: chat.configured.connection.id,
+        detail: status === "connected" ? null : "Signed out",
+        reason: status === "connected" ? null : "credentials",
+        runnerId: testMessagingRunnerId,
+        status,
+      });
+    };
+    const standing = async () => ({
+      trigger: await storeFixture.database
+        .selectFrom("triggers")
+        .select(["status", "pauseReason", "nextFireAt"])
+        .where("id", "=", trigger.id)
+        .executeTakeFirstOrThrow(),
+      occurrences: (
+        await storeFixture.database
+          .selectFrom("triggerOccurrences")
+          .select("id")
+          .where("triggerId", "=", trigger.id)
+          .execute()
+      ).length,
+    });
+    return { at, health, standing, triggers };
+  }
+
+  it("never pauses a live chat's automation when its account needs attention for a moment mid-claim", async ({
+    storeFixture,
+  }) => {
+    const { at, health, standing, triggers } = await dueChatAutomation(storeFixture, "auto-flap");
+    // Waiting when its authority is read, live again by the next read.
+    const claimed = await triggers.claimDueSchedules(new Date(), 64, {
+      afterDueRead: () => health("needs-attention"),
+      afterAuthority: () => health("connected"),
+    });
+    expect(await standing()).toEqual({
+      trigger: { status: "active", pauseReason: null, nextFireAt: at },
+      occurrences: 0,
+    });
+    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+  });
+
+  it("holds, never reports a failure, when its chat starts waiting just before the occurrence is recorded", async ({
+    storeFixture,
+  }) => {
+    const { at, health, standing, triggers } = await dueChatAutomation(storeFixture, "auto-late");
+    const claimed = await triggers.claimDueSchedules(new Date(), 64, {
+      beforeEnqueue: () => health("needs-attention"),
+    });
+    expect(claimed).toEqual({ occurrences: [], failures: [], changed: false });
+    expect(await standing()).toEqual({
+      trigger: { status: "active", pauseReason: null, nextFireAt: at },
+      occurrences: 0,
+    });
   });
 
   /** An automation of an "anyone" chat with one tick enqueued while the chat was live. */
