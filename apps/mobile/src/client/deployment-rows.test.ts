@@ -66,6 +66,34 @@ describe("describeDeploymentRow", () => {
     expect(describeDeploymentRow(connection, signedOut).status).toBe("unavailable");
   });
 
+  it("says Remote access is off where the account holds no route, and asleep where it holds one", () => {
+    const source = {
+      issuer: "https://account.example.com",
+      kind: "account" as const,
+      subject: ControlPlaneAccountIdSchema.parse("acct_0192f4a1-3333-4000-8000-000000000003"),
+    };
+    const off = describeDeploymentRow(
+      testDeploymentConnection({ kind: "personal", reachable: false, source }),
+      held,
+    );
+    expect(off.status).toBe("unavailable");
+    expect(deploymentStatusDetail(off)).toBe(
+      "Remote access is off. Turn it on in Opensteer on that Mac.",
+    );
+    // The account holds its route, and the Mac hasn't been seen lately: asleep, not off.
+    const routed = testDeploymentConnection({ kind: "personal", route: { kind: "connect" } });
+    expect("personalAccessRoute" in routed && routed.personalAccessRoute).toBeTruthy();
+    const asleep = describeDeploymentRow(
+      {
+        ...testDeploymentConnection({ kind: "personal", reachable: false, source }),
+        personalAccessRoute: "personalAccessRoute" in routed ? routed.personalAccessRoute : null,
+      } as never,
+      held,
+    );
+    expect(asleep.status).toBe("unavailable");
+    expect(deploymentStatusDetail(asleep)).toBe("That computer is asleep or off its network.");
+  });
+
   it("puts what a verification found ahead of every other state", () => {
     const connection = testDeploymentConnection({ home: true });
 

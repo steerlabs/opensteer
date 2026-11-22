@@ -83,6 +83,11 @@ export interface DeploymentRow {
   /** Non-null exactly when the status is `update-required` or `unverified`. */
   readonly verification: HostVerification | null;
   readonly status: DeploymentStatus;
+  /**
+   * The Opensteer account lists this Mac's Home with no Remote access route: Remote access is
+   * off there (or not yet on), which is not the same as the Mac being asleep.
+   */
+  readonly remoteAccessOff?: boolean;
 }
 
 /**
@@ -118,6 +123,11 @@ export function describeDeploymentRow(
     sessionFailure,
     status,
     verification: facts.verification,
+    ...(connection.source.kind === "account" &&
+    connection.reachability === "routed" &&
+    connection.personalAccessRoute === null
+      ? { remoteAccessOff: true }
+      : {}),
   };
 }
 
@@ -229,7 +239,9 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
         : "Sign in to this Opensteer to see your work.";
     case "unavailable":
       return isMacHomeRow(row)
-        ? "That computer is asleep or off its network."
+        ? row.remoteAccessOff === true
+          ? "Remote access is off. Turn it on in Opensteer on that Mac."
+          : "That computer is asleep or off its network."
         : "This Opensteer has no address this app can reach.";
     case "unverified":
       return "The address this phone uses answers as a different Opensteer.";
