@@ -46,6 +46,12 @@ export type PendingRecord =
       readonly savedStateId: string;
       readonly step: string;
       readonly at: string;
+    }
+  | {
+      readonly kind: "stop";
+      readonly reason: "home-silent";
+      readonly step: string;
+      readonly at: string;
     };
 
 export interface SlotRecord {
@@ -88,6 +94,8 @@ export interface SlotRecord {
    * vsock after its boot and after every resume, and to the Home only in a signed answer.
    */
   readonly bridgeToken?: string | null;
+  /** Why the agent itself stopped the guest; cleared on the next start, stop or key replacement. */
+  readonly stopReason?: "home-silent" | null;
   /** Only in a tombstone written before re-check finding 4, which kept the slot's keys. */
   readonly deletedAt?: string | null;
 }

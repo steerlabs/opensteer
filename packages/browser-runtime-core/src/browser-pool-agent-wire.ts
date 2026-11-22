@@ -32,6 +32,12 @@ export interface BrowserPoolAgentStatus {
    * until its next start or wake, which brings the proxy back. Absent otherwise.
    */
   readonly proxy?: "down";
+  /**
+   * Why the agent itself stopped the guest (absent before the first start, after a Home-requested
+   * stop, or while running/paused). `"home-silent"`: no authenticated call arrived from the slot's
+   * Home within the host's silence timeout.
+   */
+  readonly stopReason?: "home-silent";
 }
 
 export type BrowserPoolAgentKind = "start" | "pause" | "resume" | "stop" | "sign";
