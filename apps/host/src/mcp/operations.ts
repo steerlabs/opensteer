@@ -181,6 +181,7 @@ export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthorit
       ...(caller.chat
         ? {
             chat: {
+              conversationId: caller.chat.conversationId,
               externalUserId: caller.chat.sender.externalUserId,
               revision: caller.chat.revision,
             },

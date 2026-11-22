@@ -139,9 +139,19 @@ describe("a bridge asks your own agents to work through the task tools' own entr
         bridgeId: f.bridge.id,
         chat: { ...stranger, sender: { displayName: "Tim", externalUserId: "U-OWNER" } },
       });
+      const refused = {
+        code: "forbidden",
+        message: "This chat may no longer ask your agents to work.",
+      };
+      const bridgeTasks = () =>
+        f.storeFixture.database
+          .selectFrom("threads")
+          .select("id")
+          .where("originConnectionId", "=", f.bridge.id)
+          .execute();
       await expect(
         f.call({ ...owner, chat: stranger }, "opensteer_task_create", { message: "Hi" }, "k1"),
-      ).rejects.toMatchObject({ code: "forbidden", message: "Connected agent source is invalid" });
+      ).rejects.toMatchObject(refused);
       // A conversation another bridge covers is not this bridge's to answer.
       const other = await new AgentConnectionStore(f.storeFixture.database).createBridge({
         userId: f.fixture.userId,
@@ -159,7 +169,9 @@ describe("a bridge asks your own agents to work through the task tools' own entr
           { message: "Hi" },
           "k2",
         ),
-      ).rejects.toMatchObject({ code: "forbidden", message: "Connected agent source is invalid" });
+      ).rejects.toMatchObject(refused);
+      // Neither left a task behind.
+      expect(await bridgeTasks()).toEqual([]);
       // A selected bridge cannot send into the person's own task: it reads as not there.
       await expect(
         f.call(
