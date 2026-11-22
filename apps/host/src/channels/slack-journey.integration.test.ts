@@ -50,6 +50,7 @@ import {
   ChannelStore,
   lineagePersonalContext,
   OpensteerStore,
+  TriggerStore,
   startBridgeOwnerLink,
 } from "@opensteer/database";
 import {
@@ -57,6 +58,7 @@ import {
   pendingEvent,
   testContinuationIdentity,
   testModelSelection,
+  testReadyHarnessCatalog,
 } from "@opensteer/database/test-support/store";
 import {
   ChannelAdapterRegistry,
@@ -65,8 +67,9 @@ import {
   MessagingFrameRouter,
   RoutedChannelHostClient,
 } from "@opensteer/messaging-module";
-import type { RunnerAuxiliaryStream } from "@opensteer/orchestration";
+import type { RunnerAuxiliaryStream, RunnerRegistry } from "@opensteer/orchestration";
 import {
+  type RunnerCommand,
   RunnerAuxiliaryFrameFenceSchema,
   RunnerBootIdSchema,
   RunnerConnectionIdSchema,
@@ -77,6 +80,7 @@ import type { WebSocketFrame } from "@opensteer/shared/webSocketFrame";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CredentialService } from "../identity/credential-service.js";
 import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
+import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import { ChannelService } from "./channel-service.js";
 import { MessagingRelayHub, type MessagingRelayPeer } from "./messaging-relay-hub.js";
 
@@ -92,6 +96,7 @@ const dmChannelId = "D-JOURNEY";
 const roomChannelId = "C-ROOM";
 const teamChannelId = "C-TEAM";
 const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
+const teamPluginDigest = "a".repeat(64);
 const teamPlugin = {
   kind: "plugin",
   target: { kind: "installed", pluginId: "plugin_team_notes" },
@@ -361,6 +366,12 @@ describe("Slack on bridges, end to end", () => {
       }),
     );
     const run = await nextRun(teamBridge.id);
+    // What the Run is actually sent, through the real dispatcher: no personal context, and of
+    // the person's plugins only the one this chat holds.
+    const { sent, issued } = await dispatchRun(run.id);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: "run.execute", context: { personalContext: false } });
+    expect(issued).toEqual([[teamPluginDigest]]);
     expect(await lineagePersonalContext(storeFixture.database, teamBridge.id)).toBe(false);
     expect(await sessionsOf(run.threadId)).toEqual([{ personalContext: false }]);
     const admitted = await admitExecution(storeFixture.database, {
@@ -556,6 +567,75 @@ describe("Slack on bridges, end to end", () => {
   }, 180_000);
 
   // ---- helpers ----
+
+  /** The Run's command through the real dispatcher, to a Runner that takes it. */
+  async function dispatchRun(runId: string) {
+    const sent: RunnerCommand[] = [];
+    const issued: (readonly string[])[] = [];
+    const command = await storeFixture.database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", runId as never)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    const claimed = await store.claimCommand(command.id, `journey-dispatch-${runId}`);
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the Run's command");
+    started.add(runId);
+    const identity = {
+      bootId: "journey-dispatch-boot",
+      capabilities: [
+        "native-session-continuation-v1",
+        "assignments-v1",
+        "thread-state-v1",
+        "execution-plane-v2",
+        "agent-tools-plan-v1",
+      ],
+      modules: { agents: { computerTool: 1 } },
+      name: "Journey computer",
+      runnerId: personal.runnerId,
+    };
+    await new HostCommandDispatcher({
+      store,
+      triggers: new TriggerStore(store.database),
+      executionLeaseMs: 90_000,
+      publicUrl: new URL("https://journey.invalid"),
+      requestResponseVault: {} as never,
+      runToolTokens: { issue: () => "tools" } as never,
+      attachmentRunTokens: { issue: () => "attachments" } as never,
+      attachments: { listForRun: async () => [] },
+      browser: { hasBrowserProfiles: async () => false },
+      egress: { issue: () => ({ allowedHosts: [], token: "egress" }) } as never,
+      pluginVersions: async () => [
+        { pluginId: teamPlugin.target.pluginId, name: "team notes", digest: teamPluginDigest },
+        { pluginId: "plugin_private", name: "private", digest: "b".repeat(64) },
+      ],
+      pluginsTokens: {
+        issue: (claims: { readonly pluginDigests: readonly string[] }) => {
+          issued.push(claims.pluginDigests);
+          return "plugins";
+        },
+      } as never,
+      triggerControlTokens: { issue: () => "control" } as never,
+      runners: {
+        identityForEnvironment: (environmentId: string) => ({ ...identity, environmentId }),
+        canRunHarness: () => true,
+        supportsMessageAttachments: () => false,
+        connectionGenerationFor: () => 1,
+        inspectHarnesses: async (_environment: unknown, harnesses: readonly { id: string }[]) =>
+          harnesses.map((harness) => testReadyHarnessCatalog(harness.id as never)),
+        dispatch: async (
+          runnerCommand: RunnerCommand,
+          _signal: AbortSignal,
+          options?: { readonly beforeSend?: () => Promise<void> },
+        ) => {
+          await options?.beforeSend?.();
+          sent.push(runnerCommand);
+          return { type: "runner.command-accepted" };
+        },
+      } as unknown as RunnerRegistry,
+    }).dispatch(claimed.command, new AbortController().signal);
+    return { sent, issued };
+  }
 
   function dm(key: string, text: string, second: number) {
     return messageEnvelope({
