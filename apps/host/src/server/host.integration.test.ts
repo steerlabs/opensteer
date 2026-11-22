@@ -799,6 +799,22 @@ describe("rpc envelope", () => {
     }
   });
 
+  it("answers a request it cannot read as invalid-request, through its own HTTP mapping", async () => {
+    const app = await machinesServer();
+    try {
+      // A body the declared schema refuses: a person's app never draws what follows.
+      const response = await injectRpcRequest(app, "machines.list", { unexpected: true });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: { code: "bad_request", reason: "invalid-request", retryable: false },
+        ok: false,
+      });
+      expect(response.json().error.message).toMatch(/^Request is invalid: /u);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("forbids storing a per-user read", async () => {
     const app = await machinesServer();
     try {
