@@ -1,4 +1,5 @@
 import { deviceWords } from "@opensteer/client/computers";
+import { placeStatus } from "@opensteer/protocol/deployment-status";
 import {
   describeConnectionAccess,
   isNetworkedHome,
@@ -234,8 +235,9 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
     case "unverified":
       return "The address this phone uses answers as a different deployment.";
     case "update-required":
+      // The Home by name needs the update, in the Mac's words.
       return row.verification === "host-too-old"
-        ? "This deployment speaks an older Opensteer protocol than this app. Update the deployment."
+        ? (placeStatus.unavailable("host-too-old", row.name).reason ?? null)
         : "This deployment speaks a newer Opensteer protocol than this app. Update this app.";
   }
 }

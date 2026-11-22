@@ -86,7 +86,7 @@ describe("deployment status wording", () => {
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "host-too-old" }),
       ),
-    ).toMatch(/Update the deployment\.$/u);
+    ).toBe(`${connection.name} needs an Opensteer update to work with this app.`);
     expect(
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "client-too-old" }),
