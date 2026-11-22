@@ -133,4 +133,18 @@ describe("the chats preview", () => {
       client.dispose();
     }
   });
+
+  it("previews remote access through Connect as a Home reports it, readable by its own rules", async () => {
+    const client = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    try {
+      client.connectRemoteAccess("https://alex.connect.opensteer.invalid");
+      const read = await client.rpc["personal.remoteAccess.get"]({});
+      expect(read).toMatchObject({
+        ok: true,
+        data: { access: { mode: "connect", accountLink: { state: "active" } } },
+      });
+    } finally {
+      client.dispose();
+    }
+  });
 });

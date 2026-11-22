@@ -62,7 +62,7 @@ import {
   type IphoneScreenAttachCommand,
   type IphoneScreenDetachCommand,
 } from "@opensteer/protocol";
-import { NeedsYouPageSchema } from "@opensteer/protocol";
+import { NeedsYouPageSchema, PersonalRemoteAccessStatusSchema } from "@opensteer/protocol";
 import {
   agentConnectionConsentRefusals,
   agentConnectionVerificationChangedMessage,
@@ -4324,6 +4324,39 @@ export class MockHostClient implements HostClient {
     body: string,
   ): void {
     this.#state.receiveAgentInput(threadId, MessageAuthorSchema.parse(author), body);
+  }
+
+  /**
+   * Remote access on through Connect at `origin`, as a Home that has it reports it: an active
+   * Opensteer Account link and a signed route for this Home's own authority. It passes the
+   * protocol's own rules, so a preview never shows a status a Home could not send.
+   */
+  connectRemoteAccess(origin: string): void {
+    const authority = this.#state.remoteAdministration.authorityEnvelope;
+    this.setPersonalRemoteAccessStatus(
+      PersonalRemoteAccessStatusSchema.parse({
+        accountLink: {
+          issuer: "https://account.opensteer.invalid",
+          subject: "acct_00000000-0000-4000-8000-000000000001",
+          generation: "A".repeat(43),
+          state: "active",
+        },
+        generation: 1,
+        mode: "connect",
+        route: {
+          document: {
+            authority: authority.document,
+            documentVersion: 2,
+            purpose: "opensteer-personal-access-route",
+            route: { generation: 1, kind: "connect", origin },
+          },
+          publicKey: authority.publicKey,
+          schemaVersion: 1,
+          signature: authority.signature,
+        },
+        schemaVersion: 2,
+      }),
+    );
   }
 
   setPersonalRemoteAccessStatus(
