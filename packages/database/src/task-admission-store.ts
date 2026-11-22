@@ -605,7 +605,12 @@ export function releaseTeamAsk(
     if (inbox.editLeaseExpiresAt) mutation.react({ type: "deadlinesChanged" });
     thread = await transaction
       .updateTable("threads")
-      .set({ nextMessageSequence: sql`next_message_sequence + 1`, doneAt: null, doneReason: null })
+      .set({
+        nextMessageSequence: sql`next_message_sequence + 1`,
+        doneAt: null,
+        doneReason: null,
+        doneBy: null,
+      })
       .where("id", "=", thread.id)
       .returningAll()
       .executeTakeFirstOrThrow();

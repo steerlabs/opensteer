@@ -877,6 +877,77 @@ export class RequestStore {
     });
   }
 
+  async agentPage(input: {
+    readonly ownerId: UserId;
+    readonly scope: import("./thread-store.js").AgentThreadListScope;
+    readonly scopeId: string;
+    readonly originatingThreadId?: ThreadId;
+    readonly status?: "pending" | "all";
+    readonly before?: string;
+    readonly limit: number;
+  }): Promise<{
+    readonly requests: readonly Request[];
+    readonly window: DurableWindow;
+  }> {
+    const limit = clampLimit(input.limit);
+    const status = input.status ?? "all";
+    const cursorScope = `agent:${input.scopeId}:${input.originatingThreadId ?? "*"}:${status}`;
+    const anchor = input.before ? decodeRequestCursor(input.before, cursorScope) : null;
+    return withPersonalReadTransaction(
+      this.#database,
+      async (transaction) => {
+        await requirePersonalOwner(transaction, input.ownerId);
+        const lineageRootThreadId =
+          input.scope.kind === "lineage"
+            ? (
+                await transaction
+                  .selectFrom("threads")
+                  .select("lineageRootThreadId")
+                  .where("id", "=", input.scope.threadId)
+                  .executeTakeFirstOrThrow()
+              ).lineageRootThreadId
+            : null;
+        const base = () => {
+          let query = transaction
+            .selectFrom("requests")
+            .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+            .where("threads.createdBy", "=", input.ownerId)
+            .where("threads.removedAt", "is", null);
+          if (lineageRootThreadId !== null)
+            query = query.where("threads.lineageRootThreadId", "=", lineageRootThreadId);
+          if (input.originatingThreadId)
+            query = query.where("requests.originatingThreadId", "=", input.originatingThreadId);
+          if (status === "pending") query = query.where("requests.status", "=", "pending");
+          return query;
+        };
+        let pageQuery = base()
+          .selectAll("requests")
+          .orderBy("requests.createdAt", "desc")
+          .orderBy("requests.id", "desc")
+          .limit(limit + 1);
+        if (anchor) {
+          pageQuery = pageQuery.where((expression) =>
+            expression.or([
+              expression("requests.createdAt", "<", anchor.createdAt),
+              expression.and([
+                expression("requests.createdAt", "=", anchor.createdAt),
+                expression("requests.id", "<", anchor.id),
+              ]),
+            ]),
+          );
+        }
+        const [rows, count] = await Promise.all([
+          pageQuery.execute(),
+          base()
+            .select(({ fn }) => fn.countAll<string>().as("count"))
+            .executeTakeFirstOrThrow(),
+        ]);
+        return requestPage(rows, Number(count.count), limit, cursorScope);
+      },
+      "repeatable read",
+    );
+  }
+
   async requestComputerAppAccess(
     input: Omit<Parameters<RequestStore["requestDeviceComputerAppAccess"]>[0], "deviceId"> & {
       readonly runnerId: RunnerId;

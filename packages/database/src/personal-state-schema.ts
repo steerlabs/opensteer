@@ -740,6 +740,19 @@ export async function applyStoppedRunsNotNews(database: Kysely<DatabaseSchema>) 
   `.execute(database);
 }
 
+export const threadDoneByMigrationName = "0045_thread_done_by";
+/**
+ * Records who marked a task Done (`person`, `agent`, or `quiet`) so agent reads and memory wakes
+ * can tell a person closing a task apart from an agent finishing its own turn.
+ */
+export async function applyThreadDoneBy(database: Kysely<DatabaseSchema>) {
+  await sql`
+    alter table threads add column if not exists done_by text;
+    update threads set done_by = 'quiet'
+    where done_at is not null and done_reason = 'quiet' and done_by is null;
+  `.execute(database);
+}
+
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {
   await sql.raw(retainedStateDdl).execute(transaction);
   await sql.raw(currentStateIndexes).execute(transaction);
