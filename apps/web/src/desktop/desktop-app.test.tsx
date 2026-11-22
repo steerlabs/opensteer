@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 
 import { createId } from "@opensteer/core";
-import { MockCloudComputerAccount, type MockCloudComputerScene } from "@opensteer/client/mock";
+import {
+  MockCloudComputerAccount,
+  mockCloudComputerDeploymentId,
+  type MockCloudComputerScene,
+} from "@opensteer/client/mock";
 import {
   DeploymentAccessSnapshotSchema,
   DesktopDeploymentSummarySchema,
@@ -484,6 +488,7 @@ describe("the front door", () => {
         portalOrigin: "https://app.opensteer.example",
         status: "signed-in",
       },
+      cloud: "checkout",
     });
     await vi.waitFor(() =>
       expect(app.container.textContent).toContain("$20.00 a month. Always on."),
@@ -495,7 +500,7 @@ describe("the front door", () => {
       "Your phone and connected agents can reach it from anywhere. You can turn this off in Settings.",
     );
     expect(app.button("On an Opensteer Cloud Computer").textContent).toContain(
-      "$20.00 a month. Always on. This Mac becomes one of its devices.",
+      "$20.00 a month. Always on. This Mac can be one of its devices.",
     );
     await act(async () => app.button("On an Opensteer Cloud Computer").click());
     expect(app.bridge.openExternalUrl).toHaveBeenCalledWith({
@@ -504,9 +509,13 @@ describe("the front door", () => {
     await vi.waitFor(() =>
       expect(app.container.textContent).toContain("Finish checkout in your browser"),
     );
-    // Once the account lists the Cloud Computer it set up, it opens by itself.
+    // Back from the browser, the account reports the Cloud Computer it set up for them...
+    for (let read = 0; read < 6; read += 1)
+      await act(async () => window.dispatchEvent(new Event("focus")));
+    // ...and once the account lists it, it opens by itself.
     const cloudHome: DeploymentAccessDeployment = {
       ...accessDeployment("idle"),
+      id: mockCloudComputerDeploymentId,
       source: "account",
     };
     await app.emit(
@@ -519,6 +528,51 @@ describe("the front door", () => {
     await vi.waitFor(() =>
       expect(app.bridge.select).toHaveBeenCalledWith({ deploymentId: cloudHome.id }),
     );
+    await app.close();
+  });
+
+  it("lets a person turn back from checkout to both choices, and opens nothing", async () => {
+    const app = await door({
+      account: {
+        available: true,
+        portalOrigin: "https://app.opensteer.example",
+        status: "signed-in",
+      },
+    });
+    await vi.waitFor(() => expect(app.button("On an Opensteer Cloud Computer")).toBeTruthy());
+    await act(async () => app.button("On an Opensteer Cloud Computer").click());
+    await vi.waitFor(() =>
+      expect(app.container.textContent).toContain("Finish checkout in your browser"),
+    );
+    await act(async () => app.button("Choose something else").click());
+    expect(app.container.textContent).not.toContain("Finish checkout in your browser");
+    expect(app.button("On this Mac")).toBeTruthy();
+    expect(app.button("On an Opensteer Cloud Computer")).toBeTruthy();
+    const reads = app.bridge.cloudComputerRead.mock.calls.length;
+    await act(async () => undefined);
+    expect(app.bridge.cloudComputerRead.mock.calls.length).toBe(reads);
+    expect(app.bridge.select).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("waits on nothing when the system browser refuses the address", async () => {
+    const app = await door({
+      account: {
+        available: true,
+        portalOrigin: "https://app.opensteer.example",
+        status: "signed-in",
+      },
+    });
+    app.bridge.openExternalUrl.mockRejectedValueOnce(new Error("External links must use HTTPS"));
+    await vi.waitFor(() => expect(app.button("On an Opensteer Cloud Computer")).toBeTruthy());
+    await act(async () => app.button("On an Opensteer Cloud Computer").click());
+    await vi.waitFor(() =>
+      expect(app.container.textContent).toContain(
+        "Your browser couldn’t open the Opensteer website. Try again.",
+      ),
+    );
+    expect(app.container.textContent).not.toContain("Finish checkout in your browser");
+    expect(app.button("On this Mac")).toBeTruthy();
     await app.close();
   });
 

@@ -49,7 +49,10 @@ import { createBrowserHostClient } from "../host/browser-host-client.js";
 import { disposeMessageOutbox } from "@opensteer/client/host";
 import { UnreachableHomeLine } from "../components/asleep-moment.js";
 import { ConnectionGateView } from "../components/connection-shell.js";
-import { useClientConnectionEverReady } from "@opensteer/client/react";
+import { useClientConnectionEverReady, useCloudComputer } from "@opensteer/client/react";
+import { currentCloudComputer } from "@opensteer/client/computers";
+import { DeploymentIdSchema } from "@opensteer/core";
+import { cloudComputerAccountFor } from "../components/settings/sections/cloud-computer.js";
 import { browserClientLifecycle } from "../host/browser-lifecycle.js";
 import { desktopConnectFailure } from "./desktop-connect-failure.js";
 
@@ -162,9 +165,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // Started while signed in: once this computer's Opensteer is known, its setup turns
   // Remote access on (remoteAccessOnWhenSignedInStart).
   const [remoteAccessOnStart, setRemoteAccessOnStart] = useState(false);
-  // The person chose a Cloud Computer and went to checkout: the Home the account lists for
-  // them next is the one to open.
-  const [awaitingCloud, setAwaitingCloud] = useState(false);
+
   // Data an earlier Opensteer left, which this one can't open: offered a fresh
   // start until the person chooses another way on ("Not now").
   const startFresh = useStartFresh(bridge, snapshot?.personalSetup?.state === "repair-required");
@@ -323,19 +324,6 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     [hostClient],
   );
 
-  const awaitedId =
-    awaitingCloud &&
-    snapshot?.selectedDeploymentId === null &&
-    snapshot.deployments.length === 1 &&
-    snapshot.deployments[0]!.source === "account"
-      ? snapshot.deployments[0]!.id
-      : null;
-  useEffect(() => {
-    if (awaitedId === null) return;
-    setAwaitingCloud(false);
-    void bridge.select({ deploymentId: awaitedId }).catch(() => undefined);
-  }, [awaitedId, bridge]);
-
   const facts = useMemo(
     () => new ComputerFactsStore((computer) => readComputerFacts(bridge, computer)),
     [bridge],
@@ -352,6 +340,30 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }),
     [bridge],
   );
+  // Checkout followed from this app (the Cloud Computer client's one fact): once the account
+  // lists the Cloud Computer it set up, and nothing is open, that Home opens.
+  const cloud = useCloudComputer(
+    snapshot?.account.status === "signed-in" ? cloudComputerAccountFor(placesBridge) : null,
+  );
+  const cloudHomeId = cloud.views
+    ? (currentCloudComputer(cloud.views.computers, cloud.views.work)?.deploymentId ?? null)
+    : null;
+  const awaitedId =
+    cloud.checkoutFollowed &&
+    cloudHomeId !== null &&
+    snapshot?.selectedDeploymentId === null &&
+    snapshot.deployments.some(({ id }) => id === cloudHomeId)
+      ? cloudHomeId
+      : null;
+  const stopFollowingCheckout = cloud.stopFollowingCheckout;
+  useEffect(() => {
+    if (awaitedId === null) return;
+    stopFollowingCheckout?.();
+    void bridge
+      .select({ deploymentId: DeploymentIdSchema.parse(awaitedId) })
+      .catch(() => undefined);
+  }, [awaitedId, bridge, stopFollowingCheckout]);
+
   const places = useMemo<DesktopPlaces | null>(
     () =>
       snapshot
@@ -658,7 +670,6 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         return (
           <DesktopWelcome
             error={operationError ?? directoryError ?? personalLoadFailure}
-            onCloudChosen={() => setAwaitingCloud(true)}
             onConnect={setScreen}
             onSetUpHere={setUpHere}
             places={places}

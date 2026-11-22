@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { cloudComputerWebsite, cloudWords } from "@opensteer/client/computers";
+import { cloudComputerWebsite, cloudWords, homesListTitle } from "@opensteer/client/computers";
 import { remoteAccessOnWhenSignedInStart } from "@opensteer/client/host";
 import { useCloudComputer } from "@opensteer/client/react";
 import { DeploymentIdSchema } from "@opensteer/core";
@@ -57,23 +57,10 @@ function EntryRow({
   );
 }
 
-function SecondaryPaths({
-  onConnect,
-  pairing = true,
-}: {
-  readonly onConnect: (kind: ConnectKind) => void;
-  readonly pairing?: boolean;
-}) {
+/** A Home at its own address, under the keyless welcome's two rows. */
+function SecondaryPaths({ onConnect }: { readonly onConnect: (kind: ConnectKind) => void }) {
   return (
     <p className="desktop-entry__links">
-      {pairing ? (
-        <>
-          <button className="link-btn" onClick={() => onConnect("pairing")} type="button">
-            Use a pairing code
-          </button>
-          <span aria-hidden>·</span>
-        </>
-      ) : null}
       <button className="link-btn" onClick={() => onConnect("address")} type="button">
         Add a Home by address
       </button>
@@ -194,14 +181,11 @@ type WelcomeView = "door" | "without-account" | "other-ways";
  */
 export function DesktopWelcome({
   error,
-  onCloudChosen,
   onConnect,
   onSetUpHere,
   places,
 }: {
   readonly error: string | null;
-  /** The person chose a Cloud Computer: open it once the account lists it. */
-  readonly onCloudChosen?: () => void;
   readonly onConnect: (kind: ConnectKind) => void;
   readonly onSetUpHere: ((name?: string) => void) | null;
   readonly places: DesktopPlaces;
@@ -238,7 +222,6 @@ export function DesktopWelcome({
     return (
       <DesktopWhere
         error={actionError ?? error}
-        onCloudChosen={onCloudChosen}
         onOtherWays={() => setView("other-ways")}
         places={places}
         run={run}
@@ -268,7 +251,7 @@ export function DesktopWelcome({
             title="Connect to my Opensteer"
           />
         </div>
-        <SecondaryPaths onConnect={onConnect} pairing={false} />
+        <SecondaryPaths onConnect={onConnect} />
       </OnboardingCard>
     );
   }
@@ -382,14 +365,12 @@ function OtherWaysIn({
  */
 function DesktopWhere({
   error,
-  onCloudChosen,
   onOtherWays,
   places,
   run,
   startHere,
 }: {
   readonly error: string | null;
-  readonly onCloudChosen: (() => void) | undefined;
   readonly onOtherWays: () => void;
   readonly places: DesktopPlaces;
   readonly run: (operation: () => Promise<void>) => void;
@@ -398,6 +379,7 @@ function DesktopWhere({
   const { bridge, snapshot } = places;
   const account = snapshot.account;
   const [signingOut, setSigningOut] = useState(false);
+  const [openFailure, setOpenFailure] = useState<string | null>(null);
   const cloudAccount = useMemo(() => cloudComputerAccountFor(bridge), [bridge]);
   const cloud = useCloudComputer(cloudAccount);
   const portalOrigin = account.portalOrigin ?? null;
@@ -481,19 +463,20 @@ function DesktopWhere({
 
   const offer = screen.kind === "offer" ? screen : null;
   const waiting = offer?.waiting ?? false;
+  // Checkout counts as opened only once the system browser took the address.
   const openCheckout = () => {
     if (!portalOrigin) return;
-    void bridge
-      .openExternalUrl({ url: cloudComputerWebsite(portalOrigin, "checkout") })
-      .catch(() => undefined);
-    cloud.checkoutOpened?.();
-    onCloudChosen?.();
+    setOpenFailure(null);
+    void bridge.openExternalUrl({ url: cloudComputerWebsite(portalOrigin, "checkout") }).then(
+      () => cloud.checkoutOpened?.(),
+      () => setOpenFailure("Your browser couldn’t open the Opensteer website. Try again."),
+    );
   };
   const cloudDetail =
     screen.kind === "loading"
       ? "Checking…"
       : offer?.plan
-        ? `${offer.plan.line}. Always on. This Mac becomes one of its devices.`
+        ? `${offer.plan.line}. Always on. This Mac can be one of its devices.`
         : cloudWords("cloud.notForSale");
   return (
     <OnboardingCard
@@ -503,13 +486,21 @@ function DesktopWhere({
       live
       title="Where should your Opensteer live?"
     >
-      <ErrorNotice message={error} />
+      <ErrorNotice message={openFailure ?? error} />
       {waiting ? (
         <div aria-live="polite" className="place-card" role="status">
           <p className="place-card__title">{cloudWords("cloud.checkoutWaiting.title")}</p>
           <p className="place-card__body">{cloudWords("cloud.checkoutWaiting.detail")}</p>
           <button className="btn btn--small btn--ghost" onClick={openCheckout} type="button">
             {cloudWords("cloud.checkoutAgain")}
+          </button>
+          {/* A person can always turn back: the watch stops and both choices return. */}
+          <button
+            className="btn btn--small btn--ghost"
+            onClick={() => cloud.stopFollowingCheckout?.()}
+            type="button"
+          >
+            Choose something else
           </button>
         </div>
       ) : (
@@ -650,7 +641,7 @@ export function DesktopChooser({
         {rows.length > 0 ? (
           <PlaceList
             busy={pending}
-            label="Your Opensteers"
+            label={homesListTitle}
             onCheck={() => void bridge.checkDeployments().catch(() => undefined)}
             onOpen={(row) => {
               if (!row.current) {

@@ -14,6 +14,7 @@ import {
 import {
   CloudComputerClient,
   cloudComputerDetail,
+  cloudCheckoutWatchMs,
   cloudComputerScreen,
   currentCloudComputer,
   workHomeBadges,
@@ -105,6 +106,48 @@ describe("Cloud Computer screen", () => {
         deleted: false,
       }),
     ).toMatchObject({ kind: "offer", plan: null });
+  });
+
+  it("stops following checkout when the person turns back: no waiting, no more reading", async () => {
+    const { store, stop, schedule } = await started(new MockCloudComputerAccount("none"));
+    store.checkoutOpened();
+    await vi.waitFor(() => expect(schedule.pending).toHaveLength(1));
+    expect(store.getSnapshot()).toMatchObject({
+      checkoutFollowed: true,
+      screen: { kind: "offer", waiting: true },
+    });
+    store.stopFollowingCheckout();
+    expect(store.getSnapshot()).toMatchObject({
+      checkoutFollowed: false,
+      screen: { kind: "offer", waiting: false },
+    });
+    expect(schedule.pending).toHaveLength(0);
+    stop();
+  });
+
+  it("stops waiting on checkout when its watch ends, and reads no more for it", async () => {
+    let now = Date.parse("2026-11-21T12:00:00.000Z");
+    const schedule = manualSchedule();
+    const store = new CloudComputerClient({
+      account: new MockCloudComputerAccount("none"),
+      schedule: schedule.schedule,
+      now: () => now,
+      locale: "en-US",
+    });
+    const stop = store.start();
+    await vi.waitFor(() => expect(store.getSnapshot().screen.kind).not.toBe("loading"));
+    store.checkoutOpened();
+    await vi.waitFor(() => expect(schedule.pending).toHaveLength(1));
+    now += cloudCheckoutWatchMs;
+    await schedule.fire();
+    await vi.waitFor(() =>
+      expect(store.getSnapshot()).toMatchObject({
+        checkoutFollowed: false,
+        screen: { kind: "offer", waiting: false },
+      }),
+    );
+    expect(schedule.pending).toHaveLength(0);
+    stop();
   });
 
   it("watches after checkout until the computer it created is ready, then stops", async () => {

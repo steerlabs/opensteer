@@ -468,6 +468,8 @@ export function desktopExternalUrlAllowed(value: string): boolean {
     url.protocol === "http:" &&
     loopbackExternalHostnames.has(url.hostname) &&
     ((url.pathname === loopbackChromeConnectPath && url.search === "") ||
+      // A development account website on this computer: its Cloud Computer checkout.
+      (url.pathname === "/cloud-computer/checkout" && url.search === "" && !url.hash) ||
       (url.pathname === "/oauth/mcp/complete" &&
         !url.hash &&
         url.searchParams.size === 1 &&
@@ -1050,8 +1052,11 @@ export const DeploymentAccessSnapshotSchema = z.strictObject({
     detail: z.string().trim().min(1).max(1_000).optional(),
     email: z.string().email().max(320).optional(),
     issuer: z.url().optional(),
-    /** The Opensteer website this app's account is managed on: where checkout happens. */
-    portalOrigin: z.url().optional(),
+    /**
+     * The Opensteer website this app's account is managed on: where checkout happens. A bare
+     * https origin (loopback http in development), as the app opens nothing else there.
+     */
+    portalOrigin: DesktopAccessOriginSchema.optional(),
     status: DesktopAccountAuthStatusSchema,
     subject: z.string().min(1).max(200).optional(),
   }),

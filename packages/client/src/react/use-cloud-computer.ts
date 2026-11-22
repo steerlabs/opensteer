@@ -7,6 +7,7 @@ const loading: CloudComputerSnapshot = {
   screen: { kind: "loading" },
   pending: null,
   actionFailure: null,
+  checkoutFollowed: false,
   work: [],
   views: null,
 };
@@ -37,6 +38,7 @@ export function useCloudComputer(account: CloudComputerAccount | null) {
     refresh: store?.refresh,
     act: store?.act,
     checkoutOpened: store?.checkoutOpened,
+    stopFollowingCheckout: store?.stopFollowingCheckout,
     dismissFailure: store?.dismissFailure,
   };
 }
