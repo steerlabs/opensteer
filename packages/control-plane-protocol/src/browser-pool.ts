@@ -88,6 +88,7 @@ export const BrowserPoolHostDesiredSchema = z
     machineType: CloudComputerLocationSchema,
     slotsCapacity: z.number().int().min(1).max(16_384),
     profileDiskName: BrowserPoolResourceNameSchema,
+    profileDiskSizeGb: z.number().int().min(10).max(65_536),
     profileDiskRef: BrowserPoolDiskRefSchema.optional(),
     release: BrowserPoolHostReleaseSchema,
     providerServerRef: GoogleComputeServerRefSchema.optional(),
@@ -224,29 +225,32 @@ export type BrowserPoolHostBootCompleteResponse = z.infer<
 >;
 
 /** S4: pool host pulls one slot's exclusive egress credentials over HTTPS, signed by host key. */
-export const browserPoolHostEgressSignatureHeader = "x-opensteer-pool-host-signature";
-export const browserPoolHostEgressWindowMs = 5 * 60_000;
+export const browserPoolHostSlotEgressWindowMs = 5 * 60_000;
 
-export const BrowserPoolHostEgressRequestSchema = z.strictObject({
+export const BrowserPoolHostSlotEgressRequestSchema = z.strictObject({
   v: z.literal(1),
   hostId: BrowserPoolHostIdSchema,
   slotId: BrowserPoolSlotIdSchema,
-  issuedAt: z.iso.datetime({ offset: true }),
-  nonce: z.string().min(16).max(64),
+  /** ISO-8601 UTC timestamp with millisecond precision. */
+  issuedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
+  /** 16 random bytes encoded as unpadded base64url. */
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{22}$/u),
+  /** Standard base64 of a 64-byte Ed25519 signature by the host's enrolled key. */
+  signature: z.string().regex(/^[A-Za-z0-9+/]{86}==$/u),
 });
-export type BrowserPoolHostEgressRequest = z.infer<typeof BrowserPoolHostEgressRequestSchema>;
+export type BrowserPoolHostSlotEgressRequest = z.infer<
+  typeof BrowserPoolHostSlotEgressRequestSchema
+>;
 
-/** Exact bytes a pool host signs with its enrolled Ed25519 host key when fetching slot egress. */
-export function browserPoolHostEgressSigningBytes(input: BrowserPoolHostEgressRequest): Uint8Array {
-  const request = BrowserPoolHostEgressRequestSchema.parse(input);
+/** Exact UTF-8 bytes a pool host signs with its enrolled Ed25519 host key for slot egress. */
+export function browserPoolHostSlotEgressSigningBytes(input: {
+  readonly hostId: string;
+  readonly slotId: string;
+  readonly issuedAt: string;
+  readonly nonce: string;
+}): Uint8Array {
   return new TextEncoder().encode(
-    `opensteer/browser-pool-host-egress/v1\0${JSON.stringify({
-      hostId: request.hostId,
-      issuedAt: request.issuedAt,
-      nonce: request.nonce,
-      slotId: request.slotId,
-      v: request.v,
-    })}`,
+    `opensteer-pool-slot-egress-v1\n${input.hostId}\n${input.slotId}\n${input.issuedAt}\n${input.nonce}`,
   );
 }
 
@@ -263,7 +267,8 @@ export type ManagedBrowserPoolPublicKeys = z.infer<typeof ManagedBrowserPoolPubl
 export const BrowserPoolSlotGuestConfigSchema = z.strictObject({
   vcpus: z.number().int().min(1).max(32),
   memoryMib: z.number().int().min(256).max(65_536),
-  profileSizeMib: z.number().int().min(256).max(65_536),
+  /** Size of the slot's ext4 profile file (64 MiB to 1 TiB), matching the pool agent wire. */
+  profileMib: z.number().int().min(64).max(1_048_576),
 });
 export type BrowserPoolSlotGuestConfig = z.infer<typeof BrowserPoolSlotGuestConfigSchema>;
 
@@ -301,6 +306,7 @@ export const BrowserPoolSlotDesiredSchema = z.strictObject({
   hostKey: BrowserPoolSpkiBase64Schema,
   term: BrowserPoolTermSchema,
   appliedTerm: BrowserPoolTermSchema.optional(),
+  appliedHostGeneration: CloudComputerGenerationSchema.optional(),
   revision: CloudComputerDesiredRevisionSchema,
   state: BrowserPoolSlotStateSchema,
   phase: BrowserPoolSlotPhaseSchema,
@@ -309,6 +315,7 @@ export const BrowserPoolSlotDesiredSchema = z.strictObject({
   controlKey: BrowserPoolSpkiBase64Schema.optional(),
   slotErased: z.boolean(),
   profileErased: z.boolean(),
+  credentialsErased: z.boolean(),
   pendingAgentWrites: z.array(BrowserPoolSlotAgentWriteSchema).max(4).optional(),
 });
 export type BrowserPoolSlotDesired = z.infer<typeof BrowserPoolSlotDesiredSchema>;
@@ -344,6 +351,7 @@ export const BrowserPoolSlotReportSchema = z
     controlKey: BrowserPoolSpkiBase64Schema.nullable(),
     slotErased: z.boolean(),
     profileErased: z.boolean(),
+    credentialsErased: z.boolean(),
     lastError: BrowserPoolSlotErrorSchema.nullable(),
   })
   .superRefine((report, context) => {
@@ -356,11 +364,15 @@ export const BrowserPoolSlotReportSchema = z
     }
     if (
       report.phase === "deleted" &&
-      (!report.slotErased || !report.profileErased || report.controlKey !== null)
+      (!report.slotErased ||
+        !report.profileErased ||
+        !report.credentialsErased ||
+        report.controlKey !== null)
     ) {
       context.addIssue({
         code: "custom",
-        message: "A deleted browser slot requires both slot and profile erasure evidence",
+        message:
+          "A deleted browser slot requires slot, profile, and credential erasure evidence",
       });
     }
     if ((report.phase === "failed") !== (report.lastError !== null)) {
@@ -494,8 +506,8 @@ export const browserPoolHostBootPath = (id: BrowserPoolHostId) =>
   `/v1/browser-pool/hosts/${encodeURIComponent(id)}/boot`;
 export const browserPoolHostBootCompletePath = (id: BrowserPoolHostId) =>
   `/v1/browser-pool/hosts/${encodeURIComponent(id)}/boot-complete`;
-export const browserPoolHostEgressPath = (id: BrowserPoolHostId, slotId: BrowserPoolSlotId) =>
-  `/v1/browser-pool/hosts/${encodeURIComponent(id)}/slots/${encodeURIComponent(slotId)}/egress`;
+export const browserPoolHostSlotEgressPath = (id: BrowserPoolHostId) =>
+  `/v1/browser-pool/hosts/${encodeURIComponent(id)}/slot-egress`;
 
 export const browserPoolSlotsDesiredPath = "/v1/browser-pool/slots/desired";
 export const browserPoolSlotCheckPath = (slotId: BrowserPoolSlotId) =>
