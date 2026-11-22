@@ -1143,6 +1143,11 @@ function makeService(options: {
       const value = options.threads.find((candidate) => candidate.id === id);
       return value?.createdBy === requestedBy ? value : null;
     },
+    // Agent tools read a task as their caller; these fixtures hold no memory pass.
+    readTask: async (_reader: unknown, id: Thread["id"], requestedBy: typeof ownerId) => {
+      const value = options.threads.find((candidate) => candidate.id === id);
+      return value?.createdBy === requestedBy ? value : null;
+    },
     listEnvironmentsForUser,
     getHarnessCatalog: async () =>
       options.harnessCatalog === undefined ? readyCatalog() : options.harnessCatalog,
