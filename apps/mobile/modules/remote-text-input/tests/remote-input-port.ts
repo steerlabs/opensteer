@@ -167,7 +167,10 @@ export class NativeField {
   /** The selection the view itself last left (RemoteInputTextView.ownSelection). */
   private ownSelection: Span | null = null;
 
-  constructor(private readonly deliver: (packet: Packet) => void) {}
+  private readonly deliver: (packet: Packet) => void;
+  constructor(deliver: (packet: Packet) => void) {
+    this.deliver = deliver;
+  }
 
   get queued() {
     return this.jobs.length;
@@ -404,23 +407,54 @@ export class NativeField {
 
 /**
  * The far side: a page's text field as packages/browser-runtime-core's editing observer applies
- * operations to it (editingOwner.prepare, the control path). An edit is taken only where the
- * field's own text matches its `before` and `after` around a collapsed caret, replaces exactly
- * that span and leaves the caret after its text; anything else is refused. A caret command moves
- * by one grapheme, as Blink's moveBackward and moveForward do. Paste inserts at the caret.
+ * operations to it (PageEditingObserver.edit and editingOwner.prepare, the control path, and
+ * the controller's commands). An operation under any but the current context is refused; an
+ * edit, or a first composition, is taken only where the field's own text matches its `before`
+ * and `after` around a collapsed caret, and replaces exactly that span. A refusal rotates the
+ * context, as #stale() does: the app learns it from the new context, not from the send. A caret
+ * command moves by one grapheme and a deletion command deletes one, as Blink's do. Paste inserts
+ * at the caret. tests/editing-far-model.test.ts holds this model to the real applier in Chromium.
  */
 export class FarField {
   value = "";
   caret = 0;
   composition: Span | null = null;
+  /** The field's context; null takes any (a test that does not rotate). */
+  contextId: string | null = null;
+  /** Told the new context after a refusal, as the page publishes it. */
+  onRotate: ((contextId: string) => void) | null = null;
   refused: EditingOperation[] = [];
   /** Every operation the field was sent, in order. */
   sent: EditingOperation[] = [];
+  private rotations = 0;
+  private refuse(operation: EditingOperation) {
+    this.refused.push(operation);
+    this.composition = null;
+    this.rotations += 1;
+    this.contextId = `00000000-0000-4000-8000-${String(100000000000 + this.rotations).slice(-12)}`;
+    this.onRotate?.(this.contextId);
+  }
+  private replace(start: number, end: number, text: string) {
+    this.value = this.value.slice(0, start) + text + this.value.slice(end);
+    this.caret = start + text.length;
+  }
   take = (operation: EditingOperation): boolean => {
     this.sent.push(operation);
+    const context =
+      operation.kind === "edit"
+        ? operation.edit.contextId
+        : operation.kind === "compose"
+          ? operation.composition.contextId
+          : null;
+    if (context !== null && this.contextId !== null && context !== this.contextId) {
+      this.refuse(operation);
+      return true;
+    }
     switch (operation.kind) {
-      case "edit": {
-        const { before = "", after = "", text } = operation.edit;
+      case "edit":
+      case "compose": {
+        const change = operation.kind === "edit" ? operation.edit : operation.composition;
+        const { before = "", after = "", text } = change;
         const range = this.composition ?? {
           start: this.caret - before.length,
           end: this.caret + after.length,
@@ -431,23 +465,18 @@ export class FarField {
             this.value.slice(range.start, this.caret) !== before ||
             this.value.slice(this.caret, range.end) !== after)
         ) {
-          this.refused.push(operation);
-          return false;
+          this.refuse(operation);
+          return true;
         }
-        this.value = this.value.slice(0, range.start) + text + this.value.slice(range.end);
-        this.caret = range.start + text.length;
-        this.composition = null;
-        return true;
-      }
-      case "compose": {
-        const { before = "", after = "", text } = operation.composition;
-        const range = this.composition ?? {
-          start: this.caret - before.length,
-          end: this.caret + after.length,
-        };
-        this.value = this.value.slice(0, range.start) + text + this.value.slice(range.end);
-        this.composition = text ? { start: range.start, end: range.start + text.length } : null;
-        this.caret = range.start + text.length;
+        if (operation.kind === "compose") {
+          this.replace(range.start, range.end, text);
+          this.composition = text ? { start: range.start, end: range.start + text.length } : null;
+          const at = Math.min(Math.max(0, operation.composition.selectionEnd), text.length);
+          this.caret = range.start + at;
+        } else if (text || range.end > range.start) {
+          this.replace(range.start, range.end, text);
+          this.composition = null;
+        } else this.deleteBackward();
         return true;
       }
       case "command":
@@ -456,16 +485,32 @@ export class FarField {
         else if (operation.command === "moveForward")
           this.caret =
             this.caret < this.value.length ? characterAt(this.value, this.caret).end : this.caret;
+        else if (operation.command === "deleteBackward") this.deleteBackward();
+        else if (operation.command === "deleteForward" && this.caret < this.value.length)
+          this.replace(this.caret, characterAt(this.value, this.caret).end, "");
         return true;
       case "paste": {
         const item = operation.items.find((candidate) => candidate.type === "text/plain");
         const text = item ? new TextDecoder().decode(item.bytes) : "";
-        this.value = this.value.slice(0, this.caret) + text + this.value.slice(this.caret);
-        this.caret += text.length;
+        this.replace(this.caret, this.caret, text);
         return true;
       }
       default:
         return true;
     }
   };
+  /**
+   * Blink's Backspace: a base with combining marks loses its last mark (e + U+0301 becomes e),
+   * anything else its whole grapheme (an emoji sequence, a flag, a precomposed letter).
+   */
+  private deleteBackward() {
+    if (this.caret === 0) return;
+    const character = characterAt(this.value, this.caret - 1);
+    const text = this.value.slice(character.start, this.caret);
+    const points = [...text];
+    const last = points.at(-1)!;
+    const start =
+      points.length > 1 && /\p{M}/u.test(last) ? this.caret - last.length : character.start;
+    this.replace(start, this.caret, "");
+  }
 }

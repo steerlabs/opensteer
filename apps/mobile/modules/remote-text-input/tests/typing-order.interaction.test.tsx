@@ -335,6 +335,56 @@ describe("typing into a remote field", () => {
   });
 });
 
+// The far-field model, where it differed from the page's applier (the review of d5df54299).
+describe("the far-field model", () => {
+  it("deletes on a Backspace command, as the page does for a target without range edits", async () => {
+    const { remote, keyboard, answerAll } = await open(displayAbilities);
+    await keyboard((field) => field.type("a"));
+    await keyboard((field) => field.type("b"));
+    await answerAll();
+    await keyboard((field) => field.deleteBackward());
+    await answerAll();
+    expect(remote.value).toBe("a");
+    expect(remote.caret).toBe(1);
+  });
+  it("verifies a first composition's before and after, and refuses one that does not match", () => {
+    const far = new FarField();
+    far.contextId = context.contextId;
+    far.take({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "ab", before: "", after: "" },
+    });
+    far.take({
+      kind: "compose",
+      composition: {
+        contextId: context.contextId,
+        text: "に",
+        selectionStart: 1,
+        selectionEnd: 1,
+        before: "zz",
+        after: "",
+      },
+    });
+    expect(far.refused).toHaveLength(1);
+    expect(far.value).toBe("ab");
+  });
+  it("rotates its context after a refusal and refuses what comes under the old one", () => {
+    const far = new FarField();
+    far.contextId = context.contextId;
+    far.take({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "x", before: "q", after: "" },
+    });
+    expect(far.contextId).not.toBe(context.contextId);
+    far.take({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "y", before: "", after: "" },
+    });
+    expect(far.value).toBe("");
+    expect(far.refused).toHaveLength(2);
+  });
+});
+
 // The walk's caret variants, as the native field took them (its accessibility value after each
 // attempt): the far side ends with the native text and caret either way.
 describe("a person's caret moves and selections in the native field", () => {

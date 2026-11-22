@@ -32,6 +32,7 @@ export const realBrowserTests = [
   "apps/web/src/components/apps/app-isolation.test.ts",
   "apps/web/src/components/workspace/workspace-tabs-chromium.interaction.test.tsx",
   "tests/browser-repl.test.ts",
+  "tests/editing-far-model.test.ts",
   "tests/passkey-relay-provider.test.ts",
   "tests/passkey-routing.test.ts",
 ];
