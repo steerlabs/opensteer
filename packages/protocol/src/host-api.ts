@@ -1019,12 +1019,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   /**
    * A channel whose transport runs on one of the owner's computers — iMessage
-   * through that Mac — pinned there, using its app connection. `ownerHandles`
-   * are where the owner writes from, linked to them at once.
+   * through that Mac — pinned there, using its app connection. "Me" on it is
+   * linked as on any account: by sending, from the owner's phone, a code
+   * Opensteer shows.
    */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    ownerHandles: z.array(z.string().trim().min(3).max(320)).min(1).max(8),
     provider: z.string().min(1),
     runnerId: RunnerIdSchema,
     type: z.literal("channel.connection.computer.create"),

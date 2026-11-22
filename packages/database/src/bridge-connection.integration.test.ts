@@ -54,7 +54,9 @@ describeStore("a messaging bridge is a connection", (it) => {
   it("has authority with no credential, never signs in over MCP, and ends with its account", async ({
     storeFixture,
   }) => {
-    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-live");
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-live", {
+      bridge: false,
+    });
     const { database } = storeFixture;
     const bridgeId = await insertBridgeRow(database, {
       userId: fixture.userId,
@@ -94,7 +96,10 @@ describeStore("a messaging bridge is a connection", (it) => {
   it("never lets anyone speak in direct messages, nor an anyone bridge hold more than tasks and plugins", async ({
     storeFixture,
   }) => {
-    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-rules");
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture(
+      "bridge-rules",
+      { bridge: false },
+    );
     const { database } = storeFixture;
     const base = { userId: fixture.userId, accountId: configured.account.id };
     // Direct messages are always "only me".
@@ -142,7 +147,9 @@ describeStore("a bridge is made on the same consent as a connected agent", (it) 
   it("is Supervised unless chosen, holds tasks, and answers only the person in direct messages", async ({
     storeFixture,
   }) => {
-    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-make");
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-make", {
+      bridge: false,
+    });
     const connections = new AgentConnectionStore(storeFixture.database);
     const base = { userId: fixture.userId, accountId: configured.account.id } as const;
     const bridge = await connections.createBridge({
@@ -202,7 +209,9 @@ describeStore("a bridge is made on the same consent as a connected agent", (it) 
   it("sits under a work Home's ceiling exactly as a connected agent does", async ({
     storeFixture,
   }) => {
-    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-work");
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-work", {
+      bridge: false,
+    });
     const { WorkHomeStore } = await import("./work-home.js");
     await new WorkHomeStore(storeFixture.database).initialize(
       {
@@ -229,7 +238,9 @@ describeStore("work from a bridge anyone may speak to has no personal context", 
   it("is decided by the lineage's own row, and the person's own work reads nothing", async ({
     storeFixture,
   }) => {
-    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-ctx");
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-ctx", {
+      bridge: false,
+    });
     const { database } = storeFixture;
     const { lineagePersonalContext } = await import("./resource-access.js");
     // The person's own work has no connection: it has personal context, with no query at all.

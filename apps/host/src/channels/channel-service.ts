@@ -47,6 +47,8 @@ interface ChannelServiceOptions {
   readonly channels: ChannelStore;
   /** The task tools' own entry points, which a bridge calls as itself. */
   readonly bridgeTools: () => Pick<OpensteerMcpService, "callTool">;
+  /** A provider account ended: its bridges end with it, through the Disconnect worker. */
+  readonly onAccountEnded?: () => void;
 }
 
 export class ChannelService {
@@ -56,6 +58,7 @@ export class ChannelService {
   readonly #relay: MessagingRelayHub;
   readonly #store: OpensteerStore;
   readonly #bridgeTools: () => Pick<OpensteerMcpService, "callTool">;
+  readonly #onAccountEnded: () => void;
   #closed = false;
   readonly #drains: DeadlineDrain;
   #nextPruneAt = 0;
@@ -67,6 +70,7 @@ export class ChannelService {
     this.#relay = options.relay;
     this.#store = options.store;
     this.#bridgeTools = options.bridgeTools;
+    this.#onAccountEnded = options.onAccountEnded ?? (() => {});
     this.#drains = new DeadlineDrain({
       drain: () => this.#drainIngress(),
       ...(options.onError ? { onError: options.onError } : {}),
@@ -389,6 +393,7 @@ export class ChannelService {
       status,
       administration,
     );
+    if (status === "revoked") this.#onAccountEnded();
     await this.syncRuntimes();
     this.#onChanged();
   }

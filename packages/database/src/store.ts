@@ -24,6 +24,7 @@ import {
   type ConnectionCleanup,
   openCleanups,
   requestExpiredCleanups,
+  stopChatAttempt,
   releaseConnectionCleanupClaim,
   renewConnectionCleanupClaim,
   settleLineageRequests,
@@ -1126,6 +1127,9 @@ export class OpensteerStore {
                 new TriggerStore(tx).stopConnectionWatch(attempt.id, attempt.generation!),
               );
               if (attempt.handedOff) await stop();
+              break;
+            case "chat":
+              await mutate((tx) => stopChatAttempt(tx, attempt.id));
               break;
             case "operation":
               if (!attempt.handedOff)

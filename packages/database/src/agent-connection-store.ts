@@ -37,7 +37,12 @@ import {
 import { jsonValue } from "./store-primitives.js";
 import { connectionPolicyMode } from "./work-policy.js";
 import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
-import { bridgeStoredExpiry, connectionActive, expiresByTime } from "./connection-liveness.js";
+import {
+  bridgeAccountEnded,
+  bridgeStoredExpiry,
+  connectionActive,
+  expiresByTime,
+} from "./connection-liveness.js";
 import type { BridgeSenders } from "./schema.js";
 import { channelProviderCatalog, type ChannelAccountId } from "@opensteer/channel-core";
 
@@ -299,8 +304,8 @@ export class AgentConnectionStore {
             and (cleanup_reason is null or cleanup_reason = 'narrowed')),
         (select ${retryAt}::timestamptz where exists (
           select 1 from agent_connections
-          where removed_at is null and cleanup_requested_at is not null
-            and cleanup_completed_at is null
+          where removed_at is null and ((cleanup_requested_at is not null
+            and cleanup_completed_at is null) or ${bridgeAccountEnded})
         )),
         (select ${this.now()}::timestamptz + (min(expires_at) - clock_timestamp())
           from agent_embedder_assertion_claims)

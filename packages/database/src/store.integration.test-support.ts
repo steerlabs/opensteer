@@ -307,7 +307,15 @@ export async function createStoreFixture() {
         publicKeyPem: `-----BEGIN PUBLIC KEY-----\n${runnerId}\n-----END PUBLIC KEY-----\n`,
       });
     }
-    async function createChannelDeliveryFixture(suffix: string) {
+    /**
+     * A provider account as the previous image left it (an old route, and a conversation pinned
+     * to it), and unless asked otherwise one live bridge on its own channel with a conversation
+     * whose task is the fixture's, for the outbox.
+     */
+    async function createChannelDeliveryFixture(
+      suffix: string,
+      options: { readonly bridge?: boolean } = {},
+    ) {
       const { ChannelStore } = await import("./channel-store.js");
       const fixture = await createRunFixture(`channel-delivery-${suffix}`);
       await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
@@ -362,7 +370,7 @@ export async function createStoreFixture() {
         runnerId: testMessagingRunnerId,
         status: "connected",
       });
-      const conversationId = createChannelId("conversation");
+      const legacyConversationId = createChannelId("conversation");
       await database
         .insertInto("channelConversations")
         .values({
@@ -376,13 +384,42 @@ export async function createStoreFixture() {
           externalConversationId: `D-${suffix}`,
           externalScopeId: null,
           externalThreadId: null,
-          id: conversationId,
+          id: legacyConversationId,
           provider: "slack",
           providerState: sql`${JSON.stringify({})}::jsonb`,
           updatedAt: new Date(),
         })
         .executeTakeFirstOrThrow();
-      return { channels, configured, conversationId, fixture };
+      let conversationId = legacyConversationId;
+      let bridgeId: string | null = null;
+      if (options.bridge !== false) {
+        const { AgentConnectionStore } = await import("./agent-connection-store.js");
+        const bridge = await new AgentConnectionStore(database).createBridge({
+          userId: fixture.userId,
+          accountId: configured.account.id,
+          conversation: { id: `C-delivery-${suffix}`, name: `#delivery-${suffix}` },
+          senders: "owner",
+          accessMode: "approval-required",
+          grant: { scope: "selected", tasks: true, resources: [] },
+        });
+        bridgeId = bridge.id;
+        conversationId = createChannelId("conversation");
+        await database
+          .insertInto("bridgeConversations")
+          .values({
+            id: conversationId,
+            bridgeId,
+            accountId: configured.account.id,
+            externalScopeId: `T-${suffix}`,
+            externalConversationId: `C-delivery-${suffix}`,
+            externalThreadId: null,
+            conversationType: "channel",
+            displayName: `#delivery-${suffix}`,
+            threadId: fixture.thread.id,
+          })
+          .execute();
+      }
+      return { bridgeId, channels, configured, conversationId, legacyConversationId, fixture };
     }
     async function insertChannelDelivery(input: {
       readonly accountId: ChannelAccountId;
@@ -391,19 +428,23 @@ export async function createStoreFixture() {
     }) {
       const id = createChannelId("delivery");
       const claimed = input.status === "leased" || input.status === "attempt-started";
+      const conversation = await database
+        .selectFrom("bridgeConversations")
+        .select("bridgeId")
+        .where("id", "=", input.conversationId)
+        .executeTakeFirstOrThrow();
       await database
-        .insertInto("channelDeliveries")
+        .insertInto("bridgeDeliveries")
         .values({
+          id,
+          bridgeId: conversation.bridgeId,
           accountId: input.accountId,
+          conversationId: input.conversationId,
           attempts: input.status === "attempt-started" ? 1 : 0,
           claimExpiresAt: claimed ? new Date(Date.now() + 60_000) : null,
           claimOwner: claimed ? testMessagingRunnerId : null,
           claimTokenHash: claimed ? `claim-${id}` : null,
-          audience: "conversation",
           content: sql`${JSON.stringify([{ text: "Delivery", type: "text" }])}::jsonb`,
-          conversationId: input.conversationId,
-          id,
-          ingressId: null,
           kind: "status",
           lastError: input.status === "retryable-failed" ? "Temporary provider failure" : null,
           messageId: null,
@@ -411,9 +452,7 @@ export async function createStoreFixture() {
           // clock can trail the host's by tens of milliseconds.
           nextAttemptAt: sql<Date>`statement_timestamp()`,
           receipt: null,
-          sentAt: null,
           status: input.status,
-          updatedAt: new Date(),
         })
         .executeTakeFirstOrThrow();
       return id;

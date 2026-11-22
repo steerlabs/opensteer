@@ -196,7 +196,7 @@ describeStore("Request continuation admission", (it) => {
       await open(store, fixture, "needs-profile");
       await open(store, fixture, "needs-gmail");
       const earlyNotices = await database
-        .selectFrom("channelDeliveries")
+        .selectFrom("bridgeDeliveries")
         .select("id")
         .where("conversationId", "=", channel.conversationId)
         .where("kind", "=", "status")
@@ -232,7 +232,7 @@ describeStore("Request continuation admission", (it) => {
         await store.stopHeldRun((await store.runCapabilityScope(fixture.run.id))!, "limit");
       await finish(store, fixture, heldStop);
       const notices = await database
-        .selectFrom("channelDeliveries")
+        .selectFrom("bridgeDeliveries")
         .select("content")
         .where("conversationId", "=", channel.conversationId)
         .where("kind", "=", "status")

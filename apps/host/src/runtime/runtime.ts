@@ -2034,6 +2034,8 @@ export async function createHostRuntime(
       realtime.broadcast({ type: "host.connections-changed" });
       announceResources("machine");
       void channelService?.syncRuntimes();
+      // A bridge whose computer app lost its approval ends: the cleanup worker revokes it now.
+      connectionMaintenance?.wake();
     };
     const onSettingsChanged = async ({
       installationId,
@@ -2986,6 +2988,7 @@ export async function createHostRuntime(
         if (!bridgeToolService) throw new Error("The task tools are not ready yet");
         return bridgeToolService;
       },
+      onAccountEnded: () => void driveConnectionCleanups(),
       store,
     });
     channelService = channels;

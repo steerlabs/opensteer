@@ -11,7 +11,9 @@ const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
 
 async function bridgeFixture(suffix: string) {
   const storeFixture = await createStoreFixture();
-  const { configured, fixture } = await storeFixture.createChannelDeliveryFixture(suffix);
+  const { configured, fixture } = await storeFixture.createChannelDeliveryFixture(suffix, {
+    bridge: false,
+  });
   await serveMcp(storeFixture);
   const connections = new AgentConnectionStore(storeFixture.database);
   const bridge = await connections.createBridge({

@@ -223,10 +223,6 @@ function Messaging({ host }: { readonly host: HostClient }) {
                 type: "channel.connection.computer.create",
                 provider: provider.provider,
                 runnerId,
-                ownerHandles: handles
-                  .split(",")
-                  .map((v) => v.trim())
-                  .filter(Boolean),
                 idempotencyKey,
               },
               section,

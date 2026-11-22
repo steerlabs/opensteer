@@ -258,7 +258,6 @@ it.each(["ios", "android"])(
     await press("Connect");
     expect(commands.at(-1)).toMatchObject({
       type: "channel.connection.computer.create",
-      ownerHandles: ["owner@example.com"],
     });
     await press("Cancel");
     await press("Repair");

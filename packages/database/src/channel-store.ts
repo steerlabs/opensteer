@@ -6,6 +6,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { jsonValue } from "./store-primitives.js";
+import { liveConnection } from "./connection-liveness.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   ChannelAccountSchema,
@@ -33,17 +34,11 @@ import {
 import type { IntegrationConnectionMethod } from "@opensteer/integration-core/models";
 import { OpensteerError, type CredentialId, type RunnerId, type UserId } from "@opensteer/core";
 import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
-import type {
-  ChannelAccountTable,
-  ChannelDeliveryTable,
-  DatabaseSchema,
-  IntegrationConnectionTable,
-} from "./schema.js";
+import type { ChannelAccountTable, DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 
 import {
   channelSourceAllows,
-  insertStatusDelivery,
   revokeChannelConnectionsInTransaction,
 } from "./channel-deliveries.js";
 import type {} from "./run-grants.js";
@@ -132,13 +127,6 @@ const ingressDeferralRetryMs = 5_000;
 const ingressDeferralSlowRetryMs = 30_000;
 /** How long a message stays "just sent" for the purpose of that cadence. */
 const ingressDeferralFreshMs = 60_000;
-/**
- * What an explicitly addressed message is told when its ingress ran out of
- * attempts. Nothing here knows what actually went wrong twenty times, so it
- * says the one useful thing: the answer is not coming, look in the app.
- */
-const ingressDeadNotice =
-  "Something went wrong while handling your message. Open Opensteer to check on it.";
 
 /**
  * Exponential with full respect for a provider's own `Retry-After`, jittered
@@ -194,8 +182,8 @@ export class ChannelStore {
         .limit(500)
         .execute(),
       this.#database
-        .selectFrom("channelDeliveries")
-        .innerJoin("channelAccounts", "channelAccounts.id", "channelDeliveries.accountId")
+        .selectFrom("bridgeDeliveries")
+        .innerJoin("channelAccounts", "channelAccounts.id", "bridgeDeliveries.accountId")
         .innerJoin(
           "integrationConnections",
           "integrationConnections.id",
@@ -203,7 +191,7 @@ export class ChannelStore {
         )
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("integrationConnections.ownerUserId", "=", ownerUserId)
-        .where("channelDeliveries.status", "in", ["unknown", "dead"])
+        .where("bridgeDeliveries.status", "in", ["unknown", "dead"])
         .executeTakeFirstOrThrow(),
     ]);
     return ChannelDashboardSchema.parse({
@@ -403,9 +391,10 @@ export class ChannelStore {
     readonly ingressEvents: number;
   }> {
     const horizon = new Date(now.getTime() - retentionMs);
+    // A message that may have arrived (`unknown`) is kept: it is a Disconnect's evidence.
     const deliveries = await this.#database
-      .deleteFrom("channelDeliveries")
-      .where("status", "in", ["sent", "dead"])
+      .deleteFrom("bridgeDeliveries")
+      .where("status", "in", ["sent", "dead", "cancelled"])
       .where("updatedAt", "<", horizon)
       .executeTakeFirst();
     const ingressEvents = await this.#database
@@ -808,20 +797,9 @@ export class ChannelStore {
         .where("id", "in", maintenanceIds)
         .where("status", "=", "pending")
         .where("attempts", ">=", ingressAttemptCeiling)
-        .returning(["accountId", "event", "id"])
         .execute();
-      for (const row of dead) {
-        if (NormalizedChannelEventSchema.parse(row.event).trigger === "conversation-followup") {
-          continue;
-        }
-        await insertStatusDelivery(transaction, {
-          accountId: row.accountId,
-          audience: "actor",
-          conversationId: null,
-          ingressId: row.id,
-          text: ingressDeadNotice,
-        });
-      }
+      // Nothing is said in the chat: a message that ran out of attempts stays here, dead.
+      void dead;
     });
     return commitPersonalMutation(this.#database, async (transaction) => {
       const leasedAt = new Date();
@@ -916,7 +894,8 @@ export class ChannelStore {
     id: ChannelIngressId,
     claimToken: string,
     reason: string,
-    notice: { readonly accountId: ChannelAccountId; readonly text: string } | null = null,
+    /** Always null: nothing is said in a chat about a message that starts no work. */
+    notice: null = null,
   ): Promise<void> {
     await commitPersonalMutation(this.#database, async (transaction) => {
       const result = await transaction
@@ -935,27 +914,25 @@ export class ChannelStore {
         .where("claimTokenHash", "=", digest(claimToken))
         .executeTakeFirst();
       if (result.numUpdatedRows !== 1n) throw staleClaim("ingress");
-      if (!notice) return;
-      await insertStatusDelivery(transaction, {
-        accountId: notice.accountId,
-        audience: "actor",
-        conversationId: null,
-        ingressId: id,
-        text: notice.text,
-      });
+      void notice;
     });
   }
 
+  /**
+   * The next message a messaging runtime may send: a bridge's reply or notice, in order within
+   * its conversation, while the bridge is live and its account connected. A send whose lease ran
+   * out may have happened: it becomes `unknown` and is never handed out again.
+   */
   async claimDelivery(workerId: string, leaseMs = 30_000): Promise<ClaimedDeliveryRecord | null> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const now = new Date();
       await transaction
-        .updateTable("channelDeliveries")
+        .updateTable("bridgeDeliveries")
         .set({
           claimExpiresAt: null,
           claimOwner: null,
           claimTokenHash: null,
-          lastError: "Delivery outcome is unknown after worker lease expiry",
+          lastError: "The send's outcome is unknown: its runtime stopped answering",
           status: "unknown",
           updatedAt: now,
         })
@@ -963,17 +940,13 @@ export class ChannelStore {
         .where("claimExpiresAt", "<", now)
         .execute();
       await transaction
-        .updateTable("channelDeliveries")
-        .set({
-          lastError: "Channel delivery retry limit reached",
-          status: "dead",
-          updatedAt: now,
-        })
-        .where("status", "in", ["pending", "retryable-failed", "unknown"])
+        .updateTable("bridgeDeliveries")
+        .set({ lastError: "Channel delivery retry limit reached", status: "dead", updatedAt: now })
+        .where("status", "in", ["pending", "retryable-failed"])
         .where("attempts", ">=", deliveryAttemptCeiling)
         .execute();
       await transaction
-        .updateTable("channelDeliveries")
+        .updateTable("bridgeDeliveries")
         .set({
           claimExpiresAt: null,
           claimOwner: null,
@@ -984,44 +957,38 @@ export class ChannelStore {
         .where("status", "=", "leased")
         .where("claimExpiresAt", "<", now)
         .execute();
-      // One destination is one lane: the earliest unsent part of a
-      // conversation (or of the ingress a status answers), and only while
-      // nothing else in that lane is in flight. A reply split into parts must
-      // arrive whole and in order, which a global queue cannot promise.
       const row = await transaction
-        .selectFrom("channelDeliveries")
-        .leftJoin(
-          "channelConversations",
-          "channelConversations.id",
-          "channelDeliveries.conversationId",
+        .selectFrom("bridgeDeliveries")
+        .innerJoin(
+          "bridgeConversations",
+          "bridgeConversations.id",
+          "bridgeDeliveries.conversationId",
         )
-        .leftJoin("channelIngressEvents", "channelIngressEvents.id", "channelDeliveries.ingressId")
-        .innerJoin("channelAccounts", "channelAccounts.id", "channelDeliveries.accountId")
+        .innerJoin("agentConnections", "agentConnections.id", "bridgeDeliveries.bridgeId")
+        .innerJoin("channelAccounts", "channelAccounts.id", "bridgeDeliveries.accountId")
         .innerJoin(
           "integrationConnections",
           "integrationConnections.id",
           "channelAccounts.connectionId",
         )
         .select([
-          "channelDeliveries.accountId",
-          "channelDeliveries.attempts",
-          "channelDeliveries.audience",
-          "channelDeliveries.content",
-          "channelDeliveries.conversationId",
-          "channelDeliveries.createdAt",
-          "channelDeliveries.id",
-          "channelDeliveries.kind",
-          "channelDeliveries.lastError",
-          "channelDeliveries.messageId",
-          "channelDeliveries.part",
-          "channelDeliveries.partCount",
-          "channelDeliveries.receipt",
-          "channelDeliveries.status",
-          "channelDeliveries.updatedAt",
-          "channelConversations.externalConversationId",
-          "channelConversations.externalScopeId",
-          "channelConversations.externalThreadId",
-          "channelIngressEvents.event as ingressEvent",
+          "bridgeDeliveries.accountId",
+          "bridgeDeliveries.attempts",
+          "bridgeDeliveries.content",
+          "bridgeDeliveries.conversationId",
+          "bridgeDeliveries.createdAt",
+          "bridgeDeliveries.id",
+          "bridgeDeliveries.kind",
+          "bridgeDeliveries.lastError",
+          "bridgeDeliveries.messageId",
+          "bridgeDeliveries.part",
+          "bridgeDeliveries.partCount",
+          "bridgeDeliveries.receipt",
+          "bridgeDeliveries.status",
+          "bridgeDeliveries.updatedAt",
+          "bridgeConversations.externalConversationId",
+          "bridgeConversations.externalScopeId",
+          "bridgeConversations.externalThreadId",
           "channelAccounts.externalAccountId",
           "integrationConnections.credentialId",
           "integrationConnections.runnerId",
@@ -1029,36 +996,37 @@ export class ChannelStore {
           "integrationConnections.ownerUserId",
           "integrationConnections.provider",
         ])
-        .where("channelDeliveries.status", "in", ["pending", "retryable-failed", "unknown"])
-        // PostgreSQL defaults retain finer precision than JavaScript's clock.
-        .where("channelDeliveries.nextAttemptAt", "<=", sql<Date>`statement_timestamp()`)
+        .where("bridgeDeliveries.status", "in", ["pending", "retryable-failed"])
+        .where("bridgeDeliveries.nextAttemptAt", "<=", sql<Date>`statement_timestamp()`)
+        // One conversation is one lane: its earliest unsent part, only while nothing in it is
+        // in flight, so a reply split into parts arrives whole and in order.
         .where(
           sql<boolean>`not exists (
-            select 1 from public.channel_deliveries ahead
-            where coalesce(ahead.conversation_id, ahead.ingress_id)
-                = coalesce(channel_deliveries.conversation_id, channel_deliveries.ingress_id)
+            select 1 from public.bridge_deliveries ahead
+            where ahead.conversation_id = bridge_deliveries.conversation_id
               and (
                 ahead.status in ('leased', 'attempt-started')
                 or (
-                  ahead.status in ('pending', 'retryable-failed', 'unknown')
+                  ahead.status in ('pending', 'retryable-failed')
                   and (ahead.created_at, ahead.part)
-                      < (channel_deliveries.created_at, channel_deliveries.part)
+                      < (bridge_deliveries.created_at, bridge_deliveries.part)
                 )
               )
           )`,
         )
+        .where(liveConnection())
         .where("channelAccounts.status", "=", "connected")
         .where("integrationConnections.status", "=", "connected")
         .where("integrationConnections.runnerId", "=", workerId as RunnerId)
-        .orderBy("channelDeliveries.createdAt", "asc")
-        .orderBy("channelDeliveries.part", "asc")
-        .forNoKeyUpdate("channelDeliveries")
+        .orderBy("bridgeDeliveries.createdAt", "asc")
+        .orderBy("bridgeDeliveries.part", "asc")
+        .forNoKeyUpdate("bridgeDeliveries")
         .skipLocked()
         .executeTakeFirst();
       if (!row?.runnerId) return null;
       const claimToken = randomBytes(32).toString("base64url");
       await transaction
-        .updateTable("channelDeliveries")
+        .updateTable("bridgeDeliveries")
         .set({
           claimExpiresAt: new Date(now.getTime() + leaseMs),
           claimOwner: workerId,
@@ -1077,62 +1045,65 @@ export class ChannelStore {
           provider: ChannelProviderSchema.parse(row.provider),
           runnerId: row.runnerId,
         },
-        delivery: channelDeliveryFromRow({ ...row, status: "leased" }),
-        destination: deliveryDestination(row),
+        delivery: ChannelDeliverySchema.parse({
+          accountId: row.accountId,
+          attempts: row.attempts,
+          audience: "conversation",
+          content: row.content,
+          conversationId: row.conversationId,
+          createdAt: row.createdAt.toISOString(),
+          id: row.id,
+          kind: row.kind,
+          lastError: row.lastError,
+          messageId: row.messageId,
+          receipt: row.receipt,
+          status: "leased",
+          updatedAt: row.updatedAt.toISOString(),
+        }),
+        destination: {
+          externalConversationId: row.externalConversationId,
+          externalScopeId: row.externalScopeId,
+          externalThreadId: row.externalThreadId,
+          externalUserId: null,
+        },
         externalAccountId: row.externalAccountId,
-        mayHaveBeenSent: row.status === "unknown",
+        // Never: a send that may have happened is not handed out again.
+        mayHaveBeenSent: false,
       };
     });
   }
 
+  /**
+   * The send is about to leave the Home. Under the bridge's own row: a bridge that ended, or
+   * whose transport lost the use it was set up on, never sends it, and it is known unsent.
+   */
   async startDeliveryAttempt(deliveryId: ChannelDeliveryId, claimToken: string): Promise<void> {
     const withdrawn = await commitPersonalMutation(this.#database, async (transaction) => {
       const delivery = await transaction
-        .selectFrom("channelDeliveries")
-        .select(["accountId", "kind", "messageId"])
+        .selectFrom("bridgeDeliveries")
+        .select(["accountId", "bridgeId"])
         .where("id", "=", deliveryId)
         .executeTakeFirst();
       if (!delivery) throw staleClaim("delivery");
-      const observed = await transaction
-        .selectFrom("channelAccounts")
-        .innerJoin(
-          "integrationConnections",
-          "integrationConnections.id",
-          "channelAccounts.connectionId",
-        )
-        .select(["integrationConnections.id", "integrationConnections.sourceConnectionId"])
-        .where("channelAccounts.id", "=", delivery.accountId)
+      // Disconnect holds this row for update: once it commits, nothing more starts.
+      const live = await transaction
+        .selectFrom("agentConnections")
+        .select("id")
+        .where("id", "=", delivery.bridgeId)
+        .where(liveConnection())
+        .forShare("agentConnections")
         .executeTakeFirst();
-      if (!observed) throw staleClaim("delivery");
-      // Reserve both connection fences before checking the reply's sender authority.
-      const connections = await transaction
-        .selectFrom("integrationConnections")
-        .select(["id", "status"])
-        .where("id", "in", [
-          observed.id,
-          ...(observed.sourceConnectionId ? [observed.sourceConnectionId] : []),
-        ])
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute();
-      if (connections.find((row) => row.id === observed.id)?.status !== "connected")
-        throw staleClaim("delivery");
-      const sourceAllowed = await channelSourceAllows(transaction, delivery.accountId, false);
-      // What the previous image queued here was decided by routes and approvals that no longer
-      // exist; it never leaves the Home. A bridge's messages leave through its own outbox.
-      void sourceAllowed;
-      const allowed = false;
-      // Nothing left the Host yet, so a delivery whose channel lost the use it
-      // was set up on ends here, known not to have been sent.
+      const allowed =
+        live !== undefined && (await channelSourceAllows(transaction, delivery.accountId));
       if (!allowed) {
         const ended = await transaction
-          .updateTable("channelDeliveries")
+          .updateTable("bridgeDeliveries")
           .set({
             claimExpiresAt: null,
             claimOwner: null,
             claimTokenHash: null,
-            lastError: "Messaging authority changed before delivery",
-            status: "dead",
+            lastError: "The bridge ended before this was sent",
+            status: "cancelled",
             updatedAt: new Date(),
           })
           .where("id", "=", deliveryId)
@@ -1143,7 +1114,7 @@ export class ChannelStore {
         return true;
       }
       const result = await transaction
-        .updateTable("channelDeliveries")
+        .updateTable("bridgeDeliveries")
         .set({
           attempts: sql<number>`attempts + 1`,
           status: "attempt-started",
@@ -1164,6 +1135,10 @@ export class ChannelStore {
     }
   }
 
+  /**
+   * What the runtime saw. A failure the provider proves happened before sending is tried
+   * again; `unknown` (it may have arrived) and `dead` are final, never retried by the Home.
+   */
   async finishDelivery(input: {
     readonly claimToken: string;
     readonly deliveryId: ChannelDeliveryId;
@@ -1174,19 +1149,16 @@ export class ChannelStore {
   }): Promise<void> {
     const now = new Date();
     const observed = await this.#database
-      .selectFrom("channelDeliveries")
+      .selectFrom("bridgeDeliveries")
       .select("attempts")
       .where("id", "=", input.deliveryId)
       .executeTakeFirst();
-    // `unknown` keeps its place in the queue: the runtime reconciles with the
-    // provider before it sends again, and an outcome that never arrived is not
-    // evidence that sending again immediately would help.
     const retry =
-      input.outcome === "retryable-failed" || input.outcome === "unknown"
+      input.outcome === "retryable-failed"
         ? channelRetryDelayMs(observed?.attempts ?? 1, input.retryAfterMs ?? null)
         : 0;
     const result = await this.#database
-      .updateTable("channelDeliveries")
+      .updateTable("bridgeDeliveries")
       .set({
         claimExpiresAt: null,
         claimOwner: null,
@@ -1345,70 +1317,6 @@ function integrationConnectionFromRow(
     transportKind: row.transportKind,
     updatedAt: row.updatedAt.toISOString(),
   });
-}
-
-function channelDeliveryFromRow(
-  row: Pick<
-    Selectable<ChannelDeliveryTable>,
-    | "accountId"
-    | "attempts"
-    | "audience"
-    | "content"
-    | "conversationId"
-    | "createdAt"
-    | "id"
-    | "kind"
-    | "lastError"
-    | "messageId"
-    | "receipt"
-    | "status"
-    | "updatedAt"
-  >,
-): ChannelDelivery {
-  return ChannelDeliverySchema.parse({
-    accountId: row.accountId,
-    attempts: row.attempts,
-    audience: row.audience,
-    content: row.content,
-    conversationId: row.conversationId,
-    createdAt: row.createdAt.toISOString(),
-    id: row.id,
-    kind: row.kind,
-    lastError: row.lastError,
-    messageId: row.messageId,
-    receipt: row.receipt,
-    status: row.status,
-    updatedAt: row.updatedAt.toISOString(),
-  });
-}
-
-/**
- * Where one claimed delivery goes. A reply is addressed by the conversation it
- * belongs to; a status born from an ignored ingress has no conversation row, so
- * the event the provider sent is the only record of where that person wrote.
- */
-function deliveryDestination(row: {
-  readonly audience: "conversation" | "actor";
-  readonly externalConversationId: string | null;
-  readonly externalScopeId: string | null;
-  readonly externalThreadId: string | null;
-  readonly ingressEvent: unknown;
-}): ClaimedDeliveryRecord["destination"] {
-  if (row.externalConversationId !== null) {
-    return {
-      externalConversationId: row.externalConversationId,
-      externalScopeId: row.externalScopeId,
-      externalThreadId: row.externalThreadId,
-      externalUserId: null,
-    };
-  }
-  const event = NormalizedChannelEventSchema.parse(row.ingressEvent);
-  return {
-    externalConversationId: event.conversation.externalConversationId,
-    externalScopeId: event.conversation.externalScopeId,
-    externalThreadId: event.conversation.externalThreadId,
-    externalUserId: row.audience === "actor" ? event.actor.externalUserId : null,
-  };
 }
 
 /** See `ingressDeferralRetryMs`: quick while somebody is still watching. */

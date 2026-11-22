@@ -392,12 +392,20 @@ async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: 
     .executeTakeFirstOrThrow();
   if (run.purpose === "voice") return true;
   if (run.replyTarget?.kind !== "channel") return false;
+  // The person's own direct messages to a bridge only they may speak to.
   const conversation = await tx
-    .selectFrom("channelConversations")
-    .select("personalContext")
-    .where("id", "=", ChannelConversationIdSchema.parse(run.replyTarget.conversationId))
+    .selectFrom("bridgeConversations")
+    .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+    .select("bridgeConversations.id")
+    .where(
+      "bridgeConversations.id",
+      "=",
+      ChannelConversationIdSchema.parse(run.replyTarget.conversationId),
+    )
+    .where("bridgeConversations.conversationType", "=", "dm")
+    .where("agentConnections.bridgeSenders", "=", "owner")
     .executeTakeFirst();
-  return conversation?.personalContext === true;
+  return conversation !== undefined;
 }
 
 export function createRunFinishDrain(

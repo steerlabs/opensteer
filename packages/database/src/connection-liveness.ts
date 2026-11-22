@@ -44,3 +44,22 @@ export function connectionActive(
 ): boolean {
   return row.revokedAt === null && (row.bridgeAccountId !== null || row.expiresAt > now);
 }
+
+/**
+ * A bridge whose provider account was removed, or whose computer app connection no longer
+ * allows reading and sending: it has ended, and the Disconnect worker revokes it. A paused
+ * account only suspends it (it has no authority while paused) and is not an end.
+ */
+export const bridgeAccountEnded = sql<boolean>`(agent_connections.bridge_account_id is not null
+  and agent_connections.revoked_at is null and not exists (
+    select 1 from channel_accounts bridge_account
+    join integration_connections bridge_channel
+      on bridge_channel.id = bridge_account.connection_id
+    left join integration_connections bridge_source
+      on bridge_source.id = bridge_channel.source_connection_id
+    where bridge_account.id = agent_connections.bridge_account_id
+      and bridge_account.status <> 'revoked'
+      and bridge_channel.status <> 'revoked'
+      and (bridge_channel.transport_kind <> 'computer' or (
+        bridge_source.status is not null and bridge_source.status <> 'revoked'
+        and bridge_source.computer_access = 'read-write'))))`;

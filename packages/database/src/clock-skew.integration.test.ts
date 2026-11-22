@@ -41,13 +41,13 @@ describeStore("Host and PostgreSQL clocks 30 s apart", (it) => {
           status: "pending",
         });
         await database
-          .updateTable("channelDeliveries")
+          .updateTable("bridgeDeliveries")
           .set({ nextAttemptAt: databaseAt(5) })
           .where("id", "=", id)
           .execute();
         expect(await channels.claimDelivery(testMessagingRunnerId)).toBeNull();
         await database
-          .updateTable("channelDeliveries")
+          .updateTable("bridgeDeliveries")
           .set({ nextAttemptAt: databaseAt(-5) })
           .where("id", "=", id)
           .execute();

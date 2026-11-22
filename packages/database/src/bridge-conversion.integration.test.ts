@@ -20,7 +20,9 @@ describeStore("an existing Messaging route becomes bridges that can only do less
   it("answers only the person, Supervised, with tasks alone, and leaves the routes as they were", async ({
     storeFixture,
   }) => {
-    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("convert");
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("convert", {
+      bridge: false,
+    });
     const { database } = storeFixture;
     const binding = async (
       accessPolicy: unknown,
@@ -107,8 +109,11 @@ describeStore("an existing Messaging route becomes bridges that can only do less
   it("does not guess channels from history, and ties work without personal context to an ended connection", async ({
     storeFixture,
   }) => {
-    const { configured, fixture, conversationId } =
-      await storeFixture.createChannelDeliveryFixture("convert-all");
+    const {
+      configured,
+      fixture,
+      legacyConversationId: conversationId,
+    } = await storeFixture.createChannelDeliveryFixture("convert-all", { bridge: false });
     const { database } = storeFixture;
     await database
       .updateTable("channelBindings")
@@ -153,7 +158,10 @@ describeStore("an existing Messaging route becomes bridges that can only do less
   it("creates on a work Home that does not allow tasks only bridges that are already ended", async ({
     storeFixture,
   }) => {
-    const { fixture, configured } = await storeFixture.createChannelDeliveryFixture("convert-work");
+    const { fixture, configured } = await storeFixture.createChannelDeliveryFixture(
+      "convert-work",
+      { bridge: false },
+    );
     const { WorkHomeStore } = await import("./work-home.js");
     await new WorkHomeStore(storeFixture.database).initialize(
       {
