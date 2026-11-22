@@ -146,6 +146,79 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await vi.waitUntil(() => observer.context.field !== null, { timeout: 5000, interval: 5 });
   };
 
+  /** Sends one operation to the real page as the controller does: text, composition or command. */
+  const send = async (operation: EditingOperation) => {
+    if (operation.kind === "edit") return observer.edit(operation.edit, false);
+    if (operation.kind === "compose") return observer.edit(operation.composition, true);
+    if (operation.kind === "command")
+      await observer.input(() =>
+        cdp.send(
+          "Input.dispatchKeyEvent",
+          editingCommandParameters(operation.command, process.platform),
+        ),
+      );
+    return true;
+  };
+
+  /*
+   * What the mobile reducer sent for the random typing test's seed 15915, recorded from its run
+   * through the real proxy and reducer over the port: typing, a composition committed by
+   * unmarkText, the person's caret moved to 1 before the commit's turn (six moveBackward), then
+   * the next keystroke "x". The native caret there ends at 1; the real far caret must too, and
+   * the "x" must go in at 1.
+   */
+  it("puts the far caret where the person moved it while a composition's commit waited (seed 15915)", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    const far = new FarField();
+    far.contextId = observer.context.contextId;
+    const contextId = observer.context.contextId!;
+    const edit = (text: string, before = "") =>
+      ({ kind: "edit", edit: { contextId, text, before, after: "" } }) as const;
+    const operations: EditingOperation[] = [
+      edit("b"),
+      edit("a"),
+      edit("👩‍💻"),
+      edit("א"),
+      edit("", "א"),
+      edit("👩‍💻"),
+      edit("ب"),
+      {
+        kind: "compose",
+        composition: {
+          contextId,
+          text: "日本",
+          selectionStart: 2,
+          selectionEnd: 2,
+          before: "",
+          after: "",
+        },
+      },
+      edit("日本"),
+      ...Array.from({ length: 6 }, () => ({ kind: "command", command: "moveBackward" }) as const),
+    ];
+    for (const [index, operation] of operations.entries()) {
+      far.take(operation);
+      expect(await send(operation), `operation ${index} refused`).toBe(true);
+      const real = await read(page, kind);
+      expect(real.value, `operation ${index}: text`).toBe(far.value);
+      expect(real.caret, `operation ${index}: caret`).toBe(far.caret);
+    }
+    // The native field's caret after the same sequence, with the composition's commit putting
+    // back the caret the person chose (typing-order.interaction.test.tsx, seed 15915).
+    const nativeCaret = 1;
+    expect((await read(page, kind)).caret).toBe(nativeCaret);
+    const keystroke = edit("x");
+    far.take(keystroke);
+    expect(await send(keystroke)).toBe(true);
+    expect(await read(page, kind)).toEqual({
+      value: "bxa👩‍💻👩‍💻ب日本",
+      caret: 2,
+      collapsed: true,
+    });
+    expect(far.refused).toEqual([]);
+  });
+
   const totals = { operations: 0, refusals: 0, sequences: 0 };
   for (let chunk = 1; chunk <= seeds; chunk += 20) {
     const last = Math.min(chunk + 19, seeds);

@@ -490,5 +490,27 @@ import UIKit
     XCTAssertEqual(text, "👩‍💻👩‍💻א")
     XCTAssertEqual(text.utf16.count, (text as NSString).length)
   }
+
+  // Found by the random sequences (second generator, seeds 4021, 15915 and 16868): a tap during a
+  // composition commits it (unmarkText) and moves the caret, both before the composition's turn.
+  // The commit left the native caret at the end of the composition while the selection reported
+  // the caret the person chose, so the far caret went there and the next keystroke did not.
+  func testACaretMovedWhileTheCompositionsCommitWaitsIsWhereTheNextKeystrokeGoes() {
+    let field = Field(settled: "ab")
+    field.view.setMarkedText("日本", selectedRange: NSRange(location: 2, length: 0))
+    field.view.unmarkText()
+    field.select(NSRange(location: 1, length: 0))
+    field.answerAll()
+    let reported = field.packets.compactMap { $0["event"] as? [String: Any] }.last { $0["type"] as? String == "selection" }
+    let proxy = reported?["proxy"] as? [String: Any]
+    XCTAssertEqual(proxy?["selectionStart"] as? Int, 1)
+    XCTAssertEqual(proxy?["selectionEnd"] as? Int, 1)
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 1, length: 0))
+    field.view.insertText("x")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "axb日本")
+    let input = field.packets.compactMap { $0["event"] as? [String: Any] }.last { $0["type"] as? String == "input" }
+    XCTAssertEqual((input?["proxy"] as? [String: Any])?["selectionStart"] as? Int, 2)
+  }
 }
 #endif

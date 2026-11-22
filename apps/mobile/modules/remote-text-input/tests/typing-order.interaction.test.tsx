@@ -493,6 +493,22 @@ describe("a person's caret moves and selections in the native field", () => {
     same(remote, native);
   });
 
+  it("types where the person put the caret while a composition's commit waited", async () => {
+    // A tap during a composition: UIKit commits it (unmarkText), then moves the caret, both
+    // before the composition's own turn. The commit must not leave the native caret at the end
+    // of the composition while the far caret goes where the person put it.
+    const { remote, native, keyboard, answerAll } = await settled("ab");
+    await keyboard((field) => field.setMarkedText("日本"));
+    await keyboard((field) => field.unmarkText());
+    await keyboard((field) => field.moveSelection(1));
+    await answerAll();
+    expect(native.selection).toEqual({ start: 1, end: 1 });
+    await keyboard((field) => field.insertText("x"));
+    await answerAll();
+    expect(native.text).toBe("axb日本");
+    same(remote, native);
+  });
+
   /*
    * The family's structural test: random sequences of typing (UIKit's insertText and the
    * delegate), Backspace (the delegate) and deleteBackward, the person's caret moves and range
@@ -674,9 +690,12 @@ describe("a person's caret moves and selections in the native field", () => {
   // What the second generator found, kept: seed 81, a space typed as a composition committed,
   // named insertFromComposition when typed and lost on the far side; seed 2195, a deletion inside
   // a composition recorded at a caret moved while it waited, so a later keystroke split an emoji;
-  // seed 9944, a composition over a selection cancelled, which took the restated text with it.
-  it.each([81, 2195, 9944])("replays the sequence the second generator found at seed %i", (seed) =>
-    sequence2(seed),
+  // seed 9944, a composition over a selection cancelled, which took the restated text with it;
+  // seeds 4021, 15915 and 16868, a caret moved while a composition's commit (unmarkText) waited,
+  // left at the composition's end natively while the far caret went where the person put it.
+  it.each([81, 2195, 9944, 4021, 15915, 16868])(
+    "replays the sequence the second generator found at seed %i",
+    (seed) => sequence2(seed),
   );
 
   // 300 sequences a run; OPENSTEER_TYPING_FUZZ_RUNS and _SEED run more, 300 to a test.

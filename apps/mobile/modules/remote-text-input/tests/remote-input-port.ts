@@ -385,12 +385,18 @@ export class NativeField {
     });
   }
   unmarkText() {
+    // A tap during a composition commits it, then moves the caret, both before the commit's turn:
+    // once the composition ends, the caret goes back where the person put it.
+    const named = this.place(this.selection);
     this.enqueue(() => {
       if (!this.marked) return;
       const data = this.text.slice(this.marked.start, this.marked.end);
       this.marked = null;
+      // Its event reports its own caret; the caret the person chose is reported in its turn.
+      const proxy = this.snapshot();
+      this.keepChosen(named);
       this.ownSelection = { ...this.selection };
-      this.notify({ type: "compositionend", data, proxy: this.snapshot() });
+      this.notify({ type: "compositionend", data, proxy });
     });
   }
   /**

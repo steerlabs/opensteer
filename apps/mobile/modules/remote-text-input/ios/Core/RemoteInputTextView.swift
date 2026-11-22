@@ -198,14 +198,20 @@ import UniformTypeIdentifiers
   }
   public override func unmarkText() {
     if mutating { super.unmarkText(); return }
+    // A tap during a composition commits it, then moves the caret, both before the commit's turn:
+    // once the composition ends, the caret goes back where the person put it.
+    let named = place(selectedRange)
     gate.enqueue {
       guard self.markedTextRange != nil else { return }
       let data = self.marked()
       self.mutating = true
       super.unmarkText()
+      // Its event reports its own caret; the caret the person chose is reported in its turn.
+      let proxy = self.snapshot()
+      self.keepChosen(after: named)
       self.ownSelection = self.selectedRange
       self.mutating = false
-      self.gate.notify(["type": "compositionend", "data": data, "proxy": self.snapshot()])
+      self.gate.notify(["type": "compositionend", "data": data, "proxy": proxy])
     }
   }
   public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
