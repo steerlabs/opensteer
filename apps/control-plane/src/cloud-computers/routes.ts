@@ -397,6 +397,7 @@ export function registerCloudComputerRoutes(
     return CloudComputerListResponseSchema.parse({
       computers: await store.listForAccount(accountId),
       plan: store.plan,
+      offer: store.offer,
     });
   });
   app.get(ownerPath, async (request, reply) => {

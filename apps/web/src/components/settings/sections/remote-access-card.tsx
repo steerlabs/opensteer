@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
 import { useShell } from "../../app-shell.js";
@@ -8,6 +8,7 @@ import type {
   RemoteAccessView,
 } from "@opensteer/client/host";
 import { useWebRemoteAccess } from "../../../account/remote-access-port.js";
+import { PrivateNetworkSetup } from "../../first-run/private-network.js";
 
 /**
  * "Remote access": one status, one sentence, one action. Everything the
@@ -47,6 +48,11 @@ export interface RemoteAccessAdvanced {
     readonly origin: string;
     readonly save: (origin: string) => void;
   } | null;
+  /**
+   * The Mac that runs this Opensteer sets up a private network itself: Tailscale, its own
+   * address, and a one-time code for each phone. It replaces the typed address there.
+   */
+  readonly privateNetworkSetup?: ReactNode;
 }
 
 export function RemoteAccessCard() {
@@ -56,7 +62,27 @@ export function RemoteAccessCard() {
 }
 
 function RemoteAccessCardBody() {
-  return <RemoteAccessCardView model={useRemoteAccessCardModel()} />;
+  const { desktopBridge, desktopDeployment } = useShell();
+  const model = useRemoteAccessCardModel();
+  // Only the Mac that runs this Opensteer can share it on a tailnet or pair a phone to it.
+  const here = desktopBridge !== null && desktopDeployment?.onThisComputer === true;
+  const privateNetworkSetup = here ? <PrivateNetworkSetup bridge={desktopBridge} /> : null;
+  return (
+    <RemoteAccessCardView
+      model={
+        privateNetworkSetup
+          ? {
+              ...model,
+              advanced: {
+                actions: model.advanced?.actions ?? [],
+                privateNetwork: null,
+                privateNetworkSetup,
+              },
+            }
+          : model
+      }
+    />
+  );
 }
 
 export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCardModel }) {
@@ -155,10 +181,27 @@ export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCa
 
 function Advanced({ advanced }: { readonly advanced: RemoteAccessAdvanced }) {
   const [origin, setOrigin] = useState(advanced.privateNetwork?.origin ?? "");
+  // A private network reads Tailscale and makes phone codes, so it runs only while open.
+  const [open, setOpen] = useState(false);
   return (
-    <details className="settings-advanced">
+    <details
+      className="settings-advanced"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      open={open}
+    >
       <summary>Advanced</summary>
       <div className="card">
+        {advanced.privateNetworkSetup && open ? (
+          <section aria-labelledby="settings-private-network" className="card__row card__form">
+            <h3 className="card__row-title" id="settings-private-network">
+              Private network
+            </h3>
+            <p className="card__row-detail">
+              Reach this Opensteer on your own network instead of through your Opensteer account.
+            </p>
+            {advanced.privateNetworkSetup}
+          </section>
+        ) : null}
         {advanced.privateNetwork ? (
           <form
             className="card__row settings-remote__private"

@@ -103,6 +103,7 @@ export const desktopBridgeChannels = {
   completePersonalAccountLink: "opensteer.desktop.account-link.complete",
   linkPersonal: "opensteer.desktop.access.link-personal",
   openExternalUrl: "opensteer.desktop.external-url.open",
+  openInChrome: "opensteer.desktop.external-url.open-in-chrome",
   integrationAuthorizationReturn: "opensteer.desktop.integration-authorization.return",
   integrationAuthorizationSubscription: "opensteer.desktop.integration-authorization.subscription",
   finishIntegrationAuthorization: "opensteer.desktop.integration-authorization.finish",

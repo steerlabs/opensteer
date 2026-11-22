@@ -257,6 +257,23 @@ describe("one mixed list", () => {
     },
   );
 
+  // A list it had shown went under the connecting gate when the connection dropped: the Host's
+  // client keeps the rows and marks the inventory no longer known complete (`syncing`), and the
+  // screen took "syncing and not ready" for "never listed".
+  it("keeps the tabs it holds in view while the connection comes back", async () => {
+    const { container, host } = await mount();
+    expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
+    await act(async () => {
+      host.goOffline();
+      // What the Host's client does when its tab reads fall behind: rows stay, not complete.
+      host.getSnapshot().tabs.markInventoryStale();
+    });
+    expect(host.getSnapshot().tabs.syncing).toBe(true);
+    expect(host.connection.getSnapshot().phase).not.toBe("ready");
+    expect(container.querySelector('[data-gate="connection"]')).toBeNull();
+    expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);
+  });
+
   it("keeps every kind in the Host's one order, inside its group, and says why a tab can't open", async () => {
     const { container } = await mount();
     expect(rowTitles(container)).toEqual([...launchPrep, ...outside]);

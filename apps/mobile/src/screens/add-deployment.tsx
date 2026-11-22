@@ -1,3 +1,4 @@
+import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation } from "@react-navigation/native";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
@@ -195,7 +196,7 @@ export function AddDeploymentScreen(): ReactNode {
             <View style={styles.accountAction}>
               <SecondaryButton
                 disabled={refreshing}
-                label={refreshing ? "Refreshing…" : "Refresh Account deployments"}
+                label={refreshing ? "Refreshing…" : "Refresh your Opensteers"}
                 onPress={() => void refreshAndClose()}
               />
             </View>
@@ -220,7 +221,7 @@ export function AddDeploymentDoors(props: {
   readonly onServer: () => void;
   readonly signingIn?: boolean;
 }): ReactNode {
-  const account = accountDoorPresentation(props.account, props.signingIn === true);
+  const account = accountDoorPresentation(props.account, props.signingIn === true, thisPhoneNoun);
   return (
     <RowGroup>
       {[

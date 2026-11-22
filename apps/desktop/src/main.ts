@@ -1,3 +1,4 @@
+import { openInChrome } from "./app/open-in-chrome.js";
 import { IphoneService } from "./iphone/iphone-service.js";
 import { IphoneStore } from "./iphone/iphone-store.js";
 import { IphoneSetup } from "./iphone/iphone-setup.js";
@@ -651,6 +652,7 @@ async function runDesktop(
   const localStopPath = path.join(loaded.config.dataDirectory, "local-stop.json");
   const personal = new PersonalDeploymentSupervisor({
     agentsStoppedSince: () => localStop.agentsStoppedSince,
+    onContainedBoot: (mode: string) => localStop.noteContainedBoot(mode),
     onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
@@ -933,9 +935,11 @@ async function runDesktop(
       );
       if (errors.length) throw new Error(errors.join(" "));
     },
+    confirm: (stoppedSince, signal) => personal.waitForStopProof(stoppedSince, signal),
     store: localStopFileStore(localStopPath),
     log: reportEvent,
   });
+  shutdown.signal.addEventListener("abort", () => localStop.dispose(), { once: true });
   // Before any Runner starts: a Stop the person left in place still holds.
   await localStop.restore();
   shutdown.signal.throwIfAborted();
@@ -1159,9 +1163,16 @@ async function runDesktop(
     },
   });
   let personalAccountLinkResumeAttempted = false;
+  // Remote access is brought up once each time this Mac's Home becomes ready, not again on
+  // every later status change: a helper that can't start says so where the person turns
+  // Remote access on, instead of failing over and over in the log.
+  let personalWasReady = false;
   const detachPersonalRemoteInitialization = personal.subscribe((status) => {
+    const becameReady = status.state === "ready" && !personalWasReady;
+    personalWasReady = status.state === "ready";
     if (shutdown.requested || status.state !== "ready") return;
     if (desktopSupervisorReady) void desktopSupervisor.connect();
+    if (!becameReady) return;
     void personalRemote
       .initialize()
       .catch((error: unknown) =>
@@ -1218,6 +1229,7 @@ async function runDesktop(
   const access = new DeploymentAccessService({
     account: {
       available: loaded.config.accountUrl !== null,
+      portalOrigin: loaded.config.portalUrl?.origin ?? null,
       beginReauthorization: () => nativeAuth.beginAccountReauthorization(),
       beginSignIn: () => nativeAuth.beginAccountSignIn(),
       currentState: () => nativeAuth.state(),
@@ -1461,6 +1473,7 @@ async function runDesktop(
       openExternal: async (url) => {
         await shell.openExternal(url, { activate: true });
       },
+      openInChrome: (url) => openInChrome(url),
       pickFolder: async () => {
         const chosen = await dialog.showOpenDialog({
           properties: ["openDirectory", "createDirectory"],
@@ -1650,6 +1663,8 @@ async function runDesktop(
       phase: localStop.phase,
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
+      confirming: localStop.confirming,
+      confirmOverdue: localStop.confirmOverdue,
     }),
     openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
     log: reportEvent,

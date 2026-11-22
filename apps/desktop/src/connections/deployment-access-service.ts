@@ -39,6 +39,8 @@ export interface ClassifiedDeploymentAccessFailure {
 
 interface AccountPort {
   readonly available: boolean;
+  /** The Opensteer website this build's account is managed on, where checkout happens. */
+  readonly portalOrigin?: string | null;
   beginReauthorization(): Promise<DesktopAccountAuthState>;
   beginSignIn(): Promise<DesktopAccountAuthState>;
   currentState(): Promise<DesktopAccountAuthState>;
@@ -133,17 +135,32 @@ const checkFloorMilliseconds = 5_000;
  */
 const checkedAnswerLifetimeMilliseconds = 60_000;
 
-type ForegroundOperationKind =
-  | "account-sign-in"
-  | "create-personal"
-  | "direct-connect"
-  | "open-deployment"
-  | "personal-account-link"
-  | "personal-account-link-repair"
-  | "personal-account-unlink"
-  | "refresh-directory"
-  | "remove-from-account"
-  | "sign-out-of-app";
+/**
+ * One foreground ask, by what it asks for. A kind that acts on something names it in `target`,
+ * which the type requires; a kind with nothing to choose has none. Two asks are the same only
+ * when both match: the same kind for another target is another ask.
+ */
+type ForegroundRequest =
+  | {
+      readonly kind:
+        "create-personal" | "direct-connect" | "open-deployment" | "remove-from-account";
+      readonly target: string;
+    }
+  | { readonly kind: "account-sign-in"; readonly target: "reauthorize" | "sign-in" }
+  | {
+      readonly kind:
+        | "personal-account-link"
+        | "personal-account-link-repair"
+        | "personal-account-unlink"
+        | "refresh-directory"
+        | "sign-out-of-app";
+      readonly target?: never;
+    };
+type ForegroundOperationKind = ForegroundRequest["kind"];
+
+function sameRequest(left: ForegroundRequest, right: ForegroundRequest): boolean {
+  return left.kind === right.kind && left.target === right.target;
+}
 
 export class DeploymentAccessService {
   readonly #listeners = new Set<(snapshot: DeploymentAccessSnapshot) => void>();
@@ -170,6 +187,10 @@ export class DeploymentAccessService {
   readonly #now: () => number;
   #initialized = false;
   #operation: { readonly kind: ForegroundOperationKind } | null = null;
+  /** The running operation and what it settles to: what a second ask for the same adopts. */
+  #running: { readonly request: ForegroundRequest; readonly outcome: Promise<void> } | null = null;
+  /** Settles when the slot next frees. */
+  #ended = deferredSignal();
   #operationId = 0;
   #interactiveAttachment = false;
   #pendingAttachmentDeploymentId: string | null = null;
@@ -200,6 +221,8 @@ export class DeploymentAccessService {
   #attachment: ConnectionAttachment | null = null;
   #attachmentUnsubscribe: (() => void) | null = null;
   #unavailable: readonly DeploymentAccessUnavailable[] = [];
+  /** The person pressed Sign in here, and that sign-in hasn't settled yet. */
+  #signInStarted = false;
 
   constructor(
     ports: DeploymentAccessPorts,
@@ -217,13 +240,20 @@ export class DeploymentAccessService {
         this.#publish();
         // Only a newly signed-in Account changes the list. A refreshed token or
         // a re-verification of the same Account says nothing new about it.
+        // Only a sign-in the person started here may open a Home by itself; a
+        // re-authorisation, a restored session or a cancelled attempt never does.
+        const started = this.#signInStarted;
+        if (this.#account.status !== "authorizing") this.#signInStarted = false;
         if (this.#account.status === "signed-in" && !sameSignedInAccount(previous, this.#account)) {
+          const who = accountIdentity(this.#account);
           // The place left waiting for this sign-in reopens with it; any other
           // place's attempt is its own business, not the Account's.
-          void this.#refreshDirectory("required", "account-change").then(() => {
+          void this.#refreshDirectory("required", "account-change").then((applied) => {
             if (this.#selectedDeployment()?.source === "account") {
               this.#attachSelectedReturningDeployment();
+              return;
             }
+            if (started && applied && who) this.#openOnlyHome(who);
           });
         }
       }),
@@ -315,12 +345,18 @@ export class DeploymentAccessService {
     const personal = this.#personalSetup();
     return freezeSnapshot(
       DeploymentAccessSnapshotSchema.parse({
-        account: this.#account,
+        account: {
+          ...this.#account,
+          ...(this.#ports.account.portalOrigin
+            ? { portalOrigin: this.#ports.account.portalOrigin }
+            : {}),
+        },
         deployments: this.#catalog.deployments.filter(this.#shown).map((deployment) => {
           const info = this.#statusInfo(deployment, personal);
           const connection = this.#connectionSnapshot(deployment);
           const {
             accountLivenessExpiresAt: _accountLivenessExpiresAt,
+            accountOwner: _accountOwner,
             hasAccountConnectRoute: _hasAccountConnectRoute,
             hasVerifiedAccountRoute: _hasVerifiedAccountRoute,
             key: _key,
@@ -354,7 +390,10 @@ export class DeploymentAccessService {
   async addDirect(input: DesktopAddDirectRouteInput): Promise<void> {
     this.#assertActive();
     if (this.#catalog.deployments.length === 0) throw operationUnavailable("addDirect");
-    await this.#catalogMutation("open-deployment", () => this.#ports.direct.addRoute(input));
+    await this.#catalogMutation(
+      { kind: "open-deployment", target: `route ${input.deploymentId} ${input.origin}` },
+      () => this.#ports.direct.addRoute(input),
+    );
   }
 
   async cancel(): Promise<void> {
@@ -363,7 +402,9 @@ export class DeploymentAccessService {
       this.#pendingAttachmentDeploymentId = null;
       this.#selecting = null;
       this.#commitStagedPersonal();
-      await this.#accountOperation("sign-out-of-app", () => this.#ports.account.signOut());
+      await this.#accountOperation({ kind: "sign-out-of-app" }, () =>
+        this.#ports.account.signOut(),
+      );
       return;
     }
     const attachment = this.#selectedAttachment();
@@ -376,7 +417,7 @@ export class DeploymentAccessService {
       this.#selecting = null;
       this.#commitStagedPersonal();
       this.#operationId += 1;
-      this.#operation = null;
+      this.#endOperation();
       // Cancelling abandons the attempt and its in-flight establishment, and
       // returns the row to plain "not attached" — never to a failure a person
       // then has to clear before they can try again.
@@ -390,7 +431,16 @@ export class DeploymentAccessService {
 
   async connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void> {
     this.#assertActive();
-    await this.#catalogMutation("direct-connect", () => this.#ports.direct.connect(input));
+    await this.#catalogMutation(
+      {
+        kind: "direct-connect",
+        target:
+          input.kind === "personal-pairing"
+            ? `pairing ${input.origin} ${input.pairingCode}`
+            : `address ${input.origin}`,
+      },
+      () => this.#ports.direct.connect(input),
+    );
   }
 
   async createPersonalDeployment(input: DesktopCreatePersonalDeploymentInput = {}): Promise<void> {
@@ -406,7 +456,7 @@ export class DeploymentAccessService {
       throw operationUnavailable("createPersonalDeployment");
     }
     await this.#simpleOperation(
-      "create-personal",
+      { kind: "create-personal", target: `name ${input.name ?? ""}` },
       () => this.#ports.personal.start(input),
       (status) => {
         if (
@@ -431,7 +481,7 @@ export class DeploymentAccessService {
     if (this.#personalSetup()?.state !== "ready") throw operationUnavailable("linkPersonal");
     if (this.#personalLink.status === "needs-repair") {
       await this.#simpleOperation(
-        "personal-account-link-repair",
+        { kind: "personal-account-link-repair" },
         () => this.#ports.personalAccount.resetJournal(),
         (status) => {
           this.#personalLink = status;
@@ -446,7 +496,7 @@ export class DeploymentAccessService {
       throw operationUnavailable("linkPersonal");
     }
     await this.#simpleOperation(
-      "personal-account-link",
+      { kind: "personal-account-link" },
       () => this.#ports.personalAccount.link(),
       (status) => {
         this.#personalLink = status;
@@ -457,7 +507,7 @@ export class DeploymentAccessService {
   async reauthorize(): Promise<void> {
     this.#assertActive();
     if (this.#account.status !== "signed-in") throw operationUnavailable("reauthorize");
-    await this.#accountOperation("account-sign-in", () =>
+    await this.#accountOperation({ kind: "account-sign-in", target: "reauthorize" }, () =>
       this.#ports.account.beginReauthorization(),
     );
   }
@@ -466,7 +516,7 @@ export class DeploymentAccessService {
     this.#assertActive();
     if (this.#account.status !== "signed-in") throw operationUnavailable("refreshDirectory");
     await this.#simpleOperation(
-      "refresh-directory",
+      { kind: "refresh-directory" },
       () => this.#refreshDirectory("required", "manual"),
       () => undefined,
     );
@@ -508,6 +558,22 @@ export class DeploymentAccessService {
 
   async removeFromAccount(deploymentId: string): Promise<void> {
     this.#assertActive();
+    this.#assertRemovable(deploymentId);
+    const name = this.#nameOf(deploymentId);
+    await this.#simpleOperation(
+      { kind: "remove-from-account", target: deploymentId },
+      async () => {
+        // What it waited behind may have signed out or dropped the row.
+        if (!this.#listed(deploymentId)) throw new DeploymentAccessRefusal(homeGoneSentence(name));
+        this.#assertRemovable(deploymentId);
+        await this.#ports.directory.removeFromAccount(deploymentId);
+        return this.#refreshDirectory("required", "manual");
+      },
+      () => undefined,
+    );
+  }
+
+  #assertRemovable(deploymentId: string): void {
     if (this.#account.status !== "signed-in") throw operationUnavailable("removeFromAccount");
     const deployment = this.#catalog.deployments.find(({ id }) => id === deploymentId);
     // Dropping an Account listing is a member's preference. An owner's listing
@@ -525,14 +591,6 @@ export class DeploymentAccessService {
     ) {
       throw operationUnavailable("removeFromAccount");
     }
-    await this.#simpleOperation(
-      "remove-from-account",
-      async () => {
-        await this.#ports.directory.removeFromAccount(deploymentId);
-        return this.#refreshDirectory("required", "manual");
-      },
-      () => undefined,
-    );
   }
 
   /**
@@ -583,13 +641,21 @@ export class DeploymentAccessService {
     ) {
       throw operationUnavailable("signIn");
     }
-    await this.#accountOperation("account-sign-in", () => this.#ports.account.beginSignIn());
+    this.#signInStarted = true;
+    try {
+      await this.#accountOperation({ kind: "account-sign-in", target: "sign-in" }, () =>
+        this.#ports.account.beginSignIn(),
+      );
+    } catch (error) {
+      this.#signInStarted = false;
+      throw error;
+    }
   }
 
   async signOut(): Promise<void> {
     this.#assertActive();
     if (this.#account.status !== "signed-in") throw operationUnavailable("signOut");
-    await this.#accountOperation("sign-out-of-app", () => this.#ports.account.signOut());
+    await this.#accountOperation({ kind: "sign-out-of-app" }, () => this.#ports.account.signOut());
   }
 
   async unlinkPersonal(): Promise<void> {
@@ -601,7 +667,7 @@ export class DeploymentAccessService {
       throw operationUnavailable("unlinkPersonal");
     }
     await this.#simpleOperation(
-      "personal-account-unlink",
+      { kind: "personal-account-unlink" },
       () => this.#ports.personalAccount.unlink(),
       (status) => {
         this.#personalLink = status;
@@ -634,6 +700,32 @@ export class DeploymentAccessService {
    * is the authority that owns the place saying it is not there at all.
    */
   async #select(deploymentId: string): Promise<void> {
+    this.#assertSelectable(deploymentId);
+    const name = this.#nameOf(deploymentId);
+    await this.#exclusive(
+      { kind: "open-deployment", target: `select ${deploymentId}` },
+      (operationId) => this.#selectTurn(operationId, deploymentId, name),
+    );
+  }
+
+  /** The Home's own name while this Mac still lists it, as a person last saw it. */
+  #nameOf(deploymentId: string): string | null {
+    return (
+      this.#catalog.deployments.find(({ id }) => id === deploymentId)?.name ??
+      this.#unavailable.find((entry) => entry.deploymentId === deploymentId)?.name ??
+      null
+    );
+  }
+
+  /** Whether this Mac still lists the Home at all, open or not. */
+  #listed(deploymentId: string): boolean {
+    return (
+      this.#catalog.deployments.some(({ id }) => id === deploymentId) ||
+      this.#unavailable.some((entry) => entry.deploymentId === deploymentId)
+    );
+  }
+
+  #assertSelectable(deploymentId: string): void {
     const deployment = this.#catalog.deployments.find(({ id }) => id === deploymentId);
     if (
       !deployment ||
@@ -642,21 +734,29 @@ export class DeploymentAccessService {
     ) {
       throw operationUnavailable("select");
     }
-    if (this.#operation || this.#selecting) {
-      throw new Error("Another deployment access operation is already running.");
-    }
+  }
+
+  /** Closing the current Home and opening this one is one turn, so nothing runs in between. */
+  async #selectTurn(operationId: number, deploymentId: string, name: string | null): Promise<void> {
     const selecting = { deploymentId };
-    this.#pendingAttachmentDeploymentId = null;
-    this.#selecting = selecting;
-    if (this.#stagedPersonal?.deploymentId !== deploymentId) {
-      this.#commitStagedPersonal();
-    }
-    this.#selectedAttachment()?.deactivate();
     try {
-      await this.#ports.hostSession.closeCurrent();
-      await this.#catalogMutation("open-deployment", () =>
-        this.#ports.catalog.select(deploymentId),
-      );
+      try {
+        // What it waited behind may have removed the Home or changed what can open.
+        if (!this.#listed(deploymentId)) throw new DeploymentAccessRefusal(homeGoneSentence(name));
+        this.#assertSelectable(deploymentId);
+        this.#pendingAttachmentDeploymentId = null;
+        this.#selecting = selecting;
+        if (this.#stagedPersonal?.deploymentId !== deploymentId) {
+          this.#commitStagedPersonal();
+        }
+        this.#selectedAttachment()?.deactivate();
+        await this.#ports.hostSession.closeCurrent();
+      } catch (error) {
+        this.#failOperation(operationId);
+        throw error;
+      }
+      if (operationId !== this.#operationId) return;
+      await this.#catalogMutationTurn(operationId, () => this.#ports.catalog.select(deploymentId));
     } finally {
       if (this.#selecting === selecting) {
         this.#selecting = null;
@@ -669,10 +769,18 @@ export class DeploymentAccessService {
   }
 
   async #catalogMutation(
-    kind: ForegroundOperationKind,
+    request: ForegroundRequest,
     operation: () => Promise<CatalogProjection>,
   ): Promise<void> {
-    const operationId = this.#beginOperation(kind);
+    await this.#exclusive(request, (operationId) =>
+      this.#catalogMutationTurn(operationId, operation),
+    );
+  }
+
+  async #catalogMutationTurn(
+    operationId: number,
+    operation: () => Promise<CatalogProjection>,
+  ): Promise<void> {
     try {
       const catalog = await operation();
       if (operationId !== this.#operationId) return;
@@ -682,7 +790,7 @@ export class DeploymentAccessService {
       this.#batchPublish(() => {
         this.#commitStagedPersonal();
         this.#reconcileAttachment();
-        this.#operation = null;
+        this.#endOperation();
         this.#publish();
         this.#requestSelectedAttachment();
       });
@@ -693,17 +801,25 @@ export class DeploymentAccessService {
   }
 
   async #accountOperation(
-    kind: ForegroundOperationKind,
+    request: ForegroundRequest,
     operation: () => Promise<DesktopAccountAuthState>,
   ): Promise<void> {
-    const operationId = this.#beginOperation(kind);
+    await this.#exclusive(request, (operationId) =>
+      this.#accountOperationTurn(operationId, operation),
+    );
+  }
+
+  async #accountOperationTurn(
+    operationId: number,
+    operation: () => Promise<DesktopAccountAuthState>,
+  ): Promise<void> {
     try {
       const state = await operation();
       // The fence is read before anything is written: a superseded operation
       // must not be able to install its result on the way out.
       if (operationId !== this.#operationId) return;
       this.#account = accountState(state);
-      this.#operation = null;
+      this.#endOperation();
       if (this.#account.status !== "signed-in") this.#forgetAccountList();
       this.#publish();
     } catch (error) {
@@ -713,16 +829,23 @@ export class DeploymentAccessService {
   }
 
   async #simpleOperation<T>(
-    kind: ForegroundOperationKind,
+    request: ForegroundRequest,
     run: () => Promise<T>,
     commit: (value: T) => void,
   ): Promise<void> {
-    const operationId = this.#beginOperation(kind);
+    await this.#exclusive(request, (operationId) => this.#simpleTurn(operationId, run, commit));
+  }
+
+  async #simpleTurn<T>(
+    operationId: number,
+    run: () => Promise<T>,
+    commit: (value: T) => void,
+  ): Promise<void> {
     try {
       const value = await run();
       if (operationId !== this.#operationId) return;
       commit(value);
-      this.#operation = null;
+      this.#endOperation();
       this.#publish();
     } catch (error) {
       this.#failOperation(operationId);
@@ -740,19 +863,82 @@ export class DeploymentAccessService {
 
   #failOperation(operationId: number): void {
     if (operationId !== this.#operationId || !this.#operation) return;
-    this.#operation = null;
+    this.#endOperation();
     this.#publish();
   }
 
+  /** The slot is free: whoever waits for their turn may take it. */
+  #endOperation(): void {
+    this.#operation = null;
+    const ended = this.#ended;
+    this.#ended = deferredSignal();
+    ended.resolve();
+  }
+
+  /**
+   * One foreground operation at a time, and nobody told they collided with the app itself. The
+   * same request as the one running (same kind, same target) adopts its outcome; any other
+   * waits its turn and then runs for itself. Only a turn that never comes, within the bound, is
+   * refused, in a plain sentence.
+   */
+  async #exclusive(
+    request: ForegroundRequest,
+    body: (operationId: number) => Promise<void>,
+  ): Promise<void> {
+    const deadline = this.#now() + foregroundTurnWaitMilliseconds;
+    // Checked and taken in one synchronous step after every wake, so two waiters woken by the
+    // same end never both take the slot, and one that finds its twin running adopts it.
+    while (this.#operation) {
+      const running = this.#running;
+      if (running && sameRequest(running.request, request)) return running.outcome;
+      await this.#nextEnd(deadline);
+    }
+    const operationId = this.#beginOperation(request.kind);
+    const entry = { outcome: body(operationId), request };
+    this.#running = entry;
+    try {
+      await entry.outcome;
+    } finally {
+      if (this.#running === entry) this.#running = null;
+    }
+  }
+
+  /** Until the slot next frees, or the bound passes: then a plain sentence, not a collision. */
+  async #nextEnd(deadline: number): Promise<void> {
+    const left = deadline - this.#now();
+    if (left <= 0) throw new DeploymentAccessRefusal(busyElsewhereSentence);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      this.#ended.promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, left);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (this.#operation && this.#now() >= deadline)
+      throw new DeploymentAccessRefusal(busyElsewhereSentence);
+  }
+
+  /**
+   * Reads the account's directory into the catalog. True only when this read was made for the
+   * account still signed in, succeeded, and its catalog is the one now applied: no newer read
+   * is on its way.
+   */
   async #refreshDirectory(
     mode: "ambient" | "required",
     trigger: Parameters<DirectoryPort["syncAccountDeployments"]>[1],
-  ): Promise<void> {
+  ): Promise<boolean> {
     const readAt = this.#now();
+    const who = accountIdentity(this.#account);
+    const stillFor = () => {
+      const now = accountIdentity(this.#account);
+      return who !== null && now !== null && sameIdentity(who, now);
+    };
     try {
       const outcome = await this.#ports.directory.syncAccountDeployments(mode, trigger);
-      // A sign-out while the read was out leaves nothing for its answer to describe.
-      if (this.#account.status !== "signed-in") return;
+      // A sign-out, or another account, while the read was out leaves nothing for its answer
+      // to describe.
+      if (!stillFor()) return false;
       this.#unavailable = outcome.unavailable;
       // An ambient outcome may have joined a failed sync or skipped the read.
       if (mode === "required" || outcome.changed) {
@@ -762,8 +948,13 @@ export class DeploymentAccessService {
       }
       if (outcome.changed) await this.#reloadCatalog(false);
       else this.#publish();
+      return (
+        stillFor() &&
+        this.#directoryFailure === null &&
+        this.#catalogAppliedRead === this.#catalogRead
+      );
     } catch (error) {
-      if (this.#account.status !== "signed-in") return;
+      if (!stillFor()) return false;
       this.#directoryTriedAt = this.#now();
       const failure = classifyPortFailure("directory", error);
       this.#directoryFailure = {
@@ -772,6 +963,7 @@ export class DeploymentAccessService {
         retryable: failure.classification === "transient",
       };
       this.#publish();
+      return false;
     }
   }
 
@@ -817,6 +1009,26 @@ export class DeploymentAccessService {
         this.#attachSelectedReturningDeployment();
       }
     });
+  }
+
+  /**
+   * Right after a sign-in the person started, an account with exactly one Home opens it, on
+   * certain ground only: still signed in as the account the directory was read for, that read
+   * applied, nothing else listed or open here, and that account's one Home ready. Anything less
+   * is a list to choose from.
+   */
+  #openOnlyHome(who: AccountIdentity): void {
+    if (this.#disposed || this.#catalog.selectedDeploymentId !== null) return;
+    const now = accountIdentity(this.#account);
+    if (now === null || !sameIdentity(now, who)) return;
+    if (this.#directoryFailure !== null || this.#catalogAppliedRead !== this.#catalogRead) return;
+    if (this.#unavailable.length > 0) return;
+    const shown = this.#catalog.deployments.filter(this.#shown);
+    const only = shown.length === 1 ? shown[0] : undefined;
+    if (!only || only.source !== "account" || only.onThisComputer) return;
+    if (!only.accountOwner || !sameIdentity(only.accountOwner, who)) return;
+    if (this.#statusInfo(only, this.#personalSetup()).status !== "ready") return;
+    void this.#select(only.id).catch(() => undefined);
   }
 
   /**
@@ -1103,10 +1315,12 @@ export class DeploymentAccessService {
   }
 
   #checkDirectory(): Promise<void> {
-    const check = this.#refreshDirectory("required", "check").finally(() => {
-      this.#directoryCheck = null;
-      this.#publish();
-    });
+    const check = this.#refreshDirectory("required", "check")
+      .then(() => undefined)
+      .finally(() => {
+        this.#directoryCheck = null;
+        this.#publish();
+      });
     this.#directoryCheck = check;
     this.#publish();
     return check;
@@ -1181,6 +1395,64 @@ export class DeploymentAccessService {
 
   #assertActive(): void {
     if (this.#disposed) throw new Error("Deployment access service is disposed.");
+  }
+}
+
+/** How long a foreground request waits for the one running before it is refused. */
+const foregroundTurnWaitMilliseconds = 2 * 60_000;
+
+/**
+ * A refusal this service makes on purpose, in words written for a person. The bridge answers
+ * it as `{ refused }` and the window shows the sentence as it is; anything else that throws
+ * here is a fault, and a person never reads its text.
+ */
+export class DeploymentAccessRefusal extends Error {
+  readonly words: string;
+  constructor(words: string) {
+    super(words);
+    this.name = "DeploymentAccessRefusal";
+    this.words = words;
+  }
+}
+
+/** Said of a Home the ask named that was gone by the time its turn came. */
+export function homeGoneSentence(name: string | null): string {
+  return name
+    ? `${name} is no longer in your Opensteers.`
+    : "That Opensteer is no longer in your list.";
+}
+const busyElsewhereSentence =
+  "Opensteer is still finishing another change on this Mac. Try again in a moment.";
+
+function deferredSignal(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+interface AccountIdentity {
+  readonly issuer: string;
+  readonly subject: string;
+}
+
+/** Who is signed in, or null while nobody is. */
+function accountIdentity(account: DeploymentAccessSnapshot["account"]): AccountIdentity | null {
+  return account.status === "signed-in" && account.issuer && account.subject
+    ? { issuer: account.issuer, subject: account.subject }
+    : null;
+}
+
+function sameIdentity(left: AccountIdentity, right: AccountIdentity): boolean {
+  return originOf(left.issuer) === originOf(right.issuer) && left.subject === right.subject;
+}
+
+function originOf(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value;
   }
 }
 

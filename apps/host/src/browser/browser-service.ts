@@ -6540,7 +6540,9 @@ export class BrowserService {
           message: "The browser session is no longer attached to its Runtime.",
         });
       }
-      await broker.ready();
+      await withTimeout(broker.ready(), this.#connectTimeoutMs, {
+        timeoutError: () => unavailable("Browser is reconnecting."),
+      });
       let signedIn: boolean;
       try {
         signedIn = await withTimeout(options.signedIn(), consumerAccessRecheckMs, {
@@ -8214,7 +8216,8 @@ export class HostedBrowserBroker {
   readonly #connectTimeoutMs: number;
   readonly #onState: HostedBrowserBrokerOptions["onState"];
   readonly #onTerminal: () => void | Promise<void>;
-  readonly #readyPromise: Promise<void>;
+  #readyPromise: Promise<void>;
+  #reconnectReady: PromiseWithResolvers<void> | null = null;
   readonly #sessionId: BrowserSessionId;
   readonly #groupId: BrowserSessionId;
   readonly #socket: BrowserRuntimeConnection;
@@ -8682,7 +8685,11 @@ export class HostedBrowserBroker {
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
     if (!this.#snapshot || !this.#runtimeReady) {
-      throw new OpensteerError({ code: "conflict", message: "Browser is not synchronized." });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Browser is not synchronized.",
+        retryable: true,
+      });
     }
     if (this.#consumers.has(peer.id)) {
       throw new OpensteerError({ code: "conflict", message: "Browser consumer already attached." });
@@ -9043,6 +9050,10 @@ export class HostedBrowserBroker {
     if (!this.live || this.#stopping) throw new Error("The browser session has ended.");
     this.#runtimeReady = false;
     this.#reconnecting = true;
+    const reconnectReady = Promise.withResolvers<void>();
+    reconnectReady.promise.catch(() => undefined);
+    this.#reconnectReady = reconnectReady;
+    this.#readyPromise = reconnectReady.promise;
     this.#lastSessionState = undefined;
     ++this.#runtimeConnectionGeneration;
     this.#snapshot = null;
@@ -9193,6 +9204,7 @@ export class HostedBrowserBroker {
           clearTimeout(timeout);
           reject(normalized);
         }
+        this.#rejectReconnectReady(normalized);
         if (this.#socket.readyState === WebSocket.OPEN) {
           this.#socket.close(1002, "invalid Browser Runtime protocol");
         }
@@ -9576,6 +9588,9 @@ export class HostedBrowserBroker {
         this.#reconnecting = false;
         this.#runtimeReady = true;
         await this.#sendSessionState();
+        const reconnectReady = this.#reconnectReady;
+        this.#reconnectReady = null;
+        reconnectReady?.resolve();
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
       this.#onTabsChanged();
@@ -10493,6 +10508,9 @@ export class HostedBrowserBroker {
               new OpensteerError({
                 code: "conflict",
                 message: "Browser Runtime is not connected.",
+                ...(this.#reconnecting && !this.#settled && !this.#protocolFailed
+                  ? { retryable: true }
+                  : {}),
               }),
             );
             return;
@@ -10587,6 +10605,13 @@ export class HostedBrowserBroker {
     return settled;
   }
 
+  #rejectReconnectReady(error: unknown): void {
+    const pending = this.#reconnectReady;
+    if (!pending) return;
+    this.#reconnectReady = null;
+    pending.reject(error);
+  }
+
   #finish(
     state: "closed" | "failed" | "pooled",
     consumerCloseCode: number,
@@ -10594,6 +10619,9 @@ export class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    this.#rejectReconnectReady(
+      new OpensteerError({ code: "conflict", message: this.#failure ?? "Browser closed." }),
+    );
     if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
     this.#sessionStateHold?.release();
     this.#sessionStateHold = undefined;

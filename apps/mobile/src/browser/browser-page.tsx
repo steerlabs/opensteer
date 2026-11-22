@@ -92,6 +92,7 @@ import { PasswordSaveBanner } from "./password-save-banner.js";
 import { createPageAutofill } from "./page-autofill.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
+import { FitToScreenChip } from "./fit-chip.js";
 import { FloatingPlaceStatus, PlaceVoiceDock, usePlaceStatus } from "./place-foot.js";
 import { barFloats } from "./floating-bar.js";
 import { PageChromeProvider, PageEdge, useFloatingBar, type PageChrome } from "./floating-page.js";
@@ -1082,27 +1083,7 @@ export function BrowserPage(props: {
                     : { bottom: status.height, right: 0, top: 0, width: picture.left },
                 ]}
               >
-                <Pressable
-                  accessibilityHint="Resizes the page to fill your screen"
-                  accessibilityLabel="Fit to screen"
-                  accessibilityRole="button"
-                  onPress={fit}
-                  style={({ pressed }) => pressed && styles.pressed}
-                >
-                  <GlassSurface
-                    interactive
-                    shape="capsule"
-                    style={offer.words ? styles.fitChip : styles.fitGlyph}
-                  >
-                    <Symbol
-                      name="arrow.up.left.and.arrow.down.right"
-                      size={14}
-                      tint={color.ember}
-                      weight="semibold"
-                    />
-                    {offer.words ? <AppText role="secondaryMedium">Fit to screen</AppText> : null}
-                  </GlassSurface>
-                </Pressable>
+                <FitToScreenChip onPress={fit} words={offer.words} />
               </Animated.View>
             ) : null}
             {addressOpen ? (
@@ -1655,19 +1636,6 @@ const styles = StyleSheet.create({
   },
   dim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(0, 0, 0, 0.5)" },
   fitBand: { alignItems: "center", justifyContent: "center", position: "absolute" },
-  fitChip: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[8],
-    height: 40,
-    paddingHorizontal: space[16],
-  },
-  fitGlyph: {
-    alignItems: "center",
-    height: touchTarget,
-    justifyContent: "center",
-    width: touchTarget,
-  },
   grow: { flex: 1, minWidth: 0 },
   iconButton: {
     alignItems: "center",

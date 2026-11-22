@@ -24,6 +24,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -78,6 +79,7 @@ function AttachedTabs(props: {
   const reader = useHostSelector(hostClient, selectReader);
   // Tabs never listed and no connection to list them: the gate is the one explanation.
   const syncing = useTabsSyncing(hostClient);
+  const held = useTabsHeld(hostClient);
   const ready = useConnectionReady(hostClient.connection);
   const tabsRead = useUnreadableResources(hostClient, tabKinds);
   useEffect(() => {
@@ -94,8 +96,10 @@ function AttachedTabs(props: {
         />
       </Screen>
     );
+  // Only a list never received waits behind the gate. Rows held stay in view while the stream
+  // restarts (the client marks them `syncing` again on every reconnect), never covered by it.
   const gate =
-    reader === null || (syncing && !ready) ? (
+    reader === null || (syncing && !ready && !held) ? (
       <ConnectionRouteGate connection={hostClient.connection} />
     ) : null;
   return (
@@ -106,6 +110,14 @@ function AttachedTabs(props: {
       )}
     </Gated>
   );
+}
+
+/** Whether this phone holds any tab rows, re-rendering only when that changes. */
+function useTabsHeld(hostClient: HostClient): boolean {
+  const tabs = hostClient.getSnapshot().tabs;
+  const subscribe = useCallback((listener: () => void) => tabs.subscribe(listener), [tabs]);
+  const read = useCallback(() => tabs.rows.size > 0, [tabs]);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /** The list's narrowing: every tab or only those agents use, on every computer or one. */

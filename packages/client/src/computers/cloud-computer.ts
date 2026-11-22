@@ -86,10 +86,13 @@ export interface CloudComputerDetail {
 export type CloudComputerScreen =
   | { readonly kind: "loading" }
   | { readonly kind: "failed"; readonly failure: DesktopCloudComputerFailure }
-  /** None yet: what it is and its price. `waiting` once checkout was opened from here. */
+  /**
+   * None yet: what it is and, while checkout sells one, its price (`plan`, from the
+   * Account's offer; null when nothing is for sale). `waiting` once checkout was opened here.
+   */
   | {
       readonly kind: "offer";
-      readonly plan: CloudComputerPlanView;
+      readonly plan: CloudComputerPlanView | null;
       readonly waiting: boolean;
       readonly deleted: boolean;
     }
@@ -269,7 +272,13 @@ export function cloudComputerScreen(input: {
   const plan = cloudComputerPlanView(read.data.plan, input.locale);
   const current = currentCloudComputer(read.data.computers, read.work);
   if (current === null)
-    return { kind: "offer", plan, waiting: input.checkoutOpened, deleted: input.deleted };
+    return {
+      kind: "offer",
+      // A price for buying comes only from what checkout sells now.
+      plan: read.data.offer ? cloudComputerPlanView(read.data.offer, input.locale) : null,
+      waiting: input.checkoutOpened,
+      deleted: input.deleted,
+    };
   const computer = cloudComputerDetail(current, input.locale);
   if (current.status === "preparing") return { kind: "preparing", computer, plan };
   return { kind: "computer", computer, plan };
@@ -352,6 +361,12 @@ export interface CloudComputerSnapshot {
   readonly pending: DesktopCloudComputerActInput["action"] | null;
   /** The Account's answer to the last action, in its own words. */
   readonly actionFailure: string | null;
+  /**
+   * Checkout was opened from this app and is still being followed: until the person turns
+   * back, or the watch ends after `cloudCheckoutWatchMs`. The one fact every screen that waits
+   * on checkout reads.
+   */
+  readonly checkoutFollowed: boolean;
   /** Each work Home, beside the personal screen; none until a read succeeds. */
   readonly work: readonly WorkHomeCard[];
   /** The Account's views, for saying which kind of Home a Deployment is; null until read. */
@@ -434,8 +449,8 @@ export class CloudComputerClient {
     this.#read = result.ok
       ? { kind: "ready", data: result.data, work: result.work ?? [] }
       : { kind: "failed", failure: result.failure };
-    if (result.ok && currentCloudComputer(result.data.computers, result.work))
-      this.#checkoutOpenedAt = null;
+    // The watch is over: checkout is no longer followed, and nothing waits on it.
+    if (this.#checkoutOpenedAt !== null && !this.#following()) this.#checkoutOpenedAt = null;
     this.#changed();
     if (this.#starts > 0 && this.#watching())
       this.#cancelPoll = this.#schedule(() => void this.refresh(), cloudComputerPollMs);
@@ -447,6 +462,16 @@ export class CloudComputerClient {
     this.#deleted = false;
     this.#changed();
     void this.refresh();
+  };
+
+  /** The person turned back from checkout: stop following it and stop reading for it. */
+  stopFollowingCheckout = (): void => {
+    if (this.#checkoutOpenedAt === null) return;
+    this.#checkoutOpenedAt = null;
+    this.#generation++;
+    this.#cancelPoll?.();
+    this.#cancelPoll = null;
+    this.#changed();
   };
 
   act = async (input: DesktopCloudComputerActInput): Promise<boolean> => {
@@ -483,10 +508,12 @@ export class CloudComputerClient {
     const current = currentCloudComputer(this.#read.data.computers, this.#read.work);
     if (current?.status === "preparing") return true;
     if (this.#read.work.some(({ home }) => home.assignment.homeStatus === "preparing")) return true;
+    return current === null && this.#following();
+  }
+
+  #following(): boolean {
     return (
-      current === null &&
-      this.#checkoutOpenedAt !== null &&
-      this.#now() - this.#checkoutOpenedAt < cloudCheckoutWatchMs
+      this.#checkoutOpenedAt !== null && this.#now() - this.#checkoutOpenedAt < cloudCheckoutWatchMs
     );
   }
 
@@ -494,12 +521,13 @@ export class CloudComputerClient {
     return {
       screen: cloudComputerScreen({
         read: this.#read,
-        checkoutOpened: this.#checkoutOpenedAt !== null,
+        checkoutOpened: this.#following(),
         deleted: this.#deleted,
         ...(this.#locale === undefined ? {} : { locale: this.#locale }),
       }),
       pending: this.#pending,
       actionFailure: this.#actionFailure,
+      checkoutFollowed: this.#following(),
       work:
         this.#read.kind === "ready"
           ? this.#read.work.map((work) => workHomeCard(work, this.#locale))

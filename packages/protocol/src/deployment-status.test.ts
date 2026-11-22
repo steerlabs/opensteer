@@ -66,7 +66,7 @@ describe("deployment status vocabulary", () => {
     expect(
       deploymentStatusFromPersonalConnect({ hasConnectRoute: false, livenessExpiresAt: null }, now),
     ).toStrictEqual({
-      reason: "Remote access is off on the computer that runs this deployment.",
+      reason: "Remote access is off on the computer that runs this Opensteer.",
       status: "offline",
     } satisfies DeploymentStatusInfo);
     // A route nobody has answered on is a computer that is off, not a place
@@ -121,7 +121,7 @@ describe("deployment status vocabulary", () => {
         reachability: "routed",
       }),
     ).toStrictEqual({
-      reason: "You no longer have access to this deployment.",
+      reason: "You no longer have access to this Opensteer.",
       status: "offline",
     });
     expect(
@@ -133,7 +133,7 @@ describe("deployment status vocabulary", () => {
         reachability: "routed",
       }),
     ).toStrictEqual({
-      reason: "Update Opensteer to use this deployment’s published connection details.",
+      reason: "Update Opensteer to reach this Opensteer at its published address.",
       status: "attention",
     });
   });

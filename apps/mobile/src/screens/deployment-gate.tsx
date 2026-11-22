@@ -3,7 +3,7 @@ import type { HostClient } from "@opensteer/client/host";
 import type { DeploymentId } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
 import {
   deploymentStatusDetail,
   deploymentStatusLabel,
@@ -11,6 +11,7 @@ import {
 } from "../client/deployment-rows.js";
 import { GateAsleepLine } from "./gate-asleep-line.js";
 import { resetToDeployments } from "../navigation-ref.js";
+import { deploymentsTitle } from "./deployments-title.js";
 import { color, space } from "../theme.js";
 import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
@@ -119,13 +120,19 @@ export function DeploymentGate(props: {
   if (row === undefined) {
     return (
       <Screen>
-        <View style={[styles.content, column, top]}>
-          <AppText role="displaySmall">This deployment is gone</AppText>
+        {/* Centred while it fits; at a large text size it scrolls, from below the bar, so
+            the title is never under the bar and the way back is never off the screen. */}
+        <ScrollView
+          contentContainerStyle={[styles.scrolling, column, top]}
+          contentInsetAdjustmentBehavior="never"
+        >
+          {/* In a person's words, and back to the list by its own title. */}
+          <AppText role="displaySmall">This Home is no longer here</AppText>
           <AppText role="secondary" tone="muted">
-            It is no longer in this phone&apos;s list. Add it again from Deployments.
+            {`It isn’t in this phone’s list any more. You can add it again from ${deploymentsTitle}.`}
           </AppText>
-          <SecondaryButton label="Choose a deployment" onPress={resetToDeployments} />
-        </View>
+          <SecondaryButton label={deploymentsTitle} onPress={resetToDeployments} />
+        </ScrollView>
       </Screen>
     );
   }
@@ -230,6 +237,7 @@ const noSubscription = () => () => undefined;
 
 const styles = StyleSheet.create({
   content: { flex: 1, gap: space[8], justifyContent: "center" },
+  scrolling: { flexGrow: 1, gap: space[8], justifyContent: "center", paddingVertical: space[16] },
   gate: { backgroundColor: color.background, flex: 1 },
   removed: { backgroundColor: color.background, flex: 1 },
 });

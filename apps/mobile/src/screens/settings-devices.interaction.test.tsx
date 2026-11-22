@@ -47,6 +47,11 @@ vi.mock("../phone-setup/phone-setup.js", () => ({ phoneMembership: () => ({ stat
 vi.mock("../phone-setup/move-phone-here.js", () => ({ movePhoneHere: async () => undefined }));
 vi.mock("./leave-sheets.js", () => ({ useLeaveSheets: () => ({}) }));
 vi.mock("../ui/sheet.js", () => ({ Sheet: () => null }));
+// The sheet draws nothing here, so neither does what it holds.
+vi.mock("./add-device-guide.js", () => ({
+  AddDeviceGuide: () => null,
+  addDeviceGuideSections: () => [],
+}));
 vi.mock("./settings-computer-enrollment.js", () => ({ SettingsComputerEnrollment: () => null }));
 vi.mock("./native-settings-page.js", () => ({
   NativeSettingsPage: (props: NativeSettingsPageProps) => {

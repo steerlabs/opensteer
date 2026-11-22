@@ -7,12 +7,20 @@ import { requestSettlementLabel } from "./request-settlement.js";
 export function cardUseTitle(site: string): string {
   return `Use a saved card on ${browserSiteLabel(site)}?`;
 }
+/**
+ * What every saved-card sheet promises, in the saved-login sheet's own words (AGENTS.md rule 8):
+ * Opensteer fills it into the page and does not hand it to the agent, and an agent working in
+ * that page can read it.
+ */
+export function cardUsePrivacy(site: string): string {
+  return `Opensteer fills your saved card on ${browserSiteLabel(site)} for your own agents and connected agents you allow. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.`;
+}
 export function cardUseConsent(site: string, expiresAt: string): string {
   const deadline = new Date(expiresAt).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
   });
-  return `Your agents can fill this card on ${browserSiteLabel(site)} until ${deadline}, including payment fields embedded by that site. The website and its payment provider can read filled details. This does not approve a particular charge.`;
+  return `${cardUsePrivacy(site)} Your agents can use it on ${browserSiteLabel(site)} until ${deadline}, including payment fields embedded by that site. The website and its payment provider can read filled details. This does not approve a particular charge.`;
 }
 export function cardChoiceLabel(card: CardChoice): string {
   return `${card.brand} ending ${card.lastFour}${card.label ? ` · ${card.label}` : ""} · ${String(card.expiryMonth).padStart(2, "0")}/${card.expiryYear}`;

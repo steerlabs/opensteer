@@ -40,6 +40,13 @@ describe("the way to what an organization can see, from the Cloud Computer scree
     expect(onSee).toHaveBeenCalledExactlyOnceWith("dep_00000000-0000-4000-8000-0000000000dd");
   });
 
+  it("offers no link to a work Home that is not in this phone's list, where it would lead nowhere", () => {
+    const sections = workHomeSections([card], { ...handlers(vi.fn()), listed: () => false });
+    expect(seeRow(sections)).toBeUndefined();
+    // What its organization decides is still said, row by row.
+    expect(sections.flatMap(({ rows }) => rows).length).toBeGreaterThan(1);
+  });
+
   it("offers no button while the work Home has no Home to read it from yet", () => {
     const preparing = workHomeCard(mockWorkHome(null), "en-US");
     expect(preparing.deploymentId).toBeNull();

@@ -39,14 +39,25 @@ await wait("first window", () => {
     return false;
   }
 });
+// A fresh Mac opens on the Opensteer account's front door; the smoke uses Opensteer without
+// an account, as a person who presses "Use without an account" does. A build with no account
+// opens on the start row itself.
 await wait("startup choice or workspace", () => {
   const state = dump();
-  return state.includes("Set up this ") || state.includes("Places and menu");
+  return (
+    state.includes("Use without an account") ||
+    state.includes("Start Opensteer on this ") ||
+    state.includes("Places and menu")
+  );
 });
 const state = dump();
 writeFileSync(path.join(out, "ui-before.json"), state);
-if (state.includes("Set up this ")) {
-  click("Set up this ");
+if (state.includes("Use without an account")) {
+  click("Use without an account");
+  await wait("start row", () => dump().includes("Start Opensteer on this "));
+}
+if (dump().includes("Start Opensteer on this ")) {
+  click("Start Opensteer on this ");
   // Setup is up to three steps; each leaves through Skip, the last through
   // "Skip for now". A fresh machine may have no AI, so nothing waits on one.
   for (let step = 0; step < 3; step += 1) {

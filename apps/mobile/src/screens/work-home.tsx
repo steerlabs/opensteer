@@ -111,8 +111,9 @@ export function workHomeSections(
             label: `${line.title}: ${line.value}`,
             detail: line.detail,
           })),
-          // Read from inside the work Home: offered once there is a Home to read it from.
-          ...(card.deploymentId === null
+          // Read from inside the work Home: offered only once that Home is in this phone's
+          // list, where the page opens. A link before then would lead nowhere.
+          ...(card.deploymentId === null || !handlers.listed(card.deploymentId)
             ? []
             : [
                 {

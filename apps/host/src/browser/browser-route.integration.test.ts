@@ -15,7 +15,11 @@ import {
 import { createId } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
 
-import { BrowserServerMessageSchema, decodeBrowserFrameEnvelope } from "@opensteer/protocol";
+import {
+  BrowserServerMessageSchema,
+  createBrowserSessionId,
+  decodeBrowserFrameEnvelope,
+} from "@opensteer/protocol";
 
 import { sql } from "kysely";
 import { writeFile } from "node:fs/promises";
@@ -557,6 +561,44 @@ integration("Host browser broker vertical", () => {
           2,
         ),
       );
+    }
+  });
+
+  it("closes browser viewer sockets with 1013 (tryAgain) on retryable reconnect errors instead of 4002", async () => {
+    personalHost = await startPrivateMachineHost(databaseUrl!, { remoteAccess: true });
+    runtime = personalHost.runtime;
+    const hostPort = personalHost.hostPort;
+    const origin = personalHost.origin.origin;
+    const cookie = personalHost.ownerHeaders.cookie!;
+    const sessionId = createBrowserSessionId();
+    const { OpensteerError } = await import("@opensteer/core");
+
+    for (const error of [
+      new OpensteerError({
+        code: "conflict",
+        message: "Browser is not synchronized.",
+        retryable: true,
+      }),
+      new OpensteerError({
+        code: "runner_offline",
+        message: "Browser is reconnecting.",
+        retryable: true,
+      }),
+    ]) {
+      const attachSpy = vi.spyOn(runtime.browser, "attach").mockRejectedValueOnce(error);
+      const viewer = new WebSocket(
+        `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${sessionId}/connect?mode=watch`,
+        { headers: { cookie, origin, [hostApiVersionHeader]: String(hostApiVersion) } },
+      );
+      try {
+        const closed = await withTimeout(waitForClose(viewer), 5_000, {
+          timeoutError: () => new Error("Retryable browser viewer was not closed."),
+        });
+        expect(closed.code).toBe(1013);
+      } finally {
+        attachSpy.mockRestore();
+        viewer.terminate();
+      }
     }
   });
 });

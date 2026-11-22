@@ -1,5 +1,7 @@
+import { DeploymentAccessRefusal } from "../../connections/deployment-access-service.js";
 import {
   DeploymentAccessSnapshotSchema,
+  DesktopAccessRefusedSchema,
   DesktopAddDirectRouteInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
   DesktopCreatePersonalDeploymentInputSchema,
@@ -30,7 +32,15 @@ function accessOperation(
   return async (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
     trackRenderer(context.accessSenders, event.sender);
-    await operation(envelope.input);
+    try {
+      await operation(envelope.input);
+    } catch (error) {
+      // A refusal made on purpose crosses as its sentence; anything else stays a fault.
+      if (error instanceof DeploymentAccessRefusal)
+        return DesktopAccessRefusedSchema.parse({ refused: error.words });
+      throw error;
+    }
+    return undefined;
   };
 }
 
