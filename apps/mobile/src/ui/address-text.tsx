@@ -1,4 +1,5 @@
 import type { ComponentProps, ReactNode } from "react";
+import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { addressWords, isAddress } from "./address-words.js";
 import { AppText } from "./primitives.js";
 import { plainSentence, type SentencePart } from "./sentence-parts.js";
@@ -26,8 +27,8 @@ import { plainSentence, type SentencePart } from "./sentence-parts.js";
  * plain value in the platform's own menu.
  *
  * A one-line place that names a host (the address bar, a floating title) is not drawn this way: it
- * never wraps, so it draws the host plain and gives up its start, keeping the end that says whose
- * it is, as a browser does.
+ * never wraps, so it draws the host plain and gives up the host's start, keeping the end that says
+ * whose it is, as a browser does (`HostLine`).
  */
 
 type AppTextProps = ComponentProps<typeof AppText>;
@@ -76,27 +77,59 @@ export function AddressSentence(
 
 /**
  * A host where there is one line, as a browser's address bar has it: drawn plain, never wrapped (a
- * host wrapped at a dot reads as two hosts), and when it does not fit it gives up its start,
- * keeping the end that says whose it is. `before` and `after` are the words around it, which give
- * way first.
+ * host wrapped at a dot reads as two hosts). The line is for the host, so the host is cut alone,
+ * at its start, keeping the end that says whose it is. The words around it (`before`, `after`)
+ * are texts of their own, cut at their own end, and give way first. A scheme the host is shown
+ * with (one that is not https, a warning) is drawn on its own and never gives way. A screen reader
+ * hears the line once, whole.
  */
 export function HostLine(
-  props: Omit<AppTextProps, "children" | "selectable" | "numberOfLines" | "ellipsizeMode"> & {
+  props: Omit<
+    AppTextProps,
+    "children" | "selectable" | "numberOfLines" | "ellipsizeMode" | "style"
+  > & {
     readonly host: string;
     readonly before?: string;
     readonly after?: string;
+    /** Where the line stands among its neighbours. */
+    readonly style?: StyleProp<ViewStyle>;
   },
 ): ReactNode {
-  const { after = "", before = "", host, ...text } = props;
-  const words = `${before}${host}${after}`;
+  const { accessibilityLabel, after = "", before = "", host, style, ...text } = props;
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//iu.exec(host)?.[0] ?? "";
   return (
-    <AppText
-      {...text}
-      accessibilityLabel={props.accessibilityLabel ?? words}
-      ellipsizeMode="head"
-      numberOfLines={1}
+    <View
+      accessibilityLabel={accessibilityLabel ?? `${before}${host}${after}`}
+      accessibilityRole="text"
+      accessible
+      style={[styles.hostLine, style]}
     >
-      {words}
-    </AppText>
+      {before === "" ? null : (
+        <AppText {...text} ellipsizeMode="tail" numberOfLines={1} style={styles.givesWay}>
+          {before}
+        </AppText>
+      )}
+      {scheme === "" ? null : (
+        <AppText {...text} numberOfLines={1} style={styles.kept}>
+          {scheme}
+        </AppText>
+      )}
+      <AppText {...text} ellipsizeMode="head" numberOfLines={1} style={styles.host}>
+        {host.slice(scheme.length)}
+      </AppText>
+      {after === "" ? null : (
+        <AppText {...text} ellipsizeMode="tail" numberOfLines={1} style={styles.givesWay}>
+          {after}
+        </AppText>
+      )}
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  // The words around the host give way so much faster than it that they are gone before it is cut.
+  givesWay: { flexShrink: 10_000 },
+  host: { flexShrink: 1 },
+  hostLine: { flexDirection: "row", flexShrink: 1, minWidth: 0 },
+  kept: { flexShrink: 0 },
+});

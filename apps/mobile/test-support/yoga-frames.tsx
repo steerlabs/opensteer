@@ -471,6 +471,8 @@ export interface Frames {
   readonly visible: (element: Element) => Rect | null;
   /** Whether a text had to be cut to its lines. */
   readonly cut: (element: Element) => boolean;
+  /** Where a cut text's ellipsis is: at its start (`ellipsizeMode="head"`) or end; null if uncut. */
+  readonly ellipsis: (element: Element) => "start" | "end" | null;
   /**
    * The words of a text broken inside themselves, each wider than the line the text was given,
    * with the width the word needs.
@@ -478,7 +480,10 @@ export interface Frames {
   readonly broken: (
     element: Element,
   ) => readonly { readonly word: string; readonly width: number }[];
-  /** The characters of a text a person sees: all of them, or those before its ellipsis. */
+  /**
+   * The characters of a text a person sees: all of them, or those before its ellipsis, or after
+   * it for a text cut at its start (`ellipsizeMode="head"`).
+   */
   readonly shown: (element: Element) => string;
   /** Every text drawn, with its words. */
   readonly texts: () => readonly { readonly element: Element; readonly words: string }[];
@@ -579,13 +584,21 @@ function once(container: Element, window: { width: number; height: number }) {
       return laid?.text !== undefined && laid.text.needed > laid.text.shown;
     },
     broken: (element) => broken.get(element) ?? [],
+    ellipsis: (element) => {
+      const laid = texts.get(element);
+      if (laid?.text === undefined || laid.text.needed <= laid.text.shown) return null;
+      return hosts.get(element)?.props["ellipsizeMode"] === "head" ? "start" : "end";
+    },
     shown: (element) => {
       const words = drawnText(element.textContent ?? "")
         .split(/\s+/u)
         .filter(Boolean)
         .join(" ");
       const laid = texts.get(element);
-      return laid?.text === undefined ? words : words.slice(0, laid.text.chars);
+      if (laid?.text === undefined || laid.text.needed <= laid.text.shown) return words;
+      return hosts.get(element)?.props["ellipsizeMode"] === "head"
+        ? words.slice(words.length - laid.text.chars)
+        : words.slice(0, laid.text.chars);
     },
     frame: (element) => {
       const found = absolute.get(element);
@@ -633,7 +646,11 @@ export function textFaults(
       faults.push(`"${word}" breaks inside in "${text}"`);
     }
     if (frames.cut(element) && !options.preview?.(text))
-      faults.push(`"${text}" is cut to "${frames.shown(element)}…"`);
+      faults.push(
+        hosts.get(element)?.props["ellipsizeMode"] === "head"
+          ? `"${text}" is cut to "…${frames.shown(element)}"`
+          : `"${text}" is cut to "${frames.shown(element)}…"`,
+      );
   }
   return faults;
 }
