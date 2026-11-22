@@ -439,6 +439,38 @@ describeStore("the ingress asks the one bridge admission before it writes anythi
   });
 });
 
+describeStore("a bridge's sender rule, account and conversation are fixed for its life", (it) => {
+  it("refuses any change to them, even in the database", async ({ storeFixture }) => {
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("fixed", {
+      bridge: false,
+    });
+    const other = await storeFixture.createChannelDeliveryFixture("fixed-other", {
+      bridge: false,
+    });
+    const bridge = await new AgentConnectionStore(storeFixture.database).createBridge({
+      userId: fixture.userId,
+      accountId: configured.account.id,
+      conversation: { id: "C-fixed", name: "#fixed" },
+      senders: "owner",
+      accessMode: "approval-required",
+      grant: tasksOnly,
+    });
+    for (const change of [
+      { bridgeSenders: "anyone" as const },
+      { bridgeAccountId: other.configured.account.id as never },
+      { bridgeConversationId: "C-elsewhere" },
+    ])
+      await expect(
+        storeFixture.database
+          .updateTable("agentConnections")
+          .set(change)
+          .where("id", "=", bridge.id)
+          .execute(),
+        JSON.stringify(change),
+      ).rejects.toMatchObject({ constraint: "agent_connections_bridge_senders_fixed" });
+  });
+});
+
 describeStore('"me" is one identity on an account at a time', (it) => {
   it("unlinks the earlier one when the person links another", async ({ storeFixture }) => {
     const bridge = await storeFixture.createBridgeFixture("relink");

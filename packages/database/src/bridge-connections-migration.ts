@@ -30,19 +30,23 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
         and (bridge_account_id is null or bridge_senders is distinct from 'anyone'
           or (bridge_conversation_id is not null and "grant"->>'scope' = 'selected'
             and not jsonb_path_exists("grant", '$.resources[*] ? (@.kind != "plugin")'))));
-    -- Who may speak is fixed for the life of a bridge: to change it, it is disconnected and
-    -- another is made, so everything it admitted is swept with it.
+    -- Who may speak, and the account and conversation they speak in, are fixed for the life of
+    -- a bridge: to change them, it is disconnected and another is made, so everything it
+    -- admitted is swept with it.
     create function bridge_senders_fixed() returns trigger language plpgsql as $fixed$
     begin
-      if new.bridge_senders is distinct from old.bridge_senders then
-        raise exception 'Who may speak to a chat connection is fixed for its life'
+      if new.bridge_senders is distinct from old.bridge_senders
+        or new.bridge_account_id is distinct from old.bridge_account_id
+        or new.bridge_conversation_id is distinct from old.bridge_conversation_id then
+        raise exception 'Who may speak to a chat connection, and where, are fixed for its life'
           using errcode = 'check_violation', constraint = 'agent_connections_bridge_senders_fixed';
       end if;
       return new;
     end
     $fixed$;
-    create trigger bridge_senders_fixed before update of bridge_senders on agent_connections
-      for each row execute function bridge_senders_fixed();
+    create trigger bridge_senders_fixed
+      before update of bridge_senders, bridge_account_id, bridge_conversation_id
+      on agent_connections for each row execute function bridge_senders_fixed();
     create unique index agent_connections_bridge_cover
       on agent_connections(bridge_account_id, coalesce(bridge_conversation_id, ''))
       where bridge_account_id is not null and revoked_at is null;
