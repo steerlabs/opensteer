@@ -472,6 +472,8 @@ it.skipIf(Boolean(reportPath))(
       recorded["execution dispatch pass"] = [...dispatchSql].sort();
       const memory = memoryPass;
       await record("memory provisioning pass", () => Reflect.apply(reconcile, memory, []));
+      // An ordinary Home's Stop, last: a pooled Stop's wait for the runtime's answer adds nothing.
+      await record("person stop", () => host.runtime.browser.stop(host.ownerId, sessionId));
       if (parityReport)
         await writeFile(parityReport, `${JSON.stringify({ issued, recorded }, null, 2)}\n`);
       expect(

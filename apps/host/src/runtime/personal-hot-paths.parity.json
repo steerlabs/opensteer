@@ -552,6 +552,15 @@
       "select \"system_role\" from \"triggers\" where \"system_role\" is not null",
       "select \"triggers\".\"id\", \"triggers\".\"current_revision_id\", \"triggers\".\"system_role\", \"trigger_revisions\".\"program\" from \"triggers\" inner join \"trigger_revisions\" on \"trigger_revisions\".\"id\" = \"triggers\".\"current_revision_id\" where \"triggers\".\"system_role\" is not null",
       "select * from \"personal_settings\" where \"singleton_key\" = $1"
+    ],
+    "person stop": [
+      "begin",
+      "commit",
+      "select \"browser_sessions\".\"created_at\", \"browser_sessions\".\"runner_id\", \"browser_sessions\".\"id\", \"browser_sessions\".\"origin\", \"browser_sessions\".\"opener\", \"browser_sessions\".\"placement_key\", \"browser_sessions\".\"profile_id\", \"browser_sessions\".\"runtime_id\", \"browser_sessions\".\"state\", \"browser_sessions\".\"updated_at\" from \"browser_sessions\" left join \"browser_profiles\" on \"browser_profiles\".\"id\" = \"browser_sessions\".\"profile_id\" where \"browser_sessions\".\"id\" = $1 and (exists (select \"personal_settings\".\"owner_id\" from \"personal_settings\" inner join \"users\" on \"users\".\"id\" = \"personal_settings\".\"owner_id\" where \"personal_settings\".\"owner_id\" = $2 and \"users\".\"disabled_at\" is null) and ((\"browser_profiles\".\"owner_id\" = $3 and \"browser_profiles\".\"archived_at\" is null) or \"browser_sessions\".\"profile_id\" is null)) and exists (select \"runners\".\"id\" from \"runners\" where \"runners\".\"id\" = \"browser_sessions\".\"runner_id\" and \"runners\".\"revoked_at\" is null and ((\"runners\".\"owner_kind\" = $4 and \"runners\".\"owner_user_id\" = $5) or (\"runners\".\"owner_kind\" = $6 and \"runners\".\"kind\" = $7)))",
+      "select \"id\" from \"browser_sessions\" where \"id\" = $1 for no key update",
+      "select *, clock_timestamp() as \"now\" from \"client_sync_state\" limit $1 for no key update",
+      "update \"browser_sessions\" set \"state\" = $1, \"updated_at\" = $2 where \"id\" = $3 and \"state\" not in ($4, $5) and \"state\" != $6 returning \"created_at\", \"runner_id\", \"id\", \"origin\", \"opener\", \"placement_key\", \"profile_id\", \"runtime_id\", \"state\", \"updated_at\"",
+      "update \"client_sync_state\" set \"sequence\" = $1, \"pruned_through_sequence\" = $2, \"retained_change_count\" = $3, \"last_commit_at\" = $4, \"resource_revisions\" = $5, \"pending_request_count\" = $6, \"needs_you_count\" = $7, \"unread_task_count\" = $8 where \"deployment_id\" = $9"
     ]
   }
 }
