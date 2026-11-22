@@ -1,5 +1,6 @@
 import { createId, UserIdSchema, type AgentGrant } from "@opensteer/core";
-import type { AgentConnection, PluginsInstalledView } from "@opensteer/protocol";
+import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opensteer/protocol";
+import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
 import { chatFacts, messagingAccountView } from "./chat-view.js";
 import {
@@ -9,6 +10,7 @@ import {
 } from "./connected-agent-options.js";
 import {
   connectedAgentDetail,
+  connectedAgentPhase,
   connectedAgentIdentity,
   connectedAgentLive,
   connectedAgentWorkingTasks,
@@ -670,5 +672,24 @@ describe("connected agents copy", () => {
       "Tabs you share from Chrome on Work Mac",
     );
     expect(connectionModeDescriptions["auto-accept-edits"]).toContain("Asks before anything else");
+  });
+});
+
+describe("a list from a newer Home", () => {
+  it("reads a state it does not know as unknown on that one row, and ignores a notice it does not know", () => {
+    const scene = mockConnectedAgents("chats");
+    const [ordinary, live] = [scene.connections[0]!, scene.connections[1]!];
+    const read = hostApi["connections.list"].success.safeParse({
+      connections: [
+        { ...ordinary, state: "resting" },
+        { ...live, bridge: { ...live.bridge!, notice: "newer" } },
+      ],
+      endedConnections: [],
+    });
+    expect(read.success).toBe(true);
+    const [resting, chat] = read.data!.connections;
+    expect(connectedAgentPhase(resting!)).toBe("unknown");
+    expect(connectedAgentPhase(chat!)).toBe("active");
+    expect(chat!.bridge?.notice).toBeUndefined();
   });
 });

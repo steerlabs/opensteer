@@ -84,7 +84,8 @@ export const AgentConnectionBridgeSchema = z.object({
     })
     .optional(),
   /** A one-time notice about how the update changed this bridge, until the person dismisses it. */
-  notice: z.enum(["converted", "converted-without-channels"]).optional(),
+  // A notice from a newer Home reads as none: there is nothing this app could show for it.
+  notice: z.enum(["converted", "converted-without-channels"]).optional().catch(undefined),
   /** The chat account it speaks through: the Slack workspace, or the Mac's iMessage address. */
   accountName: z.string().min(1).max(160).optional(),
   /** The channel's name, for a chat in one channel; null for direct messages. */
@@ -144,7 +145,12 @@ export const AgentConnectionSchema = z.object({
       redirectOrigin: z.string().max(2048).nullable(),
     })
     .optional(),
-  state: AgentConnectionStateSchema.optional(),
+  /**
+   * Where it stands. A state from a newer Home is kept as it was said, so the row reads as
+   * unknown (`connectedAgentPhase`), never as active or ended, and the rest of the list still
+   * reads; nothing here may turn it into undefined, which means active.
+   */
+  state: z.union([AgentConnectionStateSchema, z.string().min(1).max(64)]).optional(),
   /** Contact was lost with work in its lineage mid-effect while it was being stopped. */
   lastActionUncertain: z.boolean().optional(),
   /** What to check: the Device, the task or tool, and when contact was lost. */
