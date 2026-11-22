@@ -9001,8 +9001,8 @@ describe("work under a connection's authority never uses the clipboard in the br
     const ownerId = createId("user");
     const repository = new SelectedGrantRepository(ownerId);
     repository.scope = "everything";
-    const { cdp, forwarded } = await attached(repository, ownerId, "run:lineage");
-    for (const [method, parameters] of [
+    const { cdp, runtime } = await attached(repository, ownerId, "run:lineage");
+    const refused = [
       ["Input.dispatchKeyEvent", cmdV],
       ["Input.dispatchKeyEvent", { ...cmdV, commands: ["paste"] }],
       ["Input.dispatchKeyEvent", { ...cmdV, key: "c", code: "KeyC", windowsVirtualKeyCode: 67 }],
@@ -9015,24 +9015,28 @@ describe("work under a connection's authority never uses the clipboard in the br
           message: JSON.stringify({ id: 1, method: "Input.dispatchKeyEvent", params: cmdV }),
         },
       ],
-    ] as const) {
-      // The refusal settles before any timer can run; a command handed to the browser waits for
-      // the browser's answer instead.
-      const handedOff = new Promise((resolve) =>
-        setTimeout(resolve, 0, "handed to the browser, waiting for its answer"),
-      );
-      const settled = await Promise.race([
-        cdp
-          .request({ method, parameters, sessionId: "cdp-page-1" })
-          .catch((error: unknown) => error),
-        handedOff,
-      ]);
-      expect(settled, method).toMatchObject({ code: "forbidden", message: sentence });
-    }
-    // Nothing of them reached the runtime: the next command it sees is the next one sent.
-    await expect(
-      forwarded("Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers: 4, code: "KeyA" }),
-    ).resolves.toMatchObject({ method: "Input.dispatchKeyEvent", parameters: { code: "KeyA" } });
+    ] as const;
+    const settled = refused.map(([method, parameters]) =>
+      cdp.request({ method, parameters, sessionId: "cdp-page-1" }).then(
+        () => "answered",
+        (error: unknown) => error,
+      ),
+    );
+    // Nothing of them reached the runtime: the first command it sees is the one sent after them.
+    const next = cdp.request({
+      method: "Input.dispatchKeyEvent",
+      parameters: { type: "rawKeyDown", modifiers: 4, code: "KeyA" },
+      sessionId: "cdp-page-1",
+    });
+    const first = await runtime.nextCommand();
+    expect(first.command, "the first command to reach the runtime").toMatchObject({
+      method: "Input.dispatchKeyEvent",
+      parameters: { code: "KeyA" },
+    });
+    runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+    await next;
+    for (const [index, outcome] of (await Promise.all(settled)).entries())
+      expect(outcome, refused[index]![0]).toMatchObject({ code: "forbidden", message: sentence });
   });
 
   it("forwards the person's own Run's paste exactly as before", async () => {

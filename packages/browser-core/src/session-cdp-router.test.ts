@@ -1954,9 +1954,14 @@ describe("SessionCdpRouter clipboard under a connection", () => {
       send = (command) => client.send(command);
     } else {
       const budget = { maxBytes: 64 * 1024, maxDepth: 16, maxEntries: 1024 };
-      router.openScriptAttachment("a", "script", "seed", budget, () => undefined, {
-        ...(connection ? { connection } : {}),
-      });
+      router.openScriptAttachment(
+        "a",
+        "script",
+        "seed",
+        budget,
+        () => undefined,
+        connection ? { connection } : {},
+      );
       send = (command) => router.send("a", { ...command, scriptAttachmentId: "script" });
     }
     const { sessionId } = (await send({
