@@ -24,7 +24,7 @@ export default defineConfig((cliOptions) => {
       ],
     }),
     // Pool host enrolment downloads dist/egress-main.js as a single standalone file with no
-    // sibling chunks and no node_modules directory (E1).
+    // sibling chunks and no node_modules directory.
     nodeApp({
       entry: ["src/egress-main.ts"],
       outDir,

@@ -4,6 +4,14 @@ import { AsyncMutex } from "./async.js";
 import type { BrowserPage } from "./browser/backend.js";
 import { BrowserRuntimeError } from "./errors.js";
 
+/**
+ * How long a pooled session without a channel keeps its pages in the guest runtime before the
+ * runtime tears it down and closes Chromium (10 minutes). The pool agent's silent-Home stop
+ * lower bound stays strictly above this plus a margin so a restarting Home's live sessions are
+ * never ended early.
+ */
+export const pooledRuntimeSessionDeadlineMs = 10 * 60_000;
+
 export interface BrowserPoolRuntimeOptions {
   /** The pool controller's key. The runtime holds no fence until the controller installs one. */
   readonly controllerKey: KeyObject;
