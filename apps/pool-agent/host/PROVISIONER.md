@@ -104,7 +104,9 @@ relay of `managed-pool.ts`, `ManagedBrowserPoolRelay`; built by `managedBrowserP
 ## 4. The profile disk
 
 The agent makes and erases it, because it is the only party on the host (round G). The
-provisioner never sends a path and never touches the file.
+provisioner never sends a path and never touches the file. On a provisioned host the agent also
+refuses to make, use or erase a profile while `driver.profilesRoot` is not the mount it was told
+to expect (`driver.profilesMount`, section 7).
 
 - **Its path is derived from the slot id alone:** `<profilesRoot>/slot-<sha256 of the slot
 id>.ext4` (`apps/pool-agent/src/profiles.ts`, `profileFileName`).
@@ -215,8 +217,31 @@ id>.ext4` (`apps/pool-agent/src/profiles.ts`, `profileFileName`).
   replaced instance accepts a create at any term; the provisioner must still go above the
   term it last used.
 - **The profiles root is the durable disk's mount point,** set by `driver.profilesRoot` in
-  `agent.json`. How a provisioned host mounts that disk and enrols is the enrolment's to decide;
-  nothing in the agent assumes it.
+  `agent.json`. How a provisioned host mounts that disk and enrols is the enrolment's to decide.
+- **The agent holds the mount by itself when told to:** `driver.profilesMount` in `agent.json`
+  (`config.ts`, `agentConfigSchema`). `{}` says `profilesRoot` must be a mount point, and
+  `{ "label": "osp-<12 hex>" }` names its filesystem too. The label is `osp-` plus the first
+  twelve hex characters of the SHA-256 of the host id, as the enrolment labels it. Without the
+  setting nothing is checked, as before.
+  - **The check** (`profiles-mount.ts`, `checkProfilesMount`; no privileged call): the root is a
+    directory on a different device than its parent; with a label, `/dev/disk/by-label/<label>`
+    is that device; and the root is writable.
+  - **At the agent's start** a failed check stops it: it exits with a plain message
+    (`agent.ts`, `start`). systemd starts it again with a growing delay, so a disk that attaches
+    late is picked up by itself.
+  - **Before every `create` and `delete`,** a failed check is a definite, signed `conflict`
+    ("The profile disk is not mounted: …"). Nothing is made, nothing is erased, and a delete
+    never answers `profileErased` (`agent.ts`, `#profilesMounted`, `#create` and
+    `deleteSlotWithEvidence`).
+  - **Before every `start` and wake from disk,** a failed check gives a Home a stored, signed
+    `applied: false` with reason `profile-disk-missing`, and nothing is booted (`agent.ts`,
+    `#profilesRefusal`).
+  - **A wake from memory, a park and a stop are not checked:** they do not open the profile
+    again.
+  - **A guest already running when the mount goes keeps its open profile,** and the agent can't
+    see it: the check reads the root, not the guest's file. Its park, wake from memory and stop
+    go on as usual, and its saved state stays on the array. Its next start or wake from disk is
+    refused until the mount is back.
 
 ## 8. Egress on a host that pulls it (`driver.requireEgressUpstream`, rounds H and I)
 

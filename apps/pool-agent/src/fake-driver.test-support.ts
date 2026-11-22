@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import {
+  checkProfilesMount,
+  type ProfilesMountExpectation,
+  type ProfilesMountIo,
+} from "./profiles-mount.js";
 import {
   ensureProfile,
   eraseFilesUnder,
@@ -77,9 +82,41 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   /** Round H: this fake host pulls each slot's upstream credentials. */
   readonly pullsEgress: boolean;
 
-  constructor(options: { startsEmpty?: boolean; pullsEgress?: boolean } = {}) {
+  constructor(
+    options: {
+      startsEmpty?: boolean;
+      pullsEgress?: boolean;
+      profilesMount?: ProfilesMountExpectation;
+    } = {},
+  ) {
     this.startsEmpty = options.startsEmpty ?? false;
     this.pullsEgress = options.pullsEgress ?? false;
+    this.#profilesMount = options.profilesMount;
+  }
+
+  readonly #profilesMount: ProfilesMountExpectation | undefined;
+  /**
+   * The profile disk's mount, through the check the real driver uses. Undefined: what the
+   * system says (a temporary directory is no mount point). True or false: a mount that comes
+   * and goes, as the check would read it.
+   */
+  profilesMounted: boolean | undefined;
+
+  async profilesMountProblem(): Promise<string | undefined> {
+    if (!this.#profilesMount) return undefined;
+    const simulated = this.profilesMounted;
+    const io: ProfilesMountIo | undefined =
+      simulated === undefined
+        ? undefined
+        : {
+            stat: async (path) => ({
+              dev: path === resolve(this.profilesRoot) && simulated ? 2 : 1,
+              rdev: 2,
+              isDirectory: () => true,
+            }),
+            access: async () => undefined,
+          };
+    return checkProfilesMount(this.profilesRoot, this.#profilesMount, io);
   }
 
   /**

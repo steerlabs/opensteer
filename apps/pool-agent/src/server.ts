@@ -24,6 +24,7 @@ import {
 } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import {
   AgentUnavailable,
+  ProfilesNotMounted,
   SlotConflict,
   SlotFenced,
   SlotNotFound,
@@ -299,7 +300,8 @@ async function administer(
         return { op: "list", slots: agent.summaries() };
     }
   } catch (error) {
-    if (error instanceof SlotConflict)
+    // A definite refusal: nothing was made or erased.
+    if (error instanceof SlotConflict || error instanceof ProfilesNotMounted)
       return { op: "refused", code: "conflict", message: error.message };
     if (error instanceof SlotNotFound)
       return { op: "refused", code: "unknown-slot", message: error.message };
