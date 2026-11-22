@@ -725,6 +725,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         state.suppressedInput = null;
         break;
       }
+      // Another input means the suppressed one is not coming (an adapter that reports input
+      // without a beforeinput): a later deletion's input is its own. Enter's suppression is
+      // consumed only by its line break.
+      if (state.suppressedInput !== "return") state.suppressedInput = null;
       const echo = state.pendingEcho;
       state.pendingEcho = null;
       const base = echo?.expected ?? state.proxy;

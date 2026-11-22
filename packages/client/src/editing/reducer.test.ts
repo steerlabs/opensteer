@@ -110,15 +110,41 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       { kind: "command", command: "moveBackward" },
     ]);
   });
-  it("still swallows the input of a deletion it could not prevent", () => {
+  // The suppression's purpose: on a target without range edits a Backspace is sent as a command
+  // and the mirror reset, and a deletion the adapter could not prevent still arrives as input.
+  // That input is the deletion already sent, never a second edit.
+  it("swallows the input of a deletion it could not prevent", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "insertText", data: "ab" },
+        input("ab"),
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        input("a", "deleteContentBackward"),
+      ],
+      "android",
+      { ...abilities, rangeEdits: false },
+    );
+    expect(result.operations).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "ab", before: "", after: "" } },
+      { kind: "command", command: "deleteBackward" },
+    ]);
+  });
+  // An input that is not the suppressed one means the suppressed input is not coming (Android's
+  // text watcher reports an edit with no beforeinput): a later deletion's input is its own.
+  it("ends the suppression at an input that is not the suppressed one", () => {
     const result = replay(
       [
         { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        input("a", "insertReplacementText"),
         input("", "deleteContentBackward"),
       ],
       "android",
     );
-    expect(result.operations).toEqual([{ kind: "command", command: "deleteBackward" }]);
+    expect(result.operations).toEqual([
+      { kind: "command", command: "deleteBackward" },
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      { kind: "edit", edit: { contextId: context.contextId, text: "", before: "a", after: "" } },
+    ]);
   });
   it.each(["insertLineBreak", "insertParagraph"])(
     "sends soft %s as one Enter and keeps pasted newlines literal",
