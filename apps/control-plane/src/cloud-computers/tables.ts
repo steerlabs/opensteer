@@ -82,6 +82,8 @@ export interface CloudComputerTable {
   backupObjectsRemovedAt: Generated<Date | null>;
   backupCleanupAttemptedAt: Generated<Date | null>;
   ownerAccessAt: Generated<Date | null>;
+  browserMode: Generated<"local" | "pool">;
+  browserSlotErasedAt: Generated<Date | null>;
   pendingProviderWrites: ColumnType<CloudComputerProviderWrite[], string | undefined, string>;
   createdAt: Timestamp;
   updatedAt: Timestamp;

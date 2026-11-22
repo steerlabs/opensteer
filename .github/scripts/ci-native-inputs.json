@@ -413,6 +413,7 @@
     "apps/host/src/plugins/plugin-service.ts",
     "apps/host/src/plugins/plugin-skill-cache.ts",
     "apps/host/src/plugins/plugin-source.ts",
+    "apps/host/src/plugins/plugin-stop-coordinator.ts",
     "apps/host/src/plugins/plugin-webhook-routes.ts",
     "apps/host/src/plugins/provider-names.ts",
     "apps/host/src/plugins/target-blocked.ts",

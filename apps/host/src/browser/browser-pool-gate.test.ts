@@ -31,8 +31,13 @@ function gate() {
       return "vetoed";
     }
     await commit.promise;
-    // After the commit the step asks again: a send during the commit still vetoes.
-    if (!subject.committed()) return "vetoed";
+    // After the commit the step asks again: a send during the commit still vetoes. The vetoed
+    // park is undone, and the loop publishes the row read running again: only then is it open.
+    if (!subject.committed()) {
+      expect(subject.admits).toBe(false);
+      subject.set({ away: null });
+      return "vetoed";
+    }
     subject.set({ away: "parked" });
     return "parked";
   };

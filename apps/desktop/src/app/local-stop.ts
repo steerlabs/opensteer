@@ -21,9 +21,18 @@ const unsavedStop = menuBarWords("menubar.stop.unsaved");
 const unreadStop = menuBarWords("menubar.stop.unread");
 const unsavedResume = menuBarWords("menubar.resume.unsaved");
 const unconfirmedStop = menuBarWords("menubar.stop.unconfirmed");
+const defaultConfirmOverdueMs = 30_000;
 
 interface DesktopLocalStopOptions {
   readonly restart: () => Promise<void>;
+  /**
+   * Keeps looking for the hosted Home's Stop proof after local containment
+   * finishes. Resolves `true` once proved or when this Mac hosts no Home,
+   * `false` if looking stopped without proof (abort or shutdown), and rejects
+   * only on a permanent Home refusal.
+   */
+  readonly confirm?: (stoppedSince: string, signal: AbortSignal) => Promise<boolean>;
+  readonly confirmOverdueMs?: number;
   readonly store: LocalStopStore;
   readonly log: ShutdownLog;
   readonly now?: () => Date;
@@ -31,15 +40,23 @@ interface DesktopLocalStopOptions {
 
 export class DesktopLocalStop {
   readonly #options: DesktopLocalStopOptions;
+  readonly #confirmOverdueMs: number;
   readonly #listeners = new Set<() => void>();
   #problem: string | null = null;
   #phase: MenuBarStopPhase = "stopping";
   #mode: string | null = null;
+  #locallyContained = false;
   #confirmedAt: string | null = null;
+  #confirming = false;
+  #confirmOverdue = false;
+  #lookGeneration = 0;
+  #lookAbort: AbortController | null = null;
+  #overdueTimer: NodeJS.Timeout | undefined;
   #transaction: Promise<void> = Promise.resolve();
 
   constructor(options: DesktopLocalStopOptions) {
     this.#options = options;
+    this.#confirmOverdueMs = options.confirmOverdueMs ?? defaultConfirmOverdueMs;
   }
 
   get stopped(): boolean {
@@ -62,7 +79,27 @@ export class DesktopLocalStop {
     return this.#phase === "stopped" ? this.#confirmedAt : null;
   }
 
+  get confirming(): boolean {
+    return (
+      this.#phase === "stopped" &&
+      this.#confirming &&
+      this.#confirmedAt === null &&
+      this.#problem === null
+    );
+  }
+
+  get confirmOverdue(): boolean {
+    return this.confirming && this.#confirmOverdue;
+  }
+
+  dispose(): void {
+    this.#cancelLook();
+  }
+
   async restore(): Promise<void> {
+    this.#cancelLook();
+    this.#confirmedAt = null;
+    this.#locallyContained = false;
     try {
       const saved = await this.#options.store.load();
       this.#mode = saved.stopped ? (saved.at ?? this.#now()) : null;
@@ -75,8 +112,24 @@ export class DesktopLocalStop {
     this.#emit();
   }
 
+  noteContainedBoot(mode: string): void {
+    if (
+      mode !== this.#mode ||
+      this.#phase !== "stopped" ||
+      this.#problem !== null ||
+      this.#locallyContained
+    )
+      return;
+    this.#locallyContained = true;
+    if (this.#options.confirm) this.#startHomeProofLook(mode);
+    else this.#confirmedAt = mode;
+    this.#emit();
+  }
+
   noteUncontainedBoot(mode: string): void {
     if (mode !== this.#mode) return;
+    this.#locallyContained = false;
+    this.#cancelLook();
     this.#confirmedAt = null;
     if (this.#problem?.includes(unconfirmedStop)) return;
     this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
@@ -108,9 +161,11 @@ export class DesktopLocalStop {
   #choose(at: string | null): Promise<void> {
     return this.whileModeStable(async () => {
       if (at === null && !this.stopped) return;
+      this.#cancelLook();
       this.#phase = "stopping";
       this.#problem = null;
       this.#confirmedAt = null;
+      this.#locallyContained = false;
       this.#emit();
       try {
         await this.#options.store.save({ stopped: at !== null, at });
@@ -128,8 +183,13 @@ export class DesktopLocalStop {
       const saveProblem = this.#problem;
       try {
         await this.#options.restart();
-        if (this.#problem === saveProblem) this.#confirmedAt = at;
+        if (at !== null && this.#problem === saveProblem) {
+          this.#locallyContained = true;
+          if (this.#options.confirm) this.#startHomeProofLook(at);
+          else this.#confirmedAt = at;
+        }
       } catch (error) {
+        this.#locallyContained = false;
         const failure = messageOf(error);
         if (at !== null && !this.#problem?.includes(unconfirmedStop))
           this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
@@ -140,10 +200,90 @@ export class DesktopLocalStop {
       this.#options.log("desktop.local-stop.restarted", {
         stopped: at !== null,
         confirmed: this.#confirmedAt !== null || (at === null && this.#problem === null),
+        confirming: this.confirming,
         elapsedMs: performance.now() - started,
       });
       this.#emit();
     });
+  }
+
+  #clearOverdueTimer(): void {
+    if (this.#overdueTimer) {
+      clearTimeout(this.#overdueTimer);
+      this.#overdueTimer = undefined;
+    }
+    this.#confirmOverdue = false;
+  }
+
+  #cancelLook(): void {
+    this.#lookGeneration += 1;
+    this.#lookAbort?.abort();
+    this.#lookAbort = null;
+    this.#confirming = false;
+    this.#clearOverdueTimer();
+  }
+
+  #startHomeProofLook(at: string): void {
+    const confirm = this.#options.confirm;
+    if (!confirm || !this.#locallyContained || this.#mode !== at) return;
+    this.#cancelLook();
+    const generation = this.#lookGeneration;
+    const controller = new AbortController();
+    this.#lookAbort = controller;
+    this.#confirming = true;
+    this.#overdueTimer = setTimeout(() => {
+      this.#overdueTimer = undefined;
+      if (
+        controller.signal.aborted ||
+        generation !== this.#lookGeneration ||
+        this.#mode !== at ||
+        !this.#confirming ||
+        this.#confirmedAt !== null ||
+        this.#problem !== null
+      )
+        return;
+      this.#confirmOverdue = true;
+      this.#emit();
+    }, this.#confirmOverdueMs);
+    this.#overdueTimer.unref();
+    void confirm(at, controller.signal).then(
+      (confirmed) => {
+        if (
+          controller.signal.aborted ||
+          generation !== this.#lookGeneration ||
+          this.#mode !== at ||
+          !this.#locallyContained
+        )
+          return;
+        this.#lookAbort = null;
+        this.#confirming = false;
+        this.#clearOverdueTimer();
+        if (!confirmed) {
+          this.#emit();
+          return;
+        }
+        this.#confirmedAt = at;
+        this.#options.log("desktop.local-stop.home-confirmed", { stoppedAt: at });
+        this.#emit();
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted || generation !== this.#lookGeneration || this.#mode !== at)
+          return;
+        this.#lookAbort = null;
+        this.#confirming = false;
+        this.#clearOverdueTimer();
+        const failure = messageOf(error);
+        if (!this.#problem?.includes(unconfirmedStop))
+          this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;
+        if (!this.#problem?.includes(failure))
+          this.#problem = this.#problem ? `${this.#problem} ${failure}` : failure;
+        this.#options.log("desktop.local-stop.home-proof-failed", {
+          stoppedAt: at,
+          message: failure,
+        });
+        this.#emit();
+      },
+    );
   }
 
   #now(): string {

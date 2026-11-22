@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
 import {
+  BrowserPoolHostReleaseSchema,
   CloudComputerBootReleaseSchema,
   CloudComputerHostnameSchema,
   CloudComputerLocationSchema,
@@ -8,8 +9,13 @@ import {
   CloudComputerRegionSchema,
   CloudComputerReleaseSchema,
   CloudComputerReleaseManifestUrlSchema,
+  defaultBrowserPoolAgentPort,
+  defaultBrowserPoolRelayPort,
 } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
+
+/** Reserve 10% of the durable ext4 profile disk for root blocks, journal, and inode tables. */
+export const browserPoolProfileDiskOverheadRatio = 0.1;
 
 const prefix = "OPENSTEER_CLOUD_COMPUTER_";
 
@@ -64,13 +70,71 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
       })
       .pipe(CloudComputerReleaseSchema.merge(CloudComputerBootReleaseSchema)),
   );
+  const has = (key: string) =>
+    env[`${prefix}${key}`] !== undefined || env[`${prefix}${key}_FILE`] !== undefined;
+  const integer = (min: number, max: number) =>
+    z.string().regex(/^\d+$/u).transform(Number).pipe(z.number().int().min(min).max(max));
+  const region = read("REGION", CloudComputerLocationSchema);
+  const browserPool = has("POOL_SLOTS_PER_HOST")
+    ? (() => {
+        const slotsPerHost = read("POOL_SLOTS_PER_HOST", integer(1, 16_384));
+        const profileMib = has("POOL_PROFILE_MIB")
+          ? read("POOL_PROFILE_MIB", integer(64, 1_048_576))
+          : 2048;
+        const profileDiskSizeGb = has("POOL_PROFILE_DISK_SIZE_GB")
+          ? read("POOL_PROFILE_DISK_SIZE_GB", integer(10, 65_536))
+          : 500;
+        const usableProfileDiskMib = Math.floor(
+          profileDiskSizeGb * 1024 * (1 - browserPoolProfileDiskOverheadRatio),
+        );
+        if (slotsPerHost * profileMib > usableProfileDiskMib) {
+          throw new Error(
+            `Browser pool slots (${slotsPerHost} * ${profileMib} MiB) exceed usable profile disk ` +
+              `capacity (${usableProfileDiskMib} MiB of ${profileDiskSizeGb} GiB with 10% filesystem overhead reserved)`,
+          );
+        }
+        return {
+          slotsPerHost,
+          release: read(
+            "POOL_RELEASE_JSON",
+            z
+              .string()
+              .transform((text, ctx) => {
+                try {
+                  return JSON.parse(text) as unknown;
+                } catch {
+                  ctx.addIssue({ code: "custom", message: "Invalid pool release JSON" });
+                  return z.NEVER;
+                }
+              })
+              .pipe(BrowserPoolHostReleaseSchema),
+          ),
+          machineType: has("POOL_MACHINE_TYPE")
+            ? read("POOL_MACHINE_TYPE", CloudComputerLocationSchema)
+            : "n2-standard-8",
+          guestVcpus: has("POOL_GUEST_VCPUS") ? read("POOL_GUEST_VCPUS", integer(1, 32)) : 2,
+          guestMemoryMib: has("POOL_GUEST_MEMORY_MIB")
+            ? read("POOL_GUEST_MEMORY_MIB", integer(256, 65_536))
+            : 2048,
+          profileMib,
+          profileDiskSizeGb,
+          agentPort: has("POOL_AGENT_PORT")
+            ? read("POOL_AGENT_PORT", integer(1, 65_535))
+            : defaultBrowserPoolAgentPort,
+          relayPort: has("POOL_RELAY_PORT")
+            ? read("POOL_RELAY_PORT", integer(1, 65_535))
+            : defaultBrowserPoolRelayPort,
+        };
+      })()
+    : undefined;
   return {
     provisionerEmail: read(
       "PROVISIONER_EMAIL",
       z.email().refine((value) => value.endsWith(".iam.gserviceaccount.com")),
     ),
     domain: read("DOMAIN", CloudComputerHostnameSchema.max(214)),
-    region: read("REGION", CloudComputerLocationSchema),
+    region,
+    ...(browserPool ? { browserPool } : {}),
     ...(env[`${prefix}REGION_LABEL`] !== undefined ||
     env[`${prefix}REGION_LABEL_FILE`] !== undefined
       ? { regionLabel: read("REGION_LABEL", CloudComputerRegionSchema.shape.label) }

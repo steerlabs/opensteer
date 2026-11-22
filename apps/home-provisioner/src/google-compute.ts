@@ -1,14 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
+  BrowserPoolDiskRefSchema,
+  BrowserPoolHostIdSchema,
   CloudComputerGenerationSchema,
   CloudComputerIdSchema,
   GoogleComputeServerRefSchema,
+  type BrowserPoolHostId,
+  type BrowserPoolHostProviderWrite,
   type CloudComputerId,
   type CloudComputerProviderWrite,
   type GoogleComputeServerRef,
 } from "@opensteer/control-plane-protocol";
-import { refused } from "@opensteer/core";
+import { refused, sameStringSet } from "@opensteer/core";
 import { z } from "zod";
 import { type ComputeAccessToken, googleMetadataAccessToken } from "./google-auth.js";
 import {
@@ -22,13 +26,31 @@ import {
   type HttpOptions,
 } from "./http.js";
 import { googleBootstrapReadyKey } from "./boot.js";
-import type { CreateVm, ExpectedVm, VmAddress, VmProvider, VmServer } from "./provider.js";
+import { poolProfileDiskDeviceName } from "./pool-boot.js";
+import type {
+  CreatePoolHostVm,
+  CreateVm,
+  EnsurePoolProfileDisk,
+  ExpectedPoolHostVm,
+  ExpectedVm,
+  PoolFirewallConfig,
+  PoolHostProvider,
+  PoolHostVm,
+  PoolProfileDisk,
+  VmAddress,
+  VmProvider,
+  VmServer,
+} from "./provider.js";
 
 const homeLabel = "opensteer-cloud-computer";
+const poolHostLabel = "opensteer-pool-host";
 const generationLabel = "opensteer-generation";
 const managedLabel = "opensteer-managed-by";
 const managedBy = "home-provisioner";
 const firewallTag = "opensteer-cloud-computers";
+const poolFirewallTag = "opensteer-pool-hosts";
+const poolFirewallHomeName = "opensteer-pool-hosts-home";
+const poolFirewallAdminName = "opensteer-pool-hosts-admin";
 const firewallId = 1;
 const accessConfigName = "External NAT";
 const compute = "Google Compute Engine";
@@ -73,6 +95,7 @@ const instance = z.object({
     .array(
       z.object({
         name: z.string(),
+        networkIP: z.ipv4().optional(),
         accessConfigs: z
           .array(z.object({ name: z.string(), natIP: z.ipv4().optional() }))
           .default([]),
@@ -82,6 +105,13 @@ const instance = z.object({
     .default([]),
 });
 type Instance = z.infer<typeof instance>;
+const disk = z.object({
+  id: numericId,
+  name: resourceName,
+  labels: labels.default({}),
+  users: z.array(z.string()).default([]),
+});
+type Disk = z.infer<typeof disk>;
 const address = z.object({
   name: resourceName,
   address: z.union([z.ipv4(), z.ipv6()]).optional(),
@@ -119,7 +149,8 @@ const firewall = z.object({
 // https://cloud.google.com/compute/docs/api/how-tos/performance
 const instanceFields =
   "items(id,name,labels,status,lastStartTimestamp,tags,metadata(fingerprint,items/key)," +
-  "networkInterfaces(name,accessConfigs(name,natIP),ipv6AccessConfigs(externalIpv6))),nextPageToken";
+  "networkInterfaces(name,networkIP,accessConfigs(name,natIP),ipv6AccessConfigs(externalIpv6))),nextPageToken";
+const diskFields = "items(id,name,labels,users),nextPageToken";
 const addressFields =
   "items(name,address,addressType,networkTier,status,labels,users),nextPageToken";
 const operationFields =
@@ -160,12 +191,15 @@ type Address = z.infer<typeof address>;
 interface Inventory {
   readonly instances: Map<string, Instance>;
   readonly addresses: Map<string, Address>;
+  disks?: Map<string, Disk>;
   /** Managed instances found in another zone, by the Cloud Computer their labels name. */
   readonly strays: Map<CloudComputerId, { name: string; scope: string }>;
+  /** Managed pool host instances found in another zone, by the pool host ID their labels name. */
+  readonly poolStrays: Map<BrowserPoolHostId, { name: string; scope: string }>;
 }
 type PendingOperation = { requestId: string; initial?: Operation };
 
-export class GoogleCompute implements VmProvider {
+export class GoogleCompute implements VmProvider, PoolHostProvider {
   readonly #options: GoogleComputeOptions;
   readonly #baseUrl: URL;
   readonly #accessToken: ComputeAccessToken;
@@ -198,7 +232,7 @@ export class GoogleCompute implements VmProvider {
    */
   async beginPass(signal: AbortSignal) {
     this.#inventory = undefined;
-    const [instances, addresses, strays] = await Promise.all([
+    const [instances, addresses, strayScan] = await Promise.all([
       this.#list(`${this.#zone}/instances`, instance, signal, { fields: instanceFields }),
       this.#list(this.#addressesPath(), address, signal, { fields: addressFields }),
       this.#strayInstances(signal),
@@ -206,7 +240,8 @@ export class GoogleCompute implements VmProvider {
     this.#inventory = {
       instances: new Map(instances.map((vm) => [vm.name, vm])),
       addresses: new Map(addresses.map((entry) => [entry.name, entry])),
-      strays,
+      strays: strayScan.strays,
+      poolStrays: strayScan.poolStrays,
     };
   }
 
@@ -401,6 +436,7 @@ export class GoogleCompute implements VmProvider {
       unreachables: z.array(z.string()).default([]),
     });
     const strays = new Map<CloudComputerId, { name: string; scope: string }>();
+    const poolStrays = new Map<BrowserPoolHostId, { name: string; scope: string }>();
     const unreachable = new Set<string>();
     for await (const result of this.#pages(`${this.#project}/aggregated/instances`, page, signal, {
       returnPartialSuccess: "true",
@@ -413,6 +449,9 @@ export class GoogleCompute implements VmProvider {
           const identity = managedIdentity(vm.labels);
           if (identity && !strays.has(identity.id))
             strays.set(identity.id, { name: vm.name, scope });
+          const poolIdentity = managedPoolHostIdentity(vm.labels);
+          if (poolIdentity && !poolStrays.has(poolIdentity.id))
+            poolStrays.set(poolIdentity.id, { name: vm.name, scope });
         }
       }
     }
@@ -421,7 +460,7 @@ export class GoogleCompute implements VmProvider {
         event: "home-provisioner.provider.zones-unreachable",
         scopes: [...unreachable].sort(),
       });
-    return strays;
+    return { strays, poolStrays };
   }
 
   async #instances(signal: AbortSignal) {
@@ -802,14 +841,24 @@ export class GoogleCompute implements VmProvider {
     signal: AbortSignal,
     check?: Check,
   ) {
+    return this.#updateBootstrapMetadata(id, receiptRecorded, false, signal, check);
+  }
+
+  async #updateBootstrapMetadata(
+    id: GoogleComputeServerRef,
+    done: boolean,
+    keepReadyKey: boolean,
+    signal: AbortSignal,
+    check?: Check,
+  ) {
     const vm = await this.#readRef(id, signal, true);
     if (!vm) return false;
     if (!vm.metadata) return true;
     const items = vm.metadata.items;
     const hasUserData = items.some(({ key }) => key === "user-data");
     const hasReady = items.some(({ key }) => key === googleBootstrapReadyKey);
-    if (!receiptRecorded && (!hasUserData || hasReady)) return true;
-    if (receiptRecorded && !hasUserData && !hasReady) return true;
+    if (!done && (!hasUserData || hasReady)) return true;
+    if (done && !hasUserData && (keepReadyKey || !hasReady)) return true;
     try {
       await this.#write(`${this.#zone}/instances/${vm.name}/setMetadata`, "zone", signal, {
         method: "POST",
@@ -817,8 +866,11 @@ export class GoogleCompute implements VmProvider {
         observedVersion: `${id}/${vm.metadata.fingerprint}`,
         body: {
           fingerprint: vm.metadata.fingerprint,
-          items: receiptRecorded
-            ? items.filter(({ key }) => key !== "user-data" && key !== googleBootstrapReadyKey)
+          items: done
+            ? items.filter(
+                ({ key }) =>
+                  key !== "user-data" && (keepReadyKey || key !== googleBootstrapReadyKey),
+              )
             : [...items, { key: googleBootstrapReadyKey, value: "1" }],
         },
       });
@@ -828,11 +880,422 @@ export class GoogleCompute implements VmProvider {
     } finally {
       await this.#refreshAfterWrite(vm.name, signal);
     }
-    if (receiptRecorded) {
+    if (done) {
       const updated = await this.#readRef(id, signal);
-      return updated !== undefined && bootstrapMetadata(updated) === "absent";
+      return updated !== undefined && bootstrapMetadata(updated, keepReadyKey) === "absent";
     }
     return true;
+  }
+
+  // --- Browser pool host provider (PoolHostProvider) ---
+
+  async ensurePoolFirewalls(config: PoolFirewallConfig, signal: AbortSignal, check?: Check) {
+    const homePorts = [...new Set([String(config.agentPort), String(config.relayPort)])].sort();
+    await this.#ensurePoolFirewallRule(
+      {
+        name: poolFirewallHomeName,
+        description: "Managed by the Opensteer Home provisioner (browser pool Home ingress)",
+        sourceTags: [firewallTag],
+        sourceRanges: [],
+        ports: homePorts,
+      },
+      signal,
+      check,
+    );
+    await this.#ensurePoolFirewallRule(
+      {
+        name: poolFirewallAdminName,
+        description: "Managed by the Opensteer Home provisioner (browser pool admin ingress)",
+        sourceTags: [],
+        sourceRanges: [config.provisionerCidr],
+        ports: [String(config.adminPort)],
+      },
+      signal,
+      check,
+    );
+  }
+
+  async #ensurePoolFirewallRule(
+    rule: {
+      name: string;
+      description: string;
+      sourceTags: string[];
+      sourceRanges: string[];
+      ports: string[];
+    },
+    signal: AbortSignal,
+    check?: Check,
+  ) {
+    const path = `${this.#project}/global/firewalls`;
+    const expected = {
+      name: rule.name,
+      description: rule.description,
+      network: this.#network,
+      direction: "INGRESS",
+      priority: 1000,
+      targetTags: [poolFirewallTag],
+      ...(rule.sourceTags.length ? { sourceTags: rule.sourceTags } : {}),
+      ...(rule.sourceRanges.length ? { sourceRanges: rule.sourceRanges } : {}),
+      allowed: [{ IPProtocol: "tcp", ports: rule.ports }],
+    };
+    let current = await this.#get(`${path}/${rule.name}`, firewall, signal);
+    if (!current) {
+      try {
+        await this.#write(path, "global", signal, {
+          method: "POST",
+          resourceName: rule.name,
+          body: expected,
+          check,
+        });
+        return;
+      } catch (error) {
+        if (!hasStatus(error, 409)) throw error;
+        current = await this.#get(`${path}/${rule.name}`, firewall, signal);
+        if (!current) throw new ProviderOutcomeUnknown(error);
+      }
+    }
+    const sortedPorts = [...(current.allowed[0]?.ports ?? [])].sort();
+    if (
+      current.name !== rule.name ||
+      current.description !== rule.description ||
+      !matchesResource(current.network, this.#network) ||
+      current.priority !== expected.priority ||
+      current.disabled ||
+      current.targetTags.length !== 1 ||
+      current.targetTags[0] !== poolFirewallTag ||
+      !sameStringSet(current.sourceTags, rule.sourceTags) ||
+      !sameStringSet(current.sourceRanges, rule.sourceRanges) ||
+      current.allowed.length !== 1 ||
+      current.allowed[0]?.IPProtocol !== "tcp" ||
+      !sameStringSet(sortedPorts, rule.ports) ||
+      current.denied.length ||
+      current.sourceServiceAccounts.length ||
+      current.targetServiceAccounts.length ||
+      current.destinationRanges.length
+    ) {
+      throw refused(
+        "conflict",
+        "The Google browser pool firewall does not match the required rules",
+      );
+    }
+  }
+
+  async #ensureDiskInventory(signal: AbortSignal) {
+    if (!this.#inventory) return undefined;
+    if (!this.#inventory.disks) {
+      const listed = await this.#list(`${this.#zone}/disks`, disk, signal, { fields: diskFields });
+      this.#inventory.disks = new Map(listed.map((entry) => [entry.name, entry]));
+    }
+    return this.#inventory.disks;
+  }
+
+  async #disk(name: string, signal: AbortSignal) {
+    const cache = await this.#ensureDiskInventory(signal);
+    if (cache) return cache.get(name);
+    return this.#refreshDisk(name, signal);
+  }
+
+  async #refreshDisk(name: string, signal: AbortSignal) {
+    const entry = await this.#get(`${this.#zone}/disks/${name}`, disk, signal);
+    if (entry && entry.name !== name)
+      throw refused("conflict", "Google returned a different disk name");
+    if (this.#inventory?.disks) {
+      if (entry) this.#inventory.disks.set(name, entry);
+      else this.#inventory.disks.delete(name);
+    }
+    return entry;
+  }
+
+  async ensurePoolProfileDisk(input: EnsurePoolProfileDisk, signal: AbortSignal, check?: Check) {
+    let current = await this.#disk(input.diskName, signal);
+    if (!current) {
+      try {
+        await this.#write(`${this.#zone}/disks`, "zone", signal, {
+          method: "POST",
+          resourceName: input.diskName,
+          requestId: input.requestId,
+          check,
+          body: {
+            name: input.diskName,
+            sizeGb: String(input.sizeGb),
+            type: `${this.#zone}/diskTypes/${input.diskType}`,
+            labels: { [poolHostLabel]: input.hostId, [managedLabel]: managedBy },
+          },
+        });
+      } catch (error) {
+        if (!hasStatus(error, 409)) throw error;
+      }
+      current = await this.#refreshDisk(input.diskName, signal);
+    }
+    if (!current) throw new ProviderOutcomeUnknown();
+    if (!isManagedPoolDisk(current, input.hostId)) {
+      throw refused("conflict", "The Google browser pool profile disk belongs to another host");
+    }
+    return poolDisk(current, input.hostId);
+  }
+
+  async findPoolProfileDisk(diskName: string, signal: AbortSignal) {
+    const entry = await this.#disk(diskName, signal);
+    if (!entry) return undefined;
+    const hostId = managedPoolDiskHostId(entry.labels);
+    return hostId ? poolDisk(entry, hostId) : undefined;
+  }
+
+  async deletePoolProfileDisk(
+    diskName: string,
+    hostId: BrowserPoolHostId,
+    signal: AbortSignal,
+    check?: Check,
+  ) {
+    const current = await this.#refreshDisk(diskName, signal);
+    if (!current) return true;
+    if (!isManagedPoolDisk(current, hostId)) {
+      throw refused("conflict", "The Google browser pool profile disk belongs to another host");
+    }
+    if (current.users.length > 0) return false;
+    try {
+      await this.#write(`${this.#zone}/disks/${current.name}`, "zone", signal, {
+        method: "DELETE",
+        check,
+        requestId: childRequestId(`${current.name}/${current.id}`, "disk-delete", ""),
+      });
+    } catch (error) {
+      if (!hasStatus(error, 404)) throw error;
+    }
+    return (await this.#refreshDisk(diskName, signal)) === undefined;
+  }
+
+  async listManagedPoolDisks(signal: AbortSignal) {
+    const cache = await this.#ensureDiskInventory(signal);
+    const listed = cache
+      ? [...cache.values()]
+      : await this.#list(`${this.#zone}/disks`, disk, signal, { fields: diskFields });
+    const found: PoolProfileDisk[] = [];
+    for (const entry of listed) {
+      const hostId = managedPoolDiskHostId(entry.labels);
+      if (hostId) found.push(poolDisk(entry, hostId));
+    }
+    return found;
+  }
+
+  async findPoolHost(id: BrowserPoolHostId, signal: AbortSignal, expected?: ExpectedPoolHostVm) {
+    const stray = this.#inventory?.poolStrays.get(id);
+    if (stray) {
+      throw new ProviderPlacementError(
+        `Managed Compute pool host ${stray.name} of ${id} is in ${stray.scope}, outside the ` +
+          `configured zone ${this.#options.zone}. Nothing is done to this pool host until ` +
+          "an operator deletes or relabels that instance or sets the zone back.",
+      );
+    }
+    const found = new Map<GoogleComputeServerRef, PoolHostVm>();
+    const add = (vm: Instance, generation?: number) => {
+      const identity = managedPoolHostIdentity(vm.labels);
+      if (identity && identity.id !== id) {
+        throw refused("conflict", "The Google VM belongs to a different browser pool host");
+      }
+      const observed = googlePoolHostVm(vm, identity?.generation ?? generation);
+      found.set(observed.id, observed);
+    };
+    for (const vm of await this.#instances(signal)) {
+      if (managedPoolHostIdentity(vm.labels)?.id === id) add(vm);
+    }
+    if (!expected) return [...found.values()];
+
+    const generations = new Set([
+      expected.generation,
+      ...(expected.pendingProviderWrites ?? [])
+        .filter(({ kind }) => kind === "create")
+        .map(({ generation }) => generation),
+    ]);
+    for (const generation of generations) {
+      const name = poolHostInstanceName(id, generation);
+      if ([...found.keys()].some((ref) => ref.startsWith(`${name}/`))) continue;
+      const named = await this.#instance(name, signal);
+      if (named) {
+        verifyNamedPoolHostInstance(named, id, generation);
+        add(named, generation);
+      }
+    }
+    for (const ref of [expected.providerServerRef, expected.previousProviderServerRef]) {
+      if (!ref || found.has(ref)) continue;
+      const vm = await this.#readRef(ref, signal);
+      if (vm) {
+        add(
+          vm,
+          vm.name === poolHostInstanceName(id, expected.generation)
+            ? expected.generation
+            : (namedPoolHostIdentity(vm.name)?.generation ?? expected.generation - 1),
+        );
+      }
+    }
+    return [...found.values()];
+  }
+
+  async listManagedPoolHosts(signal: AbortSignal) {
+    const found = new Map<GoogleComputeServerRef, { id: BrowserPoolHostId; server: PoolHostVm }>();
+    for (const vm of await this.#instances(signal)) {
+      const identity = managedPoolHostIdentity(vm.labels);
+      if (!identity) continue;
+      const server = googlePoolHostVm(vm, identity.generation);
+      found.set(server.id, { id: identity.id, server });
+    }
+    return [...found.values()];
+  }
+
+  async createPoolHost(input: CreatePoolHostVm, signal: AbortSignal, check?: Check) {
+    const { id, generation } = input;
+    const name = poolHostInstanceName(id, generation);
+    const found = await this.#instance(name, signal);
+    if (found)
+      return googlePoolHostVm(verifyNamedPoolHostInstance(found, id, generation), generation);
+
+    const localSsds = Array.from({ length: input.localSsdCount }, () => ({
+      type: "SCRATCH",
+      autoDelete: true,
+      interface: "NVME",
+      initializeParams: {
+        diskType: `${this.#zone}/diskTypes/local-ssd`,
+      },
+    }));
+
+    let inserted: Operation;
+    try {
+      inserted = await this.#write(`${this.#zone}/instances`, "zone", signal, {
+        method: "POST",
+        resourceName: name,
+        requestId: input.requestId,
+        check,
+        body: {
+          name,
+          machineType: `${this.#zone}/machineTypes/${input.machineType}`,
+          labels: {
+            [poolHostLabel]: id,
+            [managedLabel]: managedBy,
+            [generationLabel]: String(generation),
+          },
+          tags: { items: [poolFirewallTag] },
+          advancedMachineFeatures: {
+            enableNestedVirtualization: true,
+            threadsPerCore: 1,
+          },
+          shieldedInstanceConfig: {
+            enableSecureBoot: true,
+            enableVtpm: true,
+            enableIntegrityMonitoring: true,
+          },
+          scheduling: {
+            automaticRestart: true,
+            onHostMaintenance: "TERMINATE",
+            provisioningModel: "STANDARD",
+          },
+          serviceAccounts: [],
+          metadata: {
+            items: [
+              { key: "enable-oslogin", value: "TRUE" },
+              { key: "block-project-ssh-keys", value: "TRUE" },
+              { key: "disable-legacy-endpoints", value: "TRUE" },
+              { key: "serial-port-enable", value: "FALSE" },
+              { key: "user-data", value: input.userData },
+            ],
+          },
+          disks: [
+            {
+              boot: true,
+              autoDelete: true,
+              initializeParams: {
+                sourceImage: input.image,
+                diskType: `${this.#zone}/diskTypes/${this.#options.diskType}`,
+                diskSizeGb: String(input.bootDiskSizeGb),
+              },
+            },
+            {
+              boot: false,
+              autoDelete: false,
+              mode: "READ_WRITE",
+              deviceName: poolProfileDiskDeviceName,
+              source: `${this.#zone}/disks/${input.profileDiskName}`,
+            },
+            ...localSsds,
+          ],
+          // --no-address: internal VPC IP only; outbound HTTPS uses Cloud NAT.
+          networkInterfaces: [
+            {
+              subnetwork: this.#subnet,
+              stackType: "IPV4_ONLY",
+            },
+          ],
+        },
+      });
+    } catch (error) {
+      if (!hasStatus(error, 409)) throw error;
+      const existing = await this.#refreshInstance(name, signal);
+      if (!existing) throw new ProviderOutcomeUnknown(error);
+      return googlePoolHostVm(verifyNamedPoolHostInstance(existing, id, generation), generation);
+    }
+    const observed = await this.#refreshInstance(name, signal).catch((error: unknown) => {
+      if (error instanceof ProviderRateLimited) throw error;
+      throw new ProviderOutcomeUnknown(error);
+    });
+    if (!observed || (inserted.targetId && inserted.targetId !== observed.id)) {
+      throw new ProviderOutcomeUnknown();
+    }
+    return googlePoolHostVm(verifyNamedPoolHostInstance(observed, id, generation), generation);
+  }
+
+  async describePoolHost(
+    id: GoogleComputeServerRef,
+    signal: AbortSignal,
+    knownGeneration?: number,
+  ) {
+    const vm = await this.#readRef(id, signal);
+    return vm
+      ? googlePoolHostVm(
+          vm,
+          managedPoolHostIdentity(vm.labels)?.generation ??
+            knownGeneration ??
+            namedPoolHostIdentity(vm.name)?.generation,
+        )
+      : undefined;
+  }
+
+  async powerOnPoolHost(
+    id: GoogleComputeServerRef,
+    signal: AbortSignal,
+    check?: Check,
+    requestId?: string,
+  ) {
+    return this.powerOn(id, signal, check, requestId);
+  }
+
+  async deletePoolHost(id: GoogleComputeServerRef, signal: AbortSignal, check?: Check) {
+    return this.delete(id, signal, check);
+  }
+
+  async updatePoolHostBootstrap(
+    id: GoogleComputeServerRef,
+    enrolled: boolean,
+    signal: AbortSignal,
+    check?: Check,
+  ) {
+    // Z1 + J7: Pool host metadata scrub removes `user-data` (the secret carrier) and keeps
+    // `opensteer-bootstrap-ready` intact (non-secret) so a re-run of `opensteer-pool-download.service`
+    // after a failure between `boot-complete` and `systemctl enable` (or before token removal) can
+    // still pass the metadata gate and finish cleanly.
+    return this.#updateBootstrapMetadata(id, enrolled, true, signal, check);
+  }
+
+  async canRecoverPoolHostWrite(write: BrowserPoolHostProviderWrite, signal: AbortSignal) {
+    return this.canRecoverWrite(
+      {
+        token: write.token,
+        kind: write.kind === "create-disk" ? "create" : write.kind,
+        generation: write.generation,
+        ...(write.serverRef ? { serverRef: write.serverRef } : {}),
+        ...(write.recoverAfter ? { recoverAfter: write.recoverAfter } : {}),
+        ...(write.dispatched !== undefined ? { dispatched: write.dispatched } : {}),
+      },
+      signal,
+    );
   }
 
   async #get<T>(path: string, schema: z.ZodType<T>, signal: AbortSignal) {
@@ -1088,9 +1551,18 @@ function isManagedAddress(entry: z.infer<typeof address>, target: VmAddress) {
   );
 }
 
-function bootstrapMetadata(vm: Instance): NonNullable<VmServer["bootstrapMetadata"]> {
-  if (vm.metadata?.items.some(({ key }) => key === googleBootstrapReadyKey)) return "enabled";
-  return vm.metadata?.items.some(({ key }) => key === "user-data") ? "pending" : "absent";
+function bootstrapMetadata(
+  vm: Instance,
+  keepReadyKey = false,
+): NonNullable<VmServer["bootstrapMetadata"]> {
+  const hasUserData = vm.metadata?.items.some(({ key }) => key === "user-data") ?? false;
+  const hasReady = vm.metadata?.items.some(({ key }) => key === googleBootstrapReadyKey) ?? false;
+  if (keepReadyKey) {
+    if (!hasUserData) return "absent";
+    return hasReady ? "enabled" : "pending";
+  }
+  if (hasReady) return "enabled";
+  return hasUserData ? "pending" : "absent";
 }
 
 function googleVm(vm: Instance, generation?: number): VmServer<GoogleComputeServerRef> {
@@ -1103,7 +1575,79 @@ function googleVm(vm: Instance, generation?: number): VmServer<GoogleComputeServ
       vm.status === "RUNNING" ? "running" : vm.status === "TERMINATED" ? "off" : "transitioning",
     ipv4: nic?.accessConfigs[0]?.natIP ?? null,
     ipv6: nic?.ipv6AccessConfigs[0]?.externalIpv6 ?? null,
+    internalIpv4: nic?.networkIP ?? null,
     bootstrapMetadata: bootstrapMetadata(vm),
     firewalls: vm.tags?.items.includes(firewallTag) ? [{ id: firewallId, status: "applied" }] : [],
+  };
+}
+
+function poolHostInstanceName(id: BrowserPoolHostId, generation: number) {
+  return `osp-${id.replace("_", "-")}-${generation}`;
+}
+
+function namedPoolHostIdentity(name: string) {
+  const match = /^osp-ph-([a-f0-9-]{36})-([1-9][0-9]{0,15})$/u.exec(name);
+  if (!match) return undefined;
+  const id = BrowserPoolHostIdSchema.safeParse(`ph_${match[1]}`);
+  const generation = CloudComputerGenerationSchema.safeParse(Number(match[2]));
+  return id.success && generation.success
+    ? { id: id.data, generation: generation.data }
+    : undefined;
+}
+
+function managedPoolHostIdentity(
+  instanceLabels: Instance["labels"],
+): { id: BrowserPoolHostId; generation: number } | undefined {
+  if (instanceLabels[managedLabel] !== managedBy) return undefined;
+  const id = BrowserPoolHostIdSchema.safeParse(instanceLabels[poolHostLabel]);
+  const generation = CloudComputerGenerationSchema.safeParse(
+    Number(instanceLabels[generationLabel]),
+  );
+  return id.success && generation.success
+    ? { id: id.data, generation: generation.data }
+    : undefined;
+}
+
+function managedPoolDiskHostId(diskLabels: Disk["labels"]): BrowserPoolHostId | undefined {
+  if (diskLabels[managedLabel] !== managedBy) return undefined;
+  const parsed = BrowserPoolHostIdSchema.safeParse(diskLabels[poolHostLabel]);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function isManagedPoolDisk(entry: Disk, hostId: BrowserPoolHostId) {
+  return entry.labels[managedLabel] === managedBy && entry.labels[poolHostLabel] === hostId;
+}
+
+function poolDisk(entry: Disk, hostId: BrowserPoolHostId): PoolProfileDisk {
+  return {
+    name: entry.name,
+    ref: BrowserPoolDiskRefSchema.parse(`${entry.name}/${entry.id}`),
+    hostId,
+  };
+}
+
+function verifyNamedPoolHostInstance(vm: Instance, id: BrowserPoolHostId, generation: number) {
+  if (
+    vm.name !== poolHostInstanceName(id, generation) ||
+    (vm.labels[poolHostLabel] !== undefined && vm.labels[poolHostLabel] !== id) ||
+    (vm.labels[generationLabel] !== undefined &&
+      vm.labels[generationLabel] !== String(generation)) ||
+    (vm.labels[managedLabel] !== undefined && vm.labels[managedLabel] !== managedBy)
+  ) {
+    throw refused("conflict", "The Google VM's labels differ from its browser pool host name");
+  }
+  return vm;
+}
+
+function googlePoolHostVm(vm: Instance, generation?: number): PoolHostVm {
+  if (!generation) throw refused("conflict", "The Google VM has no browser pool host generation");
+  const nic = vm.networkInterfaces[0];
+  return {
+    id: GoogleComputeServerRefSchema.parse(`${vm.name}/${vm.id}`),
+    generation,
+    status:
+      vm.status === "RUNNING" ? "running" : vm.status === "TERMINATED" ? "off" : "transitioning",
+    internalIpv4: nic?.networkIP ?? null,
+    bootstrapMetadata: bootstrapMetadata(vm, true),
   };
 }

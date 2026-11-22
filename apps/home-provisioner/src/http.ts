@@ -183,9 +183,40 @@ export class BootstrapScrubFailure extends Error {
 
 export class ProviderPlacementError extends Error {}
 
+export class UntrackedPoolProfileDiskError extends Error {
+  readonly diskName: string;
+  readonly hostId: string;
+  constructor(diskName: string, hostId: string) {
+    super(
+      `Pool profile disk ${diskName} of ${hostId} is not tracked by Account. ` +
+        "The orphan sweep never deletes durable profile disks; inspect and delete manually if intended.",
+    );
+    this.diskName = diskName;
+    this.hostId = hostId;
+  }
+}
+
+export class PoolConfigMismatchError extends Error {
+  constructor() {
+    super(
+      "Account has browser pooling enabled, but OPENSTEER_POOL_PROVISIONER_KEY is not configured " +
+        "on home-provisioner. Pool hosts and slots cannot be reconciled until both switches are set.",
+    );
+  }
+}
+
 export function provisionerFailure(error: unknown) {
   if (error instanceof ProviderPlacementError)
     return { event: "home-provisioner.provider.wrong-zone", message: error.message };
+  if (error instanceof UntrackedPoolProfileDiskError)
+    return {
+      event: "home-provisioner.pool.untracked-profile-disk",
+      diskName: error.diskName,
+      hostId: error.hostId,
+      message: error.message,
+    };
+  if (error instanceof PoolConfigMismatchError)
+    return { event: "home-provisioner.pool.misconfigured", message: error.message };
   if (error instanceof BootstrapScrubFailure)
     return { event: "home-provisioner.provider.bootstrap-scrub-failed" };
   if (error instanceof ProviderOutcomeUnknown)

@@ -814,6 +814,7 @@ export class AgentSessionService {
         deadline,
         identity,
         pool,
+        reservation,
       });
     } catch (error) {
       // Nothing was handed off, so nothing reached the browser: a definite refusal.
@@ -868,6 +869,7 @@ export class AgentSessionService {
       deadline: number;
       identity: BrowserPoolTargetIdentity;
       pool: PooledDirectBrowser;
+      reservation?: BrowserPoolReservation;
     },
   ): Promise<DirectOperationResult<Result>> {
     const entry = this.#sessions.get(row.sessionId) ?? {
@@ -886,6 +888,19 @@ export class AgentSessionService {
     const base = { taskId, operationId: row.id };
     let outstanding = 0;
     let submitted = 0;
+    // A restart that can wait no longer records this operation's outcome itself, as a lost
+    // channel does: unknown when a command left, refused when none did. Both writes apply only
+    // to a row still handed off, so the work's own later outcome cannot overwrite it.
+    pooled?.reservation?.onForcedEnd?.(async () => {
+      if (submitted === 0)
+        await refuseUnsentHandedOffAgentOperation(
+          this.#store.database,
+          row.id,
+          "This browser restarted before anything was sent.",
+          "changed",
+        );
+      else await settleAgentOperation(this.#store.database, row.id, "unknown", null);
+    });
     const recheck = async () => {
       signal.throwIfAborted();
       const live = await this.#admit(operation, bindingId).catch((error: unknown) => {
