@@ -485,6 +485,22 @@
             "removed": 3
           },
           "is": 2
+        },
+        {
+          "deletedStart": {
+            "selection": [1, 0],
+            "marked": [0, 3],
+            "removed": 1
+          },
+          "is": 0
+        },
+        {
+          "deletedStart": {
+            "selection": [3, 0],
+            "marked": [0, 3],
+            "removed": 1
+          },
+          "is": 2
         }
       ]
     },

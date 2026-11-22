@@ -111,10 +111,16 @@ struct RemoteInputEdits {
   }
   /// Where deleteBackward's deletion began: the selection it deleted, or as much just before the
   /// caret (inside a composition too, where the marked text is not what went).
-  /// With marked text the deletion is at the end of the marked text, wherever the caret was moved
-  /// while it waited: the person's caret is not where an input method's Backspace deletes.
+  /// With marked text the deletion is before a caret inside it, or at its end wherever else the
+  /// caret was moved while it waited: the person's caret is not where an input method's Backspace
+  /// deletes. What a real input method does with a caret inside its marked text is a walk item.
   static func deletedStart(selection: NSRange, marked: NSRange? = nil, removed: Int) -> Int {
-    if let marked { return max(marked.location, marked.location + marked.length - removed) }
+    if let marked {
+      // A caret inside the marked text deletes before itself; anywhere else (moved away while
+      // the deletion waited) the deletion is at the marked text's end.
+      let inside = selection.length == 0 && selection.location > marked.location && selection.location <= marked.location + marked.length
+      return max(marked.location, (inside ? selection.location : marked.location + marked.length) - removed)
+    }
     return selection.length > 0 ? selection.location : max(0, selection.location - removed)
   }
 

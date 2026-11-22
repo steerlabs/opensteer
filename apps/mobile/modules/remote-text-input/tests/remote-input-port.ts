@@ -114,7 +114,15 @@ export class Edits {
     return at > 0 ? { start: characterAt(text, at - 1).start, end: at } : { start: at, end: at };
   }
   static deletedStart(selection: Span, removed: number, marked: Span | null = null): number {
-    if (marked) return Math.max(marked.start, marked.end - removed);
+    if (marked) {
+      // A caret inside the marked text deletes before itself; anywhere else (moved away while
+      // the deletion waited) the deletion is at the marked text's end.
+      const inside =
+        selection.start === selection.end &&
+        selection.start > marked.start &&
+        selection.start <= marked.end;
+      return Math.max(marked.start, (inside ? selection.start : marked.end) - removed);
+    }
     return selection.end > selection.start
       ? selection.start
       : Math.max(0, selection.start - removed);
