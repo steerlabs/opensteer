@@ -49,9 +49,23 @@ type Command<K extends HostApiCommand["type"]> = Extract<
     readonly type: K;
   }
 >;
+/**
+ * What a ThreadService reads of the store, and nothing more. A stand-in store implements these
+ * (host.integration.test.ts checks its stand-in against this), so a method the service starts
+ * using fails the typecheck there, not a test run.
+ */
+export type ThreadServiceStore = Pick<
+  OpensteerStore,
+  | "findThreadCreationByIdempotency"
+  | "getEnvironment"
+  | "getHarnessCatalog"
+  | "getHarnessInstance"
+  | "hasAcceptedThreadInput"
+  | "readTask"
+>;
 export class ThreadService {
   readonly options: {
-    readonly store: OpensteerStore;
+    readonly store: ThreadServiceStore;
     readonly commands: CommandService;
     readonly runners: Pick<
       RunnerRegistry,
