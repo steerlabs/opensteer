@@ -3188,4 +3188,167 @@ integration("Browser pool Account service", () => {
       await h.app.close();
     }
   });
+
+  it("E3: reports preparing for both Home target and operator pool-slot-show during host replacement until re-created on the new generation", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { claimed, hostId, slot } = await h.setupPooledHomeAndHost("10.40.0.10");
+
+      const gen1ControlKey = keyPairSpkiBase64().spki;
+      const readyGen1 = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 1,
+          revision: slot.revision,
+          term: slot.term,
+          phase: "ready",
+          controlKey: gen1ControlKey,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(readyGen1.statusCode).toBe(200);
+
+      const targetBefore = ManagedBrowserPoolTargetResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "GET",
+              url: managedBrowserPoolTargetPath,
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
+            })
+          ).body,
+        ),
+      );
+      expect(targetBefore.status).toBe("ready");
+      expect(targetBefore.target?.agentUrl).toBe("http://10.40.0.10:7310");
+
+      // Trigger pool-host-replace (gen 1 -> gen 2).
+      await runCloudComputerOperator(h.cloudStore, ["pool-host-replace", hostId]);
+
+      // Window 1: gen 1 replaced, gen 2 provisioning (not yet enrolled).
+      const targetDuringProvisioning = ManagedBrowserPoolTargetResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "GET",
+              url: managedBrowserPoolTargetPath,
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
+            })
+          ).body,
+        ),
+      );
+      expect(targetDuringProvisioning).toEqual({ status: "preparing" });
+
+      const slotDuringProvisioning = (await runCloudComputerOperator(h.cloudStore, [
+        "pool-slot-show",
+        slot.slotId,
+      ])) as { phase: string; appliedHostGeneration: number | null };
+      expect(slotDuringProvisioning.phase).toBe("preparing");
+      expect(slotDuringProvisioning.appliedHostGeneration).toBe(1);
+
+      // Window 2: gen 2 enrolled and ready at a new IP/keys, BEFORE slot is re-created on gen 2.
+      const gen2 = await h.enrolAndReadyHost(hostId, "10.40.0.22");
+      const targetBeforeSlotRecreate = ManagedBrowserPoolTargetResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "GET",
+              url: managedBrowserPoolTargetPath,
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
+            })
+          ).body,
+        ),
+      );
+      expect(targetBeforeSlotRecreate).toEqual({ status: "preparing" });
+
+      const slotBeforeRecreate = (await runCloudComputerOperator(h.cloudStore, [
+        "pool-slot-show",
+        slot.slotId,
+      ])) as { phase: string; appliedHostGeneration: number | null };
+      expect(slotBeforeRecreate.phase).toBe("preparing");
+      expect(slotBeforeRecreate.appliedHostGeneration).toBe(1);
+
+      // Reconciler bumps term (1 -> 2) and reports slot ready on gen 2.
+      const desiredGen2 = (await h.getDesiredSlots()).find(
+        (entry) => entry.slotId === slot.slotId,
+      )!;
+      const bumped = BrowserPoolSlotBumpTermResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "POST",
+              url: browserPoolSlotBumpTermPath(slot.slotId),
+              headers: h.leaseHeaders,
+              payload: { revision: desiredGen2.revision, expectedTerm: desiredGen2.term },
+            })
+          ).body,
+        ),
+      );
+      expect(bumped.bumped).toBe(true);
+      expect(bumped.term).toBe(2);
+
+      const gen2ControlKey = keyPairSpkiBase64().spki;
+      const readyGen2 = await h.app.inject({
+        method: "POST",
+        url: browserPoolSlotStatusPath(slot.slotId),
+        headers: h.leaseHeaders,
+        payload: {
+          slotId: slot.slotId,
+          hostGeneration: 2,
+          revision: bumped.revision!,
+          term: bumped.term!,
+          phase: "ready",
+          controlKey: gen2ControlKey,
+          slotErased: false,
+          profileErased: false,
+          credentialsErased: false,
+          lastError: null,
+        },
+      });
+      expect(readyGen2.statusCode).toBe(200);
+
+      const targetAfterGen2 = ManagedBrowserPoolTargetResponseSchema.parse(
+        JSON.parse(
+          (
+            await h.app.inject({
+              method: "GET",
+              url: managedBrowserPoolTargetPath,
+              headers: { authorization: `Bearer ${claimed.hostCredential}` },
+            })
+          ).body,
+        ),
+      );
+      expect(targetAfterGen2).toEqual({
+        status: "ready",
+        target: {
+          kind: "managed-pool",
+          agentUrl: "http://10.40.0.22:7310",
+          slotId: slot.slotId,
+          term: 2,
+          agentKey: gen2ControlKey,
+          hostKey: gen2.hostKey.spki,
+          relay: {
+            host: "10.40.0.22",
+            port: 7312,
+            relayHostKey: gen2.relayKey.spki,
+          },
+        },
+      });
+      const slotAfterGen2 = (await runCloudComputerOperator(h.cloudStore, [
+        "pool-slot-show",
+        slot.slotId,
+      ])) as { phase: string; appliedHostGeneration: number | null; appliedTerm: number | null };
+      expect(slotAfterGen2.phase).toBe("ready");
+      expect(slotAfterGen2.appliedHostGeneration).toBe(2);
+      expect(slotAfterGen2.appliedTerm).toBe(2);
+    } finally {
+      await h.app.close();
+    }
+  });
 });
