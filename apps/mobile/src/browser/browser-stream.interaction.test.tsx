@@ -1440,10 +1440,16 @@ describe("the mock Home's page through the native picture view", () => {
       const generation = native.generation;
       await act(async () => first.settle("presented"));
       await vi.waitFor(() => expect(container.textContent).not.toContain("Loading the page"));
-      // The mock world keeps working for a while: the page stays drawn, never cleared under it.
+      // The mock world changes on: the page stays drawn, never cleared under it.
+      const thread = host.getSnapshot().threads[0]!;
       const clears: number[] = [];
-      for (let step = 0; step < 30; step += 1) {
-        await act(async () => new Promise((resolve) => setTimeout(resolve, 100)));
+      for (let step = 0; step < 5; step += 1) {
+        await act(async () => {
+          host.renameThread(thread.id, `Renamed ${step}`);
+          await Promise.resolve();
+        });
+        for (const { settle } of native.presented.splice(0))
+          await act(async () => settle("presented"));
         clears.push(native.generation);
       }
       expect(new Set(clears)).toEqual(new Set([generation]));
