@@ -14,6 +14,7 @@ import {
 import {
   expectationOf,
   type BrowserPoolControllerCall,
+  type BrowserPoolControllerResult,
   type BrowserPoolPhysicalController,
 } from "../apps/host/src/browser/browser-pool-controller.js";
 import {
@@ -140,9 +141,9 @@ it("refuses a Start that arrives after its slot was deleted, by its term, and st
   await expect(client.apply(late)).rejects.toThrow(BrowserPoolAgentSlotDeleted);
   // The slot made again for another Home, at a newer term: the old term's Start is still refused.
   const again = await agentSlot("slot-late", 2, a.agent);
-  const outcome = await client.apply(late).then(
+  const outcome: BrowserPoolControllerResult | Error = await client.apply(late).then(
     (result) => result,
-    (error: unknown) => error,
+    (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
   );
   if (!(outcome instanceof Error)) expect(outcome.applied).toBe(false);
   expect(a.agent.agent.effects("slot-late")).not.toContain("start");
