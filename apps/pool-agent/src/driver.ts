@@ -103,6 +103,11 @@ export interface HypervisorDriver {
    * none). False for a unit an earlier agent or configuration made.
    */
   proxyRequiresUpstream(slotId: string): Promise<boolean>;
+  /**
+   * Round I: a pulling slot's credentials removed, files first, then its proxy service stopped,
+   * so a proxy a pending connection restarted does not keep them.
+   */
+  removePulledEgress(slotId: string): Promise<void>;
   /** Round H: the paths a slot's pulled credentials have on this host. */
   pulledEgressFiles(slotId: string): readonly string[];
   /** Re-applies the host's own rules if they are gone; true if it had to. */

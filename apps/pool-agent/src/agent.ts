@@ -1023,7 +1023,8 @@ export class PoolAgent {
       throw new AgentUnavailable("The slot's egress could not be fetched; try again later.");
     }
     if (answer === null) {
-      await this.#driver.eraseCredentials(this.#driver.pulledEgressFiles(slotId));
+      // The files, then the slot's proxy service: nothing keeps revoked credentials.
+      await this.#driver.removePulledEgress(slotId);
       this.#log({ event: "egress.none", slotId });
       return this.#store(slot, slot.record, refused(call.id, "egress-required", slot.record));
     }

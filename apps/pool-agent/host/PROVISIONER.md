@@ -259,8 +259,11 @@ No upstream, no start, and the host's credentials are a copy of what the account
   no longer knows too. It answers `credentialsErased: true` once they are seen gone
   (`agent.ts`, `deleteSlotWithEvidence`). **Removing the files alone does not cut a proxy that is
   already running**: it read them when it started (run 8, item 4). Run 7 stopped the proxy's
-  service to cut it. Credentials that change stop the slot's proxy service, so its next start
-  reads the new copy (`firecracker/driver.ts`, `writePulledEgress`).
+  service to cut it. Credentials that change stop the slot's proxy service, so its next start reads the new copy.
+  The stop runs after the old set stopped counting as present and before the new URL is in
+  place, so a crash never leaves a complete new set beside a proxy on the old one. Credentials
+  removed because none is assigned are removed first, and then the service is stopped
+  (`firecracker/driver.ts`, `writePulledEgress` and `removePulledEgress`).
 - **The fetch** (`slot-egress-fetch.ts`; `agent.json` `driver.egress.accountOrigin`, https only,
   `config.ts`, `agentConfigSchema`):
   - The request is `POST {accountOrigin}/v1/browser-pool/hosts/{hostId}/slot-egress` with

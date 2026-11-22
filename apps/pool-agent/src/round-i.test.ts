@@ -85,6 +85,18 @@ describe("U1: the account service is asked at every cold start", () => {
     expect(await h.password()).toBeNull();
   });
 
+  // Round I's re-verification: a {} answer also stops the slot's proxy service, which a pending
+  // connection may have started again after the previous guest stopped.
+  it("stops the slot's proxy when none is assigned any more, and removes the credentials", async () => {
+    const h = await pulling([first, null]);
+    await h.apply("start");
+    await h.apply("stop");
+    h.agent.driver.proxyStops.length = 0;
+    expect(await h.apply("start")).toMatchObject({ applied: false, reason: "egress-required" });
+    expect(h.agent.driver.proxyStops).toEqual(["bps"]);
+    expect(await h.password()).toBeNull();
+  });
+
   it("uses what is there when the fetch cannot be completed", async () => {
     const h = await pulling([first, new Error("the account service answered 503")]);
     await h.apply("start");

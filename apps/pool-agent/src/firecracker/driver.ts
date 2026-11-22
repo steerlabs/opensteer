@@ -39,6 +39,7 @@ import { withStepSignal } from "../step-signal.js";
 import {
   credentialFiles,
   readPulledEgress,
+  removePulledEgressFiles,
   secureCredentialsRoot,
   writePulledEgress,
 } from "../slot-credentials.js";
@@ -412,13 +413,29 @@ export class FirecrackerDriver implements HypervisorDriver {
   /**
    * Round I, found on run 8's host: a slot's proxy service can be running with no guest (a
    * connection still pending on its socket starts it again after the guest stops), holding the
-   * credentials it read then. Changed credentials stop it, so its next start reads the new copy.
+   * credentials it read then. Changed credentials stop it, so its next start reads the new copy;
+   * the stop runs before the URL is in place, so a crash never leaves a complete new set beside
+   * a proxy still on the old one (writePulledEgress in slot-credentials.ts).
    */
-  async writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<boolean> {
-    const changed = await writePulledEgress(this.#config.credentialsRoot, slotId, egress);
+  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<boolean> {
     const index = this.#numbers.get(slotId);
-    if (changed && index !== undefined) await sleepEgress(index);
-    return changed;
+    return writePulledEgress(
+      this.#config.credentialsRoot,
+      slotId,
+      egress,
+      index === undefined ? undefined : () => sleepEgress(index),
+    );
+  }
+
+  /**
+   * Round I: a pulling slot's credentials removed (none assigned any more): the files first,
+   * so a restart between the two cannot load what was revoked, then its proxy service stopped,
+   * so nothing keeps them in memory or under /run/credentials.
+   */
+  async removePulledEgress(slotId: string): Promise<void> {
+    await removePulledEgressFiles(this.#config.credentialsRoot, slotId);
+    const index = this.#numbers.get(slotId);
+    if (index !== undefined) await sleepEgress(index);
   }
 
   pulledEgressFiles(slotId: string): readonly string[] {
