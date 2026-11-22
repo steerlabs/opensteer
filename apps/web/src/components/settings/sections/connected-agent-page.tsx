@@ -4,6 +4,8 @@ import {
   agentBrowserOptions,
   agentHomeName,
   agentWords,
+  chatFacts,
+  connectedAgentConnected,
   connectedAgentDetail,
   createDedicatedProfile,
   draftFromGrant,
@@ -27,6 +29,7 @@ import { Icon } from "../../icon.js";
 import { AgentGrantEditor, ConnectionModeChoices } from "../agent-grant-editor.js";
 import { AgentMark } from "../agent-mark.js";
 import { AgentWhoLine, AgentWithdrawnNotice } from "../agent-who.js";
+import { ChatFactsSection } from "./chat-facts.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 
 interface Edit {
@@ -91,6 +94,9 @@ export function ConnectedAgentPage({
   // A withdrawn verification offers Disconnect once, in its own notice.
   const withdrawn = detail.row.phase === "active" && who.withdrawnSince !== null;
   const agent = detail.row.identity.label;
+  // A chat is a connected agent with two facts of its own: where it listens, who may speak.
+  const chat = chatFacts(connection, detail.row.phase);
+  const connected = connectedAgentConnected(detail.row.phase);
   // An edit belongs to the revision it was made against; a newer one shows what is set now.
   const current = edit && edit.revision === detail.revision ? edit : null;
   const draft = current?.draft ?? draftFromGrant(detail.grant);
@@ -155,7 +161,7 @@ export function ConnectedAgentPage({
           </Link>
         ) : null}
       </div>
-      <AgentWhoLine nameShown={agent !== who.heading} who={who} />
+      {chat ? null : <AgentWhoLine nameShown={agent !== who.heading} who={who} />}
       <AgentWithdrawnNotice
         onDisconnect={withdrawn && !busy ? () => setConfirming("disconnect") : null}
         who={who}
@@ -181,6 +187,7 @@ export function ConnectedAgentPage({
           {agentWords("agent.legacy")}
         </p>
       ) : null}
+      {chat ? <ChatFactsSection client={client} facts={chat} live={connected} /> : null}
       {/* Under a work Home's ceiling, the choices wait for it: none is offered and then refused. */}
       {detail.editable && workPolicy !== undefined ? (
         <>
@@ -243,7 +250,7 @@ export function ConnectedAgentPage({
       </SettingsGroup>
       <SettingsError message={agents.error} />
       <div className="connected-agent__end">
-        {detail.row.phase === "active" && withdrawn ? null : detail.row.phase === "active" ? (
+        {connected && withdrawn ? null : connected ? (
           <button
             className="btn btn--danger"
             disabled={busy}

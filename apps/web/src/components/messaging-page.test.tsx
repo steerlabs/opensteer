@@ -1,544 +1,266 @@
-import { MemoryRouter } from "react-router";
-import { MockHostClient } from "@opensteer/client/mock";
-import { unwrapRpcResult } from "@opensteer/client/host";
-import { ToastProvider } from "./toast.js";
 // @vitest-environment happy-dom
-
-import {
-  ChannelBindingSchema,
-  ChannelDashboardSchema,
-  createChannelId,
-  type ChannelAccount,
-  type ChannelBinding,
-  type ChannelDashboard,
-  type ChannelAccessPolicy,
-} from "@opensteer/channel-core";
-import { act, type ComponentProps, useState } from "react";
+import { MemoryRouter } from "react-router";
+import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
+import { unwrapRpcResult } from "@opensteer/client/host";
+import { ChannelDashboardSchema, createChannelId } from "@opensteer/channel-core";
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  MessagingPage,
-  AccessRequests,
-  AccessPolicyEditor,
-  AccountRoutes,
-  LinkIdentityForm,
-  normalizeChannelIds,
-  normalizeLinkCode,
-} from "./messaging-page.js";
+import { ToastProvider } from "./toast.js";
+import { MessagingPage } from "./messaging-page.js";
 
 const mountedRoots: Root[] = [];
-
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
+  document.body.replaceChildren();
 });
-
-describe("normalizeLinkCode", () => {
-  it("reads a code out of what a person pastes from chat", () => {
-    expect(normalizeLinkCode("abcd2345")).toBe("ABCD2345");
-    expect(normalizeLinkCode("ab cd-23 45")).toBe("ABCD2345");
-    // I, O, 0, 1 are not in the alphabet, so they are never part of a code.
-    expect(normalizeLinkCode("AIBOCD01")).toBe("ABCD");
-    expect(normalizeLinkCode("ABCD2345EFGH")).toBe("ABCD2345");
-  });
-});
-
-describe("normalizeChannelIds", () => {
-  it("reads Slack channel IDs from links and keeps provider IDs", () => {
-    expect(
-      normalizeChannelIds(
-        "https://acme.slack.com/archives/C0123ABC/p123?thread_ts=1, C0456DEF C0123ABC",
-      ),
-    ).toEqual(["C0123ABC", "C0456DEF"]);
-  });
-});
-
-describe("LinkIdentityForm", () => {
-  it("submits the eight-character code the bot issued", async () => {
-    const codes: string[] = [];
-    const spend = async (code: string) => {
-      codes.push(code);
-      return true;
-    };
-    const { container } = await mount(
-      <LinkIdentityForm error={null} linked={null} onLink={spend} pending />,
-    );
-    const field = input(container);
-    // Nothing to redeem while another command is in flight.
-    expect(button(container, "Link account").disabled).toBe(true);
-
-    await act(async () => {
-      root(container).render(
-        <LinkIdentityForm error={null} linked={null} onLink={spend} pending={false} />,
-      );
-    });
-    // A partial code is not a code.
-    await type(field, "abcd");
-    expect(button(container, "Link account").disabled).toBe(true);
-    await type(field, "abcd2345");
-    expect(field.value).toBe("ABCD2345");
-    expect(button(container, "Link account").disabled).toBe(false);
-    await act(async () => {
-      button(container, "Link account").click();
-    });
-    expect(codes).toEqual(["ABCD2345"]);
-    // A spent code leaves the field.
-    expect(input(container).value).toBe("");
-  });
-
-  it("keeps a code that was refused, so a typo can be corrected", async () => {
-    const { container } = await mount(
-      <LinkIdentityForm error={null} linked={null} onLink={async () => false} pending={false} />,
-    );
-    await type(input(container), "ABCD2345");
-    await act(async () => {
-      button(container, "Link account").click();
-    });
-    expect(input(container).value).toBe("ABCD2345");
-  });
-});
-
-describe("AccountRoutes", () => {
-  it("creates a route from the channel ID and access mode", async () => {
-    const created: { account: ChannelAccount; route: unknown }[] = [];
-    const { container } = await mount(
-      <AccountRoutes
-        {...routeProps({
-          onAddRoute: async (account, route) => {
-            created.push({ account, route });
-            return true;
-          },
-        })}
-      />,
-    );
-    await act(async () => {
-      button(container, "Add route").click();
-    });
-    await type(input(container), "C0123ABC");
-    const [accessSelect] = [...container.querySelectorAll("select")];
-    if (!accessSelect) throw new Error("Missing access select.");
-    await select(accessSelect, "anyone");
-    await act(async () => {
-      submitButton(container).click();
-    });
-
-    expect(created).toEqual([
-      {
-        account: account(),
-        route: {
-          accessPolicy: {
-            channels: {
-              conversationIds: [],
-              scope: "selected",
-              sender: { allowedExternalUserIds: [], mode: "anyone" },
-            },
-            directMessages: { allowedExternalUserIds: [], mode: "off" },
-          },
-          conversationId: "C0123ABC",
-        },
-      },
-    ]);
-    // A created route closes the form again.
-    expect([...container.querySelectorAll("select")]).toHaveLength(0);
-  });
-
-  it("removes a route once, after the row asks for confirmation", async () => {
-    const revoked: string[] = [];
-    const only = binding({ conversationId: "C0123ABC" });
-    const { container } = await mount(
-      <AccountRoutes
-        {...routeProps({
-          bindings: [only],
-          onRevokeRoute: (bindingId) => revoked.push(bindingId),
-        })}
-      />,
-    );
-    await act(async () => {
-      button(container, "Remove").click();
-    });
-    // Nothing is dispatched by opening the confirmation.
-    expect(revoked).toEqual([]);
-    expect(container.textContent).toContain("Stop routing this conversation?");
-    // Backing out leaves the route alone.
-    await act(async () => {
-      button(container, "Keep").click();
-    });
-    expect(revoked).toEqual([]);
-
-    await act(async () => {
-      button(container, "Remove").click();
-    });
-    await act(async () => {
-      button(container, "Remove route").click();
-    });
-    expect(revoked).toEqual([only.id]);
-  });
-
-  it("updates channel and DM access without recreating the route", async () => {
-    const updated: unknown[] = [];
-    const only = binding({ conversationId: "C0123ABC" });
-    const { container } = await mount(
-      <AccountRoutes
-        {...routeProps({
-          bindings: [only],
-          onUpdateAccess: async (_binding, accessPolicy) => {
-            updated.push(accessPolicy);
-            return true;
-          },
-        })}
-      />,
-    );
-    await act(async () => button(container, "Access").click());
-    const dmSelect = container.querySelector<HTMLSelectElement>(
-      "select[aria-label='Who can send direct messages']",
-    );
-    if (!dmSelect) throw new Error("Missing DM access select.");
-    await select(dmSelect, "approved");
-    await act(async () => button(container, "Save access").click());
-
-    expect(updated).toEqual([
-      {
-        channels: {
-          conversationIds: ["C0123ABC"],
-          scope: "selected",
-          sender: { allowedExternalUserIds: [], mode: "owner" },
-        },
-        directMessages: { allowedExternalUserIds: [], mode: "approved" },
-      },
-    ]);
-    expect(container.textContent).not.toContain("Save access");
-  });
-});
-
-describe("AccessPolicyEditor", () => {
-  it("shows, edits, and clears migrated external user restrictions", async () => {
-    const initialPolicy: ChannelAccessPolicy = {
-      channels: {
-        conversationIds: ["C0123ABC"],
-        scope: "selected",
-        sender: { allowedExternalUserIds: ["UOLD1", "UOLD2"], mode: "approved" },
-      },
-      directMessages: { allowedExternalUserIds: [], mode: "owner" },
-    };
-    const changes: ChannelAccessPolicy[] = [];
-    function ControlledEditor() {
-      const [policy, setPolicy] = useState(initialPolicy);
-      return (
-        <AccessPolicyEditor
-          channelInput="C0123ABC"
-          onChange={(next) => {
-            changes.push(next);
-            setPolicy(next);
-          }}
-          policy={policy}
-          providerLabel="Slack"
-        />
-      );
-    }
-
-    const { container } = await mount(<ControlledEditor />);
-    const restrictions = container.querySelector<HTMLDetailsElement>(
-      "details.channel-access-editor__restrictions",
-    );
-    if (!restrictions) throw new Error("Missing existing user restrictions.");
-    expect(restrictions.textContent).toContain("Existing user restrictions");
-    restrictions.open = true;
-    const userIds = restrictions.querySelector<HTMLTextAreaElement>("textarea");
-    if (!userIds) throw new Error("Missing channel user IDs field.");
-    expect(userIds.value).toBe("UOLD1\nUOLD2");
-
-    await typeTextArea(userIds, "UNEW1, UNEW2");
-    expect(changes.at(-1)?.channels.sender.allowedExternalUserIds).toEqual(["UNEW1", "UNEW2"]);
-    expect(restrictions.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("UNEW1\nUNEW2");
-
-    const updatedUserIds = restrictions.querySelector<HTMLTextAreaElement>("textarea");
-    if (!updatedUserIds) throw new Error("Missing updated channel user IDs field.");
-    await typeTextArea(updatedUserIds, "");
-    expect(changes.at(-1)?.channels.sender.allowedExternalUserIds).toEqual([]);
-    expect(container.querySelector("details.channel-access-editor__restrictions")).toBeNull();
-  });
-});
-
-describe("AccessRequests", () => {
-  it("keeps a pending request actionable and allows approved access to be revoked", async () => {
-    const reviews: string[] = [];
-    const grants = dashboard({
-      accessGrants: [
-        accessGrant({ displayName: "Ada", externalUserId: "UADA", status: "pending" }),
-        accessGrant({ displayName: "Grace", externalUserId: "UGRACE", status: "approved" }),
-      ],
-    }).accessGrants;
-    const { container } = await mount(
-      <AccessRequests
-        accounts={[account()]}
-        grants={grants}
-        onReview={(grant, decision) => reviews.push(`${grant.externalUserId}:${decision}`)}
-        pending={false}
-      />,
-    );
-    expect(container.textContent).toContain(
-      "Requests stay here until you approve or decline them.",
-    );
-    await act(async () => button(container, "Approve").click());
-    const history = container.querySelector("details");
-    if (!history) throw new Error("Missing access history.");
-    history.open = true;
-    await act(async () => button(container, "Revoke").click());
-    expect(reviews).toEqual(["UADA:approved", "UGRACE:revoked"]);
-  });
-
-  it("shows external IDs and lets declined or revoked history be approved again", async () => {
-    const reviews: string[] = [];
-    const grants = dashboard({
-      accessGrants: [
-        accessGrant({ displayName: "Alex", externalUserId: "UDECLINED", status: "declined" }),
-        accessGrant({ displayName: "Alex", externalUserId: "UREVOKED", status: "revoked" }),
-      ],
-    }).accessGrants;
-    const { container } = await mount(
-      <AccessRequests
-        accounts={[account()]}
-        grants={grants}
-        onReview={(grant, decision) => reviews.push(`${grant.externalUserId}:${decision}`)}
-        pending={false}
-      />,
-    );
-    const history = container.querySelector<HTMLDetailsElement>("details");
-    if (!history) throw new Error("Missing access history.");
-    history.open = true;
-    const historyRows = [...history.querySelectorAll(".card__row")].map(
-      (row) => row.textContent ?? "",
-    );
-    expect(historyRows).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("UDECLINED"),
-        expect.stringContaining("UREVOKED"),
-      ]),
-    );
-    const approveButtons = [...history.querySelectorAll("button")].filter(
-      (candidate) => candidate.textContent === "Approve",
-    );
-    expect(approveButtons).toHaveLength(2);
-    await act(async () => approveButtons[0]?.click());
-    await act(async () => approveButtons[1]?.click());
-    expect(reviews).toEqual(["UDECLINED:approved", "UREVOKED:approved"]);
-  });
-});
-
-function account(fields: Partial<ChannelAccount> = {}): ChannelAccount {
-  return {
-    connectionId,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    displayName: "Opensteer bot",
-    externalAccountId: "T0123ABC",
-    handle: "opensteer",
-    id: accountId,
-    metadata: {},
-    provider: "slack",
-    routingMode: "shared",
-    status: "connected",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    ...fields,
-  };
-}
-
-const accountId = createChannelId("account");
-const connectionId = createChannelId("connection");
-
-function dashboard(fields: Partial<ChannelDashboard> = {}): ChannelDashboard {
-  return ChannelDashboardSchema.parse({
-    accounts: [],
-    accessGrants: [],
-    bindings: [],
-    connections: [],
-    deliveriesNeedingAttention: 0,
-    providers: [],
-    ...fields,
-  });
-}
-
-function routeProps(
-  overrides: Partial<ComponentProps<typeof AccountRoutes>> = {},
-): ComponentProps<typeof AccountRoutes> {
-  return {
-    account: account(),
-    bindings: [],
-    onAddRoute: async () => true,
-    onRevokeRoute: () => undefined,
-    onUpdateAccess: async () => true,
-    pending: false,
-    providerLabel: "Slack",
-    ...overrides,
-  };
-}
-
-function binding(
-  selector: { conversationId: string | null },
-  status: ChannelBinding["status"] = "active",
-): ChannelBinding {
-  return ChannelBindingSchema.parse({
-    accessPolicy: {
-      channels: {
-        conversationIds: selector.conversationId ? [selector.conversationId] : [],
-        scope: selector.conversationId ? "selected" : "all",
-        sender: { allowedExternalUserIds: [], mode: "owner" },
-      },
-      directMessages: { allowedExternalUserIds: [], mode: "owner" },
-    },
-    accountId,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    createdBy: "usr_44444444-4444-4444-8444-444444444444",
-    executionPolicy: { harness: "default", harnessInstanceId: null },
-    id: createChannelId("binding"),
-    revision: 1,
-    selector: { ...selector, conversationType: null, scopeId: null, threadId: null },
-    status,
-    updatedAt: "2026-01-01T00:00:00.000Z",
-  });
-}
-
-function accessGrant(
-  fields: Partial<ChannelDashboard["accessGrants"][number]> = {},
-): ChannelDashboard["accessGrants"][number] {
-  return {
-    accountId,
-    bindingId: createChannelId("binding"),
-    decidedAt: null,
-    decidedBy: null,
-    displayName: "Ada",
-    externalUserId: "U0123ABC",
-    requestedAt: "2026-01-01T00:00:00.000Z",
-    revision: 1,
-    status: "pending",
-    ...fields,
-  };
-}
-
-async function mount(element: React.ReactElement) {
-  const container = document.createElement("div");
-  document.body.append(container);
-  const created = createRoot(container);
-  mountedRoots.push(created);
-  roots.set(container, created);
-  await act(async () => {
-    created.render(element);
-  });
-  return { container };
-}
-
-const roots = new WeakMap<HTMLElement, Root>();
-
-function root(container: HTMLElement): Root {
-  const found = roots.get(container);
-  if (!found) throw new Error("Missing React root.");
-  return found;
-}
-
-function input(container: HTMLElement): HTMLInputElement {
-  const found = container.querySelector("input");
-  if (!found) throw new Error("Missing input.");
-  return found;
-}
-
-/** React listens for the bubbled "input" event, not for a value assignment. */
-async function type(field: HTMLInputElement, value: string): Promise<void> {
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
-    setter?.call(field, value);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-
-async function typeTextArea(field: HTMLTextAreaElement, value: string): Promise<void> {
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(field, value);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-
-async function select(field: HTMLSelectElement, value: string): Promise<void> {
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLSelectElement.prototype,
-      "value",
-    )?.set;
-    setter?.call(field, value);
-    field.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-}
-
-function button(container: HTMLElement, text: string): HTMLButtonElement {
-  const match = [...container.querySelectorAll("button")].find(
-    (candidate) => candidate.textContent === text,
-  );
-  if (!match) throw new Error(`Missing button: ${text}`);
-  return match;
-}
-
-function submitButton(container: HTMLElement): HTMLButtonElement {
-  const match = [...container.querySelectorAll("button")].find(
-    (candidate) => candidate.type === "submit",
-  );
-  if (!match) throw new Error("Missing submit button.");
-  return match;
-}
 
 const shell = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock("./app-shell.js", () => ({ useShell: () => shell.value }));
-it("selects only the Messaging connection named by the child route", async () => {
-  const client = new MockHostClient({ latencyMs: 0 });
-  const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));
-  const dashboard = ChannelDashboardSchema.parse({
-    ...loaded,
-    connections: ["Support channel", "Team channel"].map((displayName) => ({
-      capabilities: [],
-      connectionMethod: "api-key",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      displayName,
-      externalIdentityId: null,
-      externalTenantId: null,
-      id: createChannelId("connection"),
-      ownerUserId: client.getSnapshot().user!.id,
-      provider: "slack",
-      status: "connected",
-      statusDetail: null,
-      statusReason: null,
-      transportKind: "socket",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    })),
-  });
-  const rpc = client.rpc;
-  Object.defineProperty(client, "rpc", {
-    value: new Proxy(rpc, {
-      get: (target, key) =>
-        key === "channels.get"
-          ? async () => ({ ok: true, data: dashboard })
-          : Reflect.get(target, key),
-    }),
-  });
-  expect(dashboard.connections.length).toBeGreaterThan(1);
-  const selected = dashboard.connections[0]!;
-  const other = dashboard.connections.find((connection) => connection.id !== selected.id)!;
+
+async function mount(client: MockHostClient, at = "/settings/messaging") {
   shell.value = { hostClient: client, snapshot: client.getSnapshot() };
-  try {
-    const { container } = await mount(
-      <MemoryRouter initialEntries={[`/settings/messaging/${selected.id}`]}>
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedRoots.push(root);
+  await act(async () => {
+    root.render(
+      <MemoryRouter initialEntries={[at]}>
         <ToastProvider>
           <MessagingPage embedded />
         </ToastProvider>
       </MemoryRouter>,
     );
-    await act(async () => {
-      await vi.waitFor(() => expect(container.textContent).toContain(selected.displayName));
+  });
+  return container;
+}
+
+function chats(scene: "chats" | "chats-empty" = "chats") {
+  return new MockHostClient({ latencyMs: 0, ...mockConnectedAgents(scene) });
+}
+
+function button(container: HTMLElement, text: string): HTMLButtonElement {
+  const match = [...container.querySelectorAll("button")].find((b) => b.textContent === text);
+  if (!match) throw new Error(`Missing button: ${text}`);
+  return match;
+}
+
+async function type(field: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(
+      field,
+      value,
+    );
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+describe("Messaging", () => {
+  it("shows each account's state, what becomes of messages sent while it is paused, who is me, and its chats", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      const text = page.textContent ?? "";
+      // Paused iMessage: messages sent meanwhile arrive when it is back.
+      expect(text).toContain(
+        "Paused: its chats hold their replies until you resume it. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late.",
+      );
+      // Needs attention: what it reports, and Fix setup; never a promise it is live.
+      expect(text).toContain("Needs attention");
+      expect(text).toContain("Slack says the token was revoked.");
+      expect(button(page, "Fix setup")).toBeTruthy();
+      // Who me is, and how to change it.
+      expect(text).toContain("Tim is you. Only messages from it give your chats work.");
+      expect(text).toContain("Linking another account replaces Tim as you.");
+      // Its chats, each a connected agent with the line the list shows.
+      await vi.waitFor(() => expect(text.length).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(page.textContent).toContain("Slack · #team"));
+      expect(page.textContent).toContain("Paused · its replies are held until it’s back");
+      const link = [...page.querySelectorAll("a")].find((a) => a.textContent === "Slack · #team");
+      expect(link?.getAttribute("href")).toBe(
+        "/settings/external-agents/mcn_00000000-0000-4000-8000-0000000000c2",
+      );
+      expect(page.textContent).not.toMatch(/bridge|lineage|ingress|route|binding|waiting/iu);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("says a paused Slack account's messages are not delivered", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      const toggle = page.querySelector<HTMLInputElement>('input[aria-label="Pause Workshop"]');
+      expect(toggle).not.toBeNull();
+      await act(async () => toggle!.click());
+      await vi.waitFor(() =>
+        expect(page.textContent).toContain(
+          "Paused: its chats hold their replies until you resume it. Messages sent while this is paused are not delivered.",
+        ),
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("shows the code that links me: what to send, from which account, and until when", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("On-call"));
+      const dispatch = vi.spyOn(client, "dispatch");
+      const links = [...page.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Link another account" || b.textContent === "Link my account",
+      );
+      await act(async () => links[0]!.click());
+      expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "channel.me.link" }));
+      await vi.waitFor(() =>
+        expect(page.textContent).toMatch(
+          /Send MOCKCODE to Workshop in a direct message from your own Slack account\. It works once, until .+\. Nothing is said in the chat; this page shows your account once it’s linked\./u,
+        ),
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("adds a chat for one channel: who may give it work is chosen once, and says so", async () => {
+    const client = chats("chats-empty");
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      expect(page.textContent).toContain("No chat on this account yet.");
+      await act(async () =>
+        [...page.querySelectorAll("button")].find((b) => b.textContent === "Add a chat")!.click(),
+      );
+      expect(page.textContent).toContain(
+        "This can’t be changed later; to change it, disconnect the chat and add it again.",
+      );
+      const channelChoice = [...page.querySelectorAll("label")].find(
+        (label) => label.textContent === "One channel",
+      );
+      await act(async () => channelChoice!.querySelector("input")!.click());
+      const [id, name] = [
+        ...page.querySelectorAll<HTMLInputElement>(".messaging-add-chat input.text-input"),
+      ];
+      await type(id!, "C-TEAM");
+      await type(name!, "team");
+      const anyone = [...page.querySelectorAll("label")].find((label) =>
+        label.textContent?.startsWith("Anyone in the channel"),
+      );
+      expect(anyone?.textContent).toContain(
+        "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+      );
+      await act(async () => anyone!.querySelector("input")!.click());
+      const dispatch = vi.spyOn(client, "dispatch");
+      await act(async () => button(page, "Add chat").click());
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "channel.chat.create",
+          conversation: { id: "C-TEAM", name: "#team" },
+          senders: "anyone",
+          grant: { scope: "selected", tasks: true, resources: [] },
+        }),
+      );
+      await vi.waitFor(() => expect(page.textContent).toContain("Slack · #team"));
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("asks before removing an account, and says what ends", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      const menu = page.querySelector<HTMLButtonElement>(
+        'button[aria-label="Actions for Workshop"]',
+      );
+      await act(async () => menu!.click());
+      const dispatch = vi.spyOn(client, "dispatch");
+      await act(async () =>
+        [...document.querySelectorAll<HTMLElement>("[role=menuitem], button")]
+          .find((item) => item.textContent?.includes("Remove account"))!
+          .click(),
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "Every chat on it ends, and nothing sent there gives your agents work again.",
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("says a failed read failed: no account shown as connected or gone", async () => {
+    const client = chats();
+    try {
+      const rpc = client.rpc;
+      Object.defineProperty(client, "rpc", {
+        value: new Proxy(rpc, {
+          get: (target, key) =>
+            key === "channels.get"
+              ? async () => {
+                  throw new Error("offline");
+                }
+              : Reflect.get(target, key),
+        }),
+      });
+      const page = await mount(client);
+      await vi.waitFor(() =>
+        expect(page.textContent).toContain("Couldn’t read your messaging accounts."),
+      );
+      expect(page.textContent).not.toContain("Workshop");
+      expect(page.textContent).not.toContain("No messaging account yet");
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("selects only the Messaging account named by the child route", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));
+    const dashboard = ChannelDashboardSchema.parse({
+      ...loaded,
+      connections: ["Support channel", "Team channel"].map((displayName) => ({
+        capabilities: [],
+        connectionMethod: "api-key",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        displayName,
+        externalIdentityId: null,
+        externalTenantId: null,
+        id: createChannelId("connection"),
+        ownerUserId: client.getSnapshot().user!.id,
+        provider: "slack",
+        status: "connected",
+        statusDetail: null,
+        statusReason: null,
+        transportKind: "socket",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      })),
     });
-    expect(container.textContent).not.toContain(other.displayName);
-    expect(container.querySelector('a[href="/settings/messaging"]')).not.toBeNull();
-  } finally {
-    client.dispose();
-  }
+    const rpc = client.rpc;
+    Object.defineProperty(client, "rpc", {
+      value: new Proxy(rpc, {
+        get: (target, key) =>
+          key === "channels.get"
+            ? async () => ({ ok: true, data: dashboard })
+            : Reflect.get(target, key),
+      }),
+    });
+    const selected = dashboard.connections[0]!;
+    const other = dashboard.connections[1]!;
+    try {
+      const page = await mount(client, `/settings/messaging/${selected.id}`);
+      await vi.waitFor(() => expect(page.textContent).toContain(selected.displayName));
+      expect(page.textContent).not.toContain(other.displayName);
+      expect(page.querySelector('a[href="/settings/messaging"]')).not.toBeNull();
+    } finally {
+      client.dispose();
+    }
+  });
 });

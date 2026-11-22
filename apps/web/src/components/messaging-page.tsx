@@ -3,22 +3,26 @@ import { SurfaceMenu } from "./surface-menu.js";
 import { SectionHeader, SettingsSwitch } from "./settings/primitives.js";
 import { IntegrationIcon } from "./integration-icon.js";
 import { Link, useLocation } from "react-router";
-import { Fragment, useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type {
-  ChannelAccessPolicy,
   ChannelAccount,
-  ChannelBinding,
   ChannelDashboard,
   ChannelProviderManifest,
-  ChannelRouteSelector,
 } from "@opensteer/channel-core";
 import {
+  agentWords,
+  chatsOfAccount,
+  connectedAgentRow,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type CreatedChannelConnection,
+  type HostClient,
 } from "@opensteer/client/host";
+import { useConnectedAgents } from "@opensteer/client/react";
+import type { AgentConnection } from "@opensteer/protocol";
 import { useShell } from "./app-shell.js";
 import { ComputerChannelSetup } from "./computer-channel-setup.js";
+import { Dialog } from "./dialog.js";
 import { ExternalLink } from "./external-link.js";
 import { Icon } from "./icon.js";
 import { PageHeader, PageTopbar } from "./page-header.js";
@@ -27,36 +31,23 @@ import { presentFailure } from "./use-action.js";
 
 type View = "overview" | "providers" | "setup" | "computer-setup" | "repair" | "success";
 
-/** The Host mints codes from this alphabet, which omits look-alike glyphs. */
-const linkCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const linkCodeLength = 8;
-
-/** Admission choices are shared by channel mentions and direct messages. */
-const senderModes = ["anyone", "owner", "approved", "off"] as const;
-type SenderMode = (typeof senderModes)[number];
-
-interface LinkedIdentity {
-  displayName: string;
-  providerLabel: string;
-}
-
-interface RouteDraft {
-  accessPolicy: ChannelAccessPolicy;
-  conversationId: string;
-}
-
 interface ChannelDraft {
-  accessPolicy: ChannelAccessPolicy;
-  channelInput: string;
   credentials: Record<string, string>;
   provider: string;
-  routingMode: "dedicated" | "shared";
+}
+
+/** A code shown for linking "me": what to send, from where, until when. */
+interface ShownCode {
+  readonly accountId: string;
+  readonly code: string;
+  readonly expiresAt: string;
 }
 
 /**
- * Messaging: the person's own Slack, Telegram or iMessage accounts, each of
- * whose conversations starts or continues a task for their agent on the
- * computer that runs tasks.
+ * Messaging: the person's own Slack and iMessage accounts, and the chats on each. A chat is a
+ * connected agent reached through one of these accounts: its own page (Connected agents) is
+ * where what it can use is chosen, where its work is stopped and where it is disconnected.
+ * This page sets up the accounts, says who "me" is on each, and adds chats.
  */
 export function MessagingPage({ embedded = false }: { readonly embedded?: boolean }) {
   const location = useLocation();
@@ -64,28 +55,23 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     ? decodeURIComponent(location.pathname.slice("/settings/messaging/".length))
     : null;
   const { hostClient, openMobileNavigation, snapshot } = useShell();
+  const agents = useConnectedAgents(hostClient);
   const [dashboard, setDashboard] = useState<ChannelDashboard | null>(null);
   const [view, setView] = useState<View>("overview");
-  const [step, setStep] = useState(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readFailed, setReadFailed] = useState(false);
   const toast = useToast();
   const [created, setCreated] = useState<CreatedChannelConnection | null>(null);
-  const [linked, setLinked] = useState<LinkedIdentity | null>(null);
-  const [linkError, setLinkError] = useState<string | null>(null);
+  const [code, setCode] = useState<ShownCode | null>(null);
   const [repairing, setRepairing] = useState<{ connectionId: string; provider: string } | null>(
     null,
   );
-  const [draft, setDraft] = useState<ChannelDraft>({
-    accessPolicy: defaultChannelAccessPolicy(),
-    channelInput: "",
-    credentials: {},
-    provider: "",
-    routingMode: "dedicated",
-  });
+  const [draft, setDraft] = useState<ChannelDraft>({ credentials: {}, provider: "" });
 
   const reload = useCallback(async () => {
     setDashboard(unwrapRpcResult(await hostClient.rpc["channels.get"]({})));
+    setReadFailed(false);
   }, [hostClient]);
 
   useEffect(() => {
@@ -94,8 +80,8 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
       .then((result) => {
         if (!cancelled) setDashboard(unwrapRpcResult(result));
       })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(message(reason));
+      .catch(() => {
+        if (!cancelled) setReadFailed(true);
       });
     return () => {
       cancelled = true;
@@ -105,7 +91,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
   useEffect(() => {
     if (view !== "overview" && view !== "success") return;
     const timer = window.setInterval(() => {
-      void reload().catch(() => undefined);
+      void reload().catch(() => setReadFailed(true));
     }, 10_000);
     return () => window.clearInterval(timer);
   }, [reload, view]);
@@ -113,21 +99,16 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
   const provider = dashboard?.providers.find(
     ({ provider }) => provider === (repairing?.provider ?? draft.provider),
   );
-  const canContinue =
-    step === 0
-      ? Boolean(provider?.credentialFields.every((field) => draft.credentials[field.key]?.trim()))
-      : step === 2 && draft.accessPolicy.channels.scope === "selected"
-        ? normalizeChannelIds(draft.channelInput).length > 0
-        : true;
+  const credentialsReady = Boolean(
+    provider?.credentialFields.every((field) => draft.credentials[field.key]?.trim()),
+  );
 
   function startProvider(manifest: ChannelProviderManifest) {
     setError(null);
-    setDraft((current) => ({
-      ...current,
+    setDraft({
       credentials: Object.fromEntries(manifest.credentialFields.map(({ key }) => [key, ""])),
       provider: manifest.provider,
-    }));
-    setStep(0);
+    });
     // A transport that runs on one of your computers has nothing to paste.
     setView(manifest.transportKinds.includes("computer") ? "computer-setup" : "setup");
   }
@@ -146,23 +127,29 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     setView("repair");
   }
 
-  async function connect(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (step < 3) {
-      if (canContinue) setStep((current) => current + 1);
-      return;
-    }
+  async function run(action: () => Promise<void>) {
     setPending(true);
     setError(null);
     try {
+      await action();
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function connect(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!credentialsReady) return;
+    await run(async () => {
       const result = await hostClient.dispatch({
-        accessPolicy: accessPolicyFromDraft(draft.accessPolicy, draft.channelInput),
         credentials: Object.fromEntries(
           Object.entries(draft.credentials).map(([key, value]) => [key, value.trim()]),
         ),
         idempotencyKey: mutationIdempotencyKey("channel-connection"),
         provider: draft.provider,
-        routingMode: draft.routingMode,
+        routingMode: "dedicated",
         type: "channel.connection.create",
       });
       if (result.type !== "channel.connection.create") throw new Error("Channel command mismatch.");
@@ -170,11 +157,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
       setDraft((current) => ({ ...current, credentials: {} }));
       setView("success");
       await reload();
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(false);
-    }
+    });
   }
 
   async function repair(event: FormEvent<HTMLFormElement>) {
@@ -184,9 +167,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
       Object.entries(draft.credentials).map(([key, value]) => [key, value.trim()]),
     );
     if (!provider.credentialFields.every(({ key }) => credentials[key])) return;
-    setPending(true);
-    setError(null);
-    try {
+    await run(async () => {
       await hostClient.dispatch({
         connectionId: repairing.connectionId,
         credentials,
@@ -197,55 +178,27 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
       setDraft((current) => ({ ...current, credentials: {} }));
       setRepairing(null);
       setView("overview");
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(false);
-    }
+    });
   }
 
-  async function checkRepair() {
-    if (!repairing) return;
-    setPending(true);
-    setError(null);
-    try {
-      const inspection = unwrapRpcResult(
-        await hostClient.rpc["channel.connection.check"]({ connectionId: repairing.connectionId }),
-      );
-      await reload();
-      if (inspection.ready) {
-        setRepairing(null);
-        setView("overview");
-      } else setError(inspection.issues[0]?.message ?? "Setup is incomplete");
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function checkConnection(connectionId: string, displayName: string) {
-    setPending(true);
-    setError(null);
-    try {
+  async function check(connectionId: string, displayName: string) {
+    await run(async () => {
       const inspection = unwrapRpcResult(
         await hostClient.rpc["channel.connection.check"]({ connectionId }),
       );
       await reload();
-      if (inspection.ready)
-        toast.success(`${displayName}: tokens verified. Connection status is shown below.`);
-      else setError(inspection.issues[0]?.message ?? "Setup is incomplete");
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(false);
-    }
+      if (inspection.ready) {
+        toast.success(`${displayName}: checked.`);
+        if (repairing) {
+          setRepairing(null);
+          setView("overview");
+        }
+      } else setError(inspection.issues[0]?.message ?? "Setup is incomplete");
+    });
   }
 
   async function changeStatus(connectionId: string, status: "connected" | "paused" | "revoked") {
-    setPending(true);
-    setError(null);
-    try {
+    await run(async () => {
       await hostClient.dispatch({
         connectionId,
         idempotencyKey: mutationIdempotencyKey(`channel-status:${connectionId}`),
@@ -253,142 +206,27 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
         type: "channel.connection.status.set",
       });
       await reload();
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(false);
-    }
+      agents.refresh?.();
+    });
   }
 
-  /**
-   * Redeems a code the bot issued in chat against the signed-in account, and
-   * answers whether it was spent so the field can keep a code that was not.
-   */
-  async function linkIdentity(code: string): Promise<boolean> {
-    setPending(true);
-    setLinkError(null);
-    try {
+  async function linkMe(accountId: string) {
+    await run(async () => {
       const result = await hostClient.dispatch({
-        code,
-        idempotencyKey: mutationIdempotencyKey("channel-identity-link"),
-        type: "channel.identity.link",
+        accountId: accountId as never,
+        idempotencyKey: mutationIdempotencyKey("channel-me-link"),
+        type: "channel.me.link",
       });
-      if (result.type !== "channel.identity.link") throw new Error("Channel command mismatch.");
-      setLinked({
-        displayName: result.identity.displayName,
-        providerLabel: providerLabelFor(dashboard, result.account.provider),
-      });
-      await reload();
-      return true;
-    } catch (reason) {
-      setLinked(null);
-      setLinkError(message(reason));
-      return false;
-    } finally {
-      setPending(false);
-    }
-  }
-
-  /** Answers whether the route was created, so the card can close its form. */
-  async function addRoute(account: ChannelAccount, route: RouteDraft): Promise<boolean> {
-    setPending(true);
-    setError(null);
-    try {
-      const result = await hostClient.dispatch({
-        accessPolicy: accessPolicyFromDraft(route.accessPolicy, route.conversationId),
-        accountId: account.id,
-        executionPolicy: { harness: "default", harnessInstanceId: null },
-        idempotencyKey: mutationIdempotencyKey(`channel-binding:${account.id}`),
-        selector: {
-          conversationId:
-            normalizeChannelIds(route.conversationId)[0] ?? route.conversationId.trim(),
-          conversationType: null,
-          scopeId: null,
-          threadId: null,
-        },
-        type: "channel.binding.create",
-      });
-      if (result.type !== "channel.binding.create") throw new Error("Channel command mismatch.");
-      await reload();
-      return true;
-    } catch (reason) {
-      setError(message(reason));
-      return false;
-    } finally {
-      setPending(false);
-    }
-  }
-
-  /** Retires one route. The binding stays as a revoked row, so the list shows it. */
-  async function revokeRoute(bindingId: ChannelBinding["id"]): Promise<void> {
-    setPending(true);
-    setError(null);
-    try {
-      const result = await hostClient.dispatch({
-        bindingId,
-        idempotencyKey: mutationIdempotencyKey(`channel-binding-revoke:${bindingId}`),
-        type: "channel.binding.revoke",
-      });
-      if (result.type !== "channel.binding.revoke") throw new Error("Channel command mismatch.");
-      await reload();
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function updateAccess(binding: ChannelBinding, accessPolicy: ChannelAccessPolicy) {
-    setPending(true);
-    setError(null);
-    try {
-      const result = await hostClient.dispatch({
-        accessPolicy,
-        bindingId: binding.id,
-        expectedRevision: binding.revision,
-        idempotencyKey: mutationIdempotencyKey(`channel-binding-access:${binding.id}`),
-        type: "channel.binding.update",
-      });
-      if (result.type !== "channel.binding.update") throw new Error("Channel command mismatch.");
-      await reload();
-      return true;
-    } catch (reason) {
-      setError(message(reason));
-      return false;
-    } finally {
-      setPending(false);
-    }
-  }
-
-  async function reviewAccess(
-    grant: ChannelDashboard["accessGrants"][number],
-    decision: "approved" | "declined" | "revoked",
-  ) {
-    setPending(true);
-    setError(null);
-    try {
-      const result = await hostClient.dispatch({
-        bindingId: grant.bindingId,
-        decision,
-        expectedRevision: grant.revision,
-        externalUserId: grant.externalUserId,
-        idempotencyKey: mutationIdempotencyKey(
-          `channel-access:${grant.bindingId}:${grant.externalUserId}:${decision}`,
-        ),
-        type: "channel.access.review",
-      });
-      if (result.type !== "channel.access.review") throw new Error("Channel command mismatch.");
-      await reload();
-    } catch (reason) {
-      setError(message(reason));
-    } finally {
-      setPending(false);
-    }
+      if (result.type !== "channel.me.link") throw new Error("Channel command mismatch.");
+      setCode({ accountId, code: result.code, expiresAt: result.expiresAt });
+    });
   }
 
   return (
     <div className={embedded ? "connected-apps__panel" : "page"}>
-      {embedded ? null : <PageTopbar onOpenNavigation={openMobileNavigation} title="Messaging" />}
+      {embedded ? null : (
+        <PageTopbar onOpenNavigation={openMobileNavigation} title={agentWords("messaging.title")} />
+      )}
       <div className="page__inner">
         {view !== "overview" ? (
           <button
@@ -405,82 +243,73 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
             type="button"
           >
             <Icon name="arrow-left" />{" "}
-            {view === "setup" || view === "computer-setup" ? "Providers" : "Messaging"}
+            {view === "setup" || view === "computer-setup"
+              ? "Providers"
+              : agentWords("messaging.title")}
           </button>
         ) : null}
 
-        {connectionId ? <Link to="/settings/messaging">All connections</Link> : null}
+        {connectionId ? <Link to="/settings/messaging">All accounts</Link> : null}
         {view === "overview" ? (
-          <SectionHeader
-            title="Messaging"
-            action={
-              <button
-                className="btn"
-                disabled={
-                  !dashboard?.providers.some(({ availability }) => availability === "available")
-                }
-                type="button"
-                onClick={() => {
-                  setError(null);
-                  setView("providers");
-                }}
-              >
-                Add
-              </button>
-            }
-          />
+          <>
+            <SectionHeader
+              title={agentWords("messaging.title")}
+              action={
+                <button
+                  className="btn"
+                  disabled={
+                    !dashboard?.providers.some(({ availability }) => availability === "available")
+                  }
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setView("providers");
+                  }}
+                >
+                  {agentWords("messaging.add")}
+                </button>
+              }
+            />
+            <p className="section__hint">{agentWords("messaging.lead")}</p>
+          </>
         ) : (
           <PageHeader
-            description={subheading(view, step, provider?.label)}
-            eyebrow="Messaging"
-            title={heading(view, step, provider?.label)}
+            description={subheading(view)}
+            eyebrow={agentWords("messaging.title")}
+            title={heading(view, provider?.label)}
           />
         )}
 
         {view === "overview" ? (
           <ChannelOverview
+            chats={agents.connections}
+            client={hostClient}
+            code={code}
             dashboard={
               dashboard && connectionId
                 ? {
                     ...dashboard,
-                    connections: dashboard.connections.filter(
-                      (connection) => connection.id === connectionId,
-                    ),
+                    connections: dashboard.connections.filter(({ id }) => id === connectionId),
                     accounts: dashboard.accounts.filter(
                       (account) => account.connectionId === connectionId,
-                    ),
-                    bindings: dashboard.bindings.filter((binding) =>
-                      dashboard.accounts.some(
-                        (account) =>
-                          account.id === binding.accountId && account.connectionId === connectionId,
-                      ),
-                    ),
-                    accessGrants: dashboard.accessGrants.filter((grant) =>
-                      dashboard.accounts.some(
-                        (account) =>
-                          account.id === grant.accountId && account.connectionId === connectionId,
-                      ),
                     ),
                   }
                 : dashboard
             }
             error={error}
-            linkError={linkError}
-            linked={linked}
+            names={{ profiles: snapshot.browserProfiles }}
             onAdd={() => {
               setError(null);
               setView("providers");
             }}
-            onAddRoute={addRoute}
-            onCheck={(connectionId, displayName) => void checkConnection(connectionId, displayName)}
-            onLink={linkIdentity}
+            onChatAdded={() => agents.refresh?.()}
+            onCheck={(id, displayName) => void check(id, displayName)}
+            onLinkMe={(accountId) => void linkMe(accountId)}
             onRepair={startRepair}
-            onReviewAccess={(grant, decision) => void reviewAccess(grant, decision)}
-            onRevoke={(connectionId) => void changeStatus(connectionId, "revoked")}
-            onRevokeRoute={(bindingId) => void revokeRoute(bindingId)}
-            onStatus={(connectionId, status) => void changeStatus(connectionId, status)}
-            onUpdateAccess={updateAccess}
+            onRemove={(id) => void changeStatus(id, "revoked")}
+            onStatus={(id, status) => void changeStatus(id, status)}
             pending={pending}
+            readFailed={readFailed}
           />
         ) : null}
 
@@ -504,22 +333,12 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
 
         {view === "setup" && provider ? (
           <form className="section" onSubmit={(event) => void connect(event)}>
-            <SetupProgress provider={provider} step={step} />
-            {step === 0 ? (
-              <ProviderCredentials
-                draft={draft}
-                onOpenError={(reason) => setError(message(reason))}
-                provider={provider}
-                setDraft={setDraft}
-              />
-            ) : null}
-            {step === 1 ? (
-              <ChannelDestination draft={draft} provider={provider} setDraft={setDraft} />
-            ) : null}
-            {step === 2 ? (
-              <ChannelAccess draft={draft} provider={provider} setDraft={setDraft} />
-            ) : null}
-            {step === 3 ? <ChannelReview draft={draft} provider={provider} /> : null}
+            <ProviderCredentials
+              draft={draft}
+              onOpenError={(reason) => setError(message(reason))}
+              provider={provider}
+              setDraft={setDraft}
+            />
             <div className="form-actions">
               {error ? (
                 <span aria-live="assertive" className="form-actions__error" role="alert">
@@ -529,16 +348,17 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
               <button
                 className="btn"
                 disabled={pending}
-                onClick={() => {
-                  if (step === 0) setView("providers");
-                  else setStep((current) => current - 1);
-                }}
+                onClick={() => setView("providers")}
                 type="button"
               >
                 Back
               </button>
-              <button className="btn btn--primary" disabled={!canContinue || pending} type="submit">
-                {pending ? "Checking…" : step === 3 ? `Connect ${provider.label}` : "Continue"}
+              <button
+                className="btn btn--primary"
+                disabled={!credentialsReady || pending}
+                type="submit"
+              >
+                {pending ? "Checking…" : `Connect ${provider.label}`}
               </button>
             </div>
           </form>
@@ -561,17 +381,14 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
               <button
                 className="btn"
                 disabled={pending}
-                onClick={() => void checkRepair()}
+                onClick={() => void check(repairing.connectionId, provider.label)}
                 type="button"
               >
-                Check again
+                {agentWords("messaging.check")}
               </button>
               <button
                 className="btn btn--primary"
-                disabled={
-                  pending ||
-                  !provider.credentialFields.every(({ key }) => draft.credentials[key]?.trim())
-                }
+                disabled={pending || !credentialsReady}
                 type="submit"
               >
                 {pending ? "Checking…" : "Update credentials"}
@@ -586,12 +403,11 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
               dashboard?.connections.find(({ id }) => id === created.connection.id) ??
               created.connection
             }
-            directMessages={draft.accessPolicy.directMessages.mode}
             onDone={() => {
               setCreated(null);
               setView("overview");
             }}
-            providerLabel={provider?.label ?? "Messaging provider"}
+            providerLabel={provider?.label ?? "Messaging"}
           />
         ) : null}
       </div>
@@ -599,67 +415,69 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
   );
 }
 
-/** The landing view: the link field, then every connection this person owns. */
+/**
+ * Every messaging account this person owns: its state and controls, who "me" is on it, and
+ * its chats, each a connected agent whose own page holds what it can use, Stop and Disconnect.
+ */
 export function ChannelOverview({
+  chats,
+  client,
+  code,
   dashboard,
   error,
-  linkError,
-  linked,
+  names,
   onAdd,
-  onAddRoute,
+  onChatAdded,
   onCheck,
-  onLink,
+  onLinkMe,
   onRepair,
-  onReviewAccess,
-  onRevoke,
-  onRevokeRoute,
+  onRemove,
   onStatus,
-  onUpdateAccess,
   pending,
+  readFailed,
 }: {
-  dashboard: ChannelDashboard | null;
-  error: string | null;
-  linkError: string | null;
-  linked: LinkedIdentity | null;
-  onAdd: () => void;
-  onAddRoute: (account: ChannelAccount, route: RouteDraft) => Promise<boolean>;
-  onCheck: (connectionId: string, displayName: string) => void;
-  onLink: (code: string) => Promise<boolean>;
-  onRepair: (connectionId: string, provider: string) => void;
-  onReviewAccess: (
-    grant: ChannelDashboard["accessGrants"][number],
-    decision: "approved" | "declined" | "revoked",
-  ) => void;
-  onRevoke: (connectionId: string) => void;
-  onRevokeRoute: (bindingId: ChannelBinding["id"]) => void;
-  onStatus: (connectionId: string, status: "connected" | "paused") => void;
-  onUpdateAccess: (binding: ChannelBinding, accessPolicy: ChannelAccessPolicy) => Promise<boolean>;
-  pending: boolean;
+  readonly chats: readonly AgentConnection[] | null;
+  readonly client: Pick<HostClient, "dispatch">;
+  readonly code: ShownCode | null;
+  readonly dashboard: ChannelDashboard | null;
+  readonly error: string | null;
+  readonly names: Parameters<typeof connectedAgentRow>[1];
+  readonly onAdd: () => void;
+  readonly onChatAdded: () => void;
+  readonly onCheck: (connectionId: string, displayName: string) => void;
+  readonly onLinkMe: (accountId: string) => void;
+  readonly onRepair: (connectionId: string, provider: string) => void;
+  readonly onRemove: (connectionId: string) => void;
+  readonly onStatus: (connectionId: string, status: "connected" | "paused") => void;
+  readonly pending: boolean;
+  readonly readFailed: boolean;
 }) {
-  if (!dashboard && !error)
+  const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
+  // A read that failed says so: it never shows accounts as connected or as gone.
+  if (readFailed && !dashboard)
+    return (
+      <p className="notice notice--error" role="alert">
+        <Icon name="alert-circle" />
+        <span>{agentWords("messaging.readFailed")}</span>
+      </p>
+    );
+  if (!dashboard)
     return (
       <div className="section">
         <span className="section__hint">
-          <span className="spinner" role="status" aria-label="Loading" /> Loading connected
-          channels…
+          <span className="spinner" role="status" aria-label="Loading" />{" "}
+          {agentWords("messaging.loading")}
         </span>
       </div>
     );
-  const providerReady = dashboard?.providers.some(
+  const providerReady = dashboard.providers.some(
     ({ availability }) => availability === "available",
   );
   return (
     <>
-      {dashboard && !providerReady ? (
-        <p className="notice notice--warn">
-          Messaging connections are starting. Opensteer will make providers available when the
-          service is ready.
-        </p>
-      ) : null}
-      {dashboard?.deliveriesNeedingAttention ? (
-        <p className="notice notice--warn">
-          {dashboard.deliveriesNeedingAttention} deliveries need review. Open this deployment’s logs
-          before retrying messages with an unknown outcome.
+      {readFailed ? (
+        <p className="notice notice--error" role="alert">
+          {agentWords("messaging.readFailed")}
         </p>
       ) : null}
       {error ? (
@@ -668,148 +486,420 @@ export function ChannelOverview({
           <span>{error}</span>
         </p>
       ) : null}
-      {dashboard?.accessGrants.length ? (
-        <AccessRequests
-          accounts={dashboard.accounts}
-          grants={dashboard.accessGrants}
-          onReview={onReviewAccess}
-          pending={pending}
-        />
-      ) : null}
-      {/*
-       * The dashboard lists only the connections this person owns, so a teammate
-       * who was handed a code has no account card to stand under. The field is
-       * always here; the Host answers `not_found` for a code that is not theirs.
-       */}
-      <LinkIdentityForm error={linkError} linked={linked} onLink={onLink} pending={pending} />
-      <section className="section">
-        <div className="section__head">
-          <div>
-            <h2 className="section__title">Messaging identities</h2>
+      {dashboard.connections.length === 0 ? (
+        <div className="card">
+          <div className="card__empty">
+            <p>{agentWords("messaging.empty")}</p>
+            <button
+              className="btn btn--primary"
+              disabled={!providerReady}
+              onClick={onAdd}
+              type="button"
+            >
+              {agentWords("messaging.add")}
+            </button>
           </div>
         </div>
-        <div className="card">
-          {dashboard?.connections.length ? (
-            dashboard.connections.map((connection) => {
-              const accounts = dashboard.accounts.filter(
-                ({ connectionId }) => connectionId === connection.id,
-              );
-              const routingMode = accounts[0]?.routingMode ?? "shared";
-              const provider = dashboard.providers.find(
-                ({ provider }) => provider === connection.provider,
-              );
-              // A channel on one of your computers is fixed on that computer and
-              // resumes by itself; there are no credentials here to replace.
-              const repairable =
-                connection.status === "needs-attention" && connection.transportKind !== "computer";
-              return (
-                <Fragment key={connection.id}>
-                  <div className="card__row settings-messaging-row">
-                    <IntegrationIcon
-                      id={connection.provider}
-                      name={provider?.label ?? connection.provider}
+      ) : null}
+      {dashboard.connections.map((connection) => {
+        const manifest = dashboard.providers.find(
+          ({ provider }) => provider === connection.provider,
+        );
+        const providerLabel = manifest?.label ?? connection.provider;
+        const accounts = dashboard.accounts.filter(
+          ({ connectionId }) => connectionId === connection.id,
+        );
+        // A channel on one of your computers is fixed on that computer and resumes by
+        // itself; there are no credentials here to replace.
+        const repairable =
+          connection.status === "needs-attention" && connection.transportKind !== "computer";
+        return (
+          <section className="section messaging-account" key={connection.id}>
+            <div className="card">
+              <div className="card__row settings-messaging-row">
+                <IntegrationIcon id={connection.provider} name={providerLabel} />
+                <div className="card__row-body">
+                  <span className="card__row-title">
+                    <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
+                      {connection.displayName}
+                    </Link>
+                    <span className={`chip ${statusChip(connection.status)}`}>
+                      {statusLabel(connection.status)}
+                    </span>
+                  </span>
+                  <span className="card__row-detail">{providerLabel}</span>
+                  {connection.status === "paused" ? (
+                    <span className="card__row-detail">
+                      {agentWords("messaging.pausedNote", {
+                        sent: agentWords(
+                          manifest?.pausedMessages === "kept"
+                            ? "chat.paused.kept"
+                            : "chat.paused.lost",
+                        ),
+                      })}
+                    </span>
+                  ) : null}
+                  {connection.statusDetail ? (
+                    <span className="card__row-detail">{connection.statusDetail}</span>
+                  ) : null}
+                </div>
+                <div className="card__row-actions">
+                  {repairable ? (
+                    <button
+                      className="btn btn--small"
+                      disabled={pending}
+                      type="button"
+                      onClick={() => onRepair(connection.id, connection.provider)}
+                    >
+                      {agentWords("messaging.fix")}
+                    </button>
+                  ) : connection.status === "revoked" ? null : (
+                    <SettingsSwitch
+                      label={`${connection.status === "paused" ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
+                      checked={connection.status !== "paused"}
+                      disabled={pending}
+                      onChange={(enabled) =>
+                        onStatus(connection.id, enabled ? "connected" : "paused")
+                      }
                     />
-                    <div className="card__row-body">
-                      <span className="card__row-title">
-                        <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
-                          {connection.displayName}
-                        </Link>
-                        <span className={`chip ${statusChip(connection.status)}`}>
-                          {statusLabel(connection.status)}
-                        </span>
-                      </span>
-                      <span className="card__row-detail">
-                        {provider?.label ?? connection.provider} ·{" "}
-                        {connection.transportKind === "computer"
-                          ? "On your Mac"
-                          : connection.connectionMethod === "managed-oauth"
-                            ? "Managed connection"
-                            : "Your provider app"}
-                        {routingMode === "dedicated" ? " · Dedicated bot" : " · Shared bot"}
-                      </span>
-                      {connection.statusDetail ? (
-                        <span className="card__row-detail">{connection.statusDetail}</span>
-                      ) : null}
-                    </div>
-                    <div className="card__row-actions">
-                      {repairable ? (
-                        <button
-                          className="btn btn--small"
-                          disabled={pending}
-                          type="button"
-                          onClick={() => onRepair(connection.id, connection.provider)}
-                        >
-                          Fix setup
-                        </button>
-                      ) : (
-                        <SettingsSwitch
-                          label={`Enable ${connection.displayName}`}
-                          checked={connection.status !== "paused"}
-                          disabled={pending}
-                          onChange={(enabled) =>
-                            onStatus(connection.id, enabled ? "connected" : "paused")
-                          }
-                        />
-                      )}
-                      <Link
-                        aria-label={`Details for ${connection.displayName}`}
-                        to={`/settings/messaging/${encodeURIComponent(connection.id)}`}
-                      >
-                        <Icon name="chevron-right" />
-                      </Link>
-                      <SurfaceMenu
-                        label={`Actions for ${connection.displayName}`}
-                        items={[
-                          {
-                            icon: "reload",
-                            label: "Check connection",
-                            disabled: pending,
-                            onSelect: () => onCheck(connection.id, connection.displayName),
-                          },
-                          {
-                            icon: "trash",
-                            label: "Remove connection",
-                            danger: true,
-                            disabled: pending,
-                            onSelect: () => onRevoke(connection.id),
-                          },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                  {accounts.map((account) => (
-                    <AccountRoutes
-                      account={account}
-                      bindings={dashboard.bindings.filter(
-                        ({ accountId }) => accountId === account.id,
-                      )}
-                      key={account.id}
-                      onAddRoute={onAddRoute}
-                      onRevokeRoute={onRevokeRoute}
-                      onUpdateAccess={onUpdateAccess}
-                      pending={pending}
-                      providerLabel={provider?.label ?? connection.provider}
-                    />
-                  ))}
-                </Fragment>
-              );
-            })
-          ) : (
-            <div className="card__empty">
-              <p>Connect a bot to use Opensteer from your team’s conversations.</p>
+                  )}
+                  <SurfaceMenu
+                    label={`Actions for ${connection.displayName}`}
+                    items={[
+                      {
+                        icon: "reload",
+                        label: agentWords("messaging.check"),
+                        disabled: pending,
+                        onSelect: () => onCheck(connection.id, connection.displayName),
+                      },
+                      {
+                        icon: "trash",
+                        label: agentWords("messaging.remove"),
+                        danger: true,
+                        disabled: pending,
+                        onSelect: () =>
+                          setRemoving({ id: connection.id, name: connection.displayName }),
+                      },
+                    ]}
+                  />
+                </div>
+              </div>
+              {accounts.map((account) => (
+                <AccountChats
+                  account={account}
+                  chats={chatsOfAccount(chats, account.id)}
+                  client={client}
+                  code={code?.accountId === account.id ? code : null}
+                  key={account.id}
+                  manifest={manifest}
+                  me={dashboard.me?.find(({ accountId }) => accountId === account.id) ?? null}
+                  names={names}
+                  onChatAdded={onChatAdded}
+                  onLinkMe={() => onLinkMe(account.id)}
+                  pending={pending}
+                  providerLabel={providerLabel}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+      {removing ? (
+        <Dialog
+          title={agentWords("messaging.remove.title", { account: removing.name })}
+          onClose={() => setRemoving(null)}
+          footer={
+            <>
+              <button className="btn btn--ghost" onClick={() => setRemoving(null)} type="button">
+                {agentWords("common.cancel")}
+              </button>
               <button
-                className="btn btn--primary"
-                disabled={!providerReady}
-                onClick={onAdd}
+                className="btn btn--danger"
+                onClick={() => {
+                  onRemove(removing.id);
+                  setRemoving(null);
+                }}
                 type="button"
               >
-                Connect a messaging app
+                {agentWords("messaging.remove")}
               </button>
-            </div>
+            </>
+          }
+        >
+          <p>{agentWords("messaging.remove.body")}</p>
+        </Dialog>
+      ) : null}
+    </>
+  );
+}
+
+/** Who "me" is on one account, the code that links it, and the chats that speak through it. */
+export function AccountChats({
+  account,
+  chats,
+  client,
+  code,
+  manifest,
+  me,
+  names,
+  onChatAdded,
+  onLinkMe,
+  pending,
+  providerLabel,
+}: {
+  readonly account: ChannelAccount;
+  readonly chats: readonly AgentConnection[];
+  readonly client: Pick<HostClient, "dispatch">;
+  readonly code: ShownCode | null;
+  readonly manifest: ChannelProviderManifest | undefined;
+  readonly me: { readonly displayName: string } | null;
+  readonly names: Parameters<typeof connectedAgentRow>[1];
+  readonly onChatAdded: () => void;
+  readonly onLinkMe: () => void;
+  readonly pending: boolean;
+  readonly providerLabel: string;
+}) {
+  const [adding, setAdding] = useState(false);
+  const accountName = account.handle ?? account.displayName;
+  return (
+    <>
+      <div className="card__row messaging-me">
+        <div className="card__row-body">
+          <span className="card__row-title">
+            {agentWords("messaging.me.title", { provider: providerLabel })}
+          </span>
+          <span className="card__row-detail">
+            {me
+              ? agentWords("messaging.me.linked", { identity: me.displayName })
+              : agentWords("messaging.me.none", { provider: providerLabel })}
+          </span>
+          {code ? (
+            <span className="card__row-detail" role="status">
+              {agentWords("messaging.me.code", {
+                code: code.code,
+                account: accountName,
+                provider: providerLabel,
+                time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
+                  hour: "numeric",
+                  minute: "2-digit",
+                }),
+              })}
+            </span>
+          ) : null}
+          {me ? (
+            <span className="card__row-detail">
+              {agentWords("messaging.me.replaces", { identity: me.displayName })}
+            </span>
+          ) : null}
+        </div>
+        <div className="card__row-actions">
+          {code ? (
+            <button
+              className="btn btn--small"
+              onClick={() => void copyText(code.code)}
+              type="button"
+            >
+              <Icon name="copy" /> Copy
+            </button>
+          ) : null}
+          <button className="btn btn--small" disabled={pending} onClick={onLinkMe} type="button">
+            {me ? agentWords("messaging.me.relink") : agentWords("messaging.me.link")}
+          </button>
+        </div>
+      </div>
+      <div className="card__row messaging-chats">
+        <div className="card__row-body">
+          <span className="card__row-title">{agentWords("messaging.chats.title")}</span>
+          {chats.length === 0 ? (
+            <span className="card__row-detail">{agentWords("messaging.chats.empty")}</span>
+          ) : (
+            <ul className="messaging-chats__list">
+              {chats.map((chat) => {
+                const row = connectedAgentRow(chat, names);
+                return (
+                  <li key={chat.id}>
+                    <Link to={`/settings/external-agents/${encodeURIComponent(chat.id)}`}>
+                      {chat.label}
+                    </Link>{" "}
+                    <span className="card__row-detail">{row.line}</span>
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </div>
-      </section>
+        <div className="card__row-actions">
+          {adding ? null : (
+            <button
+              className="btn btn--small"
+              disabled={pending || account.status === "revoked"}
+              onClick={() => setAdding(true)}
+              type="button"
+            >
+              {agentWords("messaging.chats.add")}
+            </button>
+          )}
+        </div>
+      </div>
+      {adding ? (
+        <AddChatForm
+          account={account}
+          channels={manifest?.provider === "slack"}
+          client={client}
+          onCancel={() => setAdding(false)}
+          onCreated={() => {
+            setAdding(false);
+            onChatAdded();
+          }}
+          providerLabel={providerLabel}
+        />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * Adds a chat: its direct messages, or one channel; who may give it work, chosen now and never
+ * changed; at Supervised with Tasks only, widened on its own page with the grant editor.
+ */
+export function AddChatForm({
+  account,
+  channels,
+  client,
+  onCancel,
+  onCreated,
+  providerLabel,
+}: {
+  readonly account: ChannelAccount;
+  /** The provider has channels a chat can listen in; otherwise only direct messages. */
+  readonly channels: boolean;
+  readonly client: Pick<HostClient, "dispatch">;
+  readonly onCancel: () => void;
+  readonly onCreated: (chat: AgentConnection) => void;
+  readonly providerLabel: string;
+}) {
+  const [where, setWhere] = useState<"dm" | "channel">("dm");
+  const [channelId, setChannelId] = useState("");
+  const [channelName, setChannelName] = useState("");
+  const [senders, setSenders] = useState<"owner" | "anyone">("owner");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const channel = where === "channel";
+  const ready = !channel || (channelId.trim() !== "" && channelName.trim() !== "");
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!ready) return;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await client.dispatch({
+        accountId: account.id,
+        conversation: channel
+          ? { id: channelId.trim(), name: channelName.trim().replace(/^(?!#)/u, "#") }
+          : null,
+        senders: channel ? senders : "owner",
+        accessMode: "approval-required",
+        grant: { scope: "selected", tasks: true, resources: [] },
+        idempotencyKey: mutationIdempotencyKey("channel-chat"),
+        type: "channel.chat.create",
+      });
+      if (result.type !== "channel.chat.create") throw new Error("Channel command mismatch.");
+      onCreated(result.connection);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setPending(false);
+    }
+  };
+  return (
+    <form className="card__form messaging-add-chat" onSubmit={(event) => void submit(event)}>
+      {channels ? (
+        <fieldset className="check-list">
+          <legend className="field__label">{agentWords("messaging.chat.where")}</legend>
+          {(["dm", "channel"] as const).map((option) => (
+            <label className="check-item" key={option}>
+              <input
+                checked={where === option}
+                name={`chat-where-${account.id}`}
+                onChange={() => {
+                  setWhere(option);
+                  if (option === "dm") setSenders("owner");
+                }}
+                type="radio"
+              />
+              <span className="check-item__label">
+                {agentWords(option === "dm" ? "messaging.chat.dm" : "messaging.chat.channel")}
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      ) : null}
+      {channel ? (
+        <>
+          <label className="field">
+            <span className="field__label">{agentWords("messaging.chat.channelId")}</span>
+            <input
+              className="text-input"
+              onChange={(event) => setChannelId(event.currentTarget.value)}
+              value={channelId}
+            />
+            <span className="field__hint">
+              {agentWords("messaging.chat.channelIdHint", { provider: providerLabel })}
+            </span>
+          </label>
+          <label className="field">
+            <span className="field__label">{agentWords("messaging.chat.channelName")}</span>
+            <input
+              className="text-input"
+              onChange={(event) => setChannelName(event.currentTarget.value)}
+              value={channelName}
+            />
+          </label>
+          <fieldset className="check-list">
+            <legend className="field__label">{agentWords("messaging.chat.speakers")}</legend>
+            {(["owner", "anyone"] as const).map((option) => (
+              <label className="check-item" key={option}>
+                <input
+                  checked={senders === option}
+                  name={`chat-senders-${account.id}`}
+                  onChange={() => setSenders(option)}
+                  type="radio"
+                />
+                <span className="check-item__meta">
+                  <span className="check-item__label">
+                    {agentWords(option === "owner" ? "messaging.chat.me" : "messaging.chat.anyone")}
+                  </span>
+                  <span className="check-item__detail">
+                    {agentWords(
+                      option === "owner"
+                        ? "messaging.chat.meDetail"
+                        : "messaging.chat.anyoneDetail",
+                    )}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        </>
+      ) : (
+        <p className="field__hint">{agentWords("messaging.chat.meDetail")}</p>
+      )}
+      <p className="field__hint">{agentWords("messaging.chat.fixed")}</p>
+      <p className="field__hint">{agentWords("messaging.chat.grant")}</p>
+      <div className="form-actions">
+        {error ? (
+          <span aria-live="assertive" className="form-actions__error" role="alert">
+            {error}
+          </span>
+        ) : null}
+        <button className="btn" disabled={pending} onClick={onCancel} type="button">
+          {agentWords("messaging.chat.cancel")}
+        </button>
+        <button className="btn btn--primary" disabled={pending || !ready} type="submit">
+          {pending ? agentWords("messaging.chat.creating") : agentWords("messaging.chat.create")}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -857,27 +947,14 @@ function ProviderPicker({
   );
 }
 
-function SetupProgress({ provider, step }: { provider: ChannelProviderManifest; step: number }) {
-  return (
-    <div aria-label={`${provider.label} setup progress`} className="wizard-steps">
-      {[provider.label, "Bot role", "Who can use it", "Review"].map((label, index) => (
-        <Fragment key={label}>
-          {index > 0 ? <Icon name="chevron-right" /> : null}
-          <span className={index === step ? "wizard-steps__step--active" : undefined}>
-            {index < step ? <Icon name="check" /> : null} {label}
-          </span>
-        </Fragment>
-      ))}
-    </div>
-  );
-}
-
 function ProviderCredentials({
   draft,
   onOpenError,
   provider,
   setDraft,
-}: DraftProps & {
+}: {
+  draft: ChannelDraft;
+  setDraft: (draft: ChannelDraft) => void;
   onOpenError: (reason: unknown) => void;
   provider: ChannelProviderManifest;
 }) {
@@ -976,118 +1053,12 @@ function ProviderCredentials({
   );
 }
 
-function ChannelDestination({
-  draft,
-  setDraft,
-}: DraftProps & { provider: ChannelProviderManifest }) {
-  return (
-    <div className="card">
-      <div className="card__form">
-        <div className="check-list" role="radiogroup" aria-label="Bot role">
-          <label className="check-item">
-            <input
-              checked={draft.routingMode === "dedicated"}
-              name="channel-routing-mode"
-              onChange={() => setDraft({ ...draft, routingMode: "dedicated" })}
-              type="radio"
-            />
-            <span className="check-item__meta">
-              <span className="check-item__label">
-                One route <span className="chip chip--accent">Recommended</span>
-              </span>
-              <span className="check-item__detail">
-                Every conversation with this identity follows the same access.
-              </span>
-            </span>
-          </label>
-          <label className="check-item">
-            <input
-              checked={draft.routingMode === "shared"}
-              name="channel-routing-mode"
-              onChange={() => setDraft({ ...draft, routingMode: "shared" })}
-              type="radio"
-            />
-            <span className="check-item__meta">
-              <span className="check-item__label">Shared bot with routes</span>
-              <span className="check-item__detail">
-                Give different conversations their own access. You can add routes after setup.
-              </span>
-            </span>
-          </label>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ChannelAccess({
-  draft,
-  provider,
-  setDraft,
-}: DraftProps & { provider: ChannelProviderManifest }) {
-  return (
-    <div className="card">
-      <AccessPolicyEditor
-        channelInput={draft.channelInput}
-        onChange={(accessPolicy, channelInput) =>
-          setDraft({ ...draft, accessPolicy, channelInput })
-        }
-        policy={draft.accessPolicy}
-        providerLabel={provider.label}
-      />
-    </div>
-  );
-}
-
-function ChannelReview({
-  draft,
-  provider,
-}: {
-  draft: ChannelDraft;
-  provider: ChannelProviderManifest;
-}) {
-  const rows: { detail: string; title: string }[] = [
-    { detail: `${provider.label} · verified on connect`, title: "Connected account" },
-    {
-      detail: draft.routingMode === "dedicated" ? "One route" : "Shared bot with routes",
-      title: "Bot role",
-    },
-    {
-      detail: channelPolicySummary(
-        accessPolicyFromDraft(draft.accessPolicy, draft.channelInput),
-        provider.label,
-      ),
-      title: "Channels",
-    },
-    { detail: senderLabel(draft.accessPolicy.directMessages.mode), title: "Direct messages" },
-    {
-      detail: `Runs started from ${provider.label} use your Opensteer access.`,
-      title: "Authority",
-    },
-    { detail: "Default agent", title: "Runs on" },
-  ];
-  return (
-    <div className="card">
-      {rows.map((row) => (
-        <div className="card__row" key={row.title}>
-          <div className="card__row-body">
-            <span className="card__row-title">{row.title}</span>
-            <span className="card__row-detail">{row.detail}</span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function ConnectionSuccess({
   connection,
-  directMessages,
   onDone,
   providerLabel,
 }: {
   connection: CreatedChannelConnection["connection"];
-  directMessages: SenderMode;
   onDone: () => void;
   providerLabel: string;
 }) {
@@ -1095,7 +1066,7 @@ function ConnectionSuccess({
     <section className="section">
       {connection.status === "connected" ? (
         <p className="notice notice--accent">
-          Opensteer verified the {providerLabel} account and its messaging transport is connected.
+          Opensteer checked the {providerLabel} account and is connected to it.
         </p>
       ) : (
         <p className="notice notice--warn">
@@ -1109,30 +1080,23 @@ function ConnectionSuccess({
       )}
       <div className="card">
         <div className="card__row">
-          <span className="card__row-glyph" aria-hidden="true">
-            <Icon name="message" />
-          </span>
           <div className="card__row-body">
-            <span className="card__row-title">Invite the bot where it should work</span>
+            <span className="card__row-title">Next, link your own account</span>
             <span className="card__row-detail">
-              Add the provider app to any channels where people will mention it.
+              Link my account shows a code to send from your own {providerLabel} account, so
+              Opensteer knows which messages are yours.
             </span>
           </div>
         </div>
-        {directMessages === "owner" ? (
-          <div className="card__row">
-            <span className="card__row-glyph" aria-hidden="true">
-              <Icon name="check" />
+        <div className="card__row">
+          <div className="card__row-body">
+            <span className="card__row-title">Then add a chat</span>
+            <span className="card__row-detail">
+              A chat is a connected agent for its direct messages or one channel. Choose what it can
+              use on its page.
             </span>
-            <div className="card__row-body">
-              <span className="card__row-title">Verify your direct messages</span>
-              <span className="card__row-detail">
-                Message the bot once. It sends an 8-character code that you can enter on this page
-                to confirm which {providerLabel} account is yours.
-              </span>
-            </div>
           </div>
-        ) : null}
+        </div>
       </div>
       <div className="form-actions">
         <button className="btn btn--primary" onClick={onDone} type="button">
@@ -1143,627 +1107,20 @@ function ConnectionSuccess({
   );
 }
 
-/**
- * The code travels bot → person → this field, so what is typed here is read
- * from a chat message: fold case and drop the characters the alphabet omits
- * rather than refusing the paste.
- */
-export function normalizeLinkCode(value: string): string {
-  return [...value.toUpperCase()]
-    .filter((character) => linkCodeAlphabet.includes(character))
-    .join("")
-    .slice(0, linkCodeLength);
-}
-
-export function LinkIdentityForm({
-  error,
-  linked,
-  onLink,
-  pending,
-}: {
-  error: string | null;
-  linked: LinkedIdentity | null;
-  onLink: (code: string) => Promise<boolean>;
-  pending: boolean;
-}) {
-  const [code, setCode] = useState("");
-  return (
-    <section className="section">
-      <div className="section__head">
-        <div>
-          <h2 className="section__title">Link a messaging account</h2>
-          <p className="section__hint">
-            Got a code from a bot? Enter it here to link that messaging account to you.
-          </p>
-        </div>
-      </div>
-      <div className="card">
-        <form
-          className="card__form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void onLink(code).then((spent) => {
-              if (spent) setCode("");
-            });
-          }}
-        >
-          <label className="field">
-            <span className="field__label">Code from the bot</span>
-            <input
-              autoComplete="off"
-              className="text-input"
-              maxLength={linkCodeLength}
-              onChange={(event) => setCode(normalizeLinkCode(event.currentTarget.value))}
-              placeholder="ABCD2345"
-              spellCheck={false}
-              value={code}
-            />
-            <span className="field__hint">
-              Eight characters. Codes expire an hour after the bot sends them.
-            </span>
-          </label>
-          {linked ? (
-            <p className="notice notice--accent">
-              Linked {linked.displayName} on {linked.providerLabel}.
-            </p>
-          ) : null}
-          <div className="form-actions">
-            {error ? (
-              <span aria-live="assertive" className="form-actions__error" role="alert">
-                {error}
-              </span>
-            ) : null}
-            <button
-              className="btn btn--small"
-              disabled={pending || code.length !== linkCodeLength}
-              type="submit"
-            >
-              Link account
-            </button>
-          </div>
-        </form>
-      </div>
-    </section>
-  );
-}
-
-export function AccessRequests({
-  accounts,
-  grants,
-  onReview,
-  pending,
-}: {
-  accounts: readonly ChannelAccount[];
-  grants: ChannelDashboard["accessGrants"];
-  onReview: (
-    grant: ChannelDashboard["accessGrants"][number],
-    decision: "approved" | "declined" | "revoked",
-  ) => void;
-  pending: boolean;
-}) {
-  const pendingGrants = grants.filter(({ status }) => status === "pending");
-  const decidedGrants = grants.filter(({ status }) => status !== "pending");
-  return (
-    <section className="section channel-access-inbox">
-      <div className="section__head">
-        <div>
-          <h2 className="section__title">Access requests</h2>
-          <p className="section__hint">Requests stay here until you approve or decline them.</p>
-        </div>
-        {pendingGrants.length ? (
-          <span className="chip chip--accent">{pendingGrants.length} new</span>
-        ) : null}
-      </div>
-      <div className="card">
-        {pendingGrants.map((grant) => (
-          <div className="card__row" key={`${grant.bindingId}:${grant.externalUserId}`}>
-            <span className="card__row-glyph" aria-hidden="true">
-              <Icon name="message" />
-            </span>
-            <div className="card__row-body">
-              <span className="card__row-title">{grant.displayName}</span>
-              <span className="card__row-detail">{grant.externalUserId}</span>
-              <span className="card__row-detail">
-                {accounts.find(({ id }) => id === grant.accountId)?.displayName ??
-                  "Messaging account"}
-                {" · "}
-                {new Date(grant.requestedAt).toLocaleDateString()}
-              </span>
-            </div>
-            <div className="card__row-actions">
-              <button
-                className="btn btn--small"
-                disabled={pending}
-                onClick={() => onReview(grant, "declined")}
-                type="button"
-              >
-                Decline
-              </button>
-              <button
-                className="btn btn--primary btn--small"
-                disabled={pending}
-                onClick={() => onReview(grant, "approved")}
-                type="button"
-              >
-                Approve
-              </button>
-            </div>
-          </div>
-        ))}
-        {decidedGrants.length ? (
-          <details className="channel-access-history">
-            <summary>Previous decisions ({decidedGrants.length})</summary>
-            {decidedGrants.map((grant) => (
-              <div className="card__row" key={`${grant.bindingId}:${grant.externalUserId}`}>
-                <div className="card__row-body">
-                  <span className="card__row-title">{grant.displayName}</span>
-                  <span className="card__row-detail">{grant.externalUserId}</span>
-                  <span className="card__row-detail">
-                    {grant.externalUserId} · {statusLabel(grant.status)}
-                  </span>
-                </div>
-                {grant.status === "approved" ? (
-                  <button
-                    className="btn btn--small"
-                    disabled={pending}
-                    onClick={() => onReview(grant, "revoked")}
-                    type="button"
-                  >
-                    Revoke
-                  </button>
-                ) : (
-                  <button
-                    className="btn btn--small"
-                    disabled={pending}
-                    onClick={() => onReview(grant, "approved")}
-                    type="button"
-                  >
-                    Approve
-                  </button>
-                )}
-              </div>
-            ))}
-          </details>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-export function AccessPolicyEditor({
-  channelInput,
-  onChange,
-  policy,
-  providerLabel,
-}: {
-  channelInput: string;
-  onChange: (policy: ChannelAccessPolicy, channelInput: string) => void;
-  policy: ChannelAccessPolicy;
-  providerLabel: string;
-}) {
-  return (
-    <div className="card__form channel-access-editor">
-      <div className="channel-access-editor__group">
-        <div className="channel-access-editor__heading">
-          <span className="field__label">Channels</span>
-          <span className="field__hint">Choose where people can mention the bot.</span>
-        </div>
-        <label className="field">
-          <span className="visually-hidden">Channel reach</span>
-          <select
-            aria-label="Channel reach"
-            className="select-input"
-            onChange={(event) => {
-              const scope = channelScope(event.currentTarget.value);
-              onChange({ ...policy, channels: { ...policy.channels, scope } }, channelInput);
-            }}
-            value={policy.channels.scope}
-          >
-            <option value="selected">Selected channels</option>
-            <option value="all">All channels where the bot is invited</option>
-            <option value="off">Off</option>
-          </select>
-        </label>
-        {policy.channels.scope === "selected" ? (
-          <label className="field">
-            <span className="field__label">{providerLabel} channel link or ID</span>
-            <textarea
-              className="text-input"
-              onBlur={(event) => {
-                const normalized = normalizeChannelIds(event.currentTarget.value).join("\n");
-                onChange(policy, normalized);
-              }}
-              onChange={(event) => onChange(policy, event.currentTarget.value)}
-              placeholder={"https://workspace.slack.com/archives/C0123ABC\nC0456DEF"}
-              required
-              rows={3}
-              value={channelInput}
-            />
-            <span className="field__hint">Paste links or IDs, one per line.</span>
-          </label>
-        ) : null}
-        {policy.channels.scope !== "off" ? (
-          <label className="field">
-            <span className="field__label">Who can mention it</span>
-            <select
-              className="select-input"
-              onChange={(event) =>
-                onChange(
-                  {
-                    ...policy,
-                    channels: {
-                      ...policy.channels,
-                      sender: {
-                        ...policy.channels.sender,
-                        mode: senderMode(event.currentTarget.value),
-                      },
-                    },
-                  },
-                  channelInput,
-                )
-              }
-              value={policy.channels.sender.mode}
-            >
-              <SenderOptions />
-            </select>
-          </label>
-        ) : null}
-      </div>
-      <div className="channel-access-editor__group">
-        <div className="channel-access-editor__heading">
-          <span className="field__label">Direct messages</span>
-          <span className="field__hint">Kept separate from shared channel access.</span>
-        </div>
-        <label className="field">
-          <span className="visually-hidden">Who can send direct messages</span>
-          <select
-            aria-label="Who can send direct messages"
-            className="select-input"
-            onChange={(event) =>
-              onChange(
-                {
-                  ...policy,
-                  directMessages: {
-                    ...policy.directMessages,
-                    mode: senderMode(event.currentTarget.value),
-                  },
-                },
-                channelInput,
-              )
-            }
-            value={policy.directMessages.mode}
-          >
-            <SenderOptions />
-          </select>
-        </label>
-      </div>
-      {policy.channels.sender.allowedExternalUserIds.length > 0 ||
-      policy.directMessages.allowedExternalUserIds.length > 0 ? (
-        <details className="channel-access-editor__restrictions">
-          <summary>Existing user restrictions</summary>
-          {(["channels", "directMessages"] as const).map((surface) => {
-            const sender = surface === "channels" ? policy.channels.sender : policy.directMessages;
-            if (sender.allowedExternalUserIds.length === 0) return null;
-            return (
-              <label className="field" key={surface}>
-                <span className="field__label">
-                  {surface === "channels" ? "Channel" : "Direct message"} user IDs
-                </span>
-                <textarea
-                  className="text-input"
-                  rows={2}
-                  value={sender.allowedExternalUserIds.join("\n")}
-                  onChange={(event) => {
-                    const next = {
-                      ...sender,
-                      allowedExternalUserIds: event.currentTarget.value
-                        .split(/[\s,]+/u)
-                        .filter(Boolean),
-                    };
-                    onChange(
-                      surface === "channels"
-                        ? { ...policy, channels: { ...policy.channels, sender: next } }
-                        : { ...policy, directMessages: next },
-                      channelInput,
-                    );
-                  }}
-                />
-                <span className="field__hint">
-                  Only these people are eligible. Clear the list to remove this extra restriction.
-                </span>
-              </label>
-            );
-          })}
-        </details>
-      ) : null}
-      <p className="notice notice--accent">
-        Runs started from {providerLabel} use your Opensteer access.
-      </p>
-    </div>
-  );
-}
-
-function SenderOptions() {
-  return (
-    <>
-      <option value="anyone">Anyone</option>
-      <option value="owner">Only me</option>
-      <option value="approved">Ask for access</option>
-      <option value="off">Off</option>
-    </>
-  );
-}
-
-/** One account's routes, and the form that adds another. */
-export function AccountRoutes({
-  account,
-  bindings,
-  onAddRoute,
-  onRevokeRoute,
-  onUpdateAccess,
-  pending,
-  providerLabel,
-}: {
-  account: ChannelAccount;
-  bindings: readonly ChannelBinding[];
-  onAddRoute: (account: ChannelAccount, route: RouteDraft) => Promise<boolean>;
-  onRevokeRoute: (bindingId: ChannelBinding["id"]) => void;
-  onUpdateAccess: (binding: ChannelBinding, accessPolicy: ChannelAccessPolicy) => Promise<boolean>;
-  pending: boolean;
-  providerLabel: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [confirming, setConfirming] = useState<ChannelBinding["id"] | null>(null);
-  const [editing, setEditing] = useState<ChannelBinding["id"] | null>(null);
-  const [editPolicy, setEditPolicy] = useState<ChannelAccessPolicy | null>(null);
-  const [editChannels, setEditChannels] = useState("");
-  const [route, setRoute] = useState<RouteDraft>({
-    accessPolicy: channelRouteAccessPolicy(),
-    conversationId: "",
-  });
-  /** A dedicated bot has one route: the Host refuses a second binding. */
-  const dedicated = account.routingMode === "dedicated";
-  return (
-    <>
-      {bindings.map((binding) => (
-        <Fragment key={binding.id}>
-          <div className="card__row">
-            <span className="card__row-glyph" aria-hidden="true">
-              <Icon name="hash" />
-            </span>
-            <div className="card__row-body">
-              <span className="card__row-title">
-                {routeSelectorLabel(binding.selector)}
-                {binding.status === "active" ? null : (
-                  <span className="chip">{statusLabel(binding.status)}</span>
-                )}
-              </span>
-              <span className="card__row-detail">
-                {channelPolicySummary(binding.accessPolicy, providerLabel)}
-              </span>
-              <span className="card__row-detail">
-                Direct messages: {senderLabel(binding.accessPolicy.directMessages.mode)}
-                {binding.accessPolicy.directMessages.allowedExternalUserIds.length > 0
-                  ? ` · ${binding.accessPolicy.directMessages.allowedExternalUserIds.length} eligible users`
-                  : ""}
-              </span>
-            </div>
-            {binding.status === "revoked" ? null : (
-              <div className="card__row-actions">
-                {confirming === binding.id ? (
-                  <>
-                    <span className="card__row-detail">Stop routing this conversation?</span>
-                    <button
-                      className="btn btn--small"
-                      disabled={pending}
-                      onClick={() => setConfirming(null)}
-                      type="button"
-                    >
-                      Keep
-                    </button>
-                    <button
-                      className="btn btn--danger btn--small"
-                      disabled={pending}
-                      onClick={() => {
-                        setConfirming(null);
-                        onRevokeRoute(binding.id);
-                      }}
-                      type="button"
-                    >
-                      Remove route
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      className="btn btn--small"
-                      disabled={pending}
-                      onClick={() => {
-                        setEditing(binding.id);
-                        setEditPolicy(binding.accessPolicy);
-                        setEditChannels(binding.accessPolicy.channels.conversationIds.join("\n"));
-                      }}
-                      type="button"
-                    >
-                      Access
-                    </button>
-                    <button
-                      className="btn btn--small"
-                      disabled={pending}
-                      onClick={() => setConfirming(binding.id)}
-                      type="button"
-                    >
-                      Remove
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-          {editing === binding.id && editPolicy ? (
-            <form
-              className="channel-route-editor"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const accessPolicy = accessPolicyFromDraft(editPolicy, editChannels);
-                void onUpdateAccess(binding, accessPolicy).then((updated) => {
-                  if (updated) setEditing(null);
-                });
-              }}
-            >
-              <AccessPolicyEditor
-                channelInput={editChannels}
-                onChange={(policy, channelInput) => {
-                  setEditPolicy(policy);
-                  setEditChannels(channelInput);
-                }}
-                policy={editPolicy}
-                providerLabel={providerLabel}
-              />
-              <div className="form-actions channel-route-editor__actions">
-                <button className="btn btn--small" onClick={() => setEditing(null)} type="button">
-                  Cancel
-                </button>
-                <button
-                  className="btn btn--primary btn--small"
-                  disabled={
-                    pending ||
-                    (editPolicy.channels.scope === "selected" &&
-                      normalizeChannelIds(editChannels).length === 0)
-                  }
-                  type="submit"
-                >
-                  Save access
-                </button>
-              </div>
-            </form>
-          ) : null}
-        </Fragment>
-      ))}
-      <div className="card__row">
-        <div className="card__row-body">
-          <span className="card__row-detail">
-            {dedicated
-              ? `A dedicated bot has one route. Connect another ${providerLabel} identity for different access.`
-              : bindings.length
-                ? `${bindings.length} route${bindings.length === 1 ? "" : "s"} for ${account.displayName}.`
-                : `No routes yet for ${account.displayName}. Messages reach Opensteer only where a route matches.`}
-          </span>
-        </div>
-        {dedicated ? null : (
-          <div className="card__row-actions">
-            <button
-              className="btn btn--small"
-              disabled={pending}
-              onClick={() => setOpen((current) => !current)}
-              type="button"
-            >
-              {open ? "Cancel" : "Add route"}
-            </button>
-          </div>
-        )}
-      </div>
-      {open ? (
-        <form
-          className="card__form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void onAddRoute(account, route).then((created) => {
-              if (!created) return;
-              setOpen(false);
-              setRoute({ ...route, conversationId: "" });
-            });
-          }}
-        >
-          <label className="field">
-            <span className="field__label">{providerLabel} channel link or ID</span>
-            <input
-              autoComplete="off"
-              autoFocus
-              className="text-input"
-              maxLength={512}
-              onChange={(event) =>
-                setRoute({ ...route, conversationId: event.currentTarget.value })
-              }
-              onBlur={(event) => {
-                const normalized = normalizeChannelIds(event.currentTarget.value)[0];
-                if (normalized) setRoute({ ...route, conversationId: normalized });
-              }}
-              placeholder="https://workspace.slack.com/archives/C0123ABC"
-              required
-              value={route.conversationId}
-            />
-            <span className="field__hint">Paste the channel link, or its provider ID.</span>
-          </label>
-          <label className="field">
-            <span className="field__label">Who can mention it</span>
-            <select
-              className="select-input"
-              onChange={(event) =>
-                setRoute({
-                  ...route,
-                  accessPolicy: {
-                    ...route.accessPolicy,
-                    channels: {
-                      ...route.accessPolicy.channels,
-                      sender: {
-                        ...route.accessPolicy.channels.sender,
-                        mode: senderMode(event.currentTarget.value),
-                      },
-                    },
-                  },
-                })
-              }
-              value={route.accessPolicy.channels.sender.mode}
-            >
-              <SenderOptions />
-            </select>
-          </label>
-          <div className="form-actions">
-            <button
-              className="btn btn--primary btn--small"
-              disabled={pending || !route.conversationId.trim()}
-              type="submit"
-            >
-              Add route
-            </button>
-          </div>
-        </form>
-      ) : null}
-    </>
-  );
-}
-
-type DraftProps = { draft: ChannelDraft; setDraft: (draft: ChannelDraft) => void };
-
-function heading(view: View, step: number, providerLabel = "provider"): string {
-  if (view === "overview") return "Reach your agents anywhere";
-  if (view === "providers") return "Add a messaging identity";
-  if (view === "success") return `${providerLabel} connection saved`;
+function heading(view: View, providerLabel = "provider"): string {
+  if (view === "providers") return "Add a messaging account";
+  if (view === "success") return `${providerLabel} account added`;
   if (view === "repair") return `Fix ${providerLabel} setup`;
-  return (
-    [`Connect ${providerLabel}`, "Choose a bot role", "Set access", "Review the route"][step] ??
-    `Connect ${providerLabel}`
-  );
+  return `Connect ${providerLabel}`;
 }
 
-function subheading(view: View, step: number, providerLabel = "provider"): string {
-  if (view === "overview")
-    return "Connect messaging accounts, so their conversations start tasks for your agent.";
-  if (view === "providers")
-    return "Provider adapters stay outside the agent runtime, so agents remain lean.";
-  if (view === "success") return "Review the connection status and finish the provider-side steps.";
+function subheading(view: View): string {
+  if (view === "providers") return "Choose where you want to message your agents from.";
+  if (view === "success") return "Link your own account, then add a chat.";
   if (view === "repair")
     return "Finish any provider-side changes, check again, or replace the saved credentials.";
   if (view === "computer-setup") return "Your agents answer from one of your own Macs.";
-  return (
-    [
-      `For a self-hosted deployment, bring a ${providerLabel} app you control.`,
-      "Choose one route or a shared bot with routes.",
-      "Choose channel access and direct messages.",
-      `You can add more specific routes later without reconnecting ${providerLabel}.`,
-    ][step] ?? ""
-  );
+  return "Bring a provider app you control. Its tokens are checked before anything is saved.";
 }
 
 function statusChip(status: string): string {
@@ -1777,113 +1134,11 @@ function statusChip(status: string): string {
 }
 
 function statusLabel(status: string): string {
-  return status === "connected"
-    ? "Connected"
-    : status === "needs-attention"
-      ? "Needs attention"
-      : status[0]?.toUpperCase() + status.slice(1);
+  const known = ["connected", "pending", "paused", "needs-attention", "revoked"] as const;
+  const id = known.find((candidate) => candidate === status);
+  return id ? agentWords(`messaging.status.${id}`) : status;
 }
 
-function providerLabelFor(dashboard: ChannelDashboard | null, provider: string): string {
-  return (
-    dashboard?.providers.find(({ provider: candidate }) => candidate === provider)?.label ??
-    provider
-  );
-}
-
-function routeSelectorLabel(selector: ChannelRouteSelector): string {
-  const parts = [
-    selector.conversationId ? `Channel ${selector.conversationId}` : "DMs and mentions",
-    ...(selector.conversationType ? [selector.conversationType] : []),
-    ...(selector.scopeId ? [`Scope ${selector.scopeId}`] : []),
-    ...(selector.threadId ? [`Thread ${selector.threadId}`] : []),
-  ];
-  return parts.join(" · ");
-}
-
-function defaultChannelAccessPolicy(): ChannelAccessPolicy {
-  return {
-    channels: {
-      conversationIds: [],
-      scope: "selected",
-      sender: { allowedExternalUserIds: [], mode: "anyone" },
-    },
-    directMessages: { allowedExternalUserIds: [], mode: "owner" },
-  };
-}
-
-function channelRouteAccessPolicy(): ChannelAccessPolicy {
-  return {
-    channels: {
-      conversationIds: [],
-      scope: "selected",
-      sender: { allowedExternalUserIds: [], mode: "anyone" },
-    },
-    directMessages: { allowedExternalUserIds: [], mode: "off" },
-  };
-}
-
-function senderMode(value: string): SenderMode {
-  return senderModes.find((candidate) => candidate === value) ?? "off";
-}
-
-function channelScope(value: string): ChannelAccessPolicy["channels"]["scope"] {
-  return value === "all" || value === "off" ? value : "selected";
-}
-
-function senderLabel(mode: SenderMode): string {
-  return mode === "owner"
-    ? "Only me"
-    : mode === "approved"
-      ? "Ask for access"
-      : mode === "anyone"
-        ? "Anyone"
-        : "Off";
-}
-
-function accessPolicyFromDraft(
-  policy: ChannelAccessPolicy,
-  channelInput: string,
-): ChannelAccessPolicy {
-  return {
-    ...policy,
-    channels: {
-      ...policy.channels,
-      conversationIds:
-        policy.channels.scope === "selected" ? normalizeChannelIds(channelInput) : [],
-    },
-  };
-}
-
-function channelPolicySummary(policy: ChannelAccessPolicy, providerLabel: string): string {
-  if (policy.channels.scope === "off") return "Channel mentions off";
-  const reach =
-    policy.channels.scope === "all"
-      ? `All ${providerLabel} channels where invited`
-      : `${policy.channels.conversationIds.length} selected channel${
-          policy.channels.conversationIds.length === 1 ? "" : "s"
-        }`;
-  return `${reach} · ${senderLabel(policy.channels.sender.mode)}${policy.channels.sender.allowedExternalUserIds.length > 0 ? ` · ${policy.channels.sender.allowedExternalUserIds.length} eligible users` : ""}`;
-}
-
-/** Accepts provider IDs and Slack channel URLs, deduplicating while preserving order. */
-export function normalizeChannelIds(value: string): string[] {
-  return [
-    ...new Set(
-      value
-        .split(/[\s,]+/u)
-        .map((item) => item.trim())
-        .map((item) => {
-          const fromSlackUrl = item.match(/\/archives\/([A-Za-z0-9_-]+)/u)?.[1];
-          return fromSlackUrl ?? item;
-        })
-        .map((item) => item.replace(/[?#].*$/u, ""))
-        .filter(Boolean),
-    ),
-  ];
-}
-
-/** A failure in the app's words, never the exception's own text. */
 function message(reason: unknown): string {
-  return presentFailure(reason, "change channel settings");
+  return presentFailure(reason, "change messaging settings");
 }

@@ -13,6 +13,7 @@ import { accessModeOptions } from "./access-modes.js";
 import { agentWho, agentWithdrawnLine, type AgentWho } from "./agent-identity.js";
 import type { ThreadSummary } from "./client.js";
 import { agentWords } from "./connected-agents-copy.js";
+import { chatFacts } from "./chat-view.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
 /**
@@ -256,11 +257,14 @@ function rowLine(
 ): { readonly line: string; readonly tone: ConnectedAgentTone } {
   if (phase === "active" || phase === "revoked") {
     if (phase === "revoked") return { line: agentWords("agents.row.stopping"), tone: "neutral" };
+    const summary = agentWords("agents.row.summary", {
+      summary: grantSummary(connectionGrant(connection), names),
+      mode: modeLabel(connection.accessMode),
+    });
+    // A chat says where it listens first, beside what it can use like any connected agent.
+    const where = connection.bridge ? chatFacts(connection, phase)?.where : undefined;
     return {
-      line: agentWords("agents.row.summary", {
-        summary: grantSummary(connectionGrant(connection), names),
-        mode: modeLabel(connection.accessMode),
-      }),
+      line: where ? agentWords("chat.row", { where, summary }) : summary,
       tone: "neutral",
     };
   }
