@@ -1,3 +1,4 @@
+import { createHash, X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -7,8 +8,9 @@ import path from "node:path";
  * the guest: a public-looking name the guest's hosts file puts on loopback, and a certificate
  * from a fixture authority made for the job. The guarded step `scripts/test-vm/fixture-keychain.sh`
  * makes both and removes them (`account-tls.test.ts` holds these names to it). The Mac app is
- * handed the authority as NODE_EXTRA_CA_CERTS, which it passes to its Host, and the guest's
- * system trust holds it for the app's Chromium.
+ * handed the authority as NODE_EXTRA_CA_CERTS, which it passes to its Host, and its Chromium is
+ * told at launch to accept the account service's one public key (`journeyAccountSpki`). Nothing in
+ * the guest's system trust changes.
  */
 export const journeyAccountName = "account.first-run.opensteer.example";
 
@@ -40,4 +42,13 @@ export function journeyAccountTls(
     key: readFileSync(file("account.key"), "utf8"),
     name: journeyAccountName,
   };
+}
+
+/**
+ * The account service certificate's public key as Chromium's
+ * `--ignore-certificate-errors-spki-list` names one: the base64 SHA-256 of its SubjectPublicKeyInfo.
+ */
+export function journeyAccountSpki(certificate: string): string {
+  const key = new X509Certificate(certificate).publicKey.export({ format: "der", type: "spki" });
+  return createHash("sha256").update(key).digest("base64");
 }

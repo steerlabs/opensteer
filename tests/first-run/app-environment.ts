@@ -1,4 +1,5 @@
 import path from "node:path";
+import { journeyAccountSpki } from "./account-tls.js";
 
 /**
  * What the first-run journey hands the Mac app, besides its own environment: the account service
@@ -26,4 +27,16 @@ export function journeyAppEnvironment(input: {
     OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: input.runtime,
     OPENSTEER_DESKTOP_PORTAL_URL: input.portalOrigin,
   };
+}
+
+/**
+ * The Mac app's command line as the journey launches it: its source folder, after one Chromium
+ * switch that accepts the account service's certificate by its public key, for this process only.
+ * A development launch accepts it; a released app refuses it (`launch-policy.ts`).
+ */
+export function journeyAppArguments(desktop: string, accountCertificate: string): string[] {
+  return [
+    `--ignore-certificate-errors-spki-list=${journeyAccountSpki(accountCertificate)}`,
+    desktop,
+  ];
 }

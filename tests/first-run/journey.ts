@@ -41,7 +41,8 @@ import {
   quitApp,
 } from "./remote.js";
 import { journeyAccountTls, type JourneyAccountTls } from "./account-tls.js";
-import { journeyAppEnvironment } from "./app-environment.js";
+import { journeyAppArguments, journeyAppEnvironment } from "./app-environment.js";
+import { presentedCertificate, presentedCertificateLine } from "./tls-evidence.js";
 import { phoneStepTitle, setupMoves } from "./setup-walk.js";
 import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
 import { desktopFirstScreenWords } from "../../apps/web/src/components/places/desktop-first-screen-words.js";
@@ -121,7 +122,8 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
   let app: ElectronApplication | undefined;
   try {
     app = await electron.launch({
-      args: [desktop],
+      // The app's Chromium accepts the account service's certificate by its key, for this launch.
+      args: journeyAppArguments(desktop, accountTls.cert),
       cwd: desktop,
       env: {
         ...Object.fromEntries(
@@ -175,6 +177,19 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
     // that hides it.
     const reason = error instanceof Error ? error.message : String(error);
     await writeFile(path.join(directory, "stopped.txt"), `${reason}\n`);
+    // A refused certificate: what the server at the account's name presented, and from where.
+    if (/certificate|CERT_|SSL|TLS/u.test(reason)) {
+      const presented = await presentedCertificate(account.origin, accountTls.cert).catch(
+        (failure: unknown) => String(failure),
+      );
+      await writeFile(
+        path.join(directory, "tls-evidence.json"),
+        JSON.stringify(presented, null, 2) + "\n",
+      );
+      console.log(
+        `first-run ${trial}: ${typeof presented === "string" ? presented : presentedCertificateLine(presented)}`,
+      );
+    }
     const page = app?.windows()[0];
     if (page) {
       await page.screenshot({ path: path.join(directory, "stopped.png") }).catch(() => undefined);
