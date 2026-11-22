@@ -123,6 +123,7 @@ interface PersonalDeploymentSupervisorOptions {
    * says stopped, and the Home keeps that work queued until Resume.
    */
   readonly agentsStoppedSince?: () => string | null;
+  readonly onContainedBoot?: (mode: string) => void;
   readonly onUncontainedBoot?: (mode: string) => void;
   readonly stopProofPollMs?: number;
   readonly stopProofMaxPollMs?: number;
@@ -249,6 +250,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #agentsStoppedSince: (() => string | null) | undefined;
+  readonly #onContainedBoot: PersonalDeploymentSupervisorOptions["onContainedBoot"];
   readonly #onUncontainedBoot: PersonalDeploymentSupervisorOptions["onUncontainedBoot"];
   #runnerSpec: PersonalProcessSpec | null = null;
   #runnerShutdownUnconfirmed = false;
@@ -317,6 +319,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
     this.#agentsStoppedSince = options.agentsStoppedSince;
+    this.#onContainedBoot = options.onContainedBoot;
     this.#onUncontainedBoot = options.onUncontainedBoot;
     this.#userEnvironment =
       options.userEnvironment ??
@@ -878,10 +881,11 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       );
       const runner = this.#spawn(this.#runnerSpec);
       const stoppedMode = this.#agentsStoppedSince?.();
-      if (stoppedMode && runner.runnerReceipt && this.#onUncontainedBoot) {
+      if (stoppedMode && runner.runnerReceipt && (this.#onContainedBoot || this.#onUncontainedBoot)) {
         void waitForRunnerBoot(runner.runnerReceipt.file).then(
           (contained) => {
-            if (!contained) this.#onUncontainedBoot?.(stoppedMode);
+            if (contained) this.#onContainedBoot?.(stoppedMode);
+            else this.#onUncontainedBoot?.(stoppedMode);
           },
           () => this.#onUncontainedBoot?.(stoppedMode),
         );

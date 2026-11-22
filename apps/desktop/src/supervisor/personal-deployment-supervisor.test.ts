@@ -1855,6 +1855,8 @@ function supervisorFixture(
     readonly dataReset?: PersonalDataReset;
     readonly files?: PersonalDeploymentFilesystemPort;
     readonly agentsStoppedSince?: () => string | null;
+    readonly onContainedBoot?: (mode: string) => void;
+    readonly onUncontainedBoot?: (mode: string) => void;
     readonly stopProofPollMs?: number;
     readonly checkPluginAgentWorkStopped?: NonNullable<
       PersonalHostControlPort["checkPluginAgentWorkStopped"]
@@ -1947,6 +1949,8 @@ function supervisorFixture(
       : {}),
     ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
     ...(restarts.agentsStoppedSince ? { agentsStoppedSince: restarts.agentsStoppedSince } : {}),
+    ...(restarts.onContainedBoot ? { onContainedBoot: restarts.onContainedBoot } : {}),
+    ...(restarts.onUncontainedBoot ? { onUncontainedBoot: restarts.onUncontainedBoot } : {}),
     ...(restarts.stopProofPollMs !== undefined
       ? { stopProofPollMs: restarts.stopProofPollMs }
       : {}),
@@ -2558,5 +2562,58 @@ it("paces waitForStopProof from 250 ms doubling up to a 5 s cap", async () => {
   } finally {
     vi.useRealTimers();
     await fixture.supervisor.stop();
+  }
+});
+
+it("reports positive and negative boot containment outcomes under a saved Stop", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  for (const contained of [true, false]) {
+    const onContainedBoot = vi.fn();
+    const onUncontainedBoot = vi.fn();
+    const dir = await mkdtemp(path.join(tmpdir(), "opensteer-boot-contain-"));
+    const fixture = supervisorFixture(
+      null,
+      undefined,
+      verifiedRelease(),
+      { assertAvailable: async () => undefined },
+      {
+        agentsStoppedSince: () => stoppedSince,
+        onContainedBoot,
+        onUncontainedBoot,
+      },
+    );
+    Object.assign(fixture.files.paths, { runnerDataDirectory: dir });
+    const originalSpawn = fixture.processes.spawn.bind(fixture.processes);
+    vi.spyOn(fixture.processes, "spawn").mockImplementation((spec) => {
+      const receipt = spec.environment.OPENSTEER_RUNNER_SHUTDOWN_RECEIPT;
+      if (spec.component === "runner" && receipt) {
+        const readyPayload = JSON.stringify({
+          port: 43210,
+          token: crypto.randomUUID(),
+          earlierBootsContained: contained,
+        });
+        void mkdir(path.dirname(receipt), { recursive: true }).then(() =>
+          writeFile(receipt, readyPayload, "utf8"),
+        );
+      }
+      return originalSpawn(spec);
+    });
+    try {
+      await fixture.supervisor.start();
+      if (contained) {
+        await vi.waitFor(() =>
+          expect(onContainedBoot).toHaveBeenCalledExactlyOnceWith(stoppedSince),
+        );
+        expect(onUncontainedBoot).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() =>
+          expect(onUncontainedBoot).toHaveBeenCalledExactlyOnceWith(stoppedSince),
+        );
+        expect(onContainedBoot).not.toHaveBeenCalled();
+      }
+    } finally {
+      await fixture.supervisor.stop().catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });

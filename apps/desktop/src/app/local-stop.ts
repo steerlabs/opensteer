@@ -92,15 +92,26 @@ export class DesktopLocalStop {
     try {
       const saved = await this.#options.store.load();
       this.#mode = saved.stopped ? (saved.at ?? this.#now()) : null;
-      this.#locallyContained = saved.stopped;
     } catch (error) {
       this.#mode = this.#now();
       this.#problem = unreadStop;
       this.#options.log("desktop.local-stop.read-failed", { message: messageOf(error) });
     }
     this.#phase = this.stopped ? "stopped" : "running";
-    if (this.#phase === "stopped" && this.#mode && this.#locallyContained && this.#options.confirm)
-      this.#startHomeProofLook(this.#mode);
+    this.#emit();
+  }
+
+  noteContainedBoot(mode: string): void {
+    if (
+      mode !== this.#mode ||
+      this.#phase !== "stopped" ||
+      this.#problem !== null ||
+      this.#locallyContained
+    )
+      return;
+    this.#locallyContained = true;
+    if (this.#options.confirm) this.#startHomeProofLook(mode);
+    else this.#confirmedAt = mode;
     this.#emit();
   }
 

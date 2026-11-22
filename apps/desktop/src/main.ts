@@ -662,6 +662,7 @@ async function runDesktop(
   const localStopPath = path.join(loaded.config.dataDirectory, "local-stop.json");
   const personal = new PersonalDeploymentSupervisor({
     agentsStoppedSince: () => localStop.agentsStoppedSince,
+    onContainedBoot: (mode: string) => localStop.noteContainedBoot(mode),
     onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,

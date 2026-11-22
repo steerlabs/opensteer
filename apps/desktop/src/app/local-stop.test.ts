@@ -202,7 +202,7 @@ it("cancels an in-flight Home proof look and ignores late answers on Resume or a
   expect(service.confirming).toBe(false);
 });
 
-it("never lets Home proof override failed local containment, handles permanent Home refusal, and looks again on restore()", async () => {
+it("never lets Home proof override failed local containment, handles permanent Home refusal, and waits for boot containment after restore()", async () => {
   // 1. Permanent Home refusal surfaces an error and ends the look.
   const refused = new DesktopLocalStop({
     store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
@@ -237,42 +237,70 @@ it("never lets Home proof override failed local containment, handles permanent H
   expect(localFailed.stoppedAt).toBeNull();
   expect(localFailed.problem).toContain("Couldn’t confirm everything stopped");
 
-  // 3. restore() on app reopen starts looking again and confirms once proof arrives;
-  //    if noteUncontainedBoot fires before proof arrives, Home proof never overrides it.
-  const reopenProof = Promise.withResolvers<void>();
+  // 3. restore() under a saved Stop does NOT start looking or show a timestamp
+  //    before boot containment is reported, even when Home proof is available immediately.
+  const immediateConfirm = vi.fn(async () => {});
   const reopened = new DesktopLocalStop({
     store: { load: async () => ({ stopped: true, at }), save: async () => {} },
     restart: async () => {},
-    confirm: () => reopenProof.promise,
+    confirm: immediateConfirm,
     log: vi.fn(),
     now: () => new Date(at),
   });
   await reopened.restore();
+  await Promise.resolve();
   expect(reopened.phase).toBe("stopped");
-  expect(reopened.confirming).toBe(true);
   expect(reopened.stoppedAt).toBeNull();
-  reopenProof.resolve();
-  await vi.waitFor(() => expect(reopened.stoppedAt).toBe(at));
   expect(reopened.confirming).toBe(false);
+  expect(reopened.problem).toBeNull();
+  expect(immediateConfirm).not.toHaveBeenCalled();
 
-  const uncontainedProof = Promise.withResolvers<void>();
-  let uncontainedSignal: AbortSignal | undefined;
+  // Once the supervisor reports the boot contained, it looks for Home proof and confirms.
+  reopened.noteContainedBoot(at);
+  await vi.waitFor(() => expect(reopened.stoppedAt).toBe(at));
+  expect(immediateConfirm).toHaveBeenCalledExactlyOnceWith(at, expect.any(AbortSignal));
+  expect(reopened.confirming).toBe(false);
+  expect(reopened.problem).toBeNull();
+
+  // If the boot is reported uncontained instead, show the problem line and ignore any late Home proof or contained signal.
+  const uncontainedConfirm = vi.fn(async () => {});
   const uncontained = new DesktopLocalStop({
     store: { load: async () => ({ stopped: true, at }), save: async () => {} },
     restart: async () => {},
-    confirm: (_since, signal) => {
-      uncontainedSignal = signal;
-      return uncontainedProof.promise;
-    },
+    confirm: uncontainedConfirm,
     log: vi.fn(),
     now: () => new Date(at),
   });
   await uncontained.restore();
   uncontained.noteUncontainedBoot(at);
-  expect(uncontainedSignal?.aborted).toBe(true);
-  uncontainedProof.resolve();
+  uncontained.noteContainedBoot(at);
   await Promise.resolve();
+  expect(uncontainedConfirm).not.toHaveBeenCalled();
   expect(uncontained.stoppedAt).toBeNull();
   expect(uncontained.confirming).toBe(false);
   expect(uncontained.problem).toBe("Couldn’t confirm everything stopped");
+
+  // Even if contained arrived first and Home proof was pending, a late uncontained boot revokes it and ignores late Home proof.
+  const lateProof = Promise.withResolvers<void>();
+  let lateSignal: AbortSignal | undefined;
+  const revoked = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: true, at }), save: async () => {} },
+    restart: async () => {},
+    confirm: (_since, signal) => {
+      lateSignal = signal;
+      return lateProof.promise;
+    },
+    log: vi.fn(),
+    now: () => new Date(at),
+  });
+  await revoked.restore();
+  revoked.noteContainedBoot(at);
+  expect(revoked.confirming).toBe(true);
+  revoked.noteUncontainedBoot(at);
+  expect(lateSignal?.aborted).toBe(true);
+  lateProof.resolve();
+  await Promise.resolve();
+  expect(revoked.stoppedAt).toBeNull();
+  expect(revoked.confirming).toBe(false);
+  expect(revoked.problem).toBe("Couldn’t confirm everything stopped");
 });
