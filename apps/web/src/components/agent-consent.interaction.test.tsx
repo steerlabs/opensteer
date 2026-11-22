@@ -292,6 +292,10 @@ describe("agent consent with grants", () => {
     const { container, openExternalUrl } = await mount(host);
     await act(async () => buttonNamed(container, "Choose Apps and phone screens").click());
     await vi.waitFor(() => expect(container.textContent).toContain("Notes"));
+    // The consent says what an app or a phone screen gives the agent, the clipboard included.
+    expect(container.textContent).toContain(
+      "sees and controls each one you turn on as you would, so it can paste what’s on that device’s clipboard.",
+    );
     await act(async () => row(container, "Notes").querySelector("input")!.click());
     await act(async () => buttonNamed(container, "Choose Plugins and data").click());
     await vi.waitFor(() => expect(container.textContent).toContain("Calendar"));

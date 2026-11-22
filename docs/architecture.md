@@ -337,6 +337,10 @@ The connection is confined (`packages/browser-core/src/portable-session-cdp-rout
   (update Opensteer on that device; `browser_use` still works).
 - It closes on Stop, Disconnect, expiry, a lowered mode or any grant change.
 
+Through the browser, in `browser_use`, `browser_connect` or a Run in its lineage, a connected agent
+cannot read the clipboard or change a browser permission; a page it operates can replace what is on
+the clipboard, as any page can when it is clicked.
+
 See [browser-sessions.md](browser-sessions.md).
 
 Pages are separated by lineage; signed-in state is not. The isolation boundary for cookies and

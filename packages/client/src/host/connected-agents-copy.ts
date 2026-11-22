@@ -79,7 +79,7 @@ export const connectedAgentsCopy = {
   "consent.apps.none": "None",
   "consent.apps.phoneThrough": "through {device}",
   "consent.apps.footer":
-    "Only apps you’ve already approved on a device are listed. {agent} can see and control each one you turn on.",
+    "Only apps you’ve already approved on a device are listed. {agent} sees and controls each one you turn on as you would, so it can paste what’s on that device’s clipboard.",
   "consent.plugins.title": "Plugins and data",
   "consent.plugins.none": "None",
   "consent.plugins.off": "Off",
