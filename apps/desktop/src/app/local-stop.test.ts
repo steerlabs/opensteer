@@ -154,6 +154,65 @@ it("keeps looking for Home Stop proof after local containment, keeps Resume usab
   expect(service.problem).toBeNull();
 });
 
+it("marks Home confirmation overdue after 30 s while continuing to look, then confirms when proof arrives", async () => {
+  vi.useFakeTimers();
+  try {
+    const proof = Promise.withResolvers<void>();
+    const emissions: Array<{
+      confirming: boolean;
+      confirmOverdue: boolean;
+      stoppedAt: string | null;
+    }> = [];
+    const service = new DesktopLocalStop({
+      store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+      restart: async () => {},
+      confirm: () => proof.promise,
+      log: vi.fn(),
+      now: () => new Date(at),
+    });
+    service.subscribe(() => {
+      emissions.push({
+        confirming: service.confirming,
+        confirmOverdue: service.confirmOverdue,
+        stoppedAt: service.stoppedAt,
+      });
+    });
+    await service.restore();
+    await service.stop();
+
+    expect(service.confirming).toBe(true);
+    expect(service.confirmOverdue).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(service.confirming).toBe(true);
+    expect(service.confirmOverdue).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(service.confirming).toBe(true);
+    expect(service.confirmOverdue).toBe(true);
+    expect(service.stoppedAt).toBeNull();
+    expect(service.problem).toBeNull();
+    expect(emissions.at(-1)).toEqual({
+      confirming: true,
+      confirmOverdue: true,
+      stoppedAt: null,
+    });
+
+    proof.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(service.confirming).toBe(false);
+    expect(service.confirmOverdue).toBe(false);
+    expect(service.stoppedAt).toBe(at);
+    expect(emissions.at(-1)).toEqual({
+      confirming: false,
+      confirmOverdue: false,
+      stoppedAt: at,
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("cancels an in-flight Home proof look and ignores late answers on Resume or a second Stop", async () => {
   const at2 = "2026-11-20T09:05:00.000Z";
   let clock = at;

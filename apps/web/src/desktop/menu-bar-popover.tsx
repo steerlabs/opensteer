@@ -111,7 +111,13 @@ export function MenuBarPopover({ bridge }: { readonly bridge: OpensteerMenuBarBr
           {status?.stop.stoppedAt ? (
             <p className="menu-bar__stopped">{menuBarStoppedLine(status.stop.stoppedAt)}</p>
           ) : status?.stop.waiting ? (
-            <p className="menu-bar__stopped">{status.stop.waiting}</p>
+            status.stop.waitingOverdue ? (
+              <p className="menu-bar__failure" role="alert">
+                {status.stop.waiting}
+              </p>
+            ) : (
+              <p className="menu-bar__stopped">{status.stop.waiting}</p>
+            )
           ) : null}
           {status?.stop.stoppedAt || !stopProblem ? (
             <p className="menu-bar__quiet">{menuBarWords("menubar.stopped.detail")}</p>

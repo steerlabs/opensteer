@@ -21,6 +21,7 @@ const unsavedStop = menuBarWords("menubar.stop.unsaved");
 const unreadStop = menuBarWords("menubar.stop.unread");
 const unsavedResume = menuBarWords("menubar.resume.unsaved");
 const unconfirmedStop = menuBarWords("menubar.stop.unconfirmed");
+const defaultConfirmOverdueMs = 30_000;
 
 interface DesktopLocalStopOptions {
   readonly restart: () => Promise<void>;
@@ -30,6 +31,7 @@ interface DesktopLocalStopOptions {
    * abort, and rejects only on a permanent Home refusal.
    */
   readonly confirm?: (stoppedSince: string, signal: AbortSignal) => Promise<void>;
+  readonly confirmOverdueMs?: number;
   readonly store: LocalStopStore;
   readonly log: ShutdownLog;
   readonly now?: () => Date;
@@ -37,6 +39,7 @@ interface DesktopLocalStopOptions {
 
 export class DesktopLocalStop {
   readonly #options: DesktopLocalStopOptions;
+  readonly #confirmOverdueMs: number;
   readonly #listeners = new Set<() => void>();
   #problem: string | null = null;
   #phase: MenuBarStopPhase = "stopping";
@@ -44,12 +47,15 @@ export class DesktopLocalStop {
   #locallyContained = false;
   #confirmedAt: string | null = null;
   #confirming = false;
+  #confirmOverdue = false;
   #lookGeneration = 0;
   #lookAbort: AbortController | null = null;
+  #overdueTimer: NodeJS.Timeout | undefined;
   #transaction: Promise<void> = Promise.resolve();
 
   constructor(options: DesktopLocalStopOptions) {
     this.#options = options;
+    this.#confirmOverdueMs = options.confirmOverdueMs ?? defaultConfirmOverdueMs;
   }
 
   get stopped(): boolean {
@@ -79,6 +85,10 @@ export class DesktopLocalStop {
       this.#confirmedAt === null &&
       this.#problem === null
     );
+  }
+
+  get confirmOverdue(): boolean {
+    return this.confirming && this.#confirmOverdue;
   }
 
   dispose(): void {
@@ -196,11 +206,20 @@ export class DesktopLocalStop {
     });
   }
 
+  #clearOverdueTimer(): void {
+    if (this.#overdueTimer) {
+      clearTimeout(this.#overdueTimer);
+      this.#overdueTimer = undefined;
+    }
+    this.#confirmOverdue = false;
+  }
+
   #cancelLook(): void {
     this.#lookGeneration += 1;
     this.#lookAbort?.abort();
     this.#lookAbort = null;
     this.#confirming = false;
+    this.#clearOverdueTimer();
   }
 
   #startHomeProofLook(at: string): void {
@@ -211,6 +230,21 @@ export class DesktopLocalStop {
     const controller = new AbortController();
     this.#lookAbort = controller;
     this.#confirming = true;
+    this.#overdueTimer = setTimeout(() => {
+      this.#overdueTimer = undefined;
+      if (
+        controller.signal.aborted ||
+        generation !== this.#lookGeneration ||
+        this.#mode !== at ||
+        !this.#confirming ||
+        this.#confirmedAt !== null ||
+        this.#problem !== null
+      )
+        return;
+      this.#confirmOverdue = true;
+      this.#emit();
+    }, this.#confirmOverdueMs);
+    this.#overdueTimer.unref();
     void confirm(at, controller.signal).then(
       () => {
         if (
@@ -222,6 +256,7 @@ export class DesktopLocalStop {
           return;
         this.#lookAbort = null;
         this.#confirming = false;
+        this.#clearOverdueTimer();
         this.#confirmedAt = at;
         this.#options.log("desktop.local-stop.home-confirmed", { stoppedAt: at });
         this.#emit();
@@ -231,6 +266,7 @@ export class DesktopLocalStop {
           return;
         this.#lookAbort = null;
         this.#confirming = false;
+        this.#clearOverdueTimer();
         const failure = messageOf(error);
         if (!this.#problem?.includes(unconfirmedStop))
           this.#problem = this.#problem ? `${this.#problem} ${unconfirmedStop}` : unconfirmedStop;

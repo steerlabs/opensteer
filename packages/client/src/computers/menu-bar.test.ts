@@ -541,16 +541,36 @@ describe("This Mac and Stop everything", () => {
     }
   });
 
-  it("shows a plain waiting line while local Stop waits for Home confirmation", () => {
-    const status = menuBarStatus({
+  it("shows the checking line while local Stop waits for Home confirmation, and the overdue alert line after 30 s", () => {
+    const checking = menuBarStatus({
       ...base,
       hostedHome: studio("ready"),
       stop: { phase: "stopped", stoppedAt: null, problem: null, confirming: true },
     });
-    expect(status.stop.stoppedAt).toBeNull();
-    expect(status.stop.problem).toBeNull();
-    expect(status.stop.waiting).toBe("Stopped on this Mac. Waiting for your Home to confirm…");
-    expect(status.stop.waiting).not.toMatch(/confirmed|couldn’t|couldn't|\d:\d\d/i);
+    expect(checking.stop.stoppedAt).toBeNull();
+    expect(checking.stop.problem).toBeNull();
+    expect(checking.stop.waiting).toBe(
+      "Agents on this Mac are stopped. Checking that this Mac’s Home stopped everything too…",
+    );
+    expect(checking.stop.waitingOverdue).toBeUndefined();
+
+    const overdue = menuBarStatus({
+      ...base,
+      hostedHome: studio("ready"),
+      stop: {
+        phase: "stopped",
+        stoppedAt: null,
+        problem: null,
+        confirming: true,
+        confirmOverdue: true,
+      },
+    });
+    expect(overdue.stop.stoppedAt).toBeNull();
+    expect(overdue.stop.problem).toBeNull();
+    expect(overdue.stop.waiting).toBe(
+      "Agents on this Mac are stopped. Couldn’t confirm yet that this Mac’s Home stopped everything. Still checking.",
+    );
+    expect(overdue.stop.waitingOverdue).toBe(true);
   });
 });
 

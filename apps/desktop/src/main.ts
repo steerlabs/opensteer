@@ -1694,6 +1694,7 @@ async function runDesktop(
       stoppedAt: localStop.stoppedAt,
       problem: localStop.problem,
       confirming: localStop.confirming,
+      confirmOverdue: localStop.confirmOverdue,
     }),
     openAtLogin: async () => openAtLogin.effective(await openAtLoginEligibility()),
     log: reportEvent,

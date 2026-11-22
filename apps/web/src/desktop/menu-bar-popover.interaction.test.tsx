@@ -320,8 +320,8 @@ describe("Stop everything", () => {
     }
   });
 
-  it("shows a plain waiting line with Resume available while waiting for Home proof, then switches to the timestamp", async () => {
-    const waitingState: MenuBarStatus = {
+  it("shows the plain checking line, escalates to the overdue alert line with Resume still offered, then switches to the timestamp when confirmed", async () => {
+    const checkingState: MenuBarStatus = {
       ...menuBarStates.stopped,
       stop: {
         phase: "stopped",
@@ -329,22 +329,41 @@ describe("Stop everything", () => {
         offline: null,
         problem: null,
         confirmed: null,
-        waiting: "Stopped on this Mac. Waiting for your Home to confirm…",
+        waiting:
+          "Agents on this Mac are stopped. Checking that this Mac’s Home stopped everything too…",
       },
     };
-    const value = bridge(waitingState);
+    const overdueState: MenuBarStatus = {
+      ...checkingState,
+      stop: {
+        ...checkingState.stop,
+        waiting:
+          "Agents on this Mac are stopped. Couldn’t confirm yet that this Mac’s Home stopped everything. Still checking.",
+        waitingOverdue: true,
+      },
+    };
+    const value = bridge(checkingState);
     const view = await render(value);
     try {
-      expect(view.text()).toContain("Stopped on this Mac. Waiting for your Home to confirm…");
-      expect(view.text()).not.toContain("confirmed");
+      expect(view.text()).toContain(
+        "Agents on this Mac are stopped. Checking that this Mac’s Home stopped everything too…",
+      );
       expect(view.text()).not.toContain("Couldn’t");
       expect(view.text()).not.toMatch(/Stopped everything on this Mac at/);
       expect(view.node.querySelector('[role="alert"]')).toBeNull();
       expect(view.button("Resume")).toBeDefined();
 
+      await act(async () => value.push(overdueState));
+      expect(view.node.querySelector('[role="alert"]')?.textContent).toBe(
+        "Agents on this Mac are stopped. Couldn’t confirm yet that this Mac’s Home stopped everything. Still checking.",
+      );
+      expect(view.text()).not.toMatch(/Stopped everything on this Mac at/);
+      expect(view.button("Resume")).toBeDefined();
+
       await act(async () => value.push(menuBarStates.stopped));
       expect(view.text()).toMatch(/Stopped everything on this Mac at .+\./);
-      expect(view.text()).not.toContain("Waiting for your Home");
+      expect(view.node.querySelector('[role="alert"]')).toBeNull();
+      expect(view.text()).not.toContain("Still checking");
     } finally {
       await view.close();
     }

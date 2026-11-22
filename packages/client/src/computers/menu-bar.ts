@@ -118,6 +118,8 @@ export const MenuBarStatusSchema = z.strictObject({
     confirmed: Text.nullable(),
     /** Shown after local containment while waiting for this Mac's Home to confirm Stop. */
     waiting: Text.nullable().optional(),
+    /** True once waiting for this Mac's Home to confirm Stop has passed 30 seconds. */
+    waitingOverdue: z.boolean().optional(),
   }),
   /** What macOS will do at login, and whether this Mac has anything to open for. */
   openAtLogin: z.strictObject({ on: z.boolean(), available: z.boolean() }),
@@ -181,6 +183,7 @@ export interface MenuBarInput {
     readonly stoppedAt: string | null;
     readonly problem: string | null;
     readonly confirming?: boolean;
+    readonly confirmOverdue?: boolean;
   };
   /** This Mac's row in the Home the window shows, once that Home answered. */
   readonly thisMac: ({ readonly deploymentId: string } & MenuBarMachine) | null;
@@ -283,7 +286,12 @@ export function menuBarStatus(input: MenuBarInput): MenuBarStatus {
       input.stop.confirming === true &&
       !input.stop.stoppedAt &&
       !input.stop.problem
-        ? { waiting: menuBarWords("menubar.stopped.waiting") }
+        ? input.stop.confirmOverdue === true
+          ? {
+              waiting: menuBarWords("menubar.stopped.waitingOverdue"),
+              waitingOverdue: true,
+            }
+          : { waiting: menuBarWords("menubar.stopped.waiting") }
         : {}),
     },
     openAtLogin: input.openAtLogin,
