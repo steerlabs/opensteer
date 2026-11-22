@@ -1,5 +1,12 @@
 import { SessionCdpRouter } from "@opensteer/browser-core";
-import { PageOwnership, SurfaceLedger } from "@opensteer/browser-runtime-core";
+import {
+  BrowserRuntimeServer,
+  PageOwnership,
+  SurfaceLedger,
+  standardCdpPath,
+  type BrowserRuntime,
+  type StandardCdpAttachment,
+} from "@opensteer/browser-runtime-core";
 import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -7,6 +14,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import {
   cleanup,
   findChromium,
@@ -1890,3 +1898,133 @@ it("gives a connected agent no page in its lineage when its tab's wake ends at i
     ).targetInfos.map((t) => t.targetId),
   ).toEqual([woken.targetId]);
 }, 90_000);
+
+/**
+ * Raw CDP clients at the runtime's own standard-CDP socket: the bytes an agent receives. The Home
+ * forwards each runtime frame unchanged (`standard-cdp-route.ts`, `send(frame)`).
+ */
+async function standardCdpSockets(clients: StandardCdpAttachment[]) {
+  const runtime = {
+    pooled: false,
+    prepare: async () => undefined,
+    shutdown: async () => undefined,
+    attachStandardCdp: async () => clients.shift()!,
+  } as unknown as BrowserRuntime;
+  const server = new BrowserRuntimeServer({ port: 0, runtime });
+  const { host, port } = await server.start();
+  cleanup.push(() => server.close());
+  return async () => {
+    const socket = new WebSocket(`ws://${host}:${port}${standardCdpPath}`, {
+      headers: { authorization: "Bearer test" },
+    });
+    cleanup.push(async () => socket.terminate());
+    await once(socket, "open");
+    const frames: string[] = [];
+    const waiting = new Map<number, (frame: string) => void>();
+    socket.on("message", (raw) => {
+      const frame = String(raw);
+      frames.push(frame);
+      const id = (JSON.parse(frame) as { id?: number }).id;
+      if (id !== undefined) waiting.get(id)?.(frame);
+    });
+    let next = 1;
+    /** One command; its reply frame exactly as the agent receives it. */
+    const send = (method: string, params?: Record<string, unknown>, sessionId?: string) => {
+      const id = next++;
+      const reply = new Promise<string>((resolve) => waiting.set(id, resolve));
+      socket.send(
+        JSON.stringify({
+          id,
+          method,
+          ...(params ? { params } : {}),
+          ...(sessionId ? { sessionId } : {}),
+        }),
+      );
+      return reply;
+    };
+    return { send, frames };
+  };
+}
+
+it("tells a connected agent the same bytes for a tab that never existed, one outside its lineage, its tab after a wake by address and its tab after a close, and never shows it the others (run 12)", async () => {
+  const f = await lineageSetup("lineage-answers");
+  const a = await f.open("a", 1);
+  const c = await f.open("c", 3);
+  const lineageClient = f.router.openStandardClient("session-lineage-answers", {
+    wholeContext: false,
+    connection: true,
+    lineage: { attachmentId: "agent-a", seedTargetId: f.target(a) },
+  });
+  const ownClient = f.router.openStandardClient("session-lineage-answers", {
+    wholeContext: false,
+  });
+  const connect = await standardCdpSockets([lineageClient, ownClient]);
+  const agent = await connect();
+  const own = await connect();
+  const attach = (client: typeof agent, targetId: string) =>
+    client.send("Target.attachToTarget", { targetId, flatten: true });
+  for (const client of [agent, own]) {
+    await client.send("Target.setDiscoverTargets", { discover: true });
+    await client.send("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: false,
+      flatten: true,
+    });
+  }
+  // A tab its own tab opened, which the person then closes.
+  const descendant = await f.popup(a, "descendant", 2);
+  const closedTarget = f.target(descendant);
+  expect(JSON.parse(await attach(agent, closedTarget))).toHaveProperty("result.sessionId");
+  await f.ledger.closeSurface(descendant as never);
+  // Its own tab, after a wake that ended at its address.
+  const sleptTarget = f.target(a);
+  expect(await f.ledger.sleep(a as never, () => null)).toBe(true);
+  const activate = f.lifecycle.activateByTabId.bind(f.lifecycle);
+  f.lifecycle.activateByTabId = async () => ({ ok: false, tabId: null, discarded: false });
+  const fresh = await f.ledger.wake(a as never);
+  f.lifecycle.activateByTabId = activate;
+  await waitLoaded(fresh.cdp, "/article");
+
+  const outside = (id: number) =>
+    JSON.stringify({
+      id,
+      error: { code: -32000, message: "CDP target is outside this Browser Session." },
+    });
+  const answers = {
+    neverExisted: await attach(agent, "0123456789ABCDEF0123456789ABCDEF"),
+    outsideLineage: await attach(agent, f.target(c)),
+    sleptTargetAfterWakeByAddress: await attach(agent, sleptTarget),
+    freshPageAtItsAddress: await attach(agent, fresh.targetId),
+    closedByThePerson: await attach(agent, closedTarget),
+  };
+  process.stdout.write(`${JSON.stringify({ event: "lineage.answers", answers })}\n`);
+  for (const frame of Object.values(answers))
+    expect(frame).toBe(outside((JSON.parse(frame) as { id: number }).id));
+  // The same for every command that names a target.
+  for (const method of ["Target.getTargetInfo", "Target.activateTarget", "Target.closeTarget"])
+    for (const targetId of ["0123456789ABCDEF0123456789ABCDEF", f.target(c), fresh.targetId]) {
+      const frame = await agent.send(method, { targetId });
+      expect(frame, `${method} ${targetId}`).toBe(
+        outside((JSON.parse(frame) as { id: number }).id),
+      );
+    }
+  // Nothing outside its lineage is listed, announced or auto-attached.
+  const listed = JSON.parse(await agent.send("Target.getTargets")) as {
+    result: { targetInfos: { targetId: string }[] };
+  };
+  expect(listed.result.targetInfos).toEqual([]);
+  for (const targetId of [f.target(c), fresh.targetId, f.target(f.ledger.snapshot()[0]!.id)])
+    expect(
+      agent.frames.filter((frame) => frame.includes(targetId)),
+      targetId,
+    ).toEqual([]);
+
+  // A person's own agent (no lineage) reaches the session's tabs; a tab that never existed and a
+  // closed one get the same sentence as above.
+  expect(JSON.parse(await attach(own, f.target(c)))).toHaveProperty("result.sessionId");
+  expect(JSON.parse(await attach(own, fresh.targetId))).toHaveProperty("result.sessionId");
+  for (const targetId of ["0123456789ABCDEF0123456789ABCDEF", closedTarget, sleptTarget]) {
+    const frame = await attach(own, targetId);
+    expect(frame).toBe(outside((JSON.parse(frame) as { id: number }).id));
+  }
+}, 120_000);
