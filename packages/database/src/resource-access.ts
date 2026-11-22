@@ -835,7 +835,11 @@ function classRule(
   if (selected && (effect === "destroy" || (effect === "widen-self" && scope === "new")))
     return { answer: "ask", reason: "grant" };
   if (caller.mode === "full-access") return { answer: "now" };
-  if (face.readWrite && caller.mode !== "auto") return { answer: "ask", reason: "mode" };
+  if (
+    (face.readWrite === true || (face.readWrite === "connections" && connection)) &&
+    caller.mode !== "auto"
+  )
+    return { answer: "ask", reason: "mode" };
   // Below Full access the person is asked for every effect outside the caller's own task work.
   const ownTaskWork =
     scope === "task" &&

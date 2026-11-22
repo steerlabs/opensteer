@@ -85,8 +85,10 @@ export interface CommandFace {
   /**
    * Its handler needs the read-write ceiling today (Full access or Auto): below it, even on its
    * own task work, the person is asked (`effective-grants.ts:125`, the tab tools' check).
+   * `connections`: only a connection is held to it (as decided where today's tool is not on a
+   * connection's surface and your own agents' tool does not check it).
    */
-  readonly readWrite?: true;
+  readonly readWrite?: true | "connections";
   /** Its handler needs the person's signed-in session today: every agent asks. */
   readonly personSession?: true;
   /**
@@ -1252,7 +1254,8 @@ export const commandTable: CommandTable = {
     family: "tabs-apps",
     scope: "task",
     step: "A",
-    faces: one("narrow"),
+    // A connection closes tabs from Auto up, as it opens them (approved C2 line).
+    faces: one("narrow", { readWrite: "connections" }),
     governs: (c) => ({ ...resource("tabs"), ids: sorted(c.tabIds) }),
   },
   "tab.reopen": {

@@ -82,7 +82,10 @@ describe("the command rule, generated from the table", () => {
             const full = face.answers[column];
             const own =
               mode === "auto" ? (face.answers["b:auto"] ?? face.answers.b) : face.answers.b;
-            const want = full === "now" && own !== "now" ? "ask" : full;
+            // A face that holds only connections to the read-write ceiling asks below Auto.
+            const heldToReadWrite =
+              row(expectedRow.type).faces[index]?.readWrite === "connections" && mode !== "auto";
+            const want = full === "now" && (own !== "now" || heldToReadWrite) ? "ask" : full;
             expect(
               answer(expectedRow.type, index, callers[column](mode)),
               `${expectedRow.type} face ${index} (${column} ${mode})`,
@@ -286,6 +289,32 @@ describe("the command rule, generated from the table", () => {
       expect(at("approval-required"), type).toBe("ask");
       expect(at("auto-accept-edits"), type).toBe("ask");
     }
+  });
+
+  it("lets a connection open or close a tab from Auto up and asks below it (approved C2 line)", () => {
+    for (const type of ["tab.open", "tab.close"]) {
+      const at = (mode: ThreadAccessMode) =>
+        answer(type, 0, {
+          connection: { grant: "everything" },
+          mode,
+          reach: true,
+          ownWork: true,
+          ownLineage: true,
+        });
+      expect(at("full-access"), type).toBe("now");
+      expect(at("auto"), type).toBe("now");
+      expect(at("auto-accept-edits"), type).toBe("ask");
+      expect(at("approval-required"), type).toBe("ask");
+    }
+    // Your own agent closes a tab as today's tab_close lets it, in any mode (D0a recording).
+    expect(
+      answer("tab.close", 0, {
+        connection: null,
+        mode: "approval-required",
+        reach: true,
+        ownWork: true,
+      }),
+    ).toBe("now");
   });
 
   it("asks your own agent below Full access about a task above its mode", () => {

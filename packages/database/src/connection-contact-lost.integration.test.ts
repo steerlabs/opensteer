@@ -4,6 +4,11 @@ import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { describeStore } from "./store.integration.test-support.js";
 
+/**
+ * The enforced lock order reports only what a run happens to execute: this fault needs two or
+ * more connection-started attempts still live on one boot at the instant its Runner goes away,
+ * which an ordinary integration run rarely has at teardown. This test makes that moment.
+ */
 describeStore("a Runner that goes away mid-work", (it) => {
   it("marks every connection's live attempt on that boot contact-lost, rows taken in order", async ({
     storeFixture,
