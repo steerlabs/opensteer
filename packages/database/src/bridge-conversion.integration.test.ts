@@ -93,9 +93,15 @@ describeStore("an existing Messaging route becomes bridges that can only do less
       bridgeNotice: "converted",
     };
     // Anyone, approved people and allow lists are gone: only the person, in both. The paused
-    // route stays off, and the later route that overlapped the first adds nothing.
+    // route stays off, and the later route that overlapped the first adds no bridge; its every
+    // channel is not guessed, and the direct messages' bridge says so.
     expect(bridges).toEqual([
-      { ...supervised, label: "Slack", bridgeConversationId: null },
+      {
+        ...supervised,
+        label: "Slack",
+        bridgeConversationId: null,
+        bridgeNotice: "converted-without-channels",
+      },
       { ...supervised, label: "Slack · C-general", bridgeConversationId: "C-general" },
     ]);
     expect(bridges.some(({ bridgeFromBindingId }) => bridgeFromBindingId === overlapping)).toBe(
@@ -231,6 +237,101 @@ describeStore("an existing Messaging route becomes bridges that can only do less
     ]);
     // A route for one thread matched less than any bridge covers.
     expect(await oneThread()).toEqual([]);
+  });
+
+  it("never makes what a more specific route had turned off, and keeps the notice where routes overlap", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const routes = async (
+      suffix: string,
+      list: readonly {
+        readonly accessPolicy: unknown;
+        readonly selector?: Partial<Record<"conversationId" | "conversationType", string>>;
+      }[],
+    ) => {
+      const { configured, fixture } = await storeFixture.createChannelDeliveryFixture(suffix, {
+        bridge: false,
+      });
+      await database
+        .updateTable("channelBindings")
+        .set({ status: "revoked" })
+        .where("id", "=", configured.binding.id as never)
+        .execute();
+      for (const [index, route] of list.entries())
+        await database
+          .insertInto("channelBindings")
+          .values({
+            accessPolicy: sql`${JSON.stringify(route.accessPolicy)}::jsonb`,
+            accountId: configured.account.id,
+            createdBy: fixture.userId,
+            executionPolicy: sql`${JSON.stringify({ harness: "default", harnessInstanceId: null })}::jsonb`,
+            id: createChannelId("binding"),
+            revision: 1,
+            selector: sql`${JSON.stringify({ conversationId: null, conversationType: null, scopeId: null, threadId: null, ...route.selector })}::jsonb`,
+            status: "active",
+            createdAt: new Date(Date.now() - 60_000 + index * 1_000),
+            updatedAt: new Date(),
+          })
+          .execute();
+      return async () =>
+        database
+          .selectFrom("agentConnections")
+          .select(["bridgeConversationId", "bridgeNotice", "revokedAt"])
+          .where("bridgeAccountId", "=", configured.account.id)
+          .orderBy("bridgeConversationId")
+          .execute();
+    };
+    const owner = { mode: "owner", allowedExternalUserIds: [] };
+    // A broad route answered direct messages and #one and #two; more specific routes had turned
+    // #one and direct messages off.
+    const shadowed = await routes("convert-shadowed", [
+      {
+        accessPolicy: {
+          directMessages: owner,
+          channels: { scope: "selected", conversationIds: ["C-one", "C-two"], sender: owner },
+        },
+      },
+      {
+        accessPolicy: {
+          directMessages: owner,
+          channels: { scope: "off", conversationIds: [], sender: owner },
+        },
+        selector: { conversationId: "C-one" },
+      },
+      {
+        accessPolicy: {
+          directMessages: { mode: "off", allowedExternalUserIds: [] },
+          channels: { scope: "off", conversationIds: [], sender: owner },
+        },
+        selector: { conversationType: "dm" },
+      },
+    ]);
+    // A route for every channel, and a more specific one for direct messages only.
+    const overlapping = await routes("convert-overlap", [
+      {
+        accessPolicy: {
+          directMessages: owner,
+          channels: { scope: "all", conversationIds: [], sender: owner },
+        },
+      },
+      {
+        accessPolicy: {
+          directMessages: owner,
+          channels: { scope: "off", conversationIds: [], sender: owner },
+        },
+        selector: { conversationType: "dm" },
+      },
+    ]);
+
+    await applyBridgeConversion(database as never);
+
+    expect(await shadowed()).toEqual([
+      { bridgeConversationId: "C-two", bridgeNotice: "converted", revokedAt: null },
+    ]);
+    expect(await overlapping()).toEqual([
+      { bridgeConversationId: null, bridgeNotice: "converted-without-channels", revokedAt: null },
+    ]);
   });
 
   it("ends the old route with its bridge, and cancels only chat messages known not to have run", async ({

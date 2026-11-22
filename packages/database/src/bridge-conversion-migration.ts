@@ -43,26 +43,19 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
       from channel_bindings b join channel_accounts a on a.id = b.account_id
       where b.status = 'active' and a.status <> 'revoked';
 
-    create temporary table bridge_conversion_plan on commit drop as
-      -- Direct messages, all of them, from a route not narrowed to one conversation.
+    -- What each route would make: its direct messages, and each channel it named.
+    create temporary table bridge_conversion_candidate on commit drop as
       select r.binding_id, r.created_by, r.created_at, r.specificity, r.account_id, r.provider,
-        null::text as conversation_id, null::text as conversation_name,
-        case when channels_matched and r.only_conversation is null and r.channel_scope = 'all'
-          then 'converted-without-channels' else 'converted' end as notice,
-        false as ended
+        null::text as conversation_id, null::text as conversation_name
       from bridge_conversion_route r
-      cross join lateral (select r.whole and r.channels_on
-        and (r.only_type is null or r.only_type in ('channel', 'group')) as channels_matched) m
       where r.whole and r.direct_on and r.only_conversation is null
         and (r.only_type is null or r.only_type = 'dm')
       union all
-      -- Each channel the route named: in its selector, or in the channels it allowed.
       select r.binding_id, r.created_by, r.created_at, r.specificity, r.account_id, r.provider,
         named.id,
         coalesce((select c.display_name from channel_conversations c
           where c.account_id = r.account_id and c.external_conversation_id = named.id
-            and c.display_name is not null order by c.created_at limit 1), named.id),
-        'converted', false
+            and c.display_name is not null order by c.created_at limit 1), named.id)
       from bridge_conversion_route r
       cross join lateral (
         select r.only_conversation as id
@@ -72,16 +65,47 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
         select listed.id from jsonb_array_elements_text(r.channel_ids) as listed(id)
         where r.only_conversation is null and r.channel_scope = 'selected'
       ) named
-      where r.whole and r.channels_on and (r.only_type is null or r.only_type in ('channel', 'group'))
-      union all
-      -- Every channel, with direct messages off: nothing is guessed, and an ended bridge keeps
-      -- the notice that the channels were not converted.
-      select r.binding_id, r.created_by, r.created_at, r.specificity, r.account_id, r.provider,
-        null, null, 'converted-without-channels', true
+      where r.whole and r.channels_on and (r.only_type is null or r.only_type in ('channel', 'group'));
+
+    -- Accounts where a route answered every channel: no channel is guessed, and the notice says
+    -- that channels are not covered any more.
+    create temporary table bridge_conversion_all_channels on commit drop as
+      select distinct on (r.account_id) r.binding_id, r.created_by, r.created_at, r.specificity,
+        r.account_id, r.provider
       from bridge_conversion_route r
       where r.whole and r.channels_on and r.only_conversation is null and r.channel_scope = 'all'
         and (r.only_type is null or r.only_type in ('channel', 'group'))
-        and not (r.direct_on and r.only_type is null);
+      order by r.account_id, r.created_at, r.binding_id;
+
+    create temporary table bridge_conversion_plan on commit drop as
+      -- A target converts only from the route that answered there: none more specific matched
+      -- it (whatever that route did with it, off included).
+      select c.*,
+        case when c.conversation_id is null and exists (
+            select 1 from bridge_conversion_all_channels a where a.account_id = c.account_id)
+          then 'converted-without-channels' else 'converted' end as notice,
+        false as ended
+      from bridge_conversion_candidate c
+      where not exists (
+        select 1 from bridge_conversion_route s
+        where s.account_id = c.account_id and s.whole and s.specificity > c.specificity
+          and (case when c.conversation_id is null
+            then s.only_conversation is null and (s.only_type is null or s.only_type = 'dm')
+            else (s.only_conversation is null or s.only_conversation = c.conversation_id)
+              and (s.only_type is null or s.only_type in ('channel', 'group')) end))
+      union all
+      -- Every channel, and no bridge for direct messages to carry the notice: an ended bridge
+      -- keeps it.
+      select a.binding_id, a.created_by, a.created_at, a.specificity, a.account_id, a.provider,
+        null, null, 'converted-without-channels', true
+      from bridge_conversion_all_channels a
+      where not exists (
+        select 1 from bridge_conversion_candidate c
+        where c.account_id = a.account_id and c.conversation_id is null
+          and not exists (
+            select 1 from bridge_conversion_route s
+            where s.account_id = c.account_id and s.whole and s.specificity > c.specificity
+              and s.only_conversation is null and (s.only_type is null or s.only_type = 'dm')));
 
     insert into agent_connections (
       id, user_id, label, client_name, access_mode, resource, token_hash, created_at,
