@@ -9190,12 +9190,8 @@ describe("work under a connection's authority never uses the clipboard or change
           message:
             index === outsideList.length - 1
               ? "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget."
-              : expect.stringMatching(
-                  new RegExp(
-                    `^${(index === outsideList.length - 2 ? "Storage.clearDataForOrigin" : method).replaceAll(".", "\\.")} is not available to a connected agent\\. Its CDP acts on its own pages through the Accessibility, `,
-                    "u",
-                  ),
-                ),
+              : // The exact sentence every door gives for a command outside the list.
+                `${index === outsideList.length - 2 ? "Storage.clearDataForOrigin" : method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`,
         });
       }
     });
