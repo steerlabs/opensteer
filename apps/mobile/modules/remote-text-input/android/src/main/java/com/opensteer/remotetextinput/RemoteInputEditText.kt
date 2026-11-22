@@ -9,7 +9,10 @@ import android.text.Editable
 import android.util.Base64
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
+import android.widget.PopupMenu
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -32,6 +35,8 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   private var composingStart = -1
   private var composingEnd = -1
   private var contextId: String? = null
+  private val touch = RemoteInputTouch(ViewConfiguration.getLongPressTimeout().toLong(), ViewConfiguration.get(context).scaledTouchSlop.toFloat())
+  private val longPress = Runnable { if (touch.longPress(android.os.SystemClock.uptimeMillis()) != null) offerPaste() }
   var deliver: ((Map<String, Any?>) -> Unit)?
     get() = gate.deliver
     set(value) { gate.deliver = value }
@@ -53,6 +58,39 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     onFocusChangeListener = View.OnFocusChangeListener { _, focused -> if (!focused) gate.notify(mapOf("type" to "blur")) }
     initialized = true
   }
+  /**
+   * A touch focuses the field and does nothing else: its text and cursor are invisible, so no
+   * touch selects or moves anything in it (RemoteInputTouch). TextView's own touch handling never
+   * sees one; a long press offers Paste.
+   */
+  override fun onTouchEvent(event: MotionEvent): Boolean {
+    val action = when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> RemoteInputTouch.Action.DOWN
+      MotionEvent.ACTION_MOVE -> RemoteInputTouch.Action.MOVE
+      MotionEvent.ACTION_UP -> RemoteInputTouch.Action.UP
+      MotionEvent.ACTION_CANCEL -> RemoteInputTouch.Action.CANCEL
+      else -> return true
+    }
+    if (action == RemoteInputTouch.Action.DOWN) postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
+    if (action == RemoteInputTouch.Action.UP || action == RemoteInputTouch.Action.CANCEL) removeCallbacks(longPress)
+    if (touch.onTouch(action, event.eventTime, event.x, event.y) == RemoteInputTouch.Outcome.FOCUS) performClick()
+    return true
+  }
+  override fun performClick(): Boolean {
+    super.performClick()
+    if (!isFocused) requestFocus()
+    if (desiredFocus && editableField) showKeyboard()
+    return true
+  }
+  /** The edit menu's one use here: Paste, through the same path as Ctrl+V. */
+  private fun offerPaste() {
+    if (!isEditable()) return
+    val menu = PopupMenu(context, this)
+    menu.menu.add(0, android.R.id.paste, 0, android.R.string.paste)
+    menu.setOnMenuItemClickListener { onTextContextMenuItem(it.itemId) }
+    menu.show()
+  }
+  private fun isEditable() = editableField && isEnabled
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
     super.onWindowFocusChanged(hasWindowFocus)
     if (initialized && hasWindowFocus) showKeyboard()
