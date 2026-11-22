@@ -1,0 +1,115 @@
+/** One operation at a time per slot, in arrival order. */
+export class Lane {
+  #tail: Promise<unknown> = Promise.resolve();
+  #depth = 0;
+
+  get busy(): boolean {
+    return this.#depth > 0;
+  }
+
+  run<T>(work: () => Promise<T>): Promise<T> {
+    this.#depth += 1;
+    const result = this.#tail.then(work);
+    const done = () => {
+      this.#depth -= 1;
+    };
+    // The tail itself never rejects: one failed operation does not fail the next.
+    this.#tail = result.then(done, done);
+    return result;
+  }
+}
+
+/** At most `limit` holders at once; the rest wait in order. */
+export class Semaphore {
+  readonly #limit: number;
+  #held = 0;
+  readonly #waiting: (() => void)[] = [];
+
+  constructor(limit: number) {
+    this.#limit = Math.max(1, limit);
+  }
+
+  async acquire(): Promise<() => void> {
+    if (this.#held >= this.#limit)
+      await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    this.#held += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#held -= 1;
+      this.#waiting.shift()?.();
+    };
+  }
+}
+
+/** A deadline as an AbortSignal and a promise race, so a hung step can never hold a slot. */
+export async function within<T>(
+  ms: number,
+  what: string,
+  work: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const running = work(controller.signal);
+  // The step may still be working after its deadline: whoever gave up on it can wait for it.
+  const settled = running.then(
+    () => undefined,
+    () => undefined,
+  );
+  try {
+    return await Promise.race([
+      running,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new DeadlineExceeded(`${what} did not finish within ${ms} ms.`, settled);
+          controller.abort(error);
+          reject(error);
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export class DeadlineExceeded extends Error {
+  override readonly name = "DeadlineExceeded";
+  /** Resolves when the step that ran out of time has actually finished, whatever its outcome. */
+  readonly settled: Promise<void>;
+  constructor(message: string, settled: Promise<void>) {
+    super(message);
+    this.settled = settled;
+  }
+}
+
+/** Whether `work` finished within `ms`. */
+export async function finishedWithin(work: Promise<void>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Runs `work` on every item with at most `limit` at once; rejects with the first failure. */
+export async function mapLimit<T>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++]!;
+      await work(item);
+    }
+  });
+  await Promise.all(workers);
+}

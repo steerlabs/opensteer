@@ -329,6 +329,7 @@ export class BrowserRuntime implements NativePresentationSource {
         pool.controllerKey,
         this.poolHooks(pool),
         pool.adoptionWindowMs,
+        pool.boot,
       );
     }
     this.pages = new PageOwnership({ onDiagnostic: options.onPageDiagnostic });

@@ -33,7 +33,7 @@ export function mockBrowserPoolReport(
     reason,
     at: "2026-11-20T08:59:57.000Z",
   });
-  const page = (outcome: "reloaded" | "lost", typed: boolean) => [
+  const page = (outcome: "reloaded" | "lost", typed: "yes" | "no" | "unknown") => [
     { surfaceId: tabId, outcome, typed },
   ];
   switch (scene) {
@@ -59,7 +59,7 @@ export function mockBrowserPoolReport(
         phase: "running",
         since,
         start: start("expired"),
-        pages: page("reloaded", false),
+        pages: page("reloaded", "no"),
       };
     case "reloaded-typed":
       return {
@@ -67,7 +67,7 @@ export function mockBrowserPoolReport(
         phase: "running",
         since,
         start: start("expired"),
-        pages: page("reloaded", true),
+        pages: page("reloaded", "unknown"),
       };
     case "reloaded-by-you":
       return {
@@ -75,7 +75,7 @@ export function mockBrowserPoolReport(
         phase: "running",
         since,
         start: start("person"),
-        pages: page("reloaded", false),
+        pages: page("reloaded", "no"),
       };
     case "reloaded-security":
       return {
@@ -83,7 +83,7 @@ export function mockBrowserPoolReport(
         phase: "running",
         since,
         start: start("security-update"),
-        pages: page("reloaded", true),
+        pages: page("reloaded", "unknown"),
       };
     case "lost":
       return {
@@ -91,9 +91,15 @@ export function mockBrowserPoolReport(
         phase: "running",
         since,
         start: start("host"),
-        pages: page("lost", false),
+        pages: page("lost", "no"),
       };
     case "lost-typed":
-      return { runnerId, phase: "running", since, start: start("host"), pages: page("lost", true) };
+      return {
+        runnerId,
+        phase: "running",
+        since,
+        start: start("host"),
+        pages: page("lost", "yes"),
+      };
   }
 }

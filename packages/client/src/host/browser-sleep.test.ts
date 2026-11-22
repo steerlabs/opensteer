@@ -61,22 +61,22 @@ describe("the mapping from the Home's report", () => {
       },
       reloaded: {
         browser: awake,
-        tab: { kind: "reloaded", typed: false, reason: "expired", startAt },
+        tab: { kind: "reloaded", typed: "no", reason: "expired", startAt },
       },
       "reloaded-typed": {
         browser: awake,
-        tab: { kind: "reloaded", typed: true, reason: "expired", startAt },
+        tab: { kind: "reloaded", typed: "unknown", reason: "expired", startAt },
       },
       "reloaded-by-you": {
         browser: awake,
-        tab: { kind: "reloaded", typed: false, reason: "person", startAt },
+        tab: { kind: "reloaded", typed: "no", reason: "person", startAt },
       },
       "reloaded-security": {
         browser: awake,
-        tab: { kind: "reloaded", typed: true, reason: "security-update", startAt },
+        tab: { kind: "reloaded", typed: "unknown", reason: "security-update", startAt },
       },
-      lost: { browser: awake, tab: { kind: "lost", typed: false, startAt } },
-      "lost-typed": { browser: awake, tab: { kind: "lost", typed: true, startAt } },
+      lost: { browser: awake, tab: { kind: "lost", typed: "no", startAt } },
+      "lost-typed": { browser: awake, tab: { kind: "lost", typed: "yes", startAt } },
     };
     for (const scene of browserSleepScenes) expect(view(scene), scene).toEqual(expected[scene]);
   });
@@ -169,6 +169,14 @@ describe("the note a tab says once", () => {
     expect(browserTabNote(view("reloaded-by-you").tab)?.line).toBe(
       "This page reloaded because you restarted your browser.",
     );
+    // Known to have held unsent text: the firm sentence, never the soft one.
+    expect(
+      browserTabNote({ kind: "reloaded", typed: "yes", reason: "expired", startAt: null }),
+    ).toEqual({
+      title: "This page reloaded",
+      detail: "Your browser restarted, and text you hadn’t sent is gone.",
+      line: "This page reloaded because your browser restarted. Text you hadn’t sent is gone.",
+    });
   });
 
   it("names a security update that could not wait, once", () => {
@@ -190,6 +198,13 @@ describe("the note a tab says once", () => {
     expect(browserTabNote(view("lost-typed").tab)?.line).toBe(
       "This page couldn’t be restored, and text you hadn’t sent is gone. Reload to open it again.",
     );
+    // Not known: the soft sentence, never the firm one.
+    expect(browserTabNote({ kind: "lost", typed: "unknown", startAt: null })).toEqual({
+      title: "This page couldn’t be restored",
+      detail:
+        "It didn’t come back as you left it. Check anything you were typing, then reload to open it again.",
+      line: "This page couldn’t be restored as you left it. Check anything you were typing.",
+    });
     expect(browserTabNote({ kind: "kept" })).toBeNull();
   });
 
@@ -200,7 +215,7 @@ describe("the note a tab says once", () => {
       [
         {
           ...mockBrowserPoolReport("reloaded-security", computer, tab),
-          pages: [{ surfaceId: "srf_second", outcome: "reloaded", typed: false }],
+          pages: [{ surfaceId: "srf_second", outcome: "reloaded", typed: "no" }],
         },
       ],
       computer,
@@ -296,7 +311,7 @@ describe("a second loss of the same tab", () => {
       told.push(noticeId);
     });
     const lost = (noticeId: string) =>
-      ({ kind: "lost", typed: false, startAt: null, noticeId }) as const;
+      ({ kind: "lost", typed: "no", startAt: null, noticeId }) as const;
     expect(notes.note(computer, tab, lost("id-1"))).not.toBeNull();
     notes.seen(computer, tab, lost("id-1"));
     expect(notes.note(computer, tab, lost("id-1"))).toBeNull();

@@ -694,6 +694,48 @@ it("restarts at once with an unredeemed connection ticket, which no longer attac
   }
 });
 
+it("redeems no connection ticket and passes no frame while a restart holds admission", async () => {
+  const j = await journey("ticket-held", { profile: true });
+  let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
+  try {
+    const home = await j.startHome();
+    await home.service.start({ ownerId: j.task.userId, profileId: j.profile!.id });
+    await j.draft();
+    const work = await directWork(j, () => home);
+    endpoint = await standardCdpEndpoint(() => home.service);
+    const endpointOf = async () => {
+      const issued = await work.connect();
+      expect(issued.isError, text(issued)).not.toBe(true);
+      return (issued.structuredContent as { endpoint: string }).endpoint;
+    };
+    // A refusal comes back as the command's CDP error, or as a closed connection.
+    const refused = (sent: Promise<unknown>) =>
+      sent.then(
+        (reply) => (reply as { error?: { message?: string } }).error?.message ?? "answered",
+        () => "closed",
+      );
+    // The restart's hold is set before its turn quiesces anything: the interval the loop has
+    // not reached yet. A ticket redeemed then attaches nothing (the handshake may complete).
+    const unredeemed = await endpointOf();
+    home.coordinator.gate.set({ hold: "restart" });
+    const late = await endpoint.open(unredeemed).catch(() => undefined);
+    if (late)
+      expect(await refused(late.send("Target.getTargets"))).toBe(
+        "This browser is restarting. Request a new attachment.",
+      );
+    home.coordinator.gate.set({ hold: null });
+    // A connection already attached passes no frame once the hold is set.
+    const attached = await endpoint.open(await endpointOf());
+    expect(await refused(attached.send("Target.getTargets"))).toBe("answered");
+    home.coordinator.gate.set({ hold: "restart" });
+    expect(await refused(attached.send("Target.getTargets"))).not.toBe("answered");
+    expect(j.controller.effects).toEqual(["start"]);
+  } finally {
+    await endpoint?.close();
+    await j.close();
+  }
+});
+
 it("issues browser_connect for a parked browser after access checks and one wake, attaches for real, and refuses a frame for another document", async () => {
   const j = await journey("direct-connect", { profile: true });
   let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
