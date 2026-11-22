@@ -369,4 +369,71 @@ describeStore("one admission for Home commands", (it) => {
         ),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
+
+  it("fails closed when a command only the store can tell commits without the store's view", async ({
+    storeFixture,
+  }) => {
+    const { f, database } = await setup(storeFixture);
+    const callerKey = `run:${f.run.id}`;
+    const command = {
+      type: "request.respond",
+      idempotencyKey: randomUUID(),
+      requestId: createId("request"),
+      response: { kind: "choice", optionId: "allow" },
+    } as unknown as Command & { readonly idempotencyKey: string };
+    const identity = (): CommandIdentity => ({
+      requestedBy: f.userId,
+      idempotencyKey: command.idempotencyKey,
+      // The ledger's label only: a real `request.respond` row belongs to a thread's commands.
+      type: "probe.face",
+      request: { requestId: "probe" },
+      authoritySource: { kind: "mcp", callerKey },
+      // Admitted on the face it claimed: an answer to its own question.
+      ...commandAdmission({ ownerUserId: f.userId, callerKey, command, face: 0 }),
+    });
+    const rename = (name: string, report: boolean) => {
+      const admitted = identity();
+      return withAdministrationTransaction(database, admitted, async (transaction) => {
+        if (report) await admitted.face!(transaction, { face: "widen-self" });
+        await transaction
+          .updateTable("runners")
+          .set({ name })
+          .where("id", "=", f.runnerId)
+          .execute();
+      });
+    };
+    const before = await database
+      .selectFrom("runners")
+      .select("name")
+      .where("id", "=", f.runnerId)
+      .executeTakeFirstOrThrow();
+    // The store wrote but never said what the command does against what it stores.
+    await expect(rename("Unchecked", false)).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "access-changed",
+    });
+    expect(
+      await database
+        .selectFrom("runners")
+        .select("name")
+        .where("id", "=", f.runnerId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(before);
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("id")
+        .where("idempotencyKey", "=", command.idempotencyKey)
+        .execute(),
+    ).toEqual([]);
+    // Once it reports the face it is admitted on, the same command commits.
+    await rename("Checked", true);
+    expect(
+      await database
+        .selectFrom("runners")
+        .select("name")
+        .where("id", "=", f.runnerId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ name: "Checked" });
+  });
 });

@@ -1,6 +1,6 @@
 import { withDatabaseTransaction } from "./connection.js";
-import { createId, type UserId } from "@opensteer/core";
-import type { Command } from "@opensteer/protocol/command-table";
+import { createId, OpensteerError, type UserId } from "@opensteer/core";
+import { commandFace, type Command } from "@opensteer/protocol/command-table";
 import {
   assertCommandAdmitted,
   commandSubject,
@@ -40,21 +40,28 @@ export interface CommandIdentity {
     transaction: Transaction<DatabaseSchema>,
     stored: CommandStoredFace,
   ) => Promise<void>;
+  /**
+   * Whether the store reported the face in this transaction. Set for a command only the stored
+   * state can tell: such a command that reaches its commit without a reported face refuses.
+   */
+  readonly faced?: (transaction: Transaction<DatabaseSchema>) => boolean;
 }
 /** The earlier name, kept for the stores that take it. */
 export type AdministrationCommandIdentity = CommandIdentity;
 
 /**
  * How an agent's command is admitted where it commits: `admitCommand` under the connection's
- * lock, on the face it was admitted on, and again on the face the store reports. Until a store
- * reports one, a command only the stored state can tell is held to its strictest face.
+ * lock, on the face it was admitted on, and again on the face the store reports. A command only
+ * the stored state can tell is held to its strictest face until the store reports one, and fails
+ * closed if it reaches its commit without one.
  */
 export function commandAdmission(input: {
   readonly ownerUserId: UserId;
   readonly callerKey: string;
   readonly command: Command;
   readonly face?: number | undefined;
-}): Required<Pick<CommandIdentity, "admit" | "face">> {
+}): Pick<CommandIdentity, "admit" | "face" | "faced"> &
+  Required<Pick<CommandIdentity, "admit" | "face">> {
   const subject = commandSubject(input.callerKey);
   const admitted = {
     ownerUserId: input.ownerUserId,
@@ -62,9 +69,16 @@ export function commandAdmission(input: {
     command: input.command,
     face: input.face,
   };
+  let reportedIn: Transaction<DatabaseSchema> | null = null;
   return {
     admit: (transaction) => assertCommandAdmitted(transaction, admitted),
-    face: (transaction, stored) => assertCommandAdmitted(transaction, { ...admitted, stored }),
+    face: async (transaction, stored) => {
+      await assertCommandAdmitted(transaction, { ...admitted, stored });
+      reportedIn = transaction;
+    },
+    ...(commandFace(input.command) === undefined
+      ? { faced: (transaction: Transaction<DatabaseSchema>) => reportedIn === transaction }
+      : {}),
   };
 }
 
@@ -117,6 +131,12 @@ export async function administrationCommand<Result>(
   const replay = await readAdministrationCommand(transaction, identity);
   if (replay) return replay.result as Result;
   const result = await mutate();
+  if (identity.faced && !identity.faced(transaction))
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: "access-changed",
+      message: "This change can't be made until the Home has checked what it does.",
+    });
   await transaction
     .insertInto("commands")
     .values({
