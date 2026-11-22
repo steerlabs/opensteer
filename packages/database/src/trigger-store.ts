@@ -66,6 +66,7 @@ import {
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import {
+  lineagePersonalContext,
   liveDelegatingConnection,
   meetsConnectionFloor,
   sendEligible,
@@ -357,7 +358,14 @@ export async function createTriggerInTransaction(
   const nextFireAt =
     !managed?.paused && source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
   // An automation works for whoever defined it: the authenticated actor's connection, if any.
-  const originConnectionId = input.actorConnectionId ?? null;
+  // One the person makes on a task without their personal context (from a chat anyone may
+  // speak in) works in that task's lineage, so what its program starts never gains it.
+  const originConnectionId =
+    input.actorConnectionId ??
+    (anchor.originConnectionId !== null &&
+    !(await lineagePersonalContext(transaction, anchor.originConnectionId))
+      ? anchor.originConnectionId
+      : null);
   await transaction
     .insertInto("triggers")
     .values({
@@ -2346,10 +2354,11 @@ async function requireAnchorThread(
 ): Promise<{
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
+  readonly originConnectionId: string | null;
 }> {
   const anchor = await transaction
     .selectFrom("threads")
-    .select(["purpose", "doneAt", "status"])
+    .select(["purpose", "doneAt", "status", "originConnectionId"])
     .where("id", "=", threadId)
     .executeTakeFirst();
   if (
@@ -2371,6 +2380,7 @@ async function requireAnchorThread(
   return {
     environmentId: admission.environmentId,
     id: threadId,
+    originConnectionId: anchor.originConnectionId,
   };
 }
 type LockedTriggerAuthority = {
