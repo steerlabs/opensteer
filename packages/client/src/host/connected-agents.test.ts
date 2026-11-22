@@ -252,6 +252,29 @@ function grantedFixture(patch: Partial<AgentConnection> = {}): AgentConnection {
 }
 
 describe("Connected agents with grants", () => {
+  it("never takes a paused chat, or a state it does not know, as proof that a Disconnect happened", async () => {
+    for (const state of ["paused"] as const) {
+      const row = grantedFixture({ state: state as never });
+      const host = new MockHostClient({ latencyMs: 0, connections: [row] });
+      const resource = new ConnectedAgentsClient(host);
+      const stop = resource.start();
+      try {
+        await vi.waitFor(() => expect(resource.getSnapshot().connections).toHaveLength(1));
+        // The Disconnect may never have reached the Home: its answer was lost.
+        const dispatch = host.dispatch.bind(host);
+        vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+          if (command.type === "connection.revoke") throw new Error("Lost acknowledgement");
+          return dispatch(command);
+        });
+        await resource.revoke(row.id);
+        expect(resource.getSnapshot().revoked.has(row.id), state).toBe(false);
+      } finally {
+        stop();
+        host.dispose();
+      }
+    }
+  });
+
   it("lists ended connections only from a Home that keeps their outcome", async () => {
     const stopped = grantedFixture({ state: "stopped", revokedAt: new Date().toISOString() });
     for (const grants of [true, false]) {

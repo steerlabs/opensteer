@@ -18,9 +18,16 @@ import { formatRelativeTime } from "./thread-list-model.js";
 /**
  * Where a connection stands as the person reads it. `revoked` is this client's own fact
  * between the Home confirming a Disconnect and the next list read, which then says
- * `stopping` or `stopped`.
+ * `stopping` or `stopped`. `paused` is a chat that holds what it is sent until it is back.
+ * `unknown` is a state this client does not know: never shown as active, never taken as ended.
  */
-export type ConnectedAgentPhase = "active" | "revoked" | "stopping" | "stopped" | "expired";
+export type ConnectedAgentPhase =
+  "active" | "paused" | "unknown" | "revoked" | "stopping" | "stopped" | "expired";
+
+/** The states that prove a connection ended: only these confirm a Disconnect. */
+export function connectionStateEnded(state: string | undefined): boolean {
+  return state === "revoked" || state === "stopping" || state === "stopped" || state === "expired";
+}
 export type ConnectedAgentTone = "neutral" | "good" | "attention" | "bad";
 
 /** What the Home proved about who is asking, beside the name it gave itself. */
@@ -178,13 +185,21 @@ export function connectedAgentPhase(
   revoked: ReadonlySet<string> = new Set(),
   now = new Date(),
 ): ConnectedAgentPhase {
-  const state = connection.state;
+  // Read as a plain string: a Home newer than this client may say what it does not know.
+  const state: string | undefined = connection.state;
   if (state === "stopping" || state === "stopped" || state === "expired") return state;
   if (state === "revoked" || revoked.has(connection.id)) return "revoked";
   if (connection.revokedAt) return "revoked";
+  if (state === "paused") return "paused";
+  if (state !== undefined && state !== "active") return "unknown";
   return connection.expiresAt !== null && Date.parse(connection.expiresAt) <= now.getTime()
     ? "expired"
     : "active";
+}
+
+/** Still connected, as far as the person can tell: it may act, or will once it is back. */
+export function connectedAgentConnected(phase: ConnectedAgentPhase): boolean {
+  return phase === "active" || phase === "paused" || phase === "unknown";
 }
 
 /** A connection with no stored grant is one an older Home lets do everything. */
@@ -249,6 +264,8 @@ function rowLine(
       tone: "neutral",
     };
   }
+  if (phase === "paused") return { line: agentWords("agents.row.paused"), tone: "attention" };
+  if (phase === "unknown") return { line: agentWords("agents.row.unknown"), tone: "attention" };
   if (connection.lastActionUncertain)
     return { line: agentWords("agents.row.uncertain"), tone: "attention" };
   if (phase === "stopping") return { line: agentWords("agents.row.stopping"), tone: "neutral" };
@@ -295,8 +312,8 @@ export function connectedAgentsView(
     connectedAgentRow(connection, names, revoked, now, withdrawn[connection.id]),
   );
   return {
-    connected: rows.filter((row) => row.phase === "active"),
-    disconnected: rows.filter((row) => row.phase !== "active"),
+    connected: rows.filter((row) => connectedAgentConnected(row.phase)),
+    disconnected: rows.filter((row) => !connectedAgentConnected(row.phase)),
   };
 }
 
@@ -314,6 +331,34 @@ function usedLine(lastUsedAt: string | null, now: Date): string {
   return agentWords("agent.status.idleDetail", {
     time: when === "now" ? "just now" : /^\d+[mhd]$/u.test(when) ? `${when} ago` : when,
   });
+}
+
+/**
+ * What a paused chat holds and what becomes of what is sent to it, in the person's words: its
+ * replies wait; a message sent meanwhile arrives when it is back, or is not delivered, by what
+ * its transport does; how it comes back.
+ */
+export function pausedDetail(connection: Pick<AgentConnection, "bridge">): string {
+  const bridge = connection.bridge;
+  const attention = bridge?.pausedBy === "needs-attention";
+  const sent =
+    bridge?.pausedMessages === "kept"
+      ? agentWords("chat.paused.kept")
+      : agentWords("chat.paused.lost");
+  return [
+    attention
+      ? agentWords("chat.paused.attention", {
+          account: bridge?.accountName ?? bridge?.provider ?? "",
+        })
+      : agentWords("chat.paused.you"),
+    agentWords("chat.paused.replies"),
+    sent,
+    attention
+      ? bridge?.pauseDetail
+        ? agentWords("chat.paused.attentionDetail", { detail: bridge.pauseDetail })
+        : agentWords("chat.paused.attentionFix")
+      : agentWords("chat.paused.resume"),
+  ].join(" ");
 }
 
 /** The status at the top of an agent's page. */
@@ -335,6 +380,20 @@ export function connectedAgentStatus(
             tone: "neutral",
             steps: [],
           };
+    case "paused":
+      return {
+        label: agentWords("agent.status.paused"),
+        detail: pausedDetail(connection),
+        tone: "attention",
+        steps: [],
+      };
+    case "unknown":
+      return {
+        label: agentWords("agent.status.unknown"),
+        detail: agentWords("agent.status.unknownDetail"),
+        tone: "attention",
+        steps: [],
+      };
     case "revoked":
       return {
         label: agentWords("disconnect.revoked.label", { agent }),
@@ -409,7 +468,10 @@ export function connectedAgentDetail(
         }
       : null,
     legacy,
-    editable: !legacy && row.phase === "active" && connection.grantRevision !== undefined,
+    editable:
+      !legacy &&
+      (row.phase === "active" || row.phase === "paused") &&
+      connection.grantRevision !== undefined,
     grant: connectionGrant(connection),
     revision: connection.grantRevision ?? 1,
     accessMode: connection.accessMode,
