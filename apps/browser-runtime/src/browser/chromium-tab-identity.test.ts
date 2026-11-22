@@ -415,18 +415,28 @@ it("moves a discarded named tab without loading it or changing its id or name, c
   await c.evaluate(() => sessionStorage.setItem("mark", "c-kept"));
   await a.bringToFront();
   const cId = await running.lifecycle.nameAndDiscard((await row("c")).tabId, "opensteer-sleep:c");
+  // A tab that loads gives Playwright a page: none may arrive for it until it is activated.
+  let loadsOfC = 0;
+  const countC = (page: Page) => {
+    if (page.url().includes("?c")) loadsOfC++;
+  };
+  running.context.on("page", countC);
   expect(await running.lifecycle.moveTab(cId!, 0)).toEqual({ tabId: cId, index: 0 });
-  await new Promise((resolve) => setTimeout(resolve, 1_000));
-  expect(await row("c")).toMatchObject({
+  const asleepAtLeft = {
     tabId: cId,
     index: 0,
     discarded: true,
     status: "unloaded",
     identity: "opensteer-sleep:c",
-  });
-  // Moved to the right end and activated, it wakes as itself.
+  };
+  expect(await row("c")).toMatchObject(asleepAtLeft);
+  // Moved to the right end, before it is activated: still asleep, never loaded by the moves.
   const moved = await running.lifecycle.moveTab(cId!, -1);
   expect(moved?.tabId).toBe(cId);
+  expect(await row("c")).toMatchObject({ ...asleepAtLeft, index: moved!.index });
+  expect(loadsOfC).toBe(0);
+  running.context.off("page", countC);
+  // Activated, it wakes as itself.
   const woken = running.context.waitForEvent("page");
   await running.lifecycle.activateByTabId(cId!);
   const cPage = await woken;
