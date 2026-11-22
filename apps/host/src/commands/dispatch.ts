@@ -1,7 +1,9 @@
 import { OpensteerError } from "@opensteer/core";
+import { z } from "zod";
 import {
   admitCommand,
   commandAdmission,
+  commandHeld,
   commandNotFoundMessage,
   commandSubject,
   type CommandAdmission,
@@ -9,10 +11,11 @@ import {
   type CommandIdentity,
   type DatabaseSchema,
 } from "@opensteer/database";
-import type {
-  HostApiCommand,
-  HostApiCommandOutput,
-  HostApiServerContext,
+import {
+  hostApi,
+  type HostApiCommand,
+  type HostApiCommandOutput,
+  type HostApiServerContext,
 } from "@opensteer/protocol";
 import {
   commandAgentOutput,
@@ -117,6 +120,21 @@ export async function dispatchCommand(
     throw new OpensteerError({ code: "internal", message: "This door admits no agent" });
   if (!Object.hasOwn(commandTable, command.type)) throw notFound();
   const row = commandRow(command.type) as CommandRow;
+  // A type this caller does not hold reads as nothing at all, before its input is looked at.
+  if (!commandHeld(row, { connection: agentConnectionGrant(actor), mode: actor.accessMode }))
+    throw notFound();
+  // A type it holds is read with its schema; what is wrong with it may be said. A value only the
+  // person types is left out by the agent, so a schema that requires it reads the rest without it.
+  const parsed = parseHeld(row, command);
+  if (!parsed.success)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: `That ${command.type} command is not valid: ${parsed.error.issues
+        .slice(0, 3)
+        .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
+        .join("; ")}`.slice(0, 1_000),
+    });
+  command = parsed.data as HostApiCommand;
   const admission = await door.admit(actor, command);
   if (admission.answer === "not_found") throw notFound();
   assertNoSecretPaths(row, command);
@@ -142,6 +160,17 @@ export async function dispatchCommand(
   if (answers || !door.propose) return ask;
   const proposed = await door.propose(actor, command, ask, admission.face);
   return proposed.status === "declined" ? proposed : { ...proposed, reason: ask.reason };
+}
+
+/** The grant the caller's lineage works under as the rule reads it; null for your own agents. */
+function agentConnectionGrant(
+  caller: AgentCaller,
+): { readonly grant: "everything" | "selected" } | null {
+  const grant = caller.kind === "connection" ? caller.grant : caller.agentConnection?.grant;
+  if (!grant) return null;
+  // Work from a chat anyone may speak in reaches no more than a selected grant would.
+  const personal = caller.agentConnection?.bridgeSenders !== "anyone";
+  return { grant: personal ? grant.scope : "selected" };
 }
 
 /** What a handler written for agents is given: the identity its store admits at commit. */
@@ -175,6 +204,36 @@ function commandAuthority(caller: AgentCaller, command: HostApiCommand): Command
 /** Whether the door made this authority: a store given one admits it again at commit. */
 export function isCommandAuthority(value: unknown): value is CommandAuthority {
   return typeof value === "object" && value !== null && authorities.has(value);
+}
+
+/** Each command type's own schemas (a type may have more than one variant). */
+const variants = (() => {
+  const byType = new Map<string, z.ZodObject[]>();
+  for (const option of (
+    hostApi["commands.dispatch"].payload as unknown as z.ZodUnion<z.ZodObject[]>
+  ).options) {
+    const type = (option.shape.type as z.ZodLiteral<string>).value;
+    byType.set(type, [...(byType.get(type) ?? []), option]);
+  }
+  return byType;
+})();
+
+/** Reads a command with its own schema, leaving out each top-level secret field it does not carry. */
+function parseHeld(row: CommandRow, command: HostApiCommand) {
+  const input = command as unknown as Record<string, unknown>;
+  const absent = (row.secretFields ?? []).filter(
+    (path) => !path.includes(".") && input[path] === undefined,
+  );
+  let first: ReturnType<z.ZodObject["safeParse"]> | undefined;
+  for (const variant of variants.get(command.type) ?? []) {
+    const schema = absent.length
+      ? variant.omit(Object.fromEntries(absent.map((key) => [key, true])) as never)
+      : variant;
+    const result = schema.safeParse(command);
+    if (result.success) return result;
+    first ??= result;
+  }
+  return first ?? hostApi["commands.dispatch"].payload.safeParse(command);
 }
 
 /** A value only the person types never passes through an agent: found by the table's paths. */

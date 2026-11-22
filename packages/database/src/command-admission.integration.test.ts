@@ -19,7 +19,11 @@ import {
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { beginAgentSession } from "./agent-session-store.js";
 import { admitCommand, commandSubject } from "./resource-access.js";
-import { commandTable } from "@opensteer/protocol/command-table";
+import {
+  commandResourceKey,
+  commandTable,
+  type CommandResource,
+} from "@opensteer/protocol/command-table";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 
 /** The types an agent sends today through the administration service, which admits at commit. */
@@ -56,7 +60,8 @@ const refusedToEveryAgent = new Set<CommandType>([
   "iphone.screen.detach",
 ]);
 
-const profileId = createId("browserProfile");
+/** A real profile of the fixture's person, made in each test's setup. */
+let profileId = createId("browserProfile");
 
 /** Every row whose governed thing is a task named by the input (`threadId`, an anchor). */
 function taskScopedRows(): CommandType[] {
@@ -173,6 +178,18 @@ describeStore("one admission for Home commands", (it) => {
     const workFor = (connectionId: string | null) =>
       database.updateTable("runs").set({ connectionId }).where("id", "=", f.run.id).execute();
     await setMode("full-access");
+    const home = await storeFixture.enrollBrowserRunner(
+      f.userId,
+      `Home ${randomUUID().slice(0, 4)}`,
+    );
+    profileId = (
+      await storeFixture.store.createBrowserProfile({
+        name: `Setup ${randomUUID().slice(0, 4)}`,
+        ownerId: f.userId,
+        homeRunnerId: home,
+        idempotencyKey: randomUUID(),
+      })
+    ).id;
     return { f, database, connections, setMode, connect, workFor };
   }
 
@@ -369,14 +386,11 @@ describeStore("one admission for Home commands", (it) => {
     const occurrence = await storeFixture.startTriggerOccurrence(f, `reach-${randomUUID()}`);
     const triggerId = occurrence.triggerId;
     for (const type of ["trigger.update", "trigger.cancel", "trigger.status.set"] as const) {
-      expect(await admit(self, { ...sample(type), triggerId } as Command), type).toBe("not_found");
-      expect(
-        await admit(self, { ...sample(type), triggerId: createId("trigger") } as Command),
-        type,
-      ).toBe("not_found");
-      expect(await admit(`run:${f.run.id}`, { ...sample(type), triggerId } as Command)).not.toBe(
-        "not_found",
-      );
+      const on = (id: string) =>
+        ({ ...sample(type), triggerId: id, input: { name: "Renamed" } }) as Command;
+      expect(await admit(self, on(triggerId)), type).toBe("not_found");
+      expect(await admit(self, on(createId("trigger"))), type).toBe("not_found");
+      expect(await admit(`run:${f.run.id}`, on(triggerId))).not.toBe("not_found");
     }
     // Tabs, browsers, delegations and setups no selected grant names: not there.
     for (const command of [
@@ -464,6 +478,542 @@ describeStore("one admission for Home commands", (it) => {
       });
     await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
     await expect(admit()).rejects.toMatchObject({ code: "forbidden" });
+  });
+
+  /** A tab of the person's, or one a task opened, in a profile; and a browser using it. */
+  async function browserFixtures(
+    storeFixture: StoreFixture,
+    f: Awaited<ReturnType<StoreFixture["startRunFixture"]>>,
+  ) {
+    const { database } = storeFixture;
+    const browserRunner = await storeFixture.enrollBrowserRunner(
+      f.userId,
+      `Browser ${randomUUID().slice(0, 4)}`,
+    );
+    const newProfile = (name: string) =>
+      storeFixture.store.createBrowserProfile({
+        name,
+        ownerId: f.userId,
+        homeRunnerId: browserRunner,
+        idempotencyKey: randomUUID(),
+      });
+    const profile = await newProfile(`Profile ${randomUUID().slice(0, 4)}`);
+    const deviceId = await storeFixture.store.requireSelfDeviceId(f.runnerId);
+    const tab = async (openedBy: "person" | { taskId: string }, profileId = profile.id) => {
+      const id = createId("tab");
+      await database
+        .insertInto("personalTabs")
+        .values({
+          id,
+          ownerId: f.userId,
+          kind: "page",
+          computerId: deviceId,
+          title: "Bank",
+          url: "https://bank.example",
+          profileId,
+          profileName: "Profile",
+          openedBy: JSON.stringify(openedBy) as never,
+        } as never)
+        .execute();
+      return id;
+    };
+    const browserSession = async (threadId: string | null) => {
+      const id = `bsn_${randomUUID()}`;
+      await database
+        .insertInto("browserSessions")
+        .values({
+          id,
+          tabGroupId: id,
+          origin: "agent",
+          profileId: profile.id,
+          placementKey: id,
+          runnerId: f.runnerId,
+          runtimeId: "runtime",
+          state: "ready",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        } as never)
+        .execute();
+      if (threadId)
+        await database
+          .insertInto("browserSessionUses")
+          .values({
+            id: randomUUID(),
+            sessionId: id,
+            threadId,
+            runId: null,
+            tabId: null,
+            firstUsedAt: new Date(),
+            lastUsedAt: new Date(),
+          } as never)
+          .execute();
+      return id;
+    };
+    const setup = async (threadId: string | null) => {
+      const deployment = await database
+        .selectFrom("deployments")
+        .select("id")
+        .where("singletonKey", "=", "primary")
+        .executeTakeFirstOrThrow();
+      const id = randomUUID();
+      await database
+        .insertInto("computerAppSetupRequests")
+        .values({
+          id,
+          kind: "app",
+          policyAppApproval: null,
+          reason: null,
+          server: null,
+          threadId,
+          threadTitle: null,
+          access: "read",
+          app: null,
+          appKey: null,
+          createdAt: new Date(),
+          definitionDigest: "digest",
+          definitionId: "phone-screen",
+          deploymentId: deployment.id,
+          expiresAt: new Date(Date.now() + 60 * 60_000),
+          ownerUserId: f.userId,
+          runnerId: deviceId,
+        } as never)
+        .execute();
+      return id;
+    };
+    return { profile, newProfile, tab, browserSession, setup };
+  }
+
+  it("asks a Supervised agent about tabs, browsers and setups it did not open (D3, D4)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, setMode, connect } = await setup(storeFixture);
+    const {
+      profile,
+      tab,
+      browserSession,
+      setup: deviceSetup,
+    } = await browserFixtures(storeFixture, f);
+    const admit = async (callerKey: string, command: Record<string, unknown>) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(callerKey),
+          command: { idempotencyKey: randomUUID(), ...command } as never,
+        })
+      ).answer;
+    // A Supervised connected agent holding only that profile, no Tasks.
+    const supervised = await connect(
+      {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profile.id }],
+      },
+      "approval-required",
+    );
+    const key = `connection:${supervised.id}`;
+    const persons = await tab("person");
+    const session = await browserSession(null);
+    expect(
+      await admit(key, {
+        type: "tab.open",
+        target: { kind: "page", url: "https://bank.example", profileId: profile.id },
+      }),
+    ).toBe("ask");
+    expect(await admit(key, { type: "tab.close", tabIds: [persons] })).toBe("ask");
+    expect(
+      await admit(key, { type: "tab.organize", tabIds: [persons], group: { kind: "none" } }),
+    ).toBe("ask");
+    expect(await admit(key, { type: "browser.session.close", sessionId: session })).toBe("ask");
+    // Your own agent, Supervised: a full-access task's tab is not its own work; a missing group
+    // and a missing setup are not there at all; a full-access task's setup is not its own work.
+    await setMode("approval-required");
+    const other = await storeFixture.createTaskForOwner(f.userId, `full-${randomUUID()}`);
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", other.id)
+      .execute();
+    const run = `run:${f.run.id}`;
+    expect(await admit(run, { type: "tab.close", tabIds: [await tab({ taskId: other.id })] })).toBe(
+      "ask",
+    );
+    expect(
+      await admit(run, { type: "tab.close", tabIds: [await tab({ taskId: f.threadId })] }),
+    ).toBe("now");
+    expect(
+      await admit(run, { type: "tab.group.update", groupId: "tgr_missing", name: "Bank" }),
+    ).toBe("not_found");
+    expect(
+      await admit(run, {
+        type: "integration.computer.setup.respond",
+        setupRequestId: randomUUID(),
+        decision: "deny",
+      }),
+    ).toBe("not_found");
+    expect(
+      await admit(run, {
+        type: "integration.computer.setup.respond",
+        setupRequestId: await deviceSetup(other.id),
+        decision: "deny",
+      }),
+    ).toBe("ask");
+    // D4: cancelling a setup reaches it where it is stored, under the same key as answering it.
+    await setMode("full-access");
+    const setupId = await deviceSetup(f.threadId);
+    expect(
+      await admit(run, { type: "integration.computer.setup.cancel", requestId: setupId }),
+    ).toBe("ask");
+    expect(
+      await admit(run, { type: "integration.computer.setup.cancel", requestId: randomUUID() }),
+    ).toBe("not_found");
+    const key_ = (type: CommandType, input: Record<string, unknown>) =>
+      commandResourceKey(
+        (commandTable[type].governs as (c: unknown) => CommandResource)({ type, ...input }),
+      );
+    expect(key_("integration.computer.setup.cancel", { requestId: setupId })).toBe(
+      key_("integration.computer.setup.respond", { setupRequestId: setupId }),
+    );
+  });
+
+  it("reads an existing thing out of reach exactly like a missing one", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const { profile, tab, browserSession } = await browserFixtures(storeFixture, f);
+    const selected = await connect({ scope: "selected", tasks: true, resources: [] });
+    const key = `connection:${selected.id}`;
+    const answer = async (command: Record<string, unknown>) => {
+      const {
+        answer: a,
+        reason,
+        face,
+      } = await admitCommand(database, {
+        ownerUserId: f.userId,
+        subject: commandSubject(key),
+        command: { idempotencyKey: randomUUID(), ...command } as never,
+      });
+      return JSON.stringify({ a, reason, face });
+    };
+    const question = await ownQuestion(storeFixture, f);
+    for (const [existing, missing] of [
+      [
+        { type: "tab.close", tabIds: [await tab("person")] },
+        { type: "tab.close", tabIds: ["tab_missing"] },
+      ],
+      [
+        { type: "browser.session.close", sessionId: await browserSession(f.threadId) },
+        { type: "browser.session.close", sessionId: `bsn_${randomUUID()}` },
+      ],
+      [
+        { type: "request.respond", requestId: question, response: { kind: "external" } },
+        { type: "request.respond", requestId: createId("request"), response: { kind: "external" } },
+      ],
+      [
+        {
+          type: "tab.open",
+          target: { kind: "page", url: "https://a.example", profileId: profile.id },
+        },
+        {
+          type: "tab.open",
+          target: { kind: "page", url: "https://a.example", profileId: createId("browserProfile") },
+        },
+      ],
+      [
+        { type: "browser.session.start", input: { threadId: f.threadId, profileId: profile.id } },
+        {
+          type: "browser.session.start",
+          input: { threadId: f.threadId, profileId: createId("browserProfile") },
+        },
+      ],
+    ] as const)
+      expect(await answer(existing), existing.type).toBe(await answer(missing));
+    expect(JSON.parse(await answer({ type: "tab.close", tabIds: ["tab_missing"] })).a).toBe(
+      "not_found",
+    );
+  });
+
+  it("asks a Supervised agent before it starts work above its mode, and reaches its own session's Requests (D9)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, setMode, connect } = await setup(storeFixture);
+    await setMode("approval-required");
+    const create = await admitCommand(database, {
+      ownerUserId: f.userId,
+      subject: commandSubject(`run:${f.run.id}`),
+      command: {
+        type: "thread.create",
+        idempotencyKey: randomUUID(),
+        accessMode: "full-access",
+        input: {},
+      } as never,
+    });
+    expect(create.answer).toBe("ask");
+    // A direct-work connection (no Tasks switch) answers the Requests of its own session's task.
+    const direct = await connect({ scope: "selected", tasks: false, resources: [] });
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: direct.id,
+    });
+    const created = await storeFixture.store.requests.create({
+      callId: `session-${randomUUID()}`,
+      kind: "person.question",
+      mode: "durable",
+      originatingAgentSessionId: session.id,
+      originatingThreadId: session.threadId,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Which one?",
+        fields: [{ id: "a", prompt: "Which?", custom: true, multiSelect: false, secret: false }],
+      },
+      requestedBy: f.userId,
+      requiredActor: "requester",
+    } as never);
+    expect(
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(`session:${session.id}`),
+          command: {
+            type: "request.respond",
+            idempotencyKey: randomUUID(),
+            requestId: created.request.id,
+            response: { kind: "external", value: { decision: "declined" } },
+          } as never,
+        })
+      ).answer,
+    ).not.toBe("not_found");
+  });
+
+  it("holds an agent's default-mode change to what the store sees, and a plugin to the grant", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const callerKey = `run:${f.run.id}`;
+    const remember = (accessMode: ThreadAccessMode) => {
+      const command = {
+        type: "execution.preferences.remember",
+        idempotencyKey: randomUUID(),
+        accessMode,
+      } as unknown as Command & { readonly idempotencyKey: string };
+      return storeFixture.store.rememberExecutionChoice(
+        f.userId,
+        { accessMode },
+        {
+          requestedBy: f.userId,
+          idempotencyKey: command.idempotencyKey,
+          type: command.type,
+          request: { accessMode },
+          authoritySource: { kind: "mcp", callerKey },
+          ...commandAdmission({ ownerUserId: f.userId, callerKey, command }),
+        },
+      );
+    };
+    // The person sets new tasks to start in Auto; an agent raising that is theirs to approve.
+    await storeFixture.store.rememberExecutionChoice(f.userId, { accessMode: "auto" });
+    await expect(remember("full-access")).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "authority-changed",
+    });
+    expect(await remember("approval-required")).toMatchObject({ accessMode: "approval-required" });
+    // A new version of a plugin: a selected grant without it reads nothing, with it asks.
+    const without = await connect({ scope: "selected", tasks: true, resources: [] });
+    const withIt = await connect({
+      scope: "selected",
+      tasks: true,
+      resources: [
+        { kind: "plugin", target: { kind: "installed", pluginId: "github" }, access: "read-write" },
+      ],
+    });
+    const activate = async (key: string) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(key),
+          command: {
+            type: "plugins.version.activate",
+            idempotencyKey: randomUUID(),
+            pluginId: "github",
+            versionId: "v2",
+          } as never,
+        })
+      ).answer;
+    expect(await activate(`connection:${without.id}`)).toBe("not_found");
+    expect(await activate(`connection:${withIt.id}`)).toBe("ask");
+  });
+
+  it("refuses at commit when the governed task's mode rises or a tab moves out of the grant", async ({
+    storeFixture,
+  }) => {
+    const { f, database, setMode, connect } = await setup(storeFixture);
+    const { profile, tab, newProfile } = await browserFixtures(storeFixture, f);
+    // (b) The governed task's mode rises between admission and commit.
+    await setMode("auto");
+    const target = await storeFixture.createTaskForOwner(f.userId, `target-${randomUUID()}`);
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "auto" })
+      .where("id", "=", target.id)
+      .execute();
+    const rename = {
+      type: "thread.rename",
+      idempotencyKey: randomUUID(),
+      threadId: target.id,
+      title: "New",
+    } as unknown as Command & { readonly idempotencyKey: string };
+    const runKey = `run:${f.run.id}`;
+    expect(
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(runKey),
+          command: rename,
+        })
+      ).answer,
+    ).toBe("now");
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", target.id)
+      .execute();
+    await expect(
+      database
+        .transaction()
+        .execute((tx) =>
+          commandAdmission({ ownerUserId: f.userId, callerKey: runKey, command: rename }).admit!(
+            tx,
+          ),
+        ),
+    ).rejects.toMatchObject({ code: "forbidden", reason: "authority-changed" });
+    // (c) A tab moves to a profile the grant does not name.
+    await setMode("full-access");
+    const holder = await connect({
+      scope: "selected",
+      tasks: true,
+      resources: [{ kind: "browser-profile", profileId: profile.id }],
+    });
+    const tabId = await tab("person");
+    const close = {
+      type: "tab.close",
+      idempotencyKey: randomUUID(),
+      tabIds: [tabId],
+    } as unknown as Command & { readonly idempotencyKey: string };
+    const key = `connection:${holder.id}`;
+    expect(
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(key),
+          command: close,
+        })
+      ).answer,
+    ).not.toBe("not_found");
+    const elsewhere = await newProfile("Elsewhere");
+    await database
+      .updateTable("personalTabs")
+      .set({ profileId: elsewhere.id })
+      .where("id", "=", tabId)
+      .execute();
+    await expect(
+      database
+        .transaction()
+        .execute((tx) =>
+          commandAdmission({ ownerUserId: f.userId, callerKey: key, command: close }).admit!(tx),
+        ),
+    ).rejects.toMatchObject({ code: "not_found", message: "That item is unavailable." });
+  });
+
+  it("fires nothing from a connection's webhook once the connection is Disconnected (D1)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect, connections } = await setup(storeFixture);
+    const connection = await connect({ scope: "everything" });
+    const routeKey = `wh_${randomUUID().replaceAll("-", "")}`;
+    const created = await storeFixture.triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: randomUUID(),
+      name: "Provider",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default async () => null",
+      },
+      source: { kind: "webhook" },
+      webhookRouteKey: routeKey,
+      webhookSecretHash: "a".repeat(64),
+    });
+    // It is the connection's automation: its lineage is the connection's.
+    await database
+      .updateTable("triggers")
+      .set({ originConnectionId: connection.id })
+      .where("id", "=", created.trigger.id)
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id })
+      .where("id", "=", f.threadId)
+      .execute();
+    const deliver = (deliveryId: string) =>
+      storeFixture.triggers.enqueueWebhook({
+        deliveryId,
+        headers: {},
+        method: "POST",
+        payload: { ok: true },
+        routeKey,
+      });
+    await connections.revoke(f.userId, connection.id);
+    await expect(deliver("after-disconnect")).rejects.toBeDefined();
+    expect(
+      await database
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("triggerId", "=", created.trigger.id)
+        .execute(),
+    ).toEqual([]);
+  });
+
+  it("settles what a command answers in the effect's own transaction, or not at all", async ({
+    storeFixture,
+  }) => {
+    const { f, database } = await setup(storeFixture);
+    const settled: unknown[] = [];
+    const identity = (settle: (result: unknown) => Promise<void>): CommandIdentity => ({
+      requestedBy: f.userId,
+      idempotencyKey: randomUUID(),
+      type: "probe.settle",
+      request: { probe: true },
+      authoritySource: { kind: "person" },
+      settle: async (_transaction, result) => settle(result),
+    });
+    const rename = (name: string, settle: (result: unknown) => Promise<void>) =>
+      withAdministrationTransaction(database, identity(settle), async (transaction) => {
+        await transaction
+          .updateTable("runners")
+          .set({ name })
+          .where("id", "=", f.runnerId)
+          .execute();
+        return { renamed: name };
+      });
+    const name = async () =>
+      (
+        await database
+          .selectFrom("runners")
+          .select("name")
+          .where("id", "=", f.runnerId)
+          .executeTakeFirstOrThrow()
+      ).name;
+    await rename("Settled", async (result) => void settled.push(result));
+    expect(settled).toEqual([{ renamed: "Settled" }]);
+    expect(await name()).toBe("Settled");
+    // A settlement that cannot be made takes the effect with it.
+    await expect(
+      rename("Unsettled", async () => {
+        throw new Error("The Request moved on");
+      }),
+    ).rejects.toThrow("The Request moved on");
+    expect(await name()).toBe("Settled");
   });
 
   it("admits the person without reading anything", async ({ storeFixture }) => {
@@ -624,20 +1174,19 @@ describeStore("one admission for Home commands", (it) => {
   }) => {
     const { f, database } = await setup(storeFixture);
     const callerKey = `run:${f.run.id}`;
+    // A default mode above approval-required: only the stored default says whether it rises.
     const command = {
-      type: "request.respond",
+      type: "execution.preferences.remember",
       idempotencyKey: randomUUID(),
-      // A Request of its own task: in reach, so only the face is in question.
-      requestId: await ownQuestion(storeFixture, f),
-      response: { kind: "choice", optionId: "allow" },
+      accessMode: "auto",
     } as unknown as Command;
     // Admitted before the store has looked: some face of it could be now, so it may go on, and
     // only the Request (the store's view) says what the answer does.
     const admission = commandAdmission({ ownerUserId: f.userId, callerKey, command });
     await database.transaction().execute(async (transaction) => {
       await admission.admit(transaction);
-      await admission.face(transaction, { face: "widen-self" });
-      // The stored Request is a permission: allowing it lifts a gate the person set.
+      await admission.face(transaction, { face: "preference" });
+      // The stored default is lower: this raises it, which lifts a gate the person set.
       await expect(admission.face(transaction, { face: "approve" })).rejects.toMatchObject({
         code: "forbidden",
         reason: "authority-changed",
@@ -661,12 +1210,11 @@ describeStore("one admission for Home commands", (it) => {
   }) => {
     const { f, database } = await setup(storeFixture);
     const callerKey = `run:${f.run.id}`;
+    // A default mode above approval-required: only the stored default says whether it rises.
     const command = {
-      type: "request.respond",
+      type: "execution.preferences.remember",
       idempotencyKey: randomUUID(),
-      // A Request of its own task: in reach, so only the face is in question.
-      requestId: await ownQuestion(storeFixture, f),
-      response: { kind: "choice", optionId: "allow" },
+      accessMode: "auto",
     } as unknown as Command & { readonly idempotencyKey: string };
     const identity = (): CommandIdentity => ({
       requestedBy: f.userId,
@@ -681,7 +1229,7 @@ describeStore("one admission for Home commands", (it) => {
     const rename = (name: string, report: boolean) => {
       const admitted = identity();
       return withAdministrationTransaction(database, admitted, async (transaction) => {
-        if (report) await admitted.face!(transaction, { face: "widen-self" });
+        if (report) await admitted.face!(transaction, { face: "preference" });
         await transaction
           .updateTable("runners")
           .set({ name })

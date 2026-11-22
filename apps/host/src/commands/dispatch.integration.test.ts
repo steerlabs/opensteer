@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { createId, type AgentGrant, type UserId } from "@opensteer/core";
-import { AgentConnectionStore, admitCommand, commandSubject } from "@opensteer/database";
+import type { AgentGrant, UserId } from "@opensteer/core";
+import {
+  AgentConnectionStore,
+  admitCommand,
+  commandHeld,
+  commandSubject,
+} from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
 import type { HostApiCommand } from "@opensteer/protocol";
-import { commandTable, type CommandType } from "@opensteer/protocol/command-table";
+import { commandTable, type CommandRow, type CommandType } from "@opensteer/protocol/command-table";
 import { expect, vi } from "vitest";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import {
@@ -13,35 +18,16 @@ import {
   type CommandAuthority,
 } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
+import { proposedCommand } from "./requests.js";
+import { sampleCommand } from "@opensteer/protocol/test-support/command-samples";
 
 const types = Object.keys(commandTable) as CommandType[];
 
-/** Enough of each command for its face and what it governs to be read. */
-function sample(type: CommandType, threadId: string): HostApiCommand {
+/** A command of each type as an agent would send it: its schema's shape, no secret in it. */
+function sample(type: CommandType, _threadId: string): HostApiCommand {
   return {
-    type,
+    ...proposedCommand(commandTable[type] as CommandRow, sampleCommand(type).command),
     idempotencyKey: randomUUID(),
-    threadId,
-    profileId: createId("browserProfile"),
-    machineId: createId("device"),
-    harnessInstanceId: createId("harnessInstance"),
-    environmentId: createId("environment"),
-    connectionId: `ic_${randomUUID()}`,
-    requestId: createId("request"),
-    triggerId: createId("trigger"),
-    pluginId: "plugin",
-    sessionId: "session",
-    tabIds: ["tab_missing"],
-    groupId: "group_missing",
-    status: "paused",
-    enabled: false,
-    done: true,
-    name: "Name",
-    input: { anchorThreadId: threadId, threadId, runnerId: "run_x", connectionId: "ic_x" },
-    target: { kind: "new", name: "iPhone" },
-    decision: { kind: "decline", decision: "decline" },
-    intent: { action: "rotate" },
-    action: "decline",
   } as unknown as HostApiCommand;
 }
 
@@ -95,8 +81,20 @@ describeStore("the door with the Home's own admission", (it) => {
     const everything = await connect({ scope: "everything" });
     const selected = await connect({ scope: "selected", tasks: true, resources: [] });
     const occurrence = await storeFixture.startTriggerOccurrence(f, `door-${randomUUID()}`);
+    const grants = new Map<string, "everything" | "selected">([
+      [`connection:${everything.id}`, "everything"],
+      [`connection:${selected.id}`, "selected"],
+    ]);
     const caller = (key: string, kind: AgentCaller["kind"]): AgentCaller =>
-      ({ kind, key, userId: f.userId as UserId, accessMode: "full-access" }) as AgentCaller;
+      ({
+        kind,
+        key,
+        userId: f.userId as UserId,
+        accessMode: "full-access",
+        ...(grants.has(key)
+          ? { grant: { scope: grants.get(key) }, connectionId: key.slice(11) }
+          : {}),
+      }) as AgentCaller;
     const callers = [
       caller(`run:${f.run.id}`, "run"),
       caller(`trigger:${occurrence.event.id}`, "program"),
@@ -116,7 +114,20 @@ describeStore("the door with the Home's own admission", (it) => {
             command: command as never,
           });
           const outcome = dispatchCommand(agent, command, door);
-          if (answer === "not_found")
+          const held = commandHeld(commandTable[type] as CommandRow, {
+            connection: agent.kind === "connection" ? { grant: grants.get(agent.key)! } : null,
+            mode: agent.accessMode,
+          });
+          if (!held)
+            await expect(outcome, `${agent.key} ${type}`).rejects.toMatchObject({
+              code: "not_found",
+              message: "That item is unavailable.",
+            });
+          else if (!sampleCommand(type).valid)
+            await expect(outcome, `${agent.key} ${type}`).rejects.toMatchObject({
+              code: "bad_request",
+            });
+          else if (answer === "not_found")
             await expect(outcome, `${agent.key} ${type}`).rejects.toMatchObject({
               code: "not_found",
               message: "That item is unavailable.",
@@ -126,6 +137,57 @@ describeStore("the door with the Home's own admission", (it) => {
         }),
       );
     expect(calls).toEqual([]);
+  });
+
+  it("points an agent's answer to a Request the person has at that Request (D6)", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture(`door-ask-${randomUUID().slice(0, 8)}`);
+    const { database } = storeFixture;
+    const { request } = await storeFixture.store.requests.create({
+      callId: `door-ask-${randomUUID()}`,
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: f.run.id,
+      originatingThreadId: f.threadId,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Which one?",
+        fields: [{ id: "a", prompt: "Which?", custom: true, multiSelect: false, secret: false }],
+      },
+      requestedBy: f.userId,
+      requiredActor: "requester",
+    } as never);
+    const run = {
+      kind: "run",
+      key: `run:${f.run.id}`,
+      userId: f.userId,
+      accessMode: "full-access",
+    } as unknown as AgentCaller;
+    const { registry } = spyRegistry();
+    const opened: string[] = [];
+    const door = {
+      registry,
+      admit: agentCommandAdmission(database),
+      propose: async () => {
+        opened.push("opened");
+        return { status: "pending" as const, requestId: "req_new" as never, existing: false };
+      },
+    };
+    await expect(
+      dispatchCommand(
+        run,
+        {
+          type: "request.respond",
+          idempotencyKey: randomUUID(),
+          requestId: request.id,
+          response: { kind: "form", answers: { a: ["This one"] } },
+        } as unknown as HostApiCommand,
+        door,
+      ),
+    ).resolves.toMatchObject({ status: "pending", requestId: request.id, existing: true });
+    expect(opened).toEqual([]);
   });
 
   it("runs a handler written for agents with an authority the store admits again", async ({

@@ -17,6 +17,7 @@ import {
   admitCommand,
   AgentConnectionStore,
   beginAgentSession,
+  commandAdmission,
   commandSubject,
   createDatabase,
   liveAgentConnection,
@@ -199,6 +200,35 @@ describeStore("work Home", (it) => {
     // The organization lowers what outside agents may do: the same command now asks the person.
     await f.home.apply(f.document(2, { ...permissive, externalMaxMode: "approval-required" }));
     expect(await admit()).toBe("ask");
+  });
+
+  it("refuses at commit a command the organization's policy narrowed after it was admitted", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const connection = await f.connect({ scope: "everything" });
+    const callerKey = `connection:${connection.id}`;
+    const command = {
+      type: "harness.rename",
+      idempotencyKey: randomUUID(),
+      environmentId: createId("environment"),
+      harnessInstanceId: createId("harnessInstance"),
+      name: "Renamed",
+    } as never;
+    expect(
+      (
+        await admitCommand(f.database, {
+          ownerUserId: f.task.userId,
+          subject: commandSubject(callerKey),
+          command,
+        })
+      ).answer,
+    ).toBe("now");
+    // Between admission and commit the organization lowers outside agents' mode.
+    await f.home.apply(f.document(2, { ...permissive, externalMaxMode: "approval-required" }));
+    const identity = commandAdmission({ ownerUserId: f.task.userId, callerKey, command });
+    await expect(
+      f.database.transaction().execute((transaction) => identity.admit!(transaction)),
+    ).rejects.toMatchObject({ code: "forbidden", reason: "authority-changed" });
   });
 
   it("reads one snapshot when a Work policy narrows immediately after the authority SELECT", async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { hostApi } from "./host-api.js";
 import {
+  commandAgentOutput,
   commandFamilies,
   commandResourceKey,
   commandTable,
@@ -10,7 +11,8 @@ import {
   type CommandStep,
   type CommandType,
 } from "./command-table.js";
-import { commandEditor, commandTitles } from "./command-words.js";
+import { commandEditor, commandSentence, commandTitles } from "./command-words.js";
+import { decidingInputPaths } from "./command-inputs.test-support.js";
 import expected from "./command-table.rows.json" with { type: "json" };
 
 interface ExpectedFace {
@@ -143,7 +145,9 @@ describe("the command table", () => {
     const schedule = "plugins.schedule.configure";
     expect(classOf(schedule, { enabled: true, approvalMode: "automatic" })).toBe("approve");
     expect(classOf(schedule, { enabled: false, approvalMode: "automatic" })).toBe("approve");
-    expect(classOf(schedule, { enabled: true })).toBe("widen-self");
+    // Left out, the store's default may be automatic (D5); browser approval says it is not.
+    expect(classOf(schedule, { enabled: true })).toBe("approve");
+    expect(classOf(schedule, { enabled: true, approvalMode: "browser" })).toBe("widen-self");
     expect(classOf(schedule, { enabled: false, approvalMode: "browser" })).toBe("narrow");
     expect(classOf("connection.authorize", { decision: { kind: "deny" } })).toBe("narrow");
     expect(classOf("connection.authorize", { decision: { kind: "approve" } })).toBe("widen-other");
@@ -171,6 +175,66 @@ describe("the command table", () => {
     expect(classOf({ baseUrl: "not a url" })).toBe("widen-other");
     expect(classOf({ gcpProject: "someone-else", gcpLocation: "us-central1" })).toBe("widen-other");
     expect(classOf({ gcpLocation: "us-central1" })).toBe("widen-self");
+  });
+
+  it("requires Full access where today's automation tools do (D1)", () => {
+    const faceOf = (type: CommandType, input: Record<string, unknown>) => {
+      const row = commandTable[type] as unknown as {
+        face?: (c: unknown) => number | undefined;
+        faces: readonly { class: string; fullAccess?: true }[];
+      };
+      return row.faces[row.face?.({ type, ...input }) ?? 0]!;
+    };
+    expect(faceOf("trigger.create", { input: {} }).fullAccess).toBe(true);
+    expect(faceOf("trigger.update", { input: { program: {} } }).fullAccess).toBe(true);
+    // Today's tool refuses a Supervised agent even a rename (D0a).
+    expect(faceOf("trigger.update", { input: { name: "New" } }).fullAccess).toBe(true);
+  });
+
+  it("treats a schedule whose approval is left out as one that may approve itself (D5)", () => {
+    const row = commandTable["plugins.schedule.configure"] as unknown as {
+      face: (c: unknown) => number;
+      faces: readonly { class: string }[];
+    };
+    const classOf = (input: Record<string, unknown>) => row.faces[row.face(input)]!.class;
+    expect(classOf({ enabled: true })).toBe("approve");
+    expect(classOf({ enabled: true, approvalMode: "browser" })).toBe("widen-self");
+    expect(classOf({ enabled: false })).toBe("narrow");
+  });
+
+  it("returns an agent nothing a secret or identity command hands out, and names changes in the Home's words", () => {
+    expect(
+      commandAgentOutput({ type: "runner.enrollment.createLocal" } as never, {
+        type: "runner.enrollment.createLocal",
+        token: "one-use",
+      }),
+    ).toEqual({ type: "runner.enrollment.createLocal" });
+    expect(
+      commandAgentOutput({ type: "thread.rename" } as never, { type: "thread.rename", ok: true }),
+    ).toEqual({ type: "thread.rename", ok: true });
+    expect(
+      commandSentence({ type: "thread.rename", threadId: "thr_1", title: "x" } as never, (r) =>
+        r.kind === "task" ? "“Tidy up”" : null,
+      ),
+    ).toBe("Rename a task: “Tidy up”");
+    expect(commandSentence({ type: "harness.default.set" } as never, () => null)).toBe(
+      "Make an AI engine account the default",
+    );
+  });
+
+  it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {
+    const verdicts = (expected as unknown as { inputs: Record<string, string> }).inputs;
+    const paths = decidingInputPaths();
+    expect(
+      paths.filter((path) => !verdicts[path]),
+      "paths without a verdict",
+    ).toEqual([]);
+    expect(
+      Object.keys(verdicts).filter((path) => !paths.includes(path)),
+      "verdicts for paths that no longer exist",
+    ).toEqual([]);
+    for (const [path, verdict] of Object.entries(verdicts))
+      expect(verdict.trim().length, path).toBeGreaterThan(0);
   });
 
   it("names what a command governs the same way however the input orders it", () => {

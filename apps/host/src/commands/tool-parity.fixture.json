@@ -1,0 +1,100 @@
+{
+  "thread.rename": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "thread.sendMessage": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "allowed",
+    "selected-covering": "allowed",
+    "selected-not": "not_found"
+  },
+  "thread.create": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "allowed",
+    "selected-covering": "allowed",
+    "selected-not": "not_found"
+  },
+  "execution.preferences.remember (lower)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "harness.rename": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "machine.rename": {
+    "own-full": "allowed",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "trigger.create": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "thread.done.set": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "trigger.update (name)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "trigger.update (program)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "trigger.status.set (pause)": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "trigger.status.set (archive)": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "trigger.run": {
+    "own-full": "allowed",
+    "own-supervised": "refused:access_denied",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "trigger.cancel": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  }
+}

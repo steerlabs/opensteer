@@ -141,6 +141,7 @@
       "select \"id\" from \"execution_environments\" where \"runner_id\" = $1 order by \"id\" asc",
       "select \"id\" from \"execution_environments\" where \"runner_id\" = $1 order by \"id\" asc for no key update",
       "select \"id\" from \"kysely_migration_lock\" where \"id\" = $1",
+      "select \"id\" from \"requests\" where \"status\" = $1 and command->'outcome'->>'status' = 'running'",
       "select \"id\" from \"runner_enrollments\" where \"runner_kind\" = $1 and \"owner_kind\" = $2 and \"consumed_at\" is null and \"expires_at\" > $3",
       "select \"id\" from \"runners\" where \"id\" = $1 for no key update",
       "select \"id\" from \"runners\" where \"kind\" = $1 and \"owner_kind\" = $2 and \"owner_user_id\" is null and \"revoked_at\" is not null",

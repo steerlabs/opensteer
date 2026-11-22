@@ -3804,10 +3804,10 @@ export async function createHostRuntime(
     });
     deadlines.start();
     // A proposed command waits a day; expiring it is never urgent, so it keeps to its own slow
-    // timer rather than the deadline sweep every write wakes. Approving a stale one is refused.
+    // timer rather than the deadline sweep every write wakes, and not at startup: its first sweep
+    // is the timer's first tick. Approving a stale one is refused.
     const expireCommandRequests = () =>
       void commandRequestStore.expire().catch((error: unknown) => reportMutationFailure(error));
-    expireCommandRequests();
     const commandRequestExpiry = setInterval(expireCommandRequests, 10 * 60_000);
     commandRequestExpiry.unref();
     stopCommandRequestExpiry = () => clearInterval(commandRequestExpiry);

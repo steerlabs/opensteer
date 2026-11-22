@@ -17,6 +17,7 @@ import type {
   DatabaseSchema,
 } from "@opensteer/database";
 import { hostApi, type HostApiCommand, type HostApiCommandOutput } from "@opensteer/protocol";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   commandAgentOutput,
   commandResourceKey,
@@ -59,17 +60,6 @@ export const commandDecisionFieldId = "decision";
 const approvingNeedsAnUpdatedApp = "Approving this needs an up-to-date Opensteer app.";
 const maxResultBytes = 64 * 1_024;
 
-/** One canonical JSON text: object keys sorted, so the same arguments digest the same. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.entries(value as Record<string, unknown>)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-      .join(",")}}`;
-  return JSON.stringify(value);
-}
 const digest = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 
 /** The command as an agent may store it: no key, no value only the person types. */

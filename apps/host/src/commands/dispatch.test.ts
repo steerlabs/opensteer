@@ -1,6 +1,12 @@
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
-import type { AgentGrant, AuthenticatedSession, ThreadAccessMode, UserId } from "@opensteer/core";
-import { commandRule } from "@opensteer/database";
+import type {
+  AgentGrant,
+  AuthenticatedSession,
+  OpensteerError,
+  ThreadAccessMode,
+  UserId,
+} from "@opensteer/core";
+import { commandHeld, commandRule } from "@opensteer/database";
 import type { HostApiCommand, HostApiServerContext } from "@opensteer/protocol";
 import {
   commandFace,
@@ -12,34 +18,33 @@ import type { AgentCaller } from "../mcp/agent-caller.js";
 import { personActor, type PersonActor } from "./actor.js";
 import { dispatchCommand, type AgentCommandOutcome } from "./dispatch.js";
 import type { CommandRegistry, PersonCommandHandler } from "./registry.js";
+import { sampleCommand } from "@opensteer/protocol/test-support/command-samples";
+import { proposedCommand } from "./requests.js";
 
 const userId = "usr_owner" as UserId;
 const session = { id: "ses_1", user: { id: userId } } as unknown as AuthenticatedSession;
 const context = { session } as unknown as HostApiServerContext;
 const types = Object.keys(commandTable) as CommandType[];
 
-/** Just enough input for each face to be read; the door reads nothing else of an agent's command. */
+/** A command of each type its own schema accepts, where its JSON Schema can say how. */
 function sample(type: CommandType): HostApiCommand {
-  const fields: Partial<Record<CommandType, Record<string, unknown>>> = {
-    "personal.remoteAccess.request": { intent: { action: "rotate" } },
-    "browser.sign-in.respond": { decision: { decision: "decline" } },
-    "integration.computer.setup.respond": { decision: "deny" },
-    "browser.password-sign-in.respond": { decision: { kind: "decline" } },
-    "connection.authorize": { decision: { kind: "deny" } },
-    "plugins.schedule.answer": { action: "decline" },
-    "tab.open": { target: { kind: "page", url: "about:blank", guest: true } },
-    "settings.plugin.enabled.set": { target: { kind: "plugin", pluginId: "p" } },
-    "browser.session.start": { input: { threadId: "thr_x" } },
-    "trigger.create": { input: { anchorThreadId: "thr_x" } },
-    "iphone.screen.attach": { target: { kind: "new", name: "iPhone" } },
-    "integration.computer.policy.set": { input: { runnerId: "run_x", appApproval: "ask" } },
-    "integration.grant.create": { input: { connectionId: "ic_x" } },
-    "plugin.authorization.prepare": { input: { plugin: "p" } },
-    "tab.close": { tabIds: ["t"] },
-    "tab.organize": { tabIds: ["t"] },
-  };
-  return { type, idempotencyKey: "k", ...fields[type] } as unknown as HostApiCommand;
+  // What an agent sends: never a value only the person types.
+  return {
+    ...proposedCommand(commandTable[type] as CommandRow, sampleCommand(type).command),
+    idempotencyKey: "k",
+  } as unknown as HostApiCommand;
 }
+const parses = (type: CommandType) => sampleCommand(type).valid;
+/** The caller as `commandHeld` reads it: its grant's scope and its mode, nothing else. */
+const shapeOf = (agent: AgentCaller) => ({
+  connection:
+    agent.kind === "connection"
+      ? { grant: agent.grant.scope }
+      : agent.agentConnection
+        ? { grant: agent.agentConnection.grant.scope }
+        : null,
+  mode: agent.accessMode,
+});
 
 function spyRegistry() {
   const calls: CommandType[] = [];
@@ -105,7 +110,11 @@ const agents: readonly (readonly [string, AgentCaller])[] = [
 ];
 
 /** A copy of the command with a value at a dotted path, as an agent might send it. */
-function withPath(command: HostApiCommand, path: string, value: unknown): HostApiCommand {
+function withPath(command: HostApiCommand, path: string, given: unknown): HostApiCommand {
+  // A secret of the shape its schema reads: text, or a set of named values.
+  const value = /(?:^|\.)(?:secrets|credentials|fields)$/u.test(path)
+    ? { TOKEN: String(given) }
+    : given;
   const copy = structuredClone(command) as Record<string, unknown>;
   const keys = path.split(".");
   let at = copy;
@@ -115,6 +124,13 @@ function withPath(command: HostApiCommand, path: string, value: unknown): HostAp
   }
   at[keys.at(-1)!] = value;
   return copy as HostApiCommand;
+}
+
+/** A value its schema accepts at that path, as a person would type it. */
+function validSecret(type: CommandType, path: string): unknown {
+  let at: unknown = sampleCommand(type).command;
+  for (const key of path.split(".")) at = (at as Record<string, unknown> | undefined)?.[key];
+  return at ?? "typed-by-the-agent";
 }
 
 /** Refuses at once: nothing may read an admission. */
@@ -166,9 +182,12 @@ describe("dispatchCommand", () => {
         for (const type of types) {
           const command = sample(type);
           const admitted = await admit(agent, command);
-          const answer = admitted.answer;
+          const held = commandHeld(commandTable[type] as CommandRow, shapeOf(agent));
+          const answer = held ? admitted.answer : "not_found";
           const outcome = dispatchCommand(agent, command, { registry, admit });
-          if (answer === "not_found")
+          if (held && !parses(type))
+            await expect(outcome, type).rejects.toMatchObject({ code: "bad_request" });
+          else if (answer === "not_found")
             await expect(outcome, type).rejects.toMatchObject({
               code: "not_found",
               message: "That item is unavailable.",
@@ -232,6 +251,7 @@ describe("dispatchCommand", () => {
   });
 
   it("points an ask about an ask at the Request the person already has, opening nothing", async () => {
+    const theirs = "req_00000000-0000-4000-8000-0000000000aa";
     const { registry, calls } = spyRegistry();
     const proposed: string[] = [];
     const door = {
@@ -253,7 +273,7 @@ describe("dispatchCommand", () => {
         {
           type: "request.command.approve",
           idempotencyKey: "k",
-          requestId: "req_the_persons",
+          requestId: theirs,
           expectedRevision: "1",
           command: {},
         } as unknown as HostApiCommand,
@@ -261,7 +281,7 @@ describe("dispatchCommand", () => {
       ),
     ).resolves.toEqual({
       status: "pending",
-      requestId: "req_the_persons",
+      requestId: theirs,
       reason: "approval",
       existing: true,
     });
@@ -275,6 +295,41 @@ describe("dispatchCommand", () => {
     });
     expect(proposed).toEqual(["opened"]);
     expect(calls).toEqual([]);
+  });
+
+  it("answers a type the caller does not hold before touching its input (D8)", async () => {
+    const { registry, calls } = spyRegistry();
+    const admit = async () => {
+      throw new Error("A type the caller does not hold was admitted");
+    };
+    for (const [name, agent] of agents)
+      for (const type of types) {
+        if (commandHeld(commandTable[type] as CommandRow, shapeOf(agent))) continue;
+        // What reaches the agent: everything but where in the Home it was thrown.
+        const said = (error: unknown) => {
+          const { code, message, reason, next, details } = error as OpensteerError;
+          return JSON.stringify({ code, message, reason, next, details });
+        };
+        const malformed = dispatchCommand(agent, { type } as unknown as HostApiCommand, {
+          registry,
+          admit,
+        }).catch(said);
+        const wellFormed = dispatchCommand(agent, sample(type), { registry, admit }).catch(said);
+        const [left, right] = await Promise.all([malformed, wellFormed]);
+        expect(left, `${name} ${type}`).toBe(right);
+        expect(JSON.parse(left as string)).toMatchObject({
+          code: "not_found",
+          message: "That item is unavailable.",
+        });
+      }
+    expect(calls).toEqual([]);
+    // A held type is read with its schema: a malformed one may say what is wrong.
+    await expect(
+      dispatchCommand(run("full-access"), { type: "thread.rename" } as unknown as HostApiCommand, {
+        registry,
+        admit,
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
   });
 
   it("answers not found before anything else is said, secrets included", async () => {
@@ -291,11 +346,13 @@ describe("dispatchCommand", () => {
     ).rejects.toMatchObject(fixed);
     // Outside the grant with a secret in it: the same not found, not "leave it out".
     for (const type of types)
-      for (const path of (commandTable[type] as CommandRow).secretFields ?? [])
+      for (const path of parses(type)
+        ? ((commandTable[type] as CommandRow).secretFields ?? [])
+        : [])
         await expect(
           dispatchCommand(
             connection("full-access", selected),
-            withPath(sample(type), path, "typed-by-the-agent"),
+            withPath(sample(type), path, validSecret(type, path)),
             { registry, admit: outside },
           ),
           `${type}.${path}`,

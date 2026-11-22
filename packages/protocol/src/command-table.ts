@@ -654,7 +654,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "B",
     faces: one("narrow"),
-    governs: (c) => resource("request", c.requestId),
+    governs: (c) => resource("device-setup", c.requestId),
   },
   "integration.computer.policy.set": {
     family: "device-apps",
@@ -890,7 +890,14 @@ export const commandTable: CommandTable = {
     stepFor: { connections: "B" },
     // Approval set to automatic lifts the browser approval the person would otherwise give.
     faces: [{ class: "widen-self" }, { class: "narrow" }, { class: "approve", step: "none" }],
-    face: (c) => (c.approvalMode === "automatic" ? 2 : c.enabled ? 0 : 1),
+    // Left out, an enabled schedule takes the default the store applies, which on the person's own
+    // path is automatic: only an explicit browser approval keeps it from approving itself.
+    face: (c) =>
+      c.approvalMode === "automatic" || (c.enabled && c.approvalMode === undefined)
+        ? 2
+        : c.enabled
+          ? 0
+          : 1,
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.schedule.answer": {
@@ -1251,14 +1258,16 @@ export const commandTable: CommandTable = {
     family: "automations",
     scope: "task",
     step: "A",
-    faces: one("widen-self"),
+    // Today's tool requires Full access to create an automation (agent-tools triggers.ts:47).
+    faces: one("widen-self", { fullAccess: true }),
     governs: (c) => resource("task", c.input.anchorThreadId),
   },
   "trigger.update": {
     family: "automations",
     scope: "task",
     step: "A",
-    faces: one("widen-self"),
+    // Today's tool refuses any change below Full access, a name included (D0a recording).
+    faces: one("widen-self", { fullAccess: true }),
     governs: (c) => resource("automation", c.triggerId),
   },
   "trigger.status.set": {

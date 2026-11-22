@@ -12,6 +12,7 @@ import {
   TriggerWatchActivationIdSchema,
   agentGrantAccess,
   agentGrantAllowsTasks,
+  requestOptionDeclines,
   intersectResourceAccess,
   minThreadAccessMode,
   OpensteerError,
@@ -874,6 +875,7 @@ export async function admitCommand(
       execution,
       row,
       (row.governs as (command: Command) => CommandResource)(input.command),
+      input.command,
     );
     return { execution, reach };
   };
@@ -885,7 +887,8 @@ export async function admitCommand(
   const caller: CommandRuleCaller = {
     connection: scope ? { grant: scope } : null,
     mode: execution.mode,
-    ...reach,
+    reach: reach.reach,
+    ownWork: reach.ownWork,
   };
   const steps = { connection: connection !== null, selected: scope === "selected" };
   const decide = (at: number | undefined): CommandAdmission => {
@@ -896,7 +899,10 @@ export async function admitCommand(
       return { answer: "ask", reason: "step", face: at, execution };
     return { answer: "now", face: at, execution };
   };
-  if (face !== undefined || !input.awaitingStore) return decide(face);
+  // A face only stored state can tell, read by the Home from that state where it can (the kind of
+  // the Request an answer is for), never taken from the caller.
+  const known = face ?? (input.stored ? undefined : reach.face);
+  if (known !== undefined || !input.awaitingStore) return decide(known);
   // Before the store has looked: the most this command could be. The store's report decides.
   const best = row.faces
     .map((_, index) => decide(index))
@@ -952,6 +958,8 @@ function commandFaceFor(
 interface CommandReach {
   readonly reach: boolean;
   readonly ownWork: boolean;
+  /** The face the stored state shows, where the Home read it while finding the thing. */
+  readonly face?: number;
 }
 const inReach: CommandReach = { reach: true, ownWork: true };
 const outOfReach: CommandReach = { reach: false, ownWork: false };
@@ -971,10 +979,14 @@ async function commandReach(
   execution: ExecutionAuthority,
   row: CommandRow,
   resource: CommandResource,
+  command: Command,
 ): Promise<CommandReach> {
   const connection = execution.agentConnection;
   const scope = effectiveGrantScope(execution);
   const selected = scope === "selected";
+  const owner = execution.ownerUserId;
+  /** The task this caller works in: what it opens is its own work, and only that. */
+  const ownTask = execution.threadId;
   const own = (mode: ThreadAccessMode) => threadAccessModeAtMost(mode, execution.mode);
   const task = async (threadId: string, origin?: string | null): Promise<CommandReach> => {
     const thread = await database
@@ -982,8 +994,9 @@ async function commandReach(
       .select(["createdBy", "accessMode", "originConnectionId"])
       .where("id", "=", threadId as ThreadId)
       .executeTakeFirst();
-    if (!thread || thread.createdBy !== execution.ownerUserId) return outOfReach;
-    if (connection) {
+    if (!thread || thread.createdBy !== owner) return outOfReach;
+    // A connection's own task (its direct session's) is its own, with or without Tasks.
+    if (connection && threadId !== ownTask) {
       if (!agentGrantAllowsTasks(connection.grant)) return outOfReach;
       const lineage = origin === undefined ? thread.originConnectionId : origin;
       if (!sendEligible({ ...connection, grant: scopedGrant(connection.grant, scope) }, lineage))
@@ -995,13 +1008,16 @@ async function commandReach(
     reach: left.reach && right.reach,
     ownWork: left.ownWork && right.ownWork,
   });
-  const named = async (): Promise<CommandReach> => {
-    if (!connection || !selected) return inReach;
-    const target = grantTargetOf(resource);
-    return target !== null && authorizeTarget(execution, target) !== null ? inReach : outOfReach;
+  const granted = (target: AgentGrantTarget | null) =>
+    !selected || (target !== null && authorizeTarget(execution, target) !== null);
+  const profile = async (profileId: string): Promise<boolean> => {
+    const row = await database
+      .selectFrom("browserProfiles")
+      .select("ownerId")
+      .where("id", "=", profileId as never)
+      .executeTakeFirst();
+    return row?.ownerId === owner && granted({ kind: "browser-profile", profileId });
   };
-  const within = async (reach: CommandReach) =>
-    resource.task === undefined ? reach : both(reach, await task(resource.task));
   if (row.scope === "home") return inReach;
   if (row.scope === "other-connection") return connection ? outOfReach : inReach;
   switch (resource.kind) {
@@ -1017,11 +1033,15 @@ async function commandReach(
     case "request": {
       const request = await database
         .selectFrom("requests")
-        .select(["originatingThreadId", "requestedBy"])
+        .select(["originatingThreadId", "requestedBy", "kind", "presentation"])
         .where("id", "=", resource.id as RequestId)
         .executeTakeFirst();
-      if (!request || request.requestedBy !== execution.ownerUserId) return outOfReach;
-      return task(request.originatingThreadId);
+      if (!request || request.requestedBy !== owner) return outOfReach;
+      const reach = await task(request.originatingThreadId);
+      // The face is read from the Request only once it is in reach: outside reads like missing.
+      return reach.reach && command.type === "request.respond"
+        ? { ...reach, face: answerFace(request, command) }
+        : reach;
     }
     case "assignment": {
       const assignment = await database
@@ -1037,7 +1057,7 @@ async function commandReach(
         .select(["anchorThreadId", "originConnectionId", "createdBy"])
         .where("id", "=", resource.id as never)
         .executeTakeFirst();
-      if (!trigger || trigger.createdBy !== execution.ownerUserId) return outOfReach;
+      if (!trigger || trigger.createdBy !== owner) return outOfReach;
       return task(trigger.anchorThreadId, trigger.originConnectionId);
     }
     case "agent-session": {
@@ -1046,7 +1066,7 @@ async function commandReach(
         .select(["connectionId", "threadId", "userId"])
         .where("id", "=", resource.id as never)
         .executeTakeFirst();
-      if (!session || session.userId !== execution.ownerUserId) return outOfReach;
+      if (!session || session.userId !== owner) return outOfReach;
       if (resource.task !== undefined && resource.task !== session.threadId) return outOfReach;
       // A connected agent stops only its own session.
       return connection && session.connectionId !== connection.agentConnectionId
@@ -1057,29 +1077,54 @@ async function commandReach(
       return !connection || resource.id === connection.agentConnectionId ? inReach : outOfReach;
     case "tabs": {
       const ids = resource.ids ?? [];
-      // Opening a tab with no profile (a Guest page, a window, an app): no selected grant names it.
-      if (ids.length === 0) return within(selected ? outOfReach : inReach);
+      // Opening a tab with no profile (a Guest page, a window, an app): no selected grant names
+      // it; it is the caller's own work only from a task of its own.
+      if (ids.length === 0) return { reach: !selected, ownWork: !selected && ownTask !== null };
       const tabs = await database
         .selectFrom("personalTabs")
-        .select(["profileId", "ownerId"])
+        .select(["profileId", "ownerId", "openedBy"])
         .where("id", "in", ids as never)
         .execute();
-      if (tabs.length !== ids.length || tabs.some((tab) => tab.ownerId !== execution.ownerUserId))
+      if (tabs.length !== new Set(ids).size || tabs.some((tab) => tab.ownerId !== owner))
         return outOfReach;
       if (
-        selected &&
         tabs.some(
           (tab) =>
-            tab.profileId === null ||
-            authorizeTarget(execution, { kind: "browser-profile", profileId: tab.profileId }) ===
-              null,
+            !granted(
+              tab.profileId === null ? null : { kind: "browser-profile", profileId: tab.profileId },
+            ),
         )
       )
         return outOfReach;
-      return inReach;
+      // Its own work is what its own task opened; the person's tabs, and anything that records
+      // no opener, are not.
+      const opened = (tab: (typeof tabs)[number]) => {
+        const by = tab.openedBy as unknown;
+        return (
+          ownTask !== null &&
+          typeof by === "object" &&
+          by !== null &&
+          (by as { taskId?: unknown }).taskId === ownTask
+        );
+      };
+      return { reach: true, ownWork: tabs.every(opened) };
     }
-    case "tab-group":
-      return selected ? outOfReach : inReach;
+    case "tab-group": {
+      if (selected) return outOfReach;
+      const layout = await database
+        .selectFrom("tabLayouts")
+        .select("items")
+        .where("ownerId", "=", owner)
+        .executeTakeFirst();
+      const items = (layout?.items ?? []) as readonly {
+        readonly kind: string;
+        readonly group?: { readonly groupId: string };
+      }[];
+      // A group records no opener: it is never an agent's own work.
+      return items.some((item) => item.kind === "group" && item.group?.groupId === resource.id)
+        ? { reach: true, ownWork: false }
+        : outOfReach;
+    }
     case "browser-session": {
       const session = await database
         .selectFrom("browserSessions")
@@ -1087,23 +1132,90 @@ async function commandReach(
         .where("id", "=", resource.id as never)
         .executeTakeFirst();
       if (!session) return outOfReach;
-      if (!selected) return inReach;
-      return session.profileId !== null &&
-        authorizeTarget(execution, { kind: "browser-profile", profileId: session.profileId }) !==
-          null
-        ? inReach
-        : outOfReach;
+      if (
+        !granted(
+          session.profileId === null
+            ? null
+            : { kind: "browser-profile", profileId: session.profileId },
+        )
+      )
+        return outOfReach;
+      const used =
+        ownTask !== null &&
+        (await database
+          .selectFrom("browserSessionUses")
+          .select("id")
+          .where("sessionId", "=", resource.id as never)
+          .where("threadId", "=", ownTask)
+          .executeTakeFirst()) !== undefined;
+      return { reach: true, ownWork: used };
     }
     case "browser-profile": {
       // A page with no profile is a Guest page: no selected grant names one.
-      if (resource.id === null) return within(selected ? outOfReach : inReach);
-      return within(await named());
+      const reach = resource.id === null ? !selected : await profile(resource.id);
+      if (!reach) return outOfReach;
+      if (resource.task !== undefined) return task(resource.task);
+      // A tab its own task opens is its own work; a browser not started for a task is not.
+      return { reach: true, ownWork: command.type === "tab.open" && ownTask !== null };
     }
-    default:
+    case "device-setup": {
+      if (selected) return outOfReach;
+      const setup = await database
+        .selectFrom("computerAppSetupRequests")
+        .select(["ownerUserId", "threadId"])
+        .where("id", "=", resource.id as never)
+        .executeTakeFirst();
+      if (!setup || setup.ownerUserId !== owner) return outOfReach;
+      return { reach: true, ownWork: setup.threadId !== null && setup.threadId === ownTask };
+    }
+    default: {
       // A new thing (no id yet) has nothing to be outside of; an existing one is named or not.
-      if (row.scope === "new" && resource.id === null) return within(inReach);
-      return within(await named());
+      const reach =
+        row.scope === "new" && resource.id === null ? true : granted(grantTargetOf(resource));
+      if (!reach) return outOfReach;
+      return resource.task === undefined ? inReach : task(resource.task);
+    }
   }
+}
+
+/**
+ * Which face an answer to a stored Request is, read from that Request: the answer to an agent's
+ * question is the caller's own work; a decline narrows; anything else allows what the person was
+ * asked, which is the person's to give.
+ */
+function answerFace(
+  request: { readonly kind: string; readonly presentation: unknown },
+  command: Command,
+): number {
+  if (request.kind === "harness.input") return 0;
+  const response = (
+    command as {
+      readonly response?: { kind?: string; optionId?: string; value?: { decision?: unknown } };
+    }
+  ).response;
+  if (response?.kind === "external" && response.value?.decision === "declined") return 2;
+  if (response?.kind === "choice") {
+    const options = (request.presentation as { options?: readonly { id: string; hint?: string }[] })
+      .options;
+    const chosen = options?.find((option) => option.id === response.optionId);
+    if (chosen && requestOptionDeclines(chosen as never)) return 2;
+  }
+  return 1;
+}
+
+/**
+ * Whether a caller holds a command type at all, from the caller and the row alone: some face of
+ * it could be anything but not found for such a caller. A type it does not hold reads as not
+ * found before its input is looked at; the same answer builds the caller's list of commands.
+ */
+export function commandHeld(
+  row: CommandRow,
+  caller: Pick<CommandRuleCaller, "connection" | "mode">,
+): boolean {
+  return row.faces.some(
+    (_, face) =>
+      commandRule(row, face, { ...caller, reach: true, ownWork: true }).answer !== "not_found",
+  );
 }
 
 function scopedGrant(grant: AgentGrant, scope: "everything" | "selected" | null): AgentGrant {
