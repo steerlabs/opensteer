@@ -1793,6 +1793,8 @@ export class ProductToolHandlers {
                     .selectFrom("agentConnections")
                     .select("expiresAt")
                     .where("id", "=", caller.connectionId)
+                    // A bridge has no expiry to report.
+                    .where("bridgeAccountId", "is", null)
                     .executeTakeFirst()
                 : undefined;
             await call.checkLive?.();

@@ -5987,7 +5987,8 @@ class MockHostState {
       (row) =>
         row.userId === this.snapshot.user?.id &&
         (includeRevoked ||
-          (row.state !== "stopped" && Date.parse(row.expiresAt) > this.now().getTime())),
+          (row.state !== "stopped" &&
+            (row.expiresAt === null || Date.parse(row.expiresAt) > this.now().getTime()))),
     );
   }
   revokeConnection(id: string) {

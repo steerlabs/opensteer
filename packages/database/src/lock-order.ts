@@ -182,6 +182,7 @@ export const databaseLockOrder = [
   "principals",
   "channel_access_grants",
   "channel_conversations",
+  "bridge_conversations",
   // Threads precede Trigger/watch selection and provider-session projection.
   "threads",
   "triggers",
@@ -195,7 +196,9 @@ export const databaseLockOrder = [
   "app_versions",
   "app_servers",
   "channel_deliveries",
+  "bridge_deliveries",
   "channel_link_codes",
+  "bridge_link_codes",
   // Computer approvals and integration Grants precede Request settlement.
   "computer_app_setup_requests",
   // A server's secrets change under its locked server, inside or after its approval.

@@ -38,6 +38,10 @@ import {
 import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
 import { browserPoolMigrationName, applyBrowserPool } from "./browser-pool-migration.js";
 import {
+  applyBridgeConnections,
+  bridgeConnectionsMigrationName,
+} from "./bridge-connections-migration.js";
+import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
   withPersonalStateStartupLock,
@@ -635,6 +639,7 @@ export function migrationProvider(options?: {
               },
               [workHomeMigrationName]: { up: applyWorkHome },
               [browserPoolMigrationName]: { up: applyBrowserPool },
+              [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
             }
           : {}),
       };

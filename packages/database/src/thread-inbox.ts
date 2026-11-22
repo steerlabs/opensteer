@@ -1,6 +1,7 @@
 import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
+import { liveConnection } from "./connection-liveness.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import {
   republishPendingRequestsShowing,
@@ -3368,10 +3369,9 @@ async function resolveThreadInputFacts(
       .selectAll()
       .where("id", "=", source.connectionId)
       .where("userId", "=", input.requestedBy)
-      .where("revokedAt", "is", null)
-      .where("expiresAt", ">", new Date())
+      .where(liveConnection())
       .executeTakeFirst();
-    if (!connection || !connection.tokenHash)
+    if (!connection)
       throw new OpensteerError({
         code: "forbidden",
         message: "Connected agent source is invalid",

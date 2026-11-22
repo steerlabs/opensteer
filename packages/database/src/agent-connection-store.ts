@@ -37,6 +37,9 @@ import {
 import { jsonValue } from "./store-primitives.js";
 import { connectionPolicyMode } from "./work-policy.js";
 import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
+import { bridgeStoredExpiry, connectionActive, expiresByTime } from "./connection-liveness.js";
+import type { BridgeSenders } from "./schema.js";
+import { channelProviderCatalog, type ChannelAccountId } from "@opensteer/channel-core";
 
 interface AgentConnectionEdit {
   readonly connectionId: string;
@@ -44,6 +47,18 @@ interface AgentConnectionEdit {
   readonly label?: string;
   readonly accessMode?: AgentConnection["accessMode"];
   readonly grant?: AgentGrant;
+}
+
+/** What a new messaging bridge covers and who may speak to it, chosen on its consent. */
+export interface BridgeConsent {
+  readonly userId: UserId;
+  readonly accountId: ChannelAccountId;
+  /** One named channel or group; absent covers direct messages to the bot or account. */
+  readonly conversation?: { readonly id: string; readonly name: string } | undefined;
+  readonly senders: BridgeSenders;
+  readonly accessMode: AgentConnection["accessMode"];
+  readonly grant: AgentGrant;
+  readonly label?: string | undefined;
 }
 
 export type WorkPolicyConnectionChange = { readonly userId: UserId } & (
@@ -115,6 +130,73 @@ export class AgentConnectionStore {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      return view(row, "active");
+    });
+  }
+  /**
+   * A messaging bridge: the same row a connected agent has, reached through a chat. It has no
+   * credential and no expiry, holds `tasks` always, and on a work Home sits under the
+   * organization's ceiling exactly as a connected agent does.
+   */
+  async createBridge(input: BridgeConsent): Promise<AgentConnection> {
+    const grant = AgentGrantSchema.parse(input.grant);
+    assertBridgeGrant(input.senders, input.conversation !== undefined, grant);
+    return commitPersonalMutation(this.database, async (tx) => {
+      await requirePersonalOwner(tx, input.userId);
+      const account = await tx
+        .selectFrom("channelAccounts")
+        .innerJoin(
+          "integrationConnections",
+          "integrationConnections.id",
+          "channelAccounts.connectionId",
+        )
+        .select(["channelAccounts.provider", "channelAccounts.status"])
+        .where("channelAccounts.id", "=", input.accountId)
+        .where("integrationConnections.ownerUserId", "=", input.userId)
+        .where("integrationConnections.status", "!=", "revoked")
+        .executeTakeFirst();
+      if (!account || account.status === "revoked")
+        throw new OpensteerError({
+          code: "not_found",
+          message: "That messaging account is no longer connected.",
+        });
+      const accessMode = await connectionPolicyMode(tx, grant, input.accessMode);
+      await assertGrantable(tx, input.userId, grant);
+      const provider = bridgeProviderLabel(account.provider);
+      const row = await tx
+        .insertInto("agentConnections")
+        .values({
+          id: `mcn_${randomUUID()}`,
+          userId: input.userId,
+          label: (input.label ?? bridgeLabel(provider, input.conversation?.name)).slice(0, 120),
+          clientName: provider,
+          accessMode,
+          resource: bridgeResource,
+          createdAt: this.now(),
+          expiresAt: bridgeStoredExpiry,
+          tokenHash: null,
+          lastUsedAt: null,
+          revokedAt: null,
+          grant: jsonValue(grant),
+          consentVersion: 2,
+          bridgeAccountId: input.accountId,
+          bridgeConversationId: input.conversation?.id ?? null,
+          bridgeSenders: input.senders,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow()
+        .catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            "constraint" in error &&
+            error.constraint === "agent_connections_bridge_cover"
+          )
+            throw new OpensteerError({
+              code: "conflict",
+              message: "Another bridge already answers this conversation.",
+            });
+          throw error;
+        });
       return view(row, "active");
     });
   }
@@ -213,7 +295,7 @@ export class AgentConnectionStore {
     const { rows } = await sql<{ next: Date | null }>`
       select least(
         (select min(expires_at) from agent_connections
-          where removed_at is null and revoked_at is null
+          where removed_at is null and revoked_at is null and ${expiresByTime}
             and (cleanup_reason is null or cleanup_reason = 'narrowed')),
         (select ${retryAt}::timestamptz where exists (
           select 1 from agent_connections
@@ -235,6 +317,7 @@ export class AgentConnectionStore {
       })
       .where("id", "=", id)
       .where("tokenHash", "is", null)
+      .where("bridgeAccountId", "is", null)
       .where("revokedAt", "is", null)
       .where("expiresAt", ">", this.now())
       .returning("id")
@@ -253,6 +336,7 @@ export class AgentConnectionStore {
         lastUsedAt: now,
       })
       .where("tokenHash", "=", tokenHash)
+      .where("bridgeAccountId", "is", null)
       .where("revokedAt", "is", null)
       .where("expiresAt", ">", now)
       .where(({ exists, selectFrom }) =>
@@ -285,7 +369,9 @@ export class AgentConnectionStore {
       .selectAll()
       .where("userId", "=", userId)
       .$if(!options.includeRevoked, (query) =>
-        query.where("revokedAt", "is", null).where("expiresAt", ">", now),
+        query
+          .where("revokedAt", "is", null)
+          .where((eb) => eb.or([eb("bridgeAccountId", "is not", null), eb("expiresAt", ">", now)])),
       )
       .$if(options.includeRevoked === true, (query) => query.where("removedAt", "is", null))
       .orderBy("createdAt", "desc")
@@ -293,7 +379,7 @@ export class AgentConnectionStore {
     // Derived from the durable cleanup record and what its lineage still holds.
     return Promise.all(
       rows.map(async (row) => {
-        const active = row.revokedAt === null && row.expiresAt > now;
+        const active = connectionActive(row, now);
         if (active && row.cleanupRequestedAt === null) return view(row, "active");
         const attempts = await connectionAttempts(this.database, row.id);
         const outstanding = outstandingAttempts(attempts);
@@ -365,7 +451,7 @@ export class AgentConnectionStore {
       .where("userId", "=", userId)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!current || current.revokedAt !== null || current.expiresAt <= this.now())
+    if (!current || !connectionActive(current, this.now()))
       throw new OpensteerError({
         code: "not_found",
         message: "This connected agent is no longer connected.",
@@ -452,6 +538,7 @@ export class AgentConnectionStore {
         .select([
           "revokedAt",
           "expiresAt",
+          "bridgeAccountId",
           "cleanupRequestedAt",
           "cleanupCompletedAt",
           "acknowledgedUncertaintyAt",
@@ -462,7 +549,7 @@ export class AgentConnectionStore {
         .where("userId", "=", userId)
         .executeTakeFirst();
       if (!row) return;
-      if (row.revokedAt === null && row.expiresAt > this.now())
+      if (connectionActive(row, this.now()))
         throw new OpensteerError({
           code: "conflict",
           message: "Disconnect this agent before removing it.",
@@ -532,8 +619,63 @@ function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState
       : {}),
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
-    expiresAt: row.expiresAt.toISOString(),
+    // A bridge does not expire; what its row stores there is never shown.
+    expiresAt: row.bridgeAccountId === null ? row.expiresAt.toISOString() : null,
+    ...(row.bridgeAccountId !== null && row.bridgeSenders !== null
+      ? {
+          bridge: {
+            accountId: row.bridgeAccountId,
+            provider: row.clientName,
+            conversationId: row.bridgeConversationId,
+            senders: row.bridgeSenders,
+            ...(row.bridgeNotice ? { notice: row.bridgeNotice } : {}),
+          },
+        }
+      : {}),
   };
+}
+
+/** The resource a bridge's row names where an MCP connection names its resource URL. */
+export const bridgeResource = "opensteer:bridge";
+
+function bridgeProviderLabel(provider: string): string {
+  return channelProviderCatalog.find((entry) => entry.provider === provider)?.label ?? provider;
+}
+
+function bridgeLabel(provider: string, conversation: string | undefined): string {
+  return conversation ? `${provider} · ${conversation}` : provider;
+}
+
+/**
+ * What a bridge may hold: `tasks` always; with anyone in its one conversation speaking, only
+ * `tasks` and selected plugins. Direct messages are always "only me".
+ */
+export function assertBridgeGrant(
+  senders: BridgeSenders,
+  coversOneConversation: boolean,
+  grant: AgentGrant,
+): void {
+  if (grant.scope === "selected" && !grant.tasks)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "A chat can only ask your agents to work, so it always needs tasks.",
+    });
+  if (senders !== "anyone") return;
+  if (!coversOneConversation)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Direct messages answer only you.",
+    });
+  if (
+    grant.scope === "everything" ||
+    grant.resources.some((resource) => resource.kind !== "plugin")
+  )
+    throw new OpensteerError({
+      code: "bad_request",
+      reason: "bridge-anyone-grant",
+      message:
+        "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
+    });
 }
 
 /**

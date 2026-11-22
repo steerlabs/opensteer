@@ -24,7 +24,8 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import type { BridgeSenders, DatabaseSchema } from "./schema.js";
+import { liveConnection } from "./connection-liveness.js";
 
 /**
  * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
@@ -43,6 +44,18 @@ export interface AgentConnectionAuthority {
   readonly grantRevision: number;
   readonly consentVersion: number;
   readonly accessMode: ThreadAccessMode;
+  /**
+   * Who may speak to a messaging bridge; null for an MCP connection. Work descending from a
+   * bridge anyone in its conversation may speak to runs without the person's personal context.
+   */
+  readonly bridgeSenders?: BridgeSenders | null;
+}
+
+/** Whether work in this lineage may use the person's personal context (memory, tabs, apps). */
+export function lineageAllowsPersonalContext(
+  connection: Pick<AgentConnectionAuthority, "bridgeSenders"> | null,
+): boolean {
+  return connection?.bridgeSenders !== "anyone";
 }
 
 /** One execution as the Home resolved it: whom it works for and every mode in its lineage. */
@@ -97,12 +110,11 @@ export async function readLiveAgentConnectionRow(
       "accessMode",
       "cleanupMinimumGrantRevision",
       "cleanupMaximumMode",
+      "bridgeSenders",
     ])
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId)
-    .where("revokedAt", "is", null)
-    .where("tokenHash", "is not", null)
-    .where("expiresAt", ">", new Date());
+    .where(liveConnection());
   const authority = lock ? query.forShare("agentConnections") : query;
   const workHome = isWorkHomeDatabase(database);
   const work = workHome
@@ -151,6 +163,7 @@ export async function liveAgentConnection(
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
     accessMode: row.accessMode,
+    bridgeSenders: row.bridgeSenders,
     cleanupMinimumGrantRevision: row.cleanupMinimumGrantRevision,
     cleanupMaximumMode: row.cleanupMaximumMode,
   };

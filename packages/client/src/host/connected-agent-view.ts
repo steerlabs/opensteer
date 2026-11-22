@@ -182,7 +182,9 @@ export function connectedAgentPhase(
   if (state === "stopping" || state === "stopped" || state === "expired") return state;
   if (state === "revoked" || revoked.has(connection.id)) return "revoked";
   if (connection.revokedAt) return "revoked";
-  return Date.parse(connection.expiresAt) <= now.getTime() ? "expired" : "active";
+  return connection.expiresAt !== null && Date.parse(connection.expiresAt) <= now.getTime()
+    ? "expired"
+    : "active";
 }
 
 /** A connection with no stored grant is one an older Home lets do everything. */
@@ -370,7 +372,7 @@ export function connectedAgentStatus(
       return {
         label: agentWords("disconnect.expired.label"),
         detail: agentWords("disconnect.expired.detail", {
-          time: `on ${formatDay(connection.expiresAt)}`,
+          time: connection.expiresAt ? `on ${formatDay(connection.expiresAt)}` : "",
           agent,
         }),
         tone: "neutral",
@@ -422,7 +424,7 @@ export function connectedAgentDetail(
         value: identity.origin ?? agentWords("agent.about.originUnknown"),
       },
       { label: agentWords("agent.about.connected"), value: formatDay(connection.createdAt) },
-      ...(row.phase === "active"
+      ...(row.phase === "active" && connection.expiresAt
         ? [{ label: agentWords("agent.about.expires"), value: formatDay(connection.expiresAt) }]
         : []),
     ],

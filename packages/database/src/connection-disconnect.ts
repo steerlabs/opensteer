@@ -26,6 +26,7 @@ import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
+import { connectionActive } from "./connection-liveness.js";
 
 export interface ConnectionCleanup {
   readonly connectionId: string;
@@ -109,7 +110,8 @@ export async function connectionAttempts(
     }
   >`
     with floor as (
-      select *, revoked_at is not null or expires_at <= now() as disconnected
+      select *, revoked_at is not null
+        or (bridge_account_id is null and expires_at <= now()) as disconnected
       from agent_connections where id = ${connectionId}
     ),
     lineage_runs as (
@@ -301,7 +303,12 @@ export async function requestExpiredCleanups(
   const candidates = await database
     .selectFrom("agentConnections")
     .select(["id", "revokedAt"])
-    .where((eb) => eb.or([eb("revokedAt", "is not", null), eb("expiresAt", "<=", now)]))
+    .where((eb) =>
+      eb.or([
+        eb("revokedAt", "is not", null),
+        eb.and([eb("bridgeAccountId", "is", null), eb("expiresAt", "<=", now)]),
+      ]),
+    )
     .where((eb) => eb.or([eb("cleanupReason", "is", null), eb("cleanupReason", "=", "narrowed")]))
     .orderBy("id")
     .execute();
@@ -309,12 +316,12 @@ export async function requestExpiredCleanups(
     await commitPersonalMutation(database, async (tx) => {
       const row = await tx
         .selectFrom("agentConnections")
-        .select(["id", "revokedAt", "expiresAt", "cleanupReason"])
+        .select(["id", "revokedAt", "expiresAt", "bridgeAccountId", "cleanupReason"])
         .where("id", "=", candidate.id)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row || (row.cleanupReason && row.cleanupReason !== "narrowed")) return;
-      if (row.revokedAt === null && row.expiresAt > now) return;
+      if (connectionActive(row, now)) return;
       await tx
         .updateTable("agentConnections")
         .set({
@@ -679,14 +686,13 @@ export async function recordConnectionRunHandoff(
   await commitPersonalMutation(database, async (tx) => {
     const connection = await tx
       .selectFrom("agentConnections")
-      .select(["grantRevision", "revokedAt", "expiresAt"])
+      .select(["grantRevision", "revokedAt", "expiresAt", "bridgeAccountId"])
       .where("id", "=", input.connectionId)
       .forShare()
       .executeTakeFirst();
     if (
       !connection ||
-      connection.revokedAt ||
-      connection.expiresAt <= new Date() ||
+      !connectionActive(connection, new Date()) ||
       connection.grantRevision !== input.grantRevision
     )
       throw new Error("The agent connection changed before this Run could be sent");
@@ -806,14 +812,13 @@ export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
       await commitPersonalMutation(database, async (tx) => {
         const connection = await tx
           .selectFrom("agentConnections")
-          .select(["grantRevision", "revokedAt", "expiresAt"])
+          .select(["grantRevision", "revokedAt", "expiresAt", "bridgeAccountId"])
           .where("id", "=", witness.connectionId)
           .forShare()
           .executeTakeFirst();
         if (
           !connection ||
-          connection.revokedAt ||
-          connection.expiresAt <= new Date() ||
+          !connectionActive(connection, new Date()) ||
           connection.grantRevision !== witness.grantRevision
         )
           throw new Error("This browser authority has ended");

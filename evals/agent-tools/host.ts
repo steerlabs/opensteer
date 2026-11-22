@@ -199,6 +199,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
               grantRevision,
               consentVersion: 1,
               accessMode: common.accessMode,
+              bridgeSenders: null,
             },
           };
         }

@@ -52,6 +52,20 @@ export type AgentConnectionIdentityPresentation = z.infer<
   typeof AgentConnectionIdentityPresentationSchema
 >;
 
+/** Who may message a bridge: the person's linked account only, or anyone in its one conversation. */
+export const BridgeSendersSchema = z.enum(["owner", "anyone"]);
+export type BridgeSenders = z.infer<typeof BridgeSendersSchema>;
+export const AgentConnectionBridgeSchema = z.object({
+  accountId: z.string().min(1).max(255),
+  /** What the provider is called ("Slack", "iMessage"). */
+  provider: z.string().min(1).max(100),
+  conversationId: z.string().min(1).max(512).nullable(),
+  senders: BridgeSendersSchema,
+  /** A one-time notice about how the update changed this bridge, until the person dismisses it. */
+  notice: z.enum(["converted", "converted-without-channels"]).optional(),
+});
+export type AgentConnectionBridge = z.infer<typeof AgentConnectionBridgeSchema>;
+
 export const AgentConnectionSchema = z.object({
   id: AgentConnectionIdSchema,
   userId: UserIdSchema,
@@ -90,9 +104,16 @@ export const AgentConnectionSchema = z.object({
   verificationWithdrawnAt: z.iso.datetime({ offset: true }).optional(),
   identity: AgentConnectionIdentityPresentationSchema.optional(),
 
+  /**
+   * Present when this connection is a messaging bridge: reached through a chat, not over MCP.
+   * A bridge covers direct messages (`conversationId` null) or one named channel or group.
+   */
+  bridge: AgentConnectionBridgeSchema.optional(),
+
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),
-  expiresAt: z.iso.datetime({ offset: true }),
+  /** Null when it does not expire: a bridge ends only when it is disconnected. */
+  expiresAt: z.iso.datetime({ offset: true }).nullable(),
 });
 export type AgentConnection = z.infer<typeof AgentConnectionSchema>;
 export const AgentConnectionConsentSchema = ChromeTabGrantCatalogSchema.extend({

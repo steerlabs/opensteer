@@ -1960,6 +1960,79 @@ export interface AgentConnectionTable {
   /** Who the person was shown at consent (`AgentConnectionIdentityAtConsent`); null before 0045. */
   identityAtConsent: Generated<Readonly<Record<string, unknown>> | null>;
   verificationWithdrawnAt: Generated<Date | null>;
+  /** A messaging bridge: the provider account it speaks through. Null for an MCP connection. */
+  bridgeAccountId: Generated<ChannelAccountId | null>;
+  /** The one channel or group it covers; null covers direct messages. */
+  bridgeConversationId: Generated<string | null>;
+  /** Who may speak: the linked owner only, or anyone in its one conversation. */
+  bridgeSenders: Generated<BridgeSenders | null>;
+  /** The binding the update converted into this bridge, once. */
+  bridgeFromBindingId: Generated<string | null>;
+  /** A one-time notice the person has not dismissed yet. */
+  bridgeNotice: Generated<BridgeNotice | null>;
+}
+
+export type BridgeSenders = "owner" | "anyone";
+export type BridgeNotice = "converted" | "converted-without-channels";
+
+export interface BridgeConversationTable {
+  id: ChannelConversationId;
+  bridgeId: string;
+  accountId: ChannelAccountId;
+  externalScopeId: string | null;
+  externalConversationId: string;
+  externalThreadId: string | null;
+  conversationType: "dm" | "group" | "channel";
+  displayName: string | null;
+  threadId: ThreadId | null;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
+export type BridgeDeliveryStatus =
+  | "pending"
+  | "leased"
+  | "attempt-started"
+  | "sent"
+  | "retryable-failed"
+  | "unknown"
+  | "dead"
+  | "cancelled";
+
+/** One message to a chat: an attempt of its bridge, written before it is sent. */
+export interface BridgeDeliveryTable {
+  id: ChannelDeliveryId;
+  bridgeId: string;
+  accountId: ChannelAccountId;
+  conversationId: ChannelConversationId;
+  messageId: MessageId | null;
+  kind: "reply" | "status";
+  part: Generated<number>;
+  partCount: Generated<number>;
+  content: JsonColumn<readonly unknown[]>;
+  status: BridgeDeliveryStatus;
+  attempts: Generated<number>;
+  claimTokenHash: Generated<string | null>;
+  claimOwner: Generated<string | null>;
+  claimExpiresAt: Generated<Date | null>;
+  nextAttemptAt: Generated<Date>;
+  lastError: Generated<string | null>;
+  receipt: JsonColumn<Readonly<Record<string, unknown>>> | null;
+  sentAt: Generated<Date | null>;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
+/** Shown in Opensteer and sent by the person from their own account to link "me". */
+export interface BridgeLinkCodeTable {
+  id: string;
+  accountId: ChannelAccountId;
+  userId: UserId;
+  codeHash: string;
+  expiresAt: Date;
+  consumedAt: Generated<Date | null>;
+  identityId: Generated<ChannelIdentityId | null>;
+  createdAt: Generated<Date>;
 }
 
 interface AgentDirectoryCacheTable {
@@ -2382,6 +2455,9 @@ export interface DatabaseSchema {
   channelIngressEvents: ChannelIngressEventTable;
   channelDeliveries: ChannelDeliveryTable;
   channelLinkCodes: ChannelLinkCodeTable;
+  bridgeConversations: BridgeConversationTable;
+  bridgeDeliveries: BridgeDeliveryTable;
+  bridgeLinkCodes: BridgeLinkCodeTable;
 }
 
 export type DeploymentRow = Selectable<DeploymentTable>;

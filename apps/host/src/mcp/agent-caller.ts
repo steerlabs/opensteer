@@ -147,6 +147,7 @@ export class AgentCallerResolver {
           grantRevision: connection.grantRevision,
           consentVersion: connection.consentVersion,
           accessMode: connection.accessMode,
+          bridgeSenders: null,
         },
       };
     }
