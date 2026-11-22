@@ -155,11 +155,11 @@ it.skipIf(Boolean(reportPath))(
     // which always ran inside the start while the rest of each pass raced its end; those two are
     // deliberately not listed, so a raw trace of a start shows two statements more.
     const reconcile = MemoryPassService.prototype.reconcileMissing;
-    let memoryPass: MemoryPassService | undefined;
+    const memoryPasses = new Set<MemoryPassService>();
     const reconciling = vi
       .spyOn(MemoryPassService.prototype, "reconcileMissing")
       .mockImplementation(function (this: MemoryPassService) {
-        memoryPass ??= this;
+        memoryPasses.add(this);
         return own.exit(() => Reflect.apply(reconcile, this, []) as ReturnType<typeof reconcile>);
       });
     close.unshift(() => reconciling.mockRestore());
@@ -180,12 +180,12 @@ it.skipIf(Boolean(reportPath))(
         armed = undefined;
         return own.run(pass.sql, read).finally(() => pass.done.resolve());
       });
-    let dispatcher: ExecutionCoordinator | undefined;
+    const dispatchers = new Set<ExecutionCoordinator>();
     const start = ExecutionCoordinator.prototype.start;
     const starting = vi.spyOn(ExecutionCoordinator.prototype, "start").mockImplementation(function (
       this: ExecutionCoordinator,
     ) {
-      dispatcher ??= this;
+      dispatchers.add(this);
       Reflect.apply(start, this, []);
     });
     close.unshift(() => starting.mockRestore());
@@ -440,6 +440,8 @@ it.skipIf(Boolean(reportPath))(
       expect(ran.status).toBe("completed");
       expect(brokerControllers).toEqual([]);
       // Each background pass, made once on purpose and measured by itself.
+      const [dispatcher] = dispatchers;
+      const [memoryPass] = memoryPasses;
       if (!dispatcher || !memoryPass) throw new Error("A background pass never started.");
       const pass = { sql: [] as string[], done: Promise.withResolvers<void>() };
       armed = pass;
