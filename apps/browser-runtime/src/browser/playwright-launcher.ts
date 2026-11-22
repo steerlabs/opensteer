@@ -2059,6 +2059,10 @@ class PlaywrightContextHandle implements BrowserContext {
    */
   private trackSavedTab(surfaceId: BrowserSurfaceId, page: BrowserPage | null): void {
     if (page === null) {
+      // The binding goes now: a name task still waiting finds it gone before its write (K7).
+      const bound = this.boundPages.get(surfaceId);
+      if (bound && this.savedSurfaceByPage.get(bound) === surfaceId)
+        this.savedSurfaceByPage.delete(bound);
       this.deferredNames.delete(surfaceId);
       this.boundPages.delete(surfaceId);
       return;

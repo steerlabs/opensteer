@@ -59,8 +59,10 @@ function countDescendantRenderers(rootPid: number): number {
 }
 
 async function startFixtureServer() {
+  const hits = new Map<string, number>();
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    hits.set(url.pathname, (hits.get(url.pathname) ?? 0) + 1);
     response.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
@@ -122,6 +124,7 @@ async function startFixtureServer() {
   return {
     originForSite: (index: number) => `http://site-${index}.localhost:${address.port}`,
     port: address.port,
+    hits: (pathname: string) => hits.get(pathname) ?? 0,
   };
 }
 
@@ -584,7 +587,7 @@ it("keeps A2's own state when [A1, A2] share a URL and A1 is deleted in Home whi
   );
 });
 
-it("fails closed on launch inventory failure by closing every restored non-helper page target", async () => {
+it("launches once more without the last session when launch has no read that agrees with itself, so no restored page ever loads (K4, test 5)", async () => {
   const server = await startFixtureServer();
   const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-f9-fail-closed-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
@@ -620,16 +623,25 @@ it("fails closed on launch inventory failure by closing every restored non-helpe
   await ledger1.close();
   await browser1.close();
 
-  // Fail launch-time inventory once -> launcher must fail closed, close every restored page target, and leave zero unowned pages!
+  // The first launch's read does not agree with itself: Chromium is closed and launched once more
+  // without its last session, so the saved page is never loaded and nothing is restored.
+  const loadsBefore = server.hits("/article");
   const invSpy = vi
     .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
-    .mockRejectedValueOnce(new Error("Helper worker failed at launch"));
+    .mockRejectedValueOnce(new Error("The tab inventory did not agree with itself."));
   const browser2 = await launcher.launch(request);
   invSpy.mockRestore();
   cleanup.push(() => browser2.close());
 
   expect(browser2.context.pages()).toHaveLength(0);
-  expect(browser2.context.sessionRestore).toBeUndefined();
+  expect(browser2.context.sessionRestore).toBeDefined();
+  // The first launch restored the page before its read could be known (it ran hidden and was
+  // closed with that browser); the relaunch loads it no more.
+  expect(server.hits("/article")).toBeLessThanOrEqual(loadsBefore + 1);
+  const prefs = JSON.parse(await readFile(path.join(directory, "Default", "Preferences"), "utf8"));
+  expect(prefs.session.restore_on_startup).toBe(5);
+  // The Home's tab comes back as a fresh page at its address.
+  await expect(browser2.context.sessionRestore!.claim(surfDupA)).resolves.toBeNull();
   const internal2 = browser2 as unknown as {
     browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
   };
@@ -637,7 +649,7 @@ it("fails closed on launch inventory failure by closing every restored non-helpe
     targetInfos: readonly { type: string; url: string }[];
   };
   const pageTargets = targets.targetInfos.filter((t) => t.type === "page");
-  // Only the private blank anchor page should remain; the restored /article page must be closed!
+  // Only the private blank anchor page remains, and no page ever had the saved address.
   expect(pageTargets.some((t) => t.url.includes("/article"))).toBe(false);
   expect(pageTargets.length).toBeLessThanOrEqual(1);
 });
@@ -1235,3 +1247,103 @@ it("serializes a claim racing a held parked discard and returns a single live un
   );
   expect(state).toEqual({ visibility: "visible", timerRan: true });
 }, 60_000);
+
+it("holds a saved page's first name write while it is claimed, reconciled, unsaved and killed: nothing is written for a binding that went, and nothing unnamed comes back (K7, test 6)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-session-restore-k7-held-name-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const request = nativeProfileRequest(directory);
+  const browser1 = await launcher.launch(request);
+  const ledger1 = new SurfaceLedger(browser1.context, { saveTabs: true });
+  await ledger1.start();
+  const restore1 = browser1.context.sessionRestore!;
+
+  // Every helper read waits while the gate is shut: the name task's read before its write.
+  let gate: PromiseWithResolvers<void> | null = Promise.withResolvers<void>();
+  const read = ChromiumTabLifecycleBridge.prototype.inventory;
+  const held = vi
+    .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
+    .mockImplementation(async function (this: ChromiumTabLifecycleBridge, ...args) {
+      if (gate) await gate.promise;
+      return read.apply(this, args);
+    });
+  const named = vi.spyOn(ChromiumTabLifecycleBridge.prototype, "nameTab");
+  cleanup.push(async () => {
+    gate?.resolve();
+    held.mockRestore();
+    named.mockRestore();
+  });
+
+  const savedUrl = `${server.originForSite(1)}/article`;
+  await ledger1.openSurface({ surfaceId: surfDupA });
+  const live = ledger1.binding(surfDupA)!;
+  await live.cdp.send("Page.navigate", { url: savedUrl });
+  await waitLoaded(live.cdp, "/article");
+  // Its first real navigation started the name task, which now waits before its write.
+  await vi.waitFor(() => expect(held).toHaveBeenCalled(), { timeout: 5_000, interval: 20 });
+
+  // A claim and a reconcile in that window take nothing: the live page stays the session's own.
+  await expect(restore1.claim(surfDupA)).resolves.toBeNull();
+  await restore1.reconcile(new Set());
+  expect(browser1.context.pages().map((page) => page.url())).toContain(savedUrl);
+  expect(live.page.isClosed()).toBe(false);
+
+  // The Home stops saving the tab before the write: no name is written for a binding that went.
+  restore1.trackSavedTab(surfDupA, null);
+  const releaseFirst = gate;
+  gate = null;
+  releaseFirst.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  expect(named).not.toHaveBeenCalled();
+
+  // A second saved page is killed with its write held: it comes back with no name, so it is
+  // never published, and its claim opens it fresh.
+  gate = Promise.withResolvers<void>();
+  const killedUrl = `${server.originForSite(2)}/form`;
+  await ledger1.openSurface({ surfaceId: surfForm });
+  const second = ledger1.binding(surfForm)!;
+  await second.cdp.send("Page.navigate", { url: killedUrl });
+  await waitLoaded(second.cdp, "/form");
+  await vi.waitFor(
+    async () => {
+      const files = await readdir(path.join(directory, "Default", "Sessions")).catch(() => []);
+      const sessions = files.filter((name) => name.startsWith("Session_"));
+      const text = await Promise.all(
+        sessions.map((name) =>
+          readFile(path.join(directory, "Default", "Sessions", name), "latin1"),
+        ),
+      );
+      expect(text.some((body) => body.includes("/form"))).toBe(true);
+    },
+    { timeout: 15_000, interval: 250 },
+  );
+  expect(named).not.toHaveBeenCalled();
+  const pid1 = (
+    browser1 as unknown as { playwrightContext: { process(): { pid: number } } }
+  ).playwrightContext.process().pid;
+  process.kill(-pid1, "SIGKILL");
+  gate.resolve();
+  gate = null;
+  await ledger1.close().catch(() => undefined);
+  await browser1.close().catch(() => undefined);
+
+  const browser2 = await launcher.launch(request);
+  cleanup.push(() => browser2.close());
+  const handedOff: string[] = [];
+  browser2.context.handOff((page) => handedOff.push(page.url()));
+  await expect(browser2.context.sessionRestore!.claim(surfForm)).resolves.toBeNull();
+  await browser2.context.sessionRestore!.reconcile(new Set([surfForm]));
+  const lifecycle2 = (
+    browser2 as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+  ).contextHandle.lifecycle;
+  const rows = await lifecycle2.inventory();
+  expect(rows.some((row) => row.url === killedUrl)).toBe(false);
+  expect(rows.some((row) => row.identity === surfForm)).toBe(false);
+  expect(handedOff).toEqual([]);
+  expect(browser2.context.pages()).toHaveLength(0);
+}, 90_000);
