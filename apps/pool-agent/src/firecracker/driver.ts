@@ -409,8 +409,16 @@ export class FirecrackerDriver implements HypervisorDriver {
     return (await readPulledEgress(this.#config.credentialsRoot, slotId)) !== undefined;
   }
 
-  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<boolean> {
-    return writePulledEgress(this.#config.credentialsRoot, slotId, egress);
+  /**
+   * Round I, found on run 8's host: a slot's proxy service can be running with no guest (a
+   * connection still pending on its socket starts it again after the guest stops), holding the
+   * credentials it read then. Changed credentials stop it, so its next start reads the new copy.
+   */
+  async writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<boolean> {
+    const changed = await writePulledEgress(this.#config.credentialsRoot, slotId, egress);
+    const index = this.#numbers.get(slotId);
+    if (changed && index !== undefined) await sleepEgress(index);
+    return changed;
   }
 
   pulledEgressFiles(slotId: string): readonly string[] {

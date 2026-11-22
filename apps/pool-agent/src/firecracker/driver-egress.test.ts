@@ -17,6 +17,7 @@ const units = new Map<
   { environment: string[]; listening: boolean; loadCredential?: string[] }
 >();
 const defined: string[][] = [];
+const stopped: string[] = [];
 
 vi.mock("./exec.js", () => ({
   run: async (command: string, args: readonly string[]) => {
@@ -32,6 +33,7 @@ vi.mock("./exec.js", () => ({
       return `${(unit?.environment ?? []).join(" ")}\n`;
     }
     if (command === "systemctl" && args[0] === "stop") {
+      stopped.push(...args.slice(1));
       for (const name of args.slice(1)) if (name.endsWith(".socket")) units.delete(index(name));
       return "";
     }
@@ -107,6 +109,7 @@ const credentials = {
 beforeEach(() => {
   units.clear();
   defined.length = 0;
+  stopped.length = 0;
 });
 
 afterEach(() => {
@@ -191,5 +194,22 @@ describe("a pulling host's slot proxies always require an upstream", () => {
     await again.prepareSlot("bps-a", undefined);
     expect(await again.proxyRequiresUpstream("bps-a")).toBe(true);
     expect(await again.reviveProxy("bps-a", undefined)).toBe(false);
+  });
+
+  // Found on run 8's host: a proxy service that a connection still pending on its socket
+  // started again after its guest stopped kept the credentials it read then, and the next
+  // guest, after a rotation, browsed with the old ones (every CONNECT refused). Changed
+  // credentials stop the slot's proxy service, so its next start reads the new copy.
+  it("stops a running proxy service when its slot's credentials change, and not otherwise", async () => {
+    const { driver } = await host();
+    await driver.writePulledEgress("bps-a", credentials);
+    await driver.prepareSlot("bps-a", undefined);
+    stopped.length = 0;
+    expect(await driver.writePulledEgress("bps-a", credentials)).toBe(false);
+    expect(stopped).not.toContain("opensteer-pool-egress-0.service");
+    expect(await driver.writePulledEgress("bps-a", { ...credentials, password: "rotated" })).toBe(
+      true,
+    );
+    expect(stopped).toContain("opensteer-pool-egress-0.service");
   });
 });
