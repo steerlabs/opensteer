@@ -1,5 +1,8 @@
 import Foundation
 
+// tests/typing-order.interaction.test.tsx ports RemoteInputGate.swift, RemoteInputTextView.swift
+// and RemoteInputEdits.swift to TypeScript to test the JavaScript adapter: change it with them.
+
 /// Where UIKit placed a native edit, carried over the edits applied after it placed it.
 ///
 /// The gate holds every native edit until JavaScript has answered the one before it, but UIKit
@@ -11,8 +14,9 @@ import Foundation
 /// applied since: a keystroke lands where it was typed, after everything typed before it, however
 /// late its turn comes. An edit that replaced the text around a place leaves it just after the
 /// replacement, as typing over a selection twice leaves the second character after the first. A
-/// caret moves past text inserted where it stands; a range keeps text inserted at its edges
-/// outside it, so a word named for autocorrect is still that word after a space typed after it.
+/// caret moves past text inserted where it stands; a range keeps an edit that begins at its end
+/// outside it, whatever that edit removed, so a word named for autocorrect is still that word after
+/// the space beside it was typed over.
 struct RemoteInputEdits {
   /// A place named in the text as it stood after `revision` edits, in UTF-16 offsets.
   struct Place: Equatable {
@@ -63,9 +67,9 @@ struct RemoteInputEdits {
     edits.removeAll()
   }
 
-  /// `before`: text inserted exactly at `offset` goes after it.
+  /// `before`: an edit that begins exactly at `offset` lies after it (the end of a range).
   private static func move(_ offset: Int, over edit: Edit, before: Bool) -> Int {
-    if offset < edit.start || (before && offset == edit.start && edit.removed == 0) { return offset }
+    if offset < edit.start || (before && offset == edit.start) { return offset }
     if offset >= edit.start + edit.removed { return offset - edit.removed + edit.inserted }
     return edit.start + edit.inserted
   }

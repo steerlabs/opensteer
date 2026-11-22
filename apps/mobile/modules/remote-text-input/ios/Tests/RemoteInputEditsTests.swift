@@ -87,6 +87,33 @@ import XCTest
     XCTAssertEqual(edits.current(waiting, length: 2).start, 2)
   }
 
+  // An edit that begins where a range ends is outside the range, whatever it removed: the word
+  // named for autocorrect is still that word after the space beside it became two line breaks.
+  func testARangeEndingWhereAnEarlierReplacementBeginsKeepsItOutside() {
+    let field = Field()
+    field.type("ab cd")
+    field.answerAll()
+    field.type("\n\n", replacing: 2, 3)
+    field.type("AB", replacing: 0, 2)
+    field.answerAll()
+    XCTAssertEqual(field.string, "AB\n\ncd")
+  }
+
+  // The mirror cases, read as the lead asked: a range starting where an earlier edit's removed
+  // text ended, and a range strictly containing a replaced region.
+  func testARangeStartingWhereAnEarlierRemovalEndedFollowsIt() {
+    var edits = RemoteInputEdits()
+    let word = edits.place(3, 5)
+    edits.record(start: 1, removed: 2, inserted: 1)
+    XCTAssertTrue(edits.current(word, length: 10) == (2, 4))
+  }
+  func testARangeContainingAReplacedRegionGrowsAndShrinksWithIt() {
+    var edits = RemoteInputEdits()
+    let range = edits.place(0, 5)
+    edits.record(start: 1, removed: 2, inserted: 4)
+    XCTAssertTrue(edits.current(range, length: 10) == (0, 7))
+  }
+
   func testAnEditAfterAPlaceDoesNotMoveIt() {
     var edits = RemoteInputEdits()
     let waiting = edits.place(1, 2)

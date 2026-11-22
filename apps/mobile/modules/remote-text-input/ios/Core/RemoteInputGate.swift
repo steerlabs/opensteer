@@ -1,3 +1,5 @@
+// tests/typing-order.interaction.test.tsx ports RemoteInputGate.swift, RemoteInputTextView.swift
+// and RemoteInputEdits.swift to TypeScript to test the JavaScript adapter: change it with them.
 import Foundation
 
 /// One event at a time: the bridge must decide before UIKit applies the default.

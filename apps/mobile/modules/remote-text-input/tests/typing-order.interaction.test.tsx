@@ -13,6 +13,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * ported: every default waits for its numbered answer, the answers arrive only when the test lets
  * them, late and out of step with the keystrokes, and the keyboard names places in the text as it
  * stands at the moment it types.
+ *
+ * Keep this port in step with ios/Core/RemoteInputGate.swift, RemoteInputTextView.swift and
+ * RemoteInputEdits.swift: nothing checks one against the other.
  */
 
 interface Packet {
@@ -115,8 +118,7 @@ class NativeField {
     if (place.revision >= this.base) {
       const caret = start === end;
       const move = (offset: number, before: boolean, edit: (typeof this.edits)[number]) => {
-        if (offset < edit.start || (before && offset === edit.start && edit.removed === 0))
-          return offset;
+        if (offset < edit.start || (before && offset === edit.start)) return offset;
         if (offset >= edit.start + edit.removed) return offset - edit.removed + edit.inserted;
         return edit.start + edit.inserted;
       };
@@ -202,6 +204,14 @@ class NativeField {
         };
       },
     );
+  }
+  /** replace(_:withText:): UIKit replaces a range it names, as autocorrect does. */
+  replaceRange(start: number, end: number, replacement: string) {
+    const typed = this.place(start, end);
+    this.change("insertReplacementText", replacement, () => {
+      const target = this.current(typed);
+      this.replace(target.start, target.end, replacement);
+    });
   }
   deleteBackward() {
     const typed = this.place(this.selection.start, this.selection.end);
@@ -453,6 +463,17 @@ describe("typing into a remote field", () => {
     await keyboard((field) => field.type("c"));
     await answerAll();
     expect(remote.value).toBe(`ab${pasted}c`);
+  });
+
+  // An edit that begins where a named range ends is outside it, whatever it removed.
+  it("replaces only the word named when the space beside it was replaced first", async () => {
+    const { native, keyboard, answerAll } = await open();
+    await keyboard((field) => field.type("ab cd"));
+    await answerAll();
+    await keyboard((field) => field.replaceRange(2, 3, "\n\n"));
+    await keyboard((field) => field.replaceRange(0, 2, "AB"));
+    await answerAll();
+    expect(native.text).toBe("AB\n\ncd");
   });
 
   it("deletes what was typed last, however late its turn", async () => {
