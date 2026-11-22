@@ -122,11 +122,17 @@ export async function upBrowserPoolMigration(
       slot_erased_at timestamptz,
       profile_erased_at timestamptz,
       credentials_erased_at timestamptz,
+      failed_at timestamptz,
       last_error text,
       created_at timestamptz not null default now(),
       updated_at timestamptz not null default now(),
       tombstoned_at timestamptz
     )
+  `.execute(db);
+
+  await sql`
+    alter table browser_pool_slots
+      add column if not exists failed_at timestamptz
   `.execute(db);
 
   await sql`

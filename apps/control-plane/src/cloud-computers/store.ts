@@ -49,6 +49,7 @@ import {
 import { BrowserPoolStore } from "./pool-store.js";
 import {
   egressEndpointInvalidReason,
+  normalizeEgressEndpoint,
   validateEgressCredential,
   validateEgressUpstreamUrl,
 } from "./egress-validation.js";
@@ -1697,6 +1698,7 @@ export class CloudComputerStore {
       }
       const pooled = row.browserMode === "pool";
       const endpoint = pooled ? undefined : await this.#assignEgress(tx, id);
+      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
       const marker = await workMarker(tx, row.workAssignmentId);
       const { cipher } = this.#options;
       const backup = await tx
@@ -1745,7 +1747,7 @@ export class CloudComputerStore {
           ? { releaseManifestUrl: this.#options.config.releaseManifestUrl }
           : {}),
         ...(pooled ? { browserPool: true } : {}),
-        ...(endpoint ? { egress: this.#egressCredentials(endpoint) } : {}),
+        ...(egress ? { egress } : {}),
         backup: {
           endpoint: backupEndpoint,
           bucket,
@@ -1760,31 +1762,45 @@ export class CloudComputerStore {
   }
 
   #egressCredentials(endpoint: Selectable<CloudComputerEgressEndpointTable>) {
-    return {
+    const password = this.#options.cipher.open(`egress:${endpoint.id}`, 1, endpoint.sealedPassword);
+    const normalized = normalizeEgressEndpoint({
       url: endpoint.url,
       username: endpoint.username,
-      password: this.#options.cipher.open(`egress:${endpoint.id}`, 1, endpoint.sealedPassword),
-    };
+      password,
+    });
+    return normalized.ok ? normalized.value : undefined;
   }
 
   async #assignEgress(tx: TransactionDb, id: CloudComputerId) {
     const endpoints = tx.selectFrom("cloudComputerEgressEndpoints").selectAll();
-    let endpoint = await endpoints.where("computerId", "=", id).executeTakeFirst();
-    if (!endpoint) {
-      endpoint = await endpoints
-        .where("computerId", "is", null)
-        .where("needsRotation", "=", false)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .skipLocked()
-        .limit(1)
-        .executeTakeFirst();
-      if (endpoint) {
-        await tx
-          .updateTable("cloudComputerEgressEndpoints")
-          .set({ computerId: id })
-          .where("id", "=", endpoint.id)
-          .executeTakeFirst();
+    const assigned = await endpoints.where("computerId", "=", id).executeTakeFirst();
+    let endpoint: Selectable<CloudComputerEgressEndpointTable> | undefined;
+    if (assigned) {
+      // Y6: never serve an already-assigned row that fails the strict egress rule.
+      endpoint = this.#egressCredentials(assigned) ? assigned : undefined;
+    } else {
+      // Y6: scan free rows in id order with skipLocked and skip any legacy invalid row without assigning it.
+      let afterId: string | undefined;
+      while (!endpoint) {
+        let query = endpoints
+          .where("computerId", "is", null)
+          .where("needsRotation", "=", false)
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .skipLocked()
+          .limit(1);
+        if (afterId !== undefined) query = query.where("id", ">", afterId);
+        const candidate = await query.executeTakeFirst();
+        if (!candidate) break;
+        afterId = candidate.id;
+        if (this.#egressCredentials(candidate)) {
+          await tx
+            .updateTable("cloudComputerEgressEndpoints")
+            .set({ computerId: id })
+            .where("id", "=", candidate.id)
+            .executeTakeFirst();
+          endpoint = candidate;
+        }
       }
     }
     await tx
@@ -1867,7 +1883,8 @@ export class CloudComputerStore {
         .selectAll()
         .where("computerId", "=", id)
         .executeTakeFirst();
-      return endpoint ? { egress: this.#egressCredentials(endpoint) } : {};
+      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
+      return egress ? { egress } : {};
     });
   }
 

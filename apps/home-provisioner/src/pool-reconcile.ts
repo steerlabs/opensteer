@@ -405,30 +405,39 @@ export class PoolReconciler {
       }
 
       if (state === "deleted") {
-        // W10 + T2: durable disk is deleted ONLY here, with zero slots in Account and host `list`.
+        // W10 + T2 + X3: durable disk is deleted ONLY with zero slots in Account AND either:
+        // (a) the host never enrolled (no profile data can exist), or
+        // (b) every provider VM is observed off or absent, or
+        // (c) every running VM is enrolled with an internal IP and host key and its signed agent `list` returns [].
+        // Any transitioning VM, running VM without an internal IP, ever-enrolled running VM without
+        // current enrolment/hostKey, or silent running VM waits in `deleting`.
         if (hasAccountSlots) return report("deleting");
-        if (
-          current?.status === "running" &&
-          current.internalIpv4 &&
-          host.enrolled &&
-          host.hostKey
-        ) {
-          try {
-            const liveSlots = await agent.list(
-              {
-                hostId: id,
-                internalIp: current.internalIpv4,
-                adminPort: pool.adminPort,
-                hostKeySpki: host.hostKey,
-              },
-              signal,
-            );
-            if (liveSlots.length > 0) return report("deleting");
-          } catch (error) {
-            // X3: A running host that does not answer list is unknown; wait rather than delete its disk.
-            signal.throwIfAborted();
-            this.#options.onError?.(error);
+        if (host.everEnrolled) {
+          if (servers.some((server) => server.status === "transitioning")) {
             return report("deleting");
+          }
+          for (const server of servers) {
+            if (server.status !== "running") continue;
+            if (!server.internalIpv4 || !host.enrolled || !host.hostKey) {
+              return report("deleting");
+            }
+            try {
+              const liveSlots = await agent.list(
+                {
+                  hostId: id,
+                  internalIp: server.internalIpv4,
+                  adminPort: pool.adminPort,
+                  hostKeySpki: host.hostKey,
+                },
+                signal,
+              );
+              if (liveSlots.length > 0) return report("deleting");
+            } catch (error) {
+              // X3: A running host that does not answer list is unknown; wait rather than delete its disk.
+              signal.throwIfAborted();
+              this.#options.onError?.(error);
+              return report("deleting");
+            }
           }
         }
         let vmsGone = true;
@@ -650,7 +659,10 @@ export class PoolReconciler {
       try {
         const report = await this.#applySlot(slot, target, observedById.get(slot.slotId), signal);
         if (!report) continue;
-        const key = JSON.stringify(report);
+        // Y4: Include Account's current phase/failedAt in the cache key (and each journaled write
+        // carries a fresh attemptToken and clears this cache) so repeated identical failures after
+        // the 10-minute backoff or an operator retry are never swallowed.
+        const key = `${slot.phase}:${slot.failedAt ?? ""}:${JSON.stringify(report)}`;
         if (this.#slotReports.get(slot.slotId) === key) continue;
         this.#slotReports.delete(slot.slotId);
         if (await this.#options.account.reportSlot(report, signal)) {
@@ -674,6 +686,7 @@ export class PoolReconciler {
     const { slotId, hostGeneration } = slot;
     let term = slot.term;
     let revision = slot.revision;
+    let attemptToken: string | undefined;
 
     const pending = new Map((slot.pendingAgentWrites ?? []).map((write) => [write.token, write]));
     const finish = async (token: string) => {
@@ -694,6 +707,8 @@ export class PoolReconciler {
       action: (job: AbortSignal) => Promise<T>,
     ): Promise<T> => {
       const token = randomUUID();
+      attemptToken = token;
+      this.#slotReports.delete(slotId);
       const write: BrowserPoolSlotAgentWrite = {
         token,
         kind,
@@ -767,6 +782,7 @@ export class PoolReconciler {
           profileErased,
           credentialsErased,
           lastError: null,
+          ...(attemptToken ? { attemptToken } : {}),
         };
       }
 
@@ -824,6 +840,7 @@ export class PoolReconciler {
           profileErased: false,
           credentialsErased: false,
           lastError: null,
+          ...(attemptToken ? { attemptToken } : {}),
         };
       }
 
@@ -856,11 +873,32 @@ export class PoolReconciler {
         profileErased: false,
         credentialsErased: false,
         lastError: null,
+        ...(attemptToken ? { attemptToken } : {}),
       };
     } catch (error) {
       signal.throwIfAborted();
       if (error instanceof Superseded || accountRefused(error)) throw error;
       this.#options.onError?.(error);
+      if (isProfileDiskNotMountedConflict(error)) {
+        // Y1: Agent refused because the durable profile disk is not mounted; nothing was made or erased.
+        // Treat as "not done, host is not ready": never mark ready/deleted, never trigger slot failure
+        // backoff, and never drop deleting slots (so the durable profile disk is never deleted).
+        return slot.state === "deleting"
+          ? {
+              slotId,
+              hostGeneration,
+              revision,
+              term,
+              phase: "deleting",
+              controlKey: null,
+              slotErased: slot.slotErased,
+              profileErased: slot.profileErased,
+              credentialsErased: slot.credentialsErased,
+              lastError: null,
+              ...(attemptToken ? { attemptToken } : {}),
+            }
+          : undefined;
+      }
       if (isDefiniteAgentRefusal(error)) {
         const diskFull =
           error.refusal === "conflict" &&
@@ -878,12 +916,21 @@ export class PoolReconciler {
           lastError: diskFull
             ? "This host's profile disk is full."
             : "The pool host rejected the slot administration request.",
+          ...(attemptToken ? { attemptToken } : {}),
         };
       }
       // Unknown stays unknown: leave pending write and current Account phase unchanged.
       return undefined;
     }
   }
+}
+
+function isProfileDiskNotMountedConflict(error: unknown): boolean {
+  return (
+    isDefiniteAgentRefusal(error) &&
+    error.refusal === "conflict" &&
+    /^The profile disk is not mounted\b/u.test(error.message)
+  );
 }
 
 function rateLimited(error: unknown): ProviderRateLimited | undefined {

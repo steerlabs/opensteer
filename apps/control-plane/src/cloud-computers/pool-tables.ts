@@ -75,6 +75,7 @@ export interface BrowserPoolSlotTable {
   readonly slotErasedAt: Date | null;
   readonly profileErasedAt: Date | null;
   readonly credentialsErasedAt: Date | null;
+  readonly failedAt: Date | null;
   readonly lastError: BrowserPoolSlotError | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;

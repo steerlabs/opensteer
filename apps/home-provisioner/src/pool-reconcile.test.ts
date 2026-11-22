@@ -81,18 +81,20 @@ type FakeAgentFaultMode =
   | "partial-erase-no-credentials";
 
 /**
- * Signed fake pool agent modeled directly on `apps/pool-agent/src/agent.ts` at head `c351478fb`
- * (a pulling host with `driver.requireEgressUpstream: true`):
- * - `create`: refuses `guest.profilePath` or `guest.egress`, enforces `guest.profileMib`,
- *   enforces profile filesystem capacity (`ProfilesFull` -> signed `conflict` with
- *   "A <N> MiB profile would make this host's profiles exceed their filesystem."),
- *   and reuses an existing profile for the slot id without reformatting.
+ * Signed fake pool agent modeled directly on `apps/pool-agent/src/agent.ts` at head `94c631128`
+ * (a pulling host with `driver.requireEgressUpstream: true` and `driver.profilesMount`):
+ * - `create`: enforces `profilesMounted` (`ProfilesNotMounted` -> signed `conflict` "The profile
+ *   disk is not mounted: ..."), refuses `guest.profilePath` or `guest.egress`, enforces
+ *   `guest.profileMib`, enforces profile filesystem capacity (`ProfilesFull` -> signed `conflict`
+ *   with "A <N> MiB profile would make this host's profiles exceed their filesystem."), and reuses
+ *   an existing profile for the slot id without reformatting.
  * - `replace-key`: requires strictly higher term (otherwise signed `conflict`), returns `unknown-slot`
  *   if absent.
- * - `delete`: checks term match if slot is known, erases slot + derived credential paths + profile
- *   when `eraseProfile` is set, and returns `credentialsErased: true` whenever the slot's derived
- *   credential paths are seen gone (including slots that never pulled egress, repeated deletes,
- *   and unknown slots on a pulling host).
+ * - `delete`: enforces `profilesMounted` before erasing anything (signed `conflict`, never
+ *   `profileErased`), checks term match if slot is known, erases slot + derived credential paths +
+ *   profile when `eraseProfile` is set, and returns `credentialsErased: true` whenever the slot's
+ *   derived credential paths are seen gone (including slots that never pulled egress, repeated
+ *   deletes, and unknown slots on a pulling host).
  */
 class FakePoolAgent {
   readonly slots = new Map<
@@ -121,6 +123,7 @@ class FakePoolAgent {
   readonly onOp?: ((op: string) => void) | undefined;
   profileFilesystemMib = 450_000;
   requireEgressUpstream = true;
+  profilesMounted = true;
 
   constructor(options: {
     hostId: string;
@@ -205,6 +208,19 @@ class FakePoolAgent {
       };
     } else if (envelope.request.op === "create") {
       const req = envelope.request;
+      if (!this.profilesMounted) {
+        return this.#signed(
+          hostPrivateKey!,
+          reqBytes,
+          {
+            op: "refused",
+            code: "conflict",
+            message:
+              "The profile disk is not mounted: /var/lib/opensteer-pool/profiles is not a mount point.",
+          },
+          409,
+        );
+      }
       if (req.guest.profilePath !== undefined) {
         return this.#signed(
           hostPrivateKey!,
@@ -320,6 +336,19 @@ class FakePoolAgent {
       }
     } else {
       const req = envelope.request;
+      if (!this.profilesMounted) {
+        return this.#signed(
+          hostPrivateKey!,
+          reqBytes,
+          {
+            op: "refused",
+            code: "conflict",
+            message:
+              "The profile disk is not mounted: /var/lib/opensteer-pool/profiles is not a mount point.",
+          },
+          409,
+        );
+      }
       const existing = this.slots.get(req.slotId);
       if (existing && req.term !== undefined && existing.term !== req.term) {
         return this.#signed(
@@ -1150,6 +1179,69 @@ describe("PoolReconciler — hosts", () => {
     expect(h.compute.disks.size).toBe(0);
   });
 
+  it("waits on deletion when an enrolled host is transitioning, running without an internal address, or running while un-enrolled after replacement (X3 completed)", async () => {
+    // 1. Transitioning (STAGING / STOPPING / restarting) enrolled host waits.
+    const h1 = createHarness();
+    const { host: host1 } = await h1.bringHostReady();
+    const vm1 = [...h1.compute.instances.values()][0]!;
+    vm1.status = "STAGING";
+    const req1 = h1.compute.requests.length;
+    h1.hosts.set(hostId, { ...host1, state: "deleted", revision: host1.revision + 1 });
+    await h1.reconciler.pass(h1.signal);
+    expect(h1.hostReports.at(-1)?.phase).toBe("deleting");
+    expect(h1.compute.instances.size).toBe(1);
+    expect(h1.compute.disks.size).toBe(1);
+    expect(h1.compute.requests.slice(req1).filter((r) => r.method === "DELETE")).toEqual([]);
+
+    // 2. Running enrolled host with no internal IP waits.
+    const h2 = createHarness();
+    const { host: host2 } = await h2.bringHostReady();
+    const vm2 = [...h2.compute.instances.values()][0]!;
+    vm2.networkInterfaces = [{ name: "nic0", accessConfigs: [] }];
+    const req2 = h2.compute.requests.length;
+    h2.hosts.set(hostId, { ...host2, state: "deleted", revision: host2.revision + 1 });
+    await h2.reconciler.pass(h2.signal);
+    expect(h2.hostReports.at(-1)?.phase).toBe("deleting");
+    expect(h2.compute.instances.size).toBe(1);
+    expect(h2.compute.disks.size).toBe(1);
+    expect(h2.compute.requests.slice(req2).filter((r) => r.method === "DELETE")).toEqual([]);
+
+    // 3. Previously enrolled host (everEnrolled=true) whose replacement VM is running but not enrolled yet waits.
+    const h3 = createHarness();
+    const { host: host3 } = await h3.bringHostReady();
+    const req3 = h3.compute.requests.length;
+    h3.hosts.set(hostId, {
+      ...host3,
+      state: "deleted",
+      enrolled: false,
+      everEnrolled: true,
+      hostKey: undefined,
+      revision: host3.revision + 1,
+    });
+    await h3.reconciler.pass(h3.signal);
+    expect(h3.hostReports.at(-1)?.phase).toBe("deleting");
+    expect(h3.compute.instances.size).toBe(1);
+    expect(h3.compute.disks.size).toBe(1);
+    expect(h3.compute.requests.slice(req3).filter((r) => r.method === "DELETE")).toEqual([]);
+
+    // 4. Never-enrolled host (everEnrolled=false) with a running VM deletes cleanly without list.
+    const h4 = createHarness();
+    h4.hosts.set(hostId, h4.defaultHost());
+    await h4.reconciler.pass(h4.signal);
+    const unenrolled = h4.hosts.get(hostId)!;
+    expect(unenrolled.everEnrolled).toBe(false);
+    h4.hosts.set(hostId, {
+      ...unenrolled,
+      state: "deleted",
+      bootstrapToken: undefined,
+      revision: unenrolled.revision + 1,
+    });
+    await h4.reconciler.pass(h4.signal);
+    expect(h4.hostReports.at(-1)?.phase).toBe("deleted");
+    expect(h4.compute.instances.size).toBe(0);
+    expect(h4.compute.disks.size).toBe(0);
+  });
+
   it("never deletes a pool host while Account or the host agent list still reports a live slot", async () => {
     const h = createHarness();
     const { host } = await h.bringHostReady();
@@ -1480,6 +1572,49 @@ describe("PoolReconciler — slots", () => {
       phase: "ready",
       lastError: null,
     });
+  });
+
+  it("reports a second identical failure after the 10-minute backoff and after an operator retry so failedAt advances and Account never stays stuck in preparing (Y4)", async () => {
+    const h = createHarness();
+    const { host } = await h.bringHostReady();
+    h.slots.set(slotId, h.defaultSlot(host));
+    h.agent.calls.length = 0;
+
+    // 1st failure at t=0 -> reportSlot called, failedAt = t=0.
+    h.agent.nextReply = { op: "create", mode: "profile-disk-full" };
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.calls.filter((op) => op === "create")).toHaveLength(1);
+    expect(h.slotReports).toHaveLength(1);
+    const firstFailedAt = h.slots.get(slotId)!.failedAt;
+    expect(firstFailedAt).toBeDefined();
+
+    // At t=10m, retry fails AGAIN with the exact same error -> reportSlot MUST be sent again so failedAt advances!
+    h.advance(10 * 60_000);
+    h.agent.nextReply = { op: "create", mode: "profile-disk-full" };
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.calls.filter((op) => op === "create")).toHaveLength(2);
+    expect(h.slotReports).toHaveLength(2);
+    const secondFailedAt = h.slots.get(slotId)!.failedAt;
+    expect(secondFailedAt).not.toBe(firstFailedAt);
+
+    // At t=11m (1m after 2nd failure), must NOT retry again!
+    h.advance(60_000);
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.calls.filter((op) => op === "create")).toHaveLength(2);
+
+    // Operator runs pool-slot-retry (phase -> preparing, failedAt -> undefined, SAME revision).
+    h.slots.set(slotId, {
+      ...h.slots.get(slotId)!,
+      phase: "preparing",
+      failedAt: undefined,
+    });
+    // Next pass fails AGAIN with the exact same error -> reportSlot MUST be sent so Account returns to failed (not preparing)!
+    h.advance(1_000);
+    h.agent.nextReply = { op: "create", mode: "profile-disk-full" };
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.calls.filter((op) => op === "create")).toHaveLength(3);
+    expect(h.slotReports).toHaveLength(3);
+    expect(h.slots.get(slotId)?.phase).toBe("failed");
   });
 
   it("keeps a signed unavailable refusal unknown and recovers via list", async () => {
@@ -1848,6 +1983,63 @@ describe("PoolReconciler — slots", () => {
     );
     expect(unknownDelete.erased).toBe(true);
     expect(unknownDelete.credentialsErased).toBe(false);
+  });
+
+  it("treats agent ProfilesNotMounted conflict on create and delete as not done / host not ready, never ready, failed, or deleted (Y1)", async () => {
+    const h = createHarness();
+    const { host } = await h.bringHostReady();
+    const diskName = host.profileDiskName;
+    const slot = h.defaultSlot(host);
+    h.slots.set(slotId, slot);
+
+    // 1. Create while profile disk is not mounted -> signed conflict, journal cleared, slot NOT ready and NOT failed.
+    h.agent.profilesMounted = false;
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.slots.has(slotId)).toBe(false);
+    expect(h.agent.profiles.has(slotId)).toBe(false);
+    expect(h.slots.get(slotId)!.pendingAgentWrites).toEqual([]);
+    expect(h.slotReports).toHaveLength(0);
+    expect(h.slots.get(slotId)!.phase).toBe("preparing");
+
+    // 2. As soon as the mount returns (without waiting 10 minutes!), the very next pass creates the slot cleanly.
+    h.agent.profilesMounted = true;
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.slots.has(slotId)).toBe(true);
+    expect(h.agent.profiles.has(slotId)).toBe(true);
+    expect(h.slotReports.at(-1)?.phase).toBe("ready");
+
+    // 3. Delete while profile disk is not mounted -> signed conflict, nothing erased, NEVER deleted or profileErased,
+    //    and a concurrent host deletion cannot remove the durable profile disk while this slot stays deleting.
+    h.slots.set(slotId, {
+      ...h.slots.get(slotId)!,
+      state: "deleting",
+      phase: "deleting",
+      revision: h.slots.get(slotId)!.revision + 1,
+    });
+    h.hosts.set(hostId, { ...host, state: "deleted", revision: host.revision + 1 });
+    h.agent.profilesMounted = false;
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.slots.has(slotId)).toBe(true);
+    expect(h.agent.profiles.has(slotId)).toBe(true);
+    expect(h.slots.get(slotId)!.pendingAgentWrites).toEqual([]);
+    const afterBlockedDelete = h.slotReports.at(-1)!;
+    expect(afterBlockedDelete.phase).toBe("deleting");
+    expect(afterBlockedDelete.slotErased).toBe(false);
+    expect(afterBlockedDelete.profileErased).toBe(false);
+    expect(afterBlockedDelete.credentialsErased).toBe(false);
+    expect(afterBlockedDelete.lastError).toBeNull();
+    expect(h.compute.disks.has(diskName)).toBe(true);
+
+    // 4. Mount returns -> delete now settles with all three erasure proofs.
+    h.agent.profilesMounted = true;
+    await h.reconciler.pass(h.signal);
+    expect(h.agent.slots.has(slotId)).toBe(false);
+    expect(h.agent.profiles.has(slotId)).toBe(false);
+    const settled = h.slotReports.at(-1)!;
+    expect(settled.phase).toBe("deleted");
+    expect(settled.slotErased).toBe(true);
+    expect(settled.profileErased).toBe(true);
+    expect(settled.credentialsErased).toBe(true);
   });
 
   it("logs structured fatal errors, sets exitCode=1, and resolves main module paths portably (X5)", async () => {

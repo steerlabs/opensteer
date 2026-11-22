@@ -1,4 +1,5 @@
 import { generateKeyPairSync, randomUUID, sign, type KeyObject } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import {
   BrowserPoolHostBootCompleteResponseSchema,
   BrowserPoolHostBootResponseSchema,
@@ -1607,93 +1608,147 @@ integration("Browser pool Account service", () => {
     }
   });
 
-  it("rejects invalid egress endpoints on add and rotate, preserves explicit :443, and flags legacy invalid rows in egress-list without mutating them", async () => {
+  it("normalises https://h, https://h:443, and https://h:8443/ on add, repairs legacy portless rows on both Home and pool routes, and never assigns or serves invalid legacy rows (Y6)", async () => {
     const h = await buildHarness("2");
     try {
-      const { hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
+      const { accountId, hostId, enrolled, slot } = await h.setupPooledHomeAndHost();
 
-      await expect(
-        h.cloudStore.addEgressEndpoint({
-          url: "https://egress.example.test",
-          username: "user",
-          password: "secret-password",
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message: expect.stringMatching(/explicit port/iu),
+      // 1. Add table: https://h -> https://h:443, https://h:8443/ -> https://h:8443; invalid forms refused.
+      const idImplicit443 = await h.cloudStore.addEgressEndpoint({
+        url: "https://egress-implicit.example.test",
+        username: "user-443",
+        password: "password-443",
       });
-
-      await expect(
-        h.cloudStore.addEgressEndpoint({
-          url: "https://egress.example.test:8443/",
-          username: "user",
-          password: "secret-password",
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message: expect.stringMatching(/path or trailing slash/iu),
+      const idTrailingSlash = await h.cloudStore.addEgressEndpoint({
+        url: "https://egress-slash.example.test:8443/",
+        username: "user-8443",
+        password: "password-8443",
       });
-
+      // Explicit :443 collides with the already-normalised implicit :443 row.
       await expect(
         h.cloudStore.addEgressEndpoint({
+          url: "https://egress-implicit.example.test:443",
+          username: "user-443-dup",
+          password: "password-443-dup",
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+
+      const stored = await database
+        .selectFrom("cloudComputerEgressEndpoints")
+        .select(["id", "url"])
+        .where("id", "in", [idImplicit443, idTrailingSlash])
+        .execute();
+      expect(stored.find((r) => r.id === idImplicit443)?.url).toBe(
+        "https://egress-implicit.example.test:443",
+      );
+      expect(stored.find((r) => r.id === idTrailingSlash)?.url).toBe(
+        "https://egress-slash.example.test:8443",
+      );
+
+      for (const bad of [
+        {
           url: "https://egress.example.test:0",
           username: "user",
           password: "secret-password",
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message: expect.stringMatching(/port/iu),
-      });
-
-      await expect(
-        h.cloudStore.addEgressEndpoint({
+          pattern: /port/iu,
+        },
+        {
+          url: "https://egress.example.test:8443/path",
+          username: "user",
+          password: "secret-password",
+          pattern: /path/iu,
+        },
+        {
           url: "https://egress.example.test:8443",
           username: "   ",
           password: "secret-password",
-        }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-
-      await expect(
-        h.cloudStore.addEgressEndpoint({
+          pattern: /blank/iu,
+        },
+        {
           url: "https://egress.example.test:8443",
           username: "bad:user",
           password: "secret-password",
+          pattern: /':'/u,
+        },
+        {
+          url: "https://egress.example.test:8443",
+          username: "user",
+          password: "secret\npassword",
+          pattern: /control characters/iu,
+        },
+        {
+          url: `https://${"a".repeat(1020)}.example.test:8443`,
+          username: "user",
+          password: "secret-password",
+          pattern: /1024/u,
+        },
+      ]) {
+        await expect(
+          h.cloudStore.addEgressEndpoint({
+            url: bad.url,
+            username: bad.username,
+            password: bad.password,
+          }),
+        ).rejects.toMatchObject({
+          code: "bad_request",
+          message: expect.stringMatching(bad.pattern),
+        });
+      }
+
+      // egress-rotate refuses invalid credentials with clear reasons.
+      await expect(
+        h.cloudStore.rotateEgressEndpoint(idImplicit443, {
+          username: "bad:user",
+          password: "new-password",
         }),
       ).rejects.toMatchObject({
         code: "bad_request",
         message: expect.stringMatching(/':'/u),
       });
-
       await expect(
-        h.cloudStore.addEgressEndpoint({
-          url: "https://egress.example.test:8443",
-          username: "user",
-          password: "secret\npassword",
+        h.cloudStore.rotateEgressEndpoint(idImplicit443, {
+          username: "good-user",
+          password: "bad\tpassword",
         }),
       ).rejects.toMatchObject({
         code: "bad_request",
         message: expect.stringMatching(/control characters/iu),
       });
 
-      await expect(
-        h.cloudStore.addEgressEndpoint({
-          url: `https://${"a".repeat(1020)}.example.test:8443`,
-          username: "user",
-          password: "secret-password",
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message: expect.stringMatching(/1024/u),
-      });
+      // Clear the two added endpoints so we can test legacy DB rows cleanly.
+      await database.deleteFrom("cloudComputerEgressEndpoints").execute();
 
-      // Valid endpoint with explicit :443 preserves :443 verbatim (never stripped by URL.origin).
-      const validId = await h.cloudStore.addEgressEndpoint({
-        url: "https://egress-valid.example.test:443",
-        username: "valid-user",
-        password: "valid-password",
-        publicAddress: "198.51.100.19",
-      });
-      const res = await h.app.inject({
+      // 2. Insert a BROKEN legacy row (ordered FIRST by id) and a portless legacy row (ordered SECOND by id).
+      const brokenId = "00000000-0000-4000-8000-000000000001";
+      const legacy443Id = "00000000-0000-4000-8000-000000000002";
+      await database
+        .insertInto("cloudComputerEgressEndpoints")
+        .values([
+          {
+            id: brokenId,
+            url: "https://broken.example.test:8443/badpath",
+            username: "broken-user",
+            publicAddress: null,
+            computerId: null,
+            sealedPassword: cipher.seal(`egress:${brokenId}`, 1, "broken-password"),
+            needsRotation: false,
+            retired: false,
+          },
+          {
+            id: legacy443Id,
+            url: "https://legacy-443.example.test",
+            username: "legacy-user",
+            publicAddress: null,
+            computerId: null,
+            sealedPassword: cipher.seal(`egress:${legacy443Id}`, 1, "legacy-password"),
+            needsRotation: false,
+            retired: false,
+          },
+        ])
+        .execute();
+
+      // Pool host slot-egress MUST skip brokenId and assign legacy443Id, serving it normalised with :443!
+      const poolRes = await h.app.inject({
         method: "POST",
         url: browserPoolHostSlotEgressPath(hostId),
         payload: signSlotEgress(
@@ -1703,74 +1758,91 @@ integration("Browser pool Account service", () => {
           enrolled.hostKey.privateKey,
         ),
       });
-      expect(res.statusCode).toBe(200);
-      const parsed = CloudComputerEgressResponseSchema.parse(JSON.parse(res.body));
-      expect(CloudComputerEgressSchema.parse(parsed.egress)).toEqual({
-        url: "https://egress-valid.example.test:443",
-        username: "valid-user",
-        password: "valid-password",
-      });
-
-      // egress-rotate refuses invalid credentials with clear reasons.
-      await expect(
-        h.cloudStore.rotateEgressEndpoint(validId, {
-          username: "bad:user",
-          password: "new-password",
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message: expect.stringMatching(/':'/u),
-      });
-      await expect(
-        h.cloudStore.rotateEgressEndpoint(validId, {
-          username: "good-user",
-          password: "bad\tpassword",
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message: expect.stringMatching(/control characters/iu),
-      });
-
-      // Pre-existing invalid row already in the DB is reported by egress-list with invalidReason and left untouched.
-      const legacyId = randomUUID();
-      await database
-        .insertInto("cloudComputerEgressEndpoints")
-        .values({
-          id: legacyId,
-          url: "https://legacy-no-port.example.test",
+      expect(poolRes.statusCode).toBe(200);
+      expect(JSON.parse(poolRes.body)).toEqual({
+        egress: {
+          url: "https://legacy-443.example.test:443",
           username: "legacy-user",
-          publicAddress: null,
-          computerId: null,
-          sealedPassword: cipher.seal(`egress:${legacyId}`, 1, "legacy-password"),
-          needsRotation: false,
-          retired: false,
-        })
-        .execute();
+          password: "legacy-password",
+        },
+      });
+      const brokenRowAfter = await database
+        .selectFrom("cloudComputerEgressEndpoints")
+        .select(["computerId", "url"])
+        .where("id", "=", brokenId)
+        .executeTakeFirstOrThrow();
+      expect(brokenRowAfter.computerId).toBeNull();
 
+      // egress-list flags brokenId with invalidReason (without modifying DB) and does NOT flag legacy443Id (repairs cleanly).
       const listed = (await runCloudComputerOperator(h.cloudStore, ["egress-list"])) as Array<{
         id: string;
         url: string;
         invalidReason?: string;
       }>;
-      const validEntry = listed.find((entry) => entry.id === validId);
-      expect(validEntry?.invalidReason).toBeUndefined();
-      const legacyEntry = listed.find((entry) => entry.id === legacyId);
-      expect(legacyEntry).toMatchObject({
-        id: legacyId,
-        url: "https://legacy-no-port.example.test",
-        invalidReason: expect.stringMatching(/explicit port/iu),
+      expect(listed.find((entry) => entry.id === legacy443Id)?.invalidReason).toBeUndefined();
+      expect(listed.find((entry) => entry.id === brokenId)).toMatchObject({
+        id: brokenId,
+        url: "https://broken.example.test:8443/badpath",
+        invalidReason: expect.stringMatching(/path/iu),
       });
-      // Confirm egress-list did not alter the legacy row.
-      const untouched = await database
-        .selectFrom("cloudComputerEgressEndpoints")
-        .select(["url", "retired", "needsRotation"])
-        .where("id", "=", legacyId)
-        .executeTakeFirstOrThrow();
-      expect(untouched).toEqual({
-        url: "https://legacy-no-port.example.test",
-        retired: false,
-        needsRotation: false,
-      });
+
+      // 3. Ordinary (non-pooled) Cloud Computer Home route also serves legacy portless rows normalised with :443,
+      // and never serves an assigned broken row!
+      const hLocal = await buildHarness(undefined);
+      try {
+        await hLocal.acquireLease(false);
+        const local1 = await hLocal.provisionComputer(2);
+        const claimed1 = await hLocal.bootAndClaimComputer(local1.computer, local1.accountId);
+        const localLegacyId = "00000000-0000-4000-8000-000000000003";
+        await database
+          .insertInto("cloudComputerEgressEndpoints")
+          .values({
+            id: localLegacyId,
+            url: "https://home-legacy.example.test",
+            username: "home-user",
+            publicAddress: null,
+            computerId: local1.computer.id,
+            sealedPassword: cipher.seal(`egress:${localLegacyId}`, 1, "home-password"),
+            needsRotation: false,
+            retired: false,
+          })
+          .execute();
+        const basicAuth =
+          "Basic " +
+          Buffer.from(
+            `${claimed1.boot.managedHome!.oidc.clientId}:${claimed1.boot.managedHome!.oidc.clientSecret}`,
+          ).toString("base64");
+        const homeRes = await hLocal.app.inject({
+          method: "GET",
+          url: `/v1/cloud-computers/${encodeURIComponent(local1.computer.id)}/egress`,
+          headers: { authorization: basicAuth },
+        });
+        expect(homeRes.statusCode).toBe(200);
+        expect(JSON.parse(homeRes.body)).toEqual({
+          egress: {
+            url: "https://home-legacy.example.test:443",
+            username: "home-user",
+            password: "home-password",
+          },
+        });
+
+        // If an assigned row is genuinely invalid (e.g. path), Home's route answers {} rather than handing it out.
+        await database
+          .updateTable("cloudComputerEgressEndpoints")
+          .set({ url: "https://home-legacy.example.test:8443/bad" })
+          .where("id", "=", localLegacyId)
+          .execute();
+        const brokenHomeRes = await hLocal.app.inject({
+          method: "GET",
+          url: `/v1/cloud-computers/${encodeURIComponent(local1.computer.id)}/egress`,
+          headers: { authorization: basicAuth },
+        });
+        expect(brokenHomeRes.statusCode).toBe(200);
+        expect(JSON.parse(brokenHomeRes.body)).toEqual({});
+      } finally {
+        await hLocal.app.close();
+      }
+      void accountId;
     } finally {
       await h.app.close();
     }
@@ -2776,6 +2848,145 @@ integration("Browser pool Account service", () => {
         profileErasedAt: null,
         credentialsErasedAt: null,
       });
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("enforces the 10-minute retry limit across repeated identical failures and operator pool-slot-retry against the real Account store (Y4)", async () => {
+    const h = await buildHarness("2");
+    try {
+      const { slot } = await h.setupPooledHomeAndHost();
+
+      const reconcilerModPath = fileURLToPath(
+        new URL("../../../home-provisioner/src/pool-reconcile.ts", import.meta.url),
+      );
+      const wireModPath = fileURLToPath(
+        new URL(
+          "../../../../packages/browser-runtime-core/src/browser-pool-agent-wire.ts",
+          import.meta.url,
+        ),
+      );
+      const { PoolReconciler } = (await import(reconcilerModPath)) as {
+        PoolReconciler: new (options: Record<string, unknown>) => {
+          pass: (signal: AbortSignal) => Promise<void>;
+        };
+      };
+      const { BrowserPoolAgentUnavailable } = (await import(wireModPath)) as {
+        BrowserPoolAgentUnavailable: new (message: string, refusal?: string) => Error;
+      };
+
+      let createAttempts = 0;
+      const provisionerKeys = keyPairSpkiBase64();
+      const reconciler = new PoolReconciler({
+        account: {
+          desiredHosts: async () => [],
+          checkHost: async () => true,
+          reportHost: async () => true,
+          replaceUnenrolledHost: async () => ({ replaced: false }),
+          desiredSlots: async () => await h.getDesiredSlots(),
+          checkSlot: async (id: BrowserPoolSlotId, check: unknown) => {
+            const res = await h.app.inject({
+              method: "POST",
+              url: browserPoolSlotCheckPath(id),
+              headers: h.leaseHeaders,
+              payload: check as Record<string, unknown>,
+            });
+            return CloudComputerCheckResponseSchema.parse(JSON.parse(res.body)).allowed;
+          },
+          bumpSlotTerm: async (id: BrowserPoolSlotId, input: unknown) => {
+            const res = await h.app.inject({
+              method: "POST",
+              url: browserPoolSlotBumpTermPath(id),
+              headers: h.leaseHeaders,
+              payload: input as Record<string, unknown>,
+            });
+            return BrowserPoolSlotBumpTermResponseSchema.parse(JSON.parse(res.body));
+          },
+          reportSlot: async (report: { slotId: BrowserPoolSlotId }) => {
+            const res = await h.app.inject({
+              method: "POST",
+              url: browserPoolSlotStatusPath(report.slotId),
+              headers: h.leaseHeaders,
+              payload: report as Record<string, unknown>,
+            });
+            return CloudComputerReportResponseSchema.parse(JSON.parse(res.body)).recorded;
+          },
+        },
+        provider: {
+          listManagedPoolHosts: async () => [],
+          listManagedPoolDisks: async () => [],
+        },
+        agent: {
+          list: async () => [],
+          create: async () => {
+            createAttempts += 1;
+            throw new BrowserPoolAgentUnavailable(
+              "A 2048 MiB profile would leave this host's profiles without room to fill in.",
+              "conflict",
+            );
+          },
+        },
+        accountOrigin: publicOrigin,
+        image: "ubuntu-2404",
+        pool: {
+          provisionerPrivateKey: provisionerKeys.privateKey,
+          provisionerPublicKeySpki: provisionerKeys.spki,
+          homeCidr: "10.40.0.0/20",
+          provisionerCidr: "10.50.0.0/24",
+          localSsdCount: 1,
+          bootDiskSizeGb: 40,
+          profileDiskType: "pd-ssd",
+          adminPort: 7311,
+        },
+        readinessTimeoutMs: 600_000,
+        orphanGraceMs: 300_000,
+        concurrency: 1,
+        now: () => now.getTime(),
+      });
+      const signal = new AbortController().signal;
+
+      // 1st failure at t=0 -> recorded in real Account store as failed with failedAt = t=0.
+      await reconciler.pass(signal);
+      expect(createAttempts).toBe(1);
+      const after1 = (await h.getDesiredSlots())[0]!;
+      expect(after1.phase).toBe("failed");
+      expect(after1.failedAt).toBe(now.toISOString());
+
+      // t=5m: still inside 10-minute backoff -> must NOT retry.
+      now = new Date(now.getTime() + 5 * 60_000);
+      await reconciler.pass(signal);
+      expect(createAttempts).toBe(1);
+
+      // t=10m: retry fires and fails with the EXACT same error -> failedAt MUST advance to t=10m!
+      now = new Date(now.getTime() + 5 * 60_000);
+      await reconciler.pass(signal);
+      expect(createAttempts).toBe(2);
+      const after2 = (await h.getDesiredSlots())[0]!;
+      expect(after2.phase).toBe("failed");
+      expect(after2.failedAt).toBe(now.toISOString());
+
+      // t=11m (1m after 2nd failure): must NOT retry again!
+      now = new Date(now.getTime() + 60_000);
+      await reconciler.pass(signal);
+      expect(createAttempts).toBe(2);
+
+      // Operator runs pool-slot-retry at t=11m -> Account moves to preparing.
+      await runCloudComputerOperator(h.cloudStore, ["pool-slot-retry", slot.slotId]);
+      expect((await h.getDesiredSlots())[0]!.phase).toBe("preparing");
+
+      // t=11m+1s: retry fires and fails with the EXACT same error -> Account MUST return to failed (not stuck preparing)!
+      now = new Date(now.getTime() + 1_000);
+      await reconciler.pass(signal);
+      expect(createAttempts).toBe(3);
+      const afterOpRetry = (await h.getDesiredSlots())[0]!;
+      expect(afterOpRetry.phase).toBe("failed");
+      expect(afterOpRetry.failedAt).toBe(now.toISOString());
+
+      // t=12m: still inside new 10-minute backoff -> no 4th attempt!
+      now = new Date(now.getTime() + 60_000);
+      await reconciler.pass(signal);
+      expect(createAttempts).toBe(3);
     } finally {
       await h.app.close();
     }

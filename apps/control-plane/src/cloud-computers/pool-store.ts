@@ -4,7 +4,6 @@ import {
   BrowserPoolHostIdSchema,
   BrowserPoolHostSlotEgressRequestSchema,
   BrowserPoolSlotIdSchema,
-  CloudComputerEgressSchema,
   ManagedBrowserPoolTargetResponseSchema,
   browserPoolHostSlotEgressSigningBytes,
   browserPoolHostSlotEgressWindowMs,
@@ -39,6 +38,7 @@ import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import type { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
 import { ControlPlaneError } from "../server/errors.js";
 import type { CloudComputerConfig } from "./config.js";
+import { normalizeEgressEndpoint } from "./egress-validation.js";
 import type { BrowserPoolHostTable, BrowserPoolSlotTable } from "./pool-tables.js";
 import type { CloudComputerEgressEndpointTable } from "./tables.js";
 import {
@@ -74,11 +74,13 @@ interface BrowserPoolStoreDeps {
     tx: TransactionDb,
     computerId: CloudComputerId,
   ) => Promise<Selectable<CloudComputerEgressEndpointTable> | undefined>;
-  readonly egressCredentials: (endpoint: Selectable<CloudComputerEgressEndpointTable>) => {
-    url: string;
-    username: string;
-    password: string;
-  };
+  readonly egressCredentials: (endpoint: Selectable<CloudComputerEgressEndpointTable>) =>
+    | {
+        url: string;
+        username: string;
+        password: string;
+      }
+    | undefined;
 }
 
 export class BrowserPoolStore {
@@ -132,6 +134,7 @@ export class BrowserPoolStore {
         slotErasedAt: null,
         profileErasedAt: null,
         credentialsErasedAt: null,
+        failedAt: null,
         lastError: null,
         createdAt: now,
         updatedAt: now,
@@ -168,6 +171,7 @@ export class BrowserPoolStore {
           slotErasedAt: slot.slotErasedAt ?? now,
           profileErasedAt: slot.profileErasedAt ?? now,
           credentialsErasedAt: slot.credentialsErasedAt ?? now,
+          failedAt: null,
           tombstonedAt: now,
           lastError: null,
           updatedAt: now,
@@ -201,6 +205,7 @@ export class BrowserPoolStore {
         .set({
           state: "deleting",
           phase: "deleting",
+          failedAt: null,
           lastError: null,
           updatedAt: now,
         })
@@ -832,9 +837,12 @@ export class BrowserPoolStore {
         throw refuse();
       }
       const endpoint = await this.#assignEgress(tx, computer.id);
-      return endpoint
-        ? { egress: CloudComputerEgressSchema.parse(this.#egressCredentials(endpoint)) }
-        : {};
+      if (!endpoint) return {};
+      const credentials = this.#egressCredentials(endpoint);
+      if (!credentials) return {};
+      // Y6: enforce the strict egress upstream rule (https://host:port) before serving to a pool host.
+      const normalized = normalizeEgressEndpoint(credentials);
+      return normalized.ok ? { egress: normalized.value } : {};
     });
   }
 
@@ -868,6 +876,7 @@ export class BrowserPoolStore {
         "slot.slotErasedAt",
         "slot.profileErasedAt",
         "slot.credentialsErasedAt",
+        "slot.failedAt",
         "slot.updatedAt",
         "slot.pendingAgentWrites",
         "host.generation as hostGeneration",
@@ -924,7 +933,9 @@ export class BrowserPoolStore {
         slotErased: row.slotErasedAt !== null,
         profileErased: row.profileErasedAt !== null,
         credentialsErased: row.credentialsErasedAt !== null,
-        ...(row.phase === "failed" ? { failedAt: row.updatedAt.toISOString() } : {}),
+        ...(row.phase === "failed"
+          ? { failedAt: (row.failedAt ?? row.updatedAt).toISOString() }
+          : {}),
         ...(row.pendingAgentWrites.length
           ? { pendingAgentWrites: [...row.pendingAgentWrites] }
           : {}),
@@ -1024,6 +1035,7 @@ export class BrowserPoolStore {
           appliedHostGeneration: null,
           controlKey: null,
           phase: "preparing",
+          failedAt: null,
           lastError: null,
           updatedAt: this.#now(),
         })
@@ -1124,6 +1136,7 @@ export class BrowserPoolStore {
           slotErasedAt: nextSlotErasedAt,
           profileErasedAt: nextProfileErasedAt,
           credentialsErasedAt: nextCredentialsErasedAt,
+          failedAt: report.phase === "failed" ? now : null,
           lastError: report.lastError,
           updatedAt: now,
           ...(deleted ? { tombstonedAt: now } : {}),
@@ -1305,6 +1318,7 @@ export class BrowserPoolStore {
           keysIssuedAt: issuedAt,
           term: rotation ? slot.term + 1 : slot.term,
           phase: "preparing",
+          failedAt: null,
           lastError: null,
           updatedAt: now,
         })
@@ -1477,7 +1491,7 @@ export class BrowserPoolStore {
         .where("state", "=", "active")
         .where("phase", "=", "failed")
         .where("tombstonedAt", "is", null)
-        .set({ phase: "preparing", updatedAt: now })
+        .set({ phase: "preparing", failedAt: null, updatedAt: now })
         .execute();
       return poolHostOperatorView(updated);
     });
@@ -1567,7 +1581,7 @@ export class BrowserPoolStore {
       const updated = await tx
         .updateTable("browserPoolSlots")
         .where("slotId", "=", slotId)
-        .set({ phase: "preparing", updatedAt: now })
+        .set({ phase: "preparing", failedAt: null, updatedAt: now })
         .returningAll()
         .executeTakeFirstOrThrow();
       return poolSlotOperatorView(updated);
@@ -1616,6 +1630,7 @@ function poolSlotOperatorView(row: PoolSlot) {
     slotErasedAt: row.slotErasedAt,
     profileErasedAt: row.profileErasedAt,
     credentialsErasedAt: row.credentialsErasedAt,
+    failedAt: row.failedAt,
     lastError: row.lastError,
     tombstonedAt: row.tombstonedAt,
     updatedAt: row.updatedAt,

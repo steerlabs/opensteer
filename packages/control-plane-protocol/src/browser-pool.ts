@@ -375,6 +375,8 @@ export const BrowserPoolSlotReportSchema = z
     profileErased: z.boolean(),
     credentialsErased: z.boolean(),
     lastError: BrowserPoolSlotErrorSchema.nullable(),
+    /** Optional per-attempt write token so repeated identical outcomes are distinct reports (Y4). */
+    attemptToken: z.string().min(1).max(128).optional(),
   })
   .superRefine((report, context) => {
     if (report.phase === "ready" && report.controlKey === null) {
