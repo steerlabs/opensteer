@@ -419,7 +419,7 @@ import UIKit
     let view = RemoteInputTextView()
     view.pasteboardHasContent = { true }
     let menu = view.pasteMenu(suggested: [])
-    XCTAssertEqual(menu?.children.count, 1)
+    XCTAssertEqual(menu.children.count, 1)
   }
 
   // CR7: nothing to paste offers no Paste (tapping it reset the mirror for nothing), from the menu
@@ -428,8 +428,53 @@ import UIKit
     let view = RemoteInputTextView()
     view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
     view.pasteboardHasContent = { false }
-    XCTAssertNil(view.pasteMenu(suggested: []))
+    // An empty menu: nil is "the default system menu" to UIKit, with Cut, Copy and AutoFill.
+    XCTAssertEqual(view.pasteMenu(suggested: []).children.count, 0)
     XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+  }
+  /// What UIKit suggests for a text view's edit menu, as the build 9 walk saw it on a device.
+  private func systemSuggestions() -> (all: [UIMenuElement], paste: UICommand) {
+    let paste = UICommand(title: "Paste", action: #selector(UIResponderStandardEditActions.paste(_:)))
+    let edit = UIMenu(options: .displayInline, children: [
+      UICommand(title: "Cut", action: #selector(UIResponderStandardEditActions.cut(_:))),
+      UICommand(title: "Copy", action: #selector(UIResponderStandardEditActions.copy(_:))),
+      paste,
+    ])
+    let autoFill = UIMenu(title: "AutoFill", children: [UIAction(title: "Passwords") { _ in }])
+    return ([edit, autoFill], paste)
+  }
+  private func leaves(_ elements: [UIMenuElement]) -> [UIMenuElement] {
+    elements.flatMap { ($0 as? UIMenu).map { leaves($0.children) } ?? [$0] }
+  }
+  // DW2: UIKit's own text-interaction menu (the one a long press showed on the device: Cut, Copy,
+  // Paste, AutoFill) is built by UITextInput's editMenu(for:suggestedActions:), which UITextView
+  // answers from its delegate; nil there is the default system menu. The view answers it with
+  // its own menu: Paste alone.
+  func testUIKitsOwnTextMenuIsPasteAlone() throws {
+    let view = RemoteInputTextView()
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    view.pasteboardHasContent = { true }
+    view.insertText("hello")
+    view.respond(["id": 1])
+    let range = try XCTUnwrap(view.textRange(from: view.beginningOfDocument, to: view.endOfDocument))
+    let suggested = systemSuggestions()
+    let menu = try XCTUnwrap((view as UITextInput).editMenu?(for: range, suggestedActions: suggested.all), "the system's menu")
+    let shown = leaves(menu.children)
+    XCTAssertEqual(shown.count, 1, shown.map { ($0 as? UICommand)?.title ?? "\($0)" }.joined(separator: ", "))
+    XCTAssertTrue(shown.first === suggested.paste)
+  }
+  // DW2: with nothing to paste, both menus are empty, never the system's.
+  func testNothingToPasteShowsNoMenuOfUIKits() throws {
+    let view = RemoteInputTextView()
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    view.pasteboardHasContent = { false }
+    let range = try XCTUnwrap(view.textRange(from: view.beginningOfDocument, to: view.endOfDocument))
+    let cutCopy: [UIMenuElement] = [UIMenu(options: .displayInline, children: [
+      UICommand(title: "Cut", action: #selector(UIResponderStandardEditActions.cut(_:))),
+      UICommand(title: "Copy", action: #selector(UIResponderStandardEditActions.copy(_:))),
+    ]), UIMenu(title: "AutoFill", children: [UIAction(title: "Passwords") { _ in }])]
+    let menu = try XCTUnwrap((view as UITextInput).editMenu?(for: range, suggestedActions: cutCopy), "the system's menu")
+    XCTAssertEqual(leaves(menu.children).count, 0)
   }
   // CR7: the system's own Paste command is kept whenever UIKit suggests one: it pastes without the
   // prompt a programmatic read of the pasteboard brings up.
@@ -439,8 +484,8 @@ import UIKit
     let system = UICommand(title: "Paste", action: #selector(UIResponderStandardEditActions.paste(_:)))
     let suggested: [UIMenuElement] = [UICommand(title: "Select", action: #selector(UIResponderStandardEditActions.select(_:))), UIMenu(children: [system])]
     let menu = view.pasteMenu(suggested: suggested)
-    XCTAssertEqual(menu?.children.count, 1)
-    XCTAssertTrue(menu?.children.first === system)
+    XCTAssertEqual(menu.children.count, 1)
+    XCTAssertTrue(menu.children.first === system)
   }
   // CR7: VoiceOver's activation focuses the field, as the focus tap does: no recognizer of UIKit's
   // is left to do it. Outside a window the view cannot become first responder; the windowed test

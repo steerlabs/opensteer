@@ -115,15 +115,20 @@ import UniformTypeIdentifiers
   @objc private func pasteLongPressRecognized(_ recognizer: UILongPressGestureRecognizer) {
     if recognizer.state == .began { pasteLongPressed(at: recognizer.location(in: self)) }
   }
-  /// Opens the view's own menu, which offers Paste alone and never moves the caret.
+  /// Opens the view's own menu, which offers Paste alone and never moves the caret; nothing when
+  /// nothing can be pasted.
   func pasteLongPressed(at point: CGPoint) {
-    guard isEditable, window != nil, let menu = pasteMenuInteraction as? UIEditMenuInteraction else { return }
+    guard isEditable, window != nil, pasteboardHasContent(), let menu = pasteMenuInteraction as? UIEditMenuInteraction else { return }
     menu.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: point))
   }
-  /// Paste alone: the system's own Paste command where it suggests one, so it is named as the
-  /// system names it.
-  /// No menu when nothing can be pasted.
-  func pasteMenu(suggested: [UIMenuElement]) -> UIMenu? {
+  /// Every edit menu the field shows: Paste alone, the system's own Paste command where it
+  /// suggests one, so it is named as the system names it. Empty when nothing can be pasted, never
+  /// nil: to UIKit nil is the default system menu (Cut, Copy, Paste, AutoFill).
+  ///
+  /// It is asked by the view's own long press (RemoteInputPasteMenu) and by UIKit's text
+  /// interaction: that menu is built by UITextInput's editMenu(for:suggestedActions:), which
+  /// UITextView answers from its delegate's textView(_:editMenuForTextIn(Ranges):suggestedActions:).
+  func pasteMenu(suggested: [UIMenuElement]) -> UIMenu {
     func find(_ elements: [UIMenuElement]) -> UIMenuElement? {
       for element in elements {
         if let command = element as? UICommand, command.action == #selector(UIResponderStandardEditActions.paste(_:)) { return command }
@@ -132,7 +137,7 @@ import UniformTypeIdentifiers
       return nil
     }
     if let system = find(suggested) { return UIMenu(children: [system]) }
-    guard pasteboardHasContent() else { return nil }
+    guard isEditable, pasteboardHasContent() else { return UIMenu(children: []) }
     return UIMenu(children: [UIAction(title: NSLocalizedString("Paste", comment: "")) { [weak self] _ in self?.paste(nil) }])
   }
   private func snapshot(selection: NSRange? = nil) -> [String: Any] {
@@ -474,6 +479,13 @@ import UniformTypeIdentifiers
       }
       self.gate.event(["type": "selection", "proxy": self.snapshot(selection: at)])
     }
+  }
+  public func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+    pasteMenu(suggested: suggestedActions)
+  }
+  @available(iOS 26.0, *)
+  public func textView(_ textView: UITextView, editMenuForTextInRanges ranges: [NSValue], suggestedActions: [UIMenuElement]) -> UIMenu? {
+    pasteMenu(suggested: suggestedActions)
   }
   public func textViewDidEndEditing(_ textView: UITextView) {
     held.removeAll()
