@@ -133,6 +133,7 @@ import {
   RequestIdSchema,
   RequestResponseSchema,
   RequestViewSchema,
+  commandRequestOutcomeSchema,
   RunAttemptViewSchema,
   RunIdSchema,
   RunViewSchema,
@@ -705,6 +706,18 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     response: RequestResponseSchema,
     expectedRevision: PersonalRevisionSchema.optional(),
     type: z.literal("request.respond"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    requestId: RequestIdSchema,
+    /** The revision of the Request the person reviewed. */
+    expectedRevision: PersonalRevisionSchema,
+    /**
+     * The command as the person approves it: as proposed, or changed on its screen, with the values
+     * only the person types. Its type and what it changes must be what was asked.
+     */
+    command: z.record(z.string().max(200), z.unknown()),
+    type: z.literal("request.command.approve"),
   }),
   z.strictObject({
     /** Source fields the person filled in (a base URL, a region); the driver validates them. */
@@ -1312,6 +1325,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
+  z.object({
+    type: z.literal("request.command.approve"),
+    outcome: commandRequestOutcomeSchema,
+  }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
   z.object({ installation: HarnessInstallationSchema, type: z.literal("harness.update") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.rename") }),

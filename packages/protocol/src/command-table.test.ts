@@ -66,7 +66,7 @@ describe("the command table", () => {
     const types = [...unionMembers().keys()].sort();
     expect(Object.keys(commandTable).sort()).toEqual(types);
     expect(rows.map((row) => row.type).sort()).toEqual(types);
-    expect(types).toHaveLength(136);
+    expect(types).toHaveLength(137);
   });
 
   it("says what the data file says, row by row and face by face", () => {
@@ -149,6 +149,28 @@ describe("the command table", () => {
     expect(classOf("connection.authorize", { decision: { kind: "approve" } })).toBe("widen-other");
     expect(classOf("plugins.schedule.answer", { action: "decline" })).toBe("narrow");
     expect(classOf("plugins.schedule.answer", { action: "accept" })).toBe("approve");
+  });
+
+  it("asks before an engine account sends what tasks say to another server", () => {
+    const classOf = (config?: Record<string, string>) => {
+      const row = commandTable["harness.create"] as unknown as {
+        face?: (c: unknown) => number | undefined;
+        faces: readonly { class: string }[];
+      };
+      const index = row.face?.({ type: "harness.create", ...(config ? { config } : {}) }) ?? 0;
+      return row.faces[index]!.class;
+    };
+    // The engine's own default endpoint, and a model server on this device, stay as they are.
+    expect(classOf()).toBe("widen-self");
+    expect(classOf({ baseUrl: "http://127.0.0.1:11434/v1" })).toBe("widen-self");
+    expect(classOf({ baseUrl: "http://localhost:1234/v1" })).toBe("widen-self");
+    expect(classOf({ baseUrl: "http://[::1]:8080/v1" })).toBe("widen-self");
+    // Any other server receives the conversation; so does a Google Cloud project it names.
+    expect(classOf({ baseUrl: "https://openrouter.ai/api/v1" })).toBe("widen-other");
+    expect(classOf({ baseUrl: "http://192.168.1.20:11434/v1" })).toBe("widen-other");
+    expect(classOf({ baseUrl: "not a url" })).toBe("widen-other");
+    expect(classOf({ gcpProject: "someone-else", gcpLocation: "us-central1" })).toBe("widen-other");
+    expect(classOf({ gcpLocation: "us-central1" })).toBe("widen-self");
   });
 
   it("names what a command governs the same way however the input orders it", () => {

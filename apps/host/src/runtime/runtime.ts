@@ -251,6 +251,8 @@ import {
   type NotificationPublicationTarget,
 } from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
+import { CommandRequestService } from "../commands/requests.js";
+import { CommandRequestStore } from "@opensteer/database";
 import { EgressService } from "../server/egress-service.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
 import { machineAccessNotifier, notifyComputerPresence } from "../shell/machine-access-events.js";
@@ -521,6 +523,7 @@ export async function createHostRuntime(
   let notificationDispatcher: NotificationDispatcher | undefined;
   let removeMutationHooks: (() => void) | undefined;
   let deadlines: RequestDeadlines | undefined;
+  let stopCommandRequestExpiry: (() => void) | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
   let connectionMaintenance: DeadlineDrain | undefined;
@@ -3490,8 +3493,17 @@ export async function createHostRuntime(
         },
       });
     }
+    const commandRequestStore = new CommandRequestStore(store.database, store.requests);
+    const commandRequests = new CommandRequestService({
+      store: commandRequestStore,
+      database: store.database,
+      requests: store.requests,
+    });
+    // An approval cut off by a restart may have taken effect: it is unknown, never run again.
+    await commandRequestStore.recoverRunning();
     const app = await createHostServer(
       {
+        commandRequests,
         connections,
         connectionEffects: { stopLineage: driveConnectionCleanups },
         agentOperations: agentSessions,
@@ -3791,6 +3803,14 @@ export async function createHostRuntime(
       onError: reportMutationFailure,
     });
     deadlines.start();
+    // A proposed command waits a day; expiring it is never urgent, so it keeps to its own slow
+    // timer rather than the deadline sweep every write wakes. Approving a stale one is refused.
+    const expireCommandRequests = () =>
+      void commandRequestStore.expire().catch((error: unknown) => reportMutationFailure(error));
+    expireCommandRequests();
+    const commandRequestExpiry = setInterval(expireCommandRequests, 10 * 60_000);
+    commandRequestExpiry.unref();
+    stopCommandRequestExpiry = () => clearInterval(commandRequestExpiry);
     await commitPersonalMutation(database, async () => undefined);
 
     return {
@@ -3906,6 +3926,7 @@ export async function createHostRuntime(
     await assignmentReturns?.close();
     await connectionMaintenance?.close();
     await catalogConvergence?.close();
+    stopCommandRequestExpiry?.();
     await deadlines?.close();
     removeMutationHooks?.();
     await pluginChangeNotices?.close();

@@ -325,6 +325,7 @@ create unique index plugins_owner_name on plugins(installed_by, name);
  * the Host stores each such package again under its current digest at startup.
  */
 export const pluginPackageFormatMigrationName = "0037_plugin_package_format";
+export const commandRequestsMigrationName = "0054_command_requests";
 const PLUGIN_PACKAGE_FORMAT_SQL = `
 alter table plugin_versions add column package_format text;
 `;
@@ -659,6 +660,23 @@ export function migrationProvider(options?: {
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
               [bridgeConversionMigrationName]: { up: applyBridgeConversion },
+              [commandRequestsMigrationName]: {
+                /**
+                 * An agent's proposed Home command rides an ordinary Request, with its parts in one
+                 * column. One open ask per proposer and thing; a decline is found by the same key.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table requests add column command jsonb;
+                    create unique index requests_command_open on requests
+                      (requested_by, (command->>'askKey'))
+                      where command is not null and status = 'pending';
+                    create index requests_command_asks on requests
+                      (requested_by, (command->>'askKey'), resolved_at desc)
+                      where command is not null;
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

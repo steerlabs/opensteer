@@ -43,6 +43,7 @@ const { personActor } = await import("./actor.js");
 
 /** Where the person's `commands.dispatch` sent each type before the door existed. */
 const expectedFamily = (type: CommandType): string => {
+  if (type === "request.command.approve") return "command-requests";
   if (type === "computer.view.close" || type === "computer.view.renew") return "computer-views";
   if (type.startsWith("plugins.")) return "plugins";
   if (
@@ -71,6 +72,10 @@ describe("the command registry", () => {
       devices: {} as never,
       channels: {} as never,
       browserSources: {} as never,
+      approveCommand: async (_actor, command) => {
+        routed.family.push("command-requests");
+        return { type: command.type } as never;
+      },
       handleCoreCommand: async (command) => {
         routed.family.push("core");
         return { type: command.type } as never;

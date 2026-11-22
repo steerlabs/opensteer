@@ -25,6 +25,7 @@ import type { Kysely } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { isPersonActor, type Actor, type PersonActor } from "./actor.js";
 import type { CommandHandler, CommandRegistry } from "./registry.js";
+import type { CommandProposed } from "./requests.js";
 
 /**
  * What an agent's command came to. `done`: it ran, and `output` is what an agent may read of the
@@ -37,7 +38,16 @@ export type AgentCommandOutcome =
       readonly status: "ask";
       readonly reason: CommandAskReason;
       readonly answers?: CommandAnsweredAsk;
-    };
+    }
+  /** The person has a Request for it: this one, or the one it answers, or the same ask open. */
+  | {
+      readonly status: "pending";
+      readonly requestId: string;
+      readonly reason: CommandAskReason;
+      readonly existing: boolean;
+    }
+  /** The person declined this ask within the last day: answered at once, nothing opened. */
+  | { readonly status: "declined"; readonly requestId: string };
 /** The earlier name of the waiting outcome. */
 export type CommandAsk = Extract<AgentCommandOutcome, { readonly status: "ask" }>;
 
@@ -47,6 +57,13 @@ export interface CommandDoor {
 /** The door as an agent meets it: the same registry, and the one admission. */
 export interface AgentCommandDoor extends CommandDoor {
   readonly admit: (caller: AgentCaller, command: HostApiCommand) => Promise<CommandAdmission>;
+  /** Opens the person's Request for a command that waits for them; without it, `ask` is returned. */
+  readonly propose?: (
+    caller: AgentCaller,
+    command: HostApiCommand,
+    ask: CommandAsk,
+    face: number | undefined,
+  ) => Promise<CommandProposed>;
 }
 
 /** `admitCommand` for an agent the Home authenticated, from its live execution. */
@@ -113,12 +130,18 @@ export async function dispatchCommand(
     row.answersAsk && admission.face !== undefined && row.answersAsk.faces.includes(admission.face)
       ? (row.answersAsk.of as (c: HostApiCommand) => CommandAnsweredAsk)(command)
       : undefined;
-  return {
+  const ask: CommandAsk = {
     status: "ask",
     // A `now` whose handler is still the person's waits for the person too.
     reason: admission.answer === "now" ? "step" : (admission.reason ?? "step"),
     ...(answers ? { answers } : {}),
   };
+  // An ask about an ask is not a new ask: the agent is pointed at the one the person has.
+  if (answers?.kind === "request")
+    return { status: "pending", requestId: answers.id, reason: ask.reason, existing: true };
+  if (answers || !door.propose) return ask;
+  const proposed = await door.propose(actor, command, ask, admission.face);
+  return proposed.status === "declined" ? proposed : { ...proposed, reason: ask.reason };
 }
 
 /** What a handler written for agents is given: the identity its store admits at commit. */

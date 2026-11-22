@@ -431,6 +431,25 @@
       "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B"
     },
     {
+      "type": "request.command.approve",
+      "family": "tasks",
+      "governs": "a command Request ← `requestId`; the person approves the command, as proposed or changed",
+      "faces": [
+        {
+          "when": null,
+          "class": "approve",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "ask"
+          }
+        }
+      ],
+      "step": "—",
+      "note": "A4: the person's answer to a command Request; an agent's ask about it points at that Request"
+    },
+    {
       "type": "agent.session.stop",
       "family": "tasks",
       "governs": "a connected agent's direct session ← `threadId`,`agentSessionId`",
@@ -618,7 +637,7 @@
       "governs": "engine account ← `environmentId`, source",
       "faces": [
         {
-          "when": null,
+          "when": "no endpoint, the engine's own, or this device's loopback",
           "class": "widen-self",
           "answers": {
             "a": "now",
@@ -626,10 +645,21 @@
             "c": "now",
             "d": "not_found"
           }
+        },
+        {
+          "when": "config.baseUrl not loopback, or config.gcpProject",
+          "class": "widen-other",
+          "answers": {
+            "a": "ask",
+            "b": "ask",
+            "c": "ask",
+            "d": "not_found"
+          },
+          "step": "—"
         }
       ],
       "step": "B",
-      "note": "`server.ts:2085`; sign-in that follows is its own secret command"
+      "note": "`server.ts:2085`; sign-in that follows is its own secret command; lead decision 2: an endpoint elsewhere sends what tasks say to that server (`packages/harness/src/compatible-endpoint.ts:20-35`, `packages/harness-antigravity/src/config.ts:6-9`)"
     },
     {
       "type": "harness.update",

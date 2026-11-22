@@ -74,6 +74,12 @@ export type CoreCommand = Exclude<
 
 /** The families the person's commands reach, as the Host wires them. */
 export interface CommandFamilies {
+  /** The person's approval of a command an agent proposed: it runs that command through the door. */
+  readonly approveCommand?: (
+    actor: PersonActor,
+    command: Command<"request.command.approve">,
+    context: HostApiServerContext,
+  ) => Promise<HostApiCommandOutput>;
   readonly triggers: TriggerService;
   readonly devices: DeviceRpcOptions;
   readonly channels: ChannelService;
@@ -105,6 +111,12 @@ function familyHandler(
   context: HostApiServerContext,
 ) => Promise<HostApiCommandOutput> {
   const probe = { type } as HostApiCommand;
+  if (type === "request.command.approve")
+    return async (actor, command, context) => {
+      if (!families.approveCommand)
+        throw new OpensteerError({ code: "not_found", message: "Request not found" });
+      return families.approveCommand(actor, command as Command<"request.command.approve">, context);
+    };
   if (type === "computer.view.close" || type === "computer.view.renew")
     return async (_actor, command, context) => {
       const owner = requireSession(context).user.id;

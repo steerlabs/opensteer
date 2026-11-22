@@ -1083,6 +1083,8 @@ export interface RequestTable {
   originatingAgentSessionId: Generated<AgentSessionId | null>;
   /** The direct operation this Request decides, in its parts (`Request.agentOperation`). */
   agentOperation: Generated<Readonly<Record<string, unknown>> | null>;
+  /** The Home command an agent proposed, in its parts (`Request.command`). */
+  command: Generated<Readonly<Record<string, unknown>> | null>;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;

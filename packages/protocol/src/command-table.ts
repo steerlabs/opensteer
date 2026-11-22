@@ -1,3 +1,5 @@
+import { isLoopbackHostname } from "@opensteer/core";
+import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
 import type { HostApiCommand } from "./host-api.js";
 
 /**
@@ -194,6 +196,18 @@ const resource = (kind: CommandResourceKind, id: string | null = null): CommandR
 });
 const task = (command: { readonly threadId: string }) => resource("task", command.threadId);
 const sorted = (ids: readonly string[]) => [...new Set(ids)].sort();
+/**
+ * Whether an engine account's source fields send its tasks to a server other than the engine's
+ * own: a base URL that is not this device's loopback (read the way model servers are), or a
+ * Google Cloud project. An address that does not parse is treated as elsewhere.
+ */
+function sendsTasksElsewhere(config: Readonly<Record<string, string>> | undefined): boolean {
+  if (!config) return false;
+  if (config.gcpProject !== undefined) return true;
+  if (config.baseUrl === undefined) return false;
+  const url = parseHttpEndpointBaseUrl(config.baseUrl);
+  return url === null || !isLoopbackHostname(url.hostname);
+}
 const home = (area: string) => () => resource("home", area);
 const one = (cls: EffectClass, extra: Omit<CommandFace, "class"> = {}) =>
   [{ class: cls, ...extra }] as const;
@@ -351,6 +365,16 @@ export const commandTable: CommandTable = {
     governs: (c) => resource("request", c.requestId),
     answersAsk: { faces: [1], of: (c) => ({ kind: "request", id: c.requestId }) },
   },
+  "request.command.approve": {
+    family: "tasks",
+    scope: "task",
+    step: "none",
+    // The person's own approval of an agent's proposal: an agent sending it asks about an ask.
+    faces: one("approve"),
+    governs: (c) => resource("request", c.requestId),
+    answersAsk: { faces: [0], of: (c) => ({ kind: "request", id: c.requestId }) },
+    editor: null,
+  },
   "agent.session.stop": {
     family: "tasks",
     scope: "connection",
@@ -426,7 +450,10 @@ export const commandTable: CommandTable = {
     family: "engines",
     scope: "home",
     step: "B",
-    faces: one("widen-self"),
+    // Where an engine sends a task's conversation is who else receives it: a server other than
+    // this device's own (or a Google Cloud project it names) is another principal.
+    faces: two({ class: "widen-self" }, { class: "widen-other", step: "none" }),
+    face: (c) => (sendsTasksElsewhere(c.config) ? 1 : 0),
     governs: () => resource("engine"),
   },
   "harness.update": {

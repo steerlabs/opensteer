@@ -598,6 +598,67 @@ export const RequestAnswererViewSchema = z.union([
   z.object(RequestAgentAnswererSchema.shape),
 ]);
 
+/**
+ * A Home command an agent proposed, in its parts: what changes in the Home's own words, what it
+ * gives to whom when it widens something, the command as proposed (never a value only the person
+ * types), who proposed it, and the agent's own reason, kept apart. A client that knows it shows
+ * the change and the screen that performs it; one that does not shows the Request's form.
+ */
+export const commandRequestOutcomeSchema = z.discriminatedUnion("status", [
+  /** The person approved it and it is running. */
+  z.object({ status: z.literal("running") }),
+  z.object({ status: z.literal("done"), result: z.json().optional() }),
+  /** It was refused before anything happened. */
+  z.object({
+    status: z.literal("failed"),
+    code: z.string().max(100),
+    message: z.string().max(2_000),
+  }),
+  /** It may have happened; the Home does not know and never runs it again. */
+  z.object({ status: z.literal("unknown") }),
+]);
+export const CommandRequestPartSchema = z.object({
+  type: z.string().min(1).max(100),
+  family: z.string().min(1).max(40),
+  /** The class of the face the person is asked about (`widen-other`, `approve`, …). */
+  face: z.string().min(1).max(40),
+  /** The change, in the Home's words: who proposes what. */
+  summary: z.string().min(1).max(requestTitleMaxLength),
+  /** What it gives to whom, when it widens something; null when it does not. */
+  gives: z.string().max(1_000).nullable(),
+  /** The command as proposed, without its key and without anything only the person types. */
+  command: RequestJsonObjectSchema,
+  /** Input paths the person types on the card before approving. */
+  secretPaths: z.array(z.string().min(1).max(200)).max(8),
+  governs: z.object({
+    kind: z.string().min(1).max(40),
+    id: z.string().max(512).nullable(),
+    ids: z.array(z.string().max(512)).max(100).optional(),
+    task: z.string().max(512).optional(),
+    mode: z.string().max(40).optional(),
+  }),
+  /** One open ask per proposer and thing: the proposer and what is governed, as a digest. */
+  askKey: z.string().regex(/^[0-9a-f]{64}$/u),
+  /** The arguments as proposed, as a digest: the same ask with other arguments is a conflict. */
+  argumentsDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  proposer: z.object({
+    kind: z.enum(["run", "program", "connection"]),
+    /** The agent as the person knows it: an engine, an automation, a connected agent's label. */
+    name: z.string().min(1).max(200),
+    taskTitle: z.string().max(240).nullable(),
+    key: z.string().min(1).max(300),
+  }),
+  /** The agent's own words, not checked. */
+  agentReason: z.string().max(500).nullable(),
+  /** The screen that performs it, filled in; null where only this card can. */
+  editor: z.object({ screen: z.string().min(1).max(60) }).nullable(),
+  outcome: commandRequestOutcomeSchema.optional(),
+  /** It reached the end of its lifetime unanswered. */
+  expired: z.boolean().optional(),
+});
+export type CommandRequestPart = z.infer<typeof CommandRequestPartSchema>;
+export type CommandRequestOutcome = z.infer<typeof commandRequestOutcomeSchema>;
+
 const requestBaseShape = {
   settlementProvenance: z
     .union([
@@ -640,6 +701,8 @@ const requestBaseShape = {
       expired: z.boolean().optional(),
     })
     .optional(),
+  /** A Home command an agent proposed, which the person approves on its screen or declines. */
+  command: CommandRequestPartSchema.optional(),
   /** The subagent of the originating Run that asked; absent for the Run's own agent. */
   originatingNodeId: ExecutionNodeIdSchema.optional(),
   originatingRunId: RunIdSchema.nullable(),

@@ -5,6 +5,7 @@ import {
   type CommandFamily,
   type CommandResource,
   type CommandType,
+  type EffectClass,
 } from "./command-table.js";
 
 /**
@@ -32,6 +33,7 @@ export const commandTitles: { readonly [K in CommandType]: string } = {
   "node.stop": "Stop a subagent",
   "assignment.cancel": "Cancel handed-out work",
   "request.respond": "Answer a Request",
+  "request.command.approve": "Approve a change an agent proposed",
   "agent.session.stop": "Stop a connected agent's session",
   "attachment.upload.create": "Start an upload",
   "attachment.upload.discard": "Discard an upload",
@@ -210,4 +212,97 @@ export function commandSentence(
   const resource = (commandTable[command.type].governs as (c: Command) => CommandResource)(command);
   const named = name(resource);
   return named ? `${title}: ${named}` : title;
+}
+
+/** The class of a face, from the worst it can do to the least, for the one a card speaks of. */
+const severity: readonly EffectClass[] = [
+  "identity",
+  "secret",
+  "widen-other",
+  "approve",
+  "destroy",
+  "widen-self",
+  "narrow",
+  "preference",
+  "read",
+  "person-view",
+];
+
+/** The face a card speaks of: the one admitted, or the most it could be while only the store can tell. */
+export function commandAskedFace(type: CommandType, face: number | undefined): number {
+  const faces = commandTable[type].faces;
+  if (face !== undefined && faces[face]) return face;
+  let worst = 0;
+  faces.forEach((candidate, index) => {
+    if (severity.indexOf(candidate.class) < severity.indexOf(faces[worst]!.class)) worst = index;
+  });
+  return worst;
+}
+
+/**
+ * What a command gives, and to whom, when it widens something, in the person's words; null when
+ * it gives nothing to anyone. From the table and the input only, never the agent's description.
+ */
+export function commandGives(command: Command, face: number): string | null {
+  const shape = commandTable[command.type].faces[face];
+  if (!shape) return null;
+  const input = command as unknown as Record<string, unknown>;
+  switch (command.type) {
+    case "connection.update":
+      return "It gives this connected agent more than it holds now: more of your things, or a higher access mode.";
+    case "channel.chat.create":
+      return input.senders === "anyone"
+        ? "Anyone in that conversation could ask your agents to work."
+        : "You could ask your agents to work from that conversation.";
+    case "channel.connection.status.set":
+      return "Its chats reach your agents again.";
+    case "machine.access.update":
+      return "It turns on something agents may use on this device.";
+    case "personal.remoteAccess.request":
+      return "Your other devices could reach this Home over the internet.";
+    case "personal.remoteAccess.pairing.create":
+      return "The code lets another device connect to this Home.";
+    case "runner.enrollment.createLocal":
+    case "runner.enrollment.createPhone":
+      return "It adds a device your agents may then use.";
+    case "browser.source.pair":
+      return "A Chrome could share its tabs with this Home.";
+    case "thread.access.update":
+      return `Agents in this task would act with ${String(input.accessMode)} access.`;
+    case "execution.preferences.remember":
+      return `New tasks would start with ${String(input.accessMode)} access.`;
+    case "plugins.schedule.configure":
+      return "Its scheduled runs would be approved automatically, without asking you.";
+    case "plugins.access.set":
+      return `Agents could ${input.access === "all" ? "read and change" : "read"} through this plugin.`;
+    case "settings.plugin.enabled.set":
+      return "Agents could use it again.";
+    case "integration.computer.setup.request":
+    case "integration.computer.setup.set":
+      return "Agents could use this app on that device.";
+    case "integration.grant.create":
+      return "That app could use this device's data.";
+    case "browser.session.sign-in":
+      return "Your Chrome sign-in for this site would be copied into a browser your agents use.";
+    case "plugins.account.link":
+      return "This plugin could act with that account.";
+    case "harness.create":
+    case "harness.update":
+      return shape.class === "widen-other"
+        ? "What your tasks say would be sent to that server."
+        : null;
+    default:
+  }
+  switch (shape.class) {
+    case "widen-other":
+      return "It gives access to someone other than this agent.";
+    case "approve":
+      return "It lifts an approval you set.";
+    case "secret":
+      return "You type the value on this screen; it is not sent to the agent.";
+    case "identity":
+      return "It concerns who you are or your Opensteer account.";
+    default:
+      return null;
+  }
 }

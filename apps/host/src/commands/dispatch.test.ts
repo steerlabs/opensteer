@@ -165,14 +165,27 @@ describe("dispatchCommand", () => {
         const { registry, calls } = spyRegistry();
         for (const type of types) {
           const command = sample(type);
-          const answer = (await admit(agent, command)).answer;
+          const admitted = await admit(agent, command);
+          const answer = admitted.answer;
           const outcome = dispatchCommand(agent, command, { registry, admit });
           if (answer === "not_found")
             await expect(outcome, type).rejects.toMatchObject({
               code: "not_found",
               message: "That item is unavailable.",
             });
-          else await expect(outcome, type).resolves.toMatchObject({ status: "ask" });
+          else {
+            // An ask about an ask points at the Request the person already has; others wait.
+            const row = commandTable[type] as CommandRow;
+            const face = admitted.face;
+            const pointsAtRequest =
+              face !== undefined &&
+              row.answersAsk?.faces.includes(face) &&
+              (row.answersAsk.of as (c: HostApiCommand) => { kind: string })(command).kind ===
+                "request";
+            await expect(outcome, type).resolves.toMatchObject({
+              status: pointsAtRequest ? "pending" : "ask",
+            });
+          }
         }
         expect(calls).toEqual([]);
       },
@@ -215,6 +228,52 @@ describe("dispatchCommand", () => {
         { registry, admit: admitted },
       ),
     ).resolves.toMatchObject({ status: "ask" });
+    expect(calls).toEqual([]);
+  });
+
+  it("points an ask about an ask at the Request the person already has, opening nothing", async () => {
+    const { registry, calls } = spyRegistry();
+    const proposed: string[] = [];
+    const door = {
+      registry,
+      admit: async () => ({
+        answer: "ask" as const,
+        face: 0,
+        reason: "approval" as const,
+        execution: null,
+      }),
+      propose: async () => {
+        proposed.push("opened");
+        return { status: "pending" as const, requestId: "req_new" as never, existing: false };
+      },
+    };
+    await expect(
+      dispatchCommand(
+        run("full-access"),
+        {
+          type: "request.command.approve",
+          idempotencyKey: "k",
+          requestId: "req_the_persons",
+          expectedRevision: "1",
+          command: {},
+        } as unknown as HostApiCommand,
+        door,
+      ),
+    ).resolves.toEqual({
+      status: "pending",
+      requestId: "req_the_persons",
+      reason: "approval",
+      existing: true,
+    });
+    expect(proposed).toEqual([]);
+    // Anything else that waits for the person is put to them once.
+    await expect(
+      dispatchCommand(run("full-access"), sample("harness.rename"), door),
+    ).resolves.toMatchObject({
+      status: "pending",
+      requestId: "req_new",
+    });
+    expect(proposed).toEqual(["opened"]);
     expect(calls).toEqual([]);
   });
 

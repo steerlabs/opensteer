@@ -366,6 +366,8 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  /** The person's Requests for Home commands agents propose. */
+  readonly commandRequests?: import("./commands/requests.js").CommandRequestService;
   /** The owner's plugin API; personal Hosts only. */
   readonly plugins?: import("./plugins/plugin-owner-api.js").PluginOwnerApi;
   readonly pluginAgentWorkStoppedSince?: (runnerId: RunnerId) => string | undefined;
@@ -1974,6 +1976,14 @@ export async function createHostServer(
             response: command.response,
           };
           await (async (): Promise<void> => {
+            // A command an agent proposed: approving is `request.command.approve`, never a form
+            // answer, so anything an app sends here declines it, its words handed to the agent.
+            if (pending.command) {
+              if (!dependencies.commandRequests)
+                throw new OpensteerError({ code: "not_found", message: "Request not found" });
+              await dependencies.commandRequests.decline(input);
+              return;
+            }
             // A connected agent's direct operation: the answer settles it, with no Runner.
             if (pending.originatingAgentSessionId && pending.kind === "person.question") {
               if (!dependencies.agentOperations)
@@ -2666,6 +2676,7 @@ export async function createHostServer(
         dependencies.computerViews,
         dependencies.plugins,
         dependencies.pluginOAuth,
+        dependencies.commandRequests,
       ),
       ...(dependencies.connections
         ? createConnectionRpcHandlers(dependencies.connections, (ownerId) =>

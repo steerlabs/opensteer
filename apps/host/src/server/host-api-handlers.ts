@@ -18,7 +18,8 @@ import type { PluginOwnerApi } from "../plugins/plugin-owner-api.js";
 import type { ChannelService } from "../channels/channel-service.js";
 import type { BrowserSourceRpcOptions } from "./browser-source-registration.js";
 import { personActor } from "../commands/actor.js";
-import { dispatchCommand } from "../commands/dispatch.js";
+import { dispatchCommand, type CommandDoor } from "../commands/dispatch.js";
+import type { CommandRequestService } from "../commands/requests.js";
 import { createCommandRegistry, type CoreCommand } from "../commands/registry.js";
 
 export function createHostApiHandlers(
@@ -106,6 +107,7 @@ export function createHostApiHandlers(
   computerViews?: ComputerViewService,
   plugins?: PluginOwnerApi,
   pluginOAuth?: PluginOAuthService,
+  commandRequests?: CommandRequestService,
 ): Omit<
   HostApiHandlers,
   | "personal.remoteAccess.get"
@@ -116,8 +118,26 @@ export function createHostApiHandlers(
   | "threads.activity"
   | `team.${string}`
 > {
-  const door = {
+  const door: CommandDoor = {
     registry: createCommandRegistry({
+      ...(commandRequests
+        ? {
+            // The person's approval runs the proposed command through this same door, as them.
+            approveCommand: async (actor, command, context) => ({
+              type: command.type,
+              outcome: await commandRequests.approve(
+                actor,
+                {
+                  requestId: command.requestId,
+                  expectedRevision: command.expectedRevision,
+                  command: command.command,
+                },
+                (person, approved) => dispatchCommand(person, approved, door, context),
+                (proposal) => personActor(context, proposal),
+              ),
+            }),
+          }
+        : {}),
       triggers,
       devices,
       channels,
