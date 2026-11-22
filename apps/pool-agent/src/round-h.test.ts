@@ -4,7 +4,7 @@
  * the real driver uses on real files; only the fetch and `mkfs.ext4` are stood in for. Each
  * test was written before the change and failed there.
  */
-import { lstat, readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rmdir, writeFile } from "node:fs/promises";
 import { describe, expect, it, afterEach } from "vitest";
 import { agentConfigSchema } from "./config.js";
 import { FakeHypervisorDriver } from "./fake-driver.test-support.js";
@@ -234,5 +234,50 @@ describe("the account origin", () => {
     expect(agentConfigSchema.safeParse(withOrigin("https://account.example")).success).toBe(true);
     for (const origin of ["http://account.example", "https://u:p@account.example", undefined])
       expect(agentConfigSchema.safeParse(withOrigin(origin)).success).toBe(false);
+  });
+});
+
+describe("credentialsErased whenever the credentials are proven gone (W10)", () => {
+  it("is reported for a slot that never had credentials, and for a repeated delete", async () => {
+    const h = await pulling(async () => answer);
+    await h.create("bps-never");
+    expect(await h.agent.agent.deleteSlotWithEvidence("bps-never", 1)).toMatchObject({
+      erased: true,
+      credentialsErased: true,
+    });
+    expect(await h.agent.agent.deleteSlotWithEvidence("bps-never", 1)).toMatchObject({
+      erased: true,
+      credentialsErased: true,
+    });
+  });
+
+  it("is reported on a host that does not pull, for a slot that named none", async () => {
+    const agent = await startTestPoolAgent({ saveAfterMs: null });
+    open.push(agent);
+    await agent.agent.createSlot({
+      slotId: "plain",
+      term: 1,
+      homeKey: homeKeyPair().spki,
+      guest: testGuest,
+    });
+    expect(await agent.agent.deleteSlotWithEvidence("plain", 1)).toMatchObject({
+      erased: true,
+      credentialsErased: true,
+    });
+  });
+
+  it("refuses the delete when a file is there and cannot be removed, and it can be sent again", async () => {
+    const h = await pulling(async () => answer);
+    await h.create("bps-stuck");
+    const files = h.files("bps-stuck");
+    // Not a plain file: the agent will not remove it.
+    await mkdir(files.password);
+    await expect(h.agent.agent.deleteSlotWithEvidence("bps-stuck", 1)).rejects.toThrow();
+    expect(h.agent.agent.slotIds()).toContain("bps-stuck");
+    await rmdir(files.password);
+    expect(await h.agent.agent.deleteSlotWithEvidence("bps-stuck", 1)).toMatchObject({
+      erased: true,
+      credentialsErased: true,
+    });
   });
 });

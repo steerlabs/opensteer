@@ -787,7 +787,9 @@ export class PoolAgent {
    * `deleteSlot`, with what was seen gone. Round G, B: a slot's upstream credential files are
    * removed with it, before its record becomes a tombstone (so a failed removal leaves a slot
    * that a repeated delete finishes), except a file another live slot also names.
-   * `credentialsErased` is present only when the slot named files and every one is seen gone.
+   * `credentialsErased` is present whenever every credential file the slot has is seen gone (none
+   * counts), and on a pulling host for a slot it no longer knows; a file that cannot be removed
+   * makes the delete fail, to be sent again.
    */
   async deleteSlotWithEvidence(
     slotId: string,
@@ -825,6 +827,10 @@ export class PoolAgent {
       const profilePath = slot.record.guest.profilePath;
       return this.#run(slot, async () => {
         if (slot.deleted) {
+          if (this.#driver.pullsEgress) {
+            await this.#driver.eraseCredentials(this.#driver.pulledEgressFiles(slotId));
+            credentialsErased = true;
+          }
           await erase(profilePath);
           return evidence();
         }
@@ -856,8 +862,8 @@ export class PoolAgent {
         const own = files.filter((file) => !named.has(file));
         if (own.length < files.length) this.#log({ event: "credentials.shared", slotId });
         await this.#driver.eraseCredentials(own);
-        credentialsErased =
-          (this.#driver.pullsEgress || files.length > 0) && own.length === files.length;
+        // W10: proven gone whenever every file the slot has is gone, including when it has none.
+        credentialsErased = own.length === files.length;
         // One write: the live record becomes a tombstone that holds nothing secret. From here
         // nothing queued may act, and the slot's control key is gone.
         const tombstone = tombstoneOf(slot.record, this.#iso());
