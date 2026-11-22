@@ -540,6 +540,18 @@
       "update \"agent_operations\" set \"state\" = $1, \"handed_off_at\" = $2, \"updated_at\" = $3 where \"id\" = $4 and \"state\" = $5 and \"grant_revision\" = $6 and \"mode\" = $7 and \"request_id\" is null and \"target_generation\" is null and \"target\" = $8::jsonb returning *",
       "update \"agent_operations\" set \"state\" = $1, \"outcome\" = $2, \"completed_at\" = $3, \"updated_at\" = $4, \"terminal_evidence_at\" = $5, \"result_summary\" = $6 where \"id\" = $7 and \"state\" = $8 returning *",
       "update \"agent_sessions\" set \"last_active_at\" = $1 where \"id\" = $2 returning *"
+    ],
+    "execution dispatch pass": [
+      "select \"commands\".*, \"runs\".\"harness_instance_id\" as \"run_harness_instance_id\" from \"commands\" left join \"threads\" on \"threads\".\"id\" = \"commands\".\"thread_id\" left join \"runs\" on \"runs\".\"id\" = \"commands\".\"run_id\" where \"commands\".\"status\" = $1 and \"runs\".\"finish_intent\" is null and (\"commands\".\"type\" != $2 or (\"threads\".\"input_queue_paused\" = $3 and \"runs\".\"status\" = $4)) and (\"commands\".\"type\" != $5 or not exists (select \"predecessor\".\"id\" from \"runs\" as \"predecessor\" inner join \"runs\" as \"candidate\" on \"candidate\".\"thread_id\" = \"predecessor\".\"thread_id\" where \"candidate\".\"id\" = \"commands\".\"run_id\" and \"predecessor\".\"run_ordinal\" < \"candidate\".\"run_ordinal\" and \"predecessor\".\"status\" in ($6, $7, $8, $9))) order by \"commands\".\"created_at\" asc limit $10"
+    ],
+    "memory provisioning pass": [
+      "select \"capabilities\" from \"runners\" where \"id\" = $1",
+      "select \"capabilities\", \"id\", \"kind\", \"name\", \"runner_id\" from \"execution_environments\" where \"id\" = $1",
+      "select \"id\" from \"execution_environments\" where \"runner_id\" = $1",
+      "select \"owner_id\" from \"personal_settings\"",
+      "select \"system_role\" from \"triggers\" where \"system_role\" is not null",
+      "select \"triggers\".\"id\", \"triggers\".\"current_revision_id\", \"triggers\".\"system_role\", \"trigger_revisions\".\"program\" from \"triggers\" inner join \"trigger_revisions\" on \"trigger_revisions\".\"id\" = \"triggers\".\"current_revision_id\" where \"triggers\".\"system_role\" is not null",
+      "select * from \"personal_settings\" where \"singleton_key\" = $1"
     ]
   }
 }
