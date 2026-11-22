@@ -108,7 +108,10 @@ const navigationLabels = {
   quickSettings: "Control Center",
   action: "Action",
   siri: "Siri",
-};
+} as const;
+const defaultNavigationButtons = Object.keys(
+  navigationLabels,
+) as readonly (keyof typeof navigationLabels)[];
 
 export function iphoneCapabilityReason(reason: string | null | undefined): DeviceCapabilityReason {
   switch (reason) {
@@ -1495,21 +1498,37 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       PhoneScreenDriverEvent,
       { type: "runner.integrations.device-status" }
     >["actions"] = [];
-    if (available && observation) {
-      if (inputReady)
-        actions.push(
-          ...(selfApp
-            ? ["navigate" as const]
-            : (["tap", "longPress", "swipe", "drag", "scroll", "navigate"] as const)),
-        );
-      if (!this.#observationCapability(phone, "launch")) actions.push("launch");
-      if (inputReady && !selfApp) {
-        if (capabilities?.text === null && observation.textReason === null) actions.push("type");
-        if (capabilities?.clear === null && observation.clearReason === null) actions.push("clear");
+    if (available) {
+      if (observation) {
+        if (inputReady)
+          actions.push(
+            ...(selfApp
+              ? ["navigate" as const]
+              : (["tap", "longPress", "swipe", "drag", "scroll", "navigate"] as const)),
+          );
+        if (!this.#observationCapability(phone, "launch")) actions.push("launch");
+        if (inputReady && !selfApp) {
+          if (capabilities?.text === null && observation.textReason === null) actions.push("type");
+          if (capabilities?.clear === null && observation.clearReason === null)
+            actions.push("clear");
+        }
+        actions.push("wait");
+      } else if (capabilities?.liveVideo === null && inputReady) {
+        // Advertise interactive viewer controls immediately before an agent observes.
+        actions.push("tap", "longPress", "swipe", "drag", "scroll", "navigate");
+        if (capabilities.launch === null) actions.push("launch");
+        if (capabilities.text === null) actions.push("type");
+        if (capabilities.clear === null) actions.push("clear");
+        actions.push("wait");
       }
-      actions.push("wait");
     }
     if (capabilities?.wake === null) actions.push("wake");
+    const buttons = inputReady
+      ? (observation?.buttons ?? (capabilities?.liveVideo === null ? defaultNavigationButtons : []))
+      : [];
+    const ownerControlReady =
+      capabilities?.liveVideo === null &&
+      (inputReady || (privacyShieldRouteReady && capabilities?.wake === null));
     return this.#emit({
       deviceId: phone.assignment.deviceId,
       driverGeneration: phone.assignment.generation,
@@ -1524,20 +1543,16 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         detail: capabilities ? operationReasons[operation] : null,
         remedy: null,
       })),
-      navigationButtons: (inputReady ? (observation?.buttons ?? []) : []).map((id) => ({
+      navigationButtons: buttons.map((id) => ({
         id,
         label: navigationLabels[id],
       })),
       actions,
       wake: capabilities?.wake === null,
-      lock: observation
-        ? observation.state.lock === "unknown"
-          ? null
-          : observation.state.lock === "locked"
-        : null,
+      lock: capabilities?.wake === null ? true : null,
       displayVersion: capabilities?.liveVideo === null ? 1 : null,
       ownerViewVersion: capabilities?.liveVideo === null ? 1 : null,
-      inputVersion: capabilities?.liveVideo === null && inputReady ? 1 : null,
+      inputVersion: ownerControlReady ? 1 : null,
       powerVersion: capabilities?.wake === null ? 1 : null,
     });
   }
