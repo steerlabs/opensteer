@@ -278,6 +278,59 @@ describe("what a Home's row says", () => {
       });
 });
 
+describe("a Home that needs signing in to, as the picker showed it", () => {
+  // Run 20261122T193239Z-59702488: at the largest size "computer" broke as "compu" / "ter" and
+  // the sentence was cut after "Sign in to this Ope…". A word that fits the reading column but not
+  // the column beside the mark and the controls; the earlier fixtures held none.
+  const sentence = "Sign in to this Opensteer to see your work.";
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`reads whole on ${phone.name} at text size ${fontScale}`, async () => {
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        const none = () => undefined;
+        await act(async () =>
+          root.render(
+            <View
+              style={{
+                paddingLeft: 16 + phone.insets.left,
+                paddingRight: 16 + phone.insets.right,
+                width: phone.window.width,
+              }}
+            >
+              <DeploymentListRow
+                attention={null}
+                current={false}
+                onDetails={none}
+                onOpen={none}
+                onPair={none}
+                onRemove={none}
+                onSignOut={none}
+                row={{
+                  ...row({ id: homes[0]!.id, name: "Messaging computer" }),
+                  kindLabel: "Server",
+                  status: "needs-sign-in",
+                }}
+              />
+            </View>,
+          ),
+        );
+        const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
+        expect(
+          textFaults(frames, { column: readingColumn(phone) }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
+        for (const words of ["Messaging computer", sentence]) {
+          const text = textElement(container, words);
+          expect(frames.shown(text), `"${words}" is cut`).toBe(words);
+        }
+      });
+});
+
 describe("a failure line above the Homes list", () => {
   const sentence = "Opensteer couldn't save your sign-in on this iPhone. Try again.";
   for (const phone of layoutPhones)
