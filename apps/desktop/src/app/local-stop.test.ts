@@ -130,7 +130,7 @@ it("queues Stop behind the update handoff's final idle check", async () => {
 });
 
 it("keeps looking for Home Stop proof after local containment, keeps Resume usable, and confirms when proof arrives", async () => {
-  const proof = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+  const proof = Promise.withResolvers<void>();
   const confirm = vi.fn((_stoppedSince: string, _signal: AbortSignal) => proof.promise);
   const service = new DesktopLocalStop({
     store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
@@ -148,7 +148,7 @@ it("keeps looking for Home Stop proof after local containment, keeps Resume usab
   expect(service.confirming).toBe(true);
   expect(confirm).toHaveBeenCalledWith(at, expect.any(AbortSignal));
 
-  proof.resolve("confirmed");
+  proof.resolve();
   await vi.waitFor(() => expect(service.stoppedAt).toBe(at));
   expect(service.confirming).toBe(false);
   expect(service.problem).toBeNull();
@@ -160,13 +160,13 @@ it("cancels an in-flight Home proof look and ignores late answers on Resume or a
   const calls: Array<{
     stoppedSince: string;
     signal: AbortSignal;
-    deferred: PromiseWithResolvers<"confirmed" | "not-needed" | "ended">;
+    deferred: PromiseWithResolvers<void>;
   }> = [];
   const service = new DesktopLocalStop({
     store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
     restart: async () => {},
     confirm: (stoppedSince, signal) => {
-      const deferred = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+      const deferred = Promise.withResolvers<void>();
       calls.push({ stoppedSince, signal, deferred });
       return deferred.promise;
     },
@@ -180,7 +180,7 @@ it("cancels an in-flight Home proof look and ignores late answers on Resume or a
   expect(calls).toHaveLength(1);
   await service.resume();
   expect(calls[0]!.signal.aborted).toBe(true);
-  calls[0]!.deferred.resolve("confirmed");
+  calls[0]!.deferred.resolve();
   await Promise.resolve();
   expect(service.phase).toBe("running");
   expect(service.stoppedAt).toBeNull();
@@ -192,17 +192,17 @@ it("cancels an in-flight Home proof look and ignores late answers on Resume or a
   await service.stop();
   expect(calls).toHaveLength(3);
   expect(calls[1]!.signal.aborted).toBe(true);
-  calls[1]!.deferred.resolve("confirmed");
+  calls[1]!.deferred.resolve();
   await Promise.resolve();
   expect(service.stoppedAt).toBeNull();
   expect(service.confirming).toBe(true);
 
-  calls[2]!.deferred.resolve("confirmed");
+  calls[2]!.deferred.resolve();
   await vi.waitFor(() => expect(service.stoppedAt).toBe(at2));
   expect(service.confirming).toBe(false);
 });
 
-it("never lets Home proof override failed local containment, handles permanent Home refusal, ends cleanly when Home changes, and looks again on restore()", async () => {
+it("never lets Home proof override failed local containment, handles permanent Home refusal, and looks again on restore()", async () => {
   // 1. Permanent Home refusal surfaces an error and ends the look.
   const refused = new DesktopLocalStop({
     store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
@@ -220,22 +220,8 @@ it("never lets Home proof override failed local containment, handles permanent H
   expect(refused.problem).toContain("Couldn’t confirm everything stopped");
   expect(refused.problem).toContain("Personal Host refused");
 
-  // 2. Removed or replaced Home ends the look without claiming confirmed or showing a failure.
-  const ended = new DesktopLocalStop({
-    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
-    restart: async () => {},
-    confirm: async () => "ended",
-    log: vi.fn(),
-    now: () => new Date(at),
-  });
-  await ended.restore();
-  await ended.stop();
-  await vi.waitFor(() => expect(ended.confirming).toBe(false));
-  expect(ended.stoppedAt).toBeNull();
-  expect(ended.problem).toBeNull();
-
-  // 3. Failed local containment (restart error) never starts a Home proof look.
-  const confirmOnLocalFail = vi.fn(async () => "confirmed" as const);
+  // 2. Failed local containment (restart error) never starts a Home proof look.
+  const confirmOnLocalFail = vi.fn(async () => {});
   const localFailed = new DesktopLocalStop({
     store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
     restart: async () => {
@@ -251,9 +237,9 @@ it("never lets Home proof override failed local containment, handles permanent H
   expect(localFailed.stoppedAt).toBeNull();
   expect(localFailed.problem).toContain("Couldn’t confirm everything stopped");
 
-  // 4. restore() on app reopen starts looking again and confirms once proof arrives;
+  // 3. restore() on app reopen starts looking again and confirms once proof arrives;
   //    if noteUncontainedBoot fires before proof arrives, Home proof never overrides it.
-  const reopenProof = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+  const reopenProof = Promise.withResolvers<void>();
   const reopened = new DesktopLocalStop({
     store: { load: async () => ({ stopped: true, at }), save: async () => {} },
     restart: async () => {},
@@ -265,11 +251,11 @@ it("never lets Home proof override failed local containment, handles permanent H
   expect(reopened.phase).toBe("stopped");
   expect(reopened.confirming).toBe(true);
   expect(reopened.stoppedAt).toBeNull();
-  reopenProof.resolve("confirmed");
+  reopenProof.resolve();
   await vi.waitFor(() => expect(reopened.stoppedAt).toBe(at));
   expect(reopened.confirming).toBe(false);
 
-  const uncontainedProof = Promise.withResolvers<"confirmed" | "not-needed" | "ended">();
+  const uncontainedProof = Promise.withResolvers<void>();
   let uncontainedSignal: AbortSignal | undefined;
   const uncontained = new DesktopLocalStop({
     store: { load: async () => ({ stopped: true, at }), save: async () => {} },
@@ -284,7 +270,7 @@ it("never lets Home proof override failed local containment, handles permanent H
   await uncontained.restore();
   uncontained.noteUncontainedBoot(at);
   expect(uncontainedSignal?.aborted).toBe(true);
-  uncontainedProof.resolve("confirmed");
+  uncontainedProof.resolve();
   await Promise.resolve();
   expect(uncontained.stoppedAt).toBeNull();
   expect(uncontained.confirming).toBe(false);

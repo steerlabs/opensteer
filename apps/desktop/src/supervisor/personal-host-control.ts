@@ -91,14 +91,6 @@ export interface PersonalHostControlPort {
     /** Hears what the Host says it is still waiting for, on each not-ready answer. */
     onPending?: (pending: "agent-home" | undefined) => void,
   ): Promise<void>;
-  waitForPluginAgentWorkStopped?(
-    origin: string,
-    deploymentId: string,
-    environmentId: EnvironmentId,
-    runnerId: RunnerId,
-    stoppedSince: string,
-    signal: AbortSignal,
-  ): Promise<void>;
   checkPluginAgentWorkStopped?(
     origin: string,
     deploymentId: string,
@@ -327,25 +319,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
       origin,
       { kind: "runner", environmentId, runnerId },
       signal,
-      undefined,
       onPending,
-    );
-  }
-
-  async waitForPluginAgentWorkStopped(
-    origin: string,
-    deploymentId: string,
-    environmentId: EnvironmentId,
-    runnerId: RunnerId,
-    stoppedSince: string,
-    signal: AbortSignal,
-  ): Promise<void> {
-    await this.#waitForReadiness(
-      deploymentId,
-      origin,
-      { kind: "runner", environmentId, runnerId },
-      signal,
-      stoppedSince,
     );
   }
 
@@ -391,7 +365,6 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     origin: string,
     target: Parameters<HostApiClient["personal.readiness.get"]>[0],
     signal: AbortSignal,
-    stoppedSince?: string,
     onPending?: (pending: "agent-home" | undefined) => void,
   ) {
     const read = this.#hostApi(deploymentId, origin)["personal.readiness.get"];
@@ -403,11 +376,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
         );
         if (!result.ok) throw bootstrapRefusal(result.error);
         onPending?.(result.data.ready ? undefined : result.data.pending);
-        if (
-          result.data.ready &&
-          (stoppedSince === undefined || result.data.pluginAgentWorkStoppedSince === stoppedSince)
-        )
-          return;
+        if (result.data.ready) return;
       } catch (error) {
         throwIfAborted(signal, "Personal setup was cancelled.");
         if (error instanceof PersonalHostBootstrapRefusedError) throw error;

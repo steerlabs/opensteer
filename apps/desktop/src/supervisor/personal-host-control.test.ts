@@ -1,4 +1,3 @@
-import { DesktopLocalStop } from "../app/local-stop.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import { createId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
@@ -173,54 +172,6 @@ describe("NativePersonalHostControl bootstrap", () => {
     });
     // A settled refusal ends the wait on the first answer, never on a deadline.
     expect(requests).toBe(1);
-  });
-
-  it("waits for plugin Stop proof for the exact choice, beyond Runner readiness", async () => {
-    const deployment = manifest();
-    const stoppedSince = "2026-11-20T09:00:00.000Z";
-    const requests: string[] = [];
-    const reporting = Promise.withResolvers<void>();
-    const control = new NativePersonalHostControl({
-      fetch: async (_deploymentId, input) => {
-        requests.push(String(input));
-        if (requests.length === 1) return readiness(true);
-        if (requests.length === 3) await reporting.promise;
-        return json({
-          ok: true,
-          data: {
-            ready: true,
-            pluginAgentWorkStoppedSince:
-              requests.length === 2 ? "2026-11-20T08:00:00.000Z" : stoppedSince,
-          },
-        });
-      },
-      pollIntervalMs: 1,
-    });
-    const stop = new DesktopLocalStop({
-      store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
-      log: () => {},
-      now: () => new Date(stoppedSince),
-      restart: () =>
-        control.waitForPluginAgentWorkStopped(
-          hostOrigin,
-          deployment.deploymentId,
-          deployment.environmentId,
-          deployment.runnerId,
-          stoppedSince,
-          AbortSignal.timeout(2_000),
-        ),
-    });
-    await stop.restore();
-    const stopping = stop.stop();
-    try {
-      await vi.waitFor(() => expect(requests).toHaveLength(3));
-      expect(stop.phase).toBe("stopping");
-      expect(stop.stoppedAt).toBeNull();
-    } finally {
-      reporting.resolve();
-      await stopping;
-    }
-    expect(stop.stoppedAt).toBe(stoppedSince);
   });
 
   it("checks plugin Stop proof once per call, rejecting stale proof and permanent refusals", async () => {

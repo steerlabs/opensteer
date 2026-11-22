@@ -22,19 +22,14 @@ const unreadStop = menuBarWords("menubar.stop.unread");
 const unsavedResume = menuBarWords("menubar.resume.unsaved");
 const unconfirmedStop = menuBarWords("menubar.stop.unconfirmed");
 
-export type LocalStopHomeProofOutcome = "confirmed" | "not-needed" | "ended";
-
 interface DesktopLocalStopOptions {
   readonly restart: () => Promise<void>;
   /**
    * Keeps looking for the hosted Home's Stop proof after local containment
-   * finishes. Reject only on a permanent refusal; return `"ended"` if the Home
-   * was removed or replaced, or `"not-needed"` when this Mac hosts no Home.
+   * finishes. Resolves once proved or when this Mac hosts no Home, returns on
+   * abort, and rejects only on a permanent Home refusal.
    */
-  readonly confirm?: (
-    stoppedSince: string,
-    signal: AbortSignal,
-  ) => Promise<LocalStopHomeProofOutcome>;
+  readonly confirm?: (stoppedSince: string, signal: AbortSignal) => Promise<void>;
   readonly store: LocalStopStore;
   readonly log: ShutdownLog;
   readonly now?: () => Date;
@@ -206,7 +201,7 @@ export class DesktopLocalStop {
     this.#lookAbort = controller;
     this.#confirming = true;
     void confirm(at, controller.signal).then(
-      (outcome) => {
+      () => {
         if (
           controller.signal.aborted ||
           generation !== this.#lookGeneration ||
@@ -216,12 +211,8 @@ export class DesktopLocalStop {
           return;
         this.#lookAbort = null;
         this.#confirming = false;
-        if (outcome === "confirmed" || outcome === "not-needed") {
-          this.#confirmedAt = at;
-          this.#options.log("desktop.local-stop.home-confirmed", { stoppedAt: at, outcome });
-        } else {
-          this.#options.log("desktop.local-stop.home-proof-ended", { stoppedAt: at });
-        }
+        this.#confirmedAt = at;
+        this.#options.log("desktop.local-stop.home-confirmed", { stoppedAt: at });
         this.#emit();
       },
       (error: unknown) => {

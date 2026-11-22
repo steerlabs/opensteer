@@ -2451,10 +2451,10 @@ it("keeps looking for Home Stop proof across transient faults and Home restarts,
   );
 
   try {
-    // 1. Before any hosted Home exists: returns "not-needed".
+    // 1. Before any hosted Home exists: resolves immediately (nothing more to prove).
     await expect(
       fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
-    ).resolves.toBe("not-needed");
+    ).resolves.toBeUndefined();
 
     // 2. Start Home, begin looking for proof, restart Home mid-look, confirm once restarted.
     await fixture.supervisor.start();
@@ -2462,7 +2462,7 @@ it("keeps looking for Home Stop proof across transient faults and Home restarts,
     await vi.waitFor(() => expect(checks).toBeGreaterThanOrEqual(2));
     // Crash the Host process so the supervisor restarts it mid-look.
     childrenOf(fixture, "host")[0]!.emit("exit", 1, null);
-    await expect(looking).resolves.toBe("confirmed");
+    await expect(looking).resolves.toBeUndefined();
     expect(childrenOf(fixture, "host").length).toBeGreaterThanOrEqual(2);
     expect(seenOrigins.length).toBeGreaterThanOrEqual(3);
 
@@ -2472,33 +2472,91 @@ it("keeps looking for Home Stop proof across transient faults and Home restarts,
       fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
     ).rejects.toBeInstanceOf(PersonalHostBootstrapRefusedError);
 
-    // 4. Different Home (manifest deploymentId changes mid-look) ends the look cleanly.
+    // 4. Replaced Home (manifest deploymentId changes mid-look): follows the new Home and asks it.
     mode = "replace";
     const originalLoad = fixture.files.load.bind(fixture.files);
+    const replacementDeploymentId = createId("deployment");
+    const askedDeployments: string[] = [];
     let loadCount = 0;
     const loadSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
       const current = await originalLoad();
       loadCount += 1;
       if (!current) return null;
-      return loadCount >= 2 ? { ...current, deploymentId: createId("deployment") } : current;
+      return loadCount >= 2 ? { ...current, deploymentId: replacementDeploymentId } : current;
     });
+    vi.mocked(fixture.host.checkPluginAgentWorkStopped!).mockImplementation(
+      async (_origin, depId) => {
+        askedDeployments.push(depId);
+        return depId === replacementDeploymentId;
+      },
+    );
     await expect(
       fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
-    ).resolves.toBe("ended");
+    ).resolves.toBeUndefined();
+    expect(askedDeployments).toContain(replacementDeploymentId);
     loadSpy.mockRestore();
 
-    // 5. Removed Home (manifest becomes null mid-look) ends the look cleanly.
+    // 5. Removed Home (manifest becomes null mid-look): nothing left to prove, resolves cleanly.
     mode = "remove";
     let removeCount = 0;
     const removeSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
       removeCount += 1;
       return removeCount >= 2 ? null : originalLoad();
     });
+    vi.mocked(fixture.host.checkPluginAgentWorkStopped!).mockResolvedValue(false);
     await expect(
       fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
-    ).resolves.toBe("ended");
+    ).resolves.toBeUndefined();
     removeSpy.mockRestore();
   } finally {
+    await fixture.supervisor.stop();
+  }
+});
+
+it("paces waitForStopProof from 250 ms doubling up to a 5 s cap", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  let checks = 0;
+  const fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      checkPluginAgentWorkStopped: vi.fn(async () => {
+        checks += 1;
+        return checks >= 8;
+      }),
+    },
+  );
+
+  await fixture.supervisor.start();
+  try {
+    vi.useFakeTimers();
+    const pending = fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal);
+
+    // Poll 1 fires immediately.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checks).toBe(1);
+
+    // Subsequent delays: 250, 500, 1000, 2000, 4000, 5000, 5000.
+    for (const [expectedStep, delayMs] of [
+      [2, 250],
+      [3, 500],
+      [4, 1_000],
+      [5, 2_000],
+      [6, 4_000],
+      [7, 5_000],
+      [8, 5_000],
+    ] as const) {
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(checks).toBe(expectedStep - 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(checks).toBe(expectedStep);
+    }
+
+    await expect(pending).resolves.toBeUndefined();
+  } finally {
+    vi.useRealTimers();
     await fixture.supervisor.stop();
   }
 });

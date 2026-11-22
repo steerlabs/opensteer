@@ -125,6 +125,7 @@ interface PersonalDeploymentSupervisorOptions {
   readonly agentsStoppedSince?: () => string | null;
   readonly onUncontainedBoot?: (mode: string) => void;
   readonly stopProofPollMs?: number;
+  readonly stopProofMaxPollMs?: number;
   readonly userDataDirectory?: string;
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
@@ -273,6 +274,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #shutdownTimeoutMs: number;
   readonly #startupTimeoutMs: number;
   readonly #stopProofPollMs: number;
+  readonly #stopProofMaxPollMs: number;
   readonly #userEnvironment: PersonalUserEnvironmentPort;
   #abort: AbortController | undefined;
   #browser: PersonalLocalBrowserHandle | null = null;
@@ -348,6 +350,10 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#stopProofPollMs = boundedDuration(
       options.stopProofPollMs ?? 250,
       "Stop proof poll interval",
+    );
+    this.#stopProofMaxPollMs = Math.max(
+      this.#stopProofPollMs,
+      boundedDuration(options.stopProofMaxPollMs ?? 5_000, "Stop proof max poll interval"),
     );
     const restartBackoffMs = boundedDuration(
       options.restartBackoffMs ?? defaultRestartBackoffMs,
@@ -1504,60 +1510,41 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   }
 
   /**
-   * Polls this Mac's hosted Home until it proves plugin agent work is stopped
-   * for `stoppedSince`, keeping up across transient faults and Home restarts.
-   * Returns `"not-needed"` when this Mac hosts no Home, `"ended"` when the look
-   * is cancelled or the Home is removed/replaced, and throws on permanent Home
-   * refusal.
+   * Polls whatever Home this Mac currently hosts until it proves plugin agent
+   * work is stopped for `stoppedSince`, keeping up across transient faults and
+   * Home restarts, doubling poll intervals up to `#stopProofMaxPollMs`.
+   * Returns immediately when this Mac hosts no Home (nothing more to prove) or
+   * when cancelled/shutting down, and throws on permanent Home refusal.
    */
-  async waitForStopProof(
-    stoppedSince: string,
-    signal: AbortSignal,
-  ): Promise<"confirmed" | "not-needed" | "ended"> {
+  async waitForStopProof(stoppedSince: string, signal: AbortSignal): Promise<void> {
     const check = this.#host.checkPluginAgentWorkStopped;
-    const wait = this.#host.waitForPluginAgentWorkStopped;
-    if (!check && !wait) return "not-needed";
-    let seenDeploymentId: string | null = null;
+    if (!check) return;
+    let waitMs = this.#stopProofPollMs;
     for (;;) {
-      if (signal.aborted || this.#shutdownRequested) return "ended";
+      if (signal.aborted || this.#shutdownRequested) return;
       const manifest = await this.#files.load().catch(() => null);
-      if (signal.aborted || this.#shutdownRequested) return "ended";
-      if (!manifest) return seenDeploymentId === null ? "not-needed" : "ended";
-      if (seenDeploymentId !== null && manifest.deploymentId !== seenDeploymentId) return "ended";
-      seenDeploymentId = manifest.deploymentId;
+      if (signal.aborted || this.#shutdownRequested) return;
+      if (!manifest) return;
       const runtime = this.#runtime;
       if (runtime) {
         try {
-          if (check) {
-            const confirmed = await check.call(
-              this.#host,
-              runtime.localOrigin,
-              manifest.deploymentId,
-              manifest.environmentId as EnvironmentId,
-              manifest.runnerId,
-              stoppedSince,
-              signal,
-            );
-            if (confirmed) return "confirmed";
-          } else if (wait) {
-            const slice = AbortSignal.any([signal, AbortSignal.timeout(1_000)]);
-            await wait.call(
-              this.#host,
-              runtime.localOrigin,
-              manifest.deploymentId,
-              manifest.environmentId as EnvironmentId,
-              manifest.runnerId,
-              stoppedSince,
-              slice,
-            );
-            return "confirmed";
-          }
+          const confirmed = await check.call(
+            this.#host,
+            runtime.localOrigin,
+            manifest.deploymentId,
+            manifest.environmentId as EnvironmentId,
+            manifest.runnerId,
+            stoppedSince,
+            signal,
+          );
+          if (confirmed) return;
         } catch (error: unknown) {
-          if (signal.aborted || this.#shutdownRequested) return "ended";
+          if (signal.aborted || this.#shutdownRequested) return;
           if (error instanceof PersonalHostBootstrapRefusedError) throw error;
         }
       }
-      await delay(this.#stopProofPollMs, signal).catch(() => undefined);
+      await delay(waitMs, signal).catch(() => undefined);
+      waitMs = Math.min(this.#stopProofMaxPollMs, waitMs * 2);
     }
   }
 
