@@ -108,6 +108,7 @@ import {
   type DeploymentId,
 } from "@opensteer/core";
 import {
+  BrowserPoolAdmissionClosed,
   OpensteerStore,
   withDatabaseOperationSignal,
   withoutDatabaseOperationSignal,
