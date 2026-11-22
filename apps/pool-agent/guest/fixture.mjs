@@ -5,7 +5,8 @@
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { createSocket } from "node:dgram";
 
 const guest = "172.16.0.2";
 
@@ -84,10 +85,46 @@ const bridge = createServer((request, response) => {
     return;
   }
   if (request.method === "GET" && url.pathname === "/probe") {
-    // Isolation checks from inside the guest: can a TCP connection be opened at all?
+    // Isolation checks from inside the guest: can a TCP connection be opened at all? Round I:
+    // and does a DNS question over UDP get an answer, or a ping (ICMP)?
     const host = url.searchParams.get("host") ?? "";
     const port = Number(url.searchParams.get("port"));
+    const kind = url.searchParams.get("kind") ?? "tcp";
     const started = Date.now();
+    const reply = (result) =>
+      response
+        .writeHead(200, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ host, port, kind, result, ms: Date.now() - started }));
+    if (kind === "udp-dns") {
+      // A query for example.com, type A.
+      const query = Buffer.from(
+        "123401000001000000000000076578616d706c6503636f6d0000010001",
+        "hex",
+      );
+      const socket = createSocket("udp4");
+      const timer = setTimeout(() => {
+        socket.close();
+        reply("no-answer");
+      }, 1500);
+      socket.once("message", () => {
+        clearTimeout(timer);
+        socket.close();
+        reply("answered");
+      });
+      socket.once("error", (error) => {
+        clearTimeout(timer);
+        socket.close();
+        reply(error.code ?? "error");
+      });
+      socket.send(query, port || 53, host);
+      return;
+    }
+    if (kind === "icmp") {
+      execFile("/opensteer/busybox", ["ping", "-c", "1", "-W", "1", host], (error) =>
+        reply(error ? "no-answer" : "answered"),
+      );
+      return;
+    }
     const socket = connect({ host, port, timeout: 1500 });
     const answer = (result) => {
       socket.destroy();
