@@ -1,5 +1,6 @@
 import {
   AgentConnectionStore,
+  OpensteerStore,
   TabStore,
   admitAgentOperation,
   beginAgentSession,
@@ -13,6 +14,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import { ExecutionCoordinator } from "@opensteer/orchestration";
+import { TabService } from "../tabs/tab-service.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
 import { MemoryPassService } from "../agents/memory-pass-service.js";
 import { createId } from "@opensteer/core";
@@ -129,6 +132,8 @@ it.skipIf(Boolean(reportPath))(
     const database = await cloneTestDatabase("host");
     const close: (() => unknown | Promise<unknown>)[] = [() => database.drop()];
     const own = new AsyncLocalStorage<string[]>();
+    // A later local names the agent's own tab; the traces keep a name of their own.
+    const traces = own;
     const trace = traceQueries((statement) => own.getStore()?.push(statement));
     const recorded: Record<string, string[]> = {};
     // A path's first shell read refreshes the owner's name in the background, and that
@@ -147,17 +152,52 @@ it.skipIf(Boolean(reportPath))(
         return done;
       });
     close.unshift(() => refreshing.mockRestore());
-    // The memory pass's provisioning drain is work the start leaves running: it is counted on no
-    // path. The fixture once held the first statement of its two passes at the start, which
-    // always ran inside the start while the rest of each pass raced its end; they are no longer
-    // listed.
+    // MemoryPassService's provisioning drain (`reconcileMissing`, run by its DeadlineDrain) is
+    // work the start leaves running: it is counted on no path, and its cost is pinned on a path
+    // of its own, "memory provisioning pass", one pass the test makes by itself. The fixture once held the first
+    // statement of its two passes at the start (`select "owner_id" from "personal_settings"`),
+    // which always ran inside the start while the rest of each pass raced its end; those two are
+    // deliberately not listed, so a raw trace of a start shows two statements more.
     const reconcile = MemoryPassService.prototype.reconcileMissing;
+    const memoryPasses = new Set<MemoryPassService>();
     const reconciling = vi
       .spyOn(MemoryPassService.prototype, "reconcileMissing")
       .mockImplementation(function (this: MemoryPassService) {
+        memoryPasses.add(this);
         return own.exit(() => Reflect.apply(reconcile, this, []) as ReturnType<typeof reconcile>);
       });
     close.unshift(() => reconciling.mockRestore());
+    // The execution coordinator's dispatch loop (`ExecutionCoordinator`, reading
+    // `OpensteerStore.listPendingCommands` each pass) is work the start leaves running too: a
+    // pass runs where it was woken, and its read is counted on no path of the start. The fixture once held
+    // its three reads at the start, which usually, not always, landed inside it; they are
+    // deliberately not listed, so a raw trace of a start shows them. Its cost is pinned on a path
+    // of its own, "execution dispatch pass": one pass the test asks for (the coordinator's
+    // `wake()`, made inside that path's own trace), every statement of it.
+    const dispatchSql: string[] = [];
+    let passRead: PromiseWithResolvers<void> | undefined;
+    const listPending = OpensteerStore.prototype.listPendingCommands;
+    const reading = vi
+      .spyOn(OpensteerStore.prototype, "listPendingCommands")
+      .mockImplementation(function (this: OpensteerStore, ...args) {
+        const run = () => Reflect.apply(listPending, this, args) as ReturnType<typeof listPending>;
+        if (own.getStore() !== dispatchSql) return own.exit(run);
+        const read = run();
+        const pass = passRead;
+        passRead = undefined;
+        if (pass) void read.finally(() => pass.resolve());
+        return read;
+      });
+    const dispatchers = new Set<ExecutionCoordinator>();
+    const start = ExecutionCoordinator.prototype.start;
+    const starting = vi.spyOn(ExecutionCoordinator.prototype, "start").mockImplementation(function (
+      this: ExecutionCoordinator,
+    ) {
+      dispatchers.add(this);
+      Reflect.apply(start, this, []);
+    });
+    close.unshift(() => starting.mockRestore());
+    close.unshift(() => reading.mockRestore());
     const record = async <T>(path: string, action: () => Promise<T>): Promise<T> => {
       const sql: string[] = [];
       try {
@@ -174,6 +214,39 @@ it.skipIf(Boolean(reportPath))(
         recorded[path] = counted
           .map((statement) => statement.replace(/\b(\w*timeout) = \d+/gu, "$1 = <ms>"))
           .sort();
+      }
+    };
+    // A tab's runtime frames mark it changed in the tab catalog when their work ends, which is
+    // sometimes while a tab command's own catalog refresh is in flight: the command then
+    // refreshes once more. On the paths that open or activate a tab, the order is fixed to the
+    // fixture's: a mark from the runtime's background frames is applied once the command has
+    // answered. A mark issues no statement; none is dropped, and the command's own marks are
+    // never deferred.
+    // A mark from the runtime's background frames starts in the broker's socket handler: no
+    // frame of the command is in its stack. The command's own marks (activation's before its
+    // read, the open's through its awaited admission) carry the command and stay in the path.
+    const fromBackgroundFrame = () => {
+      const limit = Error.stackTraceLimit;
+      Error.stackTraceLimit = 200;
+      const stack = new Error().stack ?? "";
+      Error.stackTraceLimit = limit;
+      return !/TabService\.(open|activate)\b|executeCoreCommand/u.test(stack);
+    };
+    const marksAfter = async <T>(command: () => Promise<T>): Promise<T> => {
+      const changed = TabService.prototype.changed;
+      const marks: { service: TabService; args: Parameters<TabService["changed"]> }[] = [];
+      const deferring = vi.spyOn(TabService.prototype, "changed").mockImplementation(function (
+        this: TabService,
+        ...args
+      ) {
+        if (args[1] && fromBackgroundFrame()) marks.push({ service: this, args });
+        else Reflect.apply(changed, this, args);
+      });
+      try {
+        return await command();
+      } finally {
+        deferring.mockRestore();
+        for (const { service, args } of marks) Reflect.apply(changed, service, args);
       }
     };
     try {
@@ -260,7 +333,9 @@ it.skipIf(Boolean(reportPath))(
       });
       const target = { kind: "page", guest: true, url: "about:blank" } as const;
       const opened = (await record("person tab open", () =>
-        rpc(api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
+        marksAfter(() =>
+          rpc(api["commands.dispatch"]({ type: "tab.open", idempotencyKey: "parity", target })),
+        ),
       )) as { tab: { tabId: Parameters<TabStore["get"]>[1] } };
       const tabId = opened.tab.tabId;
       const row = await new TabStore(host.store.database).get(host.ownerId, tabId);
@@ -276,12 +351,14 @@ it.skipIf(Boolean(reportPath))(
       );
       close.unshift(() => viewer.close());
       await record("workspace activation", () =>
-        rpc(
-          api["commands.dispatch"]({
-            type: "tab.activate",
-            idempotencyKey: "parity-activate",
-            tabId,
-          }),
+        marksAfter(() =>
+          rpc(
+            api["commands.dispatch"]({
+              type: "tab.activate",
+              idempotencyKey: "parity-activate",
+              tabId,
+            }),
+          ),
         ),
       );
       const run = await dispatchCallerRun(host, runner, { key: "parity", title: "Parity Run" });
@@ -381,6 +458,22 @@ it.skipIf(Boolean(reportPath))(
       );
       expect(ran.status).toBe("completed");
       expect(brokerControllers).toEqual([]);
+      // Each background pass, made once on purpose and measured by itself.
+      const [dispatcher] = dispatchers;
+      const [memoryPass] = memoryPasses;
+      if (!dispatcher || !memoryPass) throw new Error("A background pass never started.");
+      // A pass with nothing pending ends with its read: what it issues is in this trace by two
+      // turns of the event loop after that read.
+      dispatchSql.length = 0;
+      passRead = Promise.withResolvers<void>();
+      const read = passRead.promise;
+      traces.run(dispatchSql, () => dispatcher.wake());
+      await read;
+      for (let turn = 0; turn < 2; turn++)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      recorded["execution dispatch pass"] = [...dispatchSql].sort();
+      const memory = memoryPass;
+      await record("memory provisioning pass", () => Reflect.apply(reconcile, memory, []));
       if (parityReport)
         await writeFile(parityReport, `${JSON.stringify({ issued, recorded }, null, 2)}\n`);
       expect(

@@ -18,7 +18,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "kysely";
-import { expect, vi } from "vitest";
+import { expect, vi, onTestFinished } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { chromium } from "playwright-core";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
@@ -392,6 +392,12 @@ export async function journey(
   ) => {
     let open = true;
     const frames: Buffer[] = [];
+    const waiting: { count: number; resolve: () => void }[] = [];
+    /** Resolves once a frame arrives after the first `count`: on the stream, not on a clock. */
+    const next = (count: number) =>
+      frames.length > count
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => waiting.push({ count, resolve }));
     const attaching = home.service.attach(
       task.userId,
       BrowserSessionIdSchema.parse(sessionId),
@@ -405,13 +411,16 @@ export async function journey(
           if (binary && Buffer.isBuffer(data)) {
             if (!frames.length) onFrame?.();
             frames.push(data);
+            for (const waiter of waiting.splice(0))
+              if (frames.length > waiter.count) waiter.resolve();
+              else waiting.push(waiter);
           }
         },
       },
       { authSessionId: createId("authSession"), mode, signedIn: async () => true },
     );
     void attaching.catch(() => undefined);
-    return { attaching, frames };
+    return { attaching, frames, next };
   };
   const close = async () => {
     try {
@@ -504,20 +513,41 @@ export async function greenAt(frame: Buffer, tabId: string): Promise<boolean | u
 }
 
 /** The edit is visible only if a frame shows the page's own colour change, not a caret. */
+/**
+ * Waits on a condition, not on a window of real time: `check` is tried again after each turn of
+ * the event loop (which lets the Home under test run its own work) until it passes. Its only
+ * bound is the test's own timeout; once the test has ended it stops.
+ */
+export async function until<T>(check: () => T | Promise<T>): Promise<T> {
+  let ended = false;
+  onTestFinished(() => {
+    ended = true;
+  });
+  for (;;) {
+    try {
+      return await check();
+    } catch (error) {
+      if (ended) throw error;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+}
+
 export async function editVisibly(
   attached: { handle(data: Buffer, binary: boolean): Promise<void> },
-  frames: Buffer[],
+  watching: { readonly frames: Buffer[]; next(count: number): Promise<void> },
   tabId: string,
   value: () => Promise<string>,
   rendered: () => Promise<unknown>,
 ) {
-  await attached.handle(
-    Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId })),
-    false,
-  );
-  await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+  // Every wait here is on the stream or the page itself, never on a window of real time, so a
+  // slow machine takes longer and still sees what a fast one does.
+  const { frames } = watching;
+  const subscribe = (type: "stream.subscribe" | "stream.unsubscribe") =>
+    attached.handle(Buffer.from(JSON.stringify({ type, surfaceId: tabId })), false);
+  await subscribe("stream.subscribe");
+  await watching.next(0);
   expect(await greenAt(frames[0]!, tabId)).toBe(false);
-  const count = frames.length;
   const key = {
     type: "input.key",
     surfaceId: tabId,
@@ -528,19 +558,20 @@ export async function editVisibly(
   };
   await attached.handle(Buffer.from(JSON.stringify({ ...key, action: "down" })), false);
   await attached.handle(Buffer.from(JSON.stringify({ ...key, action: "up" })), false);
-  await vi.waitFor(async () => expect(await value()).toBe('["unsent draftx",99]'));
-  // Let the colour change reach the compositor before a fresh frame is asked for.
-  await rendered();
-  await attached.handle(
-    Buffer.from(JSON.stringify({ type: "stream.unsubscribe", surfaceId: tabId })),
-    false,
-  );
-  await attached.handle(
-    Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tabId })),
-    false,
-  );
-  await vi.waitFor(async () => {
+  // The key lands when the page has handled it: read again after each of its own frames.
+  while ((await value()) !== '["unsent draftx",99]') await rendered();
+  expect(await value()).toBe('["unsent draftx",99]');
+  // A fresh frame is asked for until one shows the page's own colour change: on a slow machine
+  // the first may have been taken before the compositor had it.
+  let green = false;
+  while (!green) {
+    await rendered();
+    await subscribe("stream.unsubscribe");
+    const count = frames.length;
+    await subscribe("stream.subscribe");
+    await watching.next(count);
     const results = await Promise.all(frames.slice(count).map((frame) => greenAt(frame, tabId)));
-    expect(results).toContain(true);
-  });
+    green = results.includes(true);
+  }
+  expect(green).toBe(true);
 }

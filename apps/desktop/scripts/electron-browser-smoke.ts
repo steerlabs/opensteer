@@ -5,6 +5,11 @@ import {
   SessionCdpRouter,
 } from "@opensteer/browser-core";
 import {
+  assertProfileContract,
+  PlatformScripts,
+  refusedProfileMessage,
+} from "./test-support/profile-probe.js";
+import {
   BrowserController,
   BrowserRuntime,
   BrowserRuntimeServer,
@@ -433,15 +438,89 @@ async function run(): Promise<void> {
       "Profiler.start ran without an enabled Profiler; the order probe proves nothing.",
     );
   }
+  // The platform's own record of every script and world, kept from before the
+  // profile starts, so a returned profile can be checked without the guard.
+  const platformScripts = new PlatformScripts();
+  const recordContext = (parameters: unknown) =>
+    platformScripts.observe("Runtime.executionContextCreated", parameters);
+  const recordScript = (parameters: unknown) =>
+    platformScripts.observe("Debugger.scriptParsed", parameters);
+  platformCdp.on("Runtime.executionContextCreated", recordContext);
+  platformCdp.on("Debugger.scriptParsed", recordScript);
+  // Enabling again reports every context the page has, with its world's name.
+  await platformCdp.send("Runtime.disable");
+  await platformCdp.send("Runtime.enable");
+  await platformCdp.send("Debugger.enable");
+  await platformCdp.send("Debugger.setSkipAllPauses", { skip: true });
   const profilerOwner = await first.cdp.attach(await firstPage.targetId());
   await profilerOwner.send("Profiler.enable");
   const released = profilerOwner.close();
   const enabled = profilerProbe.send("Profiler.enable");
   const started = profilerProbe.send("Profiler.start");
   await Promise.all([released, enabled, started]);
-  await profilerProbe.send("Profiler.stop");
+  // What this profile holds is whatever V8 sampled while the probe waited: on
+  // a busy machine that can be Opensteer's own worlds, which the guard must
+  // refuse. Either outcome keeps the contract; anything else breaks it.
+  const stopped = await profilerProbe.send("Profiler.stop").then(
+    (result: unknown) => ({ result }),
+    (error: unknown) => ({ error }),
+  );
+  const outcome = assertProfileContract(stopped, platformScripts);
+  process.stdout.write(`${JSON.stringify({ event: "electron-browser-smoke.profile", outcome })}\n`);
   await profilerProbe.close();
+  await platformCdp.send("Debugger.setSkipAllPauses", { skip: false });
+  await platformCdp.send("Debugger.disable");
+  platformCdp.off("Runtime.executionContextCreated", recordContext);
+  platformCdp.off("Debugger.scriptParsed", recordScript);
   progress("domain-order-kept");
+
+  // The profile's private inventory keeps Debugger on in the page; it must
+  // never pause it. A debugger statement runs straight through.
+  const pageValue = async (expression: string) =>
+    asEvaluationValue(
+      await platformCdp.send("Runtime.evaluate", { expression, returnByValue: true }),
+    );
+  /** A profile is returned or refused in the agent's words; its frames were checked above. */
+  const stopKeepsAgentWords = async (channel: { send(method: string): Promise<unknown> }) => {
+    const refused = await channel.send("Profiler.stop").then(
+      () => null,
+      (error: unknown) => error as { code?: unknown; message?: unknown },
+    );
+    if (refused && (refused.code !== "forbidden" || refused.message !== refusedProfileMessage))
+      throw new Error(`Profiler.stop failed: ${String(refused.message)}`);
+  };
+  const profiled = await first.cdp.attach(await firstPage.targetId());
+  await profiled.send("Profiler.enable");
+  await profiled.send("Profiler.start");
+  await pageValue(
+    "window.pausedThrough = false; setTimeout(() => { debugger; window.pausedThrough = true; }, 0); true",
+  );
+  await waitForAsync(async () => (await pageValue("window.pausedThrough")) === true, 5_000);
+  await stopKeepsAgentWords(profiled);
+  await profiled.close();
+  progress("profile-never-pauses-page");
+
+  // An agent's own breakpoint, set before its profile starts, still pauses
+  // for that agent: the inventory's skipping is its session's alone.
+  await pageValue(
+    "window.breakHere = function breakHere() {\n  return 1;\n};\n//# sourceURL=smoke-break.js",
+  );
+  const debuggee = await first.cdp.attach(await firstPage.targetId());
+  let pausedAt: unknown = null;
+  debuggee.on("Debugger.paused", (parameters) => {
+    pausedAt = parameters;
+  });
+  await debuggee.send("Debugger.enable");
+  await debuggee.send("Debugger.setBreakpointByUrl", { url: "smoke-break.js", lineNumber: 1 });
+  await debuggee.send("Profiler.enable");
+  await debuggee.send("Profiler.start");
+  await pageValue("setTimeout(() => window.breakHere(), 0); true");
+  await waitFor(() => pausedAt !== null, 5_000);
+  await debuggee.send("Debugger.resume");
+  await stopKeepsAgentWords(debuggee);
+  await debuggee.send("Debugger.disable");
+  await debuggee.close();
+  progress("agent-breakpoint-kept");
 
   // Exercise the same controller path used by remote Web and Electron panels,
   // not only Electron's raw debugger mechanics.
