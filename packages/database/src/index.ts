@@ -8,6 +8,7 @@ export * from "./browser-source-store.js";
 export * from "./channel-store.js";
 export * from "./bridge-ingress.js";
 export * from "./bridge-admission.js";
+export * from "./task-reader.js";
 export * from "./command-delivery.js";
 export * from "./node-control.js";
 export * from "./connection.js";

@@ -7,7 +7,8 @@ import type {
   UserId,
 } from "@opensteer/core";
 import { OpensteerError, ThreadIdSchema } from "@opensteer/core";
-import type { OpensteerStore, TriggerStore } from "@opensteer/database";
+import type { OpensteerStore, TaskReader, TriggerStore } from "@opensteer/database";
+import { personTaskReader } from "@opensteer/database";
 import {
   TriggerControlInputSchema,
   type TriggerControlInput,
@@ -110,9 +111,12 @@ export class TriggerService {
       readonly limit?: number;
       readonly anchorThreadId?: Parameters<TriggerStore["listForOwner"]>[0]["anchorThreadId"];
       readonly originConnectionId?: string;
+      /** Who reads: a memory pass's lineage sees only automations with personal context. */
+      readonly reader: TaskReader;
     },
   ) {
     return this.#store.listForOwner({
+      reader: input.reader,
       ...(input.originConnectionId === undefined
         ? {}
         : { originConnectionId: input.originConnectionId }),
@@ -134,8 +138,8 @@ export class TriggerService {
       ownerId,
     });
   }
-  async get(ownerId: UserId, triggerId: TriggerId, occurrenceLimit: number) {
-    const detail = await this.#store.getForOwner(triggerId, ownerId, occurrenceLimit);
+  async get(ownerId: UserId, triggerId: TriggerId, occurrenceLimit: number, reader: TaskReader) {
+    const detail = await this.#store.getForOwner(triggerId, ownerId, occurrenceLimit, reader);
     if (!detail)
       throw new OpensteerError({
         code: "not_found",
@@ -150,7 +154,7 @@ export class TriggerService {
     actorAccessMode?: ThreadAccessMode,
     actorConnectionId?: string,
   ) {
-    const current = await this.get(ownerId, input.triggerId, 1);
+    const current = await this.get(ownerId, input.triggerId, 1, actorReader(actorThreadId));
     await this.#assertProgramCompatible(
       ownerId,
       current.trigger.anchorThreadId,
@@ -301,13 +305,19 @@ export class TriggerService {
         return {
           triggers: await this.list(ownerId, {
             ...input,
+            reader: actorReader(actorThreadId),
             ...(context?.originConnectionId
               ? { originConnectionId: context.originConnectionId }
               : {}),
           }),
         };
       case "get":
-        return this.get(ownerId, input.triggerId, input.occurrenceLimit);
+        return this.get(
+          ownerId,
+          input.triggerId,
+          input.occurrenceLimit,
+          actorReader(actorThreadId),
+        );
       case "update":
         return this.update(
           ownerId,
@@ -470,4 +480,9 @@ function sameSecret(expectedHash: string, candidate: string): boolean {
 function required(value: string | undefined): string {
   if (!value) throw new Error("Webhook identity is missing");
   return value;
+}
+
+/** Work acting from a task reads as that task; the person and a connected agent as themselves. */
+function actorReader(actorThreadId: ThreadId | null): TaskReader {
+  return actorThreadId === null ? personTaskReader : { kind: "work", threadId: actorThreadId };
 }

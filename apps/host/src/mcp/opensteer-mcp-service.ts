@@ -64,6 +64,7 @@ import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import {
   AgentCallerResolver,
   callerLineage,
+  callerReader,
   type AgentCaller,
   type RunCaller,
 } from "./agent-caller.js";
@@ -134,7 +135,7 @@ export class OpensteerMcpService {
       Partial<Pick<PluginExecutions, "replayOperation">>;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
+    readonly store: Pick<OpensteerStore, "readTask" | "threadOrigins"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
       readonly database?: OpensteerStore["database"];
     };
@@ -152,7 +153,7 @@ export class OpensteerMcpService {
       Partial<Pick<PluginExecutions, "replayOperation">>;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "threadOrigins"> & {
+    readonly store: Pick<OpensteerStore, "readTask" | "threadOrigins"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
       readonly database?: OpensteerStore["database"];
     };
@@ -1012,14 +1013,13 @@ export class OpensteerMcpService {
     const selected = lineage?.grant.scope === "selected" ? lineage.agentConnectionId : undefined;
     return Promise.all(
       [...new Set(ids)].map(async (id) => {
-        // A memory pass's Run is refused a task without personal context here, where a task that
-        // does not exist is refused, in the same words.
-        const thread = await this.options.store.getThreadForOwner(
+        // A task its caller may not read (a memory pass's lineage, one without personal context)
+        // is refused here as a task that does not exist is, in the same words.
+        const thread = await this.options.store.readTask(
+          callerReader(caller),
           id,
           caller.userId,
-          selected,
-          undefined,
-          caller.kind === "run" ? caller.claims.threadId : undefined,
+          selected === undefined ? {} : { lineageConnectionId: selected },
         );
         if (!thread)
           throw new OpensteerError({

@@ -82,7 +82,8 @@ import type {
 import { admitThreadExecution } from "./execution-authority.js";
 import { isFinalScheduledOccurrence, recordAutomationFailure } from "./automation-failure-store.js";
 import { runFromRow } from "./thread-row-mappers.js";
-import { createThreadInTransaction, getThreadForOwner } from "./thread-store.js";
+import { createThreadInTransaction, readTask } from "./thread-store.js";
+import { readerSees, type TaskReader } from "./task-reader.js";
 import { assertDelegationDepth } from "./thread-lineage.js";
 import type { Thread } from "@opensteer/core";
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
@@ -821,6 +822,8 @@ export class TriggerStore {
     readonly systemRole?: TriggerSystemRole;
     /** Only the automations in one connected agent's lineage. */
     readonly originConnectionId?: string;
+    /** Who reads: a memory pass's lineage sees only automations with personal context. */
+    readonly reader: TaskReader;
   }): Promise<readonly TriggerSummary[]> {
     await requirePersonalOwner(this.#database, input.ownerId);
     let query = this.#database
@@ -829,6 +832,7 @@ export class TriggerStore {
       .selectAll("triggers")
       .select("threads.title as anchorThreadTitle")
       .where("triggers.createdBy", "=", input.ownerId)
+      .$if(input.reader.kind === "work", (q) => q.where(automationReaderSees(input.reader)))
       .$if(input.originConnectionId !== undefined, (q) =>
         q.where("triggers.originConnectionId", "=", input.originConnectionId!),
       );
@@ -1268,6 +1272,8 @@ export class TriggerStore {
     triggerId: TriggerId,
     ownerId: UserId,
     occurrenceLimit: number,
+    /** Who reads: one a memory pass's lineage may not read is null, as a missing one. */
+    reader: TaskReader,
   ): Promise<TriggerDetail | null> {
     await requirePersonalOwner(this.#database, ownerId);
     let query = this.#database
@@ -1280,7 +1286,8 @@ export class TriggerStore {
       )
       .select(["threads.title as anchorThreadTitle", "authorThread.title as createdByThreadTitle"])
       .where("triggers.id", "=", triggerId)
-      .where("triggers.createdBy", "=", ownerId);
+      .where("triggers.createdBy", "=", ownerId)
+      .$if(reader.kind === "work", (q) => q.where(automationReaderSees(reader)));
     const row = await query.executeTakeFirst();
     if (!row) return null;
     const { anchorThreadTitle, createdByThreadTitle, ...trigger } = row;
@@ -1371,7 +1378,7 @@ export class TriggerStore {
     const parsed = revisionFromRow(revision);
     return {
       activation: activation ? watchActivationFromRow(activation) : null,
-      anchorThread: await getThreadForOwner(this.#database, trigger.anchorThreadId, ownerId),
+      anchorThread: await readTask(this.#database, reader, trigger.anchorThreadId, ownerId),
       anchorThreadTitle,
       createdByThreadTitle,
       downstreamRuns: downstreamRunRows.slice(0, 100).map((row) => ({
@@ -2862,4 +2869,13 @@ async function admitTriggerActor<
     ? minThreadAccessMode(input.actorAccessMode, connection.accessMode)
     : connection.accessMode;
   return { input: { ...input, actorAccessMode }, connection };
+}
+
+/** An automation as a reader may see it: by its anchor task's lineage and its own. */
+function automationReaderSees(reader: TaskReader) {
+  return readerSees(
+    reader,
+    sql.ref("threads.origin_connection_id"),
+    sql.ref("triggers.origin_connection_id"),
+  );
 }

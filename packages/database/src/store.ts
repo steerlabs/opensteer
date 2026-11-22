@@ -185,6 +185,7 @@ import { readThreadHistory, type ThreadHistoryQuery } from "./thread-history.js"
 import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
 import * as threadStore from "./thread-store.js";
+import type { TaskReader } from "./task-reader.js";
 import {
   type AdmittedThreadDelegationRequest,
   type AdmittedThreadInputRequest,
@@ -1382,6 +1383,7 @@ export class OpensteerStore {
   async getAssignmentForOwner(input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
+    readonly reader: TaskReader;
   }): Promise<AssignmentView | null> {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
@@ -1409,16 +1411,16 @@ export class OpensteerStore {
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
-    readonly readerThreadId?: ThreadId;
+    readonly reader: TaskReader;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }
+  /** A task as the person reads it; work reading a task reads it through `readTask`. */
   async getThreadForOwner(
     threadId: ThreadId,
     ownerId: UserId,
     lineageConnectionId?: string,
     nativeOnly?: boolean,
-    readerThreadId?: ThreadId,
   ): Promise<Thread | null> {
     return threadStore.getThreadForOwner(
       this.#database,
@@ -1426,8 +1428,16 @@ export class OpensteerStore {
       ownerId,
       lineageConnectionId,
       nativeOnly,
-      readerThreadId,
     );
+  }
+  /** A task as its reader may see it; one it may not read is null, as a missing one. */
+  async readTask(
+    reader: TaskReader,
+    threadId: ThreadId,
+    ownerId: UserId,
+    options?: { readonly lineageConnectionId?: string; readonly nativeOnly?: boolean },
+  ): Promise<Thread | null> {
+    return threadStore.readTask(this.#database, reader, threadId, ownerId, options);
   }
 
   /** A Run's attempts and subagents, for a person who can read its Thread; null otherwise. */

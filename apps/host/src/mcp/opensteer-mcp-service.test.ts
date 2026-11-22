@@ -141,7 +141,7 @@ function fixture() {
         markToolDelivered,
         personSteerCount: vi.fn(async () => 0),
       },
-      getThreadForOwner: async (id: Thread["id"]) => targets.get(id) ?? null,
+      readTask: async (_reader: unknown, id: Thread["id"]) => targets.get(id) ?? null,
       threadOrigins: async () => new Map(),
 
       getAssignmentForOwner: async () => null,

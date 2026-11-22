@@ -137,7 +137,8 @@ import {
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
-import { lineageHasPersonalContext, lineagePersonalContext } from "./resource-access.js";
+import { lineagePersonalContext } from "./resource-access.js";
+import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js";
 import {
   projectThreadState,
   publishRunQueue,
@@ -679,6 +680,8 @@ export async function getAssignmentForOwner(
   input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
+    /** Who reads: one whose worker its reader may not read is null, as a missing one. */
+    readonly reader: TaskReader;
   },
 ): Promise<AssignmentView | null> {
   return withPersonalReadTransaction(
@@ -690,6 +693,9 @@ export async function getAssignmentForOwner(
         .innerJoin("threads as workerThread", "workerThread.id", "delegations.childThreadId")
         .selectAll("delegations")
         .where("delegations.id", "=", input.assignmentId)
+        .$if(input.reader.kind === "work", (query) =>
+          query.where(readerSees(input.reader, sql.ref("workerThread.origin_connection_id"))),
+        )
         .executeTakeFirst();
       if (!row) return null;
       const parent = await transaction
@@ -791,19 +797,6 @@ export async function listThreadAssignmentsForOwner(
     "repeatable read",
   );
 }
-/**
- * What a reading Run may see of a task: everything, unless the Run is a managed memory pass, which
- * sees only tasks that ran with the person's personal context, by the same predicate as its wake.
- * A task it may not see reads exactly like one that does not exist.
- */
-function memoryReaderSees(readerThreadId: ThreadId) {
-  return sql<boolean>`(not exists (
-      select 1 from triggers memory_reader
-      where memory_reader.anchor_thread_id = ${readerThreadId}
-        and memory_reader.system_role is not null
-    ) or ${lineageHasPersonalContext(sql.ref("threads.origin_connection_id"))})`;
-}
-
 export async function agentThreadPageForOwner(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -817,8 +810,8 @@ export async function agentThreadPageForOwner(
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
-    /** The task of the Run reading: a memory pass's sees only tasks with personal context. */
-    readonly readerThreadId?: ThreadId;
+    /** Who reads: a memory pass's lineage sees only tasks with personal context. */
+    readonly reader: TaskReader;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
@@ -848,8 +841,8 @@ export async function agentThreadPageForOwner(
         .selectFrom("threads")
         .where("threads.removedAt", "is", null)
         .$if(input.nativeOnly === true, (q) => q.where("threads.worker", "=", "native"))
-        .$if(input.readerThreadId !== undefined, (query) =>
-          query.where(memoryReaderSees(input.readerThreadId!)),
+        .$if(input.reader.kind === "work", (query) =>
+          query.where(readerSees(input.reader, sql.ref("threads.origin_connection_id"))),
         )
         .$if(since !== null, (query) =>
           query.innerJoin(changedThreads(transaction, since!).as("changed"), (join) =>
@@ -1021,15 +1014,31 @@ function changedThreads(transaction: Transaction<DatabaseSchema>, since: Date) {
     .where(changedAt, ">", since)
     .groupBy("messages.threadId");
 }
-export async function getThreadForOwner(
+/** A task as the person reads it. Work reading a task reads it through `readTask`. */
+export function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
   lineageConnectionId?: string,
   nativeOnly?: boolean,
-  /** The task of the Run reading: a memory pass's reads only tasks with personal context. */
-  readerThreadId?: ThreadId,
 ): Promise<Thread | null> {
+  return readTask(database, personTaskReader, threadId, ownerId, {
+    ...(lineageConnectionId === undefined ? {} : { lineageConnectionId }),
+    ...(nativeOnly === undefined ? {} : { nativeOnly }),
+  });
+}
+/**
+ * A task as its reader may see it: one a memory pass's lineage may not read is null, exactly as
+ * a task that does not exist.
+ */
+export async function readTask(
+  database: Kysely<DatabaseSchema>,
+  reader: TaskReader,
+  threadId: ThreadId,
+  ownerId: UserId,
+  options: { readonly lineageConnectionId?: string; readonly nativeOnly?: boolean } = {},
+): Promise<Thread | null> {
+  const { lineageConnectionId, nativeOnly } = options;
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
     const row = await tx
@@ -1048,7 +1057,9 @@ export async function getThreadForOwner(
       .$if(lineageConnectionId !== undefined, (query) =>
         query.where("threads.originConnectionId", "=", lineageConnectionId!),
       )
-      .$if(readerThreadId !== undefined, (query) => query.where(memoryReaderSees(readerThreadId!)))
+      .$if(reader.kind === "work", (query) =>
+        query.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
+      )
       .executeTakeFirst();
     return row
       ? { ...threadFromRow(row), returnHint: await compactionReturnHint(tx, threadId) }

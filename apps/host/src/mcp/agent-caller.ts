@@ -9,6 +9,7 @@ import type {
   AgentConnectionAuthority,
   BridgeChatSource,
   OpensteerStore,
+  TaskReader,
 } from "@opensteer/database";
 import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type {
@@ -232,6 +233,16 @@ export function callerLineage(caller: AgentCaller): {
         revision: caller.agentConnection.grantRevision,
       }
     : null;
+}
+/**
+ * Who reads a task when this caller does: work reads as the task it runs in, so a managed
+ * memory pass's lineage sees only tasks with personal context. Every agent tool that returns
+ * anything derived from a task reads it as this.
+ */
+export function callerReader(caller: AgentCaller): TaskReader {
+  return caller.kind === "connection"
+    ? { kind: "connection" }
+    : { kind: "work", threadId: callerThread(caller).id };
 }
 export function callerThread(caller: AgentCaller): Thread {
   if (caller.kind === "connection") throw unavailable();

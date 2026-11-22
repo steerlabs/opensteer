@@ -16,8 +16,10 @@ import { isRetryableHarnessCatalogStatus } from "@opensteer/harness";
 import type {
   OpensteerStore,
   EnqueueThreadInputRequest,
+  TaskReader,
   ThreadMutationAdmission,
 } from "@opensteer/database";
+import { personTaskReader } from "@opensteer/database";
 import type { CommandService, RunnerRegistry } from "@opensteer/orchestration";
 import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
 import {
@@ -26,7 +28,7 @@ import {
   storedModelSelection,
 } from "../agents/model-selection.js";
 import type { HostApiCommand } from "@opensteer/protocol";
-import type { AgentCaller } from "../mcp/agent-caller.js";
+import { callerReader, type AgentCaller } from "../mcp/agent-caller.js";
 import { threadCallerAuthority, messageSource } from "../mcp/operations.js";
 import { write as assertThreadAccess } from "../mcp/tool-access.js";
 import type { PlaceContextService } from "../computer-use/place-context-service.js";
@@ -37,6 +39,10 @@ type ThreadActor =
       readonly userId: UserId;
     }
   | AgentCaller;
+/** The person reads as the person; an agent reads a task as its caller. */
+function actorReader(actor: ThreadActor): TaskReader {
+  return actor.kind === "person" ? personTaskReader : callerReader(actor);
+}
 type Command<K extends HostApiCommand["type"]> = Extract<
   HostApiCommand,
   {
@@ -62,7 +68,7 @@ export class ThreadService {
     this.options = options;
   }
   async assertTarget(actor: ThreadActor, threadId: ThreadId) {
-    const thread = await this.options.store.getThreadForOwner(threadId, actor.userId);
+    const thread = await this.options.store.readTask(actorReader(actor), threadId, actor.userId);
     if (!thread)
       throw new OpensteerError({
         code: "not_found",
@@ -93,7 +99,7 @@ export class ThreadService {
         message: "New work must not exceed the caller’s approved access mode",
       });
     const parent = command.parentThreadId
-      ? await this.options.store.getThreadForOwner(command.parentThreadId, actor.userId)
+      ? await this.options.store.readTask(actorReader(actor), command.parentThreadId, actor.userId)
       : null;
     if (command.parentThreadId && !parent) {
       throw new OpensteerError({
@@ -203,7 +209,11 @@ export class ThreadService {
           command.content.some(isPlaceContentPart) &&
           !(await this.options.store.hasAcceptedThreadInput(actor.userId, command.idempotencyKey))
         ) {
-          const thread = await this.options.store.getThreadForOwner(command.threadId, actor.userId);
+          const thread = await this.options.store.readTask(
+            actorReader(actor),
+            command.threadId,
+            actor.userId,
+          );
           if (!thread)
             throw new OpensteerError({
               code: "not_found",

@@ -22,6 +22,7 @@ import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
+import type { TaskReader } from "./task-reader.js";
 import { assertActiveGrant, admitThreadExecution } from "./execution-authority.js";
 import {
   assertActiveTriggerExecutionBinding,
@@ -59,6 +60,14 @@ export type ThreadCallerAuthority = {
       };
     }
 );
+/** Who reads a task when this caller does: work reads as the task it runs in. */
+export function callerTaskReader(caller: ThreadCallerAuthority): TaskReader {
+  if (caller.kind === "connection") return { kind: "connection" };
+  return {
+    kind: "work",
+    threadId: caller.kind === "watch" ? caller.scope.anchorThreadId : caller.scope.threadId,
+  };
+}
 /** The connection a caller works for, read from its immutable binding; null for owner work. */
 export async function threadCallerLineageId(
   tx: Kysely<DatabaseSchema>,

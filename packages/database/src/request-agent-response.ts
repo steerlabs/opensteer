@@ -13,7 +13,7 @@ import {
   type RequestId,
 } from "@opensteer/core";
 import { z } from "zod";
-import type { Kysely, Transaction } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
 import {
@@ -23,7 +23,8 @@ import {
   sendEligible,
 } from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { threadCallerLineageId } from "./thread-caller.js";
+import { callerTaskReader, threadCallerLineageId } from "./thread-caller.js";
+import { readerSees } from "./task-reader.js";
 import type { DatabaseSchema } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
@@ -238,10 +239,16 @@ export function readAgentRequest(
   return withPersonalReadTransaction(database, async (transaction) => {
     if (authority.kind === "connection")
       return readConnectionRequest(transaction, authority, RequestIdSchema.parse(requestId));
+    // A Request a memory pass's lineage may not read reads as one that does not exist.
+    const taskReader = callerTaskReader(authority);
     const row = await transaction
       .selectFrom("requests")
-      .selectAll()
-      .where("id", "=", RequestIdSchema.parse(requestId))
+      .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+      .selectAll("requests")
+      .where("requests.id", "=", RequestIdSchema.parse(requestId))
+      .$if(taskReader.kind === "work", (query) =>
+        query.where(readerSees(taskReader, sql.ref("threads.origin_connection_id"))),
+      )
       .executeTakeFirst();
     if (!row)
       throw new OpensteerError({

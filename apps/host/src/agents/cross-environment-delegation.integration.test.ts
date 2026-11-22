@@ -1,3 +1,4 @@
+import { personTaskReader } from "@opensteer/database";
 import { DeviceIdSchema } from "@opensteer/core";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { AiAccountListOutputSchema } from "@opensteer/agent-tools/outputs";
@@ -1400,6 +1401,7 @@ integration("personal task delegation lifecycle", () => {
       await store.getAssignmentForOwner({
         ownerId: fixture.userId,
         assignmentId: task.delegationId,
+        reader: personTaskReader,
       }),
     ).toMatchObject({ workerThreadId: first.threadId });
     expect(await store.getThreadForOwner(first.threadId, fixture.userId)).toMatchObject({
@@ -2310,6 +2312,7 @@ integration("personal task delegation lifecycle", () => {
       await store.getAssignmentForOwner({
         ownerId: fixture.userId,
         assignmentId: task.delegationId,
+        reader: personTaskReader,
       }),
     ).toMatchObject({ resultRunId: worker.runId });
     acceptanceEvidence.push({
