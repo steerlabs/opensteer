@@ -575,9 +575,11 @@ export function RequestSheetContent(props: {
       <View style={[styles.body, sides]}>
         {presentation.kind === "choice" && presentation.risk === "high" ? <HighRisk /> : null}
         {askingWhy ? null : (
-          <AppText accessibilityRole="header" role="title" selectable>
-            {title}
-          </AppText>
+          <View accessibilityRole="header">
+            <AppText role="title" selectable>
+              {title}
+            </AppText>
+          </View>
         )}
         {presentation.agentProposed === true ? (
           <AppText accessibilityHint={requestAgentProposedDetail} role="caption" tone="muted">
