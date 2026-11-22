@@ -289,10 +289,10 @@ it("sleeps native Chromium tabs by discarding, restores scroll/forms/SPA/session
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     playwrightContext: { process(): { pid: number } };
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
   const rootPid = internal.playwrightContext.process().pid;
-  const lifecycle = internal.contextHandle.lifecycle;
+  const lifecycle = internal.contextHandle.lifecycleCandidate;
 
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -512,11 +512,11 @@ it("hides the helper extension from tab lists, session CDP, and connected agents
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
 
   // Ensure the helper extension worker is loaded and running in Chromium.
-  const initialInventory = await internal.contextHandle.lifecycle.inventory();
+  const initialInventory = await internal.contextHandle.lifecycleCandidate.inventory();
   expect(initialInventory.length).toBeGreaterThanOrEqual(1);
   const rawTargets = (await internal.browserCdp.send("Target.getTargets")) as {
     targetInfos: readonly { targetId: string; type: string; url: string }[];
@@ -600,9 +600,9 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
   const launched = await launcher.launch(request);
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
-  const lifecycle = internal.contextHandle.lifecycle;
+  const lifecycle = internal.contextHandle.lifecycleCandidate;
 
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -650,9 +650,9 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
   const restarted = await launcher.launch(request);
   cleanup.push(() => restarted.close());
   const internal2 = restarted as unknown as {
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
-  const invAfterRestart = await internal2.contextHandle.lifecycle.inventory();
+  const invAfterRestart = await internal2.contextHandle.lifecycleCandidate.inventory();
   expect(invAfterRestart.some((tab) => tab.url === url)).toBe(false);
 });
 
@@ -669,9 +669,9 @@ it("still sleeps and wakes by address without marking unrestorable when the help
   const launched = await launcher.launch(nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
-  const lifecycle = internal.contextHandle.lifecycle;
+  const lifecycle = internal.contextHandle.lifecycleCandidate;
 
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -725,9 +725,9 @@ it("serializes immediate wake behind an in-flight discard and settles helper tim
   const launched = await launcher.launch(nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
-  const lifecycle = internal.contextHandle.lifecycle;
+  const lifecycle = internal.contextHandle.lifecycleCandidate;
 
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -875,9 +875,9 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
   const launched = await launcher.launch(nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
-  const lifecycle = internal.contextHandle.lifecycle;
+  const lifecycle = internal.contextHandle.lifecycleCandidate;
 
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -967,9 +967,9 @@ it("wakes a stopped helper worker via ServiceWorker.startWorker without creating
       ): Promise<{ send(m: string, p?: unknown): Promise<unknown>; detach(): Promise<void> }>;
     };
     persistencePage: { goto(url: string): Promise<unknown>; close(): Promise<void> };
-    contextHandle: { lifecycle: ChromiumTabLifecycleBridge };
+    contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
   };
-  const lifecycle = internal.contextHandle.lifecycle;
+  const lifecycle = internal.contextHandle.lifecycleCandidate;
 
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -1073,7 +1073,7 @@ it("does not steal foreground visibility or pause screencasting when a backgroun
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: {
-      lifecycle: ChromiumTabLifecycleBridge;
+      lifecycleCandidate: ChromiumTabLifecycleBridge;
       activatePrivateAnchor(): Promise<void>;
     };
   };
@@ -1129,7 +1129,7 @@ it("does not steal foreground visibility or pause screencasting when a backgroun
   expect(anchorSpy).not.toHaveBeenCalled();
   anchorSpy.mockRestore();
 
-  const invAfterSleep = await internal.contextHandle.lifecycle.inventory();
+  const invAfterSleep = await internal.contextHandle.lifecycleCandidate.inventory();
   expect(invAfterSleep.find((t) => t.url === fgUrl)?.active).toBe(true);
   expect(await evalValue<string>(fgLive.cdp, "document.visibilityState")).toBe("visible");
   expect(await evalValue<number>(fgLive.cdp, "window.__hiddenCount")).toBe(0);
@@ -1395,8 +1395,8 @@ it.each(["no tab asleep", "a tab asleep"] as const)(
     // S2's counts: loads of the sleeping tab Chromium made by itself, and tabs that joined its
     // group and were un-named as newcomers (run 11: 18 and 17 in 20 rounds).
     const lifecycle = (
-      launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-    ).contextHandle.lifecycle;
+      launched as unknown as { contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycleCandidate;
     const loadsAsleep = server.hits("/article?id=bg-asleep");
     let unnamed = 0;
     const unname = lifecycle.unnameTab.bind(lifecycle);
@@ -1500,8 +1500,8 @@ it.each([
     const launched = await launcher.launch(nativeProfileRequest(directory));
     cleanup.push(() => launched.close());
     const lifecycle = (
-      launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-    ).contextHandle.lifecycle;
+      launched as unknown as { contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycleCandidate;
     const ledger = new SurfaceLedger(launched.context);
     await ledger.start();
     cleanup.push(() => ledger.close());
@@ -1570,13 +1570,13 @@ it("keeps sleeping tabs left of the private anchor and live tabs right of it thr
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: {
-      lifecycle: ChromiumTabLifecycleBridge;
+      lifecycleCandidate: ChromiumTabLifecycleBridge;
       privatePage: {
         _connection: { toImpl(page: unknown): { delegate: { _targetId: string } } };
       };
     };
   };
-  const lifecycle = internal.contextHandle.lifecycle;
+  const lifecycle = internal.contextHandle.lifecycleCandidate;
   // The private anchor's target, as the launcher knows it (without attaching to it).
   const privatePage = internal.contextHandle.privatePage;
   const anchorTarget = privatePage._connection.toImpl(privatePage).delegate._targetId;
@@ -1790,8 +1790,8 @@ async function lineageSetup(name: string) {
   await ledger.start();
   cleanup.push(() => ledger.close());
   const lifecycle = (
-    launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-  ).contextHandle.lifecycle;
+    launched as unknown as { contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge } }
+  ).contextHandle.lifecycleCandidate;
   const open = async (id: string, site: number) => {
     const surface = await ledger.openSurface();
     const cdp = ledger.binding(surface.id)!.cdp;

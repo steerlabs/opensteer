@@ -227,6 +227,12 @@ export class ChromiumTabLifecycleBridge {
   private readonly privatePage: Page | undefined;
   private serviceWorkerUrl: string | undefined;
   private wakeInFlight: Promise<void> | null = null;
+  private stopped = false;
+
+  /** Its browser is closing: nothing more is asked, and a wait for the worker ends now. */
+  stop(): void {
+    this.stopped = true;
+  }
 
   constructor(
     context: PlaywrightBrowserContext,
@@ -326,7 +332,7 @@ export class ChromiumTabLifecycleBridge {
   private async ensureWorker(): Promise<Worker> {
     const deadline = Date.now() + workerWaitMs;
     let woke = false;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !this.stopped) {
       const remaining = deadline - Date.now();
       const runningUrl = await this.runningServiceWorkerTarget(
         Math.max(100, Math.min(cdpStepMs, remaining)),

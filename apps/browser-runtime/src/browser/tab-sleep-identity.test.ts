@@ -68,8 +68,11 @@ afterEach(async () => {
  * tab a new id with the same target and closes its page, as on real Chromium; a name is written
  * to the row with that id.
  */
-async function launchWith(initial: ChromiumTabEntry[] = []) {
-  const state = { tabs: initial, readable: true };
+async function launchWith(
+  initial: ChromiumTabEntry[] = [],
+  options: { readonly helperNeverAnswers?: boolean } = {},
+) {
+  const state = { tabs: initial, readable: true, silent: options.helperNeverAnswers === true };
   /** Every CDP command the launcher sent a page, in order. */
   const cdpCalls: { method: string; targetId: string }[] = [];
   const directory = await mkdtemp(join(tmpdir(), "os-tab-sleep-identity-"));
@@ -135,6 +138,8 @@ async function launchWith(initial: ChromiumTabEntry[] = []) {
   const read = vi
     .spyOn(ChromiumTabLifecycleBridge.prototype, "inventory")
     .mockImplementation(async () => {
+      // A browser that never loads the helper (branded Chrome ignores `--load-extension`).
+      if (state.silent) return new Promise<never>(() => undefined);
       if (!state.readable) throw new Error("The tab inventory did not agree with itself.");
       return [...state.tabs];
     });
@@ -243,6 +248,20 @@ interface ContextInternals {
 
 const tokenOf = (token: unknown) => (token as { tokenId: string }).tokenId;
 const titleOf = (token: unknown) => `opensteer-sleep:${tokenOf(token)}`;
+
+it("starts and opens its first page without waiting for a helper that never answers; tabs then sleep by closing and wake fresh at their address (run 13)", async () => {
+  const started = performance.now();
+  const f = await launchWith([], { helperNeverAnswers: true });
+  const page = await f.launched.context.createPage();
+  // Nothing on the way to the first page asked the helper anything it waited on.
+  expect(performance.now() - started).toBeLessThan(1_000);
+  expect(page.isClosed()).toBe(false);
+  const { token } = await f.sleepOne(70);
+  expect(f.spies.name).not.toHaveBeenCalled();
+  expect(f.spies.discard).not.toHaveBeenCalled();
+  const woken = await f.launched.context.createPage({ restore: token });
+  expect((woken as unknown as { openedFresh?: boolean }).openedFresh).toBe(true);
+});
 
 it("names a tab first and discards it second, wakes it by that name, and removes the name (Q2)", async () => {
   const f = await launchWith();

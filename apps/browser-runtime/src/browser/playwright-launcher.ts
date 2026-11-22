@@ -845,17 +845,14 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         timeoutError: () => new Error("The browser debugger did not attach."),
       });
       timing("cdp");
-      // The helper that sleeps tabs by discard, if it answers; otherwise tabs sleep by closing.
+      // The helper that sleeps tabs by discard, if it answers; otherwise tabs sleep by closing. It
+      // is looked for after launch, off the way to the first page (run 13).
       const candidate =
         typeof context.serviceWorkers === "function"
           ? new ChromiumTabLifecycleBridge(context, browserCdp, helper)
           : undefined;
-      const lifecycle = candidate && (await readRows(candidate, deadline)) ? candidate : undefined;
-      if (candidate && !lifecycle)
-        process.stderr.write(
-          '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
-        );
-      const helperTargetId = lifecycle ? await lookupTargetId(context, helper, deadline) : null;
+      // The private page's target, in memory (no round trip in the ordinary case).
+      const helperTargetId = candidate ? await lookupTargetId(context, helper, deadline) : null;
       const launched = new PlaywrightLaunchedBrowser(
         owner,
         context,
@@ -866,7 +863,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         providerConfig,
         helper,
         true,
-        lifecycle,
+        candidate,
         helperTargetId ?? undefined,
       );
       if (this.headless) launched.clipboard = ChromiumClipboard.lazy(browser);
@@ -874,6 +871,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
       timing("target-discovery");
       signal?.throwIfAborted();
+      launched.establishTabLifecycle();
       // The runtime now owns the host; ending its first attachment must not
       // tear down sibling sessions or the native warm host.
       signal?.removeEventListener("abort", abort);
@@ -975,6 +973,11 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
     );
   }
 
+  /** Looks for the tab-lifecycle helper once, in the background. */
+  establishTabLifecycle(): void {
+    this.contextHandle.establishLifecycle();
+  }
+
   onClose(listener: () => void): void {
     this.playwrightContext.on("close", listener);
   }
@@ -1059,6 +1062,14 @@ function parseChromiumDiscardRestore(value: unknown): ChromiumDiscardRestore | n
 
 /** One bound for a wake: its lane wait, the activation and the arrival together. */
 const wakeDiscardedTabMs = 10_000;
+/**
+ * How long the helper is looked for once, after launch and off the way to the first page. A
+ * browser that does not load it (branded Chrome ignores `--load-extension`) answers within this
+ * and its tabs sleep by closing.
+ */
+const lifecycleProbeMs = 10_000;
+/** How long a sleep waits for that look to finish before it sleeps the tab by closing. */
+const lifecycleProbeWaitMs = 1_000;
 /** How long an arriving page's tab name is looked up while some tab is asleep. */
 const arrivalIdentifyMs = 2_000;
 /** How long the runtime's own new page may take; a page with no opener waits inside it (K3). */
@@ -1284,7 +1295,12 @@ class PlaywrightContextHandle implements BrowserContext {
 
   readonly authenticator: PasskeyAuthenticator | undefined;
   readonly providerConfig: BrowserPagePolicyConfig;
-  readonly lifecycle: ChromiumTabLifecycleBridge | undefined;
+  /** The tab-lifecycle helper, once it has answered after launch; until then, and without it, none. */
+  lifecycle: ChromiumTabLifecycleBridge | undefined;
+  /** The helper as launched, before it has answered. */
+  readonly lifecycleCandidate: ChromiumTabLifecycleBridge | undefined;
+  /** Settles once the look for the helper has ended, either way. */
+  lifecycleSettled: Promise<void> = Promise.resolve();
   /** A native profile's context: K3 holds for every page. */
   private readonly nativeProfile: boolean;
   private readonly privatePage: Page | undefined;
@@ -1324,7 +1340,7 @@ class PlaywrightContextHandle implements BrowserContext {
     nativeProfile = false,
   ) {
     this.privatePage = privatePage;
-    this.lifecycle = lifecycle;
+    this.lifecycleCandidate = lifecycle;
     this.authenticator = authenticator;
     this.providerConfig = providerConfig;
     this.context = context;
@@ -1738,6 +1754,7 @@ class PlaywrightContextHandle implements BrowserContext {
   markClosed(): void {
     if (this.closed) return;
     this.closed = true;
+    this.lifecycleCandidate?.stop();
     for (const wake of this.wakes.values()) wake.spoil();
     clearTimeout(this.removalTimer);
     this.removalTimer = undefined;
@@ -1770,6 +1787,26 @@ class PlaywrightContextHandle implements BrowserContext {
           timeoutError: () => new Error("Freeze detach timed out."),
         }).catch(() => undefined);
     }
+  }
+
+  /**
+   * The helper is looked for once, in the background after launch: nothing on the way to the first
+   * page waits for its worker or its inventory. Until it answers, no tab sleeps by discard; a sleep
+   * meanwhile waits a bounded time for it, then sleeps the tab by closing.
+   */
+  establishLifecycle(): void {
+    const candidate = this.lifecycleCandidate;
+    if (!candidate) return;
+    this.lifecycleSettled = readRows(candidate, performance.now() + lifecycleProbeMs).then(
+      (rows) => {
+        if (this.closed) return;
+        if (rows) this.lifecycle = candidate;
+        else
+          process.stderr.write(
+            '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
+          );
+      },
+    );
   }
 
   async activatePrivateAnchor(): Promise<void> {
@@ -2072,9 +2109,10 @@ class PlaywrightContextHandle implements BrowserContext {
     await this.beforeCreatePage?.().catch(() => undefined);
     if (signal?.aborted) throw notWanted();
     const discardRestore = parseChromiumDiscardRestore(options?.restore);
-    if (discardRestore && this.lifecycle) {
+    if (discardRestore) {
       const { tokenId } = discardRestore;
-      const record = this.sleeping.get(tokenId);
+      // Without the helper the tab slept by closing: it opens fresh at its address.
+      const record = this.lifecycle ? this.sleeping.get(tokenId) : undefined;
       if (record) {
         // M2: this waits for the lane's own outcome; it opens nothing while the lane may take.
         const deadline = performance.now() + wakeDiscardedTabMs;
@@ -2227,7 +2265,7 @@ class PlaywrightPageHandle implements BrowserPage {
     this.contextHandle = contextHandle;
     this.context = context;
     this.page = page;
-    if (contextHandle.lifecycle) {
+    if (contextHandle.lifecycleCandidate) {
       this.captureRestore = () => this.captureDiscardRestore();
     }
     page.on("request", (request) => {
@@ -2456,6 +2494,11 @@ class PlaywrightPageHandle implements BrowserPage {
   }
 
   private async captureDiscardRestore(): Promise<ChromiumDiscardRestore> {
+    // The first sleep after launch may come before the look for the helper has ended: it waits a
+    // bounded time, and the close then sleeps the tab by discard only if the helper answered.
+    await withTimeout(this.contextHandle.lifecycleSettled, lifecycleProbeWaitMs, {
+      timeoutError: () => new Error("The tab helper has not answered yet."),
+    }).catch(() => undefined);
     const targetId = this.knownTargetId ?? (await this.targetId());
     const tokenId = randomUUID();
     const url = this.url();
