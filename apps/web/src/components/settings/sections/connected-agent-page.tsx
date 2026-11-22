@@ -22,7 +22,7 @@ import {
   useConnectedAgents,
   useWorkPolicy,
 } from "@opensteer/client/react";
-import type { ThreadAccessMode } from "@opensteer/core";
+import { chatGrantRefusal, type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
@@ -96,6 +96,8 @@ export function ConnectedAgentPage({
   const agent = detail.row.identity.label;
   // A chat is a connected agent with two facts of its own: where it listens, who may speak.
   const chat = chatFacts(connection, detail.row.phase);
+  // What a chat's grant may hold, as the Home says; the editor offers only that.
+  const chatShape = connection.bridge?.grantShape as ChatGrantShape | undefined;
   const connected = connectedAgentConnected(detail.row.phase);
   // An edit belongs to the revision it was made against; a newer one shows what is set now.
   const current = edit && edit.revision === detail.revision ? edit : null;
@@ -117,6 +119,17 @@ export function ConnectedAgentPage({
     if (!current || !agents.update) return;
     let draftToSave = current.draft;
     let created: string | undefined;
+    // Nothing is created for a grant the Home would refuse: asked of the Home's own rule first.
+    const refusal = chatShape
+      ? chatGrantRefusal(
+          chatShape,
+          grantFromDraft(draftToSave, "bpr_00000000-0000-4000-8000-000000000000" as never),
+        )
+      : null;
+    if (refusal) {
+      setProfileError(refusal.message);
+      return;
+    }
     if (draftToSave.scope === "selected" && draftToSave.newProfile) {
       setCreating(true);
       setProfileError(null);
@@ -192,6 +205,7 @@ export function ConnectedAgentPage({
       {detail.editable && workPolicy !== undefined ? (
         <>
           <AgentGrantEditor
+            chat={chatShape}
             agent={agent}
             browser={browser}
             chromeTabs={chromeTabs}

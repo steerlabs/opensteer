@@ -200,6 +200,8 @@ export const connectedAgentsCopy = {
   "chat.tasks.stopping": "Stopping…",
   "chat.tasks.open": "Open",
   "chat.row": "{where} · {summary}",
+  "chat.grant.tasks": "Always on: a chat can only ask your own agents to work.",
+  "chat.grant.refused": "This chat can’t use that",
   "messaging.title": "Messaging",
   "messaging.lead":
     "Message your own agents from Slack or iMessage. Each chat is a connected agent: you choose what it can use, and you can stop or disconnect it like any other.",

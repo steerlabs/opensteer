@@ -26,7 +26,7 @@ import {
   useConnectedAgents,
   useWorkPolicy,
 } from "@opensteer/client/react";
-import type { ThreadAccessMode } from "@opensteer/core";
+import { chatGrantRefusal, type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
@@ -125,7 +125,10 @@ export function ConnectedAgentController(props: {
   const pending = agents.pending === connection.id ? agents.pendingAction : null;
   const busy = pending !== null || creating;
   const browser = agentBrowserOptions(snapshot);
+  // What a chat's grant may hold, as the Home says; the editor offers only that.
+  const chatShape = connection.bridge?.grantShape as ChatGrantShape | undefined;
   const context = {
+    ...(chatShape ? { chat: chatShape } : {}),
     agent,
     home: agentHomeName(snapshot),
     chromeTabs,
@@ -144,6 +147,17 @@ export function ConnectedAgentController(props: {
     let draft = next.draft ?? current;
     let created: string | undefined;
     setNote(null);
+    // Nothing is created for a grant the Home would refuse: asked of the Home's own rule first.
+    const refusal = chatShape
+      ? chatGrantRefusal(
+          chatShape,
+          grantFromDraft(draft, "bpr_00000000-0000-4000-8000-000000000000" as never),
+        )
+      : null;
+    if (refusal) {
+      Alert.alert(agentWords("chat.grant.refused"), refusal.message);
+      return;
+    }
     if (draft.scope === "selected" && draft.newProfile) {
       setCreating(true);
       try {
@@ -185,7 +199,13 @@ export function ConnectedAgentController(props: {
         text: agentWords("agent.narrow.confirm"),
         onPress: () =>
           void save({
-            draft: { scope: "selected", tasks: false, resources: [], newProfile: null },
+            // A chat always holds Tasks: limiting it keeps that.
+            draft: {
+              scope: "selected",
+              tasks: chatShape !== undefined,
+              resources: [],
+              newProfile: null,
+            },
           }),
       },
     ]);

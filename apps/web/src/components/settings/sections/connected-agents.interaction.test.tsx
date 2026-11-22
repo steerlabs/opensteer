@@ -3,7 +3,7 @@ import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { HostClientRequestError } from "@opensteer/client/host";
+import { agentWords, HostClientRequestError } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -481,6 +481,36 @@ describe("a chat, as a connected agent", () => {
     expect(page.textContent).toContain(
       "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
     );
+  });
+
+  it("offers an anyone chat only what the Home says it may hold, and keeps Tasks on", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
+    const text = page.textContent ?? "";
+    for (const id of [
+      "consent.scope.everything.label",
+      "consent.browser.title",
+      "consent.apps.title",
+    ] as const)
+      expect(text, id).not.toContain(agentWords(id));
+    expect(text).toContain(agentWords("consent.plugins.title"));
+    const tasks = page.querySelector<HTMLInputElement>(
+      'input[aria-labelledby="agent-grant-tasks"]',
+    );
+    expect(tasks).toMatchObject({ checked: true, disabled: true });
+    expect(text).toContain("Always on: a chat can only ask your own agents to work.");
+  });
+
+  it("offers a chat for you alone everything a connected agent may hold, with Tasks still on", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("You, as Tim"));
+    expect(page.textContent).toContain(agentWords("consent.scope.everything.label"));
+    expect(page.textContent).toContain(agentWords("consent.browser.title"));
+    expect(
+      page.querySelector<HTMLInputElement>('input[aria-labelledby="agent-grant-tasks"]'),
+    ).toMatchObject({ checked: true, disabled: true });
   });
 
   it("says why an ended chat ended and offers nothing that pretends to resume it", async () => {

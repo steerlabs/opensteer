@@ -1,4 +1,5 @@
 import {
+  chatGrantShape,
   BrowserProfileIdSchema,
   BrowserSourceIdSchema,
   UserIdSchema,
@@ -254,6 +255,12 @@ function mockChannels(now: Date): ChannelDashboard {
   };
 }
 
+/** A chat's grant shape as the Home sends it (core's one rule). */
+export function wireGrantShape(senders: "owner" | "anyone") {
+  const shape = chatGrantShape(senders);
+  return { ...shape, resources: [...shape.resources] };
+}
+
 /** Chats in each state a person can see, each a connection with a grant like any agent. */
 function mockChats(now: Date): readonly AgentConnection[] {
   const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
@@ -289,6 +296,7 @@ function mockChats(now: Date): readonly AgentConnection[] {
       provider: input.provider,
       conversationId: input.conversation?.id ?? null,
       senders: input.senders,
+      grantShape: wireGrantShape(input.senders),
       accountName: input.accountName,
       conversationName: input.conversation?.name ?? null,
       channelConnectionId: input.channelConnectionId,

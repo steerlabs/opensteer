@@ -23,7 +23,7 @@ import {
 } from "@opensteer/client/host";
 import type { AgentOptionsRead } from "@opensteer/client/react";
 import type { WorkPolicy } from "@opensteer/control-plane-protocol";
-import type { ThreadAccessMode } from "@opensteer/core";
+import type { ChatGrantShape, ThreadAccessMode } from "@opensteer/core";
 import type {
   NativeSettingsFooter,
   NativeSettingsRow,
@@ -47,6 +47,8 @@ export interface AgentGrantContext {
   readonly disabled: boolean;
   /** A work Home's effective policy, once the Home reports it; it rules choices out. */
   readonly workPolicy?: WorkPolicy | undefined;
+  /** A chat's grant as the Home says it may be: only that is offered, and Tasks stays on. */
+  readonly chat?: ChatGrantShape | undefined;
 }
 
 export function agentGrantSections(
@@ -64,6 +66,9 @@ export function agentGrantSections(
 ): readonly NativeSettingsSection[] {
   const { agent, draft, disabled } = context;
   const limits = workPolicyLimits(context.workPolicy);
+  const chat = context.chat;
+  const offers = (kind: ChatGrantShape["resources"][number]) =>
+    chat === undefined || chat.resources.includes(kind);
   const scope: NativeSettingsSection = {
     key: "scope",
     title: agentWords("consent.scope.title"),
@@ -77,15 +82,19 @@ export function agentGrantSections(
         disabled,
         onPress: () => context.onScope("selected"),
       },
-      {
-        key: "everything",
-        kind: "choice",
-        label: agentWords("consent.scope.everything.label"),
-        detail: limits.everything ?? agentWords("consent.scope.everything.detail"),
-        selected: draft.scope === "everything",
-        disabled: disabled || (limits.everything !== null && draft.scope !== "everything"),
-        onPress: () => context.onScope("everything"),
-      },
+      ...(chat !== undefined && !chat.everything
+        ? []
+        : [
+            {
+              key: "everything",
+              kind: "choice" as const,
+              label: agentWords("consent.scope.everything.label"),
+              detail: limits.everything ?? agentWords("consent.scope.everything.detail"),
+              selected: draft.scope === "everything",
+              disabled: disabled || (limits.everything !== null && draft.scope !== "everything"),
+              onPress: () => context.onScope("everything"),
+            },
+          ]),
     ],
     ...(draft.scope === "everything" && context.mode !== "full-access"
       ? { footer: { text: agentWords("consent.scope.everything.settingsNote") } }
@@ -110,38 +119,48 @@ export function agentGrantSections(
       key: "resources",
       title: "",
       rows: [
-        {
-          key: "browser",
-          kind: "button",
-          label: agentWords("consent.browser.title"),
-          detail: draftBrowserSummary(draft, context.browser),
-          symbol: "globe",
-          opens: true,
-          disabled,
-          onPress: () => context.onOpen("browser"),
-        },
-        ...chrome.options.map((option): NativeSettingsRow => ({
-          key: option.resource.sourceId,
-          kind: "toggle",
-          label: option.name,
-          detail: agentWords("consent.chromeTabs.detail"),
-          value: draftHas(draft, option.resource),
-          disabled,
-          onChange: (on) => context.onChromeTab(option.resource, on),
-        })),
-        {
-          key: "apps",
-          kind: "button",
-          label: agentWords("consent.apps.title"),
-          detail: draftAppsSummary(
-            draft,
-            context.apps.status === "ready" ? context.apps.data : null,
-          ),
-          symbol: "rectangle.on.rectangle",
-          opens: true,
-          disabled,
-          onPress: () => context.onOpen("apps"),
-        },
+        ...(offers("browser-profile")
+          ? ([
+              {
+                key: "browser",
+                kind: "button",
+                label: agentWords("consent.browser.title"),
+                detail: draftBrowserSummary(draft, context.browser),
+                symbol: "globe",
+                opens: true,
+                disabled,
+                onPress: () => context.onOpen("browser"),
+              },
+            ] satisfies NativeSettingsRow[])
+          : []),
+        ...(offers("chrome-tabs")
+          ? chrome.options.map((option): NativeSettingsRow => ({
+              key: option.resource.sourceId,
+              kind: "toggle",
+              label: option.name,
+              detail: agentWords("consent.chromeTabs.detail"),
+              value: draftHas(draft, option.resource),
+              disabled,
+              onChange: (on) => context.onChromeTab(option.resource, on),
+            }))
+          : []),
+        ...(offers("computer-app")
+          ? ([
+              {
+                key: "apps",
+                kind: "button",
+                label: agentWords("consent.apps.title"),
+                detail: draftAppsSummary(
+                  draft,
+                  context.apps.status === "ready" ? context.apps.data : null,
+                ),
+                symbol: "rectangle.on.rectangle",
+                opens: true,
+                disabled,
+                onPress: () => context.onOpen("apps"),
+              },
+            ] satisfies NativeSettingsRow[])
+          : []),
         {
           key: "plugins",
           kind: "button",
@@ -169,9 +188,11 @@ export function agentGrantSections(
           key: "tasks",
           kind: "toggle",
           label: agentWords("consent.tasks.title"),
-          detail: limits.tasks ?? agentWords("consent.tasks.detail", { home: context.home }),
-          value: draft.tasks,
-          disabled: disabled || (limits.tasks !== null && !draft.tasks),
+          detail: chat
+            ? agentWords("chat.grant.tasks")
+            : (limits.tasks ?? agentWords("consent.tasks.detail", { home: context.home })),
+          value: chat ? true : draft.tasks,
+          disabled: disabled || chat !== undefined || (limits.tasks !== null && !draft.tasks),
           onChange: context.onTasks,
         },
       ],

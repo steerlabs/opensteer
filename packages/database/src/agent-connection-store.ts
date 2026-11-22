@@ -4,6 +4,8 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   AgentGrantSchema,
   agentGrantAllowsTasks,
+  chatGrantRefusal,
+  chatGrantShape,
   OpensteerError,
   agentGrantNarrowed,
   everythingAgentGrant,
@@ -817,6 +819,9 @@ function connectionView(
             provider: row.clientName,
             conversationId: row.bridgeConversationId,
             senders: row.bridgeSenders,
+            grantShape: (({ resources, ...shape }) => ({ ...shape, resources: [...resources] }))(
+              chatGrantShape(row.bridgeSenders),
+            ),
             ...(row.bridgeNotice ? { notice: row.bridgeNotice } : {}),
             conversationName: row.bridgeConversationName,
             ...(chat
@@ -862,27 +867,14 @@ export function assertBridgeGrant(
   coversOneConversation: boolean,
   grant: AgentGrant,
 ): void {
-  if (grant.scope === "selected" && !grant.tasks)
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "A chat can only ask your agents to work, so it always needs tasks.",
-    });
-  if (senders !== "anyone") return;
-  if (!coversOneConversation)
+  if (senders === "anyone" && !coversOneConversation)
     throw new OpensteerError({
       code: "bad_request",
       message: "Direct messages answer only you.",
     });
-  if (
-    grant.scope === "everything" ||
-    grant.resources.some((resource) => resource.kind !== "plugin")
-  )
-    throw new OpensteerError({
-      code: "bad_request",
-      reason: "bridge-anyone-grant",
-      message:
-        "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
-    });
+  // The rule lives once, in core, and the screens offer what it allows (`grantShape`).
+  const refusal = chatGrantRefusal(chatGrantShape(senders), grant);
+  if (refusal) throw new OpensteerError({ code: "bad_request", ...refusal });
 }
 
 /**

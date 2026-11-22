@@ -49,7 +49,12 @@ import {
   mockIphoneScreenSession,
   type MockIphoneScreenState,
 } from "./mock-screen-devices.js";
-import { DeviceIdSchema, isPhoneDisplayDefinitionId } from "@opensteer/core";
+import {
+  chatGrantRefusal,
+  chatGrantShape,
+  DeviceIdSchema,
+  isPhoneDisplayDefinitionId,
+} from "@opensteer/core";
 import {
   DeviceMachineAccessUpdateCommandSchema,
   type IphoneScreenAttachCommand,
@@ -6007,6 +6012,18 @@ class MockHostState {
     if (!current) throw mockConflict("This connected agent is no longer connected.");
     if ((current.grantRevision ?? 1) !== command.expectedRevision)
       throw mockConflict("This connected agent changed since you opened it.");
+    // A chat's grant is refused by the Home's own rule, here as there.
+    const refusal =
+      current.bridge && command.grant
+        ? chatGrantRefusal(chatGrantShape(current.bridge.senders), command.grant)
+        : null;
+    if (refusal)
+      throw new HostClientRequestError({
+        code: "bad_request",
+        reason: refusal.reason,
+        message: refusal.message,
+        status: 400,
+      });
     const next = {
       ...current,
       ...(command.label !== undefined ? { label: command.label } : {}),
@@ -10956,6 +10973,10 @@ class MockHostState {
         provider,
         conversationId: input.conversation?.id ?? null,
         senders: input.senders,
+        grantShape: {
+          ...chatGrantShape(input.senders),
+          resources: [...chatGrantShape(input.senders).resources],
+        },
         accountName: account.handle ?? account.displayName,
         conversationName: input.conversation?.name ?? null,
         channelConnectionId: account.connectionId,

@@ -29,7 +29,7 @@ import {
   type AgentOptionsRead,
 } from "@opensteer/client/react";
 import type { WorkPolicy } from "@opensteer/control-plane-protocol";
-import type { ThreadAccessMode } from "@opensteer/core";
+import type { ChatGrantShape, ThreadAccessMode } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { SettingsSegmented } from "./primitives.js";
 
@@ -51,6 +51,7 @@ export function AgentGrantEditor({
   home,
   onChange,
   workPolicy,
+  chat,
 }: {
   readonly agent: string;
   readonly browser: BrowserOptions;
@@ -62,7 +63,11 @@ export function AgentGrantEditor({
   readonly onChange: (draft: AgentGrantDraft) => void;
   /** A work Home's effective policy, once the Home reports it; it rules choices out. */
   readonly workPolicy?: WorkPolicy | undefined;
+  /** A chat's grant as the Home says it may be: only that is offered, and Tasks stays on. */
+  readonly chat?: ChatGrantShape | undefined;
 }) {
+  const offers = (kind: ChatGrantShape["resources"][number]) =>
+    chat === undefined || chat.resources.includes(kind);
   const limits = workPolicyLimits(workPolicy);
   const [open, setOpen] = useState<Disclosure>(null);
   const apps = useAgentAppOptions(client, open === "apps" || hasKind(draft, "computer-app"));
@@ -84,110 +89,126 @@ export function AgentGrantEditor({
             onSelect={() => onChange({ ...draft, scope: "selected" })}
             value="selected"
           />
-          <Choice
-            checked={draft.scope === "everything"}
-            detail={agentWords("consent.scope.everything.detail")}
-            label={agentWords("consent.scope.everything.label")}
-            name="agent-grant-scope"
-            onSelect={() => onChange({ ...draft, scope: "everything" })}
-            unavailable={limits.everything}
-            value="everything"
-          />
+          {chat !== undefined && !chat.everything ? null : (
+            <Choice
+              checked={draft.scope === "everything"}
+              detail={agentWords("consent.scope.everything.detail")}
+              label={agentWords("consent.scope.everything.label")}
+              name="agent-grant-scope"
+              onSelect={() => onChange({ ...draft, scope: "everything" })}
+              unavailable={limits.everything}
+              value="everything"
+            />
+          )}
         </div>
       </fieldset>
       {draft.scope === "selected" ? (
         <section aria-label={agentWords("consent.scope.selected.label")} className="settings-group">
           <div className="card agent-grant">
-            <DisclosureRow
-              disabled={disabled}
-              icon="globe"
-              id="browser"
-              onToggle={() => toggle("browser")}
-              open={open === "browser"}
-              summary={draftBrowserSummary(draft, browser)}
-              title={agentWords("consent.browser.title")}
-            />
-            {open === "browser" ? (
-              <BrowserChoices
-                agent={agent}
-                browser={browser}
-                disabled={disabled}
-                draft={draft}
-                onChange={onChange}
-              />
-            ) : null}
-            {chrome.options.map((option) => (
-              <label className="card__row" key={option.resource.sourceId}>
-                <span aria-hidden className="card__row-glyph">
-                  <Icon name="browser" />
-                </span>
-                <span className="card__row-body">
-                  <span className="card__row-title">{option.name}</span>
-                  <span
-                    className="card__row-detail"
-                    id={`agent-grant-chrome-${option.resource.sourceId}`}
-                  >
-                    {agentWords("consent.chromeTabs.detail")}
-                  </span>
-                </span>
-                <span className="card__row-actions">
-                  <input
-                    aria-describedby={`agent-grant-chrome-${option.resource.sourceId}`}
-                    aria-label={option.name}
-                    checked={draftHas(draft, option.resource)}
-                    className="switch"
+            {offers("browser-profile") ? (
+              <>
+                <DisclosureRow
+                  disabled={disabled}
+                  icon="globe"
+                  id="browser"
+                  onToggle={() => toggle("browser")}
+                  open={open === "browser"}
+                  summary={draftBrowserSummary(draft, browser)}
+                  title={agentWords("consent.browser.title")}
+                />
+                {open === "browser" ? (
+                  <BrowserChoices
+                    agent={agent}
+                    browser={browser}
                     disabled={disabled}
-                    onChange={(event) =>
-                      onChange(
-                        toggleDraftResource(draft, option.resource, event.currentTarget.checked),
-                      )
-                    }
-                    role="switch"
-                    type="checkbox"
+                    draft={draft}
+                    onChange={onChange}
                   />
-                </span>
-              </label>
-            ))}
-            {chrome.repair ? <p className="settings-footnote">{chrome.repair}</p> : null}
-            <DisclosureRow
-              disabled={disabled}
-              icon="app"
-              id="apps"
-              onToggle={() => toggle("apps")}
-              open={open === "apps"}
-              summary={draftAppsSummary(draft, apps.status === "ready" ? apps.data : null)}
-              title={agentWords("consent.apps.title")}
-            />
-            {open === "apps" ? (
-              <div className="card__form agent-grant__list" id="agent-grant-apps">
-                <OptionsState read={apps}>
-                  {(options) =>
-                    options.length === 0 ? (
-                      <EmptyChoice
-                        detail={agentWords("consent.edge.noApps.detail")}
-                        title={agentWords("consent.edge.noApps.title")}
+                ) : null}
+              </>
+            ) : null}
+            {!offers("chrome-tabs")
+              ? null
+              : chrome.options.map((option) => (
+                  <label className="card__row" key={option.resource.sourceId}>
+                    <span aria-hidden className="card__row-glyph">
+                      <Icon name="browser" />
+                    </span>
+                    <span className="card__row-body">
+                      <span className="card__row-title">{option.name}</span>
+                      <span
+                        className="card__row-detail"
+                        id={`agent-grant-chrome-${option.resource.sourceId}`}
+                      >
+                        {agentWords("consent.chromeTabs.detail")}
+                      </span>
+                    </span>
+                    <span className="card__row-actions">
+                      <input
+                        aria-describedby={`agent-grant-chrome-${option.resource.sourceId}`}
+                        aria-label={option.name}
+                        checked={draftHas(draft, option.resource)}
+                        className="switch"
+                        disabled={disabled}
+                        onChange={(event) =>
+                          onChange(
+                            toggleDraftResource(
+                              draft,
+                              option.resource,
+                              event.currentTarget.checked,
+                            ),
+                          )
+                        }
+                        role="switch"
+                        type="checkbox"
                       />
-                    ) : (
-                      <>
-                        {options.map((option) => (
-                          <AppChoice
-                            disabled={disabled}
-                            key={option.key}
-                            on={draftHas(draft, option.resource)}
-                            onChange={(on) =>
-                              onChange(toggleDraftResource(draft, option.resource, on))
-                            }
-                            option={option}
+                    </span>
+                  </label>
+                ))}
+            {chrome.repair ? <p className="settings-footnote">{chrome.repair}</p> : null}
+            {offers("computer-app") ? (
+              <>
+                <DisclosureRow
+                  disabled={disabled}
+                  icon="app"
+                  id="apps"
+                  onToggle={() => toggle("apps")}
+                  open={open === "apps"}
+                  summary={draftAppsSummary(draft, apps.status === "ready" ? apps.data : null)}
+                  title={agentWords("consent.apps.title")}
+                />
+                {open === "apps" ? (
+                  <div className="card__form agent-grant__list" id="agent-grant-apps">
+                    <OptionsState read={apps}>
+                      {(options) =>
+                        options.length === 0 ? (
+                          <EmptyChoice
+                            detail={agentWords("consent.edge.noApps.detail")}
+                            title={agentWords("consent.edge.noApps.title")}
                           />
-                        ))}
-                        <p className="settings-footnote">
-                          {agentWords("consent.apps.footer", { agent })}
-                        </p>
-                      </>
-                    )
-                  }
-                </OptionsState>
-              </div>
+                        ) : (
+                          <>
+                            {options.map((option) => (
+                              <AppChoice
+                                disabled={disabled}
+                                key={option.key}
+                                on={draftHas(draft, option.resource)}
+                                onChange={(on) =>
+                                  onChange(toggleDraftResource(draft, option.resource, on))
+                                }
+                                option={option}
+                              />
+                            ))}
+                            <p className="settings-footnote">
+                              {agentWords("consent.apps.footer", { agent })}
+                            </p>
+                          </>
+                        )
+                      }
+                    </OptionsState>
+                  </div>
+                ) : null}
+              </>
             ) : null}
             <DisclosureRow
               disabled={disabled}
@@ -243,16 +264,20 @@ export function AgentGrantEditor({
                   {agentWords("consent.tasks.title")}
                 </span>
                 <span className="card__row-detail" id="agent-grant-tasks-detail">
-                  {limits.tasks ?? agentWords("consent.tasks.detail", { home })}
+                  {chat
+                    ? agentWords("chat.grant.tasks")
+                    : (limits.tasks ?? agentWords("consent.tasks.detail", { home }))}
                 </span>
               </span>
               <span className="card__row-actions">
                 <input
                   aria-describedby="agent-grant-tasks-detail"
                   aria-labelledby="agent-grant-tasks"
-                  checked={draft.tasks}
+                  checked={chat ? true : draft.tasks}
                   className="switch"
-                  disabled={disabled || (limits.tasks !== null && !draft.tasks)}
+                  disabled={
+                    disabled || chat !== undefined || (limits.tasks !== null && !draft.tasks)
+                  }
                   onChange={(event) => onChange({ ...draft, tasks: event.currentTarget.checked })}
                   role="switch"
                   type="checkbox"

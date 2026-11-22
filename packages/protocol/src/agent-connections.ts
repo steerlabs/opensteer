@@ -72,6 +72,17 @@ export const AgentConnectionBridgeSchema = z.object({
   provider: z.string().min(1).max(100),
   conversationId: z.string().min(1).max(512).nullable(),
   senders: BridgeSendersSchema,
+  /**
+   * What its grant may contain (core's `chatGrantShape`): whether everything may be chosen,
+   * which kinds of resource, and that Tasks is required. A screen offers only this.
+   */
+  grantShape: z
+    .object({
+      everything: z.boolean(),
+      resources: z.array(z.string().min(1).max(64)).max(16),
+      tasks: z.literal("required"),
+    })
+    .optional(),
   /** A one-time notice about how the update changed this bridge, until the person dismisses it. */
   notice: z.enum(["converted", "converted-without-channels"]).optional(),
   /** The chat account it speaks through: the Slack workspace, or the Mac's iMessage address. */

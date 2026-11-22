@@ -3,7 +3,7 @@
 import { createId } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { HostClientRequestError } from "@opensteer/client/host";
+import { agentWords, HostClientRequestError } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -460,6 +460,37 @@ describe("a chat on the phone", () => {
       expect(section("end")?.rows[0]?.label).toMatch(/^Disconnect /u);
     },
   );
+
+  it("offers an anyone chat only what it may hold, keeps Tasks on, and limits a chat with Tasks kept", async () => {
+    await open(chat(2), chats());
+    const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+    for (const id of [
+      "consent.scope.everything.label",
+      "consent.browser.title",
+      "consent.apps.title",
+    ] as const)
+      expect(labels, id).not.toContain(agentWords(id));
+    expect(labels).toContain(agentWords("consent.plugins.title"));
+    expect(row("tasks", "tasks")).toMatchObject({ value: true, disabled: true });
+    // A chat for you alone that can do everything is limited with Tasks kept, never refused.
+    const scene = mockConnectedAgents("chats");
+    const everything = scene.connections.map((row) =>
+      row.id === chat(1) ? { ...row, grant: { scope: "everything" as const } } : row,
+    );
+    const owner = new MockHostClient({ latencyMs: 0, ...scene, connections: everything });
+    host?.dispose();
+    act(() => root?.unmount());
+    await open(chat(1), owner);
+    const dispatch = vi.spyOn(owner, "dispatch");
+    await press(row("scope", "selected"));
+    await answer(agentWords("agent.narrow.confirm"));
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "connection.update",
+        grant: { scope: "selected", tasks: true, resources: [] },
+      }),
+    );
+  });
 
   it("says a reply may have been sent, never that it failed", async () => {
     await open(chat(4), chats());
