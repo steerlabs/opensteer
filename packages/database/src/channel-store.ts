@@ -6,7 +6,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { jsonValue } from "./store-primitives.js";
-import { liveConnection } from "./connection-liveness.js";
+import { bridgeAccountEnded, liveConnection } from "./connection-liveness.js";
 import { noticeDeadChatMessage } from "./bridge-ingress.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -1077,7 +1077,8 @@ export class ChannelStore {
 
   /**
    * The send is about to leave the Home. Under the bridge's own row: a bridge that ended, or
-   * whose transport lost the use it was set up on, never sends it, and it is known unsent.
+   * whose transport lost the use it was set up on, never sends it, and it is known unsent. A
+   * bridge that is only paused keeps it: it goes back to waiting and leaves when it resumes.
    */
   async startDeliveryAttempt(deliveryId: ChannelDeliveryId, claimToken: string): Promise<void> {
     const withdrawn = await commitPersonalMutation(this.#database, async (transaction) => {
@@ -1088,31 +1089,33 @@ export class ChannelStore {
         .executeTakeFirst();
       if (!delivery) throw staleClaim("delivery");
       // Disconnect holds this row for update: once it commits, nothing more starts.
-      const live = await transaction
+      const bridge = await transaction
         .selectFrom("agentConnections")
-        .select("id")
+        .select(["revokedAt", liveConnection().as("live"), bridgeAccountEnded.as("accountEnded")])
         .where("id", "=", delivery.bridgeId)
-        .where(liveConnection())
         .forShare("agentConnections")
         .executeTakeFirst();
       const allowed =
-        live !== undefined && (await channelSourceAllows(transaction, delivery.accountId));
+        bridge?.live === true && (await channelSourceAllows(transaction, delivery.accountId));
       if (!allowed) {
-        const ended = await transaction
+        const ended = !bridge || bridge.revokedAt !== null || bridge.accountEnded;
+        const withdrawn = await transaction
           .updateTable("bridgeDeliveries")
           .set({
             claimExpiresAt: null,
             claimOwner: null,
             claimTokenHash: null,
-            lastError: "The bridge ended before this was sent",
-            status: "cancelled",
+            lastError: ended
+              ? "The bridge ended before this was sent"
+              : "The chat was paused before this was sent",
+            status: ended ? "cancelled" : "pending",
             updatedAt: new Date(),
           })
           .where("id", "=", deliveryId)
           .where("status", "=", "leased")
           .where("claimTokenHash", "=", digest(claimToken))
           .executeTakeFirst();
-        if (ended.numUpdatedRows !== 1n) throw staleClaim("delivery");
+        if (withdrawn.numUpdatedRows !== 1n) throw staleClaim("delivery");
         return true;
       }
       const result = await transaction

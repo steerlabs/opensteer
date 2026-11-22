@@ -147,6 +147,45 @@ describeStore("answers leave the Home only through a bridge's Disconnect set", (
     expect((await channels.claimDelivery(testMessagingRunnerId))?.delivery.id).toBe(retried);
   });
 
+  it("keeps a reply waiting while its chat is paused or its computer is gone, and cancels it only at an end", async ({
+    storeFixture,
+  }) => {
+    const { channels, conversationId, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("paused");
+    const { insertChannelDelivery, database, store } = storeFixture;
+    const id = await insertChannelDelivery({
+      accountId: configured.account.id,
+      conversationId,
+      status: "pending",
+    });
+    const reply = () =>
+      database
+        .selectFrom("bridgeDeliveries")
+        .select(["status", "claimOwner"])
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+    const claim = (await channels.claimDelivery(testMessagingRunnerId))!;
+    expect(claim.delivery.id).toBe(id);
+    // The person pauses the chat just before the send leaves: it waits, it is not cancelled.
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    await expect(
+      channels.startDeliveryAttempt(claim.delivery.id, claim.claimToken),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await reply()).toEqual({ status: "pending", claimOwner: null });
+    expect(await channels.claimDelivery(testMessagingRunnerId)).toBeNull();
+    // Resumed and connected again, it leaves.
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+    await database
+      .updateTable("integrationConnections")
+      .set({ status: "connected" })
+      .where("id", "=", configured.connection.id)
+      .execute();
+    expect((await channels.claimDelivery(testMessagingRunnerId))?.delivery.id).toBe(id);
+    // The computer holding it is removed before it started: it goes to whichever takes over.
+    await store.revokeRunner(testMessagingRunnerId, fixture.userId, { allowDeployment: true });
+    expect(await reply()).toEqual({ status: "pending", claimOwner: null });
+  });
+
   it("ends with the provider account it speaks through", async ({ storeFixture }) => {
     const bridge = await storeFixture.createBridgeFixture("account-ends");
     const connections = new AgentConnectionStore(storeFixture.database);
