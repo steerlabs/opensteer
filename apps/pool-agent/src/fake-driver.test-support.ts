@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureProfile, eraseFilesUnder, eraseProfile, profilePathFor } from "./profiles.js";
+import {
+  ensureProfile,
+  eraseFilesUnder,
+  eraseProfile,
+  profilePathFor,
+  sweepUnfinishedProfiles,
+} from "./profiles.js";
 import {
   NoSaveRoom,
   type GuestBoot,
@@ -12,6 +18,8 @@ import {
   type SlotEgress,
 } from "./driver.js";
 import type { HostCapacity } from "./capacity.js";
+import { credentialFiles, readPulledEgress, writePulledEgress } from "./slot-credentials.js";
+import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
 
 type Operation =
   | "boot"
@@ -61,9 +69,44 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   readonly #gates = new Map<Operation, Promise<void>>();
   readonly #unknown = new Map<string, number>();
 
-  constructor(options: { startsEmpty?: boolean } = {}) {
+  /** Round H: this fake host pulls each slot's upstream credentials. */
+  readonly pullsEgress: boolean;
+
+  constructor(options: { startsEmpty?: boolean; pullsEgress?: boolean } = {}) {
     this.startsEmpty = options.startsEmpty ?? false;
+    this.pullsEgress = options.pullsEgress ?? false;
   }
+
+  /**
+   * Round H: pulled credentials are real files through the module the real driver uses. The
+   * proxy's definition is a record: `defineProxy:<slot>:<upstream or none>` in `operations`
+   * whenever the upstream a slot's proxy would be defined with changes.
+   */
+  readonly #proxyDefinitions = new Map<string, string>();
+
+  async hasPulledEgress(slotId: string): Promise<boolean> {
+    return (await readPulledEgress(this.credentialsRoot, slotId)) !== undefined;
+  }
+
+  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<void> {
+    return writePulledEgress(this.credentialsRoot, slotId, egress);
+  }
+
+  pulledEgressFiles(slotId: string): readonly string[] {
+    const files = credentialFiles(this.credentialsRoot, slotId);
+    return [files.url, files.username, files.password];
+  }
+
+  async #definePulled(slotId: string): Promise<void> {
+    if (!this.pullsEgress) return;
+    const upstream = (await readPulledEgress(this.credentialsRoot, slotId))?.upstreamUrl ?? "none";
+    if (this.#proxyDefinitions.get(slotId) === upstream) return;
+    this.#proxyDefinitions.set(slotId, upstream);
+    this.operations.push(`defineProxy:${slotId}:${upstream}`);
+  }
+
+  /** Round H: the size of the filesystem the profiles are on (unbounded unless a test sets it). */
+  filesystemBytes: number | undefined;
 
   /** The next `count` calls of `operation` fail with this error, or never answer. */
   fail(operation: Operation, error: Error | "hang", count = 1): void {
@@ -142,11 +185,17 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   }
 
   ensureProfile(slotId: string, sizeMib: number) {
-    return ensureProfile(this.profilesRoot, slotId, sizeMib, async (file) => {
-      if (this.formatError) throw this.formatError;
-      this.formatted += 1;
-      writeFileSync(file, "fake-ext4\n", { flag: "r+" });
-    });
+    return ensureProfile(
+      this.profilesRoot,
+      slotId,
+      sizeMib,
+      async (file) => {
+        if (this.formatError) throw this.formatError;
+        this.formatted += 1;
+        writeFileSync(file, "fake-ext4\n", { flag: "r+" });
+      },
+      async () => this.filesystemBytes ?? Number.MAX_SAFE_INTEGER,
+    );
   }
 
   async eraseProfile(path: string): Promise<void> {
@@ -182,6 +231,8 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   ): Promise<void> {
     // Only learns what exists: a slot's network is made when it next starts or resumes.
     void slots;
+    // As the real driver's open: a credentials write a crash cut short is removed, never read.
+    if (this.pullsEgress) await sweepUnfinishedProfiles(this.credentialsRoot);
   }
 
   /** The next prepare waits for this, ignoring its caller's deadline as the real one does. */
@@ -196,6 +247,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
     const gate = this.prepareGate;
     this.prepareGate = undefined;
     if (gate) await gate;
+    await this.#definePulled(slotId);
     if (this.prepared.has(slotId)) return;
     this.prepared.add(slotId);
     this.sockets.set(slotId, _egress?.upstreamUrl ?? "none");
@@ -236,6 +288,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   readonly sockets = new Map<string, string>();
 
   async reviveProxy(slotId: string, egress: SlotEgress | undefined): Promise<boolean> {
+    await this.#definePulled(slotId);
     if (!this.proxyDown.has(slotId)) return false;
     // A gated revive ignores its caller's deadline, as a `systemd-run` already sent does.
     await this.#enter("reviveProxy", slotId);

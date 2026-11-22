@@ -25,6 +25,12 @@ export interface EgressProgram {
   readonly memoryMib?: number;
   /** One proxy's connection ceiling: sized from what one Chromium opens (round D, D1). */
   readonly maxConnections?: number;
+  /**
+   * Round H, on a host that pulls its slots' credentials: every proxy requires an upstream,
+   * with credentials or without (then it refuses everything; it never connects directly), and
+   * trusts the system's roots for it.
+   */
+  readonly upstreamRequired?: boolean;
 }
 
 /** Every slot proxy runs in this slice: one aggregate memory ceiling, made by setup-host.sh. */
@@ -66,14 +72,17 @@ export async function egressDefined(index: number): Promise<boolean> {
   return state.trim() === "active";
 }
 
-/** Makes the slot's socket and its (not yet started) proxy service. Idempotent. */
+/**
+ * Makes the slot's socket and its (not yet started) proxy service. Idempotent: true if it
+ * defined them now, false if they were already there (and are left as they are).
+ */
 export async function defineEgress(
   program: EgressProgram,
   index: number,
   uid: number,
   upstream: SlotEgress | undefined,
-): Promise<void> {
-  if (await egressDefined(index)) return;
+): Promise<boolean> {
+  if (await egressDefined(index)) return false;
   const unit = egressUnit(index);
   await run("systemctl", ["stop", egressSocket(index), unit], { allow: [1, 5] });
   await run("systemctl", ["reset-failed", egressSocket(index), unit], { allow: [1, 5] });
@@ -88,9 +97,9 @@ export async function defineEgress(
         ...(upstream.caFile
           ? [`--setenv=OPENSTEER_BROWSER_EGRESS_UPSTREAM_CA_FILE=/run/credentials/${unit}/ca`]
           : []),
-        "--setenv=OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true",
       ]
     : [];
+  const required = upstream !== undefined || program.upstreamRequired === true;
   await run("systemd-run", [
     `--unit=${unit}`,
     "--quiet",
@@ -146,9 +155,38 @@ export async function defineEgress(
     `--setenv=OPENSTEER_BROWSER_EGRESS_PORT=${proxyPort}`,
     "--setenv=NODE_ENV=production",
     ...credentials,
+    ...(required ? ["--setenv=OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true"] : []),
     program.node,
+    ...(program.upstreamRequired ? ["--use-system-ca"] : []),
     program.main,
   ]);
+  return true;
+}
+
+/**
+ * Round H: what a slot's proxy unit was defined with, as systemd holds it: its upstream (or
+ * none) and whether it requires one. Undefined when the unit is not loaded.
+ */
+export async function egressDefinition(
+  index: number,
+): Promise<{ readonly upstream: string | null; readonly required: boolean } | undefined> {
+  const environment = await run(
+    "systemctl",
+    ["show", "-p", "Environment", "--value", egressUnit(index)],
+    { allow: [1] },
+  );
+  const loaded = await run("systemctl", ["show", "-p", "LoadState", "--value", egressUnit(index)], {
+    allow: [1],
+  });
+  if (loaded.trim() !== "loaded") return undefined;
+  const entries = environment.trim().split(/\s+/u);
+  const upstream = entries
+    .find((entry) => entry.startsWith("OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL="))
+    ?.slice("OPENSTEER_BROWSER_EGRESS_UPSTREAM_URL=".length);
+  return {
+    upstream: upstream ?? null,
+    required: entries.includes("OPENSTEER_BROWSER_EGRESS_UPSTREAM_REQUIRED=true"),
+  };
 }
 
 /**
