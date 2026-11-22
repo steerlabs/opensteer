@@ -635,6 +635,18 @@ async function proveChromeShares(
       await expect(
         cdp.send("Runtime.evaluate", { expression: "document.title" }),
       ).resolves.toMatchObject({ result: { value: "First" } });
+      // The person's own Chrome clipboard is in no grant: a paste or copy is refused, unsent.
+      for (const key of ["v", "c"])
+        await expect(
+          cdp.send("Input.dispatchKeyEvent", {
+            type: "rawKeyDown",
+            modifiers: 4,
+            key,
+            code: `Key${key.toUpperCase()}`,
+          }),
+        ).rejects.toThrow(
+          "The clipboard is not available to a connected agent. Use Input.insertText to enter text.",
+        );
       const attempts = async () => {
         const row = await fixture.database
           .selectFrom("agentConnections")
