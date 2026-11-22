@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
+  cloudComputerEntryDetail,
   cloudComputerDeleteInput,
   cloudComputerWebsite,
   cloudWords,
@@ -16,6 +17,7 @@ import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { SetupSteps, WorkHomeCards, WorkHomeRow, useWorkHomeBadge } from "./work-home.js";
+import { useHomeKind } from "../../devices/home-facts.js";
 
 export const cloudComputerPath = "/settings/account/cloud-computer";
 
@@ -59,10 +61,11 @@ function useOpenWebsite() {
  * page. A server or Cloud Computer Home never shows it as an offer.
  */
 export function CloudComputerEntryRow() {
+  const kind = useHomeKind().kind;
   return (
     <SettingsRow
       title={cloudWords("cloud.entry.title")}
-      detail={cloudWords("cloud.entry.detail")}
+      detail={cloudComputerEntryDetail(kind)}
       action={
         <Link className="btn btn--small" to={cloudComputerPath}>
           <Icon name="cloud" />

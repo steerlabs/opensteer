@@ -330,21 +330,26 @@ export function passwordsSettingsModel(input: {
   /** A Personal Opensteer is named after its Mac until that Mac reports itself. */
   readonly deploymentName: string;
   readonly machines: readonly MachineSummary[];
+  /** What the Home says it is, and how it is reached: only a Home on a Mac has Passwords. */
+  readonly homeKind?: "mac" | "server" | "cloud-computer" | undefined;
+  readonly exposure?: "loopback" | "networked" | undefined;
 }): PasswordsSettingsModel {
   const personal = true;
+  const onMac = input.homeKind ? input.homeKind === "mac" : input.exposure !== "networked";
   const homeName = input.machines.find(hostsDeployment)?.name ?? input.deploymentName;
   return {
-    body: passwordsElsewhere({ homeName, personal }),
-    detail: passwordsSettingsSubtitle({ homeName, personal }),
-    facts: personal
-      ? [
-          passwordsHowItWorks[0],
-          passwordsCardsFact,
-          "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
-          `In Opensteer’s browser, tap a sign-in field to fill your own saved login. ${homeName} types it; it never comes to this phone.`,
-          `When you sign in by hand there, Opensteer offers to save that login on ${homeName}. The password stays there.`,
-        ]
-      : [],
+    body: passwordsElsewhere({ homeName, personal, onMac }),
+    detail: passwordsSettingsSubtitle({ homeName, personal, onMac }),
+    facts:
+      personal && onMac
+        ? [
+            passwordsHowItWorks[0],
+            passwordsCardsFact,
+            "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
+            `In Opensteer’s browser, tap a sign-in field to fill your own saved login. ${homeName} types it; it never comes to this phone.`,
+            `When you sign in by hand there, Opensteer offers to save that login on ${homeName}. The password stays there.`,
+          ]
+        : [],
     title: passwordsSettingsLabel,
   };
 }

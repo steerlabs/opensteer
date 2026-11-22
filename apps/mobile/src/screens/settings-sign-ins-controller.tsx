@@ -23,6 +23,8 @@ export function SignInsSettingsController(): ReactNode {
             deploymentName:
               selectedRow?.name ?? snapshot.identityConfig?.deployment.name ?? "your Mac",
             machines: snapshot.machines,
+            homeKind: snapshot.identityConfig?.homeKind,
+            exposure: snapshot.identityConfig?.exposure,
           }),
     [selectedRow?.name, snapshot],
   );

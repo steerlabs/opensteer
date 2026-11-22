@@ -80,26 +80,69 @@ report_backup() {
   [[ $status == 204 ]] || fail "Backup saved. The Opensteer account refused the report (HTTP $status)."
 }
 
+backup_check_seconds=30
+
+# Reads the repository (creating it when restic says it does not exist), then takes and
+# releases a restic lock in it, which writes to it, all before anything is stopped and within
+# one deadline: restic retries an unreachable repository for many minutes. A failure prints
+# what restic said.
+check_backup_repository() {
+  local status=0
+  echo "Checking that the backup repository can be reached and written (at most ${backup_check_seconds} seconds)."
+  restic_container "$restic_script"'
+    if timeout "$2" sh -euc "$1"; then exit 0; else status=$?; fi
+    if [ "$status" = 124 ] || [ "$status" = 143 ]; then
+      if [ -s /tmp/check.err ]; then cat /tmp/check.err >&2; fi
+      exit 124
+    fi
+    exit "$status"
+  ' "$restic_script"'
+    if snapshot cat config >/dev/null 2>/tmp/check.err; then
+      :
+    else
+      status=$?
+      # 10: restic found no repository there, so this is the first backup.
+      if [ "$status" != 10 ]; then cat /tmp/check.err >&2; exit "$status"; fi
+      snapshot init >/dev/null
+    fi
+    snapshot snapshots --latest 1 >/dev/null
+  ' "$backup_check_seconds" >&2 || status=$?
+  case $status in
+    0) ;;
+    124) fail "The backup repository did not answer within ${backup_check_seconds} seconds. The Home was not stopped." ;;
+    *) fail 'The backup repository could not be reached or written. The Home was not stopped.' ;;
+  esac
+}
+
 backup_home() {
   local snapshot_id completed_at
+  check_backup_repository
   echo 'Stopping Home services to capture the database and files together.'
   durable_marker "$home_dir/backup.resume"
   resume_after_backup=true
   compose stop "${services[@]}"
+  echo 'Saving the database.'
   postgres_tool pg_dump --format=custom > "$staging/database.dump"
   cp "$identity_secrets/"{auth_secret,environment_id} "$staging/"
   volume_mounts /snapshot/volumes ,readonly
+  echo 'Uploading the encrypted snapshot.'
   restic_container "$restic_script"'
-    snapshot cat config >/dev/null 2>&1 || snapshot init >&2 || exit
+    export RESTIC_PROGRESS_FPS=0.2
     snapshot backup --json --host "$1" --tag opensteer-home \
       /snapshot/database.dump /snapshot/auth_secret /snapshot/environment_id /snapshot/volumes
-  ' "$hostname" > "$staging/restic-result.jsonl"
+  ' "$hostname" | tee "$staging/restic-result.jsonl" | jq --unbuffered -r '
+    select(.message_type == "status") |
+    "Uploaded \((.percent_done // 0) * 100 | floor)% (\(.files_done // 0) of \(.total_files // 0) files)"'
   completed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
   snapshot_id=$(jq -ser '.[] | select(.message_type == "summary") | .snapshot_id | select(test("^[0-9a-f]{8,64}$"))' "$staging/restic-result.jsonl")
   printf 'snapshot %s saved\n' "$snapshot_id"
-  start_pod
-  rm -f -- "$home_dir/backup.resume"
+  echo 'Starting Home services.'
   resume_after_backup=false
+  if ! start_pod; then
+    echo "Snapshot $snapshot_id was saved, but the Home did not start again. Start it with: sudo opensteer-home start" >&2
+    return 1
+  fi
+  rm -f -- "$home_dir/backup.resume"
   if [[ $action == scheduled-backup ]]; then report_backup "$snapshot_id" "$completed_at"; fi
 }
 
@@ -310,14 +353,18 @@ restore_home() {
 
 cleanup_backup() {
   local result=$?
-  trap - EXIT
+  trap - EXIT INT TERM HUP
+  if [[ -n ${backup_signal:-} ]]; then echo "The operation was stopped by $backup_signal." >&2; fi
   if $cleanup_restore; then
     restore_rollback || echo 'Restore recovery is pending. The journal was retained.' >&2
   fi
   rm -rf -- "$staging"
+  if ((result != 0)); then echo 'Its unfinished files were removed.' >&2; fi
   if ${resume_after_backup:-false}; then
+    echo 'The backup did not finish after Home services were stopped. Starting them again.' >&2
     if start_pod; then
       rm -f -- "$home_dir/backup.resume"
+      echo 'Home services were started again.' >&2
     else
       echo 'Could not restart the Home after backup.' >&2
       result=1
@@ -341,8 +388,12 @@ backup_command() {
   fi
   staging=$(mktemp -d "$home_dir/backup.XXXXXX")
   # The EXIT trap must run while these local variables and the operation lock are in scope.
+  # Interruption and termination end it like any failure, so cleanup always runs.
   (
     trap cleanup_backup EXIT
+    trap 'backup_signal=SIGINT; exit 130' INT
+    trap 'backup_signal=SIGTERM; exit 143' TERM
+    trap 'backup_signal=SIGHUP; exit 129' HUP
     if [[ $action == snapshots ]]; then
       [[ $# == 0 ]] || fail "Usage: opensteer-home snapshots"
       restic_container "$restic_script"'snapshot snapshots --no-lock --host "$1" --tag opensteer-home' "$hostname"
@@ -354,5 +405,16 @@ backup_command() {
       [[ $# == 0 ]] || fail "Usage: opensteer-home backup"
       backup_home
     fi
-  )
+  ) &
+  local operation=$! status=0
+  # A signal to this command reaches the operation and the command it is running, which
+  # returns at once; the operation then cleans up before this command returns.
+  trap 'kill -TERM "$operation" 2>/dev/null; pkill -TERM -P "$operation" 2>/dev/null || true' INT TERM HUP
+  wait "$operation" || status=$?
+  while kill -0 "$operation" 2>/dev/null; do
+    status=0
+    wait "$operation" || status=$?
+  done
+  trap - INT TERM HUP
+  return "$status"
 }

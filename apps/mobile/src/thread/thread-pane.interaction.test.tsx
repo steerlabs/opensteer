@@ -2505,7 +2505,7 @@ describe("a voice conversation while Opensteer is replying", () => {
     const { container } = await mount(host, conversationId);
 
     await press(container, "Stop the reply");
-    expect(host.stopRun).toHaveBeenCalledWith(conversationId, chat.runB);
+    expect(host.stopRun).toHaveBeenCalledExactlyOnceWith(conversationId);
 
     // The Host ends the reply and cancels what that exchange had not yet taken.
     host.move(
@@ -3714,7 +3714,7 @@ describe("a task", () => {
     host.stopRun.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     const { container } = await mount(host, workId);
     await press(container, "Stop this run");
-    expect(host.stopRun).toHaveBeenCalledWith(workId, task.runId);
+    expect(host.stopRun).toHaveBeenCalledExactlyOnceWith(workId);
     expect(text(container)).toContain("Couldn't confirm");
     host.move({ ...running, network: "offline" });
     host.move(running);

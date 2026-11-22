@@ -63,7 +63,7 @@ describe("setting up this Mac", () => {
     expect(calls).toEqual(["mint:null", "setUp"]);
   });
 
-  it("stops before minting when Home's Use from anywhere is off", async () => {
+  it("stops before minting when Home's Remote access is off", async () => {
     const { calls, value } = ports({ remoteAccessMode: async () => "off" });
     await expect(
       setUpThisDevice(value, { name: "MBP", access, devicesAvailable: true, homeName: "Mac mini" }),

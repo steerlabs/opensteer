@@ -1,6 +1,7 @@
 import { useThreadTranscript } from "@opensteer/client/react";
 import {
   canRespondToRequests,
+  requestsWaitingOn,
   samePlaceAgents,
   threadMark,
   threadWatch,
@@ -22,8 +23,8 @@ import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { AgentMarks } from "./agent-marks.js";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
-import { useAgentSessionStop } from "../thread/agent-session.js";
-import { placeSessionLine } from "../thread/agent-session-model.js";
+import { useAgentSessionStop } from "../thread/agent-session-hooks.js";
+import { placeSessionLine, sessionTaskOf } from "../thread/agent-session-model.js";
 
 /**
  * What a place says of the conversation it was opened from, under the page:
@@ -36,6 +37,8 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   /** The conversation's mark; null while this reader cannot name it. */
   readonly agent: PlaceAgent | null;
   readonly canRespond: boolean;
+  /** Other agents hold the place too: the row says which task it speaks for. */
+  readonly named?: boolean;
   readonly onAnswer: () => void;
   readonly onStop: () => Promise<void>;
   /** What Stop ends here, as the composer says it. */
@@ -46,11 +49,11 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   const [stop, setStop] = useState<{ readonly runId: string; readonly failed: boolean } | null>(
     null,
   );
-  const runId = watch.kind === "working" ? watch.runId : null;
+  // Waiting on the person is still work under way: its Run keeps its Stop beside Answer.
+  const runId = watch.runId;
   // A Stop belongs to the Run it was pressed for.
   const pressed = stop !== null && stop.runId === runId ? stop : null;
-  const busy =
-    (pressed !== null && !pressed.failed) || (watch.kind === "working" && watch.stopping);
+  const busy = (pressed !== null && !pressed.failed) || watch.stopping;
   const onStop = () => {
     if (runId === null || busy || !props.canRespond) return;
     setStop({ failed: false, runId });
@@ -64,12 +67,13 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
   };
   const needsYou = watch.kind === "needs-you";
   const failed = pressed?.failed === true;
-  const words = needsYou ? "Needs you" : failed ? "Couldn’t stop" : watch.words;
+  const said = needsYou ? "Needs you" : failed ? "Couldn’t stop" : watch.words;
   const who = props.agent?.title ?? null;
+  const words = props.named === true && who !== null ? `${who} · ${said}` : said;
   return (
     <View style={styles.row} testID="place-status">
       <View
-        accessibilityLabel={who === null ? words : `${who}: ${words}`}
+        accessibilityLabel={who === null ? said : `${who}: ${said}`}
         accessibilityLiveRegion="polite"
         accessible
         style={styles.said}
@@ -92,7 +96,8 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
           onPress={props.onAnswer}
           tone="primary"
         />
-      ) : (
+      ) : null}
+      {runId === null ? null : (
         <ComposerAction
           busy={busy}
           disabled={!props.canRespond}
@@ -134,52 +139,91 @@ const styles = StyleSheet.create({
 /** The two watches say the same thing: the row need not draw again. */
 function sameWatch(left: ThreadWatch | null, right: ThreadWatch | null): boolean {
   if (left === null || right === null) return left === right;
-  if (left.kind === "needs-you" || right.kind === "needs-you") return left.kind === right.kind;
-  return (
-    left.runId === right.runId && left.stopping === right.stopping && left.words === right.words
-  );
+  if (left.kind !== right.kind) return false;
+  if (left.runId !== right.runId || left.stopping !== right.stopping) return false;
+  return left.kind === "needs-you" || right.kind === "needs-you" || left.words === right.words;
 }
 
 /**
- * The status row for the conversation a place was opened from, or null while
- * that conversation has nothing to say: it speaks for that conversation alone,
- * never for whichever agent ranks first in the place. A place opened from
- * Tabs, with no conversation, has none; nor does one whose conversation is
- * already on screen beside it.
+ * The status row for one agent in a place, or null while it has nothing to say. Opened from
+ * a conversation, it speaks for that conversation alone. Opened from Tabs (`fromTabs`), it
+ * speaks for the first agent in the place's own ranking (acting first, then the most recent)
+ * that is using the place: a connected agent whose session is live, or one of your own
+ * agents at work or waiting on the person. Whichever kind it is, its Stop is the one its task
+ * has, and when several agents hold the place the row names the one it speaks for. One whose
+ * conversation is already on screen beside it has none.
  */
 export function usePlaceStatusRow(props: {
-  /** The place's agents, whose mark the conversation wears while it is one of them. */
+  /** The place's agents, ranked, whose mark the conversation wears while it is one of them. */
   readonly agents: PlaceAgents;
   readonly hostClient: HostClient;
   readonly onAnswer: (threadId: string) => void;
   /** The conversation the route carries, unless it is already on screen. */
   readonly threadId: string | null;
+  /** Opened from Tabs, with nothing on screen beside it: the place's own agent speaks. */
+  readonly fromTabs?: boolean;
   /** The tab shown, so a connected agent using it can be named with its task. */
   readonly tabId?: string | null;
 }): ReactNode {
-  const { agents, hostClient, onAnswer, threadId } = props;
+  const { agents, hostClient, onAnswer } = props;
+  const fromTabs = props.fromTabs === true && props.threadId === null;
   const tabId = props.tabId ?? null;
   const threads = useHostSelector(hostClient, selectThreads);
   const sharedFromChrome = useHostSelector(
     hostClient,
     (snapshot) => tabId !== null && snapshot.tabs.get(tabId)?.sharedByPerson !== undefined,
   );
-  const session = useMemo(
-    () =>
-      placeSessionLine(
-        { threads },
-        {
-          tabId,
-          sharedFromChrome,
-          occupants: agents.agents.map((agent) => ({
-            threadId: agent.threadId,
-            title: agent.title,
-          })),
-        },
-      ),
-    [threads, agents, tabId, sharedFromChrome],
+  // One ranking: the place's own list, whatever kind of agent each one is.
+  const selectPlaceThread = useCallback(
+    (snapshot: HostSnapshot): string | null => {
+      if (!fromTabs) return null;
+      const using = agents.agents.find(({ threadId, title }) => {
+        if (
+          placeSessionLine(snapshot, {
+            tabId,
+            sharedFromChrome,
+            occupants: [{ threadId, title }],
+          })?.stop
+        )
+          return true;
+        if (sessionTaskOf(snapshot, threadId) !== null) return false;
+        const status = snapshot.threads.find(({ id }) => id === threadId)?.status;
+        return (
+          status === "running" ||
+          status === "waiting" ||
+          requestsWaitingOn(snapshot.waitingRequests, threadId).length > 0
+        );
+      });
+      return using?.threadId ?? null;
+    },
+    [agents, fromTabs, sharedFromChrome, tabId],
   );
+  const placeThread = useHostSelector(hostClient, selectPlaceThread);
+  const threadId = props.threadId ?? placeThread;
+  // Several agents here: the row says whose it is.
+  const named = agents.agents.length > 1;
+  const session = useMemo(() => {
+    const subject = agents.agents.find((agent) => agent.threadId === threadId);
+    return subject === undefined
+      ? null
+      : placeSessionLine(
+          { threads },
+          {
+            tabId,
+            sharedFromChrome,
+            occupants: [{ threadId: subject.threadId, title: subject.title }],
+          },
+        );
+  }, [threads, agents, tabId, sharedFromChrome, threadId]);
   const sessionStop = useAgentSessionStop(hostClient, session?.threadId ?? "");
+  const sessionThreadId = session?.threadId ?? null;
+  const selectSessionNeedsYou = useCallback(
+    (snapshot: HostSnapshot): boolean =>
+      sessionThreadId !== null &&
+      requestsWaitingOn(snapshot.waitingRequests, sessionThreadId).length > 0,
+    [sessionThreadId],
+  );
+  const sessionNeedsYou = useHostSelector(hostClient, selectSessionNeedsYou);
   const transcript = useThreadTranscript(hostClient, threadId);
   const selectWatch = useCallback(
     (snapshot: HostSnapshot): ThreadWatch | null => {
@@ -237,6 +281,9 @@ export function usePlaceStatusRow(props: {
       session === null ? null : (
         <SessionStatusRow
           busy={sessionStop.running}
+          onAnswer={
+            sessionNeedsYou && session.stop !== null ? () => onAnswer(session.threadId) : null
+          }
           onStop={
             session.stop === null
               ? null
@@ -247,7 +294,7 @@ export function usePlaceStatusRow(props: {
           session={session}
         />
       ),
-    [session, sessionStop],
+    [onAnswer, session, sessionNeedsYou, sessionStop],
   );
   const runRow = useMemo(
     () =>
@@ -255,23 +302,30 @@ export function usePlaceStatusRow(props: {
         <PlaceStatusRow
           agent={agent}
           canRespond={canRespond}
+          named={named}
           onAnswer={answer}
           onStop={stop}
           stopLabel={stops}
           watch={watch}
         />
       ),
-    [agent, answer, canRespond, stop, stops, watch],
+    [agent, answer, canRespond, named, stop, stops, watch],
   );
-  // A connected agent's own work has no Run to stop: its row ends its session instead.
-  return sessionRow ?? runRow;
+  // The one agent the row speaks for: a connected agent's own work has no Run to stop, so
+  // its row ends its session instead.
+  return session !== null ? sessionRow : runRow;
 }
 
 const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
 
-/** A connected agent using this tab, for which task, and the Stop that ends its session. */
+/**
+ * A connected agent using this tab, for which task, and the Stop that ends its session; while
+ * it waits on the person, Answer back to the task's question beside that Stop.
+ */
 function SessionStatusRow(props: {
   readonly busy: boolean;
+  /** Returns to the task, where its question is answered; null while nothing waits. */
+  readonly onAnswer: (() => void) | null;
   readonly onStop: (() => void) | null;
   readonly session: NonNullable<ReturnType<typeof placeSessionLine>>;
 }): ReactNode {
@@ -294,6 +348,14 @@ function SessionStatusRow(props: {
           {session.line}
         </AppText>
       </View>
+      {props.onAnswer !== null ? (
+        <AnswerPill
+          accessibilityHint={`${workWords("tab.needsYou", { agent: session.agent.name })}. Returns to the task, where you answer it`}
+          label={workWords("tab.answer")}
+          onPress={props.onAnswer}
+          tone="primary"
+        />
+      ) : null}
       {props.onStop === null ? null : (
         <ComposerAction
           busy={props.busy}

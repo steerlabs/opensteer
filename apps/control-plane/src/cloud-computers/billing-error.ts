@@ -1,5 +1,42 @@
 import { ZodError } from "zod";
 import { ControlPlaneError } from "../server/errors.js";
+import type { CloudComputerId } from "@opensteer/control-plane-protocol";
+
+/** What settling a deleted Cloud Computer with Stripe can be stuck on; see `#settleDeletion`. */
+export type CloudComputerDeletionStep = "cancel" | "customer" | "record";
+
+/** A deleted Cloud Computer still unsettled with Stripe an hour after its request. */
+export class CloudComputerDeletionUnsettled extends Error {
+  readonly computerId: CloudComputerId;
+  readonly step: CloudComputerDeletionStep;
+
+  constructor(
+    computerId: CloudComputerId,
+    step: CloudComputerDeletionStep,
+    options?: { cause?: unknown },
+  ) {
+    super("A deleted Cloud Computer is not settled with Stripe an hour after its request", options);
+    this.name = "CloudComputerDeletionUnsettled";
+    this.computerId = computerId;
+    this.step = step;
+  }
+}
+
+/**
+ * A deleted Cloud Computer whose subscription was not cancelled at the first attempt: cancelled
+ * `waitedMs` after its deletion was requested. A renewal charged in that time is refunded by hand.
+ */
+export class CloudComputerCancelledLate extends Error {
+  readonly computerId: CloudComputerId;
+  readonly waitedMs: number;
+
+  constructor(computerId: CloudComputerId, waitedMs: number) {
+    super("A deleted Cloud Computer's subscription was cancelled late; check for a renewal");
+    this.name = "CloudComputerCancelledLate";
+    this.computerId = computerId;
+    this.waitedMs = waitedMs;
+  }
+}
 
 // Provider responses and database errors can carry secrets in their messages, causes and stacks.
 const safeMessages = new Set([
@@ -8,12 +45,30 @@ const safeMessages = new Set([
   "Stripe billing is temporarily unavailable",
   "Stripe Checkout payment is not refundable by the Account",
   "Stripe Checkout payments could not be established",
+  "Stripe did not delete the customer",
   "Stripe Checkout refunds could not be established",
+  "The subscription is not cancelled yet",
   "Stripe did not confirm Checkout expiry",
   "The configured Stripe price does not match the Cloud Computer offer",
 ]);
 
-export function billingErrorDetails(error: unknown) {
+export function billingErrorDetails(error: unknown): Record<string, unknown> {
+  // A deleted Cloud Computer names its row, so an operator can see it through.
+  if (error instanceof CloudComputerCancelledLate)
+    return {
+      type: error.name,
+      message: error.message,
+      computerId: error.computerId,
+      waitedMs: error.waitedMs,
+    };
+  if (error instanceof CloudComputerDeletionUnsettled)
+    return {
+      type: error.name,
+      message: error.message,
+      computerId: error.computerId,
+      step: error.step,
+      ...(error.cause === undefined ? {} : { cause: billingErrorDetails(error.cause) }),
+    };
   if (error instanceof ControlPlaneError) {
     return {
       type: "ControlPlaneError",

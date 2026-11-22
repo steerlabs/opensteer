@@ -102,7 +102,7 @@ const rejectionReasons: Readonly<Record<string, string>> = {
   "browser-session-closed": "This tab is closed.",
   "browser-capture-limit": "Too many pages are being watched.",
   "browser-input-owner-conflict": "Someone else is using this page.",
-  "personal-remote-access-off": "Turn on Use from anywhere to add a computer.",
+  "personal-remote-access-off": "Turn on Remote access to add a computer.",
   "device-offline": "Open Opensteer on the device and keep it open, then try again.",
   "device-asleep": "This device is asleep. Wait until it wakes, then try again.",
   "computer-app-connecting": "Opensteer on the device is still connecting. Try again in a moment.",

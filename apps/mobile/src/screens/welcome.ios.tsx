@@ -36,7 +36,6 @@ import {
   shareMacLink,
   welcomeCopy,
   welcomePresentation,
-  welcomeSentence,
   type WelcomeProps,
 } from "./welcome-model.js";
 
@@ -73,23 +72,35 @@ export function Welcome(props: WelcomeProps): ReactNode {
               {welcomeCopy.title}
             </Text>
             <Text modifiers={[font({ textStyle: "body" }), secondary, centred]}>
-              {welcomeSentence(thisPhoneNoun)}
+              {view.sentence(thisPhoneNoun)}
             </Text>
           </VStack>
-          {link === null ? null : (
-            <Wide onPress={() => shareMacLink(link)} prominent label={welcomeCopy.mac} />
+          {/* The Opensteer account finds a Home on a Mac or a Cloud Computer, so it leads. */}
+          {view.account === null ? null : (
+            <Wide
+              disabled={view.account.disabled || props.signingIn}
+              label={view.account.label}
+              onPress={props.onAccount}
+              prominent
+            />
           )}
-          <Wide onPress={props.onScan} prominent={link === null} label={welcomeCopy.scan} />
+          {link === null ? null : (
+            <Wide
+              onPress={() => shareMacLink(link)}
+              prominent={view.account === null}
+              label={welcomeCopy.mac}
+            />
+          )}
+          <Wide
+            onPress={props.onScan}
+            prominent={link === null && view.account === null}
+            label={welcomeCopy.scan}
+          />
         </Section>
         <Section footer={<Footer text={view.footer} />} title={welcomeCopy.otherWays}>
           <ErrorText detail={view.failure} />
           {view.signedInAs === null ? null : (
             <Lines detail="Opensteer account" title={view.signedInAs} />
-          )}
-          {view.account === null ? null : (
-            <Button modifiers={[disabled(view.account.disabled)]} onPress={props.onAccount}>
-              <Row busy={props.signingIn} label={view.account.label} />
-            </Button>
           )}
           <Button onPress={props.onAddress}>
             <Row busy={false} label={welcomeCopy.address} />
@@ -101,6 +112,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
 }
 
 function Wide(props: {
+  readonly disabled?: boolean;
   readonly label: string;
   readonly onPress: () => void;
   readonly prominent: boolean;
@@ -108,6 +120,7 @@ function Wide(props: {
   return (
     <Button
       modifiers={[
+        disabled(props.disabled === true),
         ...bare(12, 0),
         buttonStyle(props.prominent ? "borderedProminent" : "bordered"),
         buttonBorderShape("capsule"),

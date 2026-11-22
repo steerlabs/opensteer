@@ -41,6 +41,22 @@ describe("Cloud Computer website pages", () => {
     expect(body).not.toContain("<form");
   });
 
+  it("says before buying that it starts as a new Home, with nothing moved across", () => {
+    const body = cloudComputerCheckoutBody({
+      plan,
+      requestId: "00000000-0000-4000-8000-000000000009",
+      refusal: null,
+    });
+    for (const fact of [
+      "It starts as a new Home.",
+      "Connected agents connect again to its new address.",
+      "You sign in to your sites again in its browser.",
+      "Your Mac can be added to it as a device.",
+    ])
+      expect(body).toContain(words(fact));
+    expect(body).not.toContain(words("stays connected"));
+  });
+
   it("asks for one explicit click to buy, carrying the request id", () => {
     const body = cloudComputerCheckoutBody({
       plan,

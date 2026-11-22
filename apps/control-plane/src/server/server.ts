@@ -193,6 +193,9 @@ export async function createControlPlaneServer(
   // request is rewritten onto the Account public origin. The machine API under
   // /v1 and /healthz belongs to neither browser vhost and stays host-agnostic.
   const accountDeletion = new AccountDeletionService({
+    ...(dependencies.cloudComputers?.kickBilling
+      ? { afterDelete: dependencies.cloudComputers.kickBilling }
+      : {}),
     ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
     auth: dependencies.auth,
     connectLifecycle: dependencies.connectLifecycle,

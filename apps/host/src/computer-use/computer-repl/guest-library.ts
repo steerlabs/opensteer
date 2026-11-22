@@ -149,3 +149,27 @@ export const computerGuestLibrary = String.raw`
   }
 })();
 `;
+
+// Captured before any script runs and called by the worker inside the failing
+// call's slice. It cuts a thrown value down to bounded string fields in the
+// guest, so the Host reads only string primitives it has measured.
+export const computerFailureLibrary = String.raw`
+(() => {
+  const asString = String;
+  const slice = Function.prototype.call.bind(String.prototype.slice);
+  const isArray = Array.isArray;
+  const text = (value, units) => typeof value === "string" ? slice(value, 0, units) : undefined;
+  globalThis.__computerFailure = value => {
+    const object = typeof value === "object" && value !== null;
+    const message = slice(asString(object && "message" in value ? value.message : value), 0, 8192);
+    if (!object) return [message];
+    const performed = [];
+    const receipts = value.performed;
+    if (isArray(receipts))
+      for (let i = 0; i < receipts.length && performed.length < 160; i++)
+        if (typeof receipts[i] === "string") performed[performed.length] = slice(receipts[i], 0, 2048);
+    return [message, text(value.code, 128), text(value.next, 2000), performed,
+      text(value.machineId, 257), text(value.capability, 257), text(value.machineName, 257)];
+  };
+})();
+`;

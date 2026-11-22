@@ -49,7 +49,7 @@ function bridgeFor(account: MockCloudComputerAccount | null, listed = true) {
 
 async function mount(
   bridge: ReturnType<typeof bridgeFor> | null,
-  options: { readonly portalOrigin?: string | null } = {},
+  options: { readonly portalOrigin?: string | null; readonly deploymentId?: string } = {},
 ) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -65,6 +65,7 @@ async function mount(
         : [],
     },
     snapshot: {
+      ...(options.deploymentId ? { deploymentId: options.deploymentId } : {}),
       identityConfig: {
         portalOrigin:
           options.portalOrigin === undefined
@@ -107,7 +108,9 @@ describe("Opensteer Cloud Computer on desktop", () => {
     expect(page.querySelector(".cloud-computer__price .card__row-title")?.textContent).toBe(
       "$20.00 a month",
     );
-    expect(page.textContent).toContain("Your Cloud Computer starts as a new Opensteer.");
+    expect(page.textContent).toContain(
+      "It starts as a new Home. Connected agents connect again to its new address. You sign in to your sites again in its browser. Your Mac can be added to it as a device.",
+    );
   });
 
   it("opens checkout on the Opensteer website and watches for the computer it creates", async () => {
@@ -358,12 +361,18 @@ describe("work Homes on the Cloud Computer screen", () => {
     expect(page.querySelectorAll(".work-home")).toHaveLength(0);
   });
 
-  it("links to what the organization can see, read from the record schema", async () => {
-    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)));
+  it("links from inside the work Home to its one page of what the organization can see", async () => {
+    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)), {
+      deploymentId: workDeployment,
+    });
     const link = [...page.querySelectorAll("a")].find((a) => a.textContent === "Open");
     await act(async () => link!.click());
-    expect(path).toBe(
-      "/settings/account/cloud-computer/work/was_00000000-0000-4000-8000-0000000000a1",
-    );
+    expect(path).toBe("/settings/work");
+  });
+
+  it("offers no such link from another Home, whose Settings → Work isn't this one's", async () => {
+    const page = await mount(bridgeFor(new MockCloudComputerAccount("work", workDeployment)));
+    await vi.waitFor(() => expect(page.textContent).toContain("Acme Robotics"));
+    expect([...page.querySelectorAll("a")].find((a) => a.textContent === "Open")).toBeUndefined();
   });
 });

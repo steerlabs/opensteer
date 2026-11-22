@@ -192,7 +192,9 @@ function InputAction({
   const content = pluginInputContent(view.form, answers);
   return (
     <>
-      <ActionNote>Only this plugin receives your answer. The agent never sees it.</ActionNote>
+      <ActionNote>
+        Only this plugin receives your answer. Opensteer doesn’t pass it to the agent.
+      </ActionNote>
       <PluginFormFields
         answers={answers}
         disabled={disabled || pending !== null}

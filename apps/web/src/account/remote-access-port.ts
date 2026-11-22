@@ -214,7 +214,7 @@ export function webRemoteAccessRoute(input: {
   return { kind: "browser" };
 }
 
-/** "Use from anywhere" for the computer this web or desktop window is attached to. */
+/** "Remote access" for the computer this web or desktop window is attached to. */
 export function useWebRemoteAccess(
   remote: ReturnType<typeof usePersonalRemoteAccess>,
 ): RemoteAccessController {
