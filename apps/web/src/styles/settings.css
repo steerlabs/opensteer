@@ -1033,10 +1033,12 @@ button.card__row > .card__row-body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Its sentences are read whole: a paused note or what the account reports is never cut. */
 .settings-messaging-row .card__row-detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 .settings-messaging-row .card__row-actions {
   gap: var(--space-4);

@@ -57,6 +57,31 @@ async function type(field: HTMLInputElement, value: string): Promise<void> {
   });
 }
 
+/** The mock’s messaging settings changed by `edit`; every read after the first `failAfter` fails. */
+async function withDashboard(
+  client: MockHostClient,
+  edit: (dashboard: ReturnType<typeof ChannelDashboardSchema.parse>) => unknown,
+  failAfter = Number.POSITIVE_INFINITY,
+) {
+  const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));
+  const dashboard = ChannelDashboardSchema.parse(edit(ChannelDashboardSchema.parse(loaded)));
+  let reads = 0;
+  const rpc = client.rpc;
+  Object.defineProperty(client, "rpc", {
+    value: new Proxy(rpc, {
+      get: (target, key) =>
+        key === "channels.get"
+          ? async () => {
+              reads += 1;
+              if (reads > failAfter) throw new Error("offline");
+              return { ok: true, data: dashboard };
+            }
+          : Reflect.get(target, key),
+    }),
+  });
+  return dashboard;
+}
+
 describe("Messaging", () => {
   it("shows each account's state, what becomes of messages sent while it is paused, who is me, and its chats", async () => {
     const client = chats();
@@ -73,7 +98,7 @@ describe("Messaging", () => {
       expect(text).toContain("Slack says the token was revoked.");
       expect(button(page, "Fix setup")).toBeTruthy();
       // Who me is, and how to change it.
-      expect(text).toContain("Tim is you. Only messages from it give your chats work.");
+      expect(text).toContain("Tim is you. Messages from it count as you in your chats.");
       expect(text).toContain("Linking another account replaces Tim as you.");
       // Its chats, each a connected agent with the line the list shows.
       await vi.waitFor(() => expect(text.length).toBeGreaterThan(0));
@@ -189,7 +214,7 @@ describe("Messaging", () => {
       );
       expect(dispatch).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
-        "Every chat on it ends, and nothing sent there gives your agents work again.",
+        "Every chat on it ends, and nothing sent there gives your own agents work again.",
       );
     } finally {
       client.dispose();
@@ -236,6 +261,91 @@ describe("Messaging", () => {
         expect(page.textContent).toContain("Couldn’t read this account’s chats."),
       );
       expect(page.textContent).not.toContain("No chat on this account yet.");
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("offers no Pause switch for an account that needs attention: only Check again", async () => {
+    const client = chats();
+    try {
+      await withDashboard(client, (dashboard) => ({
+        ...dashboard,
+        connections: dashboard.connections.map((connection) =>
+          connection.transportKind === "computer"
+            ? { ...connection, status: "needs-attention", statusDetail: "The Mac is offline." }
+            : connection,
+        ),
+      }));
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("The Mac is offline."));
+      expect(page.querySelector('input[aria-label="Pause Messages on Studio Mac"]')).toBeNull();
+      expect(page.querySelector('input[aria-label="Resume Messages on Studio Mac"]')).toBeNull();
+      expect(
+        page.querySelector('button[aria-label="Actions for Messages on Studio Mac"]'),
+      ).not.toBeNull();
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("offers a chat in one channel only where the provider says it has channels", async () => {
+    const client = chats("chats-empty");
+    try {
+      await withDashboard(client, (dashboard) => ({
+        ...dashboard,
+        providers: dashboard.providers.map((provider) => ({ ...provider, channelChats: false })),
+      }));
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      await act(async () =>
+        [...page.querySelectorAll("button")].find((b) => b.textContent === "Add a chat")!.click(),
+      );
+      expect(
+        [...page.querySelectorAll("label")].some((label) => label.textContent === "One channel"),
+      ).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("after a read that failed, no account still reads as Connected", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const client = chats();
+    try {
+      await withDashboard(client, (dashboard) => dashboard, 1);
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      expect(page.textContent).toContain("Connected");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await vi.waitFor(() =>
+        expect(page.textContent).toContain("Couldn’t read your messaging accounts."),
+      );
+      const chips = [...page.querySelectorAll(".chip")].map((chip) => chip.textContent);
+      expect(chips).not.toContain("Connected");
+      expect(chips).toContain("Not read just now");
+      expect(button(page, "Try again")).toBeTruthy();
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("says a code shown on a paused account links it only once the account is resumed", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Messages on Studio Mac"));
+      const links = [...page.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Link another account" || b.textContent === "Link my account",
+      );
+      await act(async () => links[1]!.click());
+      await vi.waitFor(() => expect(page.textContent).toContain("Send MOCKCODE to"));
+      expect(page.textContent).toContain(
+        "Once this account is resumed, sending the code links your account.",
+      );
     } finally {
       client.dispose();
     }

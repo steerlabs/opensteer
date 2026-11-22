@@ -288,6 +288,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
             chats={agents.connections}
             chatsRead={connectionsRead(agents)}
             onRetryChats={() => void agents.refresh?.()}
+            onRetry={() => void reload().catch(() => setReadFailed(true))}
             client={hostClient}
             code={code}
             dashboard={
@@ -428,6 +429,7 @@ export function ChannelOverview({
   chats,
   chatsRead,
   onRetryChats,
+  onRetry,
   client,
   code,
   dashboard,
@@ -447,6 +449,8 @@ export function ChannelOverview({
   /** Where the read of the chats stands: only a read answer says an account has none. */
   readonly chatsRead: ConnectionsRead;
   readonly onRetryChats: () => void;
+  /** Read the accounts again after a read that failed. */
+  readonly onRetry: () => void;
   readonly client: Pick<HostClient, "dispatch">;
   readonly code: ShownCode | null;
   readonly dashboard: ChannelDashboard | null;
@@ -487,7 +491,10 @@ export function ChannelOverview({
     <>
       {readFailed ? (
         <p className="notice notice--error" role="alert">
-          {agentWords("messaging.readFailed")}
+          {agentWords("messaging.readFailed")}{" "}
+          <button className="btn btn--small" onClick={onRetry} type="button">
+            {agentWords("common.tryAgain")}
+          </button>
         </p>
       ) : null}
       {error ? (
@@ -531,7 +538,10 @@ export function ChannelOverview({
                     <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
                       {connection.displayName}
                     </Link>
-                    <span className={`chip ${statusChip(connection.status)}`}>{view.label}</span>
+                    {/* A read that failed leaves the last answer on screen, never as current. */}
+                    <span className={`chip ${readFailed ? "" : statusChip(connection.status)}`}>
+                      {readFailed ? agentWords("messaging.status.stale") : view.label}
+                    </span>
                   </span>
                   <span className="card__row-detail">{providerLabel}</span>
                   {view.pausedNote ? (
@@ -553,7 +563,7 @@ export function ChannelOverview({
                     <SettingsSwitch
                       label={`${view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
                       checked={view.canPause}
-                      disabled={pending}
+                      disabled={pending || readFailed}
                       onChange={(enabled) =>
                         onStatus(connection.id, enabled ? "connected" : "paused")
                       }
@@ -593,6 +603,7 @@ export function ChannelOverview({
                   names={names}
                   onChatAdded={onChatAdded}
                   onLinkMe={() => onLinkMe(account.id)}
+                  paused={view.canResume}
                   pending={pending}
                   providerLabel={providerLabel}
                 />
@@ -642,6 +653,7 @@ export function AccountChats({
   names,
   onChatAdded,
   onLinkMe,
+  paused,
   pending,
   providerLabel,
 }: {
@@ -656,6 +668,8 @@ export function AccountChats({
   readonly names: Parameters<typeof connectedAgentRow>[1];
   readonly onChatAdded: () => void;
   readonly onLinkMe: () => void;
+  /** Its account is paused: a code sent now links it only once the account is resumed. */
+  readonly paused: boolean;
   readonly pending: boolean;
   readonly providerLabel: string;
 }) {
@@ -684,6 +698,7 @@ export function AccountChats({
                   minute: "2-digit",
                 }),
               })}
+              {paused ? ` ${agentWords("messaging.me.whenResumed")}` : null}
             </span>
           ) : null}
           {me ? (
@@ -755,7 +770,7 @@ export function AccountChats({
       {adding ? (
         <AddChatForm
           account={account}
-          channels={manifest?.provider === "slack"}
+          channels={manifest?.channelChats === true}
           client={client}
           onCancel={() => setAdding(false)}
           onCreated={() => {
@@ -949,9 +964,7 @@ function ProviderPicker({
           </div>
         ))}
         {dashboard && dashboard.providers.length === 0 ? (
-          <div className="card__empty">
-            No messaging providers are available on this deployment yet.
-          </div>
+          <div className="card__empty">No messaging providers are available on this Home yet.</div>
         ) : null}
       </div>
     </section>
@@ -1058,7 +1071,10 @@ function ProviderCredentials({
             {field.help ? <span className="field__hint">{field.help}</span> : null}
           </label>
         ))}
-        <p className="notice">Credentials are encrypted and never enter agent context.</p>
+        <p className="notice">
+          These tokens are stored encrypted and are not given to connected agents or your own
+          agents.
+        </p>
       </div>
     </div>
   );
@@ -1126,11 +1142,11 @@ function heading(view: View, providerLabel = "provider"): string {
 }
 
 function subheading(view: View): string {
-  if (view === "providers") return "Choose where you want to message your agents from.";
+  if (view === "providers") return "Choose where you want to message your own agents from.";
   if (view === "success") return "Link your own account, then add a chat.";
   if (view === "repair")
     return "Finish any provider-side changes, check again, or replace the saved credentials.";
-  if (view === "computer-setup") return "Your agents answer from one of your own Macs.";
+  if (view === "computer-setup") return "Your own agents answer from one of your Macs.";
   return "Bring a provider app you control. Its tokens are checked before anything is saved.";
 }
 

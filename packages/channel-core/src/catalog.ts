@@ -3,7 +3,7 @@ import type { ChannelProviderManifest } from "./models.js";
 const slackAppManifest = JSON.stringify(
   {
     display_information: {
-      description: "Route Slack conversations to Opensteer tasks.",
+      description: "Message your own agents from Slack.",
       name: "Opensteer",
     },
     features: {
@@ -64,11 +64,12 @@ export const slackChannelProviderManifest = {
     },
   ],
   defaultTransportKind: "socket",
-  description: "Route Slack channels, threads, and direct messages to tasks.",
+  description: "Message your own agents from Slack channels and direct messages.",
   label: "Slack",
   maxMessageChars: 3_800,
   // Socket Mode holds nothing for a closed connection, and nothing reads history on reconnect.
   pausedMessages: "lost",
+  channelChats: true,
   provider: "slack",
   // Only people inside the Slack workspace can write to the bot.
   senders: "members",
@@ -97,7 +98,7 @@ export const imessageChannelProviderManifest = {
   credentialFields: [],
   defaultTransportKind: "computer",
   description:
-    "Text your agents from your phone, through a Mac signed into an Apple account for the bot.",
+    "Text your own agents from your phone, through a Mac signed into an Apple account for the bot.",
   label: "iMessage",
   // What the helper sends in one message.
   maxMessageChars: 4_000,

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   agentWords,
@@ -65,6 +65,19 @@ function Messaging({
     [host],
   );
   const dashboard = useClientRead(resource);
+  // While a code is shown, read again every ten seconds, as the web does, so the account shows
+  // once it is linked; until the code expires.
+  useEffect(() => {
+    if (shownCode === null) return;
+    const left = Date.parse(shownCode.expiresAt) - Date.now();
+    if (!(left > 0)) return;
+    const timer = setInterval(() => void resource.refresh(), 10_000);
+    const expiry = setTimeout(() => clearInterval(timer), left);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(expiry);
+    };
+  }, [resource, shownCode]);
   const [actedOn, setActedOn] = useState<string | null>(null);
   const [note, setNote] = useState<{ readonly section: string; readonly text: string } | null>(
     null,
@@ -73,7 +86,6 @@ function Messaging({
   const [repair, setRepair] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [runnerId, setRunner] = useState("");
-  const [shared, setShared] = useState(false);
   const change = useScreenAction(host, "channel-change", {
     label: "save the change",
     done: "saved",
@@ -128,6 +140,8 @@ function Messaging({
       setProvider(null);
       setRepair(null);
       resource.invalidate();
+      // Pausing, resuming or removing an account changes its chats: read them again.
+      if (command.type === "channel.connection.status.set") void agents.refresh?.();
     });
   };
   const checkConnection = (connectionId: string, section: string) => {
@@ -175,6 +189,10 @@ function Messaging({
     title: "Messaging",
     rows: [
       button("refresh", "Refresh", dashboard.refresh),
+      // Only a read answer says there is no account.
+      ...(dashboard.data?.accounts.length === 0
+        ? [text("empty", agentWords("messaging.empty"))]
+        : []),
       ...(dashboard.data === null && loaded === null
         ? [0, 1, 2].map((index) => ({
             key: `placeholder:${index}`,
@@ -183,14 +201,23 @@ function Messaging({
           }))
         : []),
     ],
-    ...(loaded ? { footer: settingsFooter(loaded)! } : {}),
+    // A read that failed says so in the web's words; a refusal keeps the Home's own.
+    ...(loaded
+      ? {
+          footer: settingsFooter(
+            loaded.tone === "danger"
+              ? loaded
+              : { ...loaded, text: agentWords("messaging.readFailed") },
+          )!,
+        }
+      : {}),
   });
   if (dashboard.data) {
     const data = dashboard.data;
     const provider = data.providers.find((p) => p.provider === providerId);
     sections.push({
       key: "providers",
-      title: "Add messaging",
+      title: agentWords("messaging.add"),
       rows: data.providers
         .filter((p) => p.availability === "available")
         .map((p) =>
@@ -227,14 +254,7 @@ function Messaging({
               button(m.id, `${m.id === runnerId ? "✓ " : ""}${m.name}`, () => setRunner(m.id)),
             ),
         );
-      } else
-        rows.push({
-          key: "shared",
-          kind: "toggle",
-          label: "Shared bot",
-          value: shared,
-          onChange: setShared,
-        });
+      }
       rows.push(
         button("save", repair ? "Replace credentials" : "Connect", () => {
           const idempotencyKey = mutationIdempotencyKey("channel-connect");
@@ -265,7 +285,7 @@ function Messaging({
                 type: "channel.connection.create",
                 provider: provider.provider,
                 credentials,
-                routingMode: shared ? "shared" : "dedicated",
+                routingMode: "dedicated",
                 idempotencyKey,
               },
               section,
@@ -353,6 +373,9 @@ function Messaging({
                   }),
                 }),
               ),
+              ...(view?.canResume
+                ? [text("whenResumed", agentWords("messaging.me.whenResumed"))]
+                : []),
             ]
           : []),
         button(

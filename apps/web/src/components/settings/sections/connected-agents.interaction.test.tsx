@@ -430,15 +430,15 @@ describe("a chat, as a connected agent", () => {
   it.each([
     [
       2,
-      "You paused its messaging account. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
+      "You paused its messaging account. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
     ],
     [
       3,
-      "You paused its messaging account. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. Resume its account in Messaging to go on.",
+      "You paused its messaging account. Its replies are held to be sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. Resume its account in Messaging to go on.",
     ],
     [
       4,
-      "Paused because On-call needs attention. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
+      "Paused because On-call needs attention. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
     ],
   ])(
     "says what a paused chat holds and what becomes of what is sent to it (chat %i)",

@@ -282,7 +282,7 @@ it.each(["ios", "android"])(
     expect(rows().filter((candidate) => candidate.label === "Fix setup")).toHaveLength(1);
     const me = rows().find((candidate) => candidate.label === "You on Slack");
     expect(me && "detail" in me ? me.detail : null).toBe(
-      "Tim is you. Only messages from it give your chats work. Linking another account replaces Tim as you.",
+      "Tim is you. Messages from it count as you in your chats. Linking another account replaces Tim as you.",
     );
     const sections = [...state.pages.values()].flatMap((page) => page.sections);
     expect(
@@ -343,6 +343,136 @@ it.each(["ios", "android"])("says an account with no chat has none yet, on %s", 
     expect(rows().filter((r) => r.label === "No chat on this account yet.")).toHaveLength(3),
   );
 });
+
+async function openChats(scene: "chats" | "chats-empty", edit?: (rpc: HostClient["rpc"]) => void) {
+  host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents(scene) });
+  await host.load();
+  edit?.(host.rpc);
+  state.host = host;
+  root = createRoot(document.createElement("div"));
+  await act(async () =>
+    root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+  );
+}
+function footers() {
+  return [...state.pages.values()].flatMap((page) =>
+    page.sections.flatMap((section) => (section.footer ? [section.footer] : [])),
+  );
+}
+
+it.each(["ios", "android"])(
+  "says a failed read of Messaging in the web's words, with Try again, on %s",
+  async (os) => {
+    state.os = os;
+    await openChats("chats", (rpc) =>
+      Object.defineProperty(rpc, "channels.get", {
+        value: vi.fn(async () => {
+          throw new Error("down");
+        }),
+        configurable: true,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(footers().map((footer) => footer.text)).toContain(
+        "Couldn’t read your messaging accounts.",
+      ),
+    );
+    const footer = footers().find((f) => f.text === "Couldn’t read your messaging accounts.");
+    expect(footer?.link?.label).toBe("Try again");
+    expect(rows().some((r) => r.label === "Workshop" || r.label === "Connected")).toBe(false);
+    expect(rows().some((r) => r.label.startsWith("No messaging account yet"))).toBe(false);
+  },
+);
+
+it.each(["ios", "android"])("says there is no messaging account yet, on %s", async (os) => {
+  state.os = os;
+  await openChats("chats", (rpc) => {
+    const read = rpc["channels.get"];
+    Object.defineProperty(rpc, "channels.get", {
+      value: async (input: Parameters<typeof read>[0]) => {
+        const response = await read(input);
+        return response.ok
+          ? { ...response, data: { ...response.data, accounts: [], connections: [], me: [] } }
+          : response;
+      },
+      configurable: true,
+    });
+  });
+  await vi.waitFor(() =>
+    expect(
+      rows().some(
+        (r) => r.label === "No messaging account yet. Add one to message your own agents.",
+      ),
+    ).toBe(true),
+  );
+});
+
+it.each(["ios", "android"])(
+  "reads Messaging again while a code is shown, and says a paused account links once resumed, on %s",
+  async (os) => {
+    state.os = os;
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let reads = 0;
+      await openChats("chats", (rpc) => {
+        const read = rpc["channels.get"];
+        Object.defineProperty(rpc, "channels.get", {
+          value: (input: Parameters<typeof read>[0]) => {
+            reads += 1;
+            return read(input);
+          },
+          configurable: true,
+        });
+      });
+      await vi.waitFor(() =>
+        expect(rows().filter((r) => r.label === "Link another account")).toHaveLength(2),
+      );
+      // The second account is the paused iMessage one.
+      const link = rows().filter((r) => r.label === "Link another account")[1]!;
+      if (link.kind !== "button") throw new Error("Not a button");
+      await act(async () => link.onPress());
+      await vi.waitFor(() =>
+        expect(rows().some((r) => r.label.startsWith("Send MOCKCODE to"))).toBe(true),
+      );
+      expect(
+        rows().some(
+          (r) => r.label === "Once this account is resumed, sending the code links your account.",
+        ),
+      ).toBe(true);
+      const before = reads;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(reads).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
+
+it.each(["ios", "android"])(
+  "reads its chats again after an account is paused, and asks nothing the Home ignores, on %s",
+  async (os) => {
+    state.os = os;
+    const list = vi.fn();
+    await openChats("chats", (rpc) => {
+      const read = rpc["connections.list"];
+      Object.defineProperty(rpc, "connections.list", {
+        value: (input: Parameters<typeof read>[0]) => {
+          list();
+          return read(input);
+        },
+        configurable: true,
+      });
+    });
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
+    const before = list.mock.calls.length;
+    await press("Pause");
+    await vi.waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(before));
+    await press("Slack");
+    expect(rows().some((r) => r.label === "Shared bot")).toBe(false);
+  },
+);
 
 it.each(["ios", "android"])(
   "fences a retained Messaging action after the session stops on %s",

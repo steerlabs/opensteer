@@ -93,6 +93,8 @@ export const ChannelProviderManifestSchema = z
      * Socket Mode, with no history read on reconnect).
      */
     pausedMessages: z.enum(["kept", "lost"]).optional(),
+    /** A chat can listen in one named channel of this provider, not only in direct messages. */
+    channelChats: z.boolean().optional(),
     provider: ChannelProviderSchema,
     setupUrl: z.url().nullable(),
     setupArtifact: z

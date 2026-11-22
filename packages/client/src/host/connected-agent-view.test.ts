@@ -86,7 +86,7 @@ describe("connected agents list", () => {
     expect(slack.status).toMatchObject({
       label: "Paused",
       detail:
-        "You paused its messaging account. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
+        "You paused its messaging account. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
     });
     const imessage = connectedAgentDetail(
       chat({
@@ -100,7 +100,7 @@ describe("connected agents list", () => {
       { grantsAvailable: true, now },
     );
     expect(imessage.status.detail).toBe(
-      "Paused because tim@example.com needs attention. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. It says: Messages isn’t signed in. Fix that on its messaging account, then check it again.",
+      "Paused because tim@example.com needs attention. Its replies are held to be sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. It says: Messages isn’t signed in. Fix that on its messaging account, then check it again.",
     );
   });
 
@@ -124,7 +124,7 @@ describe("connected agents list", () => {
     // No cause and no transport fact: only that it is paused and its replies are held.
     const paused = connectedAgentDetail(chat({}), names, { grantsAvailable: true, now });
     expect(paused.status.detail).toBe(
-      "This chat is paused. Its replies are held, and are sent in order when it’s back.",
+      "This chat is paused. Its replies are held to be sent in order when it’s back.",
     );
     expect(paused.status.detail).not.toMatch(/not delivered|You paused/u);
     // No reason, or one this app doesn't know: only that it ended, and no crash.
