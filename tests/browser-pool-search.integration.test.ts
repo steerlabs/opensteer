@@ -114,6 +114,11 @@ interface Target {
   readonly guests: Guest[];
   /** Its host fenced the Home's term, or deleted the slot: a new target is needed. */
   over: boolean;
+  /**
+   * Retired by a swap: whether, as it was retired, evidence about a Stop it held could still come
+   * (its host had signed the guest gone, or answered with its guest running).
+   */
+  retired?: { readonly reachable: boolean };
 }
 
 async function world(key: string) {
@@ -398,6 +403,34 @@ async function world(key: string) {
     errors,
     row,
     rows,
+    /**
+     * Closing rows a Stop left on a target retired while its own runtime could not be asked: no
+     * evidence about them can come (unknown), so they stay closing. Every other closing row.
+     */
+    closingRows: async () => {
+      const closing = (await rows()).filter(({ state }) => state === "closing");
+      if (!closing.length) return { open: [], unknown: [] };
+      const bound = await database
+        .selectFrom("browserPoolSessions")
+        .select(["sessionId", "slotId"])
+        .where(
+          "sessionId",
+          "in",
+          closing.map(({ id }) => id),
+        )
+        .execute();
+      const unknown = new Set(
+        bound
+          .filter(({ slotId }) =>
+            all.some((target) => target.slotId === slotId && target.retired?.reachable === false),
+          )
+          .map(({ sessionId }) => sessionId as string),
+      );
+      return {
+        open: closing.filter(({ id }) => !unknown.has(id)),
+        unknown: closing.filter(({ id }) => unknown.has(id)),
+      };
+    },
     signer,
     targets: () => all,
     current: () => current,
@@ -429,6 +462,12 @@ async function world(key: string) {
      * the old target is forgotten, and the new one is adopted. The old host answers as it did.
      */
     swap: async () => {
+      // Evidence could still come about its Stops: its host had signed that the guest is gone
+      // (over), or it answered with its guest running.
+      current.retired = {
+        reachable:
+          current.over || (current.answers === "signed" && current.guest.state === "running"),
+      };
       const next = await newTarget();
       all.push(next);
       await home.service.retirePool(task.runnerId, "browser-replaced");
@@ -749,14 +788,10 @@ async function schedule(
         return;
       case "release":
         released = true;
-        return bounded(
-          "release",
-          async () => {
-            await home.service.poolDeviceRemoved(w.task.runnerId);
-            await home.coordinator.released();
-          },
-          true,
-        );
+        // The removal's notes are written within the bound; the slot goes once the guest is
+        // known stopped, which waits for its host's word (rest checks it).
+        await bounded("release", () => home.service.poolDeviceRemoved(w.task.runnerId), true);
+        return bounded("released", () => home.coordinator.released());
     }
   };
   let inflight: Promise<void> | undefined;
@@ -804,8 +839,7 @@ async function schedule(
     .waitFor(
       async () => {
         await checkClosed();
-        const closing = (await w.rows()).filter(({ state }) => state === "closing");
-        expect(closing).toEqual([]);
+        expect((await w.closingRows()).open).toEqual([]);
         const slot = await w.slot();
         if (released) expect(slot).toBeUndefined();
         else expect(["running", "parked"]).toContain(slot?.phase);
@@ -818,7 +852,7 @@ async function schedule(
       () => false,
     );
   if (!settled) {
-    const closing = (await w.rows()).filter(({ state }) => state === "closing");
+    const closing = (await w.closingRows()).open;
     const slot = await w.slot();
     say(
       `not at rest within ${settleBoundMs} ms: ${closing.length} closing row(s), slot ${
@@ -1161,10 +1195,97 @@ const named: readonly {
     seed: 9005,
     steps: ["open", "park", "proxy-refuses", "wake"],
   },
+  {
+    // The long run on the fixed code: A Stop on a target over by its host's signed word stayed closing: the guest was known gone.
+    name: "a Stop after the slot was deleted, and a swap at rest (seed 10005)",
+    seed: 10005,
+    steps: [
+      "fail-page-close",
+      "restart-home",
+      "host-unsigned",
+      "fail-page-close-always",
+      "park",
+      "proxy-down",
+      "park&0",
+      "proxy-heals&0",
+      "fail-page-close",
+      "open",
+      "swap&2",
+      "restart-home&2",
+      "stop",
+      "wake",
+      "open&0",
+      "slot-deleted&2",
+      "wake",
+      "open",
+      "slot-deleted",
+      "proxy-down",
+    ],
+  },
+  {
+    // The long run on the fixed code: The search's own bound: a release's slot goes only on its host's word (fixed in the search).
+    name: "a release while the host answers unsigned (seed 10006)",
+    seed: 10006,
+    steps: ["stop", "host-unsigned", "wake", "proxy-down", "stop", "proxy-heals", "release"],
+  },
+  {
+    // The long run on the fixed code: A swap retired a target whose Stops its answering runtime could still end: nobody asked it.
+    name: "Stops left closing by an unsigned host, then a swap as it answers again (seed 10009)",
+    seed: 10009,
+    steps: [
+      "park-stop",
+      "open-two&0",
+      "fail-page-close",
+      "host-unsigned&1",
+      "proxy-down",
+      "stop&0",
+      "fail-page-close",
+      "open-two",
+      "restart-home&2",
+      "wake&1",
+      "heal-page-close",
+      "drop-channel",
+      "proxy-heals",
+      "proxy-heals",
+      "park-stop",
+      "host-back&3",
+      "swap",
+      "browser-ends",
+      "stop",
+      "open",
+    ],
+  },
+  {
+    // The long run on the fixed code: A Stop on a fenced target stayed closing: the guest was known gone.
+    name: "a Stop, then the term fenced (seed 10015)",
+    seed: 10015,
+    steps: [
+      "fail-page-close",
+      "drop-channel&3",
+      "open",
+      "browser-ends",
+      "heal-page-close&3",
+      "proxy-heals",
+      "restart-runtime&0",
+      "stop",
+      "restart-home",
+      "proxy-refuses&1",
+      "fail-page-close&0",
+      "wake&0",
+      "heal-page-close",
+      "park-stop",
+      "stop",
+      "restart-home",
+      "fail-page-close",
+      "fence",
+      "proxy-down",
+      "drop-channel&3",
+    ],
+  },
 ];
 
 const only = process.env.OPENSTEER_POOL_SEARCH_NAMED;
-it.each(only ? named.filter(({ seed }) => String(seed) === only) : named)(
+it.each(only ? named.filter(({ seed }) => only.split(",").includes(String(seed))) : named)(
   "holds every invariant for $name",
   { timeout: 20 * stepBoundMs },
   async ({ seed, steps }) => {

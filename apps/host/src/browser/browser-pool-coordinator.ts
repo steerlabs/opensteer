@@ -393,6 +393,10 @@ export class BrowserPoolCoordinator {
 
   /** A Stop left a session closing with no channel: the loop ends it with the runtime's answer. */
   stopped(): void {
+    // A target that is over by its host's signed word (the slot deleted, the term fenced): the
+    // guest is known gone, which is a Stop's evidence too; its end is written again for it.
+    if (this.#overEnd?.done && (this.#over === "slot-deleted" || this.#over === "fenced"))
+      this.#overEnd.done = false;
     this.#kick();
   }
 
@@ -915,6 +919,14 @@ export class BrowserPoolCoordinator {
       );
       signal.throwIfAborted();
       if (!idle) await this.gate.settleHolders();
+    }
+    // Replaced: while the old guest still answers, a Stop it holds is ended by its own runtime,
+    // the only evidence there is about it; what it does not answer stays closing (unknown).
+    if (reason === "browser-replaced") {
+      const slot = await this.#read();
+      const closing =
+        slot?.phase === "running" ? ((await this.#adopter?.ending?.(this.#own)) ?? []) : [];
+      if (slot && closing.length) await this.#endStep(slot, closing, signal).catch(() => undefined);
     }
     await this.#endOverSessions(reason);
     // A restart asked is answered once the sessions have their end.
