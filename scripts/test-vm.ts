@@ -921,18 +921,26 @@ stat -f '%Su %u' /dev/console
           'set -e; export PATH="$HOME/opensteer-tools:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" LANG=en_US.UTF-8; cd "$HOME/opensteer-job/src/apps/desktop"; export OPENSTEER_PERSONAL_E2E_RESOURCES="$HOME/opensteer-job/resources" OPENSTEER_PERSONAL_E2E_ARTIFACT_DIR="$HOME/opensteer-job/artifacts/native" OPENSTEER_QUIT_E2E_ARTIFACT_DIR="$HOME/opensteer-job/artifacts/quit"; ';
         // A keychain of the job's own, unlocked, as the default: journeys that keep a secret
         // (Electron's protected storage) can't use the guest's locked login keychain over SSH.
+        const keychainStep = readFileSync(
+          path.join(import.meta.dirname, "test-vm/fixture-keychain.sh"),
+          "utf8",
+        );
         fixtureKeychain = true;
         await run([...ssh!, `/bin/bash -s -- begin ${shellQuote(vm)}`], {
           name: "fixture-keychain",
           timeout: 60,
-          stdin: readFileSync(
-            path.join(import.meta.dirname, "test-vm/fixture-keychain.sh"),
-            "utf8",
-          ),
+          stdin: keychainStep,
         });
+        // Each SSH connection is a security session of its own, and a keychain's unlocked state
+        // may not carry over from `begin`'s: the suite's own session unlocks it again first, and
+        // its log says whether it had to. The job's VM is exported for keychain-diagnostic.sh.
+        const suiteSession =
+          `export OPENSTEER_TEST_GUEST_JOB=${shellQuote(vm)}; ` +
+          `/bin/bash -c ${shellQuote(keychainStep)} fixture-keychain.sh unlock ${shellQuote(vm)} || ` +
+          `echo "fixture keychain: the suite's session could not unlock it" >&2; `;
         facts.suiteStartedAt = Date.now() / 1000;
         const result = await run(
-          [...ssh!, `/bin/bash -c ${shellQuote(remote + shellJoin(args))}`],
+          [...ssh!, `/bin/bash -c ${shellQuote(remote + suiteSession + shellJoin(args))}`],
           { name: "suite", timeout: 1800, check: false },
         );
         facts.suiteEndedAt = Date.now() / 1000;
