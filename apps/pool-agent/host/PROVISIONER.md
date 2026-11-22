@@ -47,7 +47,7 @@ reply)` (`browser-pool-agent-wire.ts`, `browserPoolAgentAdminReplyBytes`), i.e. 
 | `delete {slotId, term, eraseProfile?}`                                                                  | Ends the guest, erases saved state, the network and the proxy, and writes a tombstone. Answers `{erased: true}` only after the VMM's exit was seen and the files are gone. It also removes the slot's upstream credential files before its record goes, and adds `credentialsErased: true` once they are seen gone, also when the slot has none, and on a pulling host for a slot it no longer knows (a file another live slot also names is kept, and the field is absent; a file that cannot be removed fails the delete, which may be sent again). Settle a deletion on `erased`, `profileErased` and `credentialsErased` all true. With `eraseProfile: true` it then removes the profile disk and adds `profileErased: true` only once the file is seen gone; if it cannot, the delete is refused (`unavailable`) and may be sent again (`agent.ts`, `deleteSlotWithEvidence`, credentials at `agent.ts`, `deleteSlotWithEvidence`, `server.ts`, `administer`). | A delete naming another term is `conflict` and erases nothing; so is one naming a tombstoned slot at a term below its tombstone's (round I). A slot already gone, or never known, answers `erased: true`; with `eraseProfile` a leftover profile at that slot id's path is removed, with the same evidence (`agent.ts`, `deleteSlotWithEvidence`).                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `list`                                                                                                  | Every live slot: `slotId`, `term`, `controlKey`, `status`, and `parked: {tier, writeMs?}` while paused (`agent.ts`, `#summary`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Read only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
-**Refusals** (`server.ts`, `administer`, and the envelope checks above): `conflict`, `unknown-slot`, `unavailable`, `bad-request`,
+**Refusals** (`server.ts`, `administer`, and the envelope checks above): `conflict`, `profile-disk-missing`, `unknown-slot`, `unavailable`, `bad-request`,
 `stale-request`, `unauthenticated`. The client throws `BrowserPoolAgentUnavailable` for any of
 them.
 
@@ -56,6 +56,9 @@ for every failure. Its `refusal` field holds the answer's code only when the hos
 signature over that answer verified (`browser-pool-agent-wire.ts`, `BrowserPoolAgentUnavailable`).
 
 - **`conflict` and `unknown-slot`:** the call did nothing.
+- **`profile-disk-missing`:** the host's profile disk is not the mount it was told to expect
+  (section 7). No profile was made or erased. A delete may have ended the guest and erased its
+  credentials first; send it again once the disk is back.
 - **A signed `unavailable`:** the host answered but could not finish, so the effect may be
   partial. Read `list`, or send the call again.
 - **No `refusal`:** no verified answer; the effect is unknown. This includes `bad-request`,
@@ -227,12 +230,19 @@ id>.ext4` (`apps/pool-agent/src/profiles.ts`, `profileFileName`).
     directory on a different device than its parent; with a label, `/dev/disk/by-label/<label>`
     is that device; and the root is writable.
   - **At the agent's start** a failed check stops it: it exits with a plain message
-    (`agent.ts`, `start`). systemd starts it again with a growing delay, so a disk that attaches
-    late is picked up by itself.
-  - **Before every `create` and `delete`,** a failed check is a definite, signed `conflict`
-    ("The profile disk is not mounted: …"). Nothing is made, nothing is erased, and a delete
-    never answers `profileErased` (`agent.ts`, `#profilesMounted`, `#create` and
-    `deleteSlotWithEvidence`).
+    (`agent.ts`, `start`). The host fails closed. Nothing on the agent's side waits for a disk
+    that attaches late or comes back: an operator mounts it and restarts the two units
+    (`systemctl restart opensteer-pool-host opensteer-pool-agent`).
+  - **Before every `create` and `delete`,** a failed check is a definite, signed
+    `profile-disk-missing` ("The profile disk is not mounted: …"). Nothing is made, nothing is
+    erased, and a delete never answers `profileErased` (`agent.ts`, `#profilesMounted`,
+    `#create` and `deleteSlotWithEvidence`; `server.ts`, `administer`).
+  - **Again immediately before a delete erases the profile** (`agent.ts`,
+    `deleteSlotWithEvidence`, its `erase`). A disk gone between the two checks gives the same
+    `profile-disk-missing`, and the slot is left as it is then: its guest, saved state,
+    network and credentials are gone and it is a tombstone, but its profile is kept. The same
+    delete repeated once the disk is back finds the tombstone, erases the profile once at the
+    same derived path, and answers `erased`, `profileErased` and `credentialsErased`.
   - **Before every `start` and wake from disk,** a failed check gives a Home a stored, signed
     `applied: false` with reason `profile-disk-missing`, and nothing is booted (`agent.ts`,
     `#profilesRefusal`).
