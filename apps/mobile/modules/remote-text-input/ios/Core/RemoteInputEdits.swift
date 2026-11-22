@@ -1,0 +1,72 @@
+import Foundation
+
+/// Where UIKit placed a native edit, carried over the edits applied after it placed it.
+///
+/// The gate holds every native edit until JavaScript has answered the one before it, but UIKit
+/// names an edit's place (the selection it types over, or the range it replaces) in the text as it
+/// stands when UIKit calls: without the edits still waiting their turn. Typed fast, "1" was placed
+/// at the start of an empty text while "0" waited, and went in before it once "0" was applied.
+///
+/// So each place keeps the number of edits applied when it was named, and is moved over every edit
+/// applied since: a keystroke lands where it was typed, after everything typed before it, however
+/// late its turn comes. An edit that replaced the text around a place leaves it just after the
+/// replacement, as typing over a selection twice leaves the second character after the first. A
+/// caret moves past text inserted where it stands; a range keeps text inserted at its edges
+/// outside it, so a word named for autocorrect is still that word after a space typed after it.
+struct RemoteInputEdits {
+  /// A place named in the text as it stood after `revision` edits, in UTF-16 offsets.
+  struct Place: Equatable {
+    let revision: Int
+    let start: Int
+    let end: Int
+  }
+  private struct Edit {
+    let start: Int
+    let removed: Int
+    let inserted: Int
+  }
+  private var edits: [Edit] = []
+  /// How many edits were applied before `edits[0]`.
+  private var base = 0
+  /// How many edits have been applied.
+  var revision: Int { base + edits.count }
+
+  /// A place in the text as it stands now.
+  func place(_ start: Int, _ end: Int) -> Place {
+    Place(revision: revision, start: start, end: end)
+  }
+
+  /// The `removed` code units from `start` became `inserted` code units.
+  mutating func record(start: Int, removed: Int, inserted: Int) {
+    edits.append(Edit(start: max(0, start), removed: max(0, removed), inserted: max(0, inserted)))
+  }
+
+  /// Where `place` is now, inside a text `length` code units long.
+  func current(_ place: Place, length: Int) -> (start: Int, end: Int) {
+    var start = place.start
+    var end = place.end
+    let caret = start == end
+    if place.revision >= base {
+      for edit in edits.dropFirst(place.revision - base) {
+        start = Self.move(start, over: edit, before: false)
+        end = Self.move(end, over: edit, before: !caret)
+      }
+    }
+    start = min(max(0, start), length)
+    end = min(max(start, end), length)
+    return (start, end)
+  }
+
+  /// Nothing placed before now is still waiting for its turn: the edits so far move nothing.
+  mutating func settle() {
+    base = revision
+    edits.removeAll()
+  }
+
+  /// `before`: text inserted exactly at `offset` goes after it.
+  private static func move(_ offset: Int, over edit: Edit, before: Bool) -> Int {
+    if offset < edit.start || (before && offset == edit.start && edit.removed == 0) { return offset }
+    if offset >= edit.start + edit.removed { return offset - edit.removed + edit.inserted }
+    return edit.start + edit.inserted
+  }
+}

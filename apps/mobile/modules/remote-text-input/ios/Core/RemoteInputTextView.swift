@@ -3,6 +3,8 @@ import UniformTypeIdentifiers
 
 @MainActor public final class RemoteInputTextView: UITextView, UITextViewDelegate {
   private let gate = RemoteInputGate()
+  /// Where each waiting edit was typed, carried over the edits applied before its turn.
+  private var edits = RemoteInputEdits()
   private var mutating = false
   private var held = Set<Int>()
   private var contextId: String?
@@ -20,6 +22,7 @@ import UniformTypeIdentifiers
     smartQuotesType = .no
     smartDashesType = .no
     gate.apply = { [weak self] in self?.apply($0) }
+    gate.idle = { [weak self] in self?.edits.settle() }
   }
   public convenience init() { self.init(frame: .zero, textContainer: nil) }
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -30,12 +33,37 @@ import UniformTypeIdentifiers
     return state
   }
   private func marked() -> String { markedTextRange.flatMap { self.text(in: $0) } ?? "" }
+  private var length: Int { (text ?? "").utf16.count }
+  private var markedRange: NSRange? {
+    markedTextRange.map { NSRange(location: offset(from: beginningOfDocument, to: $0.start), length: offset(from: $0.start, to: $0.end)) }
+  }
+  /// A place in the text as UIKit names it now, while earlier edits may still wait their turn.
+  private func place(_ range: NSRange) -> RemoteInputEdits.Place { edits.place(range.location, range.location + range.length) }
+  /// Where a place named earlier is now, after the edits applied since.
+  private func range(_ place: RemoteInputEdits.Place) -> NSRange {
+    let current = edits.current(place, length: length)
+    return NSRange(location: current.start, length: current.end - current.start)
+  }
+  /// Puts the selection where a waiting edit was typed and returns where the edit goes: the
+  /// marked text, while there is some, is where UIKit puts it.
+  private func select(_ place: RemoteInputEdits.Place) -> NSRange {
+    if let marked = markedRange { return marked }
+    let target = range(place)
+    if selectedRange != target { selectedRange = target }
+    return target
+  }
+  /// Applies an edit of `target` and records what it became, for the edits still waiting.
+  private func edit(_ target: NSRange, _ action: () -> Void) {
+    let before = length
+    action()
+    edits.record(start: target.location, removed: target.length, inserted: length - before + target.length)
+  }
   private func apply(_ instruction: [String: Any]) {
     guard markedTextRange == nil, let state = instruction["set"] as? [String: Any],
       let value = state["value"] as? String, let start = state["selectionStart"] as? Int,
       let end = state["selectionEnd"] as? Int, start >= 0, end >= start, end <= value.utf16.count else { return }
     mutating = true
-    text = value
+    edit(NSRange(location: 0, length: length)) { text = value }
     selectedRange = NSRange(location: start, length: end - start)
     mutating = false
   }
@@ -56,24 +84,40 @@ import UniformTypeIdentifiers
   }
   public override func insertText(_ text: String) {
     if mutating { super.insertText(text); return }
-    change(markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text) { super.insertText(text) }
+    let typed = place(selectedRange)
+    change(markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text) {
+      self.edit(self.select(typed)) { super.insertText(text) }
+    }
+  }
+  /// Replaces what UIKit named, wherever the edits applied since have moved it.
+  private func replaceTyped(_ typed: RemoteInputEdits.Place, with text: String) {
+    let target = range(typed)
+    guard let a = position(from: beginningOfDocument, offset: target.location), let b = position(from: a, offset: target.length), let current = textRange(from: a, to: b) else { return }
+    edit(target) { super.replace(current, withText: text) }
   }
   public override func replace(_ range: UITextRange, withText text: String) {
     if mutating { super.replace(range, withText: text); return }
-    let start = offset(from: beginningOfDocument, to: range.start)
-    let end = offset(from: beginningOfDocument, to: range.end)
-    change("insertReplacementText", data: text) {
-      guard let a = self.position(from: self.beginningOfDocument, offset: start), let b = self.position(from: self.beginningOfDocument, offset: end), let current = self.textRange(from: a, to: b) else { return }
-      super.replace(current, withText: text)
-    }
+    let typed = edits.place(offset(from: beginningOfDocument, to: range.start), offset(from: beginningOfDocument, to: range.end))
+    change("insertReplacementText", data: text) { self.replaceTyped(typed, with: text) }
   }
   public override func deleteBackward() {
     if mutating { super.deleteBackward(); return }
-    change("deleteContentBackward", data: nil) { super.deleteBackward() }
+    let typed = place(selectedRange)
+    change("deleteContentBackward", data: nil) {
+      let target = self.select(typed)
+      let before = self.length
+      super.deleteBackward()
+      let removed = before - self.length
+      // What went is the selection, or as much just before the caret.
+      self.edits.record(start: target.length > 0 ? target.location : target.location - removed, removed: removed, inserted: 0)
+    }
   }
   public override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
     if mutating { super.setMarkedText(markedText, selectedRange: selectedRange); return }
-    change("insertCompositionText", data: markedText) { super.setMarkedText(markedText, selectedRange: selectedRange) }
+    let typed = place(self.selectedRange)
+    change("insertCompositionText", data: markedText) {
+      self.edit(self.select(typed)) { super.setMarkedText(markedText, selectedRange: selectedRange) }
+    }
   }
   public override func unmarkText() {
     if mutating { super.unmarkText(); return }
@@ -89,14 +133,21 @@ import UniformTypeIdentifiers
   public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
     if mutating { return true }
     guard isEditable else { return false }
-    change(replacement.isEmpty ? "deleteContentBackward" : "insertReplacementText", data: replacement) {
-      guard let start = self.position(from: self.beginningOfDocument, offset: range.location), let end = self.position(from: start, offset: range.length), let current = self.textRange(from: start, to: end) else { return }
-      super.replace(current, withText: replacement)
-    }
+    let typed = place(range)
+    change(replacement.isEmpty ? "deleteContentBackward" : "insertReplacementText", data: replacement) { self.replaceTyped(typed, with: replacement) }
     return false
   }
+  /// A selection UIKit or the person moved takes its turn after the edits typed before it, at the
+  /// place it was moved to, carried over them; JavaScript reads it as it is then.
   public func textViewDidChangeSelection(_ textView: UITextView) {
-    if !mutating { gate.notify(["type": "selection", "proxy": snapshot()]) }
+    if mutating { return }
+    let moved = place(selectedRange)
+    gate.enqueue {
+      self.mutating = true
+      _ = self.select(moved)
+      self.mutating = false
+      self.gate.event(["type": "selection", "proxy": self.snapshot()])
+    }
   }
   public func textViewDidEndEditing(_ textView: UITextView) {
     held.removeAll()
@@ -176,7 +227,7 @@ import UniformTypeIdentifiers
       contextId = nextContext
       gate.contextId = nextContext
       mutating = true
-      text = ""
+      edit(NSRange(location: 0, length: length)) { text = "" }
       selectedRange = NSRange(location: 0, length: 0)
       mutating = false
     }

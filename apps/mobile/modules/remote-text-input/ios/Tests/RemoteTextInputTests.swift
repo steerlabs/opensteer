@@ -75,6 +75,44 @@ import UIKit
     XCTAssertEqual(view.text, "👩‍💻a")
     XCTAssertEqual(view.selectedRange.location, 6)
   }
+  // The walk typed 0123456789 fast and the target received 1023456789: UIKit named each
+  // keystroke's place in the text before the keystrokes still waiting were applied.
+  func testKeystrokesPlacedBeforeEarlierOnesWereAppliedLandInTypingOrder() {
+    let view = RemoteInputTextView()
+    var packets: [[String: Any]] = []
+    view.deliver = { packets.append($0) }
+    for (index, digit) in "0123456789".enumerated() {
+      let typed = String(digit)
+      if index % 2 == 0 {
+        XCTAssertFalse(view.textView(view, shouldChangeTextIn: view.selectedRange, replacementText: typed))
+      } else {
+        view.replace(view.selectedTextRange!, withText: typed)
+      }
+    }
+    var next = 0
+    while next < packets.count {
+      view.respond(["id": packets[next]["id"]!])
+      next += 1
+    }
+    XCTAssertEqual(view.text, "0123456789")
+    XCTAssertEqual(view.selectedRange, NSRange(location: 10, length: 0))
+  }
+  func testAnAnswerArrivingAfterNewerTypingNeverMovesTheCaretBackOverIt() {
+    let view = RemoteInputTextView()
+    var packets: [[String: Any]] = []
+    view.deliver = { packets.append($0) }
+    view.insertText("a")
+    view.respond(["id": packets[0]["id"]!])
+    // "b" is typed while the answer to "a"'s input is still on its way.
+    _ = view.textView(view, shouldChangeTextIn: view.selectedRange, replacementText: "b")
+    var next = 1
+    while next < packets.count {
+      view.respond(["id": packets[next]["id"]!])
+      next += 1
+    }
+    XCTAssertEqual(view.text, "ab")
+    XCTAssertEqual(view.selectedRange, NSRange(location: 2, length: 0))
+  }
   func testContextReplacementEndsTheNativeComposition() {
     let view = RemoteInputTextView()
     var packets: [[String: Any]] = []

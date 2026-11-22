@@ -10,6 +10,8 @@ import Foundation
   private var running = false
   private var insertion = 0
   var apply: (([String: Any]) -> Void)?
+  /// Nothing is waiting for an answer or for its turn.
+  var idle: (() -> Void)?
 
   func enqueue(_ job: @escaping () -> Void) {
     if running { jobs.insert(job, at: insertion); insertion += 1 } else { jobs.append(job) }
@@ -41,5 +43,6 @@ import Foundation
       let job = jobs.removeFirst(); job()
       running = false
     }
+    if waiting == nil && jobs.isEmpty { idle?() }
   }
 }
