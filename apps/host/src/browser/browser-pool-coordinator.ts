@@ -88,7 +88,7 @@ export interface BrowserPoolAdopter {
    * Before a restart replaces the guest: revoke unredeemed tickets and close every connection
    * and broker of the runtime without ending its row, so each send has its outcome.
    */
-  quiesce(): Promise<void>;
+  quiesce(signal?: AbortSignal): Promise<void>;
   /**
    * Sessions of this runtime a Stop is ending and that have no broker here: each one stays
    * closing until the runtime answers for it.
@@ -395,8 +395,28 @@ export class BrowserPoolCoordinator {
           await abortableWait(changed);
           continue;
         }
-        // Everything the step awaits takes its signal (the database included), so a deadline or
-        // a removal ends the wait; what it had sent is fenced by its id, sequence or predecessor.
+        // Everything the step awaits takes its signal, or has its own bound, so a deadline or a
+        // removal ends the wait; what it had sent is fenced by its id, sequence or predecessor
+        // and its outcome read on a later turn. The awaits, and their bounds:
+        //   database statements    the signal and the step's deadline: abortable query options
+        //                          outside a transaction, statement_timeout and cancel inside one
+        //   journal insert         the same (browser-pool-store passes the options)
+        //   controller calls       the signal and callTimeoutMs; not cancelled at the controller:
+        //                          its id is settled later, its predecessor fences it
+        //   runtime controls       the signal and callTimeoutMs; not cancelled at the runtime: its
+        //                          sequence fences it, and the next turn reads the runtime's state
+        //   runtime state read     the signal and callTimeoutMs
+        //   profile identity       the signal (BrowserLocalProfiles.identity)
+        //   service (Stop) lane    each item in it is bounded (an attach registers and returns; a
+        //                          Stop's close waits at most five seconds); entered work checks
+        //                          the signal first and sends nothing once it has fired
+        //   document lookup        database statements, as above
+        //   broker ready           the signal and connectTimeoutMs
+        //   broker frame drain     the frames already received: after its socket ends none arrive
+        //   quiesce                the signal (each broker's detach goes on; its socket is ended)
+        //   gate idle              the signal and quiesceMs
+        //   holders' settlements   database statements, as above
+        //   backoff                the turn's own change signal and five seconds at most
         const deadlineMs = step.deadlineMs ?? defaultStepMs;
         const preempt = new AbortController();
         const signal = AbortSignal.any([preempt.signal, AbortSignal.timeout(deadlineMs)]);
@@ -422,12 +442,12 @@ export class BrowserPoolCoordinator {
           if (step.discards && failures >= discardAfterAttempts)
             this.#discardWanted = "unrecoverable";
         }
+        // The turn's own change signal: anything asked since this turn began (a removal, a
+        // restart, demand) ends the wait, even when it arrived while the step was running.
         await delay(
           Math.min(this.#options.retryMs ?? 100 * 2 ** Math.min(failures, 6), 5_000),
           undefined,
-          {
-            signal: this.#changed.signal,
-          },
+          { signal: changed },
         ).catch(() => undefined);
       }
     }
@@ -667,7 +687,7 @@ export class BrowserPoolCoordinator {
         // Durable before the first effect: a crash from here on is finished by recovery.
         if (wanted.keys.size)
           slot = await this.#advance(slot, { phase: slot.phase, restartWanted: [...wanted.keys] });
-        await this.#adopter?.quiesce();
+        await this.#adopter?.quiesce(this.#signal);
         const idle = await withTimeout(this.gate.idle(), this.#options.quiesceMs ?? quiesceMs, {
           ...(this.#signal ? { signal: this.#signal } : {}),
           timeoutError: () => new Error("A send still holds the browser."),

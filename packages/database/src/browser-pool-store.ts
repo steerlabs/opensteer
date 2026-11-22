@@ -8,6 +8,7 @@ import {
 import { sql, type Kysely, type Selectable } from "kysely";
 import { randomUUID } from "node:crypto";
 import { transitionBrowserSession } from "./browser-session-store.js";
+import { databaseOperationOptions } from "./operation-budget.js";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -82,7 +83,7 @@ export function readBrowserPoolSlot(database: Kysely<DatabaseSchema>, runnerId: 
     .selectFrom("browserPoolSlots")
     .selectAll()
     .where("runnerId", "=", runnerId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
 }
 
 export function browserPoolSlotIdentity(slot: BrowserPoolSlot): BrowserPoolTargetIdentity {
@@ -113,7 +114,7 @@ export async function installBrowserPoolSlot(
         .selectAll()
         .where("runnerId", "=", target.runnerId)
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (current) {
         if (!sameRuntime(current, target)) throw new BrowserPoolAdmissionClosed();
         return current;
@@ -131,7 +132,7 @@ export async function installBrowserPoolSlot(
           outcome: null,
         })
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
     },
     undefined,
     "non-retrying",
@@ -153,7 +154,7 @@ export async function beginBrowserPoolPark(
         .selectAll()
         .where("runnerId", "=", target.runnerId)
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (!current || !sameRuntime(current, target)) throw new BrowserPoolAdmissionClosed();
       if (current.intentId === intentId) return current;
       if (current.phase !== "running") throw new BrowserPoolAdmissionClosed();
@@ -211,7 +212,7 @@ export async function beginBrowserPoolPark(
         })
         .where("runnerId", "=", runnerId)
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
     },
     undefined,
     "non-retrying",
@@ -253,7 +254,7 @@ export async function advanceBrowserPoolSlot(
         .selectAll()
         .where("runnerId", "=", slot.runnerId)
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       if (
         !current ||
         !sameRuntime(current, slot) ||
@@ -288,7 +289,7 @@ export async function advanceBrowserPoolSlot(
         })
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
-        .executeTakeFirstOrThrow();
+        .executeTakeFirstOrThrow(databaseOperationOptions());
       await recordBrowserPoolLosses(tx, slot, losses);
       return advanced;
     },
@@ -312,7 +313,7 @@ async function recordBrowserPoolLosses(
       .where("runnerId", "=", slot.runnerId)
       .where("runtimeId", "=", slot.runtimeId)
       .orderBy("id")
-      .execute();
+      .execute(databaseOperationOptions());
     const known = new Set(sessions.map(({ id }) => id));
     // Every loss has its own notice id: a later loss on the same tab is a new notice.
     const noteId = randomUUID();
@@ -335,7 +336,7 @@ async function recordBrowserPoolLosses(
         .insertInto("browserPoolDocumentLosses")
         .values(notes)
         .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
-        .execute();
+        .execute(databaseOperationOptions());
     // A ready row with no browser behind it is a defect: the lost session ends here.
     const ended = new Set(
       losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
@@ -368,7 +369,7 @@ export async function recordBrowserPoolStartFailure(
       .updateTable("browserPoolSlots")
       .set({ failedStarts: sql`failed_starts + 1` })
       .where("runnerId", "=", runnerId)
-      .execute();
+      .execute(databaseOperationOptions());
   });
 }
 
@@ -391,7 +392,7 @@ export async function beginBrowserPoolRelease(
         .set({ phase: "releasing", phaseSince: new Date() })
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
-        .executeTakeFirst();
+        .executeTakeFirst(databaseOperationOptions());
       await recordBrowserPoolLosses(tx, slot, losses);
       return released;
     },
@@ -413,7 +414,7 @@ export async function finishBrowserPoolRelease(
         .deleteFrom("browserPoolSlots")
         .where("runnerId", "=", runnerId)
         .where("phase", "=", "releasing")
-        .execute();
+        .execute(databaseOperationOptions());
       // Rows are locked in key order before they go, as every multi-row write here.
       const calls = await tx
         .selectFrom("browserPoolControllerCalls")
@@ -422,7 +423,7 @@ export async function finishBrowserPoolRelease(
         .orderBy("id")
         // FOR UPDATE: these rows are deleted with the slot.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       if (calls.length)
         await tx
           .deleteFrom("browserPoolControllerCalls")
@@ -431,7 +432,7 @@ export async function finishBrowserPoolRelease(
             "in",
             calls.map(({ id }) => id),
           )
-          .execute();
+          .execute(databaseOperationOptions());
       const relays = await tx
         .selectFrom("browserPoolRelays")
         .select("id")
@@ -439,7 +440,7 @@ export async function finishBrowserPoolRelease(
         .orderBy("id")
         // FOR UPDATE: these rows are deleted with the slot.
         .forUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       if (relays.length)
         await tx
           .deleteFrom("browserPoolRelays")
@@ -448,7 +449,7 @@ export async function finishBrowserPoolRelease(
             "in",
             relays.map(({ id }) => id),
           )
-          .execute();
+          .execute(databaseOperationOptions());
     },
     undefined,
     "non-retrying",
@@ -488,7 +489,7 @@ export async function recordBrowserPoolControllerCall(
           : null,
       })
       .onConflict((conflict) => conflict.column("id").doNothing())
-      .execute();
+      .execute(databaseOperationOptions());
   if (!closeOpen) {
     await insert(database);
     return;
@@ -504,7 +505,7 @@ export async function recordBrowserPoolControllerCall(
         .where("settledAt", "is", null)
         .orderBy("id")
         .forNoKeyUpdate()
-        .execute();
+        .execute(databaseOperationOptions());
       // The guest is replaced: whether an open call applied is not known, and never claimed.
       // Open Starts are never among them: the caller settled each by its id first.
       for (const { id } of open)
@@ -515,7 +516,7 @@ export async function recordBrowserPoolControllerCall(
             settledAt: new Date(),
           })
           .where("id", "=", id)
-          .execute();
+          .execute(databaseOperationOptions());
       await insert(tx);
     },
     undefined,
@@ -533,7 +534,7 @@ export async function settleBrowserPoolControllerCall(
     .set({ result, settledAt: new Date() })
     .where("id", "=", id)
     .where("settledAt", "is", null)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 export function listOpenBrowserPoolControllerCalls(
@@ -547,7 +548,7 @@ export function listOpenBrowserPoolControllerCalls(
     .where("settledAt", "is", null)
     .orderBy("createdAt")
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -566,7 +567,7 @@ export function listAppliedBrowserPoolStarts(database: Kysely<DatabaseSchema>, r
     .orderBy("createdAt", "desc")
     .orderBy("id", "desc")
     .limit(4)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /** The slot holds this Start's guest now: it is no replacement still to be installed. */
@@ -579,7 +580,7 @@ export async function markBrowserPoolStartInstalled(
     .set({ installedAt: new Date() })
     .where("id", "=", id)
     .where("installedAt", "is", null)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /** The settled result of an intent's call of one kind, if the controller applied it. */
@@ -597,7 +598,7 @@ export async function readAppliedBrowserPoolControllerCall(
     .where("kind", "=", kind)
     .where(sql<boolean>`result->>'applied' = 'true'`)
     .orderBy("createdAt", "desc")
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
 }
 
 /** The persistent tab lineage of a session: person use is keyed by it, not by the session. */
@@ -609,7 +610,7 @@ export async function readBrowserPoolSessionLineage(
     .selectFrom("browserSessions")
     .select("tabGroupId")
     .where("id", "=", sessionId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   return row?.tabGroupId;
 }
 
@@ -617,7 +618,10 @@ export async function readBrowserPoolSessionLineage(
 export async function readBrowserPoolOwner(
   database: Kysely<DatabaseSchema>,
 ): Promise<UserId | undefined> {
-  const row = await database.selectFrom("personalSettings").select("ownerId").executeTakeFirst();
+  const row = await database
+    .selectFrom("personalSettings")
+    .select("ownerId")
+    .executeTakeFirst(databaseOperationOptions());
   return (row?.ownerId ?? undefined) as UserId | undefined;
 }
 
@@ -634,7 +638,7 @@ export async function listBrowserPoolSessionTabs(
     .where(sql<string>`page_binding->>'sessionId'`, "in", [...sessionIds])
     .where("closedAt", "is", null)
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   for (const { id, sessionId } of rows) tabs.set(sessionId, [...(tabs.get(sessionId) ?? []), id]);
   return tabs;
 }
@@ -652,7 +656,7 @@ export async function listBrowserPoolRuntimeSessions(
     .where("runtimeId", "=", runtimeId)
     .where("state", "in", ["starting", "ready", "closing"])
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
 }
 
@@ -668,7 +672,7 @@ export async function readBrowserPoolRevocation(
     .selectFrom("runners")
     .select("revokedAt")
     .where("id", "=", runnerId)
-    .executeTakeFirst();
+    .executeTakeFirst(databaseOperationOptions());
   if (!runner?.revokedAt) return undefined;
   const ended = await database
     .selectFrom("browserSessions")
@@ -676,7 +680,7 @@ export async function readBrowserPoolRevocation(
     .where("runnerId", "=", runnerId)
     .where("closedAt", "=", runner.revokedAt)
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return ended.map(({ id }) => id);
 }
 
@@ -693,7 +697,7 @@ export async function listBrowserPoolReadySessions(
     .where("runtimeId", "=", runtimeId)
     .where("state", "=", "ready")
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
 }
 
@@ -714,7 +718,7 @@ export async function listBrowserPoolClosingSessions(
     .where("state", "=", "closing")
     .where("origin", "in", ["person", "agent"])
     .orderBy("id")
-    .execute();
+    .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
 }
 
@@ -729,7 +733,7 @@ export function listBrowserPoolDocumentLosses(
     .where("ownerId", "=", ownerId)
     .where("surfaceId", "=", surfaceId)
     .orderBy("lostAt", "desc")
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -763,7 +767,7 @@ export async function seeBrowserPoolDocumentLoss(
       )
       .orderBy("intentId")
       .forNoKeyUpdate()
-      .execute();
+      .execute(databaseOperationOptions());
     if (!rows.length) return;
     mutation.bumpResource("browser-placement");
     await tx
@@ -776,7 +780,7 @@ export async function seeBrowserPoolDocumentLoss(
         "in",
         rows.map(({ intentId }) => intentId),
       )
-      .execute();
+      .execute(databaseOperationOptions());
   });
 }
 
@@ -802,7 +806,7 @@ export async function listBrowserPoolReportedNotices(
     .selectAll()
     .orderBy("lostAt", "desc")
     .limit(browserPoolReportedNotices)
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -823,7 +827,7 @@ export async function pruneBrowserPoolBookkeeping(
   // age out like the rest.
   if (slot.intentId && slot.phase !== "running")
     calls = calls.where("intentId", "is distinct from", slot.intentId);
-  await calls.execute();
+  await calls.execute(databaseOperationOptions());
   await database
     .deleteFrom("browserPoolRelays")
     .where("runnerId", "=", slot.runnerId)
@@ -835,7 +839,7 @@ export async function pruneBrowserPoolBookkeeping(
         eb(sql<Date>`created_at`, "<", new Date(Date.now() - browserPoolRelayDeadlineMs)),
       ]),
     )
-    .execute();
+    .execute(databaseOperationOptions());
   // A seen note ages out from when it was seen; one never seen, from when it was written.
   await database
     .deleteFrom("browserPoolDocumentLosses")
@@ -846,7 +850,7 @@ export async function pruneBrowserPoolBookkeeping(
         eb.and([eb("noticedAt", "is", null), eb(sql<Date>`lost_at`, "<", before)]),
       ]),
     )
-    .execute();
+    .execute(databaseOperationOptions());
 }
 
 export async function openBrowserPoolRelay(
@@ -859,10 +863,13 @@ export async function openBrowserPoolRelay(
     await tx
       .insertInto("browserPoolRelays")
       .values({ id, ...target })
-      .execute();
+      .execute(databaseOperationOptions());
   });
 }
 
 export async function settleBrowserPoolRelay(database: Kysely<DatabaseSchema>, id: string) {
-  await database.deleteFrom("browserPoolRelays").where("id", "=", id).execute();
+  await database
+    .deleteFrom("browserPoolRelays")
+    .where("id", "=", id)
+    .execute(databaseOperationOptions());
 }

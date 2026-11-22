@@ -27,6 +27,7 @@ import {
   type TestPoolAgent,
 } from "../apps/pool-agent/src/test-support.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
+import type { BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
 import {
   FakeContext,
   FakeLaunchedBrowser,
@@ -208,13 +209,33 @@ async function pair(key: string) {
   open.push(async () => {
     for (const home of homes) home.close();
   });
-  const home = (crash?: Crash) => {
+  const home = (
+    crash?: Crash,
+    options: {
+      /** Runs before every read of the runtime's state; a throw is a read that failed. */
+      readingState?: () => Promise<void>;
+      /** Runs before a runtime control is handed to the runtime, which then gets it as sent. */
+      sending?: (control: BrowserPoolControl) => Promise<void>;
+      /** The runtime's own answer to each control it was handed, whoever still waits for it. */
+      landed?: (control: BrowserPoolControl, answer: Promise<unknown>) => void;
+      extra?: Partial<ConstructorParameters<typeof BrowserPoolCoordinator>[0]>;
+    } = {},
+  ) => {
+    const deliver = async (control: BrowserPoolControl, signature: Uint8Array) => {
+      await options.sending?.(control);
+      const answer = runtime.controlPool(control, signature);
+      options.landed?.(control, answer);
+      return answer;
+    };
     const channel: BrowserPoolRuntimeChannel = {
-      poolState: async () => runtime.poolState() ?? null,
+      poolState: async () => {
+        await options.readingState?.();
+        return runtime.poolState() ?? null;
+      },
       controlPool: (control, signature) =>
         crash
-          ? crash.pass(`runtime:${control.kind}`, () => runtime.controlPool(control, signature))
-          : runtime.controlPool(control, signature),
+          ? crash.pass(`runtime:${control.kind}`, () => deliver(control, signature))
+          : deliver(control, signature),
     };
     const port: BrowserPoolPhysicalController = crash
       ? {
@@ -232,6 +253,7 @@ async function pair(key: string) {
       runtime: channel,
       controller: port,
       retryMs: 5,
+      ...options.extra,
     });
     homes.push(coordinator);
     return coordinator;
@@ -241,6 +263,7 @@ async function pair(key: string) {
     answered,
     home,
     slot: () => readBrowserPoolSlot(fixture.database, task.runnerId),
+    runtime: () => runtime,
     status: () => controller.status(slotId, 1),
   };
 }
@@ -303,4 +326,74 @@ it("settles a Start still outstanding before a removal accepts stopped, so nothi
   );
   expect(p.controller.effects).toEqual(afterRemoval);
   expect((await p.status()).phase).toBe("stopped");
+});
+
+// ---- P3: a step's waits end with it; what it sent is fenced and read later --------------------
+
+it("takes a restart asked while a step is failing at once, never after that step's backoff", async () => {
+  const p = await pair("backoff");
+  await p.home().recover();
+  // A Home restart whose first read of the runtime fails, slowly; the backoff after a failure
+  // is up to five seconds.
+  const reading = Promise.withResolvers<void>();
+  const fail = Promise.withResolvers<void>();
+  let failed = false;
+  const next = p.home(undefined, {
+    readingState: async () => {
+      if (failed) return;
+      reading.resolve();
+      await fail.promise;
+      failed = true;
+      throw new Error("The runtime read failed.");
+    },
+    extra: { retryMs: 60_000 },
+  });
+  void next.recover();
+  await reading.promise;
+  // Asked during the failing step: the turn's own change ends the backoff that follows it.
+  const restarted = next.restart({ key: "during-backoff" });
+  fail.resolve();
+  const asked = Date.now();
+  await restarted;
+  expect(Date.now() - asked).toBeLessThan(4_000);
+  expect(p.controller.effects).toEqual(["start", "stop", "start"]);
+});
+
+it("refuses a runtime control that lands after its step stopped waiting, by its sequence, and reads what is so", async () => {
+  const p = await pair("late-control");
+  // The retire leaves the Home and reaches the runtime only after the Home gave up on it and
+  // released the intent.
+  const late = Promise.withResolvers<void>();
+  let held: BrowserPoolControl | undefined;
+  let lateAnswer: Promise<unknown> | undefined;
+  const home = p.home(undefined, {
+    sending: async (control) => {
+      if (control.kind !== "retire" || held) return;
+      held = control;
+      await late.promise;
+    },
+    landed: (control, answer) => {
+      if (control === held) lateAnswer = answer;
+      void answer.catch(() => undefined);
+    },
+    extra: { callTimeoutMs: 300 },
+  });
+  await home.recover();
+  const parking = home.tryPark();
+  await vi.waitFor(() => expect(held).toBeDefined());
+  // The step read the runtime's state when the retire did not answer, and released the intent.
+  expect(await parking).toBe("vetoed");
+  const released = p.runtime().poolState();
+  expect(released).toMatchObject({ phase: "running", cancelled: true });
+  // The late retire lands now, after a newer control of the same slot: it is refused.
+  late.resolve();
+  await vi.waitFor(() => expect(lateAnswer).toBeDefined());
+  await expect(lateAnswer).rejects.toThrow();
+  expect(p.runtime().poolState()).toMatchObject({
+    phase: "running",
+    retired: null,
+    revision: released?.revision,
+  });
+  expect((await p.slot())?.phase).toBe("running");
+  expect(home.gate.phase).toBe("open");
 });

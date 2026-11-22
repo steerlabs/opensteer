@@ -1192,7 +1192,7 @@ export class BrowserService {
       ended: async (sessionId) => {
         await this.#transitionBrowserSession({ from: ["closing"], sessionId, state: "closed" });
       },
-      quiesce: async () => {
+      quiesce: async (signal) => {
         if (!(this.#repository instanceof OpensteerStore)) return;
         const runtimeId = this.#pools.get(runnerId)!.runtimeId;
         const sessions = await listBrowserPoolRuntimeSessions(
@@ -1206,11 +1206,18 @@ export class BrowserService {
         );
         for (const entry of this.#standardCdpAttachments.values())
           if (entry.runnerId === runnerId) entry.close("This browser is restarting.");
-        await Promise.all(
+        // Each socket is ended at once; waiting for the brokers to finish ends with the step.
+        const detached = Promise.all(
           sessions.map((sessionId) =>
             this.#brokers.get(sessionId)?.detachPooled("This browser is restarting."),
           ),
         );
+        if (!signal) return void (await detached);
+        void detached.catch(() => undefined);
+        await withTimeout(detached, quiesceDetachMs, {
+          signal,
+          timeoutError: () => new Error("A pooled browser did not let go in time."),
+        });
       },
       reattach: async ({ sessions, documents, fence, attempt, signal }) => {
         const losses: BrowserPoolSessionLoss[] = [];
@@ -1299,7 +1306,13 @@ export class BrowserService {
     if (record.profileId) {
       if (profile?.homeRunnerId !== runnerId || !this.#localProfiles)
         throw new Error("The pooled profile is not on this computer.");
-      const local = await this.#localProfiles.identity(record.profileId, runnerId, target, false);
+      const local = await this.#localProfiles.identity(
+        record.profileId,
+        runnerId,
+        target,
+        false,
+        signal,
+      );
       if (!local.initialized) throw new Error("The pooled profile has no storage.");
       identity = local;
     }
@@ -11046,6 +11059,9 @@ function runtimeSaysGone(error: unknown): boolean {
     ?.runtimeError;
   return relayed?.code === "not_found" || runtimeRefusalCode(error) === "not_found";
 }
+
+/** How long a restart's quiesce waits for the old runtime's brokers to finish detaching. */
+const quiesceDetachMs = 15_000;
 
 function isTerminal(state: HostedBrowserSessionState): boolean {
   return state === "closed" || state === "failed";
