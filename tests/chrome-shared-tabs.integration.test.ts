@@ -283,8 +283,27 @@ async function proveChromeShares(
     deploymentShape: { kind: "personal" },
   });
   const deviceId = await fixture.store.requireSelfDeviceId(run.runnerId);
+  // A shared Chrome attach's end is written when its agent's socket closes. After a revoke the
+  // Home's authority recheck closes it on its own tick, before any cleanup is driven; a test that
+  // reads the state that precedes that end holds the write (`holdAttachEnds`) until it has read.
+  const attachEvidence = sharedChromeAttempts(fixture.database);
+  let attachEndsHeld: Promise<void> | null = null;
+  const holdAttachEnds = () => {
+    const held = Promise.withResolvers<void>();
+    attachEndsHeld = held.promise;
+    return () => {
+      attachEndsHeld = null;
+      held.resolve();
+    };
+  };
   const liveTabs = new ChromeSharedTabs(fixture.store, {
-    attempts: sharedChromeAttempts(fixture.database),
+    attempts: {
+      ...attachEvidence,
+      finish: async (...args: Parameters<typeof attachEvidence.finish>) => {
+        await attachEndsHeld;
+        return attachEvidence.finish(...args);
+      },
+    },
     device: async () => "Hosting computer",
   });
   const sources = new BrowserSourceService({
@@ -1057,6 +1076,9 @@ async function proveChromeShares(
       frameTree: expect.any(Object),
     });
     const otherEnded = disconnectedFrom(secondClient);
+    // The revoke's state before any cleanup: the attach's own end, delivered by the Home's next
+    // authority recheck, waits until it has been read.
+    const releaseAttachEnds = holdAttachEnds();
     expect(await connections.revoke(ownerId, isolated.connectionId)).toBe(true);
     expect(await connectionAttempts(fixture.database, isolated.connectionId)).toEqual(
       expect.arrayContaining([
@@ -1068,6 +1090,7 @@ async function proveChromeShares(
         ({ id }) => id === isolated.connectionId,
       )?.state,
     ).toBe("stopping");
+    releaseAttachEnds();
     const cleanup = await driveCleanups();
     expect(cleanup.failures).toEqual([]);
     expect(cleanup.settled).toContain(isolated.connectionId);
