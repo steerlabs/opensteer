@@ -115,6 +115,12 @@ interface Target {
   /** Its host fenced the Home's term, or deleted the slot: a new target is needed. */
   over: boolean;
   /**
+   * Its host signed that the guest is gone (a deleted slot is answered so, with the host's key).
+   * A fenced term is not: the host refuses the old Home's calls as not its own, which the Home
+   * cannot tell from any other unauthenticated answer (unknown).
+   */
+  goneSigned: boolean;
+  /**
    * Retired by a swap: whether, as it was retired, evidence about a Stop it held could still come
    * (its host had signed the guest gone, or answered with its guest running).
    */
@@ -225,6 +231,7 @@ async function world(key: string) {
       controlKey,
       answers: "signed",
       over: false,
+      goneSigned: false,
       guests: [],
       guest: undefined as unknown as Guest,
       client: new BrowserPoolAgentClient({
@@ -462,11 +469,11 @@ async function world(key: string) {
      * the old target is forgotten, and the new one is adopted. The old host answers as it did.
      */
     swap: async () => {
-      // Evidence could still come about its Stops: its host had signed that the guest is gone
-      // (over), or it answered with its guest running.
+      // Evidence could still come about its Stops: its host had signed that the guest is gone,
+      // or it answered with its guest running.
       current.retired = {
         reachable:
-          current.over || (current.answers === "signed" && current.guest.state === "running"),
+          current.goneSigned || (current.answers === "signed" && current.guest.state === "running"),
       };
       const next = await newTarget();
       all.push(next);
@@ -492,6 +499,7 @@ async function world(key: string) {
       const target = current;
       await target.agent.agent.deleteSlot(target.slotId);
       target.over = true;
+      target.goneSigned = true;
       await endGuest(target.guest);
     },
     /** The host stops the running guest by itself (a Home silent for long, say). */
