@@ -15,6 +15,7 @@ import {
   connectionWaiting,
   lineageEndedMessage,
   liveAgentConnection,
+  chatTasksWithdrawnMessage,
   tasksWithdrawnMessage,
   type AgentConnectionAuthority,
 } from "./resource-access.js";
@@ -201,7 +202,7 @@ export async function assertThreadCaller(
           .where("bridgeId", "=", caller.connectionId)
           .executeTakeFirst()))
     )
-      throw forbidden("This chat may no longer ask your agents to work.");
+      throw forbidden(chatTasksWithdrawnMessage);
   }
   let runMode: ThreadAccessMode | null = null;
   if (caller.kind === "run") {

@@ -112,7 +112,10 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
-export const tasksWithdrawnMessage = "This connected agent may no longer ask your agents to work.";
+export const tasksWithdrawnMessage =
+  "This connected agent may no longer ask your own agents to work.";
+/** The same refusal for a chat; it is recorded with the message the chat sent. */
+export const chatTasksWithdrawnMessage = "This chat may no longer ask your own agents to work.";
 
 interface ConnectionTargetCheck {
   readonly grantTarget?: AgentGrantTarget | undefined;

@@ -141,7 +141,7 @@ describe("a bridge asks your own agents to work through the task tools' own entr
       });
       const refused = {
         code: "forbidden",
-        message: "This chat may no longer ask your agents to work.",
+        message: "This chat may no longer ask your own agents to work.",
       };
       const bridgeTasks = () =>
         f.storeFixture.database
@@ -220,7 +220,7 @@ describe("a bridge asks your own agents to work through the task tools' own entr
         f.call(caller, "opensteer_task_create", { message: "Hi" }, "stale-revision"),
       ).rejects.toMatchObject({
         code: "forbidden",
-        message: "This chat may no longer ask your agents to work.",
+        message: "This chat may no longer ask your own agents to work.",
       });
       expect(
         await f.storeFixture.database
