@@ -187,8 +187,9 @@ export class BrowserPoolControllerJournal {
    */
   async settleStarts(signal?: AbortSignal): Promise<readonly BrowserPoolControllerResult[]> {
     const settled: BrowserPoolControllerResult[] = [];
+    // A stop too: one id per intent within a restart or a removal, never closed as superseded.
     for (const row of await listOpenBrowserPoolControllerCalls(this.#database, this.#runnerId))
-      if (row.kind === "start")
+      if (row.kind === "start" || row.kind === "stop")
         settled.push(
           await this.#deliver(row.request as unknown as BrowserPoolControllerCall, signal),
         );

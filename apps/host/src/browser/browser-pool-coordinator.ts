@@ -144,6 +144,7 @@ export interface BrowserPoolCoordinatorOptions {
     readonly beginPark?: typeof beginBrowserPoolPark;
     readonly readSlot?: typeof readBrowserPoolSlot;
     readonly settleCall?: (id: string, result: Readonly<Record<string, unknown>>) => Promise<void>;
+    readonly markInstalled?: typeof markBrowserPoolStartInstalled;
   };
   /** Tests lose a runtime control's request or its reply. */
   readonly runtimeFault?: (kind: BrowserPoolControl["kind"]) => BrowserPoolRuntimeFault | undefined;
@@ -1493,8 +1494,9 @@ export class BrowserPoolCoordinator {
       },
       losses,
     );
-    // Held by the slot now; until this write, the slot's own fence says the same.
-    await markBrowserPoolStartInstalled(this.#options.database, startedResult.id);
+    // Held by the slot now; until this write, the slot's own fence says the same, so a write that
+    // fails changes nothing the person sees (the slot never installs a Start it holds again).
+    await this.#markInstalled(startedResult.id);
   }
 
   async #lossesOf(
@@ -1624,7 +1626,7 @@ export class BrowserPoolCoordinator {
       this.#options.database,
       this.#target(started.control.fence),
     );
-    await markBrowserPoolStartInstalled(this.#options.database, started.id);
+    await this.#markInstalled(started.id);
   }
 
   /**
@@ -1653,6 +1655,13 @@ export class BrowserPoolCoordinator {
       return { result, restartKeys: row.restartKeys ?? [] };
     }
     return undefined;
+  }
+
+  async #markInstalled(id: string): Promise<void> {
+    await (this.#options.testHooks?.markInstalled ?? markBrowserPoolStartInstalled)(
+      this.#options.database,
+      id,
+    ).catch((error: unknown) => this.#options.onError?.(error));
   }
 
   #target(fence: BrowserPoolRuntimeFence): BrowserPoolTargetIdentity {

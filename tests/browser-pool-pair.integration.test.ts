@@ -695,3 +695,44 @@ it("returns a refused wake to parked, and counts a refused restart as no failed 
   await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "profile-disk-missing" }));
   expect((await p.slot())?.failedStarts).toBe(0);
 });
+
+// ---- P13: one id for a stop within a restart; a failed mark is not a failed start -------------
+
+it("sends a restart's stop again by its own id after a Home went, and never counts a failed mark as a failed start", async () => {
+  const p = await pair("stop-once");
+  const crash = new Crash();
+  const first = p.home(crash);
+  await first.recover();
+  // The stop applies and the Home goes before its answer is written.
+  crash.arm("stop", "after");
+  void first.restart({ key: "stop-once" }).catch(() => undefined);
+  await vi.waitFor(() => expect(crash.dead).toBe(true));
+  first.close();
+  let marks = 0;
+  const next = p.home(undefined, {
+    extra: {
+      testHooks: {
+        markInstalled: async () => {
+          marks++;
+          throw new Error("The mark could not be written.");
+        },
+      },
+    },
+  });
+  await next.recover();
+  await vi.waitFor(async () =>
+    expect(await p.slot()).toMatchObject({ phase: "running", restartKeys: ["stop-once"] }),
+  );
+  expect(p.controller.effects).toEqual(["start", "stop", "start"]);
+  // The stop's journal row has its own answer, by its id: never closed as superseded.
+  const stops = await p.fixture.database
+    .selectFrom("browserPoolControllerCalls")
+    .select("result")
+    .where("kind", "=", "stop")
+    .execute();
+  expect(stops).toEqual([{ result: expect.objectContaining({ applied: true }) }]);
+  // The slot holds the guest; a mark that failed leaves no "failed" behind.
+  expect(marks).toBeGreaterThan(0);
+  expect(next.report()).toBeUndefined();
+  expect((await p.slot())?.failedStarts).toBe(0);
+});

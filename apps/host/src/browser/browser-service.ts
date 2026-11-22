@@ -994,6 +994,8 @@ export class BrowserService {
 
   constructor(options: BrowserServiceOptions) {
     this.#pools = options.pools ?? new Map();
+    // A personal Home has one pooled Cloud Computer at most: the startup sweep keeps its rows.
+    if (this.#pools.size > 1) throw new Error("A Home serves at most one pooled browser.");
     this.#requireAgentAccess = options.requireAgentAccess ?? (async () => {});
     this.#requireAgentVisibility = options.requireAgentVisibility ?? (async () => {});
     this.#detachRunnerAgents = options.detachRunnerAgents;
