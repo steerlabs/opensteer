@@ -230,11 +230,10 @@ export function unsentFrom(file: string, source: string): string[] {
   const visit = (node: unknown): void => {
     if (Array.isArray(node)) return node.forEach(visit);
     if (!isNode(node)) return;
-    if (node.type === "CallExpression") {
-      const callee = node["callee"] as Node;
-      const method =
-        callee.type === "MemberExpression" ? ((callee["property"] as Node)["name"] as string) : "";
-      const index = sending[method];
+    // A call that may not happen (`page?.evaluate(f)`, `page.evaluate?.(f)`) sends as one that does.
+    if (node.type === "CallExpression" || node.type === "OptionalCallExpression") {
+      const method = memberName(node["callee"] as Node);
+      const index = Object.hasOwn(sending, method) ? sending[method] : undefined;
       const sent = index === undefined ? undefined : (node["arguments"] as Node[])[index];
       if (sent !== undefined) {
         const origin = sent.type === "Identifier" ? imports.get(sent["name"] as string) : undefined;
@@ -247,6 +246,19 @@ export function unsentFrom(file: string, source: string): string[] {
   };
   visit(ast.program);
   return found;
+}
+
+/** The member a call is made on: `page.evaluate`, `page?.evaluate`, `page["evaluate"]`. */
+function memberName(callee: Node): string {
+  if (callee.type !== "MemberExpression" && callee.type !== "OptionalMemberExpression") return "";
+  const property = callee["property"] as Node;
+  if (!callee["computed"])
+    return property.type === "Identifier" ? (property["name"] as string) : "";
+  if (property.type === "StringLiteral") return property["value"] as string;
+  const quasis = property["quasis"] as Node[] | undefined;
+  if (property.type === "TemplateLiteral" && quasis?.length === 1)
+    return (quasis[0]!["value"] as { cooked: string }).cooked;
+  return "";
 }
 
 /** The names a pattern binds: `a`, `{ a, b: c }`, `[a, ...b]`, `a = 1`. */
@@ -287,7 +299,10 @@ const functionTypes = new Set([
   "ClassMethod",
 ]);
 
-/** The names a function declares for itself: its parameters, and every declaration in its body. */
+/**
+ * The names a function declares for all of itself: its parameters, its own name, and every `var`
+ * in its body. A `let`, `const`, class or function declaration belongs to its block (`blockNames`).
+ */
 function declaredIn(fn: Node): Set<string> {
   const names = new Set<string>();
   for (const parameter of fn["params"] as Node[]) bound(parameter, names);
@@ -295,10 +310,9 @@ function declaredIn(fn: Node): Set<string> {
   const collect = (node: unknown): void => {
     if (Array.isArray(node)) return node.forEach(collect);
     if (!isNode(node)) return;
-    if (node.type === "VariableDeclarator") bound(node["id"] as Node, names);
-    if (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration")
-      bound(node["id"] as Node, names);
-    if (node.type === "CatchClause") bound(node["param"] as Node, names);
+    if (node.type === "VariableDeclaration" && node["kind"] === "var")
+      for (const declarator of node["declarations"] as Node[])
+        bound(declarator["id"] as Node, names);
     // A nested function's own names are its own.
     if (functionTypes.has(node.type)) return;
     for (const [key, value] of Object.entries(node))
@@ -306,6 +320,30 @@ function declaredIn(fn: Node): Set<string> {
   };
   collect(fn["body"]);
   return names;
+}
+
+/** The names statements declare for the block that holds them: `let`, `const`, class, function. */
+function blockNames(statements: readonly Node[]): Set<string> {
+  const names = new Set<string>();
+  for (const statement of statements) {
+    const declaration =
+      statement.type === "ExportNamedDeclaration" ? (statement["declaration"] as Node) : statement;
+    if (!declaration) continue;
+    if (declaration.type === "VariableDeclaration" && declaration["kind"] !== "var")
+      for (const declarator of declaration["declarations"] as Node[])
+        bound(declarator["id"] as Node, names);
+    if (declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration")
+      bound(declaration["id"] as Node, names);
+  }
+  return names;
+}
+
+/** What a `for` head declares with `let` or `const`, for the loop alone. */
+function loopNames(node: Node): Set<string> {
+  const head = (node.type === "ForStatement" ? node["init"] : node["left"]) as Node | null;
+  return head?.type === "VariableDeclaration" && head["kind"] !== "var"
+    ? blockNames([head])
+    : new Set();
 }
 
 /**
@@ -326,6 +364,25 @@ export function freeNames(source: string): Set<string> {
       return;
     }
     switch (node.type) {
+      case "BlockStatement":
+      case "StaticBlock":
+        walk(node["body"], [...scope, blockNames(node["body"] as Node[])]);
+        return;
+      case "SwitchStatement":
+        walk(node["discriminant"], scope);
+        walk(node["cases"], [
+          ...scope,
+          blockNames((node["cases"] as Node[]).flatMap((c) => c["consequent"] as Node[])),
+        ]);
+        return;
+      case "ForStatement":
+      case "ForInStatement":
+      case "ForOfStatement": {
+        const inner = [...scope, loopNames(node)];
+        for (const [key, value] of Object.entries(node))
+          if (key !== "loc" && typeof value === "object") walk(value, inner);
+        return;
+      }
       case "Identifier":
         if (!scope.some((names) => names.has(node["name"] as string)))
           free.add(node["name"] as string);
@@ -436,7 +493,24 @@ describe("where the first-run journey keeps what it hands over", () => {
     ]);
   });
 
+  it("sees a call that may not happen and one by a computed name", () => {
+    const source = `const local = () => document.title;
+      await page?.evaluate(local);
+      await page.evaluate?.(local);
+      await page["evaluate"](local);
+      await page[\`waitForFunction\`](local);`;
+    expect(unsentFrom("journey.ts", source)).toEqual([
+      "journey.ts:2: evaluate",
+      "journey.ts:3: evaluate",
+      "journey.ts:4: evaluate",
+      "journey.ts:5: waitForFunction",
+    ]);
+  });
+
   const sent = sources();
+  it("knows where every function the module sends runs", () => {
+    expect(Object.keys(sent).sort()).toEqual(Object.keys(runsIn).sort());
+  });
   for (const [name, where] of Object.entries(runsIn))
     it(`reads nothing in ${name}, on any path, that its process does not give it`, () => {
       const allowed = new Set([...languageGlobals, ...processGlobals[where]]);
@@ -449,5 +523,25 @@ describe("where the first-run journey keeps what it hands over", () => {
       return text.includes(sentence) || __name(/x/u).test(text);
     }`;
     expect([...freeNames(source)].sort()).toEqual(["__name", "document"]);
+  });
+
+  it("sees a name read outside the block that declared it", () => {
+    const source = `function settled(a) {
+      if (a) { const t = 1; let u = t; }
+      for (const v of [1]) v;
+      try { const w = 1 } catch { }
+      return t + u + v + w;
+    }`;
+    expect([...freeNames(source)].sort()).toEqual(["t", "u", "v", "w"]);
+  });
+
+  it("knows a block's names inside it, a var's in all its function, and a function's hoisted", () => {
+    const source = `function settled(a) {
+      if (a) { var hoisted = 1; const inner = 2; inner; later(); function later() {} }
+      for (let index = 0; index < 1; index += 1) index;
+      switch (a) { case 1: const chosen = 1; chosen; }
+      return hoisted;
+    }`;
+    expect([...freeNames(source)]).toEqual([]);
   });
 });
