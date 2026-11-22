@@ -390,11 +390,7 @@ describe("connected agent detail", () => {
     });
     expect(detail).toMatchObject({ editable: true, revision: 3, uncertain: null, live: null });
     expect(detail.activity).toEqual({ kind: "unavailable" });
-    expect(detail.about.map((row) => row.label)).toEqual([
-      "Address it uses",
-      "Added",
-      "Expires",
-    ]);
+    expect(detail.about.map((row) => row.label)).toEqual(["Address it uses", "Added", "Expires"]);
     expect(detail.about[0]!.value).toBe("grok.com");
   });
 
