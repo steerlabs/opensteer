@@ -2249,6 +2249,13 @@ export interface DatabaseSchema {
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
   browserProfileDeletions: BrowserProfileDeletionTable;
+  /** W1: the target (slot and term) each pooled session belongs to. */
+  browserPoolSessions: {
+    sessionId: BrowserSessionId;
+    runnerId: RunnerId;
+    slotId: string;
+    term: number;
+  };
   browserPoolSlots: {
     runnerId: RunnerId;
     runtimeId: string;

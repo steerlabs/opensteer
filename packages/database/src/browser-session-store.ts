@@ -1,6 +1,7 @@
 import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
 import {
   BrowserPoolAdmissionClosed,
+  bindBrowserPoolSession,
   requireBrowserPoolAdmission,
   type BrowserPoolTargetIdentity,
 } from "./browser-pool-store.js";
@@ -417,7 +418,9 @@ export async function createBrowserSession(
 ): Promise<BrowserSessionRecord> {
   const profileId = input.profileId;
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    if (input.pooled) await requireBrowserPoolAdmission(transaction, input.runnerId);
+    const pool = input.pooled
+      ? await requireBrowserPoolAdmission(transaction, input.runnerId)
+      : undefined;
     await assertPersonalOwner(transaction, input.ownerId);
     if (profileId !== null) {
       await lockBrowserProfile(transaction, profileId);
@@ -472,7 +475,7 @@ export async function createBrowserSession(
       }
     }
     mutation.bumpResource("browser-placement");
-    return transaction
+    const created = await transaction
       .insertInto("browserSessions")
       .values({
         tabGroupId: input.tabGroupId ?? input.id,
@@ -499,6 +502,15 @@ export async function createBrowserSession(
         "updatedAt",
       ])
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    // A pooled session belongs to the target it was admitted under (W1), from its first write.
+    if (pool)
+      await bindBrowserPoolSession(transaction, {
+        sessionId: input.id,
+        runnerId: input.runnerId,
+        slotId: pool.slotId,
+        term: pool.term,
+      });
+    return created;
   });
 }
 
@@ -1790,13 +1802,49 @@ export async function failActiveBrowserSessions(
   });
 }
 
+/**
+ * A session's state, other than `closed` (W5): a pooled session is closed only by the pool's
+ * writer, with evidence about its own target (`closeBrowserPoolSessions`), and any other by
+ * `closeUnpooledBrowserSession`, which refuses a pooled one in its own statement.
+ */
 export async function transitionBrowserSession(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+    readonly state: Exclude<HostedBrowserSessionState, "closed">;
+  },
+): Promise<{
+  readonly session: BrowserSessionRecord;
+}> {
+  return writeBrowserSessionState(database, input, false);
+}
+
+/**
+ * Closes a session that is not pooled. The update itself checks that the session belongs to no
+ * pool target and that its runner has no pooled slot, so no caller closes a pooled session here,
+ * whatever it believes (W1, W5). A pooled session is refused (`conflict`).
+ */
+export async function closeUnpooledBrowserSession(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  },
+): Promise<{
+  readonly session: BrowserSessionRecord;
+}> {
+  return writeBrowserSessionState(database, { ...input, state: "closed" }, true);
+}
+
+async function writeBrowserSessionState(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
     readonly state: HostedBrowserSessionState;
   },
+  unpooledOnly: boolean,
 ): Promise<{
   readonly session: BrowserSessionRecord;
 }> {
@@ -1820,6 +1868,14 @@ export async function transitionBrowserSession(
       .where("state", "not in", ["closed", "failed"])
       .where("state", "!=", input.state);
     if (input.from) update = update.where("state", "in", [...input.from]);
+    if (unpooledOnly)
+      update = update.where(
+        sql<boolean>`not exists (
+          select 1 from browser_pool_sessions own where own.session_id = browser_sessions.id
+        ) and not exists (
+          select 1 from browser_pool_slots slot where slot.runner_id = browser_sessions.runner_id
+        )`,
+      );
     const row = await update
       .returning([
         "createdAt",

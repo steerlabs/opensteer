@@ -29,6 +29,8 @@ import {
   type BrowserPoolSessionLoss,
   type BrowserPoolSlot,
   type BrowserPoolTargetIdentity,
+  type BrowserPoolSessionTarget,
+  type BrowserPoolTargetSessions,
   type DatabaseSchema,
 } from "@opensteer/database";
 import type { Kysely } from "kysely";
@@ -98,7 +100,7 @@ export interface BrowserPoolAdopter {
   /** The pages the Home keeps for this session: the notes of its end name them. */
   pagesOf(sessionId: BrowserSessionId): Promise<readonly string[]>;
   /** Ready sessions of this runtime with no channel here: the loop reattaches or ends them. */
-  withoutChannel(runtimeId: string): Promise<readonly BrowserSessionId[]>;
+  withoutChannel(target: BrowserPoolTargetSessions): Promise<readonly BrowserSessionId[]>;
   /**
    * Before a restart replaces the guest: revoke unredeemed tickets and close every connection
    * and broker of the runtime without ending its row, so each send has its outcome.
@@ -108,7 +110,7 @@ export interface BrowserPoolAdopter {
    * Sessions of this runtime a Stop is ending and that have no broker here: each one stays
    * closing until the runtime answers for it.
    */
-  ending?(runtimeId: string): Promise<readonly BrowserSessionId[]>;
+  ending?(target: BrowserPoolTargetSessions): Promise<readonly BrowserSessionId[]>;
   /**
    * The single-use ticket for the runtime's end request of a stopped session, under this fence
    * (P15): no channel is opened and no attachment spent. `gone`: the row is no longer closing
@@ -120,7 +122,7 @@ export interface BrowserPoolAdopter {
     readonly signal?: AbortSignal;
   }): Promise<string | "gone" | undefined>;
   /** The runtime that serves this fence answered that it ended the stopped session. */
-  ended?(sessionId: BrowserSessionId): Promise<void>;
+  ended?(sessionId: BrowserSessionId, target: BrowserPoolSessionTarget): Promise<void>;
 }
 
 export type BrowserPoolRuntimeFault = "request" | "reply";
@@ -324,6 +326,16 @@ export class BrowserPoolCoordinator {
   identity(): BrowserPoolTargetIdentity {
     if (!this.#slot) throw new BrowserPoolAdmissionClosed();
     return browserPoolSlotIdentity(this.#slot);
+  }
+
+  /** This target's own sessions (W1): every pool read and write of sessions is scoped to them. */
+  get ownSessions(): BrowserPoolTargetSessions {
+    return this.#own;
+  }
+
+  get #own(): BrowserPoolTargetSessions {
+    const { runnerId, runtimeId, slotId, term } = this.#options;
+    return { runnerId, runtimeId, slotId, term };
   }
 
   /** The claim every ticket for this runtime carries. */
@@ -694,9 +706,7 @@ export class BrowserPoolCoordinator {
         run: (signal) => this.#reconnectStep(slot, withoutChannel, signal),
       };
     const ending =
-      slot.phase === "running"
-        ? ((await this.#adopter?.ending?.(this.#options.runtimeId)) ?? [])
-        : [];
+      slot.phase === "running" ? ((await this.#adopter?.ending?.(this.#own)) ?? []) : [];
     if (this.#released || this.#restartWanted) return this.#next();
     if (ending.length) {
       // A closing row blocks a park anyway: one asked now is vetoed rather than kept waiting.
@@ -731,7 +741,11 @@ export class BrowserPoolCoordinator {
       return {
         name: "check",
         run: async () => {
-          await this.#status();
+          const status = await this.#status();
+          // A phase or a guest this Home did not ask for (the host stopped or paused it on its
+          // own, say after a long silence): recovery reads what is there and goes on from it.
+          if (status.phase !== "running" || !sameFence(statusFence(status), fenceOf(slot)))
+            this.#recovered = false;
         },
       };
     return undefined;
@@ -739,6 +753,12 @@ export class BrowserPoolCoordinator {
 
   /** The gate's facts, from the durable state and what is wanted; nothing else sets them. */
   #publish(slot: BrowserPoolSlot | undefined): void {
+    // A down egress proxy is a fact of a running instance: it ends when the slot leaves running
+    // (W4), and clients learn it at once.
+    if (this.#proxyDown && slot?.phase !== "running") {
+      this.#proxyDown = false;
+      void this.#announce(this.#changed.signal);
+    }
     const away =
       slot?.phase === "parked"
         ? "parked"
@@ -788,7 +808,7 @@ export class BrowserPoolCoordinator {
 
   /** Ready sessions of this runtime with no channel here; each one's window starts when seen. */
   async #withoutChannel(): Promise<BrowserSessionId[]> {
-    const found = [...((await this.#adopter?.withoutChannel(this.#options.runtimeId)) ?? [])];
+    const found = [...((await this.#adopter?.withoutChannel(this.#own)) ?? [])];
     const now = Date.now();
     for (const sessionId of found)
       if (!this.#lost.has(sessionId)) this.#lost.set(sessionId, { since: now });
@@ -929,11 +949,7 @@ export class BrowserPoolCoordinator {
   async #endOverSessions(reason: string): Promise<void> {
     const slot = await this.#read();
     if (slot) {
-      const sessions = await listBrowserPoolRuntimeSessions(
-        this.#options.database,
-        slot.runnerId,
-        slot.runtimeId,
-      );
+      const sessions = await listBrowserPoolRuntimeSessions(this.#options.database, this.#own);
       if (sessions.length)
         await advanceBrowserPoolSlot(
           this.#options.database,
@@ -1005,7 +1021,8 @@ export class BrowserPoolCoordinator {
         fence,
         runtimeState: () => this.#runtimeState(),
       });
-      if (outcome === "ended") await adopter.ended(sessionId);
+      if (outcome === "ended")
+        await adopter.ended(sessionId, { slotId: fence.slot, term: fence.term });
       // The guest is not what the slot says: recovery replaces it, and that end is the evidence
       // for these rows (V4).
       else if (outcome === "recover") {
@@ -1024,11 +1041,7 @@ export class BrowserPoolCoordinator {
   /** The removal, to its end; a turn that fails is tried again before anything else. */
   async #releaseStep(slot: BrowserPoolSlot | undefined): Promise<void> {
     if (slot && slot.phase !== "releasing") {
-      const sessions = await listBrowserPoolRuntimeSessions(
-        this.#options.database,
-        slot.runnerId,
-        slot.runtimeId,
-      );
+      const sessions = await listBrowserPoolRuntimeSessions(this.#options.database, this.#own);
       const all = [...new Set([...sessions, ...(this.#released?.ended ?? [])])];
       slot = await beginBrowserPoolRelease(
         this.#options.database,
@@ -1310,17 +1323,27 @@ export class BrowserPoolCoordinator {
       issued.attempt !== control.attempt
     )
       throw new Error(`The controller did not sign ${kind}: ${signed.reason ?? "refused"}.`);
-    return (await this.#deliver(issued, signed.signature)).state;
+    const delivered = await this.#deliver(issued, signed.signature);
+    // The runtime refused to serve because a stopped session's page would not close: this guest
+    // is replaced at once, with that reason (V2, W3).
+    if (endUnconfirmed(delivered.refusal)) throw delivered.refusal;
+    return delivered.state;
   }
 
   /**
-   * Delivers a signed control with a deadline. `answered` is false when the reply was lost or
-   * did not come in time: the current state is then read, and the outcome is not assumed.
+   * Delivers a signed control with a deadline. `answered` is false when the reply was lost, did
+   * not come in time, or was a refusal: the current state is then read, and the outcome is not
+   * assumed. A refusal is returned with its reason, never dropped (W3).
    */
   async #deliver(
     control: BrowserPoolControl,
     signature: string,
-  ): Promise<{ readonly state: BrowserPoolRuntimeState; readonly answered: boolean }> {
+  ): Promise<{
+    readonly state: BrowserPoolRuntimeState;
+    readonly answered: boolean;
+    /** The runtime's refusal, with its reason; undefined when it answered or did not answer. */
+    readonly refusal?: unknown;
+  }> {
     this.#signal?.throwIfAborted();
     const fault = this.#options.runtimeFault?.(control.kind);
     if (fault === "request") return { state: await this.#state(), answered: false };
@@ -1338,9 +1361,13 @@ export class BrowserPoolCoordinator {
       return fault === "reply"
         ? { state: await this.#state(), answered: false }
         : { state, answered: true };
-    } catch {
-      // A refusal and a lost reply look alike here: the current state decides.
-      return { state: await this.#state(), answered: false };
+    } catch (error) {
+      // No answer, or a refusal: the current state decides what happened; a refusal goes back to
+      // the caller with its reason.
+      const state = await this.#state();
+      return unknownAnswer(error)
+        ? { state, answered: false }
+        : { state, answered: false, refusal: error };
     }
   }
 
@@ -1566,7 +1593,12 @@ export class BrowserPoolCoordinator {
           if (slot.phase === "waking") await this.#advance(slot, { phase: "parked" });
           throw new BrowserPoolNotStarted(result.reason);
         }
-        return this.#discard(slot, result.reason ?? "resume-refused");
+        // Refused, and the saved state is gone with it (an agent that consumed the resume before
+        // it checked, say, the egress proxy): a refusal all the same. Not woken; the fresh guest
+        // its loss needs comes at the next turn, paced as a refusal is, never at once into the
+        // same refusal (W4).
+        if (slot.phase === "waking") await this.#advance(slot, { phase: "parked" });
+        throw new BrowserPoolNotStarted(result.reason ?? "resume-refused");
       }
       resumed = result;
       status = result.status;
@@ -1652,11 +1684,7 @@ export class BrowserPoolCoordinator {
     // the browser lost, so they have no note (P20).
     const ready = new Set(
       outcome.lost.length
-        ? await listBrowserPoolReadySessions(
-            this.#options.database,
-            this.#options.runnerId,
-            this.#options.runtimeId,
-          )
+        ? await listBrowserPoolReadySessions(this.#options.database, this.#own)
         : [],
     );
     const losses: BrowserPoolSessionLoss[] = [
@@ -1756,8 +1784,13 @@ export class BrowserPoolCoordinator {
     // A wake asked while nothing answers: the slot is still parked (its phase changes only on
     // the guest's word), and the person is shown it waking.
     const unknown = this.#unknownSince === undefined ? undefined : new Date(this.#unknownSince);
+    // A running guest not recovered yet while nothing answers (a Home restart against a host
+    // that does not answer) is not ready either: shown waking from the first unanswered call,
+    // never as running (W6).
     const waking =
-      unknown && this.gate.demand && this.#slot?.phase === "parked"
+      unknown &&
+      ((this.gate.demand && this.#slot?.phase === "parked") ||
+        (!this.#recovered && this.#slot?.phase === "running"))
         ? { phase: "waking" as const, since: unknown }
         : undefined;
     const shown = this.#display ?? waking;
@@ -1816,11 +1849,7 @@ export class BrowserPoolCoordinator {
     const { state } = await this.#deliver(control, signature);
     if (state.phase !== "running" || !sameFence(state.fence, control.fence))
       throw new Error("The fresh guest was not installed.");
-    const sessions = await listBrowserPoolRuntimeSessions(
-      this.#options.database,
-      slot.runnerId,
-      slot.runtimeId,
-    );
+    const sessions = await listBrowserPoolRuntimeSessions(this.#options.database, this.#own);
     // The tabs come from the Home's own rows, not from a manifest that may be missing.
     const losses = await this.#lossesOf(slot, sessions, reason);
     this.#slot = await advanceBrowserPoolSlot(
@@ -1911,7 +1940,9 @@ export class BrowserPoolCoordinator {
         ? sameFence(fence, { ...fenceOf(slot), epoch: fence.epoch })
         : sameFence(fence, fenceOf(slot));
     // A stopped guest has no fence: it is replaced, with nothing to adopt.
-    if (!expected(statusFence(status))) return this.#discard(slot, "guest-restarted");
+    // The host's signed `stopped` is that, whatever instance it still names.
+    if (status.phase === "stopped" || !expected(statusFence(status)))
+      return this.#discard(slot, "guest-restarted");
     // A paused guest has no runtime to ask: the row and the controller's signed status say where
     // it is, with nothing cached from before a Home restart.
     if (status.phase === "paused") {

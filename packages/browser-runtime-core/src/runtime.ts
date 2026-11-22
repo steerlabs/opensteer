@@ -2149,7 +2149,8 @@ export class BrowserRuntime implements NativePresentationSource {
     for (const session of sessions) endPresentations(session);
     await settleCleanup(
       sessions.flatMap((session) => [
-        ...closeSession(session, reason, false, this.pool !== undefined),
+        // A pooled host confirms its pages gone before a session there says closed (W3).
+        ...closeSession(session, reason, this.pool !== undefined, this.pool !== undefined),
         () => session.files.dispose(),
       ]),
     );

@@ -6425,6 +6425,13 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#sessions.get(sessionId);
   }
 
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return this.transitionBrowserSession({ ...input, state: "closed" });
+  }
+
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;

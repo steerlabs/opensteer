@@ -77,7 +77,14 @@ const settleBoundMs = 30_000;
 /** A session without a channel ends after this, on both sides (short, so schedules reach it). */
 const channelDeadlineMs = 1_500;
 /** The causes a fresh start may have in this world; any other is a finding. */
-const discardsExpected = new Set(["guest-restarted", "guest-changed", "end-unconfirmed"]);
+const discardsExpected = new Set([
+  "guest-restarted",
+  "guest-changed",
+  "end-unconfirmed",
+  // The host lost the saved state (a refused resume on an agent that consumed it first, or a
+  // guest it stopped): a cold start, said as what it is.
+  "live-state-unavailable",
+]);
 
 const egressAnswer = {
   upstreamUrl: "https://upstream.example:8443",
@@ -249,6 +256,9 @@ async function world(key: string) {
   const replaceGuest = async (target: Target) => {
     const old = target.guest;
     target.guest = await newGuest(target.controlKey);
+    // The VM goes on as it was: a runtime restart inside a running guest is still running (a
+    // start sets it running itself).
+    target.guest.state = old.state;
     target.guests.push(target.guest);
     if (target === current) dropChannels();
     await endGuest(old);
@@ -445,6 +455,13 @@ async function world(key: string) {
       target.over = true;
       await endGuest(target.guest);
     },
+    /** The host stops the running guest by itself (a Home silent for long, say). */
+    hostStops: async () => {
+      const target = current;
+      if (target.guest.state !== "running") return;
+      target.driver.loseGuest(target.slotId);
+      await endGuest(target.guest);
+    },
     /** The slot's egress proxy goes down past its restarts; only a pause and a resume revive it. */
     proxyDown: () => current.driver.proxyDown.add(current.slotId),
     /** The slot's proxy fails its check on the next start or wake (the host refuses, signed). */
@@ -475,6 +492,7 @@ const actions = [
   "proxy-refuses",
   "proxy-heals",
   "browser-ends",
+  "host-stops-guest",
   "swap",
   "fence",
   "slot-deleted",
@@ -719,6 +737,8 @@ async function schedule(
             .catch(() => undefined),
         );
       }
+      case "host-stops-guest":
+        return w.hostStops();
       case "swap":
         return bounded("swap", () => w.swap(), true);
       case "fence":
@@ -1091,6 +1111,55 @@ const named: readonly {
       "restart-runtime",
       "open",
     ],
+  },
+  // ---- Re-check 9: found by the grown search (W0), or built by hand where it did not -------
+  {
+    // F1: a swap; the old target's Stop, left closing while its host did not answer, was closed
+    // with the new target's evidence while the old guest still held its page.
+    name: "a Stop on a target swapped away while its host did not answer (seed 5029)",
+    seed: 5029,
+    steps: [
+      "drop-channel",
+      "swap",
+      "park-stop&0",
+      "fail-page-close&1",
+      "drop-channel&2",
+      "park-stop",
+      "open&1",
+      "restart-runtime",
+      "fail-page-close",
+      "stop",
+      "restart-home",
+      "host-unreachable",
+      "swap",
+      "park&1",
+      "park-stop",
+      "stop",
+      "wake",
+      "stop&1",
+      "host-back&1",
+      "proxy-down&2",
+    ],
+  },
+  {
+    // F5 A: the proxy's repair parked the guest, and parked it still showed proxy down.
+    name: "a park while the egress proxy is down (seed 5004)",
+    seed: 5004,
+    steps: ["wake", "open&2", "fail-page-close", "stop", "wake&3", "proxy-down&2", "park"],
+  },
+  {
+    // F2 (by hand, the seam forced by overlap 0): a Stop while the broker finishes a lost channel
+    // returned with the row still ready.
+    name: "a Stop racing the end of a lost channel (F2, by hand)",
+    seed: 9002,
+    steps: ["open", "drop-channel&0", "stop"],
+  },
+  {
+    // F5 B (by hand): a wake the real agent refuses for its proxy (and, today, loses the saved
+    // state with): a fresh start into the same refusal at once.
+    name: "a wake the host refuses for its egress proxy (F5 B, by hand)",
+    seed: 9005,
+    steps: ["open", "park", "proxy-refuses", "wake"],
   },
 ];
 

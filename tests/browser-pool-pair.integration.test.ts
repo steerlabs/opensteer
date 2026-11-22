@@ -593,6 +593,8 @@ it("keeps a stopped session closing through a removal until the guest is known s
     profileId: null,
     runnerId: p.task.runnerId,
     runtimeId: "pool-runtime",
+    // Admitted on the running slot: the session is this target's own (W1).
+    pooled: true,
   });
   await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
   await transitionBrowserSession(p.fixture.database, { sessionId, state: "closing" });
@@ -683,6 +685,8 @@ it("ends the sessions of a browser whose slot the host deleted, sends nothing mo
     profileId: null,
     runnerId: p.task.runnerId,
     runtimeId: "pool-runtime",
+    // Admitted on the running slot: the session is this target's own (W1).
+    pooled: true,
   });
   await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
   await mounted.agent.agent.deleteSlot("slot-over-running");
@@ -737,6 +741,8 @@ it("ends an over target's sessions as a step repeated until it succeeds", async 
     profileId: null,
     runnerId: p.task.runnerId,
     runtimeId: "pool-runtime",
+    // Admitted on the running slot: the session is this target's own (W1).
+    pooled: true,
   });
   await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
   await mounted.agent.agent.deleteSlot("slot-over-retried");
@@ -1005,6 +1011,8 @@ async function closingWithAttachments(p: Awaited<ReturnType<typeof pair>>) {
       profileId: null,
       runnerId: p.task.runnerId,
       runtimeId: "pool-runtime",
+      // Admitted on the running slot: the session is this target's own (W1).
+      pooled: true,
     });
     await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
     await p.fixture.database

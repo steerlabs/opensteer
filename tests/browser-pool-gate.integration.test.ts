@@ -3,6 +3,8 @@ import {
   admitAgentOperation,
   beginAgentSession,
   beginBrowserPoolPark,
+  bindBrowserPoolSession,
+  closeBrowserPoolSessions,
   decideAgentOperation,
   handOffAgentOperation,
   installBrowserPoolSlot,
@@ -28,6 +30,7 @@ import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
+import { HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
 import { loopbackPoolChannel } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
 import type {
@@ -90,6 +93,13 @@ it("vetoes D on an ended session with confined CDP contact loss", async () => {
       profileId: null,
       runnerId: target.runnerId,
       runtimeId: target.runtimeId,
+    });
+    // The session is this target's own, as one admitted on its slot is (W1).
+    await bindBrowserPoolSession(database, {
+      sessionId,
+      runnerId: target.runnerId,
+      slotId: target.slotId,
+      term: target.term,
     });
     const attachmentId = randomUUID();
     const lost = { runtimeBootId: target.instanceId, contactLostAt: new Date().toISOString() };
@@ -1345,6 +1355,82 @@ it("ends an abandoned pooled session through the pool loop when its runtime did 
   }
 });
 
+it("never writes a pooled row the runtime ended on its own while the Home shuts down cleanly: it is a loss with its note", async () => {
+  const j = await journey("shutdown-frame", { channelDeadlineMs: 1_500 });
+  try {
+    let home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("shutdown-frame"),
+    );
+    await j.draft();
+    // The seam: the runtime's own closing and closed statuses are held on the channel, and
+    // handed to the Home exactly as its clean shutdown lets this broker go.
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (
+        !release &&
+        event === "message" &&
+        !binary &&
+        /"state":"clos(ing|ed)"/u.test(data.toString())
+      ) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    const letGo = HostedBrowserBroker.prototype.letGoPooled;
+    const letting = vi
+      .spyOn(HostedBrowserBroker.prototype, "letGoPooled")
+      .mockImplementation(function (this: HostedBrowserBroker, reason: string) {
+        // The frames arrive first, still queued behind the broker's frame tail when it is let go.
+        release = true;
+        for (const frame of held.splice(0))
+          emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+        return letGo.call(this, reason);
+      });
+    try {
+      // The runtime ends the session on its own (an end request the Home did not send).
+      const fence = j.guest.poolState()!.fence!;
+      void j.guest
+        .endPoolSession(
+          j.signer.issue({
+            access: "read-write",
+            creationOrigin: "person",
+            actor: "person",
+            identity: { kind: "fresh" },
+            pool: { ...fence, end: true },
+            runtimeId: "pool-runtime",
+            sessionId,
+            subject: j.task.userId,
+          }),
+        )
+        .catch(() => undefined);
+      await until(() => expect(held.length).toBeGreaterThan(0));
+      home = await j.restartHome(home);
+      // The person never stopped it: not closing, not closed, whatever the frames said.
+      expect((await j.row(sessionId))?.state).toBe("ready");
+    } finally {
+      letting.mockRestore();
+      frames.mockRestore();
+    }
+    // Its end is a loss, with its note, by the window.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
+  } finally {
+    await j.close();
+  }
+});
+
 it("keeps the person's pooled tabs through a clean Home shutdown, and stops none of them", async () => {
   const j = await journey("clean-shutdown");
   try {
@@ -2231,10 +2317,15 @@ it("D counts a program's open browser session and nothing else of the program", 
       profileId: null,
       runnerId: task.runnerId,
       runtimeId: target.runtimeId,
+      // Admitted on this slot: the session is this target's own (W1).
+      pooled: true,
     });
     await fixture.store.transitionBrowserSession({ sessionId, state: "ready" });
     expect(await begin()).toBeUndefined();
-    await fixture.store.transitionBrowserSession({ sessionId, state: "closed" });
+    // Closed as a pooled session is: by its runtime's word about its own target.
+    await closeBrowserPoolSessions(fixture.database, target, [sessionId], {
+      kind: "runtime-ended",
+    });
     expect(await begin()).toMatchObject({ phase: "preparing" });
   } finally {
     await fixture.close();

@@ -36,7 +36,12 @@ import {
   applyAgentDirectoryVerification,
 } from "./agent-directory-migration.js";
 import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
-import { browserPoolMigrationName, applyBrowserPool } from "./browser-pool-migration.js";
+import {
+  browserPoolMigrationName,
+  applyBrowserPool,
+  browserPoolSessionsMigrationName,
+  applyBrowserPoolSessions,
+} from "./browser-pool-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -649,6 +654,7 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              [browserPoolSessionsMigrationName]: { up: applyBrowserPoolSessions },
             }
           : {}),
       };

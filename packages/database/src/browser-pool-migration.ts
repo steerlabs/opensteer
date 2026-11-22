@@ -93,3 +93,33 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
     )
   `.execute(database);
 }
+
+/**
+ * W1: a pooled session belongs to its target. Each pooled session is bound, when it is created, to
+ * the slot and term it was admitted under; pool code reads and closes only its own target's
+ * sessions. Pool bookkeeping, like the rest: no ordinary row changes. Expand-only: a pooled
+ * session already open is bound to the slot its runner has now.
+ */
+export const browserPoolSessionsMigrationName = "0052_browser_pool_sessions";
+
+export async function applyBrowserPoolSessions(database: Kysely<unknown>): Promise<void> {
+  await sql`
+    create table browser_pool_sessions (
+      session_id text primary key,
+      runner_id text not null,
+      slot_id text not null,
+      term integer not null check (term > 0)
+    )
+  `.execute(database);
+  await sql`
+    create index browser_pool_sessions_target on browser_pool_sessions (runner_id, slot_id, term)
+  `.execute(database);
+  await sql`
+    insert into browser_pool_sessions (session_id, runner_id, slot_id, term)
+    select session.id, session.runner_id, slot.slot_id, slot.term
+      from browser_sessions session
+      join browser_pool_slots slot
+        on slot.runner_id = session.runner_id and slot.runtime_id = session.runtime_id
+     where session.state in ('starting', 'ready', 'closing')
+  `.execute(database);
+}

@@ -885,9 +885,16 @@ export class OpensteerStore {
   async transitionBrowserSession(input: {
     readonly from?: readonly HostedBrowserSessionState[];
     readonly sessionId: BrowserSessionId;
-    readonly state: HostedBrowserSessionState;
+    readonly state: Exclude<HostedBrowserSessionState, "closed">;
   }) {
     return browserSessionStore.transitionBrowserSession(this.#database, input);
+  }
+  /** Closes a session that is not pooled; a pooled one is refused in the statement itself. */
+  async closeUnpooledBrowserSession(input: {
+    readonly from?: readonly HostedBrowserSessionState[];
+    readonly sessionId: BrowserSessionId;
+  }) {
+    return browserSessionStore.closeUnpooledBrowserSession(this.#database, input);
   }
   async renewActiveExecutionBindings(input: {
     readonly activeRunIds: readonly RunId[];

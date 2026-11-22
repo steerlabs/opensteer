@@ -698,3 +698,44 @@ it("answers not yet while an attach of the session is still opening, and that at
     await f.runtime.shutdown();
   }
 });
+
+it("refuses a standard CDP attach of a session whose end the Home asked, though the runtime still holds it", async () => {
+  const f = await fixture();
+  try {
+    await f.install();
+    await f.open();
+    // The seam: the session's lane is held, so the end's teardown and the attach both wait
+    // behind it; the end is recorded at once, before either runs.
+    const lane = Promise.withResolvers<void>();
+    const lanes = (
+      f.runtime as unknown as {
+        lanes: { run(key: string, work: () => Promise<void>): Promise<void> };
+      }
+    ).lanes;
+    const held = lanes.run(`session:${f.claims.sessionId}`, () => lane.promise);
+    f.verifier.setClaims("standard", {
+      ...f.claims,
+      initialNavigation: undefined,
+      access: "read-write",
+      standardCdp: "session",
+      standardCdpAttempt: {
+        attachmentId: randomUUID(),
+        runtimeBootId: f.runtime.standardCdpBootId,
+      },
+      pool: { ...f.fence(), attachment: 1 },
+    });
+    // A standard CDP ticket issued before the end arrives first; then the Home asks the end.
+    const attach = f.runtime.attachStandardCdp("standard", () => {}, new AbortController().signal);
+    void attach.catch(() => undefined);
+    // One turn of the event loop: its ticket is read and it waits in the lane, first.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const ending = endRequest(f, "end");
+    lane.resolve();
+    await held;
+    // When the attach runs the session is still held, and its end recorded: never admitted.
+    await expect(attach).rejects.toThrow("does not authorize a live Browser Session");
+    expect((await ending).outcome).toBe("ended");
+  } finally {
+    await f.runtime.shutdown();
+  }
+});

@@ -32,6 +32,8 @@ export interface PoolControllerUnderTest extends BrowserPoolPhysicalController {
   inject(kind: BrowserPoolPhysicalKind | `sign:${string}` | "any", fault: BrowserPoolFault): void;
   hold(kind: BrowserPoolPhysicalKind, until: () => Promise<void>): void;
   observe(change: Partial<BrowserPoolPhysicalStatus>): void;
+  /** The real agent only: the slot's egress proxy fails its check on each start and wake. */
+  refuseProxy?(refusing: boolean): void;
   close?(): Promise<void>;
 }
 
@@ -93,7 +95,17 @@ export class AgentPoolController implements PoolControllerUnderTest {
       // Its host check (which slots' proxies are down) runs often enough for a test to see it.
       hostCheckMs: 200,
       ...(options.now ? { now: options.now } : {}),
-      ...(options.freshGuests ? { driver: new FakeHypervisorDriver({ startsEmpty: true }) } : {}),
+      // As a Cloud Computer's pool host runs: it pulls each slot's egress and confirms the slot's
+      // proxy serves before a start or a wake answers.
+      driver: new FakeHypervisorDriver({
+        startsEmpty: options.freshGuests ?? false,
+        pullsEgress: true,
+      }),
+      egressFetch: async () => ({
+        upstreamUrl: "https://upstream.example:8443",
+        username: "u-1",
+        password: "the password",
+      }),
     });
     const home = homeKeyPair();
     const summary = await agent.agent.createSlot({
@@ -128,6 +140,11 @@ export class AgentPoolController implements PoolControllerUnderTest {
 
   hold(kind: BrowserPoolPhysicalKind, until: () => Promise<void>): void {
     this.#holds.set(kind, until);
+  }
+
+  refuseProxy(refusing: boolean): void {
+    if (refusing) this.#agent.driver.proxyUnhealthy.add(this.#slotId);
+    else this.#agent.driver.proxyUnhealthy.delete(this.#slotId);
   }
 
   /**

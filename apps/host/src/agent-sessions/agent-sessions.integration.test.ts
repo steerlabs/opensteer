@@ -612,6 +612,75 @@ describeStore("an external agent's direct work through sessions", (it) => {
     expect(gate.held).toBe(0);
   });
 
+  it("lets a holder's settler take its own refusal of a handed-off operation as the outcome, with nothing more read", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("pool-settler-answer");
+    const identity = {
+      runnerId: f.runnerId,
+      runtimeId: "pooled-browser",
+      slotId: "slot",
+      instanceId: randomUUID(),
+      term: 1,
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(storeFixture.database, identity);
+    const database = storeFixture.database;
+    // The seam: the reservation the holder takes is this one, so its settler is held here, and
+    // the work is held after its hand-off, before anything is sent.
+    let settle: (() => Promise<void>) | undefined;
+    const work = Promise.withResolvers<{ content: { type: "text"; text: string }[] }>();
+    const s = await setUp(storeFixture, "pool-settler-answer", {
+      run: f,
+      pooledBrowser: () => ({
+        identity: () => identity,
+        pageDocument: () => undefined,
+        reserve: async () => ({
+          release: () => {},
+          // The holder's own settler, the first registered (the execution's replaces it later).
+          onForcedEnd: (settler: () => Promise<void>) => {
+            settle ??= settler;
+          },
+        }),
+      }),
+    });
+    s.runBrowserScript.mockImplementationOnce(() => work.promise);
+    const call = s.call("browser_use", script);
+    const state = async () =>
+      (
+        await database
+          .selectFrom("agentOperations")
+          .select("state")
+          .where("tool", "=", "browser_use")
+          .executeTakeFirstOrThrow()
+      ).state;
+    await vi.waitFor(async () => expect(await state()).toBe("handed-off"), { timeout: 10_000 });
+    expect(settle).toBeDefined();
+    // The settler reads the row once, writes its refusal, and takes that write's answer as the
+    // outcome: no second read of the operation.
+    // Counted on every Kysely the Home holds (the service's own store included), outside a
+    // transaction: the reads, not the refusal's own write.
+    let kysely = Object.getPrototypeOf(database) as {
+      selectFrom: (...args: unknown[]) => unknown;
+    };
+    while (!Object.hasOwn(kysely, "selectFrom")) kysely = Object.getPrototypeOf(kysely);
+    const select = kysely.selectFrom;
+    const operationReads: unknown[] = [];
+    kysely.selectFrom = function (this: { isTransaction: boolean }, ...args: unknown[]) {
+      if (!this.isTransaction && args[0] === "agentOperations") operationReads.push(args[0]);
+      return select.apply(this, args);
+    };
+    try {
+      await settle!();
+    } finally {
+      kysely.selectFrom = select;
+    }
+    expect(operationReads).toHaveLength(1);
+    expect(await state()).toBe("refused");
+    work.resolve({ content: [{ type: "text", text: "ran" }] });
+    await call.catch(() => undefined);
+  });
+
   it("ends a restart's settlement of a holder whose row stays locked with the step's deadline", async ({
     storeFixture,
   }) => {

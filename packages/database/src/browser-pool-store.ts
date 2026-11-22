@@ -68,7 +68,7 @@ export async function requireBrowserPoolAdmission(
   tx: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   target?: BrowserPoolTargetIdentity,
-): Promise<void> {
+): Promise<BrowserPoolSlot> {
   if (
     !tx.isTransaction ||
     !activePersonalMutation(tx as Parameters<typeof activePersonalMutation>[0])
@@ -77,6 +77,47 @@ export async function requireBrowserPoolAdmission(
   const row = await readBrowserPoolSlot(tx, runnerId);
   if (!row || row.phase !== "running" || (target && !sameRuntime(row, target)))
     throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+  return row;
+}
+
+/** The target a pooled session belongs to (W1): the slot and term it was admitted under. */
+export interface BrowserPoolSessionTarget {
+  readonly slotId: string;
+  readonly term: number;
+}
+
+/** A pool read or write of sessions of `runnerId`'s runtime, scoped to one target's own. */
+export interface BrowserPoolTargetSessions extends BrowserPoolSessionTarget {
+  readonly runnerId: RunnerId;
+  readonly runtimeId: string;
+}
+
+/** Binds a pooled session to its target, in the transaction that creates it (W1). */
+export async function bindBrowserPoolSession(
+  tx: Kysely<DatabaseSchema>,
+  input: BrowserPoolSessionTarget & {
+    readonly sessionId: BrowserSessionId;
+    readonly runnerId: RunnerId;
+  },
+): Promise<void> {
+  await tx
+    .insertInto("browserPoolSessions")
+    .values({
+      sessionId: input.sessionId,
+      runnerId: input.runnerId,
+      slotId: input.slotId,
+      term: input.term,
+    })
+    .execute(databaseOperationOptions());
+}
+
+/** Whether the session row in scope (`browser_sessions`) belongs to this target. */
+function ownedBy(target: BrowserPoolSessionTarget, alias = "browser_sessions") {
+  return sql<boolean>`exists (
+    select 1 from browser_pool_sessions own
+    where own.session_id = ${sql.ref(`${alias}.id`)}
+      and own.slot_id = ${target.slotId} and own.term = ${target.term}
+  )`;
 }
 
 export function readBrowserPoolSlot(database: Kysely<DatabaseSchema>, runnerId: RunnerId) {
@@ -164,6 +205,8 @@ export async function beginBrowserPoolPark(
       select exists (
         select 1 from browser_sessions session
         where session.runner_id = ${runnerId} and session.runtime_id = ${runtimeId}
+          -- Only this target's own sessions (W1): an earlier target's are not this guest's.
+          and ${ownedBy(target, "session")}
           and (
             session.state in ('starting', 'closing')
             -- Adoption does not rebuild a Trigger or Watch program's session yet.
@@ -318,6 +361,7 @@ export async function advanceBrowserPoolSlot(
           .where("runnerId", "=", slot.runnerId)
           .where("runtimeId", "=", slot.runtimeId)
           .where("state", "=", "closing")
+          .where(ownedBy(slot))
           .orderBy("id")
           .execute(databaseOperationOptions());
         await endBrowserPoolSessions(
@@ -325,7 +369,7 @@ export async function advanceBrowserPoolSlot(
           stopped.map(({ id }) => ({
             id,
             from: ["closing"],
-            end: { state: "closed", evidence: { kind: "guest-paused" } },
+            end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot },
           })),
         );
       }
@@ -351,16 +395,19 @@ export async function stopBrowserPoolSession(
       // Lock order: the slot first, then the session.
       const slot = await tx
         .selectFrom("browserPoolSlots")
-        .select("phase")
+        .select(["phase", "slotId", "term"])
         .where("runnerId", "=", input.runnerId)
         .forShare()
         .executeTakeFirst(databaseOperationOptions());
-      const state = slot?.phase === "parked" ? ("closed" as const) : ("closing" as const);
       const row = await tx
         .selectFrom("browserSessions")
-        .select("state")
+        .select(["state", ownedBy(slot ?? { slotId: "", term: 1 }).as("own")])
         .where("id", "=", input.sessionId)
         .executeTakeFirst(databaseOperationOptions());
+      // Closed on a parked guest only when the session is that guest's (W1); a session of an
+      // earlier target, or one with no slot here, is closing until its own evidence.
+      const state =
+        slot?.phase === "parked" && row?.own ? ("closed" as const) : ("closing" as const);
       if (!row || row.state === "closed" || row.state === "failed") return undefined;
       if (row.state === state) return state;
       // On a parked guest the Stop is answered by the pause itself: the next wake ends the
@@ -370,7 +417,7 @@ export async function stopBrowserPoolSession(
           {
             id: input.sessionId,
             from: ["starting", "ready", "closing"],
-            end: { state: "closed", evidence: { kind: "guest-paused" } },
+            end: { state: "closed", evidence: { kind: "guest-paused" }, target: slot! },
           },
         ]);
       else
@@ -448,7 +495,7 @@ async function recordBrowserPoolLosses(
           from: ["starting", "ready", "closing"],
           end:
             state === "closing" && closing
-              ? { state: "closed", evidence: closing }
+              ? { state: "closed", evidence: closing, target: slot }
               : { state: "failed" },
         })),
     );
@@ -474,9 +521,13 @@ export type BrowserPoolCloseEvidence =
     }
   | { readonly kind: "guest-paused" };
 
-/** The one writer of `closed` for pooled rows outside the slot's own writes: its evidence first. */
+/**
+ * The one writer of `closed` for pooled rows outside the slot's own writes: its evidence first,
+ * and the target that evidence is about. Only that target's own sessions are closed (W1).
+ */
 export async function closeBrowserPoolSessions(
   database: Kysely<DatabaseSchema>,
+  target: BrowserPoolSessionTarget,
   sessionIds: readonly BrowserSessionId[],
   evidence: BrowserPoolCloseEvidence,
 ): Promise<void> {
@@ -489,7 +540,7 @@ export async function closeBrowserPoolSessions(
         sessionIds.map((id) => ({
           id,
           from: ["starting", "ready", "closing"],
-          end: { state: "closed", evidence },
+          end: { state: "closed", evidence, target },
         })),
       ),
     undefined,
@@ -507,10 +558,14 @@ async function endBrowserPoolSessions(
   ends: readonly {
     readonly id: BrowserSessionId;
     readonly from: readonly HostedBrowserSessionState[];
-    /** A failed row needs nothing; a closed one, its evidence (V1). */
+    /** A failed row needs nothing; a closed one, its evidence and the target it is about. */
     readonly end:
       | { readonly state: "failed" }
-      | { readonly state: "closed"; readonly evidence: BrowserPoolCloseEvidence };
+      | {
+          readonly state: "closed";
+          readonly evidence: BrowserPoolCloseEvidence;
+          readonly target: BrowserPoolSessionTarget;
+        };
   }[],
 ): Promise<void> {
   if (!ends.length) return;
@@ -530,14 +585,15 @@ async function endBrowserPoolSessions(
     const now = new Date();
     const ended: BrowserSessionId[] = [];
     for (const end of ordered) {
-      const row = await transaction
+      let update = transaction
         .updateTable("browserSessions")
         .set({ closedAt: now, state: end.end.state, updatedAt: now })
         .where("id", "=", end.id)
         .where("state", "not in", ["closed", "failed"])
-        .where("state", "in", [...end.from])
-        .returning("id")
-        .executeTakeFirst(databaseOperationOptions());
+        .where("state", "in", [...end.from]);
+      // Closed only by evidence about the session's own target (W1).
+      if (end.end.state === "closed") update = update.where(ownedBy(end.end.target));
+      const row = await update.returning("id").executeTakeFirst(databaseOperationOptions());
       if (row) ended.push(row.id);
     }
     if (!ended.length) return;
@@ -620,11 +676,12 @@ export async function finishBrowserPoolRelease(
     database,
     async (tx, mutation) => {
       mutation.bumpResource("browser-placement");
-      await tx
+      const released = await tx
         .deleteFrom("browserPoolSlots")
         .where("runnerId", "=", runnerId)
         .where("phase", "=", "releasing")
-        .execute(databaseOperationOptions());
+        .returning(["slotId", "term"])
+        .executeTakeFirst(databaseOperationOptions());
       // Rows are locked in key order before they go, as every multi-row write here.
       const calls = await tx
         .selectFrom("browserPoolControllerCalls")
@@ -661,12 +718,15 @@ export async function finishBrowserPoolRelease(
           )
           .execute(databaseOperationOptions());
 
-      // The guest is known stopped: a session a Stop left closing has its end now.
+      // The guest is known stopped: a session of its own that a Stop left closing has its end
+      // now (an earlier target's is not this guest's).
+      if (!released) return;
       const closing = await tx
         .selectFrom("browserSessions")
         .select("id")
         .where("runnerId", "=", runnerId)
         .where("state", "=", "closing")
+        .where(ownedBy(released))
         .orderBy("id")
         .execute(databaseOperationOptions());
       // Only after the guest is known stopped, or its host said signed that it is gone.
@@ -675,7 +735,11 @@ export async function finishBrowserPoolRelease(
         closing.map(({ id }) => ({
           id,
           from: ["closing"],
-          end: { state: "closed", evidence: { kind: "guest-gone", by: "stopped" } },
+          end: {
+            state: "closed",
+            evidence: { kind: "guest-gone", by: "stopped" },
+            target: released,
+          },
         })),
       );
     },
@@ -874,14 +938,14 @@ export async function listBrowserPoolSessionTabs(
 /** Every session of a pooled runtime that is not yet terminal. */
 export async function listBrowserPoolRuntimeSessions(
   database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-  runtimeId: string,
+  target: BrowserPoolTargetSessions,
 ): Promise<readonly BrowserSessionId[]> {
   const rows = await database
     .selectFrom("browserSessions")
     .select("id")
-    .where("runnerId", "=", runnerId)
-    .where("runtimeId", "=", runtimeId)
+    .where("runnerId", "=", target.runnerId)
+    .where("runtimeId", "=", target.runtimeId)
+    .where(ownedBy(target))
     .where("state", "in", ["starting", "ready", "closing"])
     .orderBy("id")
     .execute(databaseOperationOptions());
@@ -915,14 +979,14 @@ export async function readBrowserPoolRevocation(
 /** The ready sessions of this runtime: the ones a channel can be missing from. */
 export async function listBrowserPoolReadySessions(
   database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-  runtimeId: string,
+  target: BrowserPoolTargetSessions,
 ): Promise<readonly BrowserSessionId[]> {
   const rows = await database
     .selectFrom("browserSessions")
     .select("id")
-    .where("runnerId", "=", runnerId)
-    .where("runtimeId", "=", runtimeId)
+    .where("runnerId", "=", target.runnerId)
+    .where("runtimeId", "=", target.runtimeId)
+    .where(ownedBy(target))
     .where("state", "=", "ready")
     .orderBy("id")
     .execute(databaseOperationOptions());
@@ -935,14 +999,14 @@ export async function listBrowserPoolReadySessions(
  */
 export async function listBrowserPoolClosingSessions(
   database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-  runtimeId: string,
+  target: BrowserPoolTargetSessions,
 ): Promise<readonly BrowserSessionId[]> {
   const rows = await database
     .selectFrom("browserSessions")
     .select("id")
-    .where("runnerId", "=", runnerId)
-    .where("runtimeId", "=", runtimeId)
+    .where("runnerId", "=", target.runnerId)
+    .where("runtimeId", "=", target.runtimeId)
+    .where(ownedBy(target))
     .where("state", "=", "closing")
     .orderBy("id")
     .execute(databaseOperationOptions());
