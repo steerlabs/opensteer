@@ -3,6 +3,7 @@ import {
   BrowserRuntimeServer,
   PageOwnership,
   SurfaceLedger,
+  TabSleeper,
   standardCdpPath,
   type BrowserRuntime,
   type StandardCdpAttachment,
@@ -522,7 +523,7 @@ it("hides the helper extension from tab lists, session CDP, and connected agents
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launchReady(launcher, nativeProfileRequest(directory));
+  const launched = await launcher.launch(nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
@@ -661,7 +662,7 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
   // Cold restart must bring none of the ended session's sleeping tabs back.
   await ledger.close();
   await launched.close();
-  const restarted = await launchReady(launcher, request);
+  const restarted = await launcher.launch(request);
   cleanup.push(() => restarted.close());
   const internal2 = restarted as unknown as {
     contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
@@ -831,7 +832,7 @@ it("hands off new popups synchronously, without dropping short-lived popups", as
   });
   const request = nativeProfileRequest(directory);
 
-  const b2 = await launchReady(launcher, request);
+  const b2 = await launcher.launch(request);
   cleanup.push(() => b2.close());
   const internal2 = b2 as unknown as {
     playwrightContext: { on(event: string, listener: (p: unknown) => void): void };
@@ -2164,7 +2165,7 @@ it("tells the client of a noopener tab's opener nothing of that tab's wake, and 
   expect(await agentC.targets()).toEqual([f.target(c)]);
 }, 90_000);
 
-it("sleeps a tab asked to sleep right after launch by discard, with its state, when the helper answers late (R1)", async () => {
+it("sleeps a tab under memory pressure through the sleeper as soon as the helper answers late, by discard with its state, and holds opens meanwhile (R1, R4)", async () => {
   // The helper's first answer is held until the test lets it through (a slow first worker start).
   const { ChromiumTabLifecycleBridge: Bridge } = await import("./tab-lifecycle-extension.js");
   const inventory = Bridge.prototype.inventory;
@@ -2202,15 +2203,43 @@ it("sleeps a tab asked to sleep right after launch by discard, with its state, w
   await cdp.send("Input.insertText", { text: "typed early" });
   await evalValue(cdp, "document.activeElement.blur()");
   await evalValue(cdp, "window.scrollTo(0, 1750)");
-  // Asked to sleep while the helper has not answered: refused (it waits, it is not closed).
-  expect(await ledger.sleep(tab.id, () => null)).toBe(false);
-  // The helper answers; asked again, as the sleeper asks again after a refusal, it sleeps by
-  // discard.
-  firstAnswer.resolve();
-  await vi.waitFor(async () => expect(await ledger.sleep(tab.id, () => null)).toBe(true), {
-    timeout: 15_000,
-    interval: 250,
+  // The runtime's sleeper, over the start threshold, with this browser's look still running.
+  const limit = 2 * 1024 ** 3;
+  let samples = 0;
+  const sleeper = new TabSleeper({
+    memoryPressure: async () => {
+      samples++;
+      return { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    },
   });
+  cleanup.push(async () => sleeper.close());
+  sleeper.add("session", {
+    ledger,
+    restoreVersion: 1,
+    blocked: () => null,
+    sleepReady: () => launched.context.sleepReady?.() ?? null,
+  });
+  sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+  // Passes run (they sample the memory) and sleep nothing; opens over the threshold wait.
+  await vi.waitFor(() => expect(samples).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
+  let opened = 0;
+  void sleeper.beforePageOpen().then(() => opened++);
+  void sleeper.beforePageOpen().then(() => opened++);
+  const sampled = samples;
+  await vi.waitFor(() => expect(samples).toBeGreaterThan(sampled), { timeout: 10_000 });
+  expect(opened).toBe(0);
+  expect(ledger.stateOf(tab.id)).not.toBe("suspended");
+  // The helper answers: the tab sleeps at once, not a probe penalty later.
+  const released = performance.now();
+  firstAnswer.resolve();
+  await vi.waitFor(() => expect(ledger.stateOf(tab.id)).toBe("suspended"), {
+    timeout: 3_000,
+    interval: 25,
+  });
+  const sleptAfterMs = performance.now() - released;
+  process.stdout.write(`${JSON.stringify({ event: "r4.slept-after-release", sleptAfterMs })}\n`);
+  await vi.waitFor(() => expect(opened).toBe(2), { timeout: 5_000 });
+  sleeper.close();
   const woken = await ledger.wake(tab.id);
   await waitLoaded(woken.cdp, "/draft");
   expect((woken.page as unknown as { openedFresh?: boolean }).openedFresh).not.toBe(true);
@@ -2220,4 +2249,54 @@ it("sleeps a tab asked to sleep right after launch by discard, with its state, w
       `({ mark: sessionStorage.getItem("mark"), draft: document.getElementById("draft").value, scroll: window.scrollY })`,
     ),
   ).toEqual({ mark: "kept", draft: "typed early", scroll: 1750 });
+}, 60_000);
+
+it("stops a look for the tab helper that ran out: no target poll and no navigation of the private page after it (R6)", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-look-timeout-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  // The helper's worker is never found (as on a browser that does not load it): the real wait
+  // polls for it and wakes it through the private page, until the look runs out.
+  const { ChromiumTabLifecycleBridge: Bridge } = await import("./tab-lifecycle-extension.js");
+  let polls = 0;
+  vi.spyOn(
+    Bridge.prototype as unknown as { runningServiceWorkerTarget(): Promise<string | null> },
+    "runningServiceWorkerTarget",
+  ).mockImplementation(async () => {
+    polls++;
+    return null;
+  });
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+    tabLifecycleProbeMs: 1_500,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    contextHandle: {
+      lifecycle: unknown;
+      lifecycleSettled: Promise<void>;
+      privatePage: { goto(url: string, options?: unknown): Promise<unknown> };
+    };
+  };
+  let navigations = 0;
+  const anchor = internal.contextHandle.privatePage;
+  const goto = anchor.goto.bind(anchor);
+  anchor.goto = (url, options) => {
+    navigations++;
+    return goto(url, options);
+  };
+  await internal.contextHandle.lifecycleSettled;
+  expect(internal.contextHandle.lifecycle).toBeUndefined();
+  expect(polls).toBeGreaterThan(0);
+  const after = { polls, navigations };
+  // Ordinary work for a while after the look ended (pages open, load and close).
+  for (let i = 0; i < 6; i++) {
+    const page = await launched.context.createPage();
+    const cdp = await page.cdp();
+    await cdp.send("Page.navigate", { url: "about:blank#" + i });
+    await page.close();
+  }
+  expect({ polls, navigations }).toEqual(after);
 }, 60_000);

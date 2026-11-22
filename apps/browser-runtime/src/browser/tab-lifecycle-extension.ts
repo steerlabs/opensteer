@@ -228,10 +228,16 @@ export class ChromiumTabLifecycleBridge {
   private serviceWorkerUrl: string | undefined;
   private wakeInFlight: Promise<void> | null = null;
   private stopped = false;
+  /** Calls to the worker still running; a stop waits for them (R6). */
+  private readonly working = new Set<Promise<unknown>>();
 
-  /** Its browser is closing: nothing more is asked, and a wait for the worker ends now. */
-  stop(): void {
+  /**
+   * Nothing more is asked: a wait for the worker ends at its next step, and the stop settles once
+   * every call in flight has, so no target poll or navigation of the private page follows it.
+   */
+  async stop(): Promise<void> {
     this.stopped = true;
+    await Promise.allSettled(this.working);
   }
 
   constructor(
@@ -281,7 +287,8 @@ export class ChromiumTabLifecycleBridge {
   }
 
   private async wakeServiceWorkerOnce(remainingMs: number): Promise<void> {
-    if (!this.privatePage || this.privatePage.isClosed() || remainingMs <= 0) return;
+    if (this.stopped || !this.privatePage || this.privatePage.isClosed() || remainingMs <= 0)
+      return;
     const stepMs = Math.max(100, Math.min(cdpStepMs, remainingMs));
     const origin =
       extensionOriginFromUrl(this.serviceWorkerUrl) ??
@@ -377,10 +384,21 @@ export class ChromiumTabLifecycleBridge {
    * could not be reached: once it was asked, a failure or timeout is an unknown outcome the caller
    * resolves from the inventory, never a second request (Rule B).
    */
-  private async callWorker<T>(
+  private callWorker<T>(
     fn: (worker: Worker) => Promise<T>,
     kind: "read" | "change" = "read",
   ): Promise<T> {
+    const call = this.callWorkerOnce(fn, kind);
+    this.working.add(call);
+    void call.catch(() => undefined).finally(() => this.working.delete(call));
+    return call;
+  }
+
+  private async callWorkerOnce<T>(
+    fn: (worker: Worker) => Promise<T>,
+    kind: "read" | "change",
+  ): Promise<T> {
+    if (this.stopped) throw new Error("The tab lifecycle helper was stopped.");
     let lastError: unknown;
     for (let attempt = 0; attempt < 2; attempt++) {
       let asked = false;

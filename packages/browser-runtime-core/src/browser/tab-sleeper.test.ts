@@ -641,6 +641,44 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("waits for a context's look for the tab helper: no tab of it is probed meanwhile, opens over the threshold wait for it within their bound, and the tab sleeps as soon as it ends (R4)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      // As the launcher's page answers while the look runs.
+      f.page.keepAwake = () => (pending ? "tab-helper" : null);
+      f.sleeper.add("session", {
+        ledger: f.ledger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f.ledger.stateOf(f.record.id)).not.toBe("suspended");
+      // Back-to-back opens over the threshold wait while the look is pending.
+      let opened = 0;
+      void f.sleeper.beforePageOpen().then(() => opened++);
+      void f.sleeper.beforePageOpen().then(() => opened++);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(opened).toBe(0);
+      look.resolve();
+      // The look's end is a pass at once: the tab sleeps now, not after a penalty of quietMs.
+      await vi.advanceTimersByTimeAsync(600);
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(opened).toBe(2);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("holds a burst of 46 opens so the sample never passes the limit: sleeping starts at the threshold and each wait is bounded (K9 corrected)", async () => {
     const mib = 1024 ** 2;
     const limit = 2048 * mib;

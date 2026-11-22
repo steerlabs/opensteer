@@ -1346,9 +1346,11 @@ export class BrowserRuntime implements NativePresentationSource {
           };
           host.sessions.set(claims.sessionId, active);
           this.sessions.set(claims.sessionId, active);
+          const sleepContext = host.browser.context;
           this.sleeper.add(claims.sessionId, {
             ledger,
             restoreVersion: claims.tabRestoreVersion,
+            sleepReady: () => sleepContext.sleepReady?.() ?? null,
             blocked: (id) =>
               [...this.nativePresentations].some(
                 (p) => p.sessionId === claims.sessionId && p.surfaceId === id,

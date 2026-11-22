@@ -96,6 +96,8 @@ export interface NativeProfileOpenTiming {
 
 interface PlaywrightChromiumLauncherOptions {
   authenticator?: PasskeyAuthenticator;
+  /** How long the look for the tab helper may run after a native launch (tests shorten it). */
+  tabLifecycleProbeMs?: number;
   onNativeOpenTiming?: (timing: NativeProfileOpenTiming) => void;
   probePasskeys?: boolean;
   args?: readonly string[];
@@ -241,6 +243,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
     },
   };
   private readonly onNativeOpenTiming: ((timing: NativeProfileOpenTiming) => void) | undefined;
+  private readonly tabLifecycleProbeMs: number;
   private readonly probePasskeys: boolean;
   private securityStateAvailable = false;
   get passkeys(): 1 | undefined {
@@ -260,6 +263,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       throw new Error("Chromium executablePath must be absolute.");
     }
     this.onNativeOpenTiming = options.onNativeOpenTiming;
+    this.tabLifecycleProbeMs = options.tabLifecycleProbeMs ?? lifecycleProbeMs;
     this.probePasskeys = options.probePasskeys === true || options.authenticator !== undefined;
     this.authenticator = options.authenticator;
     this.args = options.args ?? [];
@@ -871,7 +875,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       await browserCdp.send("Target.setDiscoverTargets", { discover: true });
       timing("target-discovery");
       signal?.throwIfAborted();
-      launched.establishTabLifecycle();
+      launched.establishTabLifecycle(this.tabLifecycleProbeMs);
       // The runtime now owns the host; ending its first attachment must not
       // tear down sibling sessions or the native warm host.
       signal?.removeEventListener("abort", abort);
@@ -974,8 +978,8 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
   }
 
   /** Looks for the tab-lifecycle helper once, in the background. */
-  establishTabLifecycle(): void {
-    this.contextHandle.establishLifecycle();
+  establishTabLifecycle(probeMs: number): void {
+    this.contextHandle.establishLifecycle(probeMs);
   }
 
   onClose(listener: () => void): void {
@@ -1754,7 +1758,7 @@ class PlaywrightContextHandle implements BrowserContext {
   markClosed(): void {
     if (this.closed) return;
     this.closed = true;
-    this.lifecycleCandidate?.stop();
+    void this.lifecycleCandidate?.stop();
     for (const wake of this.wakes.values()) wake.spoil();
     clearTimeout(this.removalTimer);
     this.removalTimer = undefined;
@@ -1795,21 +1799,26 @@ class PlaywrightContextHandle implements BrowserContext {
    * it must stay awake, so the sleeper asks again later); then a tab sleeps by discard if the
    * helper answered, by closing if not. The only caller of a sleep is the sleeper's own pass.
    */
-  establishLifecycle(): void {
+  establishLifecycle(probeMs: number): void {
     const candidate = this.lifecycleCandidate;
     if (!candidate) return;
     this.lifecyclePending = true;
-    this.lifecycleSettled = readRows(candidate, performance.now() + lifecycleProbeMs).then(
-      (rows) => {
-        this.lifecyclePending = false;
-        if (this.closed) return;
-        if (rows) this.lifecycle = candidate;
-        else
-          process.stderr.write(
-            '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
-          );
-      },
-    );
+    this.lifecycleSettled = readRows(candidate, performance.now() + probeMs).then(async (rows) => {
+      // A look that ran out stops before it is over: no poll or navigation follows it (R6).
+      if (!rows) await candidate.stop();
+      this.lifecyclePending = false;
+      if (this.closed) return;
+      if (rows) this.lifecycle = candidate;
+      else
+        process.stderr.write(
+          '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
+        );
+    });
+  }
+
+  /** Null once the look for the tab helper has ended; until then, when it will (R4). */
+  sleepReady(): Promise<void> | null {
+    return this.lifecyclePending ? this.lifecycleSettled : null;
   }
 
   async activatePrivateAnchor(): Promise<void> {

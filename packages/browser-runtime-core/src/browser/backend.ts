@@ -148,6 +148,11 @@ export interface BrowserContext {
   /** False after whole-context/browser teardown; page closes alone keep it connected. */
   isConnected?(): boolean;
   /**
+   * Null when its tabs may sleep now; otherwise a promise that settles when they may (a native
+   * browser's look for its tab helper, after launch).
+   */
+  sleepReady?(): Promise<void> | null;
+  /**
    * Restore precedes any load; other new pages submit their initial blank
    * document. `own` receives the page synchronously as soon as its handle
    * exists, before any later step can fail.

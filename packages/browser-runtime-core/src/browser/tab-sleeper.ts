@@ -83,6 +83,12 @@ interface SleepSession {
   readonly ledger: SurfaceLedger;
   readonly restoreVersion?: 1 | undefined;
   readonly blocked: (id: BrowserSurfaceId) => SleepBlocker | null;
+  /**
+   * Null when the session's tabs may sleep now; otherwise when they may (its browser's look for the
+   * tab helper after launch). A fact about the browser, not a tab: none of its tabs is probed
+   * meanwhile, and its end is a pass (R4).
+   */
+  readonly sleepReady?: (() => Promise<void> | null) | undefined;
 }
 interface HeldSession extends SleepSession {
   hostState: BrowserSessionState | null;
@@ -112,6 +118,8 @@ export class TabSleeper {
   private pendingAsyncPressurePass = false;
   /** An open over the threshold asked for a pass: it runs past a backoff, never past a settle. */
   private openAsked = false;
+  /** Looks already watched, so each one's end asks for one pass. */
+  private readonly watchedLooks = new WeakSet<Promise<void>>();
   /** Sleeps a pass has started and not finished: their memory is on its way back (M4). */
   private reclaimInFlight = 0;
   private readonly passWaiters: Array<() => void> = [];
@@ -349,6 +357,7 @@ export class TabSleeper {
     const state = session?.hostState;
     if (!session || !state || state.keepAwake) return "host-state";
     if (session.ledger.closing) return "closing";
+    if (this.lookOf(session)) return "tab-helper";
     if (state.viewed.includes(record.id)) return "viewed";
     if (state.pinned.includes(record.id)) return "pinned";
     const external = session.blocked(record.id);
@@ -515,6 +524,15 @@ export class TabSleeper {
             ? this.reclaimFrom.settledAt
             : 0;
       const canShed = this.canShedNow(at);
+      // R4: no tab can sleep yet only because a browser's look for the tab helper is still
+      // running: the open waits for it, within its own bound, then reads again.
+      const look = canShed || settleUntil > at ? null : this.pendingLook();
+      if (look && this.options.scheduling !== false && at < until) {
+        await withTimeout(look, until - at, {
+          timeoutError: () => new Error("The tab helper's look did not end."),
+        }).catch(() => undefined);
+        continue;
+      }
       if (this.options.scheduling === false || (settleUntil <= at && !canShed) || at >= until) {
         this.poke();
         return;
@@ -545,6 +563,33 @@ export class TabSleeper {
   private pressureHoldUntil(): number {
     const settling = this.reclaimFrom?.settledAt ?? 0;
     return this.openAsked ? settling : Math.max(this.pressureBackoffUntil, settling);
+  }
+
+  /**
+   * The session's pending look for the tab helper, watched: its end asks for a pass at once
+   * (under pressure through any backoff), instead of a probe on a clock.
+   */
+  private lookOf(session: SleepSession): Promise<void> | null {
+    const look = session.sleepReady?.() ?? null;
+    if (look && !this.watchedLooks.has(look)) {
+      this.watchedLooks.add(look);
+      void look
+        .catch(() => undefined)
+        .then(() => {
+          if (this.closed) return;
+          if (this.releasing) this.pendingAsyncPressurePass = true;
+          this.poke();
+        });
+    }
+    return look;
+  }
+
+  /** A pending look of any session, for an open over the threshold to wait on. */
+  private pendingLook(): Promise<void> | null {
+    const looks = [...this.sessions.values()]
+      .map((session) => this.lookOf(session))
+      .filter((look): look is Promise<void> => look !== null);
+    return looks.length ? Promise.race(looks) : null;
   }
 
   /** Whether some page may sleep right now, whatever a backoff or a settle holds back. */
