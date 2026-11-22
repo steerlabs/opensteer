@@ -8,7 +8,13 @@ import {
   type RunId,
   type Thread,
 } from "@opensteer/core";
-import { createMemoryPass, needsYouPage, type MemoryPassExecution } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  ChannelStore,
+  createMemoryPass,
+  needsYouPage,
+  type MemoryPassExecution,
+} from "@opensteer/database";
 import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import {
@@ -16,6 +22,7 @@ import {
   testContinuationIdentity,
   testReadyHarnessCatalog,
   type StoreFixture,
+  testMessagingRunnerId,
 } from "@opensteer/database/test-support/store";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import {
@@ -1143,6 +1150,71 @@ describeStore("managed memory passes", (it) => {
     });
     expect(nextSession!.id).not.toBe(firstSession!.id);
   });
+  it("never reads a task that had no personal context into the person's memory", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "strangers");
+    await service(f).instance.ensureForPersonal();
+    const light = (await role(f, base.userId)).trigger;
+    const first = await wake(f, light, (await tick(f, base, light)).occurrence.id, "strangers-1");
+    await finish(f, first.run!, "completed");
+    const task = async (title: string) =>
+      (
+        await f.store.createThread({
+          createdBy: base.userId,
+          environmentId: base.environmentId,
+          harnessInstanceId: base.harnessInstance.id,
+          idempotencyKey: `strangers-${title}`,
+          modelSelection: base.thread.modelSelection,
+          title,
+        })
+      ).thread;
+    // A task from a channel where anyone may speak.
+    await f.enrollMessagingRunner(testMessagingRunnerId, "Messaging");
+    const account = await new ChannelStore(f.database).createConnection({
+      account: { displayName: "Team", externalAccountId: "T-strangers", routingMode: "dedicated" },
+      connection: {
+        runnerId: testMessagingRunnerId,
+        connectionMethod: "bring-your-own",
+        displayName: "Team",
+        externalIdentityId: "U-BOT-strangers",
+        externalTenantId: "T-strangers",
+        provider: "slack",
+        transportKind: "socket",
+      },
+      createdBy: base.userId,
+      credential: {
+        encryptedPayload: Buffer.from("strangers"),
+        encryptionKeyVersion: 1,
+        id: createId("credential"),
+        name: "Team",
+        ownerId: base.userId,
+        provider: "channel:slack",
+      },
+    });
+    const anyone = await new AgentConnectionStore(f.database).createBridge({
+      userId: base.userId,
+      accountId: account.account.id,
+      conversation: { id: "C-team", name: "#team" },
+      senders: "anyone",
+      accessMode: "approval-required",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const fromStrangers = await task("From the channel");
+    const own = await task("Own work");
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: anyone.id })
+      .where("id", "=", fromStrangers.id)
+      .execute();
+    await delivered(f, base, fromStrangers.id, "strangers-channel");
+    await delivered(f, base, own.id, "strangers-own");
+    const second = await wake(f, light, (await tick(f, base, light)).occurrence.id, "strangers-2");
+    const text = wakeText(second).join("\n");
+    expect(text).toContain(own.id);
+    expect(text).not.toContain(fromStrangers.id);
+  });
+
   it("lists what a light pass must read, with no old wakes, and skips an idle wake", async ({
     storeFixture: f,
   }) => {

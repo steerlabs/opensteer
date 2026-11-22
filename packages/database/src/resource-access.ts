@@ -23,7 +23,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely } from "kysely";
+import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
 import { liveConnection } from "./connection-liveness.js";
 
@@ -67,12 +67,22 @@ export async function lineagePersonalContext(
   connectionId: string | null,
 ): Promise<boolean> {
   if (connectionId === null) return true;
-  const row = await database
-    .selectFrom("agentConnections")
-    .select("bridgeSenders")
-    .where("id", "=", connectionId)
-    .executeTakeFirst();
-  return row !== undefined && lineageAllowsPersonalContext(row);
+  const { rows } = await sql<{ personal: boolean }>`
+    select ${lineageHasPersonalContext(sql`${connectionId}::text`)} as personal
+  `.execute(database);
+  return rows[0]?.personal === true;
+}
+
+/**
+ * The one rule, as SQL over a lineage's connection id (null: the person's own work): personal
+ * context only where no bridge anyone may speak to is the lineage. Every reader of the rule (a
+ * Run, a session, the memory passes' sources) asks it here.
+ */
+export function lineageHasPersonalContext(connectionId: RawBuilder<unknown>): RawBuilder<boolean> {
+  return sql<boolean>`(${connectionId} is null or exists (
+    select 1 from agent_connections personal_lineage
+    where personal_lineage.id = ${connectionId}
+      and personal_lineage.bridge_senders is distinct from 'anyone'))`;
 }
 
 /** One execution as the Home resolved it: whom it works for and every mode in its lineage. */

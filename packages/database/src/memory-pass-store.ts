@@ -1,4 +1,5 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { lineageHasPersonalContext } from "./resource-access.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
@@ -261,6 +262,8 @@ export async function memoryPassWakeContext(
       sql<Date>`max(coalesce(thread_inputs.updated_at, messages.created_at))`.as("newest"),
     ])
     .where("threads.id", "not in", workers)
+    // A task that could not read the person's memory is never a source of it.
+    .where(lineageHasPersonalContext(sql.ref("threads.origin_connection_id")))
     .where(
       sql<boolean>`coalesce(messages.author->>'threadId', '') not in (
       select anchor_thread_id from triggers
