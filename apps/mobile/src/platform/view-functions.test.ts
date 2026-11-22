@@ -75,6 +75,25 @@ describe("a native view's functions", () => {
     expect(instance.present).not.toHaveBeenCalled();
   });
 
+  // A name the binary offers no tag function for stays the instance's own, called on it.
+  it("call a view's own function on the view when the binary has no tag function for it", async () => {
+    modules.set("PhoneDisplay", { viewTagFunctions: 1, presentForView: vi.fn() });
+    const { viewFunctionsOf, viewTagModule } = await load();
+    const instance = {
+      nativeTag: 42,
+      present: vi.fn(),
+      clear(this: { nativeTag: number }) {
+        return Promise.resolve(this.nativeTag);
+      },
+    };
+    const calls = viewFunctionsOf<Calls>(
+      viewTagModule("PhoneDisplay"),
+      instance as unknown as Calls,
+      ["present", "clear"],
+    )!;
+    await expect(calls.clear()).resolves.toBe(42);
+  });
+
   it.each([
     ["Android, whose view functions run on the main queue", "android", { viewTagFunctions: 1 }],
     ["an older iOS binary without calls by tag", "ios", {}],

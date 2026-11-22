@@ -39,6 +39,7 @@ import type { NativeMenuSection } from "../thread/composer-menu.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
+import { ViewNotMountedError } from "../platform/view-not-mounted.js";
 import {
   DisplayControls,
   type DisplayPicture,
@@ -204,7 +205,9 @@ export function ComputerDisplay({
       keepPicture && native.resetKeepingPicture
         ? native.resetKeepingPicture(String(next))
         : native.reset(String(next));
-    void reset.catch(() => {
+    void reset.catch((error: unknown) => {
+      // No tag yet: the view reports its epoch when it joins its window, and is reset then.
+      if (error instanceof ViewNotMountedError) return;
       // Native teardown already clears its surface. A bridge call queued before
       // removal can reject after that view's tag is gone.
       if (!mounted.current || decoder.current !== instance || epoch.current !== next) return;

@@ -1,5 +1,8 @@
 import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
+import { ViewNotMountedError } from "./view-not-mounted.js";
+
+export { ViewNotMountedError };
 
 /**
  * Calls to one of our native views' functions that never make the JavaScript thread wait for
@@ -56,13 +59,15 @@ export function viewFunctionsOf<Calls extends Record<string, ViewCall>>(
   const calls: Record<string, ViewCall> = {};
   for (const name of names) {
     const byTag = module[`${name}ForView`];
+    const own = instance[name] as ViewCall | undefined;
     calls[name] =
       typeof byTag !== "function"
-        ? (instance[name] as ViewCall)
+        ? // The view's own function, called on the view (it reads the view's tag from `this`).
+          ((typeof own === "function" ? own.bind(instance) : own) as ViewCall)
         : (...args: never[]) => {
             const tag = viewTagOf(instance);
             return tag === null
-              ? Promise.reject(new Error("The view is not mounted yet."))
+              ? Promise.reject(new ViewNotMountedError())
               : (byTag as (tag: number, ...rest: never[]) => Promise<unknown>)(tag, ...args);
           };
   }
