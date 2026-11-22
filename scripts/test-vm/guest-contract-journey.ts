@@ -260,21 +260,20 @@ function keychainCase(
       path.join(import.meta.dirname, "fixture-authority-files.sh"),
       path.join(root, "opensteer-job/fixture-authority-files.sh"),
     );
+    // As the runner runs it: the step arrives over stdin (`bash -s`), so a command in it that read
+    // stdin would take the rest of the step with it.
     const step = (action: string, extra: NodeJS.ProcessEnv = {}) => {
-      const r = spawnSync(
-        "/bin/bash",
-        ["scripts/test-vm/fixture-keychain.sh", action, "opensteer-gui-job-contract"],
-        {
-          env: {
-            HOME: root,
-            // The stand-ins first; Node for the security stand-in; the system's own tools after.
-            PATH: `${tools}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
-            ...extra,
-          },
-          encoding: "utf8",
-          timeout: 15_000,
+      const r = spawnSync("/bin/bash", ["-s", "--", action, "opensteer-gui-job-contract"], {
+        input: readFileSync(path.join(import.meta.dirname, "fixture-keychain.sh"), "utf8"),
+        env: {
+          HOME: root,
+          // The stand-ins first; Node for the security stand-in; the system's own tools after.
+          PATH: `${tools}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          ...extra,
         },
-      );
+        encoding: "utf8",
+        timeout: 15_000,
+      });
       writeFileSync(path.join(root, `${action}.log`), r.stdout + r.stderr);
       assert.equal(r.error, undefined);
       return r.status;
