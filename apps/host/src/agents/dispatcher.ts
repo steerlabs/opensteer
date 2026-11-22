@@ -850,7 +850,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       try {
         return await step();
       } catch (error) {
-        if (await this.#triggers.commandChatWaiting(command.id)) throw chatRunHeld();
+        // Only the authority refusal a paused chat causes: a conflict or a missing row fails as
+        // itself, paused or not.
+        if (
+          error instanceof OpensteerError &&
+          error.code === "forbidden" &&
+          (await this.#triggers.commandChatWaiting(command.id))
+        )
+          throw chatRunHeld();
         throw error;
       }
     };

@@ -1642,6 +1642,8 @@ export class TriggerStore {
   async claimDueSchedules(
     now = new Date(),
     limit = 64,
+    /** Tests only: runs after the due schedules are read and before their authority is. */
+    seam?: { readonly afterDueRead?: () => Promise<void> },
   ): Promise<{
     readonly occurrences: readonly TriggerOccurrence[];
     readonly changed: boolean;
@@ -1683,7 +1685,11 @@ export class TriggerStore {
       ): Promise<TriggerOccurrence | undefined> => {
         if (!trigger.nextFireAt) return undefined;
         let occurrence: TriggerOccurrence | undefined;
+        await seam?.afterDueRead?.();
         if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
+          // Held or lost, read as one fact: a chat that started waiting since the due read is
+          // skipped as held (nothing created, nothing moved); only an end pauses the automation.
+          if (await triggerChatWaiting(transaction, trigger)) return undefined;
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
           // condition.

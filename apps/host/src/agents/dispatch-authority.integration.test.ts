@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readPluginSnapshot, pluginSnapshotDigest } from "@opensteer/agent-plugins";
-import type { AgentGrant, ThreadAccessMode } from "@opensteer/core";
+import { OpensteerError, type AgentGrant, type ThreadAccessMode } from "@opensteer/core";
 import {
   AgentConnectionStore,
   ChannelStore,
@@ -54,6 +54,8 @@ function dispatcher(
   hooks: {
     readonly planning: () => Promise<void>;
     readonly afterFence?: () => Promise<void>;
+    /** Between the Home's preparation and its send fence. */
+    readonly beforeFence?: () => Promise<void>;
     readonly holdAck?: (beforeAck: () => Promise<void>) => void;
   },
   sent: RunnerCommand[],
@@ -109,9 +111,17 @@ function dispatcher(
         options?: {
           readonly beforeAck?: () => Promise<void>;
           readonly beforeSend?: () => Promise<void>;
+          readonly onNotAdmitted?: () => Promise<void>;
         },
       ) => {
-        await options?.beforeSend?.();
+        await hooks.beforeFence?.();
+        // As the registry: a fence that refuses means the Runner never had it.
+        try {
+          await options?.beforeSend?.();
+        } catch (error) {
+          await options?.onNotAdmitted?.();
+          throw error;
+        }
         await hooks.afterFence?.();
         sent.push(command);
         if (options?.beforeAck) hooks.holdAck?.(options.beforeAck);
@@ -773,6 +783,186 @@ describeStore("a connected agent's authority at the send", (it) => {
         await service.close();
       }
     });
+
+  it("skips, never pauses, an automation whose chat started waiting between the due read and its authority", async ({
+    storeFixture,
+  }) => {
+    const { anyone, channels, configured, fixture, thread } = await anyoneChat(
+      storeFixture,
+      "auto-race",
+    );
+    const { database } = storeFixture;
+    const triggers = new TriggerStore(database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: thread.id,
+      createdBy: fixture.userId,
+      idempotencyKey: "auto-race",
+      name: "Every minute",
+      ...everyMinute,
+    });
+    expect(await originOf(storeFixture, trigger.id)).toBe(anyone.id);
+    const at = new Date(Date.now() - 60_000);
+    await database
+      .updateTable("triggers")
+      .set({ nextFireAt: at })
+      .where("id", "=", trigger.id)
+      .execute();
+    // Due when read; then the account needs attention before its authority is read.
+    const claimed = await triggers.claimDueSchedules(new Date(), 64, {
+      afterDueRead: async () => {
+        await channels.setRuntimeConnectionHealth({
+          connectionId: configured.connection.id,
+          detail: "Signed out",
+          reason: "credentials",
+          runnerId: testMessagingRunnerId,
+          status: "needs-attention",
+        });
+      },
+    });
+    expect(claimed).toMatchObject({ occurrences: [], failures: [] });
+    expect(
+      await database
+        .selectFrom("triggers")
+        .select(["status", "pauseReason", "nextFireAt"])
+        .where("id", "=", trigger.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "active", pauseReason: null, nextFireAt: at });
+  });
+
+  /** An automation of an "anyone" chat with one tick enqueued while the chat was live. */
+  async function liveTick(storeFixture: Fixture, suffix: string) {
+    const chat = await anyoneChat(storeFixture, suffix);
+    const triggers = new TriggerStore(storeFixture.database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: chat.thread.id,
+      createdBy: chat.fixture.userId,
+      idempotencyKey: suffix,
+      name: "Every minute",
+      ...everyMinute,
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: chat.fixture.userId,
+      triggerId: trigger.id,
+    });
+    const pause = () =>
+      chat.channels.setConnectionStatus(
+        chat.configured.connection.id,
+        chat.fixture.userId,
+        "paused",
+      );
+    const resume = () =>
+      chat.channels.setConnectionStatus(
+        chat.configured.connection.id,
+        chat.fixture.userId,
+        "connected",
+      );
+    return { ...chat, occurrence, pause, resume };
+  }
+  const listed = async (storeFixture: Fixture, commandId: string) =>
+    (await storeFixture.store.listPendingCommands()).some(({ id }) => id === commandId);
+
+  it("holds a tick enqueued before the pause at its listing, and lists it when the chat is back", async ({
+    storeFixture,
+  }) => {
+    const { occurrence, pause, resume } = await liveTick(storeFixture, "tick-listing");
+    expect(await listed(storeFixture, occurrence.commandId)).toBe(true);
+    await pause();
+    expect(await listed(storeFixture, occurrence.commandId)).toBe(false);
+    await resume();
+    expect(await listed(storeFixture, occurrence.commandId)).toBe(true);
+  });
+
+  it("holds a tick listed before the pause at its claim, and claims it when the chat is back", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { occurrence, pause, resume } = await liveTick(storeFixture, "tick-claim");
+    expect(await listed(storeFixture, occurrence.commandId)).toBe(true);
+    await pause();
+    expect(await store.claimCommand(occurrence.commandId, "tick-claim")).toBeNull();
+    await resume();
+    expect(
+      (await store.claimCommand(occurrence.commandId, "tick-claim"))?.terminalFailure,
+    ).toBeUndefined();
+  });
+
+  it("holds a tick paused at its send fence, undoes its running stamp, and sends it once when back", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { fixture, occurrence, pause, resume } = await liveTick(storeFixture, "tick-fence");
+    const claimed = await store.claimCommand(occurrence.commandId, "tick-fence");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {}, beforeFence: pause },
+      [],
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect((failure as CommandDispatchError).disposition).toBe("held");
+    await store.retryCommand(occurrence.commandId, failure);
+    expect(
+      await database
+        .selectFrom("triggerOccurrences")
+        .select("status")
+        .where("id", "=", occurrence.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "pending" });
+    await resume();
+    const again = await store.claimCommand(occurrence.commandId, "tick-fence-2");
+    if (!again || again.terminalFailure) throw new Error("Expected the automation's command again");
+    const sent: RunnerCommand[] = [];
+    await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {} },
+      sent,
+      [],
+    ).dispatch(again.command, new AbortController().signal);
+    expect(sent.map(({ type }) => type)).toEqual(["trigger.execute"]);
+  });
+
+  it("fails a tick as itself when something other than a paused chat refuses it, even while paused", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { fixture, occurrence, pause } = await liveTick(storeFixture, "tick-conflict");
+    const claimed = await store.claimCommand(occurrence.commandId, "tick-conflict");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    await pause();
+    const load = vi
+      .spyOn(TriggerStore.prototype, "loadDispatchContext")
+      .mockRejectedValue(
+        new OpensteerError({ code: "conflict", message: "The occurrence changed" }),
+      );
+    try {
+      const failure = await dispatcher(
+        storeFixture,
+        fixture.runnerId,
+        { planning: async () => {} },
+        [],
+        [],
+      )
+        .dispatch(claimed.command, new AbortController().signal)
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(failure).toMatchObject({ message: "The occurrence changed" });
+      expect((failure as { disposition?: string }).disposition).not.toBe("held");
+    } finally {
+      load.mockRestore();
+    }
+  });
 
   it("never turns a dispatch that may have reached the Runner into held, even if the chat is paused meanwhile", async ({
     storeFixture,
