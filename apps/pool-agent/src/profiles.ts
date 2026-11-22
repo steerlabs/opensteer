@@ -25,6 +25,11 @@ export function profilePathFor(root: string, slotId: string): string {
   return join(root, profileFileName(slotId));
 }
 
+/** Round H: a new profile would make the profiles exceed the filesystem they are on. */
+export class ProfilesFull extends Error {
+  override readonly name = "ProfilesFull";
+}
+
 /** Writes a filesystem onto a new, empty file (the driver's is `mkfs.ext4`). */
 export type ProfileFormatter = (file: string) => Promise<void>;
 
@@ -34,9 +39,21 @@ export async function ensureProfile(
   slotId: string,
   sizeMib: number,
   format: ProfileFormatter,
+  filesystemBytes?: () => Promise<number>,
 ): Promise<{ readonly path: string; readonly made: boolean }> {
   const path = profilePathFor(root, slotId);
   if (await present(path)) return { path, made: false };
+  // Round H: the profiles' sizes together, with this one, stay inside their filesystem (the
+  // files are sparse, so a filled-in profile still has the room it was given).
+  if (filesystemBytes) {
+    let total = sizeMib * mib;
+    for (const entry of await readdir(root))
+      if (/^slot-[0-9a-f]{64}\.ext4$/u.test(entry)) total += (await lstat(join(root, entry))).size;
+    if (total > (await filesystemBytes()))
+      throw new ProfilesFull(
+        `A ${sizeMib} MiB profile would make this host's profiles exceed their filesystem.`,
+      );
+  }
   const making = join(
     root,
     `${makingPrefix}${profileFileName(slotId)}-${randomBytes(6).toString("hex")}`,

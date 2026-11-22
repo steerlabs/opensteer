@@ -131,6 +131,13 @@ Bounds (round D, D1):
 
 ## Agent configuration
 
+A provisioned host sets `driver.requireEgressUpstream` and `driver.egress.accountOrigin`. Then no
+slot's proxy ever connects directly, a create names no egress, and each slot's upstream
+credentials are pulled from the account service at its start, signed with the host key, into a
+root-only `driver.credentialsRoot` (`PROVISIONER.md`, section 8). Without the flag a slot's
+egress is what its create names, as before. `driver.profilesRoot` is the durable disk's mount
+point (`PROVISIONER.md`, section 7).
+
 `/etc/opensteer-pool/agent.json` (mode 0600), for example:
 
 ```json
@@ -160,8 +167,10 @@ Bounds (round D, D1):
     "egressUidBase": 300000,
     "egress": {
       "node": "/opt/opensteer-pool/node/bin/node",
-      "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js"
+      "main": "/var/lib/opensteer-pool/images/egress/dist/egress-main.js",
+      "accountOrigin": "https://<the account service>"
     },
+    "requireEgressUpstream": true,
     "network": {
       "resolvers": ["8.8.8.8", "1.1.1.1"],
       "privateResolvers": [],

@@ -14,6 +14,7 @@ import { FirecrackerDriver } from "./firecracker/driver.js";
 import { SlotJournal } from "./journal.js";
 import { createAdminServer, createHomeServer, listen, parseProvisionerKey } from "./server.js";
 import { createRelayAuthServer } from "./relay.js";
+import { fetchSlotEgress } from "./slot-egress-fetch.js";
 
 export function log(event: Readonly<Record<string, unknown>>): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -26,12 +27,22 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
   refuseUnsupportedMode(config);
   const driver = new FirecrackerDriver(config.driver, log);
   await driver.open();
+  const hostKey = await readHostKey(config.admin.hostKeyFile);
+  // Round H: a host that requires an egress upstream pulls each slot's from the account
+  // service, signed with its host key (fetchSlotEgress).
+  const origin = config.driver.egress.accountOrigin;
+  const egressFetch =
+    config.driver.requireEgressUpstream && origin
+      ? (slotId: string, signal: AbortSignal) =>
+          fetchSlotEgress({ origin, hostId: config.admin.hostId, hostKey, slotId, signal })
+      : undefined;
   const agent = new PoolAgent({
     journal: new SlotJournal(config.journal),
     driver,
     retentionMs: config.retentionHours * 60 * 60_000,
     saveAfterMs: config.saveAfterSeconds === null ? null : config.saveAfterSeconds * 1000,
     maxConcurrentSaves: config.maxConcurrentSaves,
+    ...(egressFetch ? { egressFetch } : {}),
     log,
     // Rule S2: a failed journal write ends the process; systemd starts it again
     // (Restart=always) and the new agent's recovery reads the disk. Guests keep running.
@@ -46,7 +57,6 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
   });
   await agent.start();
   const servers: Server[] = [];
-  const hostKey = await readHostKey(config.admin.hostKeyFile);
   const home = createHomeServer({ agent, log, hostKey });
   const admin = createAdminServer({
     agent,

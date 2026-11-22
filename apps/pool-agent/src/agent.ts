@@ -44,6 +44,8 @@ import {
   type SlotEgress,
 } from "./driver.js";
 import { fits, guestCharge } from "./capacity.js";
+import { ProfilesFull } from "./profiles.js";
+import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
 import {
   isTombstone,
   type JournalRecord,
@@ -71,6 +73,8 @@ export interface PoolAgentDeadlines {
   readonly sweep: number;
   /** How long a save that ran out of time waits for its writer before the VMM is ended. */
   readonly snapshotDrain: number;
+  /** Round H: how long a slot's credentials are fetched from the account service. */
+  readonly egress: number;
 }
 
 export const defaultDeadlines: PoolAgentDeadlines = {
@@ -88,6 +92,7 @@ export const defaultDeadlines: PoolAgentDeadlines = {
   inspect: 3_000,
   sweep: 60_000,
   snapshotDrain: 30_000,
+  egress: 10_000,
 };
 
 /** The binding limit on how long a parked guest's live state may be kept. */
@@ -124,6 +129,12 @@ export interface PoolAgentOptions {
    * called. The daemon exits; the service manager starts it again and recovery reads the disk.
    */
   readonly fatal?: (error: unknown) => void;
+  /**
+   * Round H: on a host that pulls its slots' credentials, fetches one slot's from the account
+   * service (`fetchSlotEgress`): its upstream, or null when none is assigned; a throw when the
+   * fetch could not be completed. Required exactly when the driver pulls.
+   */
+  readonly egressFetch?: (slotId: string, signal: AbortSignal) => Promise<SlotEgressAnswer | null>;
 }
 
 interface Slot {
@@ -247,6 +258,9 @@ export class PoolAgent {
    */
   async start(): Promise<void> {
     await this.#journal.open();
+    // Round H: a host that pulls its slots' credentials has a way to fetch them, and only it.
+    if (this.#driver.pullsEgress !== (this.#options.egressFetch !== undefined))
+      throw new Error("The agent fetches slot egress exactly when its driver pulls it.");
     this.#incarnation = await this.#step("verify", () => this.#driver.incarnation());
     // Round E, E4: the room the agent admits guests into memory by, as computed on this host.
     const capacity = this.#driver.memoryCapacity();
@@ -608,13 +622,22 @@ export class PoolAgent {
     // it when none is there and keeps one that is exactly as it is; a path the provisioner
     // names must be that same path. A make that failed leaves no slot and no file.
     const { profileMib, profilePath: named, ...spec } = input.guest;
+    // Round H: a host that pulls its slots' credentials takes none from a create.
+    if (this.#driver.pullsEgress && spec.egress !== undefined)
+      throw new SlotConflict("This host pulls each slot's egress; a create names none.");
     const profilePath = this.#driver.profilePath(input.slotId);
     if (named !== undefined && named !== profilePath)
       throw new SlotConflict("A slot's profile is its own: its path is derived from the slot id.");
     if (named === undefined && profileMib === undefined)
       throw new SlotConflict("A create names the size of the slot's profile (profileMib).");
     if (profileMib !== undefined) {
-      const profile = await this.#driver.ensureProfile(input.slotId, profileMib);
+      const profile = await this.#driver
+        .ensureProfile(input.slotId, profileMib)
+        .catch((error: unknown) => {
+          // Round H: no room for it is a definite refusal; nothing was made.
+          if (error instanceof ProfilesFull) throw new SlotConflict(error.message);
+          throw error;
+        });
       this.#log({ event: "profile.ready", slotId: input.slotId, made: profile.made });
     }
     const guest: BrowserPoolAgentGuestSpec = { ...spec, profilePath };
@@ -764,7 +787,9 @@ export class PoolAgent {
    * `deleteSlot`, with what was seen gone. Round G, B: a slot's upstream credential files are
    * removed with it, before its record becomes a tombstone (so a failed removal leaves a slot
    * that a repeated delete finishes), except a file another live slot also names.
-   * `credentialsErased` is present only when the slot named files and every one is seen gone.
+   * `credentialsErased` is present whenever every credential file the slot has is seen gone (none
+   * counts), and on a pulling host for a slot it no longer knows; a file that cannot be removed
+   * makes the delete fail, to be sent again.
    */
   async deleteSlotWithEvidence(
     slotId: string,
@@ -791,12 +816,21 @@ export class PoolAgent {
     return this.#admin.run(async () => {
       const slot = this.#slots.get(slotId);
       if (!slot || slot.deleted) {
+        // Round H: a slot it does not know: leftover pulled credentials at its derived paths.
+        if (this.#driver.pullsEgress) {
+          await this.#driver.eraseCredentials(this.#driver.pulledEgressFiles(slotId));
+          credentialsErased = true;
+        }
         await erase(this.#driver.profilePath(slotId));
         return evidence();
       }
       const profilePath = slot.record.guest.profilePath;
       return this.#run(slot, async () => {
         if (slot.deleted) {
+          if (this.#driver.pullsEgress) {
+            await this.#driver.eraseCredentials(this.#driver.pulledEgressFiles(slotId));
+            credentialsErased = true;
+          }
           await erase(profilePath);
           return evidence();
         }
@@ -811,9 +845,12 @@ export class PoolAgent {
         await this.#step("network", () => this.#driver.removeSlot(slotId));
         // Round G, B: its proxy is gone; its credential files go before its record does.
         const egress = slot.record.guest.egress;
-        const files = egress
-          ? [egress.usernameFile, egress.passwordFile, ...(egress.caFile ? [egress.caFile] : [])]
-          : [];
+        // Round H: a pulling host's slot has its credentials at paths derived from its id.
+        const files = this.#driver.pullsEgress
+          ? [...this.#driver.pulledEgressFiles(slotId)]
+          : egress
+            ? [egress.usernameFile, egress.passwordFile, ...(egress.caFile ? [egress.caFile] : [])]
+            : [];
         const named = new Set(
           this.#live()
             .filter((other) => other !== slot)
@@ -825,7 +862,8 @@ export class PoolAgent {
         const own = files.filter((file) => !named.has(file));
         if (own.length < files.length) this.#log({ event: "credentials.shared", slotId });
         await this.#driver.eraseCredentials(own);
-        credentialsErased = files.length > 0 && own.length === files.length;
+        // W10: proven gone whenever every file the slot has is gone, including when it has none.
+        credentialsErased = own.length === files.length;
         // One write: the live record becomes a tombstone that holds nothing secret. From here
         // nothing queued may act, and the slot's control key is gone.
         const tombstone = tombstoneOf(slot.record, this.#iso());
@@ -862,13 +900,15 @@ export class PoolAgent {
     if (refusal) return this.#store(slot, record, refused(call.id, refusal, record));
     switch (call.kind) {
       case "start":
-        return this.#admitted(slot, () => this.#start(slot, call));
+        return this.#withEgress(slot, call, () =>
+          this.#admitted(slot, () => this.#start(slot, call)),
+        );
       case "pause":
         return this.#pause(slot, call);
       case "resume":
         // A wake from memory keeps the memory it holds; a wake from disk needs room.
         return slot.record.saved?.tier === "disk"
-          ? this.#admitted(slot, () => this.#resume(slot, call))
+          ? this.#withEgress(slot, call, () => this.#admitted(slot, () => this.#resume(slot, call)))
           : this.#resume(slot, call);
       case "stop":
         return this.#stop(slot, call);
@@ -924,6 +964,42 @@ export class PoolAgent {
     } finally {
       this.#admitting.delete(slotId);
     }
+  }
+
+  /**
+   * Round H: no upstream, no start. On a host that pulls its slots' credentials, a start or a
+   * wake from disk whose slot has none fetches them first, before anything is written or
+   * booted (its proxy's service cannot have started: no guest of the slot runs).
+   * - Fetched: written in place, and the start goes on (its proxy is defined again with them).
+   * - None assigned: a stored, signed `applied: false`, reason `egress-required`; nothing booted.
+   * - The fetch could not be completed: refused as "try again" (`unavailable`), nothing written.
+   * Credentials already present are used as they are.
+   */
+  async #withEgress(
+    slot: Slot,
+    call: BrowserPoolAgentCall,
+    work: () => Promise<BrowserPoolAgentResult>,
+  ): Promise<BrowserPoolAgentResult> {
+    const fetch = this.#options.egressFetch;
+    const slotId = slot.record.slotId;
+    if (!fetch || (await this.#driver.hasPulledEgress(slotId))) return work();
+    let answer: SlotEgressAnswer | null;
+    try {
+      answer = await within(this.#deadlines.egress, "The slot's egress fetch", (signal) =>
+        fetch(slotId, signal),
+      );
+    } catch (error) {
+      // Never the error's text: it is the fetch's, and says nothing secret, but stays out anyway.
+      this.#log({ event: "egress.fetch-failed", slotId, error: (error as Error)?.name ?? "error" });
+      throw new AgentUnavailable("The slot's egress could not be fetched; try again later.");
+    }
+    if (answer === null) {
+      this.#log({ event: "egress.none", slotId });
+      return this.#store(slot, slot.record, refused(call.id, "egress-required", slot.record));
+    }
+    await this.#driver.writePulledEgress(slotId, answer);
+    this.#log({ event: "egress.fetched", slotId });
+    return work();
   }
 
   /** The charges of every other guest in memory: running, paused there, or being let in. */
