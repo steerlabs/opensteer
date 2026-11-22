@@ -1,4 +1,5 @@
 import { whoLines } from "../thread/agent-session-model.js";
+import { failureWords } from "../ui/client-feedback.js";
 import {
   agentBrowserOptions,
   agentHomeName,
@@ -225,14 +226,14 @@ export function ConnectedAgentController(props: {
           onScope: changeScope,
           onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
           onStop: (threadId) =>
-            void host
-              .stopRun(threadId)
-              .catch((error: unknown) =>
-                Alert.alert(
-                  agentWords("chat.tasks.stop"),
-                  error instanceof Error ? error.message : String(error),
-                ),
-              ),
+            void host.stopRun(threadId).catch((error: unknown) => {
+              const words = failureWords(error, {
+                label: "stop this task",
+                done: "stopped",
+                happened: "the task was stopped",
+              });
+              if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
+            }),
           onChromeTab: (resource, on) =>
             void save({ draft: toggleDraftResource(current, resource, on) }),
           onTasks: (tasks) => void save({ draft: { ...current, tasks } }),

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { agentWords, type ChatFacts, type HostClient } from "@opensteer/client/host";
+import { presentFailure } from "../../use-action.js";
 import { SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 
 /**
@@ -26,7 +27,7 @@ export function ChatFactsSection({
     try {
       await client.stopRun(threadId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(presentFailure(reason, "stop this task", "stopped"));
     } finally {
       setStopping(null);
     }
