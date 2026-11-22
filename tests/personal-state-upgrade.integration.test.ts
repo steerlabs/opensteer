@@ -255,6 +255,7 @@ test("carries a person's work from a database the released Home last migrated th
       "0048_shared_chrome_grants",
       workHomeMigrationName,
       browserPoolMigrationName,
+      "0051_needs_you_counts_requests",
     ]);
     await migrateToLatest(database, {
       async getMigrations() {

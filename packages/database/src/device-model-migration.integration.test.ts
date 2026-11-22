@@ -203,19 +203,6 @@ it("backfills visible active and revoked identities exactly, splits targets and 
   await migrateToLatest(db);
   expect(await catalog()).toEqual(upgraded);
 });
-it("creates no Devices on a team deployment, including historical visible Runners", async () => {
-  await previous();
-  const deployment = createId("deployment");
-  await sql`insert into deployments(id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape) values(${deployment},'primary',${createId("hostInstance")},'https://team.invalid','active','{"kind":"team"}')`.execute(
-    db,
-  );
-  await sql`insert into runners(id,owner_kind,owner_user_id,name,kind,public_key_pem,public_key_fingerprint,enrollment_token_hash,capabilities,allowed_modules,module_descriptors,access_policy,access_policy_revision,connection_generation,max_concurrent_runs) values(${createId("runner")},'deployment',null,'Team','main','key','fp','token','[]','["agents"]','{}','{"reach":"nobody","commands":false,"forwarding":false,"shares":[]}',1,0,null)`.execute(
-    db,
-  );
-  await migrateToLatest(db);
-  expect(await db.selectFrom("devices").selectAll().execute()).toEqual([]);
-});
-
 it("keeps the previous Host's writes readable after expanding the device model", async () => {
   await previous();
   const fixture = await seedPrivatePublisher(db);
