@@ -128,3 +128,16 @@ describe("Z2: the mount is checked again immediately before the erase", () => {
     expect(await present(h.driver.profilePath("bps"))).toBe(false);
   });
 });
+
+describe("J4: a full profile disk has its own signed code", () => {
+  it("answers create with signed profile-disk-full when profiles would exceed available space", async () => {
+    const h = await host();
+    h.driver.availableBytes = 100 * 1024 * 1024;
+    await h.create("fits", 1);
+    await expect(h.create("too-much", 1)).rejects.toMatchObject({
+      name: "BrowserPoolAgentUnavailable",
+      refusal: "profile-disk-full",
+    });
+    expect(await present(h.driver.profilePath("too-much"))).toBe(false);
+  });
+});

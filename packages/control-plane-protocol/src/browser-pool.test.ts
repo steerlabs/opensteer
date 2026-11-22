@@ -102,6 +102,7 @@ describe("control-plane-protocol browser pool contracts", () => {
       everEnrolled: false,
       autoReplaceCount: 0,
       bootstrapToken: "b".repeat(43),
+      liveSlotCount: 0,
     });
     expect(desired.agentPort).toBe(7310);
     expect(desired.relayPort).toBe(7312);
@@ -109,6 +110,25 @@ describe("control-plane-protocol browser pool contracts", () => {
     expect(
       BrowserPoolHostReplaceUnreadyRequestSchema.parse({ revision: 1, generation: 1 }),
     ).toEqual({ revision: 1, generation: 1 });
+
+    // J1: liveSlotCount is required; an answer without it must fail to parse.
+    expect(
+      BrowserPoolHostDesiredSchema.safeParse({
+        id: hostId,
+        generation: 1,
+        revision: 1,
+        state: "deleted",
+        machineType: "n2-standard-8",
+        profileDiskName: "osp-disk-11111111-1111-4111-8111-111111111111",
+        profileDiskSizeGb: 500,
+        agentPort: 7310,
+        relayPort: 7312,
+        release,
+        enrolled: true,
+        everEnrolled: true,
+        autoReplaceCount: 0,
+      }).success,
+    ).toBe(false);
 
     // Deleted pool host cannot carry a bootstrap token.
     expect(() =>

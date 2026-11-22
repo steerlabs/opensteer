@@ -30,10 +30,10 @@ readonly RUN=${OSP_RUN_DIR:-/run/opensteer-pool}
 readonly ETC=${OSP_ETC_DIR:-/etc/opensteer-pool}
 readonly RELAY_ETC=${OSP_RELAY_ETC_DIR:-/etc/opensteer-pool-relay}
 readonly SYSTEMD_DIR=${OSP_SYSTEMD_DIR:-/etc/systemd/system}
-readonly KVM_DEV=${OSP_KVM_DEV:-/dev/kvm}
-readonly CGROUP_CONTROLLERS=${OSP_CGROUP_CONTROLLERS:-/sys/fs/cgroup/cgroup.controllers}
-readonly SMT_ACTIVE=${OSP_SMT_ACTIVE:-/sys/devices/system/cpu/smt/active}
-readonly CPU_VULNS_DIR=${OSP_CPU_VULNS_DIR:-/sys/devices/system/cpu/vulnerabilities}
+readonly KVM_DEV=/dev/kvm
+readonly CGROUP_CONTROLLERS=/sys/fs/cgroup/cgroup.controllers
+readonly SMT_ACTIVE=/sys/devices/system/cpu/smt/active
+readonly CPU_VULNS_DIR=/sys/devices/system/cpu/vulnerabilities
 readonly MAPPER=osp-saved
 readonly HOST_ENV="$ETC/host.env"
 readonly AGENT_CONFIG="$ETC/agent.json"
@@ -48,19 +48,27 @@ is_block_device() {
     [[ $(stat -L -c '%F' "$target" 2>/dev/null || true) == "block special file" ]]
 }
 
-# Z7: Single shared bounded wait for the durable profile disk, used by both enrolment and boot.
+# Z7 + J6: Single shared bounded wait for the durable profile disk, used by both enrolment and boot.
+# Bounded by elapsed wall time (SECONDS) so udevadm settle + sleep cannot multiply the budget.
 wait_for_profile_disk() {
     local dev=$1
     local max_wait=${OSP_PROFILE_DISK_WAIT_SECONDS:-30}
     [[ $max_wait =~ ^[0-9]+$ ]] || max_wait=30
-    local waited=0
-    while ! is_block_device "$dev" && (( waited < max_wait )); do
-        udevadm settle --timeout=2 2>/dev/null || true
+    local start_s=$SECONDS
+    local deadline=$(( start_s + max_wait ))
+    while ! is_block_device "$dev"; do
+        local remaining=$(( deadline - SECONDS ))
+        (( remaining <= 0 )) && break
+        local settle_timeout=$remaining
+        (( settle_timeout > 2 )) && settle_timeout=2
+        udevadm settle --timeout="$settle_timeout" 2>/dev/null || true
         is_block_device "$dev" && break
+        remaining=$(( deadline - SECONDS ))
+        (( remaining <= 0 )) && break
         sleep 1
-        waited=$(( waited + 1 ))
     done
-    is_block_device "$dev" || die "durable profile disk $dev did not appear as a block device after ${waited}s; inspect attached disks and do NOT format"
+    local elapsed=$(( SECONDS - start_s ))
+    is_block_device "$dev" || die "durable profile disk $dev did not appear as a block device after ${elapsed}s (limit ${max_wait}s); inspect attached disks and do NOT format"
 }
 
 load_host_env() {
@@ -177,7 +185,7 @@ save_host_env() {
 require_host() {
     [[ $(id -u) == 0 ]] || die "run as root"
     [[ $(uname -m) == x86_64 ]] || die "x86_64 only"
-    [[ -c $KVM_DEV || ( $KVM_DEV != /dev/kvm && -e $KVM_DEV ) ]] || die "/dev/kvm is missing: enable nested virtualization or use bare metal"
+    [[ -c $KVM_DEV ]] || die "/dev/kvm is missing: enable nested virtualization or use bare metal"
     [[ -f $CGROUP_CONTROLLERS ]] || die "the unified cgroup v2 hierarchy is required"
     # One thread per core: no SMT sibling is shared between two people's guests. A host whose
     # thread status cannot be read fails unless it is declared one-thread-per-core.
@@ -229,14 +237,14 @@ install_binaries() {
     # Root-owned and not writable by anyone else: the jailer trusts its exec file.
     install -o root -g root -m 0755 "$release/firecracker-$FC_VERSION-x86_64" "$OPT/bin/firecracker"
     install -o root -g root -m 0755 "$release/jailer-$FC_VERSION-x86_64" "$OPT/bin/jailer"
-    rm -rf "$unpack"
+    rm -rf --one-file-system "$unpack"
     fetch "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-linux-x64.tar.xz" \
         "$OPT/download/node.tar.xz" "$NODE_SHA256"
     if [[ ! -x $OPT/node/bin/node ]] || [[ $("$OPT/node/bin/node" --version) != "$NODE_VERSION" ]]; then
-        rm -rf "$OPT/node.new"
+        rm -rf --one-file-system "$OPT/node.new"
         install -d -m 0755 "$OPT/node.new"
         tar -xJf "$OPT/download/node.tar.xz" -C "$OPT/node.new" --strip-components=1 --no-same-owner
-        rm -rf "$OPT/node"
+        rm -rf --one-file-system "$OPT/node"
         mv "$OPT/node.new" "$OPT/node"
     fi
     install -d -m 0755 "$STATE/images"
@@ -390,7 +398,9 @@ EOF
     # its own (128 MiB, one core) on top. Round E, E4: the slice as a whole gets a quarter of the
     # host's cores, at least one (1 of the 4 on a run host): however many proxies are busy at
     # once, the guests, the agent and the relay keep the other three quarters.
-    local cores; cores=$(nproc 2>/dev/null || echo 4)
+    local cores
+    cores=$(nproc 2>/dev/null) && [[ $cores =~ ^[1-9][0-9]*$ ]] ||
+        die "nproc failed or is missing; cannot compute egress CPU quota"
     local egress_cpu=$(( cores * 25 ))
     (( egress_cpu < 100 )) && egress_cpu=100
     cat > "$SYSTEMD_DIR/opensteer-pool-egress.slice" <<EOF

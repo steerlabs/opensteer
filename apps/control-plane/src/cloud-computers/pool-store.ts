@@ -1500,12 +1500,15 @@ export class BrowserPoolStore {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
-      // X2: A replaced host places previously failed active slots again; keep lastError visible until ready.
+      // X2 + E3: A replaced host resets active slots (both ready and failed) to `preparing` so
+      // neither Home target lookup nor `pool-slot-show` reads `ready` on a gone generation; keep
+      // `appliedHostGeneration` intact so the provisioner bumps term and re-creates on the new
+      // generation, and keep `lastError` visible until ready.
       await tx
         .updateTable("browserPoolSlots")
         .where("hostId", "=", id)
         .where("state", "=", "active")
-        .where("phase", "=", "failed")
+        .where("phase", "in", ["ready", "failed"])
         .where("tombstonedAt", "is", null)
         .set({ phase: "preparing", failedAt: null, updatedAt: now })
         .execute();

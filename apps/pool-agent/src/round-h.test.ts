@@ -195,7 +195,7 @@ describe("the free-space guard at create", () => {
         guest: { ...testGuest, profileMib },
       });
     await create("fits", 64);
-    await expect(create("too-much", 64)).rejects.toMatchObject({ name: "SlotConflict" });
+    await expect(create("too-much", 64)).rejects.toMatchObject({ name: "ProfilesFull" });
     expect(agent.agent.slotIds()).not.toContain("too-much");
     expect(await readdir(driver.profilesRoot)).toHaveLength(1);
   });

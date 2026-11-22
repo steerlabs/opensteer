@@ -102,9 +102,11 @@ export type BrowserPoolAgentRefusal =
 /**
  * An administration refusal's code. `profile-disk-missing`: the host's profile disk is not the
  * mount it was told to expect, so it makes and erases no profile until an operator mounts it.
+ * `profile-disk-full`: the profile filesystem does not have room for the requested profile, so
+ * nothing was made.
  */
 export type BrowserPoolAgentAdminRefusal =
-  BrowserPoolAgentRefusal | "conflict" | "profile-disk-missing";
+  BrowserPoolAgentRefusal | "conflict" | "profile-disk-missing" | "profile-disk-full";
 
 /** The slot administration interface, for the provisioner only. */
 export type BrowserPoolAgentAdminRequest =
@@ -274,13 +276,15 @@ export class BrowserPoolAgentUnavailable extends Error {
   override readonly name = "BrowserPoolAgentUnavailable";
   /**
    * Round G: set only when the pool host answered and its host key's signature over that
-   * answer verified. It is that answer's code. `conflict`, `profile-disk-missing` and
-   * `unknown-slot` mean the call did nothing, except that a delete refused with
-   * `profile-disk-missing` may have ended the guest and erased its credentials before the
-   * profile; the profile is kept, and the same delete repeated once the disk is back finishes. A signed `unavailable` means the host answered but could not finish, so the effect
-   * may be partial; read the slot with `list`. Absent means no verified answer, so the effect is
-   * unknown. The host answers `bad-request`, `unauthenticated` and `stale-request` without a
-   * signature, so those arrive absent too.
+   * answer verified. It is that answer's code. `conflict`, `profile-disk-missing`,
+   * `profile-disk-full` and `unknown-slot` mean the call did nothing, except that a delete
+   * refused with `profile-disk-missing` may have ended the guest and erased its credentials
+   * before the profile; the profile is kept, and the same delete repeated once the disk is back
+   * finishes (answering `credentialsErased` as well on a host that pulls its egress). A signed
+   * `unavailable` means the host answered but could not finish, so the effect may be partial;
+   * read the slot with `list`. Absent means no verified answer, so the effect is unknown. The
+   * host answers `bad-request`, `unauthenticated` and `stale-request` without a signature, so
+   * those arrive absent too.
    */
   readonly refusal?: BrowserPoolAgentAdminRefusal;
 
@@ -291,8 +295,9 @@ export class BrowserPoolAgentUnavailable extends Error {
 }
 
 /**
- * The agent answered, signed by the slot's control key, that the slot was deleted. Unlike an
- * unavailable agent this is evidence: the guest has ended and its saved state is erased.
+ * The agent answered, signed by the host key (a deleted slot has no control key any more), that
+ * the slot was deleted. Unlike an unavailable agent this is evidence: the guest has ended and its
+ * saved state is erased.
  */
 export class BrowserPoolAgentSlotDeleted extends Error {
   override readonly name = "BrowserPoolAgentSlotDeleted";

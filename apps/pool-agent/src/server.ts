@@ -30,6 +30,7 @@ import {
   SlotNotFound,
   type PoolAgent,
 } from "./agent.js";
+import { ProfilesFull } from "./profiles.js";
 
 const maximumBodyBytes = 64 * 1024;
 export const maximumConnections = 256;
@@ -303,6 +304,9 @@ async function administer(
     // A definite refusal: nothing was made or erased.
     if (error instanceof SlotConflict)
       return { op: "refused", code: "conflict", message: error.message };
+    // The profile filesystem cannot guarantee room for the requested profile: nothing was made.
+    if (error instanceof ProfilesFull)
+      return { op: "refused", code: "profile-disk-full", message: error.message };
     // The profile disk is not the mount expected: no profile was made or erased. A delete may
     // have ended the guest and its credentials first; a repeated delete finishes it.
     if (error instanceof ProfilesNotMounted)

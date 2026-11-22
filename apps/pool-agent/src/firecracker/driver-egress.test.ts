@@ -21,15 +21,42 @@ const defined: string[][] = [];
 const stopped: string[] = [];
 /** Round I's follow-up: what a test sees at a stop, and a crash there if it throws. */
 let onStop: ((names: readonly string[]) => void) | undefined;
+/** E2: simulated `/health` probe answer and service state per slot index. */
+let healthProbe: ((index: number) => string | Error) | undefined;
+const serviceStates = new Map<number, string>();
 
 vi.mock("./exec.js", () => ({
   run: async (command: string, args: readonly string[]) => {
     const index = (name: string | undefined) =>
       Number(/opensteer-pool-egress-(\d+)\./u.exec(name ?? "")?.[1]);
     if (command === "getent") return "exists\n";
-    if (command === "systemctl" && args[0] === "is-active")
-      return units.get(index(args[1]))?.listening ? "active\n" : "inactive\n";
+    if (command === "ip" && args[0] === "netns" && args[1] === "exec" && args[3] === "curl") {
+      const slotIndex = Number(/^osp(\d+)$/u.exec(args[2] ?? "")?.[1]);
+      if (healthProbe) {
+        const result = healthProbe(slotIndex);
+        if (result instanceof Error) throw result;
+        return result;
+      }
+      return '{"ok":true}\n';
+    }
+    if (command === "systemctl" && args[0] === "is-active") {
+      const idx = index(args[1]);
+      if (args[1]?.endsWith(".service") && serviceStates.has(idx)) {
+        return `${serviceStates.get(idx)}\n`;
+      }
+      return units.get(idx)?.listening ? "active\n" : "inactive\n";
+    }
     if (command === "systemctl" && args[0] === "show") {
+      if (args.includes("ActiveState")) {
+        const names = args.slice(args.indexOf("--value") + 1);
+        return `${names
+          .map((name) => {
+            const idx = index(name);
+            if (name.endsWith(".service") && serviceStates.has(idx)) return serviceStates.get(idx);
+            return units.get(idx)?.listening ? "active" : "inactive";
+          })
+          .join("\n")}\n`;
+      }
       const unit = units.get(index(args.at(-1)));
       if (args.includes("LoadState")) return unit ? "loaded\n" : "not-found\n";
       if (args.includes("LoadCredential")) return `${(unit?.loadCredential ?? []).join(" ")}\n`;
@@ -38,7 +65,10 @@ vi.mock("./exec.js", () => ({
     if (command === "systemctl" && args[0] === "stop") {
       stopped.push(...args.slice(1));
       onStop?.(args.slice(1));
-      for (const name of args.slice(1)) if (name.endsWith(".socket")) units.delete(index(name));
+      for (const name of args.slice(1)) {
+        if (name.endsWith(".socket")) units.delete(index(name));
+        if (name.endsWith(".service")) serviceStates.set(index(name), "inactive");
+      }
       return "";
     }
     if (command === "systemd-run") {
@@ -118,6 +148,8 @@ beforeEach(() => {
   defined.length = 0;
   stopped.length = 0;
   onStop = undefined;
+  healthProbe = undefined;
+  serviceStates.clear();
 });
 
 afterEach(() => {
@@ -266,5 +298,35 @@ describe("a pulling host's slot proxies always require an upstream", () => {
     // Removed first: a restart between the two could not load what was revoked.
     expect(gone).toBe(true);
     expect(existsSync(files.url) || existsSync(files.username)).toBe(false);
+  });
+
+  // E2: verifyProxy confirms /health returns {"ok":true} and the service is active; resets
+  // activating/failed units before probing; returns false promptly when the service fails.
+  it("verifyProxy confirms /health + active service, resets stale activating state, and fails promptly on failed unit", async () => {
+    const { driver } = await host();
+    await driver.writePulledEgress("bps-a", credentials);
+    await driver.prepareSlot("bps-a", undefined);
+
+    // Healthy service returns true.
+    serviceStates.set(0, "active");
+    healthProbe = () => '{"ok":true}\n';
+    expect(await driver.verifyProxy("bps-a", AbortSignal.timeout(2_000))).toBe(true);
+
+    // Stale activating unit is stopped (reset) first, then activates cleanly on probe.
+    stopped.length = 0;
+    serviceStates.set(0, "activating");
+    healthProbe = () => {
+      serviceStates.set(0, "active");
+      return '{"ok":true}\n';
+    };
+    expect(await driver.verifyProxy("bps-a", AbortSignal.timeout(2_000))).toBe(true);
+    expect(stopped).toContain("opensteer-pool-egress-0.service");
+
+    // Broken proxy: /health fails and service transitions to failed -> returns false immediately.
+    healthProbe = () => {
+      serviceStates.set(0, "failed");
+      return new Error("curl: (52) Empty reply from server");
+    };
+    expect(await driver.verifyProxy("bps-a", AbortSignal.timeout(2_000))).toBe(false);
   });
 });

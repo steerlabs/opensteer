@@ -99,7 +99,7 @@ export class PoolReconciler {
             const portsKey = `${host.agentPort}:${host.relayPort}`;
             const report = await this.#applyHost(
               host,
-              (host.liveSlotCount ?? 0) > 0 || hostsWithSlots.has(host.id),
+              host.liveSlotCount > 0 || hostsWithSlots.has(host.id),
               (operationSignal, check) => {
                 let promise = firewallsByPorts.get(portsKey);
                 if (!promise) {
@@ -724,8 +724,9 @@ export class PoolReconciler {
         await finish(token);
         return result;
       } catch (error) {
-        // Only definite signed refusals (`conflict`, `unknown-slot`) or Superseded clear the journal.
-        // Signed `unavailable`, unsigned refusals, forged signatures, and transport loss stay pending (unknown).
+        // Only definite signed refusals (`conflict`, `unknown-slot`, `profile-disk-missing`,
+        // `profile-disk-full`) or Superseded clear the journal. Signed `unavailable`, unsigned
+        // refusals, forged signatures, and transport loss stay pending (unknown).
         if (isDefiniteAgentRefusal(error) || error instanceof Superseded) {
           await finish(token);
         }
@@ -901,9 +902,7 @@ export class PoolReconciler {
           : undefined;
       }
       if (isDefiniteAgentRefusal(error)) {
-        const diskFull =
-          error.refusal === "conflict" &&
-          /exceed their filesystem|without room to fill in/u.test(error.message);
+        const diskFull = error.refusal === "profile-disk-full";
         return {
           slotId,
           hostGeneration,
