@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Prepares a pool host and keeps it prepared. Idempotent: run it again at any time.
 #
-#   setup-host.sh install   packages, pinned binaries, users, units, then `boot`
-#   setup-host.sh boot      every boot (opensteer-pool-host.service): the encrypted saved-state
-#                           array with a fresh key, kernel settings, the guest images on the array
-#   setup-host.sh check     prints every setting this host must have and fails on a wrong one
+#   setup-host.sh install               packages, pinned binaries, users, units, then `boot`
+#   setup-host.sh boot                  every boot (opensteer-pool-host.service): profile disk
+#                                       mount check, encrypted saved-state array, kernel settings,
+#                                       persisted firewall rules, guest images on the array
+#   setup-host.sh verify-profiles-mount verify that OSP_PROFILES_ROOT is mounted from OSP_PROFILE_DISK
+#   setup-host.sh check                 prints every setting this host must have and fails on a wrong one
 #
-# Every setting and its reason: apps/pool-agent/host/HOST-SETUP.md. Ubuntu 24.04, x86_64.
-# Downloads go through the environment's http(s)_proxy when one is set.
+# Every setting and its reason: apps/pool-agent/host/HOST-SETUP.md and ENROLMENT.md.
+# Ubuntu 24.04, x86_64. Downloads go through the environment's http(s)_proxy when one is set.
 set -euo pipefail
 umask 022
 
@@ -25,15 +27,76 @@ readonly STATE=/var/lib/opensteer-pool        # durable: journal, driver state, 
 readonly ARRAY=/srv/opensteer-pool            # encrypted Local SSD array: jails, saved state
 readonly RUN=/run/opensteer-pool
 readonly MAPPER=osp-saved
+readonly HOST_ENV=/etc/opensteer-pool/host.env
+
+log() { printf 'setup-host: %s\n' "$*" >&2; }
+die() { log "$*"; exit 1; }
+
+load_host_env() {
+    [[ -e $HOST_ENV ]] || return 0
+    [[ -f $HOST_ENV && ! -L $HOST_ENV ]] || die "$HOST_ENV must be a regular file (not a symlink)"
+    local owner mode
+    owner=$(stat -c '%u' "$HOST_ENV")
+    mode=$(stat -c '%a' "$HOST_ENV")
+    [[ $owner == 0 ]] || die "$HOST_ENV must be owned by root (uid 0, found $owner)"
+    (( (8#$mode & 022) == 0 )) || die "$HOST_ENV must not be group- or world-writable (mode $mode)"
+    local line key val
+    while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line || $line == \#* ]] && continue
+        [[ $line == *=* ]] || die "malformed line in $HOST_ENV"
+        key=${line%%=*}
+        val=${line#*=}
+        case "$key" in
+            OSP_LOCAL_SSDS|OSP_HOME_CIDR|OSP_PROVISIONER_CIDR|OSP_AGENT_PORT|OSP_ADMIN_PORT|OSP_RELAY_PORT|OSP_PROFILE_DISK|OSP_PROFILES_ROOT|OSP_EGRESS_SLICE_MIB|OSP_ONE_THREAD_PER_CORE|OSP_SKIP_DEFAULT_KERNEL)
+                if [[ -z ${!key+x} ]]; then
+                    printf -v "$key" '%s' "$val"
+                fi
+                ;;
+            *)
+                die "unexpected key '$key' in $HOST_ENV"
+                ;;
+        esac
+    done < "$HOST_ENV"
+}
+
+load_host_env
+
 : "${OSP_LOCAL_SSDS:=/dev/disk/by-id/google-local-nvme-ssd-*}"
 : "${OSP_HOME_CIDR:=10.0.0.0/8}"              # who may reach the agent's Home interface
 : "${OSP_PROVISIONER_CIDR:=127.0.0.1/32}"     # who may reach its administration interface
 : "${OSP_AGENT_PORT:=7310}"
 : "${OSP_ADMIN_PORT:=7311}"
 : "${OSP_RELAY_PORT:=7312}"
+: "${OSP_PROFILE_DISK:=}"                     # optional durable profile disk block device (enrolment)
+: "${OSP_PROFILES_ROOT:=$STATE/profiles}"
+: "${OSP_EGRESS_SLICE_MIB:=1536}"
+: "${OSP_SKIP_DEFAULT_KERNEL:=0}"
 
-log() { printf 'setup-host: %s\n' "$*" >&2; }
-die() { log "$*"; exit 1; }
+save_host_env() {
+    install -d -m 0700 /etc/opensteer-pool
+    local tmp
+    tmp=$(mktemp /etc/opensteer-pool/.host.env.XXXXXX)
+    chmod 0600 "$tmp"
+    {
+        printf '# Persisted Opensteer pool host settings (read by setup-host.sh on every boot)\n'
+        printf 'OSP_LOCAL_SSDS=%s\n' "$OSP_LOCAL_SSDS"
+        printf 'OSP_HOME_CIDR=%s\n' "$OSP_HOME_CIDR"
+        printf 'OSP_PROVISIONER_CIDR=%s\n' "$OSP_PROVISIONER_CIDR"
+        printf 'OSP_AGENT_PORT=%s\n' "$OSP_AGENT_PORT"
+        printf 'OSP_ADMIN_PORT=%s\n' "$OSP_ADMIN_PORT"
+        printf 'OSP_RELAY_PORT=%s\n' "$OSP_RELAY_PORT"
+        printf 'OSP_PROFILES_ROOT=%s\n' "$OSP_PROFILES_ROOT"
+        printf 'OSP_EGRESS_SLICE_MIB=%s\n' "$OSP_EGRESS_SLICE_MIB"
+        printf 'OSP_SKIP_DEFAULT_KERNEL=%s\n' "$OSP_SKIP_DEFAULT_KERNEL"
+        if [[ -n $OSP_PROFILE_DISK ]]; then
+            printf 'OSP_PROFILE_DISK=%s\n' "$OSP_PROFILE_DISK"
+        fi
+        if [[ -n ${OSP_ONE_THREAD_PER_CORE:-} ]]; then
+            printf 'OSP_ONE_THREAD_PER_CORE=%s\n' "$OSP_ONE_THREAD_PER_CORE"
+        fi
+    } > "$tmp"
+    mv "$tmp" "$HOST_ENV"
+}
 
 require_host() {
     [[ $(id -u) == 0 ]] || die "run as root"
@@ -75,7 +138,7 @@ install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o Acquire::Retries=3 update -q
     apt-get install -y -q --no-install-recommends \
-        nftables iproute2 mdadm cryptsetup-bin xfsprogs util-linux curl ca-certificates xz-utils uuid-runtime openssl
+        nftables iproute2 mdadm cryptsetup-bin xfsprogs e2fsprogs util-linux curl ca-certificates xz-utils uuid-runtime openssl
 }
 
 install_binaries() {
@@ -101,7 +164,9 @@ install_binaries() {
         mv "$OPT/node.new" "$OPT/node"
     fi
     install -d -m 0755 "$STATE/images"
-    fetch "$KERNEL_URL" "$STATE/images/vmlinux.download" "$KERNEL_SHA256"
+    if [[ $OSP_SKIP_DEFAULT_KERNEL != 1 ]]; then
+        fetch "$KERNEL_URL" "$STATE/images/vmlinux.download" "$KERNEL_SHA256"
+    fi
 }
 
 host_key() {
@@ -135,16 +200,57 @@ install_users() {
         useradd --system --no-create-home --shell /usr/sbin/nologin opensteer-pool-relay
 }
 
+verify_profile_mount() {
+    [[ -n $OSP_PROFILE_DISK ]] || return 0
+    [[ -b $OSP_PROFILE_DISK ]] || die "durable profile disk $OSP_PROFILE_DISK is not present as a block device; refusing to start agent"
+    local expected actual mounted_src opts
+    expected=$(readlink -f "$OSP_PROFILE_DISK")
+    mountpoint -q "$OSP_PROFILES_ROOT" || die "durable profile directory $OSP_PROFILES_ROOT is not a mount point; refusing to fall back to the boot disk"
+    mounted_src=$(findmnt -n -o SOURCE --target "$OSP_PROFILES_ROOT" || true)
+    [[ -n $mounted_src ]] || die "could not determine mounted source for $OSP_PROFILES_ROOT; refusing to start agent"
+    actual=$(readlink -f "$mounted_src")
+    [[ $actual == "$expected" ]] || die "durable profile directory $OSP_PROFILES_ROOT is mounted from $actual, expected $expected; refusing to start agent"
+    opts=$(findmnt -n -o OPTIONS --target "$OSP_PROFILES_ROOT" || true)
+    [[ ,$opts, == *,rw,* ]] || die "durable profile directory $OSP_PROFILES_ROOT is not mounted read-write ($opts)"
+}
+
+readonly PROFILE_DISK_LABEL=opensteer-profiles
+
+mount_profile_disk() {
+    # Boot-time mount ONLY (X1/T6): NEVER formats. Verifies the durable disk carries the
+    # Opensteer profile label before mounting so a foreign or wiped disk fails loudly and
+    # opensteer-pool-agent.service never starts against the boot disk.
+    [[ -n $OSP_PROFILE_DISK ]] || return 0
+    [[ -b $OSP_PROFILE_DISK ]] || die "durable profile disk $OSP_PROFILE_DISK is missing at boot; inspect attached disks and do NOT format"
+    local resolved
+    resolved=$(readlink -f "$OSP_PROFILE_DISK")
+    install -d -m 0711 "$OSP_PROFILES_ROOT"
+    if ! mountpoint -q "$OSP_PROFILES_ROOT"; then
+        local blkid_out fs_type fs_label
+        blkid_out=$(blkid -o export -p "$resolved" 2>/dev/null) ||
+            die "durable profile disk $OSP_PROFILE_DISK ($resolved) has no readable filesystem at boot; refusing to format or start agent"
+        fs_type=$(printf '%s\n' "$blkid_out" | awk -F= '$1=="TYPE"{print $2}')
+        fs_label=$(printf '%s\n' "$blkid_out" | awk -F= '$1=="LABEL"{print $2}')
+        [[ $fs_type == ext4 && $fs_label == "$PROFILE_DISK_LABEL" ]] ||
+            die "durable profile disk $OSP_PROFILE_DISK ($resolved) has TYPE=${fs_type:-none} LABEL=${fs_label:-none}, expected ext4/$PROFILE_DISK_LABEL; refusing to mount or start agent"
+        mount -o noatime,nosuid,nodev "$resolved" "$OSP_PROFILES_ROOT" ||
+            die "failed to mount durable profile disk $OSP_PROFILE_DISK ($resolved) at $OSP_PROFILES_ROOT; refusing to start agent (inspect with lsblk, blkid, and fsck.ext4; never reformat)"
+    fi
+    chmod 0711 "$OSP_PROFILES_ROOT"
+    verify_profile_mount
+    log "durable profile disk $OSP_PROFILE_DISK ($resolved) verified mounted at $OSP_PROFILES_ROOT"
+}
+
 install_units() {
     # The state root is traversable (the egress users read the egress tree in images/); the
     # journal and driver state inside it are root-only.
     install -d -m 0700 /etc/opensteer-pool "$STATE/journal" "$STATE/driver"
     install -d -m 0711 "$STATE"
-    install -d -m 0711 "$STATE/profiles"
+    install -d -m 0711 "$OSP_PROFILES_ROOT"
     install -m 0755 "$0" "$OPT/setup-host.sh"
     cat > /etc/systemd/system/opensteer-pool-host.service <<EOF
 [Unit]
-Description=Opensteer pool host: encrypted saved-state array and kernel settings
+Description=Opensteer pool host: durable profiles mount, encrypted saved-state array and kernel settings
 DefaultDependencies=no
 After=local-fs.target systemd-udev-settle.service nftables.service
 Before=opensteer-pool-agent.service
@@ -168,6 +274,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+ExecStartPre=$OPT/setup-host.sh verify-profiles-mount
 ExecStart=$OPT/node/bin/node $OPT/agent/main.js /etc/opensteer-pool/agent.json
 Restart=always
 RestartSec=1
@@ -209,7 +316,7 @@ Description=Opensteer pool slot proxies
 
 [Slice]
 MemoryAccounting=yes
-MemoryMax=${OSP_EGRESS_SLICE_MIB:-1536}M
+MemoryMax=${OSP_EGRESS_SLICE_MIB}M
 CPUAccounting=yes
 CPUQuota=${egress_cpu}%
 TasksMax=4096
@@ -402,6 +509,14 @@ check() {
     expect "array mounted" "$(mountpoint -q "$ARRAY" && echo yes || echo no)" "yes"
     expect "array encrypted" "$(cryptsetup status "$MAPPER" 2>/dev/null | awk '/type:/ {print $2}')" "PLAIN"
     expect "array cipher" "$(cryptsetup status "$MAPPER" 2>/dev/null | awk '/cipher:/ {print $2}')" "aes-xts-plain64"
+    if [[ -n $OSP_PROFILE_DISK ]]; then
+        local expected_profile actual_profile mounted_profile
+        expected_profile=$(readlink -f "$OSP_PROFILE_DISK" 2>/dev/null || echo missing)
+        mounted_profile=$(findmnt -n -o SOURCE --target "$OSP_PROFILES_ROOT" 2>/dev/null || true)
+        actual_profile=$(if [[ -n $mounted_profile ]]; then readlink -f "$mounted_profile" 2>/dev/null || echo "$mounted_profile"; else echo unmounted; fi)
+        expect "profiles mounted" "$(mountpoint -q "$OSP_PROFILES_ROOT" && echo yes || echo no)" "yes"
+        expect "profiles device" "$actual_profile" "$expected_profile"
+    fi
     expect "firecracker" "$(sha256sum "$OPT/bin/firecracker" | cut -d' ' -f1)" "$FC_SHA256"
     expect "jailer" "$(sha256sum "$OPT/bin/jailer" | cut -d' ' -f1)" "$JAILER_SHA256"
     expect "node" "$("$OPT/node/bin/node" --version)" "$NODE_VERSION"
@@ -417,7 +532,9 @@ case "${1:-}" in
         install_binaries
         install_users
         host_key
+        save_host_env
         install_units
+        mount_profile_disk
         kernel_settings
         host_firewall
         saved_state_array
@@ -426,16 +543,20 @@ case "${1:-}" in
         ;;
     boot)
         require_host
+        mount_profile_disk
         kernel_settings
         host_firewall
         saved_state_array
         stage_images
         ;;
+    verify-profiles-mount)
+        verify_profile_mount
+        ;;
     check)
         check
         ;;
     *)
-        echo "usage: $0 install|boot|check" >&2
+        echo "usage: $0 install|boot|verify-profiles-mount|check" >&2
         exit 2
         ;;
 esac
