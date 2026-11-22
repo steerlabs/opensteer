@@ -556,12 +556,12 @@ func TestDisplayRefreshAndDemandDoNotBlockBehindPhoneLane(t *testing.T) {
 func TestAppCacheServesWarmEntriesWithoutBlockingOnRefresh(t *testing.T) {
 	life, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// Between soft TTL and hard TTL: returns cached apps immediately and refreshes in background.
 	cache := &appCache{
 		life: life,
 		apps: []InstalledApp{{AppID: "com.example.app", Label: "Example"}},
-		at:   time.Now().Add(-10 * time.Minute),
+		at:   time.Now().Add(-(appCacheSoftTTL + 5*time.Second)),
 	}
-	// Passing a blocking dialer verifies warm cache returns immediately while refreshing in background.
 	start := time.Now()
 	got, err := cache.read(context.Background(), stubSlowDialer{})
 	if err != nil || len(got) != 1 || got[0].AppID != "com.example.app" {
@@ -569,6 +569,18 @@ func TestAppCacheServesWarmEntriesWithoutBlockingOnRefresh(t *testing.T) {
 	}
 	if time.Since(start) > 100*time.Millisecond {
 		t.Fatalf("warm cache blocked for %v", time.Since(start))
+	}
+
+	// Past hard TTL: fails closed rather than serving indefinitely expired entries.
+	expired := &appCache{
+		life: life,
+		apps: []InstalledApp{{AppID: "com.example.app", Label: "Example"}},
+		at:   time.Now().Add(-(appCacheHardTTL + 5*time.Second)),
+	}
+	failCtx, failCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer failCancel()
+	if got, err := expired.read(failCtx, stubSlowDialer{}); err == nil || got != nil {
+		t.Fatalf("expected hard-expired appCache to fail closed, got %+v, err=%v", got, err)
 	}
 }
 

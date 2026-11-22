@@ -104,6 +104,7 @@ type Pipeline struct {
 	firstFrameAt         time.Time
 	nextEncode           time.Time
 	forceKey             bool
+	keyframeSeq          uint64
 	latest               *VideoFrame
 	picture              decodedPicture
 	pictureAt            time.Time
@@ -662,6 +663,7 @@ func (p *Pipeline) tryEncode(now time.Time) time.Duration {
 	generation := p.generation
 	sequence := p.sequence
 	forceKey := p.forceKey
+	keyframeSeq := p.keyframeSeq
 	pictureAt := p.pictureAt
 	if p.firstFrameAt.IsZero() {
 		p.firstFrameAt = pictureAt
@@ -718,15 +720,22 @@ func (p *Pipeline) tryEncode(now time.Time) time.Duration {
 		return 0
 	}
 	p.nextEncode = now.Add(time.Second / time.Duration(cfg.MaxFPS))
-	p.lastEncodedAt = pictureAt
 	p.sequence++
 	p.lastPTS = pts
-	p.forceKey = false
+	// Preserve any RequestKeyframe that arrived while this frame was encoding.
+	pendingRefresh := p.keyframeSeq != keyframeSeq
+	if !pendingRefresh {
+		p.lastEncodedAt = pictureAt
+		p.forceKey = false
+	}
 	if p.width != width || p.height != height {
 		p.width, p.height = width, height
 		p.publishLocked("live", "")
 	}
 	p.mu.Unlock()
+	if pendingRefresh {
+		p.signalEncode()
+	}
 	return 0
 }
 
@@ -826,6 +835,7 @@ func (p *Pipeline) RequestKeyframe() {
 		p.mu.Unlock()
 		return
 	}
+	p.keyframeSeq++
 	p.forceKey = true
 	p.lastEncodedAt = time.Time{}
 	needInbound := p.pictureAt.IsZero() && !p.hidden
@@ -953,7 +963,8 @@ func (p *Pipeline) resetStreamLocked() decodedPicture {
 	p.forceKey = true
 	p.epoch++
 	if p.stream != nil {
-		p.stream.receiver.reset()
+		// Only close the sockets here; runIngress owns stream.receiver and resets
+		// it in closeStream once ReadFrom unblocks, avoiding concurrent map access.
 		if p.stream.audioConn != nil {
 			_ = p.stream.audioConn.Close()
 		}

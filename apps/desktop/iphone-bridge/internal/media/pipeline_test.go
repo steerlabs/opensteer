@@ -360,3 +360,95 @@ func TestRequestKeyframeGeneratesLocalIDRWithoutInboundPLI(t *testing.T) {
 		t.Fatalf("expected immediate local IDR on RequestKeyframe, got %+v", refreshed)
 	}
 }
+
+type hookEncoder struct {
+	stubEncoder
+	onEncode func(call int, key bool)
+}
+
+func (e *hookEncoder) encode(p decodedPicture, width, height, fps int, pts uint64, key bool) (encodedPicture, error) {
+	n := int(e.calls.Add(1))
+	if e.onEncode != nil {
+		e.onEncode(n, key)
+	}
+	if key {
+		return encodedPicture{testAnnex([]byte{0x67, 0x64, 0, 0x2a}, []byte{0x68, 1}, []byte{0x65, p.rgba[0]}), true, "avc1.64002a"}, nil
+	}
+	return encodedPicture{annexB: testAnnex([]byte{0x41, p.rgba[0]})}, nil
+}
+
+func TestRequestKeyframePreservedWhenArrivingMidEncode(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "iphone-media-mid-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "media.sock")
+	transport := loopbackTransport{}
+	phone, err := transport.ListenUDP(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer phone.Close()
+	svc := &stubDisplayService{
+		port:    uint16(phone.LocalAddr().(*net.UDPAddr).Port),
+		started: make(chan negotiatedSession, 2),
+		stopped: make(chan uuid.UUID, 2),
+	}
+	dec := &stubDecoder{}
+	var p *Pipeline
+	enc := &hookEncoder{
+		onEncode: func(call int, key bool) {
+			// While the second frame (a delta) is encoding, fire RequestKeyframe.
+			if call == 2 && !key {
+				p.RequestKeyframe()
+			}
+		},
+	}
+	p, err = newPipeline(PipelineConfig{
+		StreamID: testStreamID, DisplayID: 1, MaxFPS: 60, SocketPath: path,
+	}, transport, svc, codecFactory{
+		decoder: func() videoDecoder { return dec },
+		encoder: func() videoEncoder { return enc },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	if _, err := p.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	session := receiveTestValue(t, svc.started)
+	view, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer view.Close()
+	dest := &net.UDPAddr{IP: transport.LocalIP(), Port: session.request.ReceiverPort}
+
+	// Frame 0 (keyframe)
+	keyPayload := aggregation([]byte{0x78}, []byte{0x67, 0x64, 0, 0x2a}, []byte{0x68, 1}, []byte{0x65, 1})
+	if _, err := phone.WriteTo(testRTP(1, 1500, 42, 123, true, keyPayload), dest); err != nil {
+		t.Fatal(err)
+	}
+	f0, _ := readTestFrame(t, view)
+	if !f0.Key || f0.Sequence != 0 {
+		t.Fatalf("unexpected frame 0: %+v", f0)
+	}
+	writeTestACK(t, view, 0)
+
+	// Frame 1 (delta) triggers RequestKeyframe mid-encode; sequence 2 must follow as a keyframe.
+	if _, err := phone.WriteTo(testRTP(2, 3000, 42, 123, true, []byte{0x41, 2}), dest); err != nil {
+		t.Fatal(err)
+	}
+	f1, _ := readTestFrame(t, view)
+	if f1.Key || f1.Sequence != 1 {
+		t.Fatalf("unexpected frame 1: %+v", f1)
+	}
+	writeTestACK(t, view, 1)
+
+	f2, _ := readTestFrame(t, view)
+	if !f2.Key || f2.Sequence != 2 {
+		t.Fatalf("mid-encode RequestKeyframe was lost: %+v", f2)
+	}
+}

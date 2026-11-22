@@ -32,12 +32,18 @@ type nativeScreen struct {
 	procConn  *warmProcesses
 }
 
-const appCacheTTL = 5 * time.Minute
+const (
+	// Soft TTL triggers a background refresh before the cache expires so
+	// monitorDisplay never stalls on a ~500 ms installation_proxy browse.
+	appCacheSoftTTL = 45 * time.Second
+	// Hard TTL bounds staleness so privacy checks fail closed if refreshes
+	// keep failing (for example, if Opensteer was installed or updated).
+	appCacheHardTTL = 90 * time.Second
+)
 
-// appCache keeps the installed-app list for front-app labels; it rarely
-// changes, and reading it costs about half a second per call. Once warm, stale
-// entries refresh asynchronously in the background so privacy monitoring ticks
-// never block or time out on installation_proxy.
+// appCache keeps the installed-app list for front-app labels and Opensteer
+// self-app privacy checks. Warm entries trigger a background refresh after
+// appCacheSoftTTL, and fail closed via synchronous refresh past appCacheHardTTL.
 type appCache struct {
 	life       context.Context
 	mu         sync.Mutex
@@ -51,28 +57,32 @@ type appCache struct {
 func (c *appCache) read(ctx context.Context, dial ServiceDialer) ([]InstalledApp, error) {
 	c.mu.Lock()
 	if c.apps != nil {
-		apps := c.apps
-		stale := time.Since(c.at) >= appCacheTTL
-		if stale && !c.refreshing {
-			c.refreshing = true
-			life := c.life
-			if life == nil {
-				life = context.Background()
-			}
-			go func() {
-				bgCtx, cancel := context.WithTimeout(life, 10*time.Second)
-				fresh, err := readInstalledApps(bgCtx, dial)
-				cancel()
-				c.mu.Lock()
-				if err == nil {
-					c.apps, c.at = fresh, time.Now()
+		age := time.Since(c.at)
+		if age < appCacheHardTTL {
+			apps := c.apps
+			if age >= appCacheSoftTTL && !c.refreshing {
+				c.refreshing = true
+				life := c.life
+				if life == nil {
+					life = context.Background()
 				}
-				c.refreshing = false
-				c.mu.Unlock()
-			}()
+				go func() {
+					bgCtx, cancel := context.WithTimeout(life, 10*time.Second)
+					fresh, err := readInstalledApps(bgCtx, dial)
+					cancel()
+					c.mu.Lock()
+					if err == nil {
+						c.apps, c.at, c.lastErr = fresh, time.Now(), nil
+					}
+					c.refreshing = false
+					c.mu.Unlock()
+				}()
+			}
+			c.mu.Unlock()
+			return apps, nil
 		}
-		c.mu.Unlock()
-		return apps, nil
+		// Past hard TTL: drop expired entries so callers fail closed if refresh fails.
+		c.apps = nil
 	}
 	if c.wait != nil {
 		wait := c.wait
