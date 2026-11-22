@@ -249,13 +249,25 @@ final class PhoneDisplayPictureView: ExpoView {
     if window == nil { blank() } else { shownAgain() }
   }
   private var showing: Bool { window != nil && UIApplication.shared.applicationState == .active }
+  /// Why the view cannot show a picture now, as the development trace says it.
+  private var hiddenReason: String { window == nil ? "no-window" : "app-not-active" }
+  /// Development builds only: one line per picture answered, so a walk can tell a picture the
+  /// view refused from one that never arrived. Nothing in a release build.
+  private func trace(_ line: @autoclosure () -> String) {
+    #if DEBUG
+    NSLog("[opensteer-picture] native %@", line())
+    #endif
+  }
   func clear(_ generation: Int) {
     queue.clear(generation)
     remove()
   }
   /// JavaScript may draw again what this view dropped while it could not show.
   private func shownAgain() {
-    if showing { onShown(["generation": queue.generation]) }
+    if showing {
+      trace("shown-again generation=\(queue.generation)")
+      onShown(["generation": queue.generation])
+    }
   }
   /// Leaves the generation alone: the same deliveries may draw once the view is shown again.
   private func blank() {
@@ -276,7 +288,12 @@ final class PhoneDisplayPictureView: ExpoView {
   }
   func present(_ bytes: Data, _ request: PictureRequest, settle: @escaping (PictureOutcome) -> Void) {
     let receipt = PictureReceipt(settle)
-    guard showing else { receipt(.dropped); return }
+    guard showing else {
+      trace("dropped generation=\(request.generation) size=\(request.width)x\(request.height) reason=\(hiddenReason)")
+      receipt(.dropped)
+      return
+    }
+    trace("offered generation=\(request.generation) size=\(request.width)x\(request.height) bytes=\(bytes.count) queue-generation=\(queue.generation)")
     if let job = queue.submit(request, bytes, receipt) { decode(job) }
   }
   private func decode(_ job: PictureQueue<Data>.Job) {
@@ -284,9 +301,20 @@ final class PhoneDisplayPictureView: ExpoView {
       let image = PictureDecoder.decode(job.payload, width: job.request.width, height: job.request.height)
       DispatchQueue.main.async {
         guard let self else { job.receipt(.dropped); return }
+        if image == nil {
+          self.trace("failed generation=\(job.request.generation) size=\(job.request.width)x\(job.request.height) bytes=\(job.payload.count) reason=undecodable-or-size-mismatch")
+        }
         let result = self.queue.complete(decoded: image != nil)
+        if image != nil, result.shown == nil {
+          self.trace("dropped generation=\(job.request.generation) reason=superseded-or-cleared")
+        }
         if let shown = result.shown, let image {
-          if self.showing { self.draw(image, shown.request, shown.receipt) } else { shown.receipt(.dropped) }
+          if self.showing {
+            self.draw(image, shown.request, shown.receipt)
+          } else {
+            self.trace("dropped generation=\(shown.request.generation) reason=\(self.hiddenReason)-before-draw")
+            shown.receipt(.dropped)
+          }
         }
         if let next = result.next { self.decode(next) }
       }
@@ -304,7 +332,14 @@ final class PhoneDisplayPictureView: ExpoView {
     CATransaction.begin()
     CATransaction.setDisableActions(true)
     CATransaction.setCompletionBlock { [weak self] in
-      receipt(self?.shownVersion == version && self?.showing == true ? .presented : .dropped)
+      let current = self?.shownVersion == version
+      let showing = self?.showing == true
+      self?.trace(
+        current && showing
+          ? "presented generation=\(request.generation)"
+          : "dropped generation=\(request.generation) reason=\(current ? (self?.hiddenReason ?? "view-gone") : "replaced-before-commit")"
+      )
+      receipt(current && showing ? .presented : .dropped)
       if self?.undrawn === receipt { self?.undrawn = nil }
     }
     picture.contents = image
