@@ -14,7 +14,8 @@ import { FarField } from "../apps/mobile/modules/remote-text-input/tests/remote-
  */
 
 const kinds = ["textarea", "contenteditable"] as const;
-const alphabet = ["a", "b", "é", "é", "👩‍💻", " "];
+// Left-to-right and right-to-left letters, precomposed and decomposed é, a joined emoji.
+const alphabet = ["a", "b", "\u00e9", "e\u0301", "👩‍💻", " ", "א", "ب"];
 const commands = ["moveBackward", "moveForward", "deleteBackward", "deleteForward"] as const;
 const seeds = Number(process.env.OPENSTEER_FAR_MODEL_SEEDS ?? 60);
 const opsPerSeed = 10;

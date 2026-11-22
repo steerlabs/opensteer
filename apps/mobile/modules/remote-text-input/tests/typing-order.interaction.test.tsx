@@ -31,6 +31,7 @@ const harness = vi.hoisted(() => ({
     deliver(packet: unknown): void;
     respond(instruction: unknown): Promise<void>;
     finishComposition(): Promise<void>;
+    configure?(contextId: string | null): void;
   },
   mounted: false,
   answers: [] as (() => void)[],
@@ -49,9 +50,19 @@ vi.mock("expo", async () => {
     requireOptionalNativeModule: () => null,
     requireNativeView: () =>
       React.forwardRef(
-        (props: { onProxyEvent(event: { nativeEvent: unknown }): void; onLayout(): void }, ref) => {
+        (
+          props: {
+            onProxyEvent(event: { nativeEvent: unknown }): void;
+            onLayout(): void;
+            context?: { contextId: string } | null;
+          },
+          ref,
+        ) => {
           const onProxyEvent = React.useRef(props.onProxyEvent);
           onProxyEvent.current = props.onProxyEvent;
+          // The context prop reaches the view's configure, as RemoteTextInputModule's Prop does.
+          const contextId = props.context?.contextId ?? null;
+          React.useEffect(() => harness.field?.configure?.(contextId), [contextId]);
           React.useEffect(() => {
             harness.field!.deliver = (packet) => onProxyEvent.current({ nativeEvent: packet });
             harness.mounted = true;
@@ -96,33 +107,61 @@ const displayAbilities = {
 
 async function open(abilities?: typeof displayAbilities) {
   const remote = new RemoteField();
+  remote.contextId = context.contextId;
   let native: NativeField | null = null;
   const pending: Packet[] = [];
+  /**
+   * The far text the native mirror does not hold: what was there when the reducer last cleared
+   * the native field (a reset, a paste, a new context) or acted outside it (a deletion command).
+   * The far field must always equal before + the native text + after.
+   */
+  let base = { before: "", after: "" };
+  const split = () => {
+    base = { before: remote.value.slice(0, remote.caret), after: remote.value.slice(remote.caret) };
+  };
+  let current: typeof context = context;
+  const render = () =>
+    root.render(
+      <NativeEditingProxy
+        context={current}
+        sendOperation={(operation) => {
+          const sent = remote.take(operation);
+          if (operation.kind === "command" && !operation.command.startsWith("move")) split();
+          return sent;
+        }}
+        onDone={() => undefined}
+        {...(abilities ? { abilities } : {})}
+      />,
+    );
+  /** A new context, as the page publishes it after a refusal or when its field changes. */
+  const renew = (contextId: string) => {
+    current = { ...context, contextId };
+    queueMicrotask(() => {
+      // The new context's mirror starts empty at the far caret.
+      split();
+      render();
+    });
+  };
+  remote.onRotate = renew;
   harness.field = {
     // Packets before the view is laid out wait for it, as Expo's event dispatcher's do.
     deliver: (packet) => pending.push(packet as Packet),
     // Each answer reaches the main queue only when the test lets it.
-    respond: (instruction) =>
-      new Promise<void>((resolve) =>
+    respond: (instruction) => {
+      if ((instruction as Answer).set) split();
+      return new Promise<void>((resolve) =>
         harness.answers.push(() => {
           native!.respond(instruction as Answer);
           resolve();
         }),
-      ),
+      );
+    },
     finishComposition: async () => native!.unmarkText(),
+    configure: (contextId) => native!.configure(contextId),
   };
   native = new NativeField((packet) => harness.field!.deliver(packet));
   native.contextId = context.contextId;
-  await act(async () =>
-    root.render(
-      <NativeEditingProxy
-        context={context}
-        sendOperation={remote.take}
-        onDone={() => undefined}
-        {...(abilities ? { abilities } : {})}
-      />,
-    ),
-  );
+  await act(async () => render());
   await vi.waitFor(() => expect(harness.mounted).toBe(true));
   expect(pending).toEqual([]);
   /** The keyboard does something, inside React's act like any native event. */
@@ -138,7 +177,21 @@ async function open(abilities?: typeof displayAbilities) {
   const answerAll = async () => {
     while (harness.answers.length > 0) await answer();
   };
-  return { remote, native: native as NativeField, keyboard, answer, answerAll };
+  /** The page's field changes under the edits still waiting: a new context from the page. */
+  const rotate = (contextId: string) =>
+    act(async () => {
+      remote.contextId = contextId;
+      renew(contextId);
+    });
+  return {
+    remote,
+    native: native as NativeField,
+    keyboard,
+    answer,
+    answerAll,
+    rotate,
+    mirror: () => base,
+  };
 }
 
 describe("typing into a remote field", () => {
@@ -453,7 +506,10 @@ describe("a person's caret moves and selections in the native field", () => {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
   const alphabet = ["a", "b", "é", " ", "👩‍💻"];
-  /** One seeded sequence, through the real proxy, reducer and port, to a settled comparison. */
+  /**
+   * The first generator, kept as it was so the seeds it found still replay what they found: one
+   * seeded sequence through the real proxy, reducer and port, to a settled comparison.
+   */
   async function sequence(seed: number) {
     const next = random(seed);
     const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
@@ -502,11 +558,125 @@ describe("a person's caret moves and selections in the native field", () => {
     harness.mounted = false;
   }
 
+  /*
+   * The second generator: also a target without range edits, a multi-character replacement at a
+   * range (autocorrect), paste, composition between other steps, a context rotation while edits
+   * wait, right-to-left letters, and decomposed é with the mark alone named for deletion, as
+   * UIKit can name it. The far field must equal the far text outside the native mirror plus the
+   * native text, and refuse no edit for its text (refusals for a stale context are the fence).
+   */
+  const letters = ["a", "b", "\u00e9", "e\u0301", " ", "👩‍💻", "א", "ب"];
+  async function sequence2(seed: number) {
+    const next = random(seed * 2654435761);
+    const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
+    const steps: string[] = [];
+    const display = next() < 0.2;
+    if (display) steps.push("display");
+    const { remote, native, keyboard, answer, answerAll, rotate, mirror } = await open(
+      display ? displayAbilities : undefined,
+    );
+    let rotations = 0;
+    /** The input method is composing from its own setMarkedText on, whatever the field holds yet. */
+    let composing = false;
+    const length = 1 + Math.floor(next() * 28);
+    for (let step = 0; step < length; step++) {
+      const boundaries = [0, ...characters(native.text).map(({ end }) => end)];
+      let choice = next();
+      // While text is marked, UIKit's input method updates or commits it (setMarkedText,
+      // insertText) or deletes inside it (deleteBackward); nothing else reaches the field.
+      if (composing && !(choice < 0.22 || (choice >= 0.4 && choice < 0.45) || choice >= 0.65))
+        choice = next() < 0.5 ? 0.1 : 0.67;
+      if (composing && choice >= 0.73 && choice < 0.78) choice = 0.9;
+      if (choice < 0.22) {
+        const character = pick(letters);
+        steps.push(`insertText(${JSON.stringify(character)})`);
+        composing = false;
+        await keyboard((field) => field.insertText(character));
+      } else if (choice < 0.32) {
+        const character = pick(letters);
+        steps.push(`type(${JSON.stringify(character)})`);
+        await keyboard((field) => field.type(character));
+      } else if (choice < 0.4) {
+        steps.push("backspace()");
+        await keyboard((field) => field.backspace());
+      } else if (choice < 0.45 && composing) {
+        // An input method deletes inside its composition by setting shorter marked text; with
+        // one character marked, it cancels the composition.
+        steps.push('setMarkedText("")');
+        composing = false;
+        await keyboard((field) => field.setMarkedText(""));
+      } else if (choice < 0.45) {
+        steps.push("deleteBackward()");
+        await keyboard((field) => field.deleteBackward());
+      } else if (choice < 0.54) {
+        const at = pick(boundaries);
+        steps.push(`moveSelection(${at})`);
+        await keyboard((field) => field.moveSelection(at));
+      } else if (choice < 0.58) {
+        const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
+        steps.push(`moveSelection(${start}, ${end})`);
+        await keyboard((field) => field.moveSelection(start!, end!));
+      } else if (choice < 0.62) {
+        const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
+        const word = pick(["the", "ab", "\u00e9"]);
+        steps.push(`replaceRange(${start}, ${end}, ${JSON.stringify(word)})`);
+        await keyboard((field) => field.replaceRange(start!, end!, word));
+      } else if (choice < 0.65) {
+        const text = pick(["pasted", "א b"]);
+        steps.push(`paste(${JSON.stringify(text)})`);
+        await keyboard((field) => field.paste(text));
+      } else if (choice < 0.7) {
+        const text = pick(["に", "日本"]);
+        steps.push(`setMarkedText(${JSON.stringify(text)})`);
+        composing = true;
+        await keyboard((field) => field.setMarkedText(text));
+      } else if (choice < 0.73) {
+        steps.push("unmarkText()");
+        composing = false;
+        await keyboard((field) => field.unmarkText());
+      } else if (choice < 0.75) {
+        rotations += 1;
+        const id = `00000000-0000-4000-9000-${String(seed * 100 + rotations).padStart(12, "0")}`;
+        steps.push("rotate()");
+        await rotate(id);
+      } else if (choice < 0.78) {
+        const mark = [...native.text].findIndex((point) => /\p{M}/u.test(point));
+        if (mark >= 0) {
+          const at = [...native.text].slice(0, mark).join("").length;
+          steps.push(`deleteMark(${at})`);
+          await keyboard((field) => field.shouldChangeText({ start: at, end: at + 1 }, ""));
+        }
+      } else {
+        const count = 1 + Math.floor(next() * 3);
+        steps.push(`answer(${count})`);
+        await answer(count);
+      }
+    }
+    await answerAll();
+    const failure = `seed ${seed}: ${steps.join("; ")}`;
+    expect(remote.mismatched, failure).toEqual([]);
+    const { before, after } = mirror();
+    expect(remote.value, failure).toBe(before + native.text + after);
+    if (native.selection.start === native.selection.end && native.marked === null)
+      expect(remote.caret, failure).toBe(before.length + native.selection.start);
+    await act(async () => root.render(null));
+    harness.answers = [];
+    harness.mounted = false;
+  }
+
   // What the random sequences found, kept: seed 32, a prevented Backspace on an empty field whose
   // suppression swallowed a later deletion; seed 4363, a replacement next to a repeated character
   // the reducer could not verify, refused and the field cleared.
   it.each([32, 4363])("replays the sequence the random test found at seed %i", (seed) =>
     sequence(seed),
+  );
+
+  // What the second generator found, kept: seed 81, a space typed as a composition committed,
+  // named insertFromComposition when typed and lost on the far side; seed 2195, a deletion inside
+  // a composition recorded at a caret moved while it waited, so a later keystroke split an emoji;
+  // seed 9944, a composition over a selection cancelled, which took the restated text with it.
+  it.each([81, 2195, 9944])("replays the sequence the second generator found at seed %i", (seed) =>
+    sequence2(seed),
   );
 
   // 300 sequences a run; OPENSTEER_TYPING_FUZZ_RUNS and _SEED run more, 300 to a test.
@@ -515,7 +685,7 @@ describe("a person's caret moves and selections in the native field", () => {
   for (let chunk = firstSeed; chunk < firstSeed + runs; chunk += 300) {
     const last = Math.min(chunk + 300, firstSeed + runs) - 1;
     it(`keeps the far field equal to the native one over random sequences ${chunk} to ${last}`, async () => {
-      for (let seed = chunk; seed <= last; seed++) await sequence(seed);
+      for (let seed = chunk; seed <= last; seed++) await sequence2(seed);
     });
   }
 });
