@@ -1,5 +1,16 @@
 # Pool host agent: seventh real-host run (2026-11-22, round H)
 
+**Summary.**
+
+- The guest booted from a profile the agent made on its own disk.
+- A kept profile held the person's marker through a create at a higher term and a boot, and
+  `eraseProfile` removed it with evidence.
+- With `requireEgressUpstream`, a slot with none assigned got `egress-required` and no guest.
+  An assigned one's HTTPS left only through the upstream, with its credentials.
+- **With its credential files removed _and its proxy's service stopped_,** nothing more left.
+  Removing the files alone does not cut a proxy that is already running: it read them when it
+  started (round I's review, finding 2). The next host run shows what happens without the stop.
+
 ## The instance
 
 - **Shape:** `pool-agent-run-7`, an n2-standard-8 with one thread per core, nested

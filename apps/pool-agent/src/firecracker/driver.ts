@@ -141,8 +141,11 @@ export class FirecrackerDriver implements HypervisorDriver {
   #arrayId: string | undefined;
   #hostAddresses: readonly string[] = [];
   readonly #space = new SpaceLedger();
-  /** Round H: the upstream each slot number's proxy unit was defined with, while it is loaded. */
-  readonly #definitions = new Map<number, string | null>();
+  /**
+   * Round H, round I (U3): what each slot number's proxy unit was defined with, while it is
+   * loaded: its upstream and where it loads its credentials from (null for none).
+   */
+  readonly #definitions = new Map<number, string>();
   #capacity: HostCapacity | null = null;
 
   readonly #log: (event: Readonly<Record<string, unknown>>) => void;
@@ -212,12 +215,13 @@ export class FirecrackerDriver implements HypervisorDriver {
       slotId,
       sizeMib,
       async (file) => {
-        await run("mkfs.ext4", ["-q", "-F", "-m", "0", file], { timeoutMs: 120_000 });
+        // Round I, U8: bounded below the provisioner's own 60 s, with the kill's 10 s grace.
+        await run("mkfs.ext4", ["-q", "-F", "-m", "0", file], { timeoutMs: 30_000 });
       },
-      // Round H: the size of the filesystem the profiles are on.
+      // Round I, U5: what an unprivileged writer (the slot's VMM) can still use there.
       async () => {
         const fs = await statfs(this.#config.profilesRoot);
-        return Number(fs.blocks) * Number(fs.bsize);
+        return Number(fs.bavail) * Number(fs.bsize);
       },
     );
   }
@@ -315,7 +319,7 @@ export class FirecrackerDriver implements HypervisorDriver {
         : egress;
       // Only a definition made here is known; one found is read from systemd when it matters.
       if (await defineEgress(this.#program(), index, this.#config.egressUidBase + index, upstream))
-        this.#definitions.set(index, upstream?.upstreamUrl ?? null);
+        this.#definitions.set(index, definitionKey(true, upstream));
       this.#present.add(index);
     }
     this.#verified.add(index);
@@ -360,21 +364,41 @@ export class FirecrackerDriver implements HypervisorDriver {
    */
   async #revivePulled(slotId: string, index: number): Promise<boolean> {
     const wanted = await readPulledEgress(this.#config.credentialsRoot, slotId);
-    const upstream = wanted?.upstreamUrl ?? null;
+    const key = definitionKey(true, wanted);
     if (await egressDefined(index)) {
-      let known = this.#definitions.has(index) ? this.#definitions.get(index) : undefined;
-      if (known === undefined && !this.#definitions.has(index)) {
-        // After an agent restart: what systemd holds. A unit that does not require an upstream
-        // (an earlier agent's) never matches, so it is defined again.
-        const held = await egressDefinition(index);
-        known = held?.required ? held.upstream : undefined;
-      }
-      if (known !== undefined && known === upstream) return false;
+      // After an agent restart, what systemd holds: a unit that does not require an upstream
+      // (an earlier agent's), or loads its credentials from elsewhere, never matches.
+      const known = this.#definitions.get(index) ?? (await this.#heldDefinition(index));
+      if (known === key) return false;
       await removeEgress(index);
     }
     await defineEgress(this.#program(), index, this.#config.egressUidBase + index, wanted);
-    this.#definitions.set(index, upstream);
+    this.#definitions.set(index, key);
     return true;
+  }
+
+  async #heldDefinition(index: number): Promise<string | undefined> {
+    const held = await egressDefinition(index);
+    if (!held) return undefined;
+    return definitionKey(
+      held.required,
+      held.upstream === null
+        ? undefined
+        : {
+            upstreamUrl: held.upstream,
+            usernameFile: held.credentials.username ?? "",
+            passwordFile: held.credentials.password ?? "",
+          },
+    );
+  }
+
+  async proxyRequiresUpstream(slotId: string): Promise<boolean> {
+    const index = this.#numbers.get(slotId);
+    if (index === undefined) return true;
+    const wanted = await readPulledEgress(this.#config.credentialsRoot, slotId);
+    const held = await this.#heldDefinition(index);
+    // No unit at all is no road out; a unit is the slot's own only as this host defines it.
+    return held === undefined || held === definitionKey(true, wanted);
   }
 
   get pullsEgress(): boolean {
@@ -385,8 +409,16 @@ export class FirecrackerDriver implements HypervisorDriver {
     return (await readPulledEgress(this.#config.credentialsRoot, slotId)) !== undefined;
   }
 
-  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<void> {
-    return writePulledEgress(this.#config.credentialsRoot, slotId, egress);
+  /**
+   * Round I, found on run 8's host: a slot's proxy service can be running with no guest (a
+   * connection still pending on its socket starts it again after the guest stops), holding the
+   * credentials it read then. Changed credentials stop it, so its next start reads the new copy.
+   */
+  async writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<boolean> {
+    const changed = await writePulledEgress(this.#config.credentialsRoot, slotId, egress);
+    const index = this.#numbers.get(slotId);
+    if (changed && index !== undefined) await sleepEgress(index);
+    return changed;
   }
 
   pulledEgressFiles(slotId: string): readonly string[] {
@@ -969,4 +1001,13 @@ async function mounted(path: string): Promise<boolean> {
 async function processStart(pid: string): Promise<number> {
   const stat = await readFile(`/proc/${pid}/stat`, "utf8");
   return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+}
+
+/** Round I, U3: a proxy unit's definition as compared: required, upstream, credential sources. */
+function definitionKey(required: boolean, egress: SlotEgress | undefined): string {
+  return JSON.stringify([
+    required,
+    egress?.upstreamUrl ?? null,
+    egress ? [egress.usernameFile, egress.passwordFile, egress.caFile ?? null] : null,
+  ]);
 }

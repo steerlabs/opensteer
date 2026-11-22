@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./browser-pool": "./src/browser-pool.ts",
     "./browser-pool-agent-wire": "./src/browser-pool-agent-wire.ts",
+    "./browser-egress-upstream": "./src/browser-egress-upstream.ts",
     "./page-policy": "./src/browser/page-policy.ts",
     "./test-support": "./src/test-support/fakes.ts",
     "./test-support/passkey-policy": "./src/test-support/passkey-policy-scenario.ts",

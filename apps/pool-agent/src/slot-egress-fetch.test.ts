@@ -171,4 +171,29 @@ describe("the answer", () => {
     await expect(untrusted).rejects.toThrow();
     expect(service.requests).toEqual([]);
   });
+
+  // Round I, U8: a response cut off part-way fails at once, not at the fetch's deadline.
+  it("could not be completed, at once, when the answer is cut off", async () => {
+    const server = createServer({ key: tls.key, cert: tls.cert }, (_request, response) => {
+      response.writeHead(200, { "content-type": "application/json", "content-length": "500" });
+      response.write('{"egress": {"url": "https://up');
+      setTimeout(() => response.socket?.destroy(), 50);
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const started = Date.now();
+    const outcome = await fetchSlotEgress({
+      origin: `https://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      hostId: "ph_test",
+      hostKey: hostKeys.privateKey,
+      slotId: "bps_test",
+      signal: AbortSignal.timeout(5_000),
+      ca: [tls.cert.toString()],
+    }).then(
+      () => "answered",
+      (error: unknown) => (error as Error).name,
+    );
+    expect(outcome).toBe("SlotEgressUnavailable");
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
 });

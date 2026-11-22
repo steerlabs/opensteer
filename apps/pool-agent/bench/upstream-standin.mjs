@@ -30,7 +30,14 @@ createServer({ key: readFileSync(config.key), cert: readFileSync(config.cert) },
       .find((line) => /^proxy-authorization:/iu.test(line))
       ?.replace(/^[^:]+:\s*/u, "");
     const authOk = auth !== undefined && allowed.has(auth);
-    record({ line: lines[0], authOk });
+    // Whose credentials they are (the username only), and whether the password was that user's.
+    const presented = auth?.startsWith("Basic ")
+      ? Buffer.from(auth.slice(6), "base64").toString("utf8").split(":")[0]
+      : null;
+    const slot =
+      Object.entries(config.assigned).find(([, egress]) => egress.username === presented)?.[0] ??
+      null;
+    record({ line: lines[0], authOk, user: presented, slot });
     if (!authOk) {
       socket.end("HTTP/1.1 407 Proxy Authentication Required\r\ncontent-length: 0\r\n\r\n");
       return;

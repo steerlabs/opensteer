@@ -11,7 +11,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { link, lstat, open, readdir, realpath, rm } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { syncDirectory } from "@opensteer/shared/privateFiles";
 
 const mib = 1024 * 1024;
@@ -39,19 +39,25 @@ export async function ensureProfile(
   slotId: string,
   sizeMib: number,
   format: ProfileFormatter,
-  filesystemBytes?: () => Promise<number>,
+  availableBytes?: () => Promise<number>,
 ): Promise<{ readonly path: string; readonly made: boolean }> {
   const path = profilePathFor(root, slotId);
   if (await present(path)) return { path, made: false };
-  // Round H: the profiles' sizes together, with this one, stay inside their filesystem (the
-  // files are sparse, so a filled-in profile still has the room it was given).
-  if (filesystemBytes) {
-    let total = sizeMib * mib;
+  // Round H, round I (U5): every profile can fill in. The new one's size, with what each
+  // existing profile may still grow by (its size less what it already holds), fits in what an
+  // unprivileged writer can still use (`bavail`), which already leaves out what the profiles
+  // and every other file on that filesystem hold, and the root-reserved blocks:
+  //   new + sum(apparent - allocated) <= available.
+  if (availableBytes) {
+    let needed = sizeMib * mib;
     for (const entry of await readdir(root))
-      if (/^slot-[0-9a-f]{64}\.ext4$/u.test(entry)) total += (await lstat(join(root, entry))).size;
-    if (total > (await filesystemBytes()))
+      if (/^slot-[0-9a-f]{64}\.ext4$/u.test(entry)) {
+        const info = await lstat(join(root, entry));
+        needed += Math.max(0, info.size - info.blocks * 512);
+      }
+    if (needed > (await availableBytes()))
       throw new ProfilesFull(
-        `A ${sizeMib} MiB profile would make this host's profiles exceed their filesystem.`,
+        `A ${sizeMib} MiB profile would leave this host's profiles without room to fill in.`,
       );
   }
   const making = join(
@@ -83,10 +89,12 @@ export async function ensureProfile(
 
 /** Removes the profile at `path`, which must be directly under `root`; resolves once it is gone. */
 export async function eraseProfile(root: string, path: string): Promise<void> {
-  if (dirname(path) !== root) throw new Error(`${path} is not a profile under ${root}.`);
+  // Round I, U6: compared as resolved paths (a root named with a trailing slash is the same).
+  if (resolve(dirname(path)) !== resolve(root))
+    throw new Error(`${path} is not a profile under ${root}.`);
   // A link is removed as a link: nothing outside the root is followed.
   await rm(path, { force: true });
-  await syncDirectory(root);
+  await syncDirectory(resolve(root));
   if (await present(path)) throw new Error(`The profile ${path} is still there.`);
 }
 
@@ -96,7 +104,13 @@ export async function eraseProfile(root: string, path: string): Promise<void> {
  * every one is seen gone.
  */
 export async function eraseFilesUnder(root: string, files: readonly string[]): Promise<void> {
-  const base = await realpath(root);
+  // Round I, U4: nothing to remove is success, also with no such directory on disk.
+  if (files.length === 0) return;
+  const base = await realpath(root).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (base === undefined) return;
   for (const file of files) {
     const info = await lstat(file).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined;
