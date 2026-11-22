@@ -41,6 +41,7 @@ export async function runDaemon(extra: Pick<PoolAgentOptions, "checkpoint"> = {}
     driver,
     retentionMs: config.retentionHours * 60 * 60_000,
     saveAfterMs: config.saveAfterSeconds === null ? null : config.saveAfterSeconds * 1000,
+    homeSilenceMs: config.homeSilenceSeconds * 1000,
     maxConcurrentSaves: config.maxConcurrentSaves,
     ...(egressFetch ? { egressFetch } : {}),
     log,
