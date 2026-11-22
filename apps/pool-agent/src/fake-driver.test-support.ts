@@ -32,6 +32,7 @@ import {
 import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
 
 type Operation =
+  | "ensureHost"
   | "boot"
   | "sync"
   | "pause"
@@ -278,6 +279,7 @@ export class FakeHypervisorDriver implements HypervisorDriver {
   hostRepairs = 0;
 
   async ensureHost(): Promise<boolean> {
+    await this.#enter("ensureHost", "host");
     if (!this.hostTableGone) return false;
     this.hostTableGone = false;
     this.hostRepairs += 1;
@@ -341,10 +343,16 @@ export class FakeHypervisorDriver implements HypervisorDriver {
 
   /** Slots whose proxy a test made trip its start limit. */
   readonly proxyDown = new Set<string>();
+  /** Slots whose proxy fails readiness verification on start/wake (E2). */
+  readonly proxyUnhealthy = new Set<string>();
   readonly revived: string[] = [];
 
   async proxiesDown(): Promise<readonly string[]> {
     return [...this.proxyDown];
+  }
+
+  async verifyProxy(slotId: string, _signal: AbortSignal): Promise<boolean> {
+    return !this.proxyUnhealthy.has(slotId);
   }
 
   /** Each prepared slot's listening proxy socket, and the upstream it was defined with. */

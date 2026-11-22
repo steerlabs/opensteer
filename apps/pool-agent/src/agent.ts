@@ -74,6 +74,8 @@ export interface PoolAgentDeadlines {
   readonly snapshotDrain: number;
   /** Round H: how long a slot's credentials are fetched from the account service. */
   readonly egress: number;
+  /** E2: how long a pulling host waits for a slot's egress proxy to serve `/health`. */
+  readonly proxy: number;
 }
 
 export const defaultDeadlines: PoolAgentDeadlines = {
@@ -92,6 +94,7 @@ export const defaultDeadlines: PoolAgentDeadlines = {
   sweep: 60_000,
   snapshotDrain: 30_000,
   egress: 10_000,
+  proxy: 5_000,
 };
 
 /** The binding limit on how long a parked guest's live state may be kept. */
@@ -387,6 +390,25 @@ export class PoolAgent {
       this.#driver.prepareSlot(slotId, egress, signal),
     );
     await this.#reviveProxy(slotId, egress);
+    if (this.#driver.pullsEgress) {
+      if (!(await this.#verifyProxy(slotId))) {
+        if (!this.#proxiesDown.has(slotId)) this.#log({ event: "proxy.down", slotId });
+        this.#proxiesDown.add(slotId);
+        throw new EgressProxyDown("The slot's egress proxy is not serving.");
+      }
+      this.#proxiesDown.delete(slotId);
+    }
+  }
+
+  async #verifyProxy(slotId: string): Promise<boolean> {
+    try {
+      return await this.#drained(slotId, "proxy", (signal) =>
+        this.#driver.verifyProxy(slotId, signal),
+      );
+    } catch (error) {
+      if (error instanceof AgentCrashed || error instanceof DriverStateUncertain) throw error;
+      return false;
+    }
   }
 
   async #drained<T>(
@@ -1125,6 +1147,8 @@ export class PoolAgent {
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
       if (error instanceof DriverStateUncertain) this.#die(error);
+      if (error instanceof EgressProxyDown)
+        return this.#fail(slot, call, "egress-proxy-down", error);
       return this.#fail(slot, call, "start-failed", error);
     }
     const fence = { slot: before.slotId, term: before.term, instance, epoch: 1 };
@@ -1208,8 +1232,32 @@ export class PoolAgent {
       jailGeneration += 1;
       jailId = jailName(before.slotId, jailGeneration);
     }
+    const steps: Record<string, number> = {};
+    let mark = performance.now();
+    const step = (name: string) => {
+      const at = performance.now();
+      steps[name] = Math.round((at - mark) * 10) / 10;
+      mark = at;
+    };
+    // E4: Host rules, slot network, proxy readiness and closing the guest gate touch nothing of
+    // the paused guest or its saved state. They run before the right to resume is consumed so a
+    // refusal known here (such as `egress-proxy-down`) leaves the slot `paused` with its saved
+    // state intact and the same resume can be asked again later.
+    try {
+      await this.#ensureHost();
+      step("host");
+      await this.#prepareToRun(before.slotId, before.guest.egress);
+      step("prepare");
+      await this.#drained(before.slotId, "network", () => this.#driver.closeNetwork(before.slotId));
+      step("close");
+    } catch (error) {
+      if (error instanceof AgentCrashed) throw error;
+      if (error instanceof DriverStateUncertain) this.#die(error);
+      const reason = error instanceof EgressProxyDown ? "egress-proxy-down" : "resume-failed";
+      return this.#refuseUnchanged(slot, call, reason, error);
+    }
+    this.#checkpoint("resume:prepared");
     this.#unschedule(slot);
-    const consumedAt = performance.now();
     // The right to resume is consumed here, durably, before anything is loaded or thawed.
     await this.#commit(slot, {
       ...before,
@@ -1222,23 +1270,9 @@ export class PoolAgent {
         ...(jailId ? { jailId } : {}),
       },
     });
+    step("journal");
     this.#checkpoint("resume:consumed");
-    const steps: Record<string, number> = { journal: round(performance.now() - consumedAt) };
-    let mark = performance.now();
-    const step = (name: string) => {
-      const at = performance.now();
-      steps[name] = Math.round((at - mark) * 10) / 10;
-      mark = at;
-    };
     try {
-      await this.#ensureHost();
-      step("host");
-      await this.#prepareToRun(before.slotId, before.guest.egress);
-      step("prepare");
-      await within(this.#deadlines.network, "Closing the guest network", () =>
-        this.#driver.closeNetwork(before.slotId),
-      );
-      step("close");
       if (saved.tier === "disk") {
         if (!saved.image || saved.diskGeneration !== before.diskGeneration)
           throw new Error("The saved state does not match the profile disk.");
@@ -1343,6 +1377,27 @@ export class PoolAgent {
       this.#applied(call.id, next, slot, control),
       `sign:${control.kind}`,
     );
+  }
+
+  /**
+   * E4: A call refused before anything of the guest was loaded, thawed or changed. The slot keeps
+   * its current record (for a resume: `paused` with its `savedState` intact), and the refusal is
+   * stored under the call's id.
+   */
+  #refuseUnchanged(
+    slot: Slot,
+    call: BrowserPoolAgentCall,
+    reason: string,
+    error: unknown,
+  ): Promise<BrowserPoolAgentResult> {
+    this.#log({
+      event: "call.failed",
+      slotId: call.slotId,
+      kind: call.kind,
+      reason,
+      message: messageOf(error),
+    });
+    return this.#store(slot, slot.record, refused(call.id, reason, slot.record));
   }
 
   /**
@@ -1961,6 +2016,11 @@ export class SlotConflict extends Error {
  */
 export class ProfilesNotMounted extends Error {
   override readonly name = "ProfilesNotMounted";
+}
+
+/** E2: The slot's egress proxy failed to serve within `deadlines.proxy` on a pulling host. */
+class EgressProxyDown extends Error {
+  override readonly name = "EgressProxyDown";
 }
 
 export function statusOf(record: SlotRecord): BrowserPoolAgentStatus {

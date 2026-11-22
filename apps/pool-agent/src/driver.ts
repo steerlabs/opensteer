@@ -141,6 +141,11 @@ export interface HypervisorDriver {
     egress: SlotEgress | undefined,
     signal?: AbortSignal,
   ): Promise<boolean>;
+  /**
+   * E2: On a host that requires an upstream (`pullsEgress`), confirms the slot's proxy process is
+   * actually serving (not merely socket-activated) within the signal's bound.
+   */
+  verifyProxy(slotId: string, signal: AbortSignal): Promise<boolean>;
   /** Every slot that holds a number (and so a namespace and proxy) on this host. */
   slotsKnown(): Promise<readonly string[]>;
   /** Removes everything prepareSlot made. Idempotent. */
