@@ -4,6 +4,7 @@ import { AgentConnectionStore } from "./agent-connection-store.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { describeStore, testMessagingRunnerId } from "./store.integration.test-support.js";
+import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 
 describeStore("answers leave the Home only through a bridge's Disconnect set", (it) => {
   it("ends the bridge's Run, cancels what has not left, and keeps what may have as unknown", async ({
@@ -157,5 +158,81 @@ describeStore("answers leave the Home only through a bridge's Disconnect set", (
         ({ id }) => id === bridge.bridge.id,
       ),
     ).toMatchObject({ state: "stopped", revokedAt: expect.any(String) });
+  });
+
+  it("stops a running Run when who may speak changes, not only its next step", async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("senders-live", {
+      conversation: { id: "C-live", name: "#live" },
+    });
+    const { database, store } = storeFixture;
+    const { fixture } = bridge;
+    const conversationId = createChannelId("conversation") as ChannelConversationId;
+    await database
+      .insertInto("bridgeConversations")
+      .values({
+        id: conversationId,
+        bridgeId: bridge.bridge.id,
+        accountId: bridge.configured.account.id,
+        externalScopeId: null,
+        externalConversationId: "C-live",
+        externalThreadId: "1.0",
+        conversationType: "channel",
+        displayName: "#live",
+        threadId: null,
+      })
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "Work on it" }],
+      source: {
+        kind: "connection",
+        connectionId: bridge.bridge.id,
+        chat: { conversationId, sender: { displayName: "Tim", owner: true } },
+      },
+      policy: "queue",
+      idempotencyKey: "senders-live-message",
+    });
+    // The Run is on the computer, admitted under the bridge's first revision.
+    await startPersonalQueuedRunFixture(store, queued.run!.id);
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["status", "admittedGrantRevision"])
+        .where("id", "=", queued.run!.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "running", admittedGrantRevision: 1 });
+    // Now anyone in the channel may speak: what runs was admitted under "only me".
+    await new AgentConnectionStore(database).update(fixture.userId, {
+      connectionId: bridge.bridge.id,
+      expectedRevision: 1,
+      senders: "anyone",
+    });
+    const stopped: string[] = [];
+    await store.driveConnectionCleanups({
+      stopper: {
+        stop: async (attempt) => {
+          stopped.push(attempt.kind);
+          return undefined;
+        },
+      },
+    });
+    // The Runner is told to interrupt it now, and its handed-off attempt is stopped.
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("type")
+        .where("runId", "=", queued.run!.id)
+        .where("type", "=", "run.interrupt")
+        .execute(),
+    ).toEqual([{ type: "run.interrupt" }]);
+    expect(stopped).toContain("run-attempt");
   });
 });
