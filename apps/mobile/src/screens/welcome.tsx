@@ -123,7 +123,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
                 {view.cloud.address === null ? null : (
                   <RowGroup>
                     {[
-                      <View key="address" style={styles.row}>
+                      <View key="address" style={[styles.row, styles.rowText]}>
                         <AppText role="body" style={styles.rowLabel}>
                           {view.cloud.address}
                         </AppText>
@@ -206,7 +206,13 @@ const styles = StyleSheet.create({
   centred: { textAlign: "center" },
   content: { flexGrow: 1, gap: space[24], justifyContent: "center", paddingBottom: space[24] },
   intro: { alignItems: "center", gap: space[8] },
-  link: { alignSelf: "center", paddingVertical: space[8] },
+  // A link is still a touch: at least 44 points tall.
+  link: {
+    alignSelf: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: space[8],
+  },
   pressed: { backgroundColor: color.surfacePressed },
   row: {
     alignItems: "center",
@@ -216,5 +222,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[16],
   },
   rowLabel: { flex: 1 },
+  // A row of text that may wrap to several lines keeps clear of the rows beside it.
+  rowText: { paddingVertical: space[12] },
   section: { gap: space[8] },
 });
