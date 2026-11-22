@@ -1,7 +1,7 @@
 import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
 import { escapeHtml } from "@opensteer/shared/browserPage";
 import { describe, expect, it } from "vitest";
-import { accountDeletedBody, deleteAccountBody, portalHomeBody } from "./pages.js";
+import { accountDeletedBody, deleteAccountBody, placeRow, portalHomeBody } from "./pages.js";
 
 const base = {
   account: { displayName: "Sam", email: "sam@example.com" },
@@ -82,5 +82,25 @@ describe("the page that deletes an Account", () => {
     // Without a Cloud Computer the pages say nothing about one.
     expect(accountDeletedBody()).not.toContain("Cloud Computer");
     expect(deleteAccountBody(base)).not.toContain("Cloud Computer");
+  });
+});
+
+describe("a row on Your Opensteers", () => {
+  it("says what kind of Home it is in the table's words, a Mac included", () => {
+    const row = (kind: "personal" | "cloud" | "server", kindLabel: string) =>
+      placeRow({
+        control: { kind: "none" },
+        id: "dep_1",
+        kind,
+        kindLabel,
+        name: "Studio",
+        remove: null,
+        status: null,
+      });
+    expect(row("personal", "Mac")).toContain('<span class="place__note">Mac</span>');
+    expect(row("cloud", "Cloud Computer")).toContain(
+      '<span class="place__note">Cloud Computer</span>',
+    );
+    expect(row("server", "Server")).toContain('<span class="place__note">Server</span>');
   });
 });

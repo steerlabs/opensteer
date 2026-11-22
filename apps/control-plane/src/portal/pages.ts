@@ -14,7 +14,7 @@ import {
   type BrowserPageLayout,
 } from "@opensteer/shared/browserPage";
 import type { FastifyReply } from "fastify";
-import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
+import { cloudWords, homesListTitle, orgWords } from "@opensteer/control-plane-protocol";
 import type { ConsentGrant } from "../account/account-oauth.js";
 
 /**
@@ -315,19 +315,19 @@ export function portalHomeBody(input: {
     ? `<li class="place place--add"><span class="device">${icon("download")}</span><span class="place__body"><a class="place__name" href="${escapeHtml(input.desktopDownloadUrl)}">Get the desktop app</a></span></li>`
     : "";
   return `${masthead}<main class="column">
-    <h1 class="title title--page">Your Opensteers</h1>
+    <h1 class="title title--page">${escapeHtml(homesListTitle)}</h1>
     <ul class="places">${input.rows.join("")}${download}${more}</ul>
     ${fallbackSignOut}
   </main>`;
 }
 
 /**
- * How a row draws each kind of Home: its mark, and whether it says the kind in words (a
- * Cloud Computer and a server do; a Mac is told by its mark). A Home
- * whose kind isn't known draws none.
+ * How a row draws each kind of Home: its mark, and whether it says the kind in words, from the
+ * one table every client reads ("Mac", "Cloud Computer", "Server"). A Home whose kind isn't
+ * known draws none.
  */
 const placeMarks = {
-  personal: { icon: "laptop", said: false },
+  personal: { icon: "laptop", said: true },
   cloud: { icon: "cloud", said: true },
   server: { icon: "server", said: true },
   unknown: { icon: null, said: false },
@@ -384,7 +384,7 @@ export function placeRow(input: {
   const note = status?.reason
     ? `<span class="place__note${status.tone === "warn" ? " place__note--warn" : ""}">${escapeHtml(status.reason)}</span>`
     : "";
-  // A Cloud Computer or a server says so in words, a work Home with its organization's badge.
+  // Every known kind says so in words, a work Home with its organization's badge.
   const kindLine = placeMarks[input.kind].said
     ? `<span class="place__note">${escapeHtml([input.badge, input.kindLabel].filter(Boolean).join(" · "))}</span>`
     : "";

@@ -1,3 +1,4 @@
+import { homesListTitle } from "@opensteer/client/computers";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { hostsDeployment } from "@opensteer/client/computers";
@@ -452,7 +453,7 @@ export function DeploymentsScreen(): ReactNode {
           // An alert survives that reset, so a rejected callback does not
           // disappear with this screen's local state.
           if (line !== null && opened)
-            Alert.alert(line.text, "Try again from Computers.", [{ text: "Done" }]);
+            Alert.alert(line.text, `Try again from ${homesListTitle}.`, [{ text: "Done" }]);
           else if (attempt.active) setFailure(line);
           attempt.cancel();
         });
@@ -612,7 +613,7 @@ export function DeploymentsScreen(): ReactNode {
   // The first run titles itself; a bar title above it would say it twice.
   useLayoutEffect(() => {
     if (switching) return;
-    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : "Computers" });
+    navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : homesListTitle });
   }, [navigation, switching, welcome]);
 
   const enterAddress = useCallback(() => {

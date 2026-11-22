@@ -1,3 +1,4 @@
+import { homesListTitle } from "@opensteer/client/computers";
 import { pushedInPresentation, screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
@@ -196,7 +197,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         headerLargeTitle: true,
-        title: "Computers",
+        title: homesListTitle,
       }),
     },
     // Home: the new-task composer, holding its one unsent draft.
@@ -573,7 +574,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         presentation: screenPresentations.DeploymentSwitcher,
-        title: "Switch deployment",
+        title: homesListTitle,
       }),
     },
   },

@@ -39,6 +39,7 @@ export * from "./cloud-computer-deletion.js";
 export * from "./cloud-computer-copy.js";
 export * from "./organizations.js";
 export * from "./organization-copy.js";
+export * from "./home-kind-copy.js";
 export * from "./notifications.js";
 export * from "./oauth-broker.js";
 

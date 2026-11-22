@@ -1,4 +1,4 @@
-import { deviceWords } from "@opensteer/client/computers";
+import { homeKindWords } from "@opensteer/client/computers";
 import { placeStatus } from "@opensteer/protocol/deployment-status";
 import {
   describeConnectionAccess,
@@ -145,16 +145,15 @@ export function deploymentSignInLabel(signIn: DeploymentSignIn): string {
 }
 
 /**
- * The kind, in the words the product uses for it — and only the words its own
- * data supports. A Deployment listed by the Account directory is one somebody
- * gave that Account access to; the directory entry says who may reach it, never
- * who runs it, so nothing here may call it Cloud.
+ * The kind, from the one table of words every client reads — and only the words its own
+ * data supports. A Home reached at its own address is a server until the Account says it is
+ * a Cloud Computer (`listedKind`); a phone never hosts a Home, so any other is a Mac.
  */
 export function deploymentKindLabel(connection: DeploymentConnection): string {
-  if (isNetworkedHome(connection.authority.document)) return "Home";
-  return personalComputerKind;
+  if (isNetworkedHome(connection.authority.document)) return homeKindWords("server").label;
+  return macKind;
 }
-const personalComputerKind = "Personal computer";
+const macKind = homeKindWords("mac").label;
 
 /**
  * What a row in the list of Homes calls its kind: "Cloud Computer" when the Account says it
@@ -166,16 +165,16 @@ export function listedKind(
   cloud: boolean,
 ): { readonly label: string; readonly cloud: boolean } {
   return cloud
-    ? { label: deviceWords("place.kind.cloud"), cloud: true }
+    ? { label: homeKindWords("cloud").label, cloud: true }
     : { label: row.kindLabel, cloud: false };
 }
 
 /**
- * A Home on a person's own Mac: a personal deployment reached through it, never a networked
- * server, Cloud Computer or work Home (those are "Home").
+ * A Home on a person's own Mac, never a server, Cloud Computer or work Home reached at its
+ * own address.
  */
 export function isMacHomeRow(row: Pick<DeploymentRow, "kindLabel">): boolean {
-  return row.kindLabel === personalComputerKind;
+  return row.kindLabel === macKind;
 }
 
 export function deploymentStatusLabel(status: DeploymentStatus): string {
