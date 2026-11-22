@@ -1,11 +1,12 @@
 #if canImport(UIKit)
-// tests/typing-order.interaction.test.tsx ports RemoteInputGate.swift, RemoteInputTextView.swift
-// and RemoteInputEdits.swift to TypeScript to test the JavaScript adapter: change it with them.
+// tests/remote-input-port.ts ports RemoteInputGate.swift, RemoteInputTextView.swift and
+// RemoteInputEdits.swift to TypeScript for the JavaScript adapter's tests: change it with them.
+// Tests/Cases/remote-input-edits.json holds RemoteInputEdits' cases, run against both.
 import UIKit
 import UniformTypeIdentifiers
 
 @MainActor public final class RemoteInputTextView: UITextView, UITextViewDelegate {
-  private let gate = RemoteInputGate()
+  let gate = RemoteInputGate()
   /// Where each waiting edit was typed, carried over the edits applied before its turn.
   private var edits = RemoteInputEdits()
   private var mutating = false
@@ -30,8 +31,9 @@ import UniformTypeIdentifiers
   public convenience init() { self.init(frame: .zero, textContainer: nil) }
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
   public func respond(_ instruction: [String: Any]) { gate.respond(instruction) }
-  private func snapshot() -> [String: Any] {
-    var state: [String: Any] = ["value": text ?? "", "selectionStart": selectedRange.location, "selectionEnd": selectedRange.location + selectedRange.length]
+  private func snapshot(selection: NSRange? = nil) -> [String: Any] {
+    let selection = selection ?? selectedRange
+    var state: [String: Any] = ["value": text ?? "", "selectionStart": selection.location, "selectionEnd": selection.location + selection.length]
     if let range = markedTextRange { state["markedRange"] = ["start": offset(from: beginningOfDocument, to: range.start), "end": offset(from: beginningOfDocument, to: range.end)] }
     return state
   }
@@ -70,12 +72,20 @@ import UniformTypeIdentifiers
     selectedRange = NSRange(location: start, length: end - start)
     mutating = false
   }
-  private func change(_ inputType: String, data: String?, _ action: @escaping () -> Void) {
+  /// The selection UIKit or the person chose after `typed` was named, carried: applying an edit
+  /// named earlier moves the native selection, and this puts it back where they last put it.
+  private func keepChosen(after typed: RemoteInputEdits.Place?) {
+    guard let typed, markedRange == nil, let chosen = edits.chosen(after: typed) else { return }
+    let target = range(chosen)
+    if selectedRange != target { selectedRange = target }
+  }
+  private func change(_ inputType: String, data: String?, typed: RemoteInputEdits.Place? = nil, _ action: @escaping () -> Void) {
     gate.enqueue {
       self.gate.event(["type": "beforeinput", "inputType": inputType, "data": data as Any? ?? NSNull()]) {
         let wasComposing = self.markedTextRange != nil
         self.mutating = true
         action()
+        self.keepChosen(after: typed)
         self.mutating = false
         let composing = self.markedTextRange != nil
         if !wasComposing && composing { self.gate.notify(["type": "compositionstart", "proxy": self.snapshot()]) }
@@ -88,38 +98,43 @@ import UniformTypeIdentifiers
   public override func insertText(_ text: String) {
     if mutating { super.insertText(text); return }
     let typed = place(selectedRange)
-    change(markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text) {
+    change(markedTextRange == nil ? (text == "\n" ? "insertLineBreak" : "insertText") : "insertFromComposition", data: text, typed: typed) {
       self.edit(self.select(typed)) { super.insertText(text) }
     }
   }
-  /// Replaces what UIKit named, wherever the edits applied since have moved it; a deletion whose
-  /// text an earlier one already took deletes the character before it instead (RemoteInputEdits).
-  private func replaceTyped(_ typed: RemoteInputEdits.Place, with text: String) {
-    let target = text.isEmpty ? edits.deletion(typed, in: self.text ?? "") : range(typed)
+  /// Replaces `target` with `text`, recording it for the edits still waiting.
+  private func replaceRange(_ target: NSRange, with text: String) {
     guard let a = position(from: beginningOfDocument, offset: target.location), let b = position(from: a, offset: target.length), let current = textRange(from: a, to: b) else { return }
     edit(target) { super.replace(current, withText: text) }
+  }
+  /// Replaces what UIKit named, wherever the edits applied since have moved it. Named text that is
+  /// already gone replaces nothing, never a neighbour; only the deletion of a selection pressed
+  /// twice deletes the character before it (RemoteInputEdits.deletion).
+  private func replaceTyped(_ typed: RemoteInputEdits.Place, with text: String, selectionAgain: Bool = false) {
+    replaceRange(selectionAgain ? edits.deletion(typed, in: self.text ?? "") : range(typed), with: text)
   }
   public override func replace(_ range: UITextRange, withText text: String) {
     if mutating { super.replace(range, withText: text); return }
     let typed = edits.place(offset(from: beginningOfDocument, to: range.start), offset(from: beginningOfDocument, to: range.end))
-    change("insertReplacementText", data: text) { self.replaceTyped(typed, with: text) }
+    change("insertReplacementText", data: text, typed: typed) { self.replaceTyped(typed, with: text) }
   }
   public override func deleteBackward() {
     if mutating { super.deleteBackward(); return }
     let typed = place(selectedRange)
-    change("deleteContentBackward", data: nil) {
-      let target = self.select(typed)
+    change("deleteContentBackward", data: nil, typed: typed) {
+      _ = self.select(typed)
+      // Inside a composition the marked text is not what goes: the character before the caret is.
+      let selection = self.selectedRange
       let before = self.length
       super.deleteBackward()
       let removed = before - self.length
-      // What went is the selection, or as much just before the caret.
-      self.edits.record(start: target.length > 0 ? target.location : target.location - removed, removed: removed, inserted: 0)
+      self.edits.record(start: RemoteInputEdits.deletedStart(selection: selection, removed: removed), removed: removed, inserted: 0)
     }
   }
   public override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
     if mutating { super.setMarkedText(markedText, selectedRange: selectedRange); return }
     let typed = place(self.selectedRange)
-    change("insertCompositionText", data: markedText) {
+    change("insertCompositionText", data: markedText, typed: typed) {
       self.edit(self.select(typed)) { super.setMarkedText(markedText, selectedRange: selectedRange) }
     }
   }
@@ -137,20 +152,32 @@ import UniformTypeIdentifiers
   public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText replacement: String) -> Bool {
     if mutating { return true }
     guard isEditable else { return false }
+    if replacement.isEmpty && RemoteInputEdits.isBackspace(named: range, selection: selectedRange) {
+      // A Backspace: backward from the caret, wherever the caret is by its turn, as many composed
+      // characters as UIKit named.
+      let caret = place(selectedRange)
+      let count = RemoteInputEdits.composedCount(in: text ?? "", range: range)
+      change("deleteContentBackward", data: replacement, typed: caret) {
+        self.replaceRange(self.edits.backspace(caret, count: count, in: self.text ?? ""), with: "")
+      }
+      return false
+    }
+    let again = replacement.isEmpty && RemoteInputEdits.deletesSelection(named: range, selection: selectedRange)
     let typed = place(range)
-    change(replacement.isEmpty ? "deleteContentBackward" : "insertReplacementText", data: replacement) { self.replaceTyped(typed, with: replacement) }
+    change(replacement.isEmpty ? "deleteContentBackward" : "insertReplacementText", data: replacement, typed: typed) {
+      self.replaceTyped(typed, with: replacement, selectionAgain: again)
+    }
     return false
   }
-  /// A selection UIKit or the person moved takes its turn after the edits typed before it, at the
-  /// place it was moved to, carried over them; JavaScript reads it as it is then.
+  /// A selection UIKit or the person moved is reported after the edits typed before it, carried
+  /// over them. Reporting never writes the native selection: that stays whatever UIKit last set.
+  /// A newer report replaces one still queued, so a drag queues one, not one per frame.
   public func textViewDidChangeSelection(_ textView: UITextView) {
     if mutating { return }
     let moved = place(selectedRange)
-    gate.enqueue {
-      self.mutating = true
-      _ = self.select(moved)
-      self.mutating = false
-      self.gate.event(["type": "selection", "proxy": self.snapshot()])
+    edits.choose(moved)
+    gate.report {
+      self.gate.event(["type": "selection", "proxy": self.snapshot(selection: self.range(moved))])
     }
   }
   public func textViewDidEndEditing(_ textView: UITextView) {

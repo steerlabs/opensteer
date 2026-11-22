@@ -1,7 +1,8 @@
 import Foundation
 
-// tests/typing-order.interaction.test.tsx ports RemoteInputGate.swift, RemoteInputTextView.swift
-// and RemoteInputEdits.swift to TypeScript to test the JavaScript adapter: change it with them.
+// tests/remote-input-port.ts ports RemoteInputGate.swift, RemoteInputTextView.swift and
+// RemoteInputEdits.swift to TypeScript for the JavaScript adapter's tests: change it with them.
+// Tests/Cases/remote-input-edits.json holds RemoteInputEdits' cases, run against both.
 
 /// Where UIKit placed a native edit, carried over the edits applied after it placed it.
 ///
@@ -18,9 +19,11 @@ import Foundation
 /// outside it, whatever that edit removed, so a word named for autocorrect is still that word after
 /// the space beside it was typed over.
 struct RemoteInputEdits {
-  /// A place named in the text as it stood after `revision` edits, in UTF-16 offsets.
+  /// A place named in the text as it stood after `revision` edits, in UTF-16 offsets; `order`
+  /// counts the places named, so a later one can tell it was named after an earlier one.
   struct Place: Equatable {
     let revision: Int
+    let order: Int
     let start: Int
     let end: Int
   }
@@ -34,10 +37,24 @@ struct RemoteInputEdits {
   private var base = 0
   /// How many edits have been applied.
   var revision: Int { base + edits.count }
+  private var named = 0
+  /// The selection UIKit or the person last chose, as named.
+  private var chosen: Place?
 
   /// A place in the text as it stands now.
-  func place(_ start: Int, _ end: Int) -> Place {
-    Place(revision: revision, start: start, end: end)
+  mutating func place(_ start: Int, _ end: Int) -> Place {
+    named += 1
+    return Place(revision: revision, order: named, start: start, end: end)
+  }
+
+  /// UIKit or the person chose this selection. The native selection is whatever they last chose:
+  /// an edit named before the choice and applied after it must not leave the caret where the edit
+  /// put it.
+  mutating func choose(_ selection: Place) { chosen = selection }
+  /// The selection chosen after `place` was named, if there is one.
+  func chosen(after place: Place) -> Place? {
+    guard let chosen, chosen.order > place.order else { return nil }
+    return chosen
   }
 
   /// The `removed` code units from `start` became `inserted` code units.
@@ -61,10 +78,42 @@ struct RemoteInputEdits {
     return (start, end)
   }
 
-  /// Where a deletion UIKit named is now, in `text`. A backspace pressed while the one before it
-  /// waits names the same character before the caret; once the earlier one has deleted it, the
-  /// place is empty and this one deletes the character before where it now stands. Five presses
-  /// are five deletions.
+  /// Whether an empty replacement UIKit asked the delegate for is a Backspace: the selection is a
+  /// caret and the range named ends at it. A Backspace deletes backward from the caret, wherever
+  /// the caret has moved by its turn; it never deletes the text it named, which may by then be a
+  /// character typed before the typo the person meant to erase.
+  static func isBackspace(named range: NSRange, selection: NSRange) -> Bool {
+    selection.length == 0 && range.length > 0 && range.location + range.length == selection.location
+  }
+  /// Whether an empty replacement deletes the selection itself.
+  static func deletesSelection(named range: NSRange, selection: NSRange) -> Bool {
+    selection.length > 0 && range == selection
+  }
+  /// How many composed characters `range` of `text` holds: what a Backspace named (one, or a
+  /// word's worth when UIKit deletes a word through the delegate).
+  static func composedCount(in text: String, range: NSRange) -> Int {
+    var count = 0
+    (text as NSString).enumerateSubstrings(in: range, options: [.byComposedCharacterSequences, .substringNotRequired]) { _, _, _, _ in count += 1 }
+    return count
+  }
+  /// What a Backspace pressed at `caret` deletes: the `count` composed characters before where the
+  /// caret now stands, as many as there are.
+  func backspace(_ caret: Place, count: Int = 1, in text: String) -> NSRange {
+    let at = current(caret, length: text.utf16.count).start
+    let string = text as NSString
+    var start = at
+    for _ in 0..<max(0, count) where start > 0 { start = string.rangeOfComposedCharacterSequence(at: start - 1).location }
+    return NSRange(location: start, length: at - start)
+  }
+  /// Where deleteBackward's deletion began: the selection it deleted, or as much just before the
+  /// caret (inside a composition too, where the marked text is not what went).
+  static func deletedStart(selection: NSRange, removed: Int) -> Int {
+    selection.length > 0 ? selection.location : max(0, selection.location - removed)
+  }
+
+  /// Where the deletion of a selection UIKit named is now, in `text`. Pressed twice while the
+  /// first waits, both name the selection; once the first has deleted it, the place is empty and
+  /// the second deletes the character before where it now stands, as a second press would.
   func deletion(_ place: Place, in text: String) -> NSRange {
     let current = current(place, length: text.utf16.count)
     if current.end > current.start || place.end == place.start { return NSRange(location: current.start, length: current.end - current.start) }
@@ -76,6 +125,7 @@ struct RemoteInputEdits {
   mutating func settle() {
     base = revision
     edits.removeAll()
+    chosen = nil
   }
 
   /// `before`: an edit that begins exactly at `offset` lies after it (the end of a range).

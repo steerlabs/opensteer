@@ -78,7 +78,7 @@ import UIKit
   }
   // The walk typed 0123456789 fast and the target received 1023456789: UIKit named each
   // keystroke's place in the text before the keystrokes still waiting were applied.
-  func testKeystrokesPlacedBeforeEarlierOnesWereAppliedLandInTypingOrder() {
+  func testKeystrokesPlacedBeforeEarlierOnesWereAppliedLandInTypingOrder() throws {
     let view = RemoteInputTextView()
     var packets: [[String: Any]] = []
     view.deliver = { packets.append($0) }
@@ -87,7 +87,9 @@ import UIKit
       if index % 2 == 0 {
         XCTAssertFalse(view.textView(view, shouldChangeTextIn: view.selectedRange, replacementText: typed))
       } else {
-        view.replace(view.selectedTextRange!, withText: typed)
+        // The caret as a range; a view outside a window may have none until it has text.
+        let caret = try XCTUnwrap(view.textRange(from: view.endOfDocument, to: view.endOfDocument))
+        view.replace(caret, withText: typed)
       }
     }
     var next = 0
@@ -192,5 +194,119 @@ import UIKit
     XCTAssertEqual(view.text, "b")
   }
 
+
+  // MARK: The review's faults, on the real view: typed fast, answers late.
+
+  /// The view with its answers held until the test lets them through, oldest first.
+  @MainActor final class Field {
+    let view = RemoteInputTextView()
+    var packets: [[String: Any]] = []
+    var next = 0
+    init(settled text: String = "") {
+      view.deliver = { [unowned self] in packets.append($0) }
+      if !text.isEmpty { view.insertText(text); answerAll() }
+    }
+    func answerOne() { if next < packets.count { view.respond(["id": packets[next]["id"]!]); next += 1 } }
+    func answerAll() { while next < packets.count { answerOne() } }
+    /// A Backspace as UIKit asks the delegate: the composed character before the caret, named in
+    /// the text as it stands now.
+    func backspace() {
+      let caret = view.selectedRange
+      let named = caret.length > 0 ? caret : ((view.text ?? "") as NSString).rangeOfComposedCharacterSequence(at: caret.location - 1)
+      XCTAssertFalse(view.textView(view, shouldChangeTextIn: named, replacementText: ""))
+    }
+    /// The person or UIKit moves the selection; UIKit tells the delegate itself.
+    func select(_ range: NSRange) { view.selectedRange = range }
+    var selections: Int { packets.filter { ($0["event"] as? [String: Any])?["type"] as? String == "selection" }.count }
+  }
+
+  // P1: a typo then Backspace erases the typo, not the character before it.
+  func testATypoThenBackspaceErasesTheTypo() {
+    let field = Field(settled: "a")
+    field.view.insertText("b")
+    field.backspace()
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "a")
+  }
+  func testBackspaceWhileNineWaitErasesTheLastOfThem() {
+    let field = Field(settled: "0")
+    for digit in "123456789" { field.view.insertText(String(digit)) }
+    field.backspace()
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "012345678")
+  }
+  func testBackspaceAfterAJoinedEmojiErasesWhatWasTypedAfterIt() {
+    let field = Field(settled: "a👩‍💻")
+    field.view.insertText("b")
+    field.backspace()
+    field.backspace()
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "a")
+  }
+  func testASelectionDeletedTwiceDeletesTheCharacterBeforeIt() {
+    let field = Field(settled: "hello")
+    field.select(NSRange(location: 1, length: 3))
+    field.answerAll()
+    XCTAssertFalse(field.view.textView(field.view, shouldChangeTextIn: NSRange(location: 1, length: 3), replacementText: ""))
+    XCTAssertFalse(field.view.textView(field.view, shouldChangeTextIn: NSRange(location: 1, length: 3), replacementText: ""))
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "o")
+  }
+  // Finding 4: a replacement naming text already gone replaces nothing; its neighbour stays.
+  func testAReplacementOfTextAlreadyGoneDeletesNothingElse() {
+    let field = Field(settled: "xyab")
+    let named = { () -> UITextRange in
+      let start = field.view.position(from: field.view.beginningOfDocument, offset: 2)!
+      return field.view.textRange(from: start, to: field.view.endOfDocument)!
+    }
+    field.view.replace(named(), withText: "")
+    field.view.replace(named(), withText: "")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "xy")
+  }
+
+  // P2: a queued selection report never moves the text view's selection back.
+  func testTypingAfterDraggingTheCaretLandsWhereTheDragEnded() {
+    let field = Field(settled: "hello")
+    field.select(NSRange(location: 0, length: 0))
+    field.answerAll()
+    for offset in 1...5 { field.select(NSRange(location: offset, length: 0)) }
+    field.answerOne()
+    field.view.insertText("!")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "hello!")
+  }
+  func testTypingAfterATapWhileAnEarlierKeystrokeWaitsLandsAtTheTap() {
+    let field = Field(settled: "hello")
+    field.view.insertText("a")
+    field.select(NSRange(location: 0, length: 0))
+    field.answerOne()
+    field.view.insertText("X")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "Xhelloa")
+  }
+  func testADragOfSixtyCallbacksQueuesOneReport() {
+    let field = Field(settled: "hello")
+    field.view.insertText("a")
+    for frame in 0..<60 { field.select(NSRange(location: frame % 6, length: 0)) }
+    XCTAssertEqual(field.view.gate.queued, 1)
+    field.answerAll()
+    XCTAssertEqual(field.selections, 1)
+  }
+
+  // P3: deleteBackward inside a composition records where the characters actually went. Without
+  // an input method UIKit deletes the whole marked text, so a place named inside it lands where it
+  // began; an IME that deletes one marked character is covered by the shared cases
+  // (deletedStart), since no IME runs here.
+  func testDeletingACompositionCarriesLaterPlacesToWhereItWent() {
+    let field = Field()
+    field.view.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0))
+    field.answerAll()
+    field.view.deleteBackward()
+    field.view.unmarkText()
+    XCTAssertFalse(field.view.textView(field.view, shouldChangeTextIn: NSRange(location: 1, length: 0), replacementText: "X"))
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "X")
+  }
 }
 #endif

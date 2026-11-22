@@ -1,286 +1,21 @@
 // @vitest-environment happy-dom
 import { act, useImperativeHandle } from "react";
-import type { EditingOperation, EditingProxyInstruction } from "@opensteer/client/editing";
+import type { EditingOperation } from "@opensteer/client/editing";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { NativeField, type Answer, type Packet, type Proxy } from "./remote-input-port.js";
 
 /*
  * Text typed into a remote page arrives in the order typed, at any speed. The walk typed
  * 0123456789 fast and the target received 1023456789: UIKit names a keystroke's place in the text
  * as it stands when it calls, while the keystrokes before it still wait for JavaScript's answer.
  *
- * The native view here is RemoteInputGate.swift and RemoteInputTextView.swift as they behave,
- * ported: every default waits for its numbered answer, the answers arrive only when the test lets
- * them, late and out of step with the keystrokes, and the keyboard names places in the text as it
- * stands at the moment it types.
- *
- * Keep this port in step with ios/Core/RemoteInputGate.swift, RemoteInputTextView.swift and
- * RemoteInputEdits.swift: nothing checks one against the other.
+ * The native view here is the port in remote-input-port.ts: every default waits for its numbered
+ * answer, the answers arrive only when the test lets them, late and out of step with the
+ * keystrokes, and the keyboard names places in the text as it stands at the moment it types. The
+ * truth for the view is RemoteTextInputTests.swift; these check the JavaScript adapter and reducer
+ * over it.
  */
-
-interface Packet {
-  id: number;
-  contextId?: string;
-  event: Record<string, unknown>;
-}
-type Answer = EditingProxyInstruction & { id: number };
-
-interface Proxy {
-  value: string;
-  selectionStart: number;
-  selectionEnd: number;
-  markedRange?: { start: number; end: number };
-}
-
-/** RemoteInputEdits.swift: a place named in the text after `revision` edits. */
-interface Place {
-  revision: number;
-  start: number;
-  end: number;
-}
-
-class NativeField {
-  // RemoteInputGate.swift
-  private jobs: (() => void)[] = [];
-  private next = 0;
-  private waiting: [number, () => void] | null = null;
-  private running = false;
-  private insertion = 0;
-  contextId: string | null = null;
-  // RemoteInputTextView.swift
-  text = "";
-  selection = { start: 0, end: 0 };
-  marked: { start: number; end: number } | null = null;
-  private mutating = false;
-  // RemoteInputEdits.swift
-  private edits: { start: number; removed: number; inserted: number }[] = [];
-  private base = 0;
-
-  constructor(private readonly deliver: (packet: Packet) => void) {}
-
-  // The gate, line for line.
-  private enqueue(job: () => void) {
-    if (this.running) this.jobs.splice(this.insertion++, 0, job);
-    else this.jobs.push(job);
-    this.drain();
-  }
-  private event(event: Record<string, unknown>, action: () => void = () => undefined) {
-    this.next += 1;
-    this.waiting = [this.next, action];
-    this.deliver({
-      id: this.next,
-      ...(this.contextId === null ? {} : { contextId: this.contextId }),
-      event,
-    });
-  }
-  private notify(event: Record<string, unknown>) {
-    this.enqueue(() => this.event(event));
-  }
-  respond(instruction: Answer) {
-    if (instruction.id === 0) {
-      this.apply(instruction);
-      return;
-    }
-    const current = this.waiting;
-    if (current === null || instruction.id !== current[0]) return;
-    this.waiting = null;
-    this.running = true;
-    this.insertion = 0;
-    if (instruction.preventDefault !== true) current[1]();
-    this.apply(instruction);
-    this.running = false;
-    this.drain();
-  }
-  private drain() {
-    if (this.running) return;
-    while (this.waiting === null && this.jobs.length > 0) {
-      this.running = true;
-      this.insertion = 0;
-      this.jobs.shift()!();
-      this.running = false;
-    }
-    if (this.waiting === null && this.jobs.length === 0) this.settle();
-  }
-
-  // The edits, as RemoteInputEdits.swift moves a place.
-  private get revision() {
-    return this.base + this.edits.length;
-  }
-  private settle() {
-    this.base = this.revision;
-    this.edits = [];
-  }
-  private place(start: number, end: number): Place {
-    return { revision: this.revision, start, end };
-  }
-  private current(place: Place): { start: number; end: number } {
-    let { start, end } = place;
-    if (place.revision >= this.base) {
-      const caret = start === end;
-      const move = (offset: number, before: boolean, edit: (typeof this.edits)[number]) => {
-        if (offset < edit.start || (before && offset === edit.start)) return offset;
-        if (offset >= edit.start + edit.removed) return offset - edit.removed + edit.inserted;
-        return edit.start + edit.inserted;
-      };
-      for (const edit of this.edits.slice(place.revision - this.base)) {
-        start = move(start, false, edit);
-        end = move(end, !caret, edit);
-      }
-    }
-    start = Math.min(Math.max(0, start), this.text.length);
-    end = Math.min(Math.max(start, end), this.text.length);
-    return { start, end };
-  }
-  private replace(start: number, end: number, text: string) {
-    const before = this.text.length;
-    this.text = this.text.slice(0, start) + text + this.text.slice(end);
-    this.edits.push({
-      start,
-      removed: end - start,
-      inserted: this.text.length - before + end - start,
-    });
-  }
-  /** RemoteInputTextView.select: the marked text while there is some, else the place named. */
-  private select(place: Place) {
-    if (this.marked) return { ...this.marked };
-    const target = this.current(place);
-    this.selection = { ...target };
-    return target;
-  }
-  snapshot(): Proxy {
-    return {
-      value: this.text,
-      selectionStart: this.selection.start,
-      selectionEnd: this.selection.end,
-      ...(this.marked ? { markedRange: { ...this.marked } } : {}),
-    };
-  }
-  private apply(instruction: Answer) {
-    const set = instruction.set;
-    if (this.marked || !set) return;
-    this.mutating = true;
-    this.replace(0, this.text.length, set.value);
-    this.selection = { start: set.selectionStart, end: set.selectionEnd };
-    this.mutating = false;
-  }
-  private change(inputType: string, data: string | null, action: () => void) {
-    this.enqueue(() =>
-      this.event({ type: "beforeinput", inputType, data }, () => {
-        const wasComposing = this.marked !== null;
-        this.mutating = true;
-        action();
-        this.mutating = false;
-        const composing = this.marked !== null;
-        if (!wasComposing && composing)
-          this.notify({ type: "compositionstart", proxy: this.snapshot() });
-        if (composing)
-          this.notify({
-            type: "compositionupdate",
-            data: this.text.slice(this.marked!.start, this.marked!.end),
-            proxy: this.snapshot(),
-          });
-        if (wasComposing && !composing)
-          this.notify({ type: "compositionend", data: data ?? "", proxy: this.snapshot() });
-        this.notify({ type: "input", inputType, composing, proxy: this.snapshot() });
-      }),
-    );
-  }
-
-  // What UIKit calls, naming places in the text as it stands at that moment.
-
-  /** textView(_:shouldChangeTextIn:replacementText:) over the selection: a keystroke. */
-  type(replacement: string) {
-    const typed = this.place(this.selection.start, this.selection.end);
-    this.change(
-      replacement ? "insertReplacementText" : "deleteContentBackward",
-      replacement,
-      () => {
-        const target = this.current(typed);
-        if (target.end > this.text.length) return;
-        this.replace(target.start, target.end, replacement);
-        this.selection = {
-          start: target.start + replacement.length,
-          end: target.start + replacement.length,
-        };
-      },
-    );
-  }
-  /**
-   * RemoteInputEdits.deletion: the place, until an earlier deletion took its text; then the
-   * character before where it now stands.
-   */
-  private deletion(place: Place): { start: number; end: number } {
-    const current = this.current(place);
-    if (current.end > current.start || place.end === place.start) return current;
-    if (current.start === 0) return { start: 0, end: 0 };
-    return { start: previousCharacter(this.text, current.start), end: current.start };
-  }
-  /**
-   * A backspace as UIKit asks the delegate for it: the character before the caret (or the
-   * selection), named in the text as it stands now. UIKit asks nothing where it sees nothing.
-   */
-  backspace() {
-    const { start, end } = this.selection;
-    if (end === 0) return;
-    const from = start < end ? start : previousCharacter(this.text, end);
-    const typed = this.place(from, end);
-    this.change("deleteContentBackward", "", () => {
-      const target = this.deletion(typed);
-      this.replace(target.start, target.end, "");
-      this.selection = { start: target.start, end: target.start };
-    });
-  }
-  /** replace(_:withText:): UIKit replaces a range it names, as autocorrect does. */
-  replaceRange(start: number, end: number, replacement: string) {
-    const typed = this.place(start, end);
-    this.change("insertReplacementText", replacement, () => {
-      const target = this.current(typed);
-      this.replace(target.start, target.end, replacement);
-    });
-  }
-  deleteBackward() {
-    const typed = this.place(this.selection.start, this.selection.end);
-    this.change("deleteContentBackward", null, () => {
-      const target = this.select(typed);
-      const start = target.end > target.start ? target.start : Math.max(0, target.start - 1);
-      this.replace(start, target.end, "");
-      this.selection = { start, end: start };
-    });
-  }
-  setMarkedText(text: string) {
-    const typed = this.place(this.selection.start, this.selection.end);
-    this.change("insertCompositionText", text, () => {
-      const target = this.select(typed);
-      this.replace(target.start, target.end, text);
-      this.marked = { start: target.start, end: target.start + text.length };
-      this.selection = { start: this.marked.end, end: this.marked.end };
-    });
-  }
-  unmarkText() {
-    this.enqueue(() => {
-      if (!this.marked) return;
-      const data = this.text.slice(this.marked.start, this.marked.end);
-      this.marked = null;
-      this.notify({ type: "compositionend", data, proxy: this.snapshot() });
-    });
-  }
-  paste(text: string) {
-    this.enqueue(() => {
-      const data = Buffer.from(text, "utf8").toString("base64");
-      this.notify({ type: "paste", items: [{ type: "text/plain", data }] });
-    });
-  }
-}
-
-/** Where the composed character before `offset` starts (NSString.rangeOfComposedCharacterSequence). */
-function previousCharacter(text: string, offset: number): number {
-  let start = 0;
-  for (const { index } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
-    text.slice(0, offset),
-  ))
-    start = index;
-  return start;
-}
 
 /** The remote field: it takes an edit only where its own text says it goes. */
 class RemoteField {
@@ -529,6 +264,59 @@ describe("typing into a remote field", () => {
     await answerAll();
     expect(native.text).toBe("01234");
     expect(remote.value).toBe("01234");
+  });
+
+  // The review's fault 1: a typo then Backspace at once erased the character before the typo.
+  it("erases the typo when Backspace follows it at once", async () => {
+    const { remote, native, keyboard, answerAll } = await open();
+    await keyboard((field) => field.type("a"));
+    await answerAll();
+    await keyboard((field) => field.type("b"));
+    await keyboard((field) => field.backspace());
+    await answerAll();
+    expect(native.text).toBe("a");
+    expect(remote.value).toBe("a");
+  });
+
+  it("erases the last of nine still waiting when Backspace follows them", async () => {
+    const { remote, native, keyboard, answerAll } = await open();
+    await keyboard((field) => field.type("0"));
+    await answerAll();
+    for (const digit of "123456789") await keyboard((field) => field.type(digit));
+    await keyboard((field) => field.backspace());
+    await answerAll();
+    expect(native.text).toBe("012345678");
+    expect(remote.value).toBe("012345678");
+  });
+
+  // The review's fault 2: a queued selection report moved the caret back under the next keystroke.
+  it("types where a drag of the caret ended", async () => {
+    const { remote, native, keyboard, answer, answerAll } = await open();
+    await keyboard((field) => field.type("hello"));
+    await answerAll();
+    await keyboard((field) => field.moveSelection(0));
+    await answerAll();
+    for (let offset = 1; offset <= 5; offset++)
+      await keyboard((field) => field.moveSelection(offset));
+    expect(native.queued).toBe(1);
+    await answer(1);
+    await keyboard((field) => field.insertText("!"));
+    await answerAll();
+    expect(native.text).toBe("hello!");
+    expect(remote.value).toBe("hello!");
+  });
+
+  it("types at a tap made while an earlier keystroke waits", async () => {
+    const { remote, native, keyboard, answer, answerAll } = await open();
+    await keyboard((field) => field.type("hello"));
+    await answerAll();
+    await keyboard((field) => field.insertText("a"));
+    await keyboard((field) => field.moveSelection(0));
+    await answer(1);
+    await keyboard((field) => field.insertText("X"));
+    await answerAll();
+    expect(native.text).toBe("Xhelloa");
+    expect(remote.value).toBe("Xhelloa");
   });
 
   it("deletes what was typed last, however late its turn", async () => {

@@ -1,12 +1,13 @@
-// tests/typing-order.interaction.test.tsx ports RemoteInputGate.swift, RemoteInputTextView.swift
-// and RemoteInputEdits.swift to TypeScript to test the JavaScript adapter: change it with them.
+// tests/remote-input-port.ts ports RemoteInputGate.swift, RemoteInputTextView.swift and
+// RemoteInputEdits.swift to TypeScript for the JavaScript adapter's tests: change it with them.
+// Tests/Cases/remote-input-edits.json holds RemoteInputEdits' cases, run against both.
 import Foundation
 
 /// One event at a time: the bridge must decide before UIKit applies the default.
 @MainActor final class RemoteInputGate {
   var deliver: (([String: Any]) -> Void)?
   var contextId: String?
-  private var jobs: [() -> Void] = []
+  private var jobs: [(run: () -> Void, report: Bool)] = []
   private var next = 0
   private var waiting: (Int, () -> Void)?
   private var running = false
@@ -15,8 +16,18 @@ import Foundation
   /// Nothing is waiting for an answer or for its turn.
   var idle: (() -> Void)?
 
-  func enqueue(_ job: @escaping () -> Void) {
-    if running { jobs.insert(job, at: insertion); insertion += 1 } else { jobs.append(job) }
+  /// Jobs waiting for their turn.
+  var queued: Int { jobs.count }
+
+  func enqueue(_ job: @escaping () -> Void) { add(job, report: false) }
+  /// A report of state that a newer report supersedes (where the selection is): it replaces the
+  /// queued report nothing was queued after, so a drag queues one report, not one per frame.
+  func report(_ job: @escaping () -> Void) { add(job, report: true) }
+  private func add(_ job: @escaping () -> Void, report: Bool) {
+    let last = running ? insertion - 1 : jobs.count - 1
+    if report, jobs.indices.contains(last), jobs[last].report { jobs[last] = (job, true) }
+    else if running { jobs.insert((job, report), at: insertion); insertion += 1 }
+    else { jobs.append((job, report)) }
     drain()
   }
   func event(_ event: [String: Any], default action: @escaping () -> Void = {}) {
@@ -42,7 +53,7 @@ import Foundation
     guard !running else { return }
     while waiting == nil && !jobs.isEmpty {
       running = true; insertion = 0
-      let job = jobs.removeFirst(); job()
+      let job = jobs.removeFirst(); job.run()
       running = false
     }
     if waiting == nil && jobs.isEmpty { idle?() }
