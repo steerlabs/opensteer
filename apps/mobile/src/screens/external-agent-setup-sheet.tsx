@@ -102,7 +102,12 @@ function AddressStep(props: {
   return (
     <View style={styles.address}>
       {/* Copied whole by its button: drawn text holds joiners, so it is not selectable. */}
-      <CopyableAddressText role="caption" style={styles.url} value={address.url} />
+      <CopyableAddressText
+        layoutStyle={styles.urlRoom}
+        role="caption"
+        style={styles.url}
+        value={address.url}
+      />
       <Pressable
         accessibilityLabel={copied ? "Copied" : "Copy address"}
         accessibilityRole="button"
@@ -147,5 +152,7 @@ const styles = StyleSheet.create({
   },
   step: { flexDirection: "row", gap: space[14] },
   stepBody: { flex: 1, gap: space[10], paddingTop: space[2] },
-  url: { color: color.text, flex: 1, fontFamily: monoFontFamily },
+  url: { color: color.text, fontFamily: monoFontFamily },
+  // Beside its Copy button, the address takes the rest of the row and wraps there.
+  urlRoom: { flex: 1 },
 });
