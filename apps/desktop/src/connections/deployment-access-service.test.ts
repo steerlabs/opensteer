@@ -1800,6 +1800,150 @@ describe("DeploymentAccessService", () => {
       service.dispose();
     });
 
+    const accountB = {
+      issuer: testAccount.issuer,
+      subject: "acct_0192f4a1-2222-4000-8000-000000000002",
+    };
+    /** The person presses Sign in here, and the browser comes back signed in as `who`. */
+    async function signInHere(
+      fixture: ReturnType<typeof fakePorts>,
+      service: DeploymentAccessService,
+      who: { readonly issuer: string; readonly subject: string } = testAccount,
+    ) {
+      await service.signIn();
+      fixture.emitAccount(signedInAccount(who));
+      await settle();
+    }
+
+    it("opens the one Home an account has, after a sign-in the person started, never on a token refresh", async () => {
+      const server = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [server] });
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      expect(fixture.select).not.toHaveBeenCalled();
+
+      await signInHere(fixture, service);
+      expect(fixture.select).toHaveBeenCalledExactlyOnceWith(server.id);
+      fixture.emitAccount(signedInAccount(testAccount));
+      await settle();
+      expect(fixture.select).toHaveBeenCalledTimes(1);
+      service.dispose();
+    });
+
+    it("opens nothing for a sign-in this Mac didn't start, or a re-authorisation", async () => {
+      const server = otherMac({ livenessExpiresAt: liveLease });
+      const restored = fakePorts({ deployments: [server] });
+      const quiet = new DeploymentAccessService(restored.ports, restored.options);
+      await quiet.initialize();
+      restored.emitAccount(signedInAccount(testAccount));
+      await settle();
+      expect(restored.select).not.toHaveBeenCalled();
+      // Confirming it's still them passes through authorizing and back: still not a sign-in.
+      await quiet.reauthorize();
+      restored.emitAccount({
+        account: { available: true, detail: null, identity: null, status: "authorizing" },
+        schemaVersion: 2,
+      });
+      restored.emitAccount(signedInAccount(testAccount));
+      await settle();
+      expect(restored.select).not.toHaveBeenCalled();
+      quiet.dispose();
+    });
+
+    it("leaves several Homes, or one beside a place of this Mac's own, as a list to choose from", async () => {
+      const studio = otherMac({ livenessExpiresAt: liveLease });
+      const lab = otherMac({ livenessExpiresAt: liveLease });
+      const two = fakePorts({ deployments: [studio, lab] });
+      const listed = new DeploymentAccessService(two.ports, two.options);
+      await listed.initialize();
+      await signInHere(two, listed);
+      expect(two.select).not.toHaveBeenCalled();
+      listed.dispose();
+
+      const added = deployment({ name: "Added by hand" });
+      const beside = fakePorts({ deployments: [studio, added] });
+      const mixed = new DeploymentAccessService(beside.ports, beside.options);
+      await mixed.initialize();
+      await signInHere(beside, mixed);
+      expect(beside.select).not.toHaveBeenCalled();
+      mixed.dispose();
+    });
+
+    it("never opens a Home this Mac remembers from another account, read or not", async () => {
+      const ofA = { ...otherMac({ livenessExpiresAt: liveLease }), accountOwner: testAccount };
+      // The read fails: the remembered Home of A is all there is to see.
+      const failing = fakePorts({ deployments: [ofA], joined: [ofA.id] });
+      vi.mocked(failing.ports.directory.syncAccountDeployments).mockRejectedValue(
+        new Error("The Account did not answer."),
+      );
+      const failed = new DeploymentAccessService(failing.ports, failing.options);
+      await failed.initialize();
+      await signInHere(failing, failed, accountB);
+      expect(failing.select).not.toHaveBeenCalled();
+      failed.dispose();
+
+      // The read succeeds and still lists only A's Home, which this Mac joined.
+      const reading = fakePorts({ deployments: [ofA], joined: [ofA.id] });
+      const read = new DeploymentAccessService(reading.ports, reading.options);
+      await read.initialize();
+      await signInHere(reading, read, accountB);
+      expect(reading.select).not.toHaveBeenCalled();
+      read.dispose();
+    });
+
+    it("opens nothing when the person signs out, or another account signs in, while the read is out", async () => {
+      for (const next of ["signed-out", "account B"] as const) {
+        const home = otherMac({ livenessExpiresAt: liveLease });
+        const fixture = fakePorts({ deployments: [home] });
+        const sync = deferred<{ changed: boolean; unavailable: [] }>();
+        vi.mocked(fixture.ports.directory.syncAccountDeployments).mockReturnValueOnce(sync.promise);
+        const service = new DeploymentAccessService(fixture.ports, fixture.options);
+        await service.initialize();
+        await signInHere(fixture, service);
+        fixture.emitAccount(
+          next === "signed-out"
+            ? {
+                account: { available: true, detail: null, identity: null, status: "signed-out" },
+                schemaVersion: 2,
+              }
+            : signedInAccount(accountB),
+        );
+        await settle();
+        sync.resolve({ changed: true, unavailable: [] });
+        await settle();
+        expect(fixture.select, next).not.toHaveBeenCalled();
+        service.dispose();
+      }
+    });
+
+    it("shows the list when a catalog reload is still on its way with a second Home", async () => {
+      const first = otherMac({ livenessExpiresAt: liveLease });
+      const second = otherMac({ livenessExpiresAt: liveLease });
+      const fixture = fakePorts({ deployments: [first] });
+      const service = new DeploymentAccessService(fixture.ports, fixture.options);
+      await service.initialize();
+      const stale = deferred<CatalogProjection>();
+      const fresh = deferred<CatalogProjection>();
+      vi.mocked(fixture.ports.catalog.read)
+        .mockReturnValueOnce(stale.promise)
+        .mockReturnValueOnce(fresh.promise);
+      await service.signIn();
+      fixture.emitAccount(signedInAccount(testAccount));
+      await settle();
+      // While the read's own catalog read is out, a write with a second Home starts another.
+      fixture.emitCatalog({ deployments: [first, second], selectedDeploymentId: null });
+      await settle();
+      // The older read answers first, with one Home, and is superseded; the newer is still out.
+      stale.resolve({ deployments: [first], revision: 2, selectedDeploymentId: null });
+      await settle();
+      expect(fixture.select).not.toHaveBeenCalled();
+      fresh.resolve({ deployments: [first, second], revision: 3, selectedDeploymentId: null });
+      await settle();
+      expect(fixture.select).not.toHaveBeenCalled();
+      expect(service.snapshot().deployments).toHaveLength(2);
+      service.dispose();
+    });
+
     it("keeps an Account place this Mac joined listed and openable after the sign-in ends, until the Mac leaves it", async () => {
       const mac = otherMac({ livenessExpiresAt: liveLease });
       const other = deployment({ name: "Studio server", source: "account" });
@@ -2301,15 +2445,23 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
-function signedInAccount(): DesktopAccountAuthState {
+/** The account `signedInAccount()` signs in by default, and the one Account rows belong to. */
+const testAccount = {
+  issuer: "https://accounts.opensteer.test",
+  subject: "acct_0192f4a1-1111-4000-8000-000000000001",
+};
+
+function signedInAccount(
+  identity: { readonly issuer: string; readonly subject: string } = {
+    issuer: testAccount.issuer,
+    subject: `acct_${crypto.randomUUID()}`,
+  },
+): DesktopAccountAuthState {
   return {
     account: {
       available: true,
       detail: null,
-      identity: {
-        issuer: "https://accounts.opensteer.test",
-        subject: `acct_${crypto.randomUUID()}`,
-      },
+      identity,
       status: "signed-in",
     },
     schemaVersion: 2,
@@ -2531,6 +2683,8 @@ function deployment(
     readonly onThisComputer?: boolean;
     readonly routes?: readonly { readonly kind: "canonical" | "direct"; readonly origin: string }[];
     readonly source?: "account" | "manual" | "this-device";
+    /** Which account listed an Account row; by default the one `signedInAccount()` signs in. */
+    readonly accountOwner?: { readonly issuer: string; readonly subject: string } | null;
     /** An Account Personal row's signed Connect route and its liveness lease. */
     readonly connect?: { readonly livenessExpiresAt: string | null } | null;
   } = {},
@@ -2554,6 +2708,12 @@ function deployment(
   return {
     ...summary,
     accountAccess: overrides.accountAccess ?? null,
+    accountOwner:
+      overrides.accountOwner !== undefined
+        ? overrides.accountOwner
+        : overrides.source === "account"
+          ? testAccount
+          : null,
     accountLivenessExpiresAt: overrides.connect?.livenessExpiresAt ?? null,
     hasAccountConnectRoute: overrides.connect != null,
     hasVerifiedAccountRoute: overrides.connect != null,

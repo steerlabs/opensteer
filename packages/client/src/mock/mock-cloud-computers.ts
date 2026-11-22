@@ -36,6 +36,8 @@ export const mockCloudComputerScenes = [
   "work",
   /** A personal Cloud Computer and a work Home. */
   "both",
+  /** None, and checkout isn't selling one yet: the Account's offer is null. */
+  "not-for-sale",
 ] as const;
 export type MockCloudComputerScene = (typeof mockCloudComputerScenes)[number];
 
@@ -202,7 +204,8 @@ export class MockCloudComputerAccount implements CloudComputerAccount {
     }
     const work =
       this.scene === "work" || this.scene === "both" ? [mockWorkHome(this.#workDeploymentId)] : [];
-    return { ok: true, data: { computers: [...this.#computers], plan }, work };
+    const offer = this.scene === "not-for-sale" ? null : plan;
+    return { ok: true, data: { computers: [...this.#computers], plan, offer }, work };
   }
 
   async act(input: DesktopCloudComputerActInput): Promise<DesktopCloudComputerActResult> {

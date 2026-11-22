@@ -20,7 +20,7 @@ describe("describeDeploymentRow", () => {
     // "Connected" is a socket, and there is none: a credential in protected
     // storage says only that this phone could sign in without asking again.
     expect(row.status).toBe("signed-in");
-    expect(row.kindLabel).toBe("Home");
+    expect(row.kindLabel).toBe("Server");
     expect(row.origin).toBe("https://home.example.com");
   });
 
@@ -38,7 +38,7 @@ describe("describeDeploymentRow", () => {
     );
 
     // The directory says who may reach a deployment, never who runs it.
-    expect(row.kindLabel).toBe("Home");
+    expect(row.kindLabel).toBe("Server");
     expect(row.accountManaged).toBe(true);
   });
 
@@ -46,7 +46,7 @@ describe("describeDeploymentRow", () => {
     const connection = testDeploymentConnection({ home: true });
     const row = describeDeploymentRow(connection, signedOut);
 
-    expect(row.kindLabel).toBe("Home");
+    expect(row.kindLabel).toBe("Server");
     expect(row.origin).toBe("https://home.example.com");
     expect(row.status).toBe("needs-sign-in");
     expect(row.signIn).toBe("host-oauth");
@@ -112,7 +112,7 @@ describe("the door a row that needs a credential opens", () => {
 
     expect(row.signIn).toBe("account-grant");
     expect(deploymentSignInLabel("account-grant")).toBe("Sign in");
-    expect(deploymentStatusDetail(row)).toBe("Sign in to this deployment to see your work.");
+    expect(deploymentStatusDetail(row)).toBe("Sign in to this Opensteer to see your work.");
   });
 
   it("asks for a pairing code where only the operator can supply one", () => {
@@ -176,11 +176,11 @@ describe("the door a row that needs a credential opens", () => {
 
 describe("what the list of Homes calls a Home", () => {
   it("calls a Home the Account says is a Cloud Computer one, and leaves any other its kind", () => {
-    expect(listedKind({ kindLabel: "Home" }, true)).toEqual({
+    expect(listedKind({ kindLabel: "Server" }, true)).toEqual({
       label: "Cloud Computer",
       cloud: true,
     });
-    expect(listedKind({ kindLabel: "Home" }, false)).toEqual({ label: "Home", cloud: false });
-    expect(listedKind({ kindLabel: "Personal computer" }, false).label).toBe("Personal computer");
+    expect(listedKind({ kindLabel: "Server" }, false)).toEqual({ label: "Server", cloud: false });
+    expect(listedKind({ kindLabel: "Mac" }, false).label).toBe("Mac");
   });
 });

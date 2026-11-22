@@ -330,8 +330,8 @@ integration("Opensteer web portal", () => {
       url: "/",
     });
     expect(empty.statusCode).toBe(200);
-    expect(empty.body).toContain("Set up Opensteer");
-    expect(empty.body).toContain("Opensteers you set up or join show up here.");
+    expect(empty.body).toContain("Where should your Opensteer live?");
+    expect(empty.body).toContain("Free. Works while your Mac is awake.");
 
     const ready = await registerDeployment("First <Server>", "first-server");
     await publishPresence(ready);
@@ -349,7 +349,7 @@ integration("Opensteer web portal", () => {
     expect(listed.body).not.toContain(">Needs attention<");
     expect(listed.body).not.toContain(">Ready<");
     expect(listed.body).not.toContain("Open this deployment to check");
-    expect(listed.body).not.toContain("Set up Opensteer");
+    expect(listed.body).not.toContain("Where should your Opensteer live?");
   });
 
   it("signs out of the portal and of the Account session that proved it", async () => {

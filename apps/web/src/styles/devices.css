@@ -507,6 +507,13 @@ a.devices-row:focus-visible {
   font-size: var(--text-md);
 }
 
+/* The one line that says what starting here does: under its row, in the row's measure. */
+.desktop-entry__note {
+  margin: calc(var(--space-4) * -1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
 .desktop-entry__form {
   display: flex;
   flex-direction: column;
@@ -772,4 +779,37 @@ a.devices-row:focus-visible {
   max-width: 34rem;
   margin-inline: auto;
   text-align: center;
+}
+
+/* ---- The one invitation to sign in, on an Opensteer with no account ---- */
+.sign-in-invite {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin-top: var(--space-16);
+  padding: var(--space-14) var(--space-16);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.sign-in-invite__title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.sign-in-invite__body {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.sign-in-invite__body--error {
+  color: var(--red-text);
+}
+
+.sign-in-invite__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
 }

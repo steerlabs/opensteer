@@ -1,7 +1,7 @@
 import { cloudWords, orgWords } from "@opensteer/control-plane-protocol";
 import { escapeHtml } from "@opensteer/shared/browserPage";
 import { describe, expect, it } from "vitest";
-import { accountDeletedBody, deleteAccountBody, portalHomeBody } from "./pages.js";
+import { accountDeletedBody, deleteAccountBody, placeRow, portalHomeBody } from "./pages.js";
 
 const base = {
   account: { displayName: "Sam", email: "sam@example.com" },
@@ -12,16 +12,54 @@ const base = {
 
 describe("the Account portal's home", () => {
   it("offers a Cloud Computer and organizations to someone with no Opensteer yet, and with one", () => {
-    for (const rows of [[], ['<li class="place">Studio</li>']]) {
-      const body = portalHomeBody({
-        ...base,
-        rows,
-        cloudComputerHref: "/cloud-computer",
-        organizationsHref: "/organizations",
-      });
-      expect(body).toContain(`href="/cloud-computer">${escapeHtml(cloudWords("cloud.title"))}</a>`);
-      expect(body).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
-    }
+    const empty = portalHomeBody({
+      ...base,
+      rows: [],
+      cloudComputerHref: "/cloud-computer",
+      organizationsHref: "/organizations",
+    });
+    expect(empty).toContain(`href="/cloud-computer">On an Opensteer Cloud Computer</a>`);
+    expect(empty).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
+    const listed = portalHomeBody({
+      ...base,
+      rows: ['<li class="place">Studio</li>'],
+      cloudComputerHref: "/cloud-computer",
+      organizationsHref: "/organizations",
+    });
+    expect(listed).toContain(`href="/cloud-computer">${escapeHtml(cloudWords("cloud.title"))}</a>`);
+    expect(listed).toContain(`href="/organizations">${escapeHtml(orgWords("org.title"))}</a>`);
+  });
+
+  it("asks where an account's first Opensteer should live, with the price checkout sells", () => {
+    const plan = {
+      name: "Cloud Computer",
+      currency: "usd",
+      amountMinor: 2000,
+      interval: "month" as const,
+    };
+    const body = portalHomeBody({
+      ...base,
+      rows: [],
+      cloudComputerHref: "/cloud-computer",
+      cloudOffer: plan,
+    });
+    expect(body).toContain("Where should your Opensteer live?");
+    expect(body).toContain(`href="https://example.com/download">On your Mac</a>`);
+    expect(body).toContain("Free. Works while your Mac is awake.");
+    expect(body).toContain("$20.00 a month. Always on.");
+    expect(body).not.toContain("Set up Opensteer");
+    // Nothing for sale: no price, and still what a Cloud Computer is.
+    const closed = portalHomeBody({ ...base, rows: [], cloudComputerHref: "/cloud-computer" });
+    expect(closed).toContain(`<span class="place__note">Always on.</span>`);
+    expect(closed).not.toContain("$");
+  });
+
+  it("lists one Opensteer rather than opening it, so the account's own page stays reachable", () => {
+    const body = portalHomeBody({ ...base, rows: ['<li class="place">Studio</li>'] });
+    expect(body).toContain("Your Opensteers");
+    expect(body).toContain("Sign out");
+    expect(body).not.toContain("http-equiv");
+    expect(body).not.toContain("location.");
   });
 
   it("offers neither where this Account service has neither", () => {
@@ -82,5 +120,25 @@ describe("the page that deletes an Account", () => {
     // Without a Cloud Computer the pages say nothing about one.
     expect(accountDeletedBody()).not.toContain("Cloud Computer");
     expect(deleteAccountBody(base)).not.toContain("Cloud Computer");
+  });
+});
+
+describe("a row on Your Opensteers", () => {
+  it("says what kind of Home it is in the table's words, a Mac included", () => {
+    const row = (kind: "personal" | "cloud" | "server", kindLabel: string) =>
+      placeRow({
+        control: { kind: "none" },
+        id: "dep_1",
+        kind,
+        kindLabel,
+        name: "Studio",
+        remove: null,
+        status: null,
+      });
+    expect(row("personal", "Mac")).toContain('<span class="place__note">Mac</span>');
+    expect(row("cloud", "Cloud Computer")).toContain(
+      '<span class="place__note">Cloud Computer</span>',
+    );
+    expect(row("server", "Server")).toContain('<span class="place__note">Server</span>');
   });
 });

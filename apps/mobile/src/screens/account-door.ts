@@ -25,7 +25,7 @@ export function accountDoorPresentation(
     description: account.available
       ? account.status === "error"
         ? (unavailableDetail ?? "Your Opensteer account could not be reached.")
-        : "Your Account lists every deployment you can reach."
+        : "Your Opensteer account lists every Opensteer you can open."
       : (unavailableDetail ?? "This build was made without an Opensteer account service."),
     disabled: !account.available,
     // Retrying is only something to offer when signing in is possible at all.
@@ -90,7 +90,7 @@ export function accountDirectoryUnavailablePresentation(
       entry.reason === "host-unavailable"
         ? `${sharedDetail} Pull down to try again.`
         : entry.reason === "not-active"
-          ? "This deployment is not ready yet."
+          ? "This Opensteer is not ready yet."
           : sharedDetail,
     title: `${entry.name} — Account listing`,
   };
@@ -108,7 +108,7 @@ export function signedInDirectoryPresentation(input: {
 } {
   if (input.status === "idle" || input.status === "loading") {
     return {
-      detail: "Checking your Account for deployments…",
+      detail: "Checking your Opensteer account…",
       refreshDisabled: true,
       refreshLabel: "Refreshing…",
       title: "Signed in to your Account",
@@ -116,25 +116,25 @@ export function signedInDirectoryPresentation(input: {
   }
   if (input.status === "error") {
     return {
-      detail: input.detail ?? "Your Account deployment list could not be refreshed.",
+      detail: input.detail ?? "Your list of Opensteers could not be refreshed.",
       refreshDisabled: false,
       refreshLabel: "Try refreshing again",
-      title: "Your deployment list could not be loaded",
+      title: "Your list of Opensteers could not be loaded",
     };
   }
   if (input.unavailableCount > 0) {
     return {
-      detail: `${input.unavailableCount === 1 ? "One deployment" : `${input.unavailableCount} deployments`} from your Account could not be verified on this phone.`,
+      detail: `${input.unavailableCount === 1 ? "One Opensteer" : `${input.unavailableCount} Opensteers`} from your account could not be verified on this phone.`,
       refreshDisabled: false,
-      refreshLabel: "Refresh deployments",
-      title: "Some deployments could not be loaded",
+      refreshLabel: "Refresh",
+      title: "Some Opensteers could not be loaded",
     };
   }
   return {
     detail:
-      "Your Account does not list any deployments yet. You can refresh or add one another way.",
+      "Your Opensteer account doesn’t list an Opensteer yet. You can refresh or add one another way.",
     refreshDisabled: false,
-    refreshLabel: "Refresh deployments",
-    title: "No Account deployments yet",
+    refreshLabel: "Refresh",
+    title: "No Opensteer in your account yet",
   };
 }

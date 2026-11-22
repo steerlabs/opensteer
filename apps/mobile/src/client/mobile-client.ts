@@ -845,7 +845,7 @@ export class MobileClient {
     this.#sessionFailures.delete(id);
     const resolved = resolveConnection(connection, null, { authorization: null });
     if (resolved.access !== "connect" || !this.sessionExchange.supports(resolved)) {
-      throw new Error("This deployment has no address this phone can sign in to.");
+      throw new Error("This Opensteer has no address this phone can sign in to.");
     }
     const outcome = await this.#startSelection(id, true, { establishPersonal: true });
     if (outcome.kind === "session-failed") throw outcome.error;
@@ -1535,7 +1535,7 @@ export class MobileClient {
             !catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)
           ) {
             await this.#forgetRemovedSelectionNow();
-            throw new Error("That deployment is no longer in this app's list.");
+            throw new Error("That Opensteer is no longer in this app's list.");
           }
           await this.catalog.select(id);
           return true;
@@ -2440,7 +2440,7 @@ export class MobileClient {
       if (!listed.ok && removed && listed.error.code === "unauthorized") return;
       if (!listed.ok) {
         throw new Error(
-          listed.error.message || "That deployment would not list this phone's session.",
+          listed.error.message || "That Opensteer would not list this phone's session.",
         );
       }
       const own = listed.data.sessions.find((session) => session.current);
@@ -2570,7 +2570,7 @@ export class MobileClient {
     const connection = catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === deploymentId,
     );
-    if (!connection) throw new Error("That deployment is no longer in this app's list.");
+    if (!connection) throw new Error("That Opensteer is no longer in this app's list.");
     return connection;
   }
 
@@ -2860,9 +2860,9 @@ function sameConnectionSource(
 function verificationFailureDetail(verification: HostVerification): string {
   switch (verification) {
     case "identity-mismatch":
-      return "Sign-in was not started because this address answers as a different deployment.";
+      return "Sign-in was not started because this address answers as a different Opensteer.";
     case "host-too-old":
-      return "Sign-in was not started because this deployment must be updated first.";
+      return "Sign-in was not started because this Opensteer must be updated first.";
     case "client-too-old":
       return "Sign-in was not started because this app must be updated first.";
   }

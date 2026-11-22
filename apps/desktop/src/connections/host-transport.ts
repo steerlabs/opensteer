@@ -239,6 +239,7 @@ export class DesktopHostTransport extends HostTransport {
         ({
           capabilities: _capabilities,
           accountAccess: _accountAccess,
+          accountOwner: _accountOwner,
           accountLivenessExpiresAt: _accountLivenessExpiresAt,
           hasAccountConnectRoute: _hasAccountConnectRoute,
           hasVerifiedAccountRoute: _hasVerifiedAccountRoute,

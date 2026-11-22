@@ -438,7 +438,14 @@ export type CloudComputerView = z.infer<typeof CloudComputerViewSchema>;
 
 export const CloudComputerListResponseSchema = z.object({
   computers: z.array(CloudComputerViewSchema),
+  /** The plan a Cloud Computer is on: what its status page shows. */
   plan: CloudComputerPlanSchema,
+  /**
+   * What checkout sells now, the same answer as the public offer: null until the payment
+   * provider has confirmed it. A client shows a price for buying only from this; an older
+   * account service leaves it out, and then nothing is offered for sale.
+   */
+  offer: CloudComputerPlanSchema.nullable().optional(),
 });
 
 export type CloudComputerListResponse = z.infer<typeof CloudComputerListResponseSchema>;

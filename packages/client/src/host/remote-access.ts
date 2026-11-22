@@ -18,6 +18,13 @@ import { remoteAccessDisconnectWarning } from "./personal-remote-access.js";
  * and the view reads its progress and outcome from the Host.
  */
 
+/**
+ * The one switch for O3: a person signed in to their Opensteer account who starts Opensteer on
+ * their Mac gets Remote access turned on in the same step, so their phone and connected agents
+ * reach it at once. They can turn it off in Settings. Flip to false to leave it off.
+ */
+export const remoteAccessOnWhenSignedInStart: boolean = true;
+
 /** The Account link as the computer's own app sees it; absent where only the Host is known. */
 export type RemoteAccessLink = DesktopPersonalAccountLinkStatus["status"];
 

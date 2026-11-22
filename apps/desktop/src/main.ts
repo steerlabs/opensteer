@@ -1218,6 +1218,7 @@ async function runDesktop(
   const access = new DeploymentAccessService({
     account: {
       available: loaded.config.accountUrl !== null,
+      portalOrigin: loaded.config.portalUrl?.origin ?? null,
       beginReauthorization: () => nativeAuth.beginAccountReauthorization(),
       beginSignIn: () => nativeAuth.beginAccountSignIn(),
       currentState: () => nativeAuth.state(),

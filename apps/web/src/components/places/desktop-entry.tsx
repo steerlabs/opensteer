@@ -1,4 +1,7 @@
-import { useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { cloudComputerWebsite, cloudWords, homesListTitle } from "@opensteer/client/computers";
+import { remoteAccessOnWhenSignedInStart } from "@opensteer/client/host";
+import { useCloudComputer } from "@opensteer/client/react";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   DesktopConnectPrivateDeploymentInputSchema,
@@ -14,9 +17,22 @@ import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
 import { OptionRow } from "../option-row.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceAccountFooter, SignOutDialog } from "./place-account.js";
-import { usePlaceCloudComputers, usePlaceWorkBadges } from "../settings/sections/work-home.js";
+import {
+  SetupSteps,
+  usePlaceCloudComputers,
+  usePlaceWorkBadges,
+} from "../settings/sections/work-home.js";
+import { cloudComputerAccountFor } from "../settings/sections/cloud-computer.js";
 
 export type ConnectKind = "pairing" | "address";
+
+/**
+ * Which question started this Mac's Opensteer: "Where should your Opensteer live? › On this
+ * Mac" (its setup turns Remote access on), "Use without an account" (it is never asked to sign
+ * in), or anything else, such as a separate Opensteer (neither).
+ */
+export type StartedFrom = "on-this-mac" | "without-account" | "other";
+export type SetUpHere = (name: string | undefined, from: StartedFrom) => void;
 
 function EntryRow({
   detail,
@@ -49,23 +65,10 @@ function EntryRow({
   );
 }
 
-function SecondaryPaths({
-  onConnect,
-  pairing = true,
-}: {
-  readonly onConnect: (kind: ConnectKind) => void;
-  readonly pairing?: boolean;
-}) {
+/** A Home at its own address, under the keyless welcome's two rows. */
+function SecondaryPaths({ onConnect }: { readonly onConnect: (kind: ConnectKind) => void }) {
   return (
     <p className="desktop-entry__links">
-      {pairing ? (
-        <>
-          <button className="link-btn" onClick={() => onConnect("pairing")} type="button">
-            Use a pairing code
-          </button>
-          <span aria-hidden>·</span>
-        </>
-      ) : null}
       <button className="link-btn" onClick={() => onConnect("address")} type="button">
         Add a Home by address
       </button>
@@ -83,12 +86,15 @@ function StartHere({
   name,
   onRename,
   onStart,
+  title,
 }: {
   readonly detail: string;
   readonly disabled: boolean;
   readonly name: string | null;
   readonly onRename: (name: string) => void;
   readonly onStart: () => void;
+  /** What the row is called; by default "Start Opensteer on this Mac". */
+  readonly title?: string;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   // Escape closes the field, and the blur that follows must not save it.
@@ -112,7 +118,7 @@ function StartHere({
           </span>
         }
         onClick={onStart}
-        title={`Start Opensteer on ${thisComputerLabel().replace(/^This /u, "this ")}`}
+        title={title ?? `Start Opensteer on ${thisComputerLabel().replace(/^This /u, "this ")}`}
         trailing={<Icon name="chevron-right" />}
       />
       {name ? (
@@ -173,6 +179,14 @@ function StartHere({
   );
 }
 
+type WelcomeView = "door" | "without-account" | "other-ways";
+
+/**
+ * The first screen with nothing on this Mac yet. The Opensteer account is the front door: one
+ * primary action, Sign in. Using Opensteer without an account stays a small link, and so do
+ * the other ways in (a pairing code, an address). A build with no account to sign in to keeps
+ * the welcome it always had. Signed in, the account decides what comes next.
+ */
 export function DesktopWelcome({
   error,
   onConnect,
@@ -181,14 +195,14 @@ export function DesktopWelcome({
 }: {
   readonly error: string | null;
   readonly onConnect: (kind: ConnectKind) => void;
-  readonly onSetUpHere: ((name?: string) => void) | null;
+  readonly onSetUpHere: SetUpHere | null;
   readonly places: DesktopPlaces;
 }) {
   const { bridge, snapshot } = places;
   const account = snapshot.account;
   const [actionError, setActionError] = useState<string | null>(null);
-  const [signingOut, setSigningOut] = useState(false);
   const [chosenName, setChosenName] = useState<string | null>(null);
+  const [view, setView] = useState<WelcomeView>("door");
   const macName = chosenName ?? snapshot.personalSetup?.name ?? null;
   usePlaceChecks(bridge, account.status === "signed-in");
   const run = (operation: () => Promise<void>) => {
@@ -197,63 +211,80 @@ export function DesktopWelcome({
       setActionError(failureWords(reason)),
     );
   };
-  const start = () => onSetUpHere?.(chosenName ?? undefined);
+  const startHere = (from: StartedFrom, detail: string, title?: string) => (
+    <StartHere
+      detail={detail}
+      disabled={onSetUpHere === null}
+      name={macName}
+      onRename={setChosenName}
+      onStart={() => onSetUpHere?.(chosenName ?? undefined, from)}
+      {...(title ? { title } : {})}
+    />
+  );
+
+  if (view === "other-ways")
+    return <OtherWaysIn onBack={() => setView("door")} onConnect={onConnect} />;
 
   if (account.status === "signed-in") {
-    // A list that couldn't be read may hold an Opensteer, so the way on is to
-    // read it again, never to start a second one beside it.
-    const listFailed = snapshot.directoryFailure !== null;
+    return (
+      <DesktopWhere
+        error={actionError ?? error}
+        onOtherWays={() => setView("other-ways")}
+        places={places}
+        run={run}
+        startHere={
+          onSetUpHere
+            ? startHere("on-this-mac", "Free. Works while this Mac is awake.", "On this Mac")
+            : null
+        }
+      />
+    );
+  }
+
+  // A build with no Opensteer account to sign in to: the welcome as it always was.
+  if (!account.available) {
     return (
       <OnboardingCard
         bare
-        description={
-          listFailed
-            ? "Check your connection, then try again."
-            : "If yours was started without an account, connect with a pairing code from the computer it runs on."
-        }
+        description="Your AI agent, working on your computer."
         live
-        title={listFailed ? "Couldn’t load your Opensteers" : "No Opensteer on this account"}
+        title="Welcome to Opensteer"
       >
         <ErrorNotice message={actionError ?? error} />
-        {listFailed ? (
-          <button
-            className="btn btn--primary onboarding__primary"
-            onClick={() => run(() => bridge.checkDeployments())}
-            type="button"
-          >
-            Try again
-          </button>
-        ) : (
-          <div className="desktop-entry__rows">
-            <EntryRow
-              detail="From the computer your Opensteer runs on."
-              icon="devices"
-              onClick={() => onConnect("pairing")}
-              title="Connect with a pairing code"
-            />
-            {onSetUpHere ? (
-              <StartHere
-                detail="Your agent lives and works here."
-                disabled={false}
-                name={macName}
-                onRename={setChosenName}
-                onStart={start}
-              />
-            ) : null}
-          </div>
-        )}
-        <SecondaryPaths onConnect={onConnect} pairing={false} />
-        <div className="place-panel">
-          <PlaceAccountFooter account={account} onSignOut={() => setSigningOut(true)} />
-        </div>
-        {signingOut ? (
-          <SignOutDialog
-            bridge={bridge}
-            onClose={() => setSigningOut(false)}
-            onConfirm={() => bridge.signOut()}
-            snapshot={snapshot}
+        <div className="desktop-entry__rows">
+          {startHere("other", "Your agent lives and works here. No account needed.")}
+          <EntryRow
+            detail="It’s already running on another computer. Use its pairing code."
+            icon="devices"
+            onClick={() => onConnect("pairing")}
+            title="Connect to my Opensteer"
           />
-        ) : null}
+        </div>
+        <SecondaryPaths onConnect={onConnect} />
+      </OnboardingCard>
+    );
+  }
+
+  if (view === "without-account") {
+    return (
+      <OnboardingCard
+        bare
+        description="Opensteer runs on this Mac. You can sign in to your Opensteer account later, in Settings."
+        live
+        title="Use Opensteer without an account"
+      >
+        <ErrorNotice message={actionError ?? error} />
+        <div className="desktop-entry__rows">
+          {startHere("without-account", "Your agent lives and works here. No account needed.")}
+        </div>
+        <button
+          className="btn btn--ghost onboarding__back"
+          onClick={() => setView("door")}
+          type="button"
+        >
+          <Icon name="arrow-left" />
+          Back
+        </button>
       </OnboardingCard>
     );
   }
@@ -261,50 +292,251 @@ export function DesktopWelcome({
   return (
     <OnboardingCard
       bare
-      description="Your AI agent, working on your computer."
+      description="Sign in with your Opensteer account. Your phone and connected agents can then reach your Opensteer from anywhere."
       live
       title="Welcome to Opensteer"
     >
       <ErrorNotice message={actionError ?? error} />
+      {account.status === "authorizing" ? (
+        <div aria-live="polite" className="place-card" role="status">
+          <p className="place-card__title">Finish signing in in your browser</p>
+          <p className="place-card__body">This window continues by itself.</p>
+          <button
+            className="btn btn--small btn--ghost"
+            onClick={() => run(() => bridge.cancel())}
+            type="button"
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          className="btn btn--primary onboarding__primary"
+          onClick={() => run(() => bridge.signIn())}
+          type="button"
+        >
+          Sign in
+        </button>
+      )}
+      <p className="desktop-entry__links">
+        <button className="link-btn" onClick={() => setView("without-account")} type="button">
+          Use without an account
+        </button>
+        <span aria-hidden>·</span>
+        <button className="link-btn" onClick={() => setView("other-ways")} type="button">
+          Other ways in
+        </button>
+      </p>
+    </OnboardingCard>
+  );
+}
+
+/** A pairing code or an address: the ways in that aren't the Opensteer account. */
+function OtherWaysIn({
+  children,
+  onBack,
+  onConnect,
+}: {
+  readonly children?: ReactNode;
+  readonly onBack: () => void;
+  readonly onConnect: (kind: ConnectKind) => void;
+}) {
+  return (
+    <OnboardingCard bare live title="Other ways in">
       <div className="desktop-entry__rows">
-        <StartHere
-          detail="Your agent lives and works here. No account needed."
-          disabled={onSetUpHere === null}
-          name={macName}
-          onRename={setChosenName}
-          onStart={start}
+        <EntryRow
+          detail="From the Mac your Opensteer runs on."
+          icon="devices"
+          onClick={() => onConnect("pairing")}
+          title="Use a pairing code"
         />
-        {account.available ? (
-          account.status === "authorizing" ? (
-            <div aria-live="polite" className="place-card" role="status">
-              <p className="place-card__title">Finish signing in in your browser</p>
-              <p className="place-card__body">This window continues by itself.</p>
-              <button
-                className="btn btn--small btn--ghost"
-                onClick={() => run(() => bridge.cancel())}
-                type="button"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <EntryRow
-              detail="It’s already running on another computer. Sign in to continue."
-              icon="devices"
-              onClick={() => run(() => bridge.signIn())}
-              title="Connect to my Opensteer"
-            />
-          )
-        ) : (
-          <EntryRow
-            detail="It’s already running on another computer. Use its pairing code."
-            icon="devices"
-            onClick={() => onConnect("pairing")}
-            title="Connect to my Opensteer"
-          />
-        )}
+        <EntryRow
+          detail="An Opensteer you run on your own server."
+          icon="server"
+          onClick={() => onConnect("address")}
+          title="Add a Home by address"
+        />
+        {children}
       </div>
-      <SecondaryPaths onConnect={onConnect} pairing={account.available} />
+      <button className="btn btn--ghost onboarding__back" onClick={onBack} type="button">
+        <Icon name="arrow-left" />
+        Back
+      </button>
+    </OnboardingCard>
+  );
+}
+
+/**
+ * Signed in, and the account has no Opensteer yet: where should it live? On this Mac (free,
+ * while it is awake), or on an Opensteer Cloud Computer at the price checkout sells now (always
+ * on; this Mac becomes one of its devices). A list that couldn't be read may hold one, so the
+ * way on is to read it again, never to start a second one beside it.
+ */
+function DesktopWhere({
+  error,
+  onOtherWays,
+  places,
+  run,
+  startHere,
+}: {
+  readonly error: string | null;
+  readonly onOtherWays: () => void;
+  readonly places: DesktopPlaces;
+  readonly run: (operation: () => Promise<void>) => void;
+  readonly startHere: ReactNode;
+}) {
+  const { bridge, snapshot } = places;
+  const account = snapshot.account;
+  const [signingOut, setSigningOut] = useState(false);
+  const [openFailure, setOpenFailure] = useState<string | null>(null);
+  const cloudAccount = useMemo(() => cloudComputerAccountFor(bridge), [bridge]);
+  const cloud = useCloudComputer(cloudAccount);
+  const portalOrigin = account.portalOrigin ?? null;
+  const refresh = cloud.refresh;
+  // Back from checkout in the browser: the account's answer is read again.
+  useEffect(() => {
+    if (!refresh) return;
+    const again = () => void refresh();
+    window.addEventListener("focus", again);
+    return () => window.removeEventListener("focus", again);
+  }, [refresh]);
+  const screen = cloud.screen;
+  const readyId =
+    screen.kind === "computer" || screen.kind === "preparing" ? screen.computer.deploymentId : null;
+  // Once the account has set the Cloud Computer up for this person, the list has it.
+  useEffect(() => {
+    if (readyId) void bridge.checkDeployments().catch(() => undefined);
+  }, [bridge, readyId]);
+  const footer = (
+    <>
+      <div className="place-panel">
+        <PlaceAccountFooter account={account} onSignOut={() => setSigningOut(true)} />
+      </div>
+      {signingOut ? (
+        <SignOutDialog
+          bridge={bridge}
+          onClose={() => setSigningOut(false)}
+          onConfirm={() => bridge.signOut()}
+          snapshot={snapshot}
+        />
+      ) : null}
+    </>
+  );
+  const eyebrow = account.email ? `Signed in as ${account.email}` : undefined;
+
+  if (snapshot.directoryFailure !== null) {
+    return (
+      <OnboardingCard
+        bare
+        description="Check your connection, then try again."
+        live
+        title="Couldn’t load your Opensteers"
+      >
+        <ErrorNotice message={error} />
+        <button
+          className="btn btn--primary onboarding__primary"
+          onClick={() => run(() => bridge.checkDeployments())}
+          type="button"
+        >
+          Try again
+        </button>
+        {footer}
+      </OnboardingCard>
+    );
+  }
+
+  if (screen.kind === "preparing" || screen.kind === "computer") {
+    return (
+      <OnboardingCard
+        bare
+        description={
+          screen.kind === "preparing"
+            ? cloudWords("cloud.preparing.footer")
+            : cloudWords("cloud.ready.notListed")
+        }
+        {...(eyebrow ? { eyebrow } : {})}
+        live
+        title={
+          screen.kind === "preparing"
+            ? cloudWords("cloud.preparing.title")
+            : cloudWords("cloud.ready.title")
+        }
+      >
+        {screen.kind === "preparing" && screen.computer.steps ? (
+          <SetupSteps steps={screen.computer.steps} />
+        ) : null}
+        {footer}
+      </OnboardingCard>
+    );
+  }
+
+  const offer = screen.kind === "offer" ? screen : null;
+  const waiting = offer?.waiting ?? false;
+  // Checkout counts as opened only once the system browser took the address.
+  const openCheckout = () => {
+    if (!portalOrigin) return;
+    setOpenFailure(null);
+    void bridge.openExternalUrl({ url: cloudComputerWebsite(portalOrigin, "checkout") }).then(
+      () => cloud.checkoutOpened?.(),
+      () => setOpenFailure("Your browser couldn’t open the Opensteer website. Try again."),
+    );
+  };
+  const cloudDetail =
+    screen.kind === "loading"
+      ? "Checking…"
+      : offer?.plan
+        ? `${offer.plan.line}. Always on. This Mac can be one of its devices.`
+        : cloudWords("cloud.notForSale");
+  return (
+    <OnboardingCard
+      bare
+      description="Your browser profiles, apps, plugins, tasks and rules live in one Home. You can add devices to it later."
+      {...(eyebrow ? { eyebrow } : {})}
+      live
+      title="Where should your Opensteer live?"
+    >
+      <ErrorNotice message={openFailure ?? error} />
+      {waiting ? (
+        <div aria-live="polite" className="place-card" role="status">
+          <p className="place-card__title">{cloudWords("cloud.checkoutWaiting.title")}</p>
+          <p className="place-card__body">{cloudWords("cloud.checkoutWaiting.detail")}</p>
+          <button className="btn btn--small btn--ghost" onClick={openCheckout} type="button">
+            {cloudWords("cloud.checkoutAgain")}
+          </button>
+          {/* A person can always turn back: the watch stops and both choices return. */}
+          <button
+            className="btn btn--small btn--ghost"
+            onClick={() => cloud.stopFollowingCheckout?.()}
+            type="button"
+          >
+            Choose something else
+          </button>
+        </div>
+      ) : (
+        <div className="desktop-entry__rows">
+          {startHere}
+          {startHere && remoteAccessOnWhenSignedInStart ? (
+            <p className="desktop-entry__note">
+              Your phone and connected agents can reach it from anywhere. You can turn this off in
+              Settings.
+            </p>
+          ) : null}
+          <EntryRow
+            detail={cloudDetail}
+            disabled={!offer?.plan || !portalOrigin}
+            icon="cloud"
+            onClick={openCheckout}
+            title="On an Opensteer Cloud Computer"
+          />
+        </div>
+      )}
+      <p className="desktop-entry__links">
+        <span>Started Opensteer on another Mac without an account?</span>{" "}
+        <button className="link-btn" onClick={onOtherWays} type="button">
+          Other ways in
+        </button>
+      </p>
+      {footer}
     </OnboardingCard>
   );
 }
@@ -328,7 +560,7 @@ export function DesktopChooser({
     readonly title: string;
   } | null;
   readonly onConnect: (kind: ConnectKind) => void;
-  readonly onSetUpHere: ((name?: string) => void) | null;
+  readonly onSetUpHere: SetUpHere | null;
   readonly places: DesktopPlaces;
 }) {
   const { bridge, snapshot } = places;
@@ -336,6 +568,7 @@ export function DesktopChooser({
   const [actionError, setActionError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [confirmingStart, setConfirmingStart] = useState(false);
+  const [otherWays, setOtherWays] = useState(false);
   usePlaceChecks(bridge, true);
   const facts = useComputerFacts(places.facts, snapshot.deployments);
   const work = usePlaceWorkBadges(bridge);
@@ -360,6 +593,29 @@ export function DesktopChooser({
   };
   const account = snapshot.account;
   const title = notice?.title ?? (rows.length > 1 ? "Choose an Opensteer" : "Open your Opensteer");
+  const startSeparate = startHere ? (
+    <EntryRow
+      detail={
+        others.length > 0
+          ? "A new, empty Opensteer here, with its own agent and tasks."
+          : "Your agent lives and works here."
+      }
+      disabled={pending}
+      icon="laptop"
+      onClick={() => (others.length > 0 ? setConfirmingStart(true) : startHere(undefined, "other"))}
+      title={
+        others.length > 0
+          ? `Start a separate Opensteer on ${thisMac}`
+          : `Start Opensteer on ${thisMac}`
+      }
+    />
+  ) : null;
+  if (otherWays && !confirmingStart)
+    return (
+      <OtherWaysIn onBack={() => setOtherWays(false)} onConnect={onConnect}>
+        {startSeparate}
+      </OtherWaysIn>
+    );
   return (
     <OnboardingCard
       bare
@@ -394,7 +650,7 @@ export function DesktopChooser({
         {rows.length > 0 ? (
           <PlaceList
             busy={pending}
-            label="Your Opensteers"
+            label={homesListTitle}
             onCheck={() => void bridge.checkDeployments().catch(() => undefined)}
             onOpen={(row) => {
               if (!row.current) {
@@ -440,27 +696,17 @@ export function DesktopChooser({
         ) : null}
         <PlaceAccountFooter account={account} onSignOut={() => setSigningOut(true)} />
       </div>
-      {startHere ? (
-        <p className="desktop-entry__links">
-          <button
-            className="link-btn"
-            disabled={pending}
-            onClick={() => (others.length > 0 ? setConfirmingStart(true) : startHere())}
-            type="button"
-          >
-            {others.length > 0
-              ? `Start a separate Opensteer on ${thisMac}`
-              : `Start Opensteer on ${thisMac}`}
-          </button>
-        </p>
-      ) : null}
-      <SecondaryPaths onConnect={onConnect} />
+      <p className="desktop-entry__links">
+        <button className="link-btn" onClick={() => setOtherWays(true)} type="button">
+          Other ways in
+        </button>
+      </p>
       {confirmingStart && startHere ? (
         <StartSeparateDialog
           onClose={() => setConfirmingStart(false)}
           onStart={() => {
             setConfirmingStart(false);
-            startHere();
+            startHere(undefined, "other");
           }}
           others={others}
         />
@@ -513,7 +759,7 @@ export function DesktopConnect({
       bare
       description={
         kind === "pairing"
-          ? "On the Mac your Opensteer runs on, create a pairing code in Settings › Devices › Add a device."
+          ? "On the Mac your Opensteer runs on, create a pairing code in Settings › Devices › Add a device › Advanced."
           : "The address of an Opensteer you run on your own server."
       }
       live

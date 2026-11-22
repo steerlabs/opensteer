@@ -39,6 +39,8 @@ export interface ClassifiedDeploymentAccessFailure {
 
 interface AccountPort {
   readonly available: boolean;
+  /** The Opensteer website this build's account is managed on, where checkout happens. */
+  readonly portalOrigin?: string | null;
   beginReauthorization(): Promise<DesktopAccountAuthState>;
   beginSignIn(): Promise<DesktopAccountAuthState>;
   currentState(): Promise<DesktopAccountAuthState>;
@@ -200,6 +202,8 @@ export class DeploymentAccessService {
   #attachment: ConnectionAttachment | null = null;
   #attachmentUnsubscribe: (() => void) | null = null;
   #unavailable: readonly DeploymentAccessUnavailable[] = [];
+  /** The person pressed Sign in here, and that sign-in hasn't settled yet. */
+  #signInStarted = false;
 
   constructor(
     ports: DeploymentAccessPorts,
@@ -217,13 +221,20 @@ export class DeploymentAccessService {
         this.#publish();
         // Only a newly signed-in Account changes the list. A refreshed token or
         // a re-verification of the same Account says nothing new about it.
+        // Only a sign-in the person started here may open a Home by itself; a
+        // re-authorisation, a restored session or a cancelled attempt never does.
+        const started = this.#signInStarted;
+        if (this.#account.status !== "authorizing") this.#signInStarted = false;
         if (this.#account.status === "signed-in" && !sameSignedInAccount(previous, this.#account)) {
+          const who = accountIdentity(this.#account);
           // The place left waiting for this sign-in reopens with it; any other
           // place's attempt is its own business, not the Account's.
-          void this.#refreshDirectory("required", "account-change").then(() => {
+          void this.#refreshDirectory("required", "account-change").then((applied) => {
             if (this.#selectedDeployment()?.source === "account") {
               this.#attachSelectedReturningDeployment();
+              return;
             }
+            if (started && applied && who) this.#openOnlyHome(who);
           });
         }
       }),
@@ -315,12 +326,18 @@ export class DeploymentAccessService {
     const personal = this.#personalSetup();
     return freezeSnapshot(
       DeploymentAccessSnapshotSchema.parse({
-        account: this.#account,
+        account: {
+          ...this.#account,
+          ...(this.#ports.account.portalOrigin
+            ? { portalOrigin: this.#ports.account.portalOrigin }
+            : {}),
+        },
         deployments: this.#catalog.deployments.filter(this.#shown).map((deployment) => {
           const info = this.#statusInfo(deployment, personal);
           const connection = this.#connectionSnapshot(deployment);
           const {
             accountLivenessExpiresAt: _accountLivenessExpiresAt,
+            accountOwner: _accountOwner,
             hasAccountConnectRoute: _hasAccountConnectRoute,
             hasVerifiedAccountRoute: _hasVerifiedAccountRoute,
             key: _key,
@@ -583,7 +600,13 @@ export class DeploymentAccessService {
     ) {
       throw operationUnavailable("signIn");
     }
-    await this.#accountOperation("account-sign-in", () => this.#ports.account.beginSignIn());
+    this.#signInStarted = true;
+    try {
+      await this.#accountOperation("account-sign-in", () => this.#ports.account.beginSignIn());
+    } catch (error) {
+      this.#signInStarted = false;
+      throw error;
+    }
   }
 
   async signOut(): Promise<void> {
@@ -744,15 +767,26 @@ export class DeploymentAccessService {
     this.#publish();
   }
 
+  /**
+   * Reads the account's directory into the catalog. True only when this read was made for the
+   * account still signed in, succeeded, and its catalog is the one now applied: no newer read
+   * is on its way.
+   */
   async #refreshDirectory(
     mode: "ambient" | "required",
     trigger: Parameters<DirectoryPort["syncAccountDeployments"]>[1],
-  ): Promise<void> {
+  ): Promise<boolean> {
     const readAt = this.#now();
+    const who = accountIdentity(this.#account);
+    const stillFor = () => {
+      const now = accountIdentity(this.#account);
+      return who !== null && now !== null && sameIdentity(who, now);
+    };
     try {
       const outcome = await this.#ports.directory.syncAccountDeployments(mode, trigger);
-      // A sign-out while the read was out leaves nothing for its answer to describe.
-      if (this.#account.status !== "signed-in") return;
+      // A sign-out, or another account, while the read was out leaves nothing for its answer
+      // to describe.
+      if (!stillFor()) return false;
       this.#unavailable = outcome.unavailable;
       // An ambient outcome may have joined a failed sync or skipped the read.
       if (mode === "required" || outcome.changed) {
@@ -762,8 +796,13 @@ export class DeploymentAccessService {
       }
       if (outcome.changed) await this.#reloadCatalog(false);
       else this.#publish();
+      return (
+        stillFor() &&
+        this.#directoryFailure === null &&
+        this.#catalogAppliedRead === this.#catalogRead
+      );
     } catch (error) {
-      if (this.#account.status !== "signed-in") return;
+      if (!stillFor()) return false;
       this.#directoryTriedAt = this.#now();
       const failure = classifyPortFailure("directory", error);
       this.#directoryFailure = {
@@ -772,6 +811,7 @@ export class DeploymentAccessService {
         retryable: failure.classification === "transient",
       };
       this.#publish();
+      return false;
     }
   }
 
@@ -817,6 +857,26 @@ export class DeploymentAccessService {
         this.#attachSelectedReturningDeployment();
       }
     });
+  }
+
+  /**
+   * Right after a sign-in the person started, an account with exactly one Home opens it, on
+   * certain ground only: still signed in as the account the directory was read for, that read
+   * applied, nothing else listed or open here, and that account's one Home ready. Anything less
+   * is a list to choose from.
+   */
+  #openOnlyHome(who: AccountIdentity): void {
+    if (this.#disposed || this.#catalog.selectedDeploymentId !== null) return;
+    const now = accountIdentity(this.#account);
+    if (now === null || !sameIdentity(now, who)) return;
+    if (this.#directoryFailure !== null || this.#catalogAppliedRead !== this.#catalogRead) return;
+    if (this.#unavailable.length > 0) return;
+    const shown = this.#catalog.deployments.filter(this.#shown);
+    const only = shown.length === 1 ? shown[0] : undefined;
+    if (!only || only.source !== "account" || only.onThisComputer) return;
+    if (!only.accountOwner || !sameIdentity(only.accountOwner, who)) return;
+    if (this.#statusInfo(only, this.#personalSetup()).status !== "ready") return;
+    void this.#select(only.id).catch(() => undefined);
   }
 
   /**
@@ -1103,10 +1163,12 @@ export class DeploymentAccessService {
   }
 
   #checkDirectory(): Promise<void> {
-    const check = this.#refreshDirectory("required", "check").finally(() => {
-      this.#directoryCheck = null;
-      this.#publish();
-    });
+    const check = this.#refreshDirectory("required", "check")
+      .then(() => undefined)
+      .finally(() => {
+        this.#directoryCheck = null;
+        this.#publish();
+      });
     this.#directoryCheck = check;
     this.#publish();
     return check;
@@ -1181,6 +1243,30 @@ export class DeploymentAccessService {
 
   #assertActive(): void {
     if (this.#disposed) throw new Error("Deployment access service is disposed.");
+  }
+}
+
+interface AccountIdentity {
+  readonly issuer: string;
+  readonly subject: string;
+}
+
+/** Who is signed in, or null while nobody is. */
+function accountIdentity(account: DeploymentAccessSnapshot["account"]): AccountIdentity | null {
+  return account.status === "signed-in" && account.issuer && account.subject
+    ? { issuer: account.issuer, subject: account.subject }
+    : null;
+}
+
+function sameIdentity(left: AccountIdentity, right: AccountIdentity): boolean {
+  return originOf(left.issuer) === originOf(right.issuer) && left.subject === right.subject;
+}
+
+function originOf(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value;
   }
 }
 

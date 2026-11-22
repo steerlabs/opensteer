@@ -195,7 +195,7 @@ export function AddDeploymentScreen(): ReactNode {
             <View style={styles.accountAction}>
               <SecondaryButton
                 disabled={refreshing}
-                label={refreshing ? "Refreshing…" : "Refresh Account deployments"}
+                label={refreshing ? "Refreshing…" : "Refresh your Opensteers"}
                 onPress={() => void refreshAndClose()}
               />
             </View>

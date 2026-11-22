@@ -574,7 +574,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         presentation: screenPresentations.DeploymentSwitcher,
-        title: "Switch deployment",
+        title: deploymentsTitle,
       }),
     },
   },

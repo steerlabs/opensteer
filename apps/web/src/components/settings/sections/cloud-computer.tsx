@@ -48,10 +48,11 @@ export function cloudComputerAccountFor(
   return account;
 }
 
+/** Opens a page of the Opensteer website; resolves once the browser took it. */
 function useOpenWebsite() {
   const { desktopBridge } = useShell();
-  return (url: string) => {
-    if (desktopBridge) void desktopBridge.openExternalUrl({ url });
+  return async (url: string): Promise<void> => {
+    if (desktopBridge) await desktopBridge.openExternalUrl({ url });
     else window.open(url, "_blank", "noopener,noreferrer");
   };
 }
@@ -116,7 +117,11 @@ export function CloudComputerPage() {
               portalOrigin ? (
                 <button
                   className="btn btn--small"
-                  onClick={() => openWebsite(cloudComputerWebsite(portalOrigin, "home"))}
+                  onClick={() =>
+                    void openWebsite(cloudComputerWebsite(portalOrigin, "home")).catch(
+                      () => undefined,
+                    )
+                  }
                   type="button"
                 >
                   {cloudWords("cloud.account.openWebsite")}
@@ -128,10 +133,13 @@ export function CloudComputerPage() {
       </>
     );
   const { screen } = cloud;
+  // Checkout counts as opened only once the browser took the address.
   const checkout = () => {
     if (!portalOrigin) return;
-    openWebsite(cloudComputerWebsite(portalOrigin, "checkout"));
-    cloud.checkoutOpened?.();
+    void openWebsite(cloudComputerWebsite(portalOrigin, "checkout")).then(
+      () => cloud.checkoutOpened?.(),
+      () => undefined,
+    );
   };
   return (
     <>
@@ -168,8 +176,10 @@ export function CloudComputerPage() {
           <SettingsGroup heading={null} headingId="cloud-computer-price">
             <SettingsRow
               className="cloud-computer__price"
-              title={screen.plan.line}
-              detail={cloudWords("cloud.priceDetail")}
+              title={screen.plan?.line ?? cloudWords("cloud.notForSale")}
+              detail={
+                screen.plan ? cloudWords("cloud.priceDetail") : cloudWords("cloud.notForSaleDetail")
+              }
             />
           </SettingsGroup>
           <SettingsGroup
@@ -182,14 +192,16 @@ export function CloudComputerPage() {
             <Link className="btn" to="/settings/account">
               {cloudWords("cloud.notNow")}
             </Link>
-            <button
-              className="btn btn--primary"
-              disabled={!portalOrigin}
-              onClick={checkout}
-              type="button"
-            >
-              {screen.waiting ? cloudWords("cloud.checkoutAgain") : cloudWords("cloud.checkout")}
-            </button>
+            {screen.plan ? (
+              <button
+                className="btn btn--primary"
+                disabled={!portalOrigin}
+                onClick={checkout}
+                type="button"
+              >
+                {screen.waiting ? cloudWords("cloud.checkoutAgain") : cloudWords("cloud.checkout")}
+              </button>
+            ) : null}
           </div>
         </>
       ) : null}
@@ -234,7 +246,12 @@ export function CloudComputerPage() {
           computer={screen.computer}
           onAct={(input) => void cloud.act?.(input)}
           onBilling={
-            portalOrigin ? () => openWebsite(cloudComputerWebsite(portalOrigin, "billing")) : null
+            portalOrigin
+              ? () =>
+                  void openWebsite(cloudComputerWebsite(portalOrigin, "billing")).catch(
+                    () => undefined,
+                  )
+              : null
           }
           pending={cloud.pending}
           planLine={screen.plan.line}
