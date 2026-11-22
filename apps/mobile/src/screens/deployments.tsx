@@ -38,6 +38,7 @@ import { resetToDeployment, resetToDeployments } from "../navigation-ref.js";
 import {
   color,
   controlFontScaleLimit,
+  statusFontScaleLimit,
   radius,
   space,
   touchTarget,
@@ -159,7 +160,7 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
               live={row.status === "connecting" || row.status === "reconnecting"}
               tone={statusTone(row.status)}
             />
-            <AppText role="caption" tone="muted">
+            <AppText maxFontSizeMultiplier={statusFontScaleLimit} role="caption" tone="muted">
               {deploymentStatusLabel(row.status)}
             </AppText>
             <AppText role="caption" tone="muted">
@@ -824,7 +825,15 @@ const styles = StyleSheet.create({
     minHeight: 60,
     paddingRight: space[4],
   },
-  statusLine: { alignItems: "center", flexDirection: "row", gap: space[6], minWidth: 0 },
+  // At a large text size the status and kind move to the next line whole, never broken
+  // inside a word.
+  statusLine: {
+    alignItems: "center",
+    columnGap: space[6],
+    flexDirection: "row",
+    flexWrap: "wrap",
+    minWidth: 0,
+  },
   needsYou: {
     alignItems: "center",
     backgroundColor: color.amber,

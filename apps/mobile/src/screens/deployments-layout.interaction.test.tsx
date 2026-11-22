@@ -144,3 +144,53 @@ describe("Homes in the list", () => {
         expect(second, "the second Home's name is cut").toBe(homes[1]!.name);
       });
 });
+
+describe("a Home's status in the list", () => {
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`never breaks inside its word on ${phone.name} at text size ${fontScale}`, async () => {
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        const none = () => undefined;
+        await act(async () =>
+          root.render(
+            <View
+              style={{
+                paddingLeft: 16 + phone.insets.left,
+                paddingRight: 16 + phone.insets.right,
+                width: phone.window.width,
+              }}
+            >
+              <DeploymentListRow
+                attention={null}
+                current={false}
+                onDetails={none}
+                onOpen={none}
+                onPair={none}
+                onRemove={none}
+                onSignOut={none}
+                row={{ ...row({ id: homes[0]!.id, name: "Studio Mac" }), status: "connected" }}
+              />
+            </View>,
+          ),
+        );
+        const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
+        const texts = [...container.querySelectorAll('[data-rn="Text"]')];
+        const status = texts.find((text) => text.textContent === "Connected");
+        const dot = texts.find((text) => text.textContent === "·");
+        if (!status || !dot) throw new Error("No status line");
+        // One word on one line, whole: as tall as the one-character separator beside it.
+        expect(frames.shown(status)).toBe("Connected");
+        // One word on one line, whole: no taller than one line of the separator's size.
+        expect(
+          frames.frame(status).height,
+          "the status word breaks inside itself",
+        ).toBeLessThanOrEqual(frames.frame(dot).height);
+        const name = texts.find((text) => text.textContent === "Studio Mac")!;
+        expect(frames.shown(name), "the Home's name is cut").toBe("Studio Mac");
+      });
+});
