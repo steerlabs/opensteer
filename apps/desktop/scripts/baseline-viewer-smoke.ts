@@ -1,18 +1,8 @@
-import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
-import type {
-  BrowserTabRecord,
-  BrowserTabStreamMeta,
-  BrowserRuntimeServerMessage,
-} from "@opensteer/protocol/browser";
+import type { BrowserRuntimeServerMessage } from "@opensteer/protocol/browser";
 import { existsSync as guestMarkerExists } from "node:fs";
-import {
-  browserViewerEditingVersion,
-  browserViewerMessage,
-} from "../../host/src/browser/browser-viewer-protocol.js";
 /** VM-only baseline Personal browser: real renderer, runtime, Electron engine and native clipboard. */
 import {
   BrowserRuntime,
-  encodeBrowserFrame,
   type BrowserAttachment,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
@@ -22,13 +12,8 @@ import {
   bridgeMockPersonalRealtime,
   handleMockPersonalRpc,
 } from "./test-support/mock-personal-host-server.js";
-import {
-  BrowserClientMessageSchema,
-  BrowserSessionIdSchema,
-  BrowserSurfaceIdSchema,
-  hostApiVersionHeader,
-  type BrowserServerMessage,
-} from "@opensteer/protocol";
+import { BaselineViewerHost } from "./test-support/baseline-viewer-host.js";
+import { BrowserSessionIdSchema, hostApiVersionHeader } from "@opensteer/protocol";
 import {
   parseDesktopHostRoute,
   DesktopHostWebSocketEventSchema,
@@ -76,64 +61,14 @@ const output = path.join(
   process.env.OPENSTEER_JOURNEY_OUT ?? path.join(process.env.HOME!, "opensteer-job/artifacts"),
   `${rawBaseline ? "baseline-raw-viewer" : pcViewer ? "editing-v2-pc-viewer" : editingV2 ? "editing-v2-viewer" : "baseline-viewer"}`,
 );
-let viewerVersion: 1 | 2 | undefined;
-let requestedVersion: 1 | 2 | undefined;
-const consumerToken = randomUUID();
-const tabStream = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
-let heldSurfaceId: string | null = null;
-let runtimeSnapshot: Extract<BrowserRuntimeServerMessage, { type: "browser.snapshot" }> | undefined;
-const icons = new Map<string, string>();
-function heldSurface(): BrowserServerMessage | undefined {
-  if (!heldSurfaceId) return;
-  const row = tabStream.rows.get(heldSurfaceId);
-  if (!row)
-    return {
-      type: "browser.surface",
-      surfaceId: BrowserSurfaceIdSchema.parse(heldSurfaceId),
-      surface: null,
-    };
-  const { icon, order: _order, openerId: _opener, ...surface } = row;
-  return {
-    type: "browser.surface",
-    surfaceId: row.id,
-    surface: { ...surface, favicon: icon ? (icons.get(icon) ?? null) : null },
-  };
-}
-function project(
-  message: BrowserServerMessage | BrowserRuntimeServerMessage,
-): BrowserServerMessage | undefined {
-  if (message.type === "browser.tab.icon") {
-    icons.set(message.key, message.favicon);
-    return;
-  }
-  if (message.type === "browser.snapshot" && !("surfaces" in message)) {
-    runtimeSnapshot = message;
-    const {
-      cdpReplyBudget: _cdpReplyBudget,
-      scriptAttachments: _scriptAttachments,
-      scriptCancellation: _scriptCancellation,
-      ...viewerSnapshot
-    } = message;
-    return browserViewerMessage({ ...viewerSnapshot, surfaces: [] }, viewerVersion);
-  }
-  if (message.type === "browser.tabs") {
-    if (tabStream.apply(message.stream) !== "applied") return;
-    return heldSurface();
-  }
-
-  if (
-    !viewerVersion &&
-    [
-      "browser.editing",
-      "browser.contextmenu",
-      "clipboard.result",
-      "clipboard.part",
-      "clipboard.written",
-    ].includes(message.type)
-  )
-    return;
-  return browserViewerMessage(message, viewerVersion);
-}
+let failure: string | undefined;
+let attachment: BrowserAttachment | undefined;
+const viewerHost = new BaselineViewerHost(
+  (message) => attachment!.handle(message),
+  (error) => {
+    failure = String(error);
+  },
+);
 const bundle = process.env.OPENSTEER_VIEWER_SMOKE_BUNDLE;
 if (!bundle) throw new Error("Missing viewer fixture bundle.");
 registerDesktopAppScheme(protocol);
@@ -143,14 +78,11 @@ app.setPath("userData", path.join(scratch, "user-data"));
 const records: string[] = [];
 const runtimeMessages: BrowserRuntimeServerMessage[] = [];
 const rendererErrors: string[] = [];
-let failure: string | undefined;
 let window: BrowserWindow | undefined;
 let browser: LaunchedBrowser | undefined;
 let runtime: BrowserRuntime | undefined;
-let attachment: BrowserAttachment | undefined;
 let nativeWrites = 0;
 let inspectTarget: (() => Promise<unknown>) | undefined;
-let peer: WebSocket | undefined;
 const mock = new MockHostClient({ latencyMs: 0 });
 let personalHost: MockPersonalHost | undefined;
 let pageTabAlias: { readonly from: string; readonly to: string } | undefined;
@@ -273,34 +205,8 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
   wss.handleUpgrade(request, socket, head, (ws) => {
-    peer = ws;
-    assert(runtimeSnapshot);
-    requestedVersion =
-      new URL(request.url!, "http://fixture").searchParams.get("editing") === "2" ? 2 : 1;
-    viewerVersion = browserViewerEditingVersion(runtimeSnapshot, requestedVersion);
-    ws.send(JSON.stringify(project(runtimeSnapshot)!));
-    ws.on("message", (data) => {
-      const message = BrowserClientMessageSchema.parse(JSON.parse(data.toString()));
-      if (message.type === "stream.subscribe") {
-        assert(message.surfaceId, "The viewer must subscribe to one surface.");
-        heldSurfaceId = message.surfaceId;
-        const surface = heldSurface();
-        if (surface) ws.send(JSON.stringify(surface));
-      } else if (message.type === "stream.unsubscribe") heldSurfaceId = null;
-      const input = [
-        "input.key",
-        "input.pointer",
-        "input.command",
-        "clipboard.copy",
-        "clipboard.cut",
-        "clipboard.paste-data",
-      ].includes(message.type)
-        ? { ...message, consumerToken, producerId: consumerToken }
-        : { ...message, producerId: consumerToken };
-      void attachment!.handle(JSON.stringify(input)).catch((error) => {
-        failure = String(error);
-      });
-    });
+    const handle = viewerHost.connect(ws, request.url!);
+    ws.on("message", (data) => handle(data.toString()));
   });
 });
 async function wait(predicate: () => Promise<boolean> | boolean, label: string) {
@@ -359,18 +265,16 @@ async function main() {
     attachment = await runtime.attach("baseline", {
       sendServer: async (message) => {
         runtimeMessages.push(message);
-        const projected = project(message);
-        if (projected && peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify(projected));
+        viewerHost.runtimeMessage(message);
       },
-      sendFrame: async (frame) => {
-        if (peer?.readyState === WebSocket.OPEN) peer.send(encodeBrowserFrame(frame));
-      },
+      sendFrame: async (frame) => viewerHost.runtimeFrame(frame),
     });
+    const runtimeSnapshot = viewerHost.runtimeSnapshot;
     assert(runtimeSnapshot);
     assert.equal(runtimeSnapshot.editingVersion, rawBaseline ? undefined : 2);
     assert.equal(runtimeSnapshot.clipboard, rawBaseline ? undefined : false);
     assert.equal(browser?.clipboard, undefined);
-    const surfaceId = tabStream.meta?.activeId;
+    const surfaceId = viewerHost.tabStream.meta?.activeId;
     assert(surfaceId);
     const mockPageTab = [...mock.getSnapshot().tabs.rows.values()].find(
       (tab) => tab.kind === "page",
@@ -615,8 +519,8 @@ async function main() {
         "Cmd+Backspace",
       );
       records.push("Cmd+Backspace deletes to beginning");
-      assert.equal(requestedVersion, editingV2 ? 2 : 1);
-      assert.equal(viewerVersion, editingV2 ? 2 : undefined);
+      assert.equal(viewerHost.requestedVersion, editingV2 ? 2 : 1);
+      assert.equal(viewerHost.viewerVersion, editingV2 ? 2 : undefined);
       const projectedState = await view.webContents.executeJavaScript(
         "remoteEditingJourney.editingState()",
       );
@@ -853,10 +757,10 @@ async function main() {
           records,
           nativeWrites,
           rendererErrors,
-          editingVersion: runtimeSnapshot?.editingVersion ?? null,
-          clipboard: runtimeSnapshot?.clipboard,
-          requestedVersion,
-          viewerVersion,
+          editingVersion: viewerHost.runtimeSnapshot?.editingVersion ?? null,
+          clipboard: viewerHost.runtimeSnapshot?.clipboard,
+          requestedVersion: viewerHost.requestedVersion,
+          viewerVersion: viewerHost.viewerVersion,
           fixture:
             "real HttpHostClient + BrowserViewport + Electron engine/runtime; RPC inventory fixture",
           cleanup: true,
