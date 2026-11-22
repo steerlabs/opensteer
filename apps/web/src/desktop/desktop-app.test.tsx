@@ -825,7 +825,10 @@ it.each([
       await act(async () => root.render(<DesktopApp bridge={bridge} />));
       await vi.waitFor(() => expect(container.textContent).toContain("Studio"));
       expect(button("Start Opensteer on")).toBeUndefined();
+      expect(button("Start a separate Opensteer")).toBeUndefined();
 
+      // Starting another one here is one of the other ways in, not a choice beside the list.
+      await act(async () => button("Other ways in")!.click());
       await act(async () => button("Start a separate Opensteer on this")!.click());
       expect(document.body.textContent).toContain("Nothing from Studio comes with it.");
       await act(async () => button("Cancel")!.click());

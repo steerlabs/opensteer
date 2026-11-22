@@ -568,6 +568,7 @@ export function DesktopChooser({
   const [actionError, setActionError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [confirmingStart, setConfirmingStart] = useState(false);
+  const [otherWays, setOtherWays] = useState(false);
   usePlaceChecks(bridge, true);
   const facts = useComputerFacts(places.facts, snapshot.deployments);
   const work = usePlaceWorkBadges(bridge);
@@ -592,6 +593,29 @@ export function DesktopChooser({
   };
   const account = snapshot.account;
   const title = notice?.title ?? (rows.length > 1 ? "Choose an Opensteer" : "Open your Opensteer");
+  const startSeparate = startHere ? (
+    <EntryRow
+      detail={
+        others.length > 0
+          ? "A new, empty Opensteer here, with its own agent and tasks."
+          : "Your agent lives and works here."
+      }
+      disabled={pending}
+      icon="laptop"
+      onClick={() => (others.length > 0 ? setConfirmingStart(true) : startHere())}
+      title={
+        others.length > 0
+          ? `Start a separate Opensteer on ${thisMac}`
+          : `Start Opensteer on ${thisMac}`
+      }
+    />
+  ) : null;
+  if (otherWays && !confirmingStart)
+    return (
+      <OtherWaysIn onBack={() => setOtherWays(false)} onConnect={onConnect}>
+        {startSeparate}
+      </OtherWaysIn>
+    );
   return (
     <OnboardingCard
       bare
@@ -672,21 +696,11 @@ export function DesktopChooser({
         ) : null}
         <PlaceAccountFooter account={account} onSignOut={() => setSigningOut(true)} />
       </div>
-      {startHere ? (
-        <p className="desktop-entry__links">
-          <button
-            className="link-btn"
-            disabled={pending}
-            onClick={() => (others.length > 0 ? setConfirmingStart(true) : startHere())}
-            type="button"
-          >
-            {others.length > 0
-              ? `Start a separate Opensteer on ${thisMac}`
-              : `Start Opensteer on ${thisMac}`}
-          </button>
-        </p>
-      ) : null}
-      <SecondaryPaths onConnect={onConnect} />
+      <p className="desktop-entry__links">
+        <button className="link-btn" onClick={() => setOtherWays(true)} type="button">
+          Other ways in
+        </button>
+      </p>
       {confirmingStart && startHere ? (
         <StartSeparateDialog
           onClose={() => setConfirmingStart(false)}

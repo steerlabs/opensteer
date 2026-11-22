@@ -21,7 +21,11 @@ afterEach(() => {
 
 const unanswered = () => new Promise<never>(() => undefined);
 
-async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expired = false) {
+async function mount(
+  overrides: Partial<DeploymentAccessDeployment> = {},
+  expired = false,
+  options: { readonly severalOnly?: boolean; readonly second?: boolean } = {},
+) {
   const id = createId("deployment");
   const snapshot = DeploymentAccessSnapshotSchema.parse({
     account: {
@@ -48,6 +52,29 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
         statusInfo: { status: "attention", reason: "This server did not answer." },
         ...overrides,
       },
+      ...(options.second
+        ? [
+            {
+              id: createId("deployment"),
+              name: "Studio server",
+              kind: "personal",
+              access: "native",
+              activeOrigin: "https://studio.example.test",
+              canonicalOrigin: "https://studio.example.test",
+              routes: [
+                { kind: "canonical", origin: "https://studio.example.test", selected: true },
+              ],
+              lastUsedAt: null,
+              onThisComputer: false,
+              accountAccess: null,
+              availableActions: ["select"],
+              failure: null,
+              source: "manual",
+              status: "idle",
+              statusInfo: { status: "attention", reason: "This server did not answer." },
+            },
+          ]
+        : []),
     ],
     directoryFailure: null,
     personalAccountLink: {
@@ -74,6 +101,7 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
       <PlaceMenuPlaces
         onClose={onClose}
         places={{ bridge, facts: new ComputerFactsStore(unanswered), snapshot, onAddPlace }}
+        severalOnly={options.severalOnly ?? false}
       />,
     ),
   );
@@ -159,4 +187,16 @@ it("adding a computer closes the chooser before opening the add screen", async (
   expect(fixture.onClose.mock.invocationCallOrder[0]).toBeLessThan(
     fixture.onAddPlace.mock.invocationCallOrder[0]!,
   );
+});
+
+it("is a switcher in the sidebar only when there is more than one Opensteer to switch between", async () => {
+  await mount({}, false, { severalOnly: true });
+  expect(document.querySelector(".place-menu__places")).toBeNull();
+  act(() => root?.unmount());
+  root = null;
+  document.body.replaceChildren();
+
+  await mount({}, false, { severalOnly: true, second: true });
+  expect(document.querySelector(".place-menu__heading")?.textContent).toContain("Your Opensteers");
+  expect(document.querySelectorAll(".place-row")).toHaveLength(2);
 });

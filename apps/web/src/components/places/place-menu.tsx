@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { DeploymentIdSchema } from "@opensteer/core";
+import { homesListTitle } from "@opensteer/client/computers";
 import { type DesktopPlaces } from "../../desktop/places-context.js";
 import { useComputerFacts } from "../../desktop/use-computer-facts.js";
 import { placeRows, thisComputerLabel } from "../../desktop/places.js";
@@ -10,13 +11,19 @@ import { PlaceList } from "./place-list.js";
 import { PlaceSignInCard } from "./place-account.js";
 import { usePlaceCloudComputers, usePlaceWorkBadges } from "../settings/sections/work-home.js";
 
-/** Places in the switch dialog, checked while open. Choosing or adding one closes it. */
+/**
+ * Places in the switch dialog, checked while open. Choosing or adding one closes it. With
+ * `severalOnly` (the sidebar's menu) it is a switcher, shown only when there is more than one
+ * Opensteer to switch between; Settings shows it always.
+ */
 export function PlaceMenuPlaces({
   onClose,
   places,
+  severalOnly = false,
 }: {
   readonly onClose: () => void;
   readonly places: DesktopPlaces;
+  readonly severalOnly?: boolean;
 }) {
   const { bridge, facts: factsStore, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
@@ -51,11 +58,12 @@ export function PlaceMenuPlaces({
       .finally(() => setPending(false));
   };
   const signedIn = snapshot.account.status === "signed-in";
+  if (severalOnly && rows.length <= 1) return null;
   return (
     <div className="picker__section place-menu__places">
       {/* A failed refresh says so on this line, so it never moves the menu open above it. */}
       <div className="picker__heading place-menu__heading">
-        <span aria-hidden>Your computers</span>
+        <span aria-hidden>{homesListTitle}</span>
         {signedIn && snapshot.directoryFailure ? (
           <span
             className="place-menu__note"
@@ -76,7 +84,7 @@ export function PlaceMenuPlaces({
       <PlaceList
         busy={pending}
         explainCurrent
-        label="Your computers"
+        label={homesListTitle}
         onCheck={() => void bridge.checkDeployments().catch(() => undefined)}
         onOpen={(row) => {
           if (row.current) {
