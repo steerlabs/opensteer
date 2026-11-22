@@ -155,6 +155,84 @@ describeStore("an existing Messaging route becomes bridges that can only do less
     ).toEqual({ originConnectionId: null });
   });
 
+  it("makes nothing the old route did not match", async ({ storeFixture }) => {
+    const { database } = storeFixture;
+    const route = async (
+      suffix: string,
+      accessPolicy: unknown,
+      selector: Partial<
+        Record<"conversationId" | "conversationType" | "scopeId" | "threadId", string>
+      > = {},
+    ) => {
+      const { configured } = await storeFixture.createChannelDeliveryFixture(suffix, {
+        bridge: false,
+      });
+      await database
+        .updateTable("channelBindings")
+        .set({
+          accessPolicy: sql`${JSON.stringify(accessPolicy)}::jsonb`,
+          selector: sql`${JSON.stringify({ conversationId: null, conversationType: null, scopeId: null, threadId: null, ...selector })}::jsonb`,
+        })
+        .where("id", "=", configured.binding.id as never)
+        .execute();
+      return async () =>
+        database
+          .selectFrom("agentConnections")
+          .select(["bridgeConversationId", "bridgeNotice", "revokedAt"])
+          .where("bridgeAccountId", "=", configured.account.id)
+          .orderBy("bridgeConversationId")
+          .execute();
+    };
+    const channelsOff = {
+      ...policy("owner", { scope: "selected", conversationIds: ["C-quiet"] }),
+      channels: {
+        scope: "selected",
+        conversationIds: ["C-quiet"],
+        sender: { mode: "off", allowedExternalUserIds: [] },
+      },
+    };
+    const sendersOff = await route("convert-senders-off", channelsOff);
+    const channelOnly = await route(
+      "convert-channel-only",
+      policy("owner", { scope: "selected", conversationIds: ["C-team"] }),
+      { conversationType: "channel" },
+    );
+    const named = await route("convert-named", policy("owner", { scope: "all" }), {
+      conversationId: "C-one",
+    });
+    const directOff = await route("convert-dms-off", policy("off", { scope: "all" }));
+    const oneThread = await route(
+      "convert-thread",
+      policy("owner", { scope: "selected", conversationIds: ["C-thread"] }),
+      { threadId: "1786320000.000100" },
+    );
+
+    await applyBridgeConversion(database as never);
+
+    // Channels whose senders were off make no channel bridge.
+    expect(await sendersOff()).toEqual([
+      { bridgeConversationId: null, bridgeNotice: "converted", revokedAt: null },
+    ]);
+    // A route that matched only channels makes no direct-message bridge.
+    expect(await channelOnly()).toEqual([
+      { bridgeConversationId: "C-team", bridgeNotice: "converted", revokedAt: null },
+    ]);
+    // A route that named one conversation makes that one.
+    expect(await named()).toEqual([
+      { bridgeConversationId: "C-one", bridgeNotice: "converted", revokedAt: null },
+    ]);
+    // Every channel with direct messages off: nothing is guessed, and the notice is kept.
+    expect(await directOff()).toEqual([
+      {
+        bridgeConversationId: null,
+        bridgeNotice: "converted-without-channels",
+        revokedAt: expect.any(Date),
+      },
+    ]);
+    // A route for one thread matched less than any bridge covers.
+    expect(await oneThread()).toEqual([]);
+  });
+
   it("ends the old route with its bridge, and cancels only chat messages known not to have run", async ({
     storeFixture,
   }) => {
