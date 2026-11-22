@@ -16,10 +16,12 @@ export const AgentConnectionIdSchema = z.string().regex(/^mcn_[0-9a-f-]{36}$/);
 /**
  * Where a connection stands. `revoked` holds from the moment authority ends;
  * `stopping` while handed-off work in its lineage has not yet confirmed it
- * ended; `stopped` once every one of them has.
+ * ended; `stopped` once every one of them has. `paused` is a chat whose account
+ * is paused: it holds what it receives and makes until it is back.
  */
 export const AgentConnectionStateSchema = z.enum([
   "active",
+  "paused",
   "expired",
   "revoked",
   "stopping",
@@ -51,6 +53,67 @@ export const AgentConnectionIdentityPresentationSchema = z.object({
 export type AgentConnectionIdentityPresentation = z.infer<
   typeof AgentConnectionIdentityPresentationSchema
 >;
+
+/** Who may message a bridge: the person's linked account only, or anyone in its one conversation. */
+export const BridgeSendersSchema = z.enum(["owner", "anyone"]);
+export type BridgeSenders = z.infer<typeof BridgeSendersSchema>;
+/** Why a chat ended, in the person's terms. */
+export const ChatEndedBySchema = z.enum([
+  "you",
+  "organization",
+  "account",
+  "computer",
+  "work-home",
+]);
+export type ChatEndedBy = z.infer<typeof ChatEndedBySchema>;
+export const AgentConnectionBridgeSchema = z.object({
+  accountId: z.string().min(1).max(255),
+  /** What the provider is called ("Slack", "iMessage"). */
+  provider: z.string().min(1).max(100),
+  conversationId: z.string().min(1).max(512).nullable(),
+  senders: BridgeSendersSchema,
+  /** A one-time notice about how the update changed this bridge, until the person dismisses it. */
+  notice: z.enum(["converted", "converted-without-channels"]).optional(),
+  /** The chat account it speaks through: the Slack workspace, or the Mac's iMessage address. */
+  accountName: z.string().min(1).max(160).optional(),
+  /** The channel's name, for a chat in one channel; null for direct messages. */
+  conversationName: z.string().min(1).max(160).nullable().optional(),
+  /** The chat account's channel connection, which pausing and resuming act on. */
+  channelConnectionId: z.string().min(1).max(255).optional(),
+  /** Who "me" is on the account: the one identity linked to the person, or null. */
+  me: z
+    .object({
+      displayName: z.string().min(1).max(160),
+      externalUserId: z.string().min(1).max(512),
+    })
+    .nullable()
+    .optional(),
+  /** Why a paused chat is paused: the person paused it, or its account needs attention. */
+  pausedBy: z.enum(["you", "needs-attention"]).optional(),
+  /** What the account needs, when it needs attention, as the account reports it. */
+  pauseDetail: z.string().max(500).nullable().optional(),
+  /**
+   * What happens to a message sent to a paused chat: `kept`, it arrives when the chat is back
+   * (one more than an hour old is answered that it came too late); `lost`, it is not delivered.
+   */
+  pausedMessages: z.enum(["kept", "lost"]).optional(),
+  /** Why an ended chat ended. */
+  endedBy: ChatEndedBySchema.optional(),
+  /** Replies whose delivery is not known: they may have been sent, and are never sent again. */
+  unknownReplies: z.number().int().nonnegative().optional(),
+  /** Its most recent tasks, newest first: its recent work, and what Stop can stop. */
+  tasks: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(255),
+        title: z.string().max(500),
+        running: z.boolean(),
+      }),
+    )
+    .max(5)
+    .optional(),
+});
+export type AgentConnectionBridge = z.infer<typeof AgentConnectionBridgeSchema>;
 
 export const AgentConnectionSchema = z.object({
   id: AgentConnectionIdSchema,
@@ -90,9 +153,16 @@ export const AgentConnectionSchema = z.object({
   verificationWithdrawnAt: z.iso.datetime({ offset: true }).optional(),
   identity: AgentConnectionIdentityPresentationSchema.optional(),
 
+  /**
+   * Present when this connection is a messaging bridge: reached through a chat, not over MCP.
+   * A bridge covers direct messages (`conversationId` null) or one named channel or group.
+   */
+  bridge: AgentConnectionBridgeSchema.optional(),
+
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),
-  expiresAt: z.iso.datetime({ offset: true }),
+  /** Null when it does not expire: a bridge ends only when it is disconnected. */
+  expiresAt: z.iso.datetime({ offset: true }).nullable(),
 });
 export type AgentConnection = z.infer<typeof AgentConnectionSchema>;
 export const AgentConnectionConsentSchema = ChromeTabGrantCatalogSchema.extend({

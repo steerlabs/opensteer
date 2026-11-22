@@ -23,8 +23,9 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
+import { sql, type Kysely, type RawBuilder } from "kysely";
+import type { BridgeSenders, DatabaseSchema } from "./schema.js";
+import { connectionState, liveConnection } from "./connection-liveness.js";
 
 /**
  * Who an effect is for. A binding names an execution the Home issued (`run:`, `trigger:`,
@@ -43,6 +44,45 @@ export interface AgentConnectionAuthority {
   readonly grantRevision: number;
   readonly consentVersion: number;
   readonly accessMode: ThreadAccessMode;
+  /**
+   * Who may speak to a messaging bridge; null for an MCP connection. Work descending from a
+   * bridge anyone in its conversation may speak to runs without the person's personal context.
+   */
+  readonly bridgeSenders?: BridgeSenders | null;
+}
+
+/** Whether work in this lineage may use the person's personal context (memory, tabs, apps). */
+export function lineageAllowsPersonalContext(
+  connection: Pick<AgentConnectionAuthority, "bridgeSenders"> | null,
+): boolean {
+  return connection?.bridgeSenders !== "anyone";
+}
+
+/**
+ * Whether work in this lineage may use the person's personal context, from its connection's own
+ * row. The person's own work reads nothing: it has no connection, and always has it.
+ */
+export async function lineagePersonalContext(
+  database: Kysely<DatabaseSchema>,
+  connectionId: string | null,
+): Promise<boolean> {
+  if (connectionId === null) return true;
+  const { rows } = await sql<{ personal: boolean }>`
+    select ${lineageHasPersonalContext(sql`${connectionId}::text`)} as personal
+  `.execute(database);
+  return rows[0]?.personal === true;
+}
+
+/**
+ * The one rule, as SQL over a lineage's connection id (null: the person's own work): personal
+ * context only where no bridge anyone may speak to is the lineage. Every reader of the rule (a
+ * Run, a session, the memory passes' sources) asks it here.
+ */
+export function lineageHasPersonalContext(connectionId: RawBuilder<unknown>): RawBuilder<boolean> {
+  return sql<boolean>`(${connectionId} is null or exists (
+    select 1 from agent_connections personal_lineage
+    where personal_lineage.id = ${connectionId}
+      and personal_lineage.bridge_senders is distinct from 'anyone'))`;
 }
 
 /** One execution as the Home resolved it: whom it works for and every mode in its lineage. */
@@ -97,12 +137,12 @@ export async function readLiveAgentConnectionRow(
       "accessMode",
       "cleanupMinimumGrantRevision",
       "cleanupMaximumMode",
+      "bridgeSenders",
+      "bridgeAccountId",
     ])
     .where("id", "=", agentConnectionId)
     .where("userId", "=", ownerUserId)
-    .where("revokedAt", "is", null)
-    .where("tokenHash", "is not", null)
-    .where("expiresAt", ">", new Date());
+    .where(liveConnection(database));
   const authority = lock ? query.forShare("agentConnections") : query;
   const workHome = isWorkHomeDatabase(database);
   const work = workHome
@@ -151,6 +191,7 @@ export async function liveAgentConnection(
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
     accessMode: row.accessMode,
+    bridgeSenders: row.bridgeSenders,
     cleanupMinimumGrantRevision: row.cleanupMinimumGrantRevision,
     cleanupMaximumMode: row.cleanupMaximumMode,
   };
@@ -185,6 +226,24 @@ export function connectionTaskRequestScope(
   input: Parameters<typeof connectionTaskReadScope>[1],
 ): Promise<"everything" | "selected"> {
   return connectionTaskReadScope(database, input, "Request is unavailable");
+}
+
+/**
+ * Whether a connection's work waits rather than ends: a chat whose account is paused. What it
+ * would run stays queued until the chat is back; nothing of it is cancelled.
+ */
+export async function connectionWaiting(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<boolean> {
+  const row = await database
+    .selectFrom("agentConnections")
+    .select(connectionState(database).as("state"))
+    .where("id", "=", agentConnectionId)
+    .where("userId", "=", ownerUserId)
+    .executeTakeFirst();
+  return row?.state === "waiting";
 }
 
 /** The connection delegated work may still run for: live, and still granted Tasks. */

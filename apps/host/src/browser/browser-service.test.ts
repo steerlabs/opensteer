@@ -8898,7 +8898,7 @@ describe("a connected agent's selected grant admits the exact profile before any
         }),
       },
       store: {
-        getThreadForOwner: async () => null,
+        readTask: async () => null,
         threadOrigins: async () => new Map(),
         requests: { get: async () => null },
       },

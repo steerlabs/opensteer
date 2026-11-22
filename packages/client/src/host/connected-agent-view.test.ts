@@ -57,6 +57,62 @@ function connection(patch: Partial<AgentConnection> = {}): AgentConnection {
 }
 
 describe("connected agents list", () => {
+  it("shows a paused chat as paused, with what becomes of what is sent to it, per transport and cause", () => {
+    const chat = (bridge: Partial<NonNullable<AgentConnection["bridge"]>>) =>
+      connection({
+        label: "Slack",
+        clientName: "Slack",
+        state: "paused",
+        expiresAt: null,
+        bridge: {
+          accountId: "cha_1",
+          provider: "Slack",
+          conversationId: null,
+          senders: "owner",
+          accountName: "Workshop",
+          ...bridge,
+        },
+      });
+    const slack = connectedAgentDetail(chat({ pausedBy: "you", pausedMessages: "lost" }), names, {
+      grantsAvailable: true,
+      now,
+    });
+    expect(slack.row.phase).toBe("paused");
+    expect(
+      connectedAgentsView([slack.row.connection], names, new Set(), now).connected,
+    ).toHaveLength(1);
+    expect(slack.row.line).toBe("Paused · its replies are held until it’s back");
+    expect(slack.status).toMatchObject({
+      label: "Paused",
+      detail:
+        "You paused this chat. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
+    });
+    const imessage = connectedAgentDetail(
+      chat({
+        provider: "iMessage",
+        accountName: "tim@example.com",
+        pausedBy: "needs-attention",
+        pauseDetail: "Messages isn’t signed in.",
+        pausedMessages: "kept",
+      }),
+      names,
+      { grantsAvailable: true, now },
+    );
+    expect(imessage.status.detail).toBe(
+      "Paused because tim@example.com needs attention. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. It says: Messages isn’t signed in. Fix that on its messaging account, then check it again.",
+    );
+  });
+
+  it("shows a state it does not know as unknown, never as active", () => {
+    const detail = connectedAgentDetail(connection({ state: "resting" as never }), names, {
+      grantsAvailable: true,
+      now,
+    });
+    expect(detail.row.phase).toBe("unknown");
+    expect(detail.status.label).toBe("Not known to this app");
+    expect(detail.editable).toBe(false);
+  });
+
   it("says what each active agent can use and its mode, in a few words", () => {
     const view = connectedAgentsView(
       [

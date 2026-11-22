@@ -1,6 +1,7 @@
 import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
+import { admitBridgeSender, chatWaitingError } from "./bridge-admission.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import {
   republishPendingRequestsShowing,
@@ -25,7 +26,11 @@ import {
 } from "./waiting-inputs.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { threadAllowsPersonalContext } from "./run-personal-context.js";
+import {
+  connectionWaiting,
+  lineagePersonalContext,
+  readLiveAgentConnectionRow,
+} from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
@@ -59,13 +64,7 @@ import { harnessRevisionChanged, prepareThreadInsertion } from "./thread-inserti
 import { projectThreadState, publishRunQueue, publishThreadSummary } from "./thread-status.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import {
-  ChannelConversationIdSchema,
-  ChannelBindingSchema,
-  ChannelIngressIdSchema,
-  PrincipalIdSchema,
-  type PrincipalId,
-} from "@opensteer/channel-core";
+import { ChannelConversationIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   ArtifactContentPartSchema,
   deriveThreadStatus,
@@ -179,12 +178,7 @@ import {
   supersedeCurrentAttempt,
   type SteeringMode,
 } from "./run-attempts.js";
-import { resolveChannelAuthority } from "./channel-authority.js";
 import { claimMessageAttachments } from "./attachment-store.js";
-import {
-  channelInputAuthorityIsCurrent,
-  lockThreadChannelAuthorities,
-} from "./channel-execution.js";
 import { resolveMessageQuote } from "./message-quotes.js";
 import { describeTranscriptMessage, transcriptMessageTextBytes } from "./transcript-store.js";
 import {
@@ -482,11 +476,10 @@ async function restartInputCount(
 }
 
 /**
- * The sources that are the person themselves writing: in the app, or in a
- * direct message their channel identity sent. Everything else that reaches a
+ * The sources that are the person themselves writing in the app. Everything else that reaches a
  * conversation — Triggers, watches, tasks, other agents — keeps its queue.
  */
-const personAuthoritySourceKinds = ["user-session", "channel-ingress"] as const;
+const personAuthoritySourceKinds = ["user-session"] as const;
 
 /** Whether a message is the person themselves writing, rather than a machine queuing work. */
 function isPersonsMessage(input: {
@@ -516,12 +509,21 @@ async function conversationalReply(
 ): Promise<boolean> {
   if (thread.purpose === "voice") return true;
   if (replyTarget?.kind !== "channel") return false;
+  // The person's own direct messages to a bridge only they may speak to are a conversation with
+  // them, as a reply under way; a channel or group, or anyone else, waits its turn.
   const conversation = await transaction
-    .selectFrom("channelConversations")
-    .select("personalContext")
-    .where("id", "=", ChannelConversationIdSchema.parse(replyTarget.conversationId))
+    .selectFrom("bridgeConversations")
+    .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+    .select("bridgeConversations.id")
+    .where(
+      "bridgeConversations.id",
+      "=",
+      ChannelConversationIdSchema.parse(replyTarget.conversationId),
+    )
+    .where("bridgeConversations.conversationType", "=", "dm")
+    .where("agentConnections.bridgeSenders", "=", "owner")
     .executeTakeFirst();
-  return conversation?.personalContext === true;
+  return conversation !== undefined;
 }
 
 function exchangeInputs(
@@ -632,6 +634,13 @@ async function claimFollowUps(
         },
       )
     : null;
+  // A paused chat's follow-ups wait for it, queued; they are not taken, and not cancelled.
+  if (
+    run.connectionId !== null &&
+    connection === null &&
+    (await connectionWaiting(transaction, run.requestedBy, run.connectionId))
+  )
+    return { claimed: 0 };
   const eligible =
     run.connectionId === null ||
     (connection !== null && sendEligible(connection, thread.originConnectionId));
@@ -665,11 +674,11 @@ async function claimFollowUps(
   for (const messageId of ids) {
     const row = lockedById.get(messageId);
     if (!row) continue;
-    if (!eligible || !(await channelInputAuthorityIsCurrent(transaction, messageId))) {
+    if (!eligible || !(await chatSenderMaySpeak(transaction, row))) {
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({
-          cancelReason: eligible ? "channel-authority-unavailable" : "authority-revoked",
+          cancelReason: "authority-revoked",
           state: "cancelled",
           updatedAt: new Date(),
         })
@@ -1530,7 +1539,7 @@ export async function claimRunInputBatch(
   if (seed.freshContext) {
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
-      personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
+      personalContext: await lineagePersonalContext(transaction, run.connectionId),
     });
     await transaction
       .updateTable("runs")
@@ -1581,24 +1590,6 @@ export async function claimRunInputBatch(
     if (candidates.length === 0) break;
     for (const candidate of candidates) {
       afterSequence = String(candidate.sequence);
-      if (!(await channelInputAuthorityIsCurrent(transaction, candidate.id))) {
-        const cancelled = await transaction
-          .updateTable("threadInputs")
-          .set({
-            cancelReason: "channel-authority-unavailable",
-            state: "cancelled",
-            updatedAt: new Date(),
-          })
-          .where("messageId", "=", candidate.id)
-          .where("state", "in", ["pending", "unknown"])
-          .returningAll()
-          .executeTakeFirst();
-        if (cancelled) {
-          cancelledCount += 1;
-          await refreshInputQueue(transaction, thread.id, cancelled.messageId);
-        }
-        continue;
-      }
       const candidateBytes =
         Buffer.byteLength(JSON.stringify(messageFromRow(candidate)), "utf8") + 1;
       if (bytes + candidateBytes > threadReportBatchMaxSerializedBytes) break selection;
@@ -1860,10 +1851,6 @@ export async function settleSteer(
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!run) return;
-  const channelAuthorityCurrent = await channelInputAuthorityIsCurrent(
-    transaction,
-    observed.messageId,
-  );
   await lockThreadRow(transaction, observed.threadId);
   // A refusal can return the hand-offs behind this one as well.
   await lockRunProjectionRows(transaction, {
@@ -1895,12 +1882,8 @@ export async function settleSteer(
   await transaction
     .updateTable("commands")
     .set({
-      lastError: jsonValue({
-        message: channelAuthorityCurrent
-          ? reason.trim().slice(0, 500) || "Steer was refused"
-          : "Channel authority changed before the input could be delivered",
-      }),
-      status: channelAuthorityCurrent ? outcome : "failed",
+      lastError: jsonValue({ message: reason.trim().slice(0, 500) || "Steer was refused" }),
+      status: outcome,
       updatedAt: now,
     })
     .where("id", "=", commandId)
@@ -1908,37 +1891,31 @@ export async function settleSteer(
   const inputRow = await transaction
     .updateTable("threadInputs")
     .set(
-      !channelAuthorityCurrent
+      stopped
         ? {
-            cancelReason: "channel-authority-unavailable",
+            cancelReason: "stopped",
             state: "cancelled",
             updatedAt: now,
           }
-        : stopped
-          ? {
-              cancelReason: "stopped",
-              state: "cancelled",
-              updatedAt: now,
-            }
-          : outcome === "failed"
-            ? observed.policy === "queue" || reasonCode === "request-pending"
-              ? {
-                  cancelReason: null,
-                  state: "pending",
-                  policy: reasonCode === "request-pending" ? "queue" : observed.policy,
-                  runId: null,
-                  steerCommandId: null,
-                  updatedAt: now,
-                }
-              : {
-                  cancelReason: "steer-refused",
-                  state: "cancelled",
-                  updatedAt: now,
-                }
-            : {
-                state: "unknown",
+        : outcome === "failed"
+          ? observed.policy === "queue" || reasonCode === "request-pending"
+            ? {
+                cancelReason: null,
+                state: "pending",
+                policy: reasonCode === "request-pending" ? "queue" : observed.policy,
+                runId: null,
+                steerCommandId: null,
                 updatedAt: now,
-              },
+              }
+            : {
+                cancelReason: "steer-refused",
+                state: "cancelled",
+                updatedAt: now,
+              }
+          : {
+              state: "unknown",
+              updatedAt: now,
+            },
     )
     .where("messageId", "=", observed.messageId)
     .where("state", "=", "claimed")
@@ -2254,7 +2231,6 @@ async function lockThreadInputPreconditions(
     harness?.runtimeRevision !== input.expectedHarnessRevision
   )
     throw harnessRevisionChanged();
-  await lockThreadChannelAuthorities(transaction, [input.threadId]);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
@@ -2379,6 +2355,16 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
       return {
         kind: "connection",
         connectionId: source.connectionId,
+        // Where the reply goes is part of the request; who wrote it is not.
+        ...(source.chat
+          ? {
+              chat: {
+                conversationId: source.chat.conversationId,
+                revision: source.chat.revision,
+                sender: { displayName: "", externalUserId: source.chat.sender.externalUserId },
+              },
+            }
+          : {}),
       };
     case "agent":
       return {
@@ -2389,13 +2375,6 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
       return {
         kind: "trigger",
         occurrenceId: source.occurrenceId,
-      };
-    case "channel":
-      return {
-        kind: "channel",
-        conversationId: source.conversationId,
-        ingressId: source.ingressId,
-        principalId: source.principalId,
       };
     case "watch":
       return {
@@ -2868,7 +2847,9 @@ export async function enqueueThreadInputInTransaction(
     (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
     (request.source.kind === "human" ||
-      request.source.kind === "channel" ||
+      // A chat message that is a conversation with the person (their own direct messages to a
+      // bridge only they may speak to: conversationalReply checks which).
+      (request.source.kind === "connection" && request.source.chat !== undefined) ||
       Boolean(activeRun?.voiceSessionId));
   // A Run whose turn ended while its background work runs on takes the next
   // message from its own requester, on the same engine and model, as a new
@@ -2876,7 +2857,7 @@ export async function enqueueThreadInputInTransaction(
   const joinsBackground =
     !activeRun?.maintenance &&
     !request.freshContext &&
-    request.source.kind !== "channel" &&
+    !(request.source.kind === "connection" && request.source.chat) &&
     !conversational &&
     policy === "queue" &&
     activeRun?.phase === "background" &&
@@ -3207,190 +3188,129 @@ async function resolveThreadInputFacts(
   },
 ): Promise<ResolvedThreadInputFacts> {
   const { source } = input;
-  if (source.kind === "channel") requireBoundedIdentity(source.ingressId, "Channel ingress", 255);
-  if (source.kind === "human" || source.kind === "channel") {
-    const channelSource =
-      source.kind === "channel"
-        ? await transaction
-            .selectFrom("channelIngressEvents")
-            .innerJoin(
-              "channelConversations",
-              "channelConversations.id",
-              "channelIngressEvents.conversationId",
-            )
-            .innerJoin("channelBindings", "channelBindings.id", "channelConversations.bindingId")
-            .innerJoin("channelIdentities", (join) =>
-              join
-                .onRef("channelIdentities.accountId", "=", "channelIngressEvents.accountId")
-                .on(
-                  "channelIdentities.principalId",
-                  "=",
-                  PrincipalIdSchema.parse(source.principalId),
-                ),
-            )
-            .select([
-              "channelBindings.accessPolicy",
-              "channelBindings.accountId as bindingAccountId",
-              "channelBindings.createdAt as bindingCreatedAt",
-              "channelBindings.createdBy as bindingCreatedBy",
-              "channelBindings.executionPolicy",
-              "channelBindings.id as bindingId",
-              "channelBindings.revision as currentBindingRevision",
-              "channelBindings.selector",
-              "channelBindings.status as bindingStatus",
-              "channelBindings.updatedAt as bindingUpdatedAt",
-              "channelConversations.activeThreadId as contextActiveThreadId",
-              "channelConversations.bindingRevision as contextBindingRevision",
-              "channelConversations.conversationType",
-              "channelConversations.externalConversationId",
-              "channelConversations.id as conversationId",
-              "channelIdentities.externalUserId",
-              "channelIdentities.id",
-              "channelIdentities.linkedUserId",
-              "channelIdentities.status as identityStatus",
-              "channelIdentities.principalId",
-            ])
-            .where("channelIngressEvents.id", "=", ChannelIngressIdSchema.parse(source.ingressId))
-            .where("channelIngressEvents.status", "=", "leased")
-            .where(
-              "channelIngressEvents.conversationId",
-              "=",
-              ChannelConversationIdSchema.parse(source.conversationId),
-            )
-            // This is the final authority check, not a snapshot replay. A
-            // concurrent binding/identity revocation either commits first and
-            // is observed here, or waits until this admission commits.
-            .forNoKeyUpdate([
-              "channelIngressEvents",
-              "channelConversations",
-              "channelBindings",
-              "channelIdentities",
-            ])
-            .executeTakeFirst()
-        : null;
-    let channelAuthority: Awaited<ReturnType<typeof resolveChannelAuthority>> | null = null;
-    if (source.kind === "channel" && channelSource) {
-      const binding = ChannelBindingSchema.parse({
-        accessPolicy: channelSource.accessPolicy,
-        accountId: channelSource.bindingAccountId,
-        createdAt: channelSource.bindingCreatedAt.toISOString(),
-        createdBy: channelSource.bindingCreatedBy,
-        executionPolicy: channelSource.executionPolicy,
-        id: channelSource.bindingId,
-        revision: channelSource.currentBindingRevision,
-        selector: channelSource.selector,
-        status: channelSource.bindingStatus,
-        updatedAt: channelSource.bindingUpdatedAt.toISOString(),
-      });
-      channelAuthority = await resolveChannelAuthority(transaction, binding, channelSource, {
-        externalConversationId: channelSource.externalConversationId,
-        type: channelSource.conversationType,
-      });
-    }
-    if (
-      source.kind === "channel" &&
-      (!channelSource ||
-        channelSource.bindingStatus !== "active" ||
-        channelSource.contextBindingRevision !== channelSource.currentBindingRevision ||
-        channelSource.contextActiveThreadId !== input.targetThread.id ||
-        !channelAuthority ||
-        channelAuthority.userId !== input.requestedBy)
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Channel ingress source is invalid",
-      });
-    }
-    const principal =
-      source.kind === "human"
-        ? await transaction
-            .selectFrom("principals")
-            .innerJoin("users", "users.id", "principals.userId")
-            .select(["principals.displayName", "principals.id", "principals.userId"])
-            .where("principals.kind", "=", "user")
-            .where("principals.userId", "=", input.requestedBy)
-            .executeTakeFirstOrThrow()
-        : await transaction
-            .selectFrom("principals")
-            .select(["displayName", "id", "userId"])
-            .where("id", "=", PrincipalIdSchema.parse(source.principalId))
-            .executeTakeFirstOrThrow();
-    const authorUserId =
-      source.kind === "channel"
-        ? channelSource?.identityStatus === "linked"
-          ? channelSource.linkedUserId
-          : null
-        : principal.userId;
-    const replyTarget =
-      source.kind === "channel"
-        ? ReplyTargetSchema.parse({
-            conversationId: source.conversationId,
-            kind: "channel",
-          })
-        : null;
+  if (source.kind === "human") {
+    const principal = await transaction
+      .selectFrom("principals")
+      .innerJoin("users", "users.id", "principals.userId")
+      .select(["principals.displayName", "principals.id", "principals.userId"])
+      .where("principals.kind", "=", "user")
+      .where("principals.userId", "=", input.requestedBy)
+      .executeTakeFirstOrThrow();
     return {
       actorPrincipalId: principal.id,
       author: MessageAuthorSchema.parse({
         displayName: principal.displayName,
         kind: "human",
         principalId: principal.id,
-        ...(authorUserId
-          ? {
-              userId: authorUserId,
-            }
-          : {}),
-      }),
-      authoritySource:
-        source.kind === "channel"
-          ? {
-              access: channelAuthority!.source,
-              bindingId: channelSource!.bindingId,
-              bindingRevision: channelSource!.contextBindingRevision,
-              conversationId: source.conversationId,
-              ingressId: source.ingressId,
-              kind: "channel-ingress",
-              principalId: principal.id,
-              userId: input.requestedBy,
-            }
-          : {
-              kind: "user-session",
-              userId: input.requestedBy,
-              ...(source.clientSessionId ? { clientSessionId: source.clientSessionId } : {}),
-            },
-      causalChainId: null,
-      kind: "input",
-      replyTarget,
-    };
-  }
-  if (source.kind === "connection") {
-    const connection = await transaction
-      .selectFrom("agentConnections")
-      .selectAll()
-      .where("id", "=", source.connectionId)
-      .where("userId", "=", input.requestedBy)
-      .where("revokedAt", "is", null)
-      .where("expiresAt", ">", new Date())
-      .executeTakeFirst();
-    if (!connection || !connection.tokenHash)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Connected agent source is invalid",
-      });
-    return {
-      actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-      author: MessageAuthorSchema.parse({
-        kind: "connection",
-        connectionId: connection.id,
-        displayName: connection.label,
+        ...(principal.userId ? { userId: principal.userId } : {}),
       }),
       authoritySource: {
-        kind: "connection",
-        connectionId: connection.id,
+        kind: "user-session",
         userId: input.requestedBy,
+        ...(source.clientSessionId ? { clientSessionId: source.clientSessionId } : {}),
       },
       causalChainId: null,
       kind: "input",
       replyTarget: null,
+    };
+  }
+  if (source.kind === "connection") {
+    const chat = source.chat;
+    // A chat's message reads through the one sender admission: the bridge is live, it covers
+    // this conversation, and this sender may speak under the revision the message was admitted
+    // under. Any other connection's message reads its live row with its organization's policy in
+    // the same statement. The task is already locked here, so the row is read, not locked.
+    const admitted = chat
+      ? await admitBridgeSender(transaction, {
+          ownerUserId: input.requestedBy,
+          bridgeId: source.connectionId,
+          externalUserId: chat.sender.externalUserId,
+          expectedRevision: chat.revision,
+        })
+      : null;
+    // A chat that went paused while its message was on the way: the message waits for it.
+    if (admitted?.kind === "waiting") throw chatWaitingError();
+    const connection =
+      admitted?.kind === "admitted"
+        ? { id: admitted.connection.agentConnectionId, label: admitted.connection.label }
+        : chat
+          ? undefined
+          : await readLiveAgentConnectionRow(
+              transaction,
+              input.requestedBy,
+              source.connectionId,
+            ).catch((error: unknown) => {
+              if (error instanceof OpensteerError && error.code === "forbidden") return undefined;
+              throw error;
+            });
+    if (!connection)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Connected agent source is invalid",
+      });
+    if (
+      chat &&
+      (admitted?.kind !== "admitted" ||
+        !(await transaction
+          .selectFrom("bridgeConversations")
+          .select("id")
+          .where("id", "=", ChannelConversationIdSchema.parse(chat.conversationId))
+          .where("bridgeId", "=", connection.id)
+          .executeTakeFirst()))
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Connected agent source is invalid",
+      });
+    const actorPrincipalId = await principalIdForUser(transaction, input.requestedBy);
+    const owner =
+      admitted?.kind === "admitted" && admitted.owner
+        ? await transaction
+            .selectFrom("principals")
+            .select("displayName")
+            .where("id", "=", actorPrincipalId)
+            .executeTakeFirstOrThrow()
+        : null;
+    return {
+      actorPrincipalId,
+      // The person writing from their own linked account is the person; anyone else in a
+      // bridge's conversation is named, and is never the person.
+      author: MessageAuthorSchema.parse(
+        owner
+          ? {
+              kind: "human",
+              displayName: `${owner.displayName} (via ${connection.label})`.slice(0, 160),
+              principalId: actorPrincipalId,
+              userId: input.requestedBy,
+            }
+          : {
+              kind: "connection",
+              connectionId: connection.id,
+              displayName: (chat
+                ? `${chat.sender.displayName} in ${connection.label}`
+                : connection.label
+              ).slice(0, 160),
+            },
+      ),
+      authoritySource: {
+        kind: "connection",
+        connectionId: connection.id,
+        userId: input.requestedBy,
+        // Who wrote it, so that it runs only if they may still speak when its turn comes.
+        ...(chat
+          ? {
+              chat: {
+                conversationId: chat.conversationId,
+                externalUserId: chat.sender.externalUserId,
+              },
+            }
+          : {}),
+      },
+      causalChainId: null,
+      kind: "input",
+      replyTarget: chat
+        ? ReplyTargetSchema.parse({ kind: "channel", conversationId: chat.conversationId })
+        : null,
     };
   }
   if (source.kind === "agent") {
@@ -3848,27 +3768,6 @@ export async function ensureQueuedRun(
     if (!candidate || (await inputLeaseBarrier(transaction, thread.id, candidate.queueRank)))
       return { command: null, run: null };
 
-    // Channel authority can change after inbox admission. Read and lock its
-    // binding before taking the input lock so revocation and policy updates
-    // cannot cross a requeue boundary.
-    if (!(await channelInputAuthorityIsCurrent(transaction, candidate.messageId))) {
-      const cancelled = await transaction
-        .updateTable("threadInputs")
-        .set({
-          cancelReason: "channel-authority-unavailable",
-          state: "cancelled",
-          updatedAt: new Date(),
-        })
-        .where("messageId", "=", candidate.messageId)
-        .where("state", "=", "pending")
-        .where("policy", "=", "queue")
-        .returningAll()
-        .executeTakeFirst();
-      if (cancelled) {
-        await refreshInputQueue(transaction, thread.id, cancelled.messageId);
-      }
-      continue;
-    }
     const lockedCandidate = await transaction
       .selectFrom("threadWorkInputs as threadInputs")
       .innerJoin("messages", "messages.id", "threadInputs.messageId")
@@ -3963,10 +3862,16 @@ export async function ensureQueuedRun(
             : null,
         )
         .then(
-          () => true,
+          () => chatSenderMaySpeak(transaction, candidate),
           () => false,
         ))
     ) {
+      // A paused chat's work waits: it stays queued, and so does everything behind it.
+      if (
+        candidateConnectionId &&
+        (await connectionWaiting(transaction, candidate.requestedBy, candidateConnectionId))
+      )
+        break;
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({ cancelReason: "authority-revoked", state: "cancelled", updatedAt: new Date() })
@@ -4012,17 +3917,13 @@ export async function ensureQueuedRun(
     }
   }
   if (!seed) return { command: null, run: null };
+  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const selectedSession = options.maintenance
     ? options.maintenance.providerSessionId
     : await ensureSelectedProviderSession(transaction, thread, {
-        personalContext: await threadAllowsPersonalContext(
-          transaction,
-          thread.id,
-          thread.createdBy,
-        ),
+        personalContext: await lineagePersonalContext(transaction, connectionId),
       });
   const runId = createId("run");
-  const connectionId = thread.originConnectionId ?? seed.connectionId;
   const runRow = await transaction
     .insertInto("runs")
     .values({
@@ -4312,7 +4213,6 @@ async function lockAssignmentReturn(
   const threadIds = [
     ...new Set([observed.parentThreadId, ...group.map(({ childThreadId }) => childThreadId)]),
   ];
-  await lockThreadChannelAuthorities(transaction, threadIds);
   await transaction
     .selectFrom("threads")
     .select("id")
@@ -5565,10 +5465,6 @@ export async function delegateThreadInTransaction(
     },
     input.expectedHarnessRevision,
   );
-  await lockThreadChannelAuthorities(transaction, [
-    input.origin.parentThreadId,
-    ...(input.threadId ? [input.threadId] : []),
-  ]);
   const lockedThreads = await transaction
     .selectFrom("threads")
     .select(["id", "lineageRootThreadId", "purpose", "doneAt"])
@@ -5785,7 +5681,15 @@ export async function delegateThreadInTransaction(
         icon: null,
         iconSource: "provisional",
       });
-  await ensureSelectedProviderSession(transaction, threadRow);
+  // A new worker in a lineage without the person's personal context never has a personal
+  // session, not even its first (none is queried for the person's own work).
+  await ensureSelectedProviderSession(
+    transaction,
+    threadRow,
+    reusedRow
+      ? {}
+      : { personalContext: await lineagePersonalContext(transaction, childConnectionId) },
+  );
   await transaction
     .insertInto("commands")
     .values({
@@ -5948,4 +5852,28 @@ async function delegationListsThread(
     .where("runs.id", "=", origin.parentRunId)
     .executeTakeFirstOrThrow();
   return seed.voiceSessionId !== null || MessageAuthorSchema.parse(seed.author).kind === "human";
+}
+
+/**
+ * A chat's queued message runs only if its sender may still speak there when its turn comes: if
+ * "me" was linked to another identity since (the person said the old one is no longer them), or
+ * the chat's senders no longer include them, it is cancelled, silently. A paused chat holds it
+ * (its own check holds the queue first); anything not from a chat is not asked.
+ */
+export async function chatSenderMaySpeak(
+  transaction: Transaction<DatabaseSchema>,
+  input: {
+    readonly authoritySource: Readonly<Record<string, unknown>>;
+    readonly connectionId: string | null;
+    readonly requestedBy: UserId;
+  },
+): Promise<boolean> {
+  const chat = input.authoritySource["chat"] as { readonly externalUserId?: unknown } | undefined;
+  if (!chat || typeof chat.externalUserId !== "string" || input.connectionId === null) return true;
+  const admitted = await admitBridgeSender(transaction, {
+    ownerUserId: input.requestedBy,
+    bridgeId: input.connectionId,
+    externalUserId: chat.externalUserId,
+  });
+  return admitted.kind !== "refused";
 }

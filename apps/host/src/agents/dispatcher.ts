@@ -242,7 +242,18 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       throw new CommandDispatchError("Unsupported durable Runner command", "failed");
     }
     if (command.type === "trigger.execute") {
-      await this.#dispatchTrigger(command, signal);
+      try {
+        await this.#dispatchTrigger(command, signal);
+      } catch (error) {
+        // An automation of a paused chat is held with the chat's work: it neither fails nor
+        // counts as a failure, and runs once when the chat is back.
+        if (
+          !(error instanceof CommandDispatchError && error.disposition === "held") &&
+          (await this.#triggers.commandChatWaiting(command.id))
+        )
+          throw chatRunHeld();
+        throw error;
+      }
       return;
     }
     if (command.type !== "run.execute") {
@@ -448,7 +459,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             ownerUserId: command.requestedBy,
             subject: { kind: "binding", bindingId: `run:${context.run.id}` },
           })
-    ).catch((error: unknown) => {
+    ).catch(async (error: unknown) => {
+      // A chat that is only paused holds its Run until it is back; only an end fails it.
+      if (
+        runConnectionId !== null &&
+        (await this.#store.connectionWaiting(command.requestedBy, runConnectionId))
+      )
+        throw chatRunHeld();
       throw new CommandDispatchError(
         error instanceof OpensteerError ? error.message : "This task's access ended.",
         "failed",
@@ -762,14 +779,22 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const dispatch = {
       beforeSend: async () => {
         if (authority.agentConnection) {
-          await this.#assertPlannedAuthority(context.run, authority);
-          await this.#store.recordConnectionRunHandoff({
-            runId: context.run.id,
-            bindingGeneration: binding.bindingGeneration,
-            connectionId: authority.agentConnection.agentConnectionId,
-            grantRevision: authority.agentConnection.grantRevision,
-            mode: authority.mode,
-          });
+          const connectionId = authority.agentConnection.agentConnectionId;
+          try {
+            await this.#assertPlannedAuthority(context.run, authority);
+            await this.#store.recordConnectionRunHandoff({
+              runId: context.run.id,
+              bindingGeneration: binding.bindingGeneration,
+              connectionId,
+              grantRevision: authority.agentConnection.grantRevision,
+              mode: authority.mode,
+            });
+          } catch (error) {
+            // Paused while the Run was being prepared: held for the chat, as at the first check.
+            if (await this.#store.connectionWaiting(command.requestedBy, connectionId))
+              throw chatRunHeld();
+            throw error;
+          }
         }
         await this.#store.assertActiveGrant({
           bindingGeneration: binding.bindingGeneration,
@@ -791,12 +816,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       connectionGeneration: identity.connectionGeneration,
     };
     if (command.authoritySource.kind === "channel-ingress") {
-      await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-        await this.#runners.dispatch(runnerCommand, signal, {
-          ...dispatch,
-          beforeAck,
-        });
-      });
+      // Decided by routes that no longer exist: a message from before the update never runs.
+      throw new CommandDispatchError("Messages from before the update are not run.", "failed");
     } else {
       await this.#runners.dispatch(runnerCommand, signal, dispatch);
     }
@@ -1127,15 +1148,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             throw new CommandDispatchError(error.message, "failed");
           }
         });
-      if (command.authoritySource.kind === "channel-ingress") {
-        await this.#store.dispatchChannelCommand(command.id, async (beforeAck) => {
-          await this.#runners.dispatch(runnerCommand, signal, {
-            beforeAck,
-            ...(beforeSend ? { beforeSend } : {}),
-          });
-        });
-        return;
-      }
+      if (command.authoritySource.kind === "channel-ingress")
+        throw new CommandDispatchError("Messages from before the update are not run.", "failed");
       await this.#runners.dispatch(runnerCommand, signal, beforeSend ? { beforeSend } : undefined);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
@@ -1148,4 +1162,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     await this.#store.succeedCommand(command.id);
   }
+}
+
+/** A Run of a paused chat waits for the chat: no failure, no error, no timer; its resume wakes it. */
+function chatRunHeld(): CommandDispatchError {
+  return new CommandDispatchError("Its chat is paused; this waits until it is back.", "held");
 }

@@ -2,7 +2,7 @@
 import { act, useId, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
+import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import { hostApi } from "@opensteer/protocol";
 import type { HostClient } from "@opensteer/client/host";
 import type { NativeSettingsPageProps } from "./native-settings-page.types.js";
@@ -99,187 +99,201 @@ async function input(label: string, value: string) {
   await act(async () => found.onChange(value));
 }
 
+it.each(["ios", "android"])("sends every Messaging change from the phone on %s", async (os) => {
+  state.os = os;
+  await open("messaging");
+  const now = new Date().toISOString();
+  const accountId = `cha_${crypto.randomUUID()}`;
+  const connectionId = `con_${crypto.randomUUID()}`;
+  const response = await host.rpc["channels.get"]({});
+  if (!response.ok) throw new Error("Missing messaging catalog");
+  const data = hostApi["channels.get"].success.parse({
+    ...response.data,
+    accounts: [
+      {
+        id: accountId,
+        connectionId,
+        provider: "slack",
+        displayName: "Team bot",
+        externalAccountId: "team",
+        handle: null,
+        metadata: {},
+        routingMode: "dedicated",
+        status: "connected",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  });
+  const check = vi.fn(async () => ({
+    ok: true,
+    data: { ready: true, capabilities: [], identity: null, issues: [] },
+  }));
+  const rpc = host.rpc;
+  Object.defineProperty(host, "rpc", {
+    value: new Proxy(rpc, {
+      get(target, key, receiver) {
+        if (key === "channel.connection.check") return check;
+        if (key === "channels.get")
+          return async () => ({ ok: true, data: { ...data, accounts: [...data.accounts] } });
+        return Reflect.get(target, key, receiver);
+      },
+    }),
+  });
+  await press("Refresh");
+  const commands: Parameters<HostClient["dispatch"]>[0][] = [];
+  vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+    commands.push(command);
+    throw new Error("Keep the current state");
+  });
+  await press("Check again");
+  expect(check).toHaveBeenCalledWith({ connectionId });
+  await press("Pause");
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.status.set",
+    connectionId,
+    status: "paused",
+  });
+  data.accounts[0]!.status = "paused";
+  await press("Refresh");
+  // Paused Slack: what becomes of what is sent meanwhile, in the Home's words for Slack.
+  expect(row("Paused").kind).toBe("status");
+  expect(
+    rows().some(
+      (candidate) =>
+        candidate.label ===
+        "Paused: its chats hold their replies until you resume it. Messages sent while this is paused are not delivered.",
+    ),
+  ).toBe(true);
+  await press("Resume");
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.status.set",
+    status: "connected",
+    connectionId,
+  });
+  await press("Link my account");
+  expect(commands.at(-1)).toMatchObject({ type: "channel.me.link", accountId });
+  const { Alert } = await import("react-native");
+  await press("Remove account");
+  const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
+  expect(vi.mocked(Alert.alert).mock.calls.at(-1)?.[1]).toContain("Every chat on it ends");
+  await act(async () => buttons?.find((button) => button.style === "destructive")?.onPress?.());
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.status.set",
+    status: "revoked",
+    connectionId,
+  });
+  await press("iMessage");
+  await input("Your iMessage addresses, separated by commas", "owner@example.com");
+  await press("Connect");
+  expect(commands.at(-1)).toMatchObject({ type: "channel.connection.computer.create" });
+  await press("Cancel");
+  await press("Fix setup");
+  await input("Bot user OAuth token", "replacement");
+  await input("App-level token", "replacement-app");
+  await press("Replace credentials");
+  expect(commands.at(-1)).toMatchObject({
+    type: "channel.connection.credentials.replace",
+    connectionId,
+    credentials: { botToken: "replacement", appToken: "replacement-app" },
+  });
+  // Nothing a person reads names the machinery.
+  expect(
+    rows().some((candidate) =>
+      /bridge|lineage|ingress|route|binding|waiting/iu.test(
+        `${candidate.label} ${"detail" in candidate ? (candidate.detail ?? "") : ""}`,
+      ),
+    ),
+  ).toBe(false);
+});
+
 it.each(["ios", "android"])(
-  "sends every Messaging mutation with revision fences on %s",
+  "shows each account's chats with their state, who is me and the code that links it, on %s",
   async (os) => {
     state.os = os;
-    await open("messaging");
-    const snapshot = host.getSnapshot();
-    const now = new Date().toISOString();
-    const accountId = `cha_${crypto.randomUUID()}`;
-    const connectionId = `con_${crypto.randomUUID()}`;
-    const bindingId = `chb_${crypto.randomUUID()}`;
-    const response = await host.rpc["channels.get"]({});
-    if (!response.ok) throw new Error("Missing messaging catalog");
-    const base = response.data;
-    const data = hostApi["channels.get"].success.parse({
-      ...base,
-      accounts: [
-        {
-          id: accountId,
-          connectionId,
-          provider: "slack",
-          displayName: "Team bot",
-          externalAccountId: "team",
-          handle: null,
-          metadata: {},
-          routingMode: "shared",
-          status: "connected",
-          createdAt: now,
-          updatedAt: now,
-        },
-      ],
-      bindings: [
-        {
-          id: bindingId,
-          accountId,
-          createdBy: snapshot.user!.id,
-          createdAt: now,
-          updatedAt: now,
-          revision: 7,
-          status: "active",
-          selector: {
-            conversationId: "general",
-            conversationType: null,
-            scopeId: null,
-            threadId: null,
-          },
-          accessPolicy: {
-            channels: {
-              scope: "selected",
-              conversationIds: [],
-              sender: { mode: "approved", allowedExternalUserIds: [] },
-            },
-            directMessages: { mode: "owner", allowedExternalUserIds: [] },
-          },
-          executionPolicy: { harness: "default", harnessInstanceId: null },
-        },
-      ],
-      accessGrants: [
-        {
-          accountId,
-          bindingId,
-          externalUserId: "alice",
-          displayName: "Alice",
-          status: "pending",
-          revision: 4,
-          requestedAt: now,
-          decidedAt: null,
-          decidedBy: null,
-        },
-      ],
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    await host.load();
+    state.host = host;
+    const element = document.createElement("div");
+    root = createRoot(element);
+    await act(async () =>
+      root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+    );
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Slack · #team")).toBe(true));
+    const chat = row("Slack · #team");
+    expect(chat.kind === "button" && chat.detail).toBe(
+      "Paused · its replies are held until it’s back",
+    );
+    if (chat.kind !== "button") throw new Error("Not a button");
+    await act(async () => chat.onPress());
+    expect(state.navigate).toHaveBeenCalledWith("ConnectedAgent", {
+      deploymentId: "deployment",
+      connectionId: "mcn_00000000-0000-4000-8000-0000000000c2",
     });
-    const check = vi.fn(async () => ({
-      ok: true,
-      data: { ready: true, capabilities: [], identity: null, issues: [] },
-    }));
-    const rpc = host.rpc;
-    Object.defineProperty(host, "rpc", {
-      value: new Proxy(rpc, {
-        get(target, key, receiver) {
-          if (key === "channel.connection.check") return check;
-          if (key === "channels.get")
-            return async () => ({ ok: true, data: { ...data, accounts: [...data.accounts] } });
-          return Reflect.get(target, key, receiver);
-        },
-      }),
+    // iMessage, paused: what is sent meanwhile arrives when it is back.
+    expect(
+      rows().some(
+        (candidate) =>
+          candidate.label ===
+          "Paused: its chats hold their replies until you resume it. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late.",
+      ),
+    ).toBe(true);
+    expect(row("Needs attention").kind).toBe("status");
+    const me = rows().find((candidate) => candidate.label === "You on Slack");
+    expect(me && "detail" in me ? me.detail : null).toBe(
+      "Tim is you. Only messages from it give your chats work. Linking another account replaces Tim as you.",
+    );
+    const sections = [...state.pages.values()].flatMap((page) => page.sections);
+    expect(
+      sections.some((section) =>
+        section.footer?.text?.startsWith("Add a chat from Opensteer on your computer"),
+      ),
+    ).toBe(true);
+    await act(async () => {
+      const link = rows().find((candidate) => candidate.label === "Link another account");
+      if (link?.kind === "button") link.onPress();
     });
-    await press("Refresh");
-    const commands: Parameters<HostClient["dispatch"]>[0][] = [];
-    vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
-      commands.push(command);
-      throw new Error("Keep the current state");
-    });
-    await press("Check connection");
-    expect(check).toHaveBeenCalledWith({ connectionId });
-    await press("Pause");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.status.set",
-      connectionId,
-      status: "paused",
-    });
-    data.accounts[0]!.status = "paused";
-    await press("Refresh");
-    await press("Resume");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.status.set",
-      status: "connected",
-      connectionId,
-    });
-    await input("Conversation ID", "support");
-    await press("Add route");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.binding.create",
-      accountId,
-      selector: { conversationId: "support" },
-    });
-    for (const label of [
-      "Direct messages: approved",
-      "Channel senders: anyone",
-      "Channels: all",
-      "✓ Channels: selected",
-      "Channels: off",
-    ]) {
-      await press(label);
-      expect(commands.at(-1)).toMatchObject({
-        type: "channel.binding.update",
-        bindingId,
-        expectedRevision: 7,
-      });
-    }
-    for (const [label, decision] of [
-      ["Approve", "approved"],
-      ["Decline", "declined"],
-      ["Revoke", "revoked"],
-    ]) {
-      await press(label!);
-      expect(commands.at(-1)).toMatchObject({
-        type: "channel.access.review",
-        bindingId,
-        externalUserId: "alice",
-        expectedRevision: 4,
-        decision,
-      });
-    }
-    await press("Remove route");
-    expect(commands.at(-1)).toMatchObject({ type: "channel.binding.revoke", bindingId });
-    const { Alert } = await import("react-native");
-    await press("Remove");
-    const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
-    expect(buttons?.find((button) => button.style === "destructive")).toBeDefined();
-    await act(async () => buttons?.find((button) => button.style === "destructive")?.onPress?.());
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.status.set",
-      status: "revoked",
-      connectionId,
-    });
-    await press("iMessage");
-    await input("Your iMessage addresses, separated by commas", "owner@example.com");
-    await press("Connect");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.computer.create",
-      ownerHandles: ["owner@example.com"],
-    });
-    await press("Cancel");
-    await press("Repair");
-    await input("Bot user OAuth token", "replacement");
-    await input("App-level token", "replacement-app");
-    await press("Replace credentials");
-    expect(commands.at(-1)).toMatchObject({
-      type: "channel.connection.credentials.replace",
-      connectionId,
-      credentials: { botToken: "replacement", appToken: "replacement-app" },
-    });
+    await vi.waitFor(() =>
+      expect(
+        rows().some((candidate) =>
+          /^Send MOCKCODE to Workshop in a direct message from your own Slack account\. It works once, until .+\. Nothing is said in the chat; this page shows your account once it’s linked\.$/u.test(
+            candidate.label,
+          ),
+        ),
+      ).toBe(true),
+    );
   },
 );
 
+it.each(["ios", "android"])("says an account with no chat has none yet, on %s", async (os) => {
+  state.os = os;
+  host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats-empty") });
+  await host.load();
+  state.host = host;
+  root = createRoot(document.createElement("div"));
+  await act(async () =>
+    root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+  );
+  await vi.waitFor(() =>
+    expect(rows().filter((r) => r.label === "No chat on this account yet.")).toHaveLength(3),
+  );
+});
+
 it.each(["ios", "android"])(
-  "fences a retained Messaging Link action after the session stops on %s",
+  "fences a retained Messaging action after the session stops on %s",
   async (os) => {
     state.os = os;
-    await open("messaging");
-    await input("Link code", "ABCDEFGH");
-    const retained = row("Link account");
+    host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    await host.load();
+    state.host = host;
+    root = createRoot(document.createElement("div"));
+    await act(async () =>
+      root!.render(<SettingsMessagingScreen route={{ params: { deploymentId: "deployment" } }} />),
+    );
+    await vi.waitFor(() =>
+      expect(rows().some((r) => r.label === "Link another account")).toBe(true),
+    );
+    const retained = row("Link another account");
     const dispatch = vi.spyOn(host, "dispatch");
     await act(async () => host.connection.stop());
     if (retained.kind !== "button") throw new Error("Missing link action");

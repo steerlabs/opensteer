@@ -21,11 +21,18 @@ import {
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
+import type { ChannelBindingId } from "@opensteer/channel-core";
 import type { StandardCdpAttemptReconciliation } from "@opensteer/protocol/standard-cdp";
-import { sql, type Kysely } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
+import {
+  chatEndReason,
+  chatEndedUnrevoked,
+  connectionActive,
+  liveConnection,
+} from "./connection-liveness.js";
 
 export interface ConnectionCleanup {
   readonly connectionId: string;
@@ -62,7 +69,9 @@ export type LineageAttempt =
   | (ConnectionAttempt<"standard-cdp"> & {
       readonly standardCdpRecovery?: StandardCdpAttemptReconciliation;
     })
-  | ConnectionAttempt<"plugin" | "shared-chrome">;
+  | ConnectionAttempt<"plugin" | "shared-chrome">
+  /** A message to a bridge's chat: written before it is sent, its status is its evidence. */
+  | ConnectionAttempt<"chat">;
 
 export interface ConnectionAttemptStopper {
   stop(
@@ -109,7 +118,8 @@ export async function connectionAttempts(
     }
   >`
     with floor as (
-      select *, revoked_at is not null or expires_at <= now() as disconnected
+      select *, revoked_at is not null
+        or (bridge_account_id is null and expires_at <= now()) as disconnected
       from agent_connections where id = ${connectionId}
     ),
     lineage_runs as (
@@ -252,6 +262,20 @@ export async function connectionAttempts(
       from floor f cross join lateral jsonb_each(f.shared_chrome_attempts) c(id, witness)
       where ${belowFloor(sql`(c.witness->>'grantRevision')::integer`, sql`c.witness->>'mode'`)}
       union all
+      -- A reply or notice to a disconnected bridge's chat: unsent ones are cancelled; one that
+      -- may have left is unknown and counts as ended with contact lost, never sent again.
+      select 'chat', d.id, null, c.thread_id, null, channel.runner_id, null,
+        d.status = 'attempt-started',
+        case when d.status in ('sent', 'dead', 'cancelled', 'unknown') then d.updated_at end,
+        case when d.status = 'unknown' then d.updated_at end, null
+      from bridge_deliveries d join floor f on f.id = d.bridge_id
+      join bridge_conversations c on c.id = d.conversation_id
+      join channel_accounts account on account.id = d.account_id
+      join integration_connections channel on channel.id = account.connection_id
+      where f.disconnected and (
+        d.status in ('pending', 'leased', 'attempt-started', 'retryable-failed')
+        or (d.status = 'unknown' and d.updated_at >= f.cleanup_requested_at))
+      union all
       select 'session', s.id, null, s.thread_id, null, null, null, false, null, null, null
       from agent_sessions s join floor f on f.id = s.connection_id
       where s.status = 'active' and (f.disconnected or f.cleanup_reason = 'narrowed')
@@ -301,7 +325,15 @@ export async function requestExpiredCleanups(
   const candidates = await database
     .selectFrom("agentConnections")
     .select(["id", "revokedAt"])
-    .where((eb) => eb.or([eb("revokedAt", "is not", null), eb("expiresAt", "<=", now)]))
+    .where((eb) =>
+      eb.or([
+        eb("revokedAt", "is not", null),
+        eb.and([eb("bridgeAccountId", "is", null), eb("expiresAt", "<=", now)]),
+        // A chat ends by what it is (its account, its computer, its grant, the organization's
+        // Home), read by the one state; no timer ends it.
+        chatEndedUnrevoked(database, now),
+      ]),
+    )
     .where((eb) => eb.or([eb("cleanupReason", "is", null), eb("cleanupReason", "=", "narrowed")]))
     .orderBy("id")
     .execute();
@@ -309,12 +341,37 @@ export async function requestExpiredCleanups(
     await commitPersonalMutation(database, async (tx) => {
       const row = await tx
         .selectFrom("agentConnections")
-        .select(["id", "revokedAt", "expiresAt", "cleanupReason"])
+        .select([
+          "id",
+          "revokedAt",
+          "expiresAt",
+          "bridgeAccountId",
+          "cleanupReason",
+          "grantRevision",
+          chatEndedUnrevoked(tx, now).as("accountEnded"),
+        ])
         .where("id", "=", candidate.id)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row || (row.cleanupReason && row.cleanupReason !== "narrowed")) return;
-      if (row.revokedAt === null && row.expiresAt > now) return;
+      if (row.accountEnded) {
+        await tx
+          .updateTable("agentConnections")
+          .set({
+            revokedAt: now,
+            grantRevision: row.grantRevision + 1,
+            cleanupReason: "revoked",
+            cleanupRequestedAt: now,
+            cleanupCompletedAt: null,
+            // Why it ended, from the facts that ended it, read now.
+            bridgeEndedBy: chatEndReason(tx),
+          })
+          .where("id", "=", row.id)
+          .execute();
+        await endConvertedRoutes(tx, [row.id], now);
+        return;
+      }
+      if (connectionActive(row, now)) return;
       await tx
         .updateTable("agentConnections")
         .set({
@@ -325,6 +382,45 @@ export async function requestExpiredCleanups(
         .where("id", "=", row.id)
         .execute();
     });
+}
+
+/**
+ * A bridge made from a Messaging route ends that route with it, in the same transaction: the
+ * image before this one, which still answers through routes, never answers through it again.
+ */
+export async function endConvertedRoutes(
+  tx: Transaction<DatabaseSchema>,
+  bridgeIds: readonly string[],
+  now: Date,
+): Promise<void> {
+  if (bridgeIds.length === 0) return;
+  const routes = [
+    ...new Set(
+      (
+        await tx
+          .selectFrom("agentConnections")
+          .select("bridgeFromBindingId")
+          .where("id", "in", bridgeIds)
+          .where("bridgeFromBindingId", "is not", null)
+          .execute()
+      ).map(({ bridgeFromBindingId }) => bridgeFromBindingId as ChannelBindingId),
+    ),
+  ];
+  if (routes.length === 0) return;
+  // The routes in id order, then the change: never one route while holding a later one.
+  await tx
+    .selectFrom("channelBindings")
+    .select("id")
+    .where("id", "in", routes)
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  await tx
+    .updateTable("channelBindings")
+    .set({ status: "revoked", updatedAt: now })
+    .where("id", "in", routes)
+    .where("status", "<>", "revoked")
+    .execute();
 }
 
 export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<string[]> {
@@ -677,18 +773,15 @@ export async function recordConnectionRunHandoff(
   },
 ): Promise<void> {
   await commitPersonalMutation(database, async (tx) => {
+    // The one liveness test: a bridge whose account was paused or removed hands nothing off.
     const connection = await tx
       .selectFrom("agentConnections")
-      .select(["grantRevision", "revokedAt", "expiresAt"])
+      .select("grantRevision")
       .where("id", "=", input.connectionId)
+      .where(liveConnection(tx))
       .forShare()
       .executeTakeFirst();
-    if (
-      !connection ||
-      connection.revokedAt ||
-      connection.expiresAt <= new Date() ||
-      connection.grantRevision !== input.grantRevision
-    )
+    if (!connection || connection.grantRevision !== input.grantRevision)
       throw new Error("The agent connection changed before this Run could be sent");
     const witness = {
       admittedGrantRevision: input.grantRevision,
@@ -804,18 +897,15 @@ export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
   return {
     async open(sessionId: BrowserSessionId, id: string, witness: Witness): Promise<void> {
       await commitPersonalMutation(database, async (tx) => {
+        // Only a live connection opens one: a paused or ended chat opens nothing, by the one
+        // state function.
         const connection = await tx
           .selectFrom("agentConnections")
-          .select(["grantRevision", "revokedAt", "expiresAt"])
+          .select(["grantRevision", liveConnection(tx).as("live")])
           .where("id", "=", witness.connectionId)
           .forShare()
           .executeTakeFirst();
-        if (
-          !connection ||
-          connection.revokedAt ||
-          connection.expiresAt <= new Date() ||
-          connection.grantRevision !== witness.grantRevision
-        )
+        if (!connection || !connection.live || connection.grantRevision !== witness.grantRevision)
           throw new Error("This browser authority has ended");
         const changed = await tx
           .updateTable("browserSessions")
@@ -893,4 +983,42 @@ export async function recoverConnectionCdpAttempts(
         then witness else witness || jsonb_build_object('contactLostAt', now()) end)
       from jsonb_each(b.standard_cdp_attempts) a(id, witness)
     ) where b.standard_cdp_attempts <> '{}'`.execute(database);
+}
+
+/**
+ * Stop one chat attempt of a disconnected bridge: what has not left the Home is cancelled, known
+ * never sent; one whose send began and whose lease ran out may have left, so it is unknown,
+ * which ends it with contact lost. One still in the runtime's hands is waited for.
+ */
+export async function stopChatAttempt(
+  tx: Kysely<DatabaseSchema>,
+  deliveryId: string,
+): Promise<void> {
+  await tx
+    .updateTable("bridgeDeliveries")
+    .set({
+      status: "cancelled",
+      lastError: "Disconnected before it was sent",
+      claimExpiresAt: null,
+      claimOwner: null,
+      claimTokenHash: null,
+      updatedAt: new Date(),
+    })
+    .where("id", "=", deliveryId as never)
+    .where("status", "in", ["pending", "leased", "retryable-failed"])
+    .execute();
+  await tx
+    .updateTable("bridgeDeliveries")
+    .set({
+      status: "unknown",
+      lastError: "Disconnected while it was being sent; it may have arrived",
+      claimExpiresAt: null,
+      claimOwner: null,
+      claimTokenHash: null,
+      updatedAt: new Date(),
+    })
+    .where("id", "=", deliveryId as never)
+    .where("status", "=", "attempt-started")
+    .where("claimExpiresAt", "<", sql<Date>`now()`)
+    .execute();
 }

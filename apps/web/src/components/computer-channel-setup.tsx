@@ -55,7 +55,6 @@ export function ComputerChannelSetup({
         () =>
           hostClient.dispatch({
             idempotencyKey: mutationIdempotencyKey("channel-computer-connection"),
-            ownerHandles,
             provider: provider.provider,
             runnerId,
             type: "channel.connection.computer.create",

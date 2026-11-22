@@ -21,6 +21,7 @@ import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
+import { senderUnlinkedFailure } from "./bridge-admission.js";
 import {
   OpensteerError,
   MessageContentSchema,
@@ -299,10 +300,7 @@ export async function settleFinishChildren(
     const unknown = current.state === "unknown" || (recovering && !unclaimed);
     const requeue = current.policy === "queue" && unclaimed && !delivered && !unknown;
     const stopped =
-      requeue &&
-      stoppedConversation &&
-      (current.authoritySource.kind === "user-session" ||
-        current.authoritySource.kind === "channel-ingress");
+      requeue && stoppedConversation && current.authoritySource.kind === "user-session";
     if (requeue && !stopped)
       await tx.updateTable("messages").set({ runId: null }).where("id", "=", id).execute();
     const row = await tx
@@ -395,12 +393,20 @@ async function stoppedConversationReply(tx: Transaction<DatabaseSchema>, runId: 
     .executeTakeFirstOrThrow();
   if (run.purpose === "voice") return true;
   if (run.replyTarget?.kind !== "channel") return false;
+  // The person's own direct messages to a bridge only they may speak to.
   const conversation = await tx
-    .selectFrom("channelConversations")
-    .select("personalContext")
-    .where("id", "=", ChannelConversationIdSchema.parse(run.replyTarget.conversationId))
+    .selectFrom("bridgeConversations")
+    .innerJoin("agentConnections", "agentConnections.id", "bridgeConversations.bridgeId")
+    .select("bridgeConversations.id")
+    .where(
+      "bridgeConversations.id",
+      "=",
+      ChannelConversationIdSchema.parse(run.replyTarget.conversationId),
+    )
+    .where("bridgeConversations.conversationType", "=", "dm")
+    .where("agentConnections.bridgeSenders", "=", "owner")
     .executeTakeFirst();
-  return conversation?.personalContext === true;
+  return conversation !== undefined;
 }
 
 export function createRunFinishDrain(
@@ -568,6 +574,8 @@ async function finalizeRunOutcome(
     }
   } else if (
     replyTarget?.kind === "channel" &&
+    // A message whose sender stopped being "me" ends without a word to the chat.
+    input.failure?.message !== senderUnlinkedFailure &&
     (input.status !== "interrupted" ||
       !(await transaction
         .selectFrom("commands")
@@ -582,8 +590,8 @@ async function finalizeRunOutcome(
       conversationId: replyTarget.conversationId,
       text:
         input.status === "failed"
-          ? `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the Thread in Opensteer: ${threadUrl}`
-          : `The agent was stopped. Open the Thread in Opensteer: ${threadUrl}`,
+          ? `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the task in Opensteer: ${threadUrl}`
+          : `The agent was stopped. Open the task in Opensteer: ${threadUrl}`,
     });
   }
   await recordPersonWaited(transaction, run.id);

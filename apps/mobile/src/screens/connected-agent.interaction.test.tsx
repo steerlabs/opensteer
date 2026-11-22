@@ -422,3 +422,60 @@ describe("one connected agent on the phone", () => {
     expect(row("end", "disconnect").label).toBe("Disconnect Grok");
   });
 });
+
+describe("a chat on the phone", () => {
+  const chat = (n: number) => `mcn_00000000-0000-4000-8000-0000000000c${n}`;
+  const chats = () => new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+
+  it("shows where a live chat listens, who can give it work, its work with Stop, and Disconnect", async () => {
+    const client = await open(chat(1), chats());
+    expect(row("chat-where", "where").label).toBe("Direct messages to Workshop on Slack");
+    expect(row("chat-speakers", "speakers")).toMatchObject({
+      label: "You, as Tim",
+      detail:
+        "Only messages you send as Tim give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
+    });
+    expect(section("chat-speakers")?.footer?.text).toBe(
+      "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
+    );
+    const stop = vi.spyOn(client, "stopRun").mockResolvedValue(undefined);
+    await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
+    expect(stop).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
+    expect(row("end", "disconnect").label).toBe("Disconnect Slack");
+  });
+
+  it.each([
+    [2, "Messages sent while this is paused are not delivered."],
+    [
+      3,
+      "Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late.",
+    ],
+    [4, "It says: Slack says the token was revoked."],
+  ])(
+    "says what a paused chat holds and what becomes of what is sent to it (chat %i)",
+    async (n, sentence) => {
+      await open(chat(n), chats());
+      expect(status()).toMatchObject({ label: "Paused", tone: "attention" });
+      expect(section("status")?.footer?.text).toContain(sentence);
+      expect(section("end")?.rows[0]?.label).toMatch(/^Disconnect /u);
+    },
+  );
+
+  it("says a reply may have been sent, never that it failed", async () => {
+    await open(chat(4), chats());
+    expect(row("chat-unknown", "unknown").label).toBe(
+      "1 reply may have been sent. Opensteer couldn’t confirm it arrived, so it won’t send it again.",
+    );
+  });
+
+  it("says why an ended chat ended, and offers no Stop, Disconnect or resume", async () => {
+    await open(chat(5), chats());
+    expect(row("chat-ended", "ended").label).toBe(
+      "You disconnected it. To use it again, add the chat again on Messaging.",
+    );
+    const buttons = (state.page?.sections ?? []).flatMap((s) =>
+      s.rows.filter((r) => r.kind === "button").map((r) => r.label),
+    );
+    expect(buttons.filter((label) => /^(Stop|Disconnect|Resume)/u.test(label))).toEqual([]);
+  });
+});

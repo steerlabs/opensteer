@@ -3,17 +3,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readPluginSnapshot, pluginSnapshotDigest } from "@opensteer/agent-plugins";
 import type { AgentGrant, ThreadAccessMode } from "@opensteer/core";
-import { AgentConnectionStore, TriggerStore } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  ChannelStore,
+  TriggerStore,
+  wakeChatQueues,
+} from "@opensteer/database";
 import {
   createStoreFixture,
   describeStore,
+  testMessagingRunnerId,
   testReadyHarnessCatalog,
 } from "@opensteer/database/test-support/store";
-import { CommandDispatchError, type RunnerRegistry } from "@opensteer/orchestration";
+import {
+  CommandDispatchError,
+  ExecutionCoordinator,
+  type RunnerRegistry,
+} from "@opensteer/orchestration";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import type { RunnerCommand } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import {
   packageStillGranted,
   PluginPackageService,
@@ -26,6 +36,7 @@ import {
   queuedRun,
   serveMcp,
 } from "../mcp/connection-caller.test-support.js";
+import { ChannelService } from "../channels/channel-service.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
 
 type Fixture = Awaited<ReturnType<typeof createStoreFixture>>;
@@ -279,6 +290,433 @@ describeStore("a connected agent's authority at the send", (it) => {
         .where("id", "=", occurrence.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "running" });
+  });
+
+  it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("dispatch-paused");
+    const { database, store } = storeFixture;
+    // The fixture's task is the chat's: its next Run works for the bridge.
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the chat" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "dispatch-paused",
+    });
+    if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+    const claimed = await store.claimCommand(queued.command.id, "dispatch-paused");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the Run's command");
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    const sent: RunnerCommand[] = [];
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {} },
+      sent,
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    // Nothing is sent, and the Run is held for its chat rather than failed or retried on a timer.
+    expect(sent).toEqual([]);
+    expect(failure).toBeInstanceOf(CommandDispatchError);
+    expect((failure as CommandDispatchError).disposition).toBe("held");
+  });
+
+  it("holds a chat's Run paused while it is being prepared: no failure, no error, no timer, until the chat is back", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("dispatch-planning");
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the chat" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "dispatch-planning",
+    });
+    if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+    // The person pauses the chat while the Run is being prepared, after the first check.
+    let pauseWhilePlanning = true;
+    const sent: RunnerCommand[] = [];
+    const host = dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      {
+        planning: async () => {
+          if (!pauseWhilePlanning) return;
+          pauseWhilePlanning = false;
+          await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+        },
+      },
+      sent,
+      [],
+    );
+    const errors: unknown[] = [];
+    const timers: number[] = [];
+    let dispatches = 0;
+    let listings = 0;
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async (command, signal) => {
+          dispatches += 1;
+          await host.dispatch(command, signal);
+        },
+      },
+      dispatcherId: "dispatch-planning",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 1_000_000,
+      maxQueuedCommands: 10,
+      store: {
+        claimCommand: (...args) => store.claimCommand(...args),
+        failCommand: (...args) => store.failCommand(...args),
+        markSteerUnknown: (...args) => store.markSteerUnknown(...args),
+        retryCommand: (...args) => store.retryCommand(...args),
+        listPendingCommands: async (...args) => {
+          const listed = await store.listPendingCommands(...args);
+          listings += 1;
+          return listed;
+        },
+      },
+      onDispatchError: (error) => errors.push(error),
+      clock: {
+        now: Date.now,
+        schedule: (callback, milliseconds) => {
+          timers.push(milliseconds);
+          const timer = setTimeout(callback, milliseconds);
+          return () => clearTimeout(timer);
+        },
+      },
+    });
+    const run = () =>
+      database
+        .selectFrom("runs")
+        .innerJoin("commands", "commands.runId", "runs.id")
+        .select(["runs.status as run", "commands.status as command"])
+        .where("commands.id", "=", queued.command!.id)
+        .executeTakeFirstOrThrow();
+    coordinator.start();
+    try {
+      await vi.waitFor(async () => {
+        expect(dispatches).toBe(1);
+        expect(await run()).toEqual({ run: "queued", command: "pending" });
+      }, 20_000);
+      // Woken again while the chat waits, it is not taken again: nothing is listed for it.
+      expect((await store.listPendingCommands()).map(({ id }) => id)).not.toContain(
+        queued.command.id,
+      );
+      const before = listings;
+      coordinator.wake();
+      await vi.waitFor(() => expect(listings).toBeGreaterThan(before), 20_000);
+      expect(dispatches).toBe(1);
+      expect(sent).toEqual([]);
+      expect(errors).toEqual([]);
+      expect(timers).toEqual([]);
+      // No failure, and nothing said in the chat.
+      expect(
+        await database
+          .selectFrom("bridgeDeliveries")
+          .select("id")
+          .where("bridgeId", "=", bridgeId!)
+          .execute(),
+      ).toEqual([]);
+      // The chat is back: what it held is woken, and the Run is sent.
+      await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+      await wakeChatQueues(database, configured.connection.id);
+      coordinator.wake();
+      await vi.waitFor(() => expect(sent).toHaveLength(1), 20_000);
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop();
+    }
+  });
+
+  for (const back of ["resume", "recovery", "check"] as const)
+    it(`starts a chat's held Run once the chat is back by ${back === "resume" ? "the person's resume" : back === "recovery" ? "the account reporting healthy" : "a successful check of the account"}, woken by the commit, never polled`, async ({
+      storeFixture,
+    }) => {
+      const { bridgeId, configured, fixture } = await storeFixture.createChannelDeliveryFixture(
+        `dispatch-wake-${back}`,
+      );
+      const { database, store } = storeFixture;
+      await database
+        .updateTable("threads")
+        .set({ originConnectionId: bridgeId })
+        .where("id", "=", fixture.thread.id)
+        .execute();
+      const { externalTenantId: tenant } = await database
+        .selectFrom("integrationConnections")
+        .select("externalTenantId")
+        .where("id", "=", configured.connection.id)
+        .executeTakeFirstOrThrow();
+      // The service the person and the messaging runtime reach.
+      const service = new ChannelService({
+        channels: new ChannelStore(database),
+        // A check reaches the account through its messaging runtime, which says it is ready.
+        credentials: { materializeForChannelRuntime: async () => ({}) } as never,
+        relay: {
+          connectedRunnerIds: () => [],
+          isConnected: () => true,
+          request: async (_runnerId: string, operation: string) =>
+            operation === "connection.inspect"
+              ? {
+                  capabilities: [],
+                  identity: {
+                    accountDisplayName: "Workshop",
+                    connectionDisplayName: "Workshop",
+                    externalAccountId: tenant,
+                    externalIdentityId: null,
+                    handle: null,
+                    metadata: {},
+                  },
+                  issues: [],
+                  ready: true,
+                }
+              : {},
+        } as never,
+        store,
+        bridgeTools: () => ({ callTool: async () => ({}) }),
+      });
+      const health = (status: "connected" | "needs-attention") =>
+        service.handleRuntimeRequest(testMessagingRunnerId, {
+          operation: "connection.health",
+          payload: {
+            connectionId: configured.connection.id,
+            detail: status === "connected" ? null : "Signed out",
+            reason: status === "connected" ? null : "credentials",
+            status,
+          },
+        } as never);
+      // Its Run is queued, then the chat is paused before any dispatcher takes it.
+      const queued = await store.enqueueThreadInput({
+        requestedBy: fixture.userId,
+        threadId: fixture.thread.id,
+        content: [{ type: "text", text: "From the chat" }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: `dispatch-wake-${back}`,
+      });
+      if (back === "recovery") await health("needs-attention");
+      else await service.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+      if (!queued.command) throw new Error("Expected a queued Run");
+      const sent: RunnerCommand[] = [];
+      const host = dispatcher(
+        storeFixture,
+        fixture.runnerId,
+        { planning: async () => {} },
+        sent,
+        [],
+      );
+      let listings = 0;
+      const coordinator = new ExecutionCoordinator({
+        dispatcher: {
+          isAvailable: () => true,
+          dispatch: (command, signal) => host.dispatch(command, signal),
+        },
+        dispatcherId: `dispatch-wake-${back}`,
+        maxConcurrentRuns: 1,
+        maxConcurrentTriggerPrograms: 1,
+        maxQueuedBytes: 1_000_000,
+        maxQueuedCommands: 10,
+        store: {
+          claimCommand: (...args) => store.claimCommand(...args),
+          failCommand: (...args) => store.failCommand(...args),
+          markSteerUnknown: (...args) => store.markSteerUnknown(...args),
+          retryCommand: (...args) => store.retryCommand(...args),
+          listPendingCommands: async (...args) => {
+            const listed = await store.listPendingCommands(...args);
+            listings += 1;
+            return listed;
+          },
+        },
+        // No poll: only a wake lists commands again.
+        clock: { now: Date.now, schedule: () => () => undefined },
+      });
+      // The coordinator hears commits as the runtime wires it (runtime.ts, `react`): the Home's
+      // mutation hooks hand it each commit's reactions, and an executionCommandsChanged one wakes
+      // it. Nothing in this test wakes it otherwise.
+      const unhook = storeFixture.observePersonalReactions({
+        notice: () => undefined,
+        reaction: (reaction) => {
+          if (reaction.type === "executionCommandsChanged") coordinator.wake();
+        },
+      });
+      coordinator.start();
+      try {
+        // While the chat is paused it is listed for nothing, and nothing is sent.
+        await vi.waitFor(() => expect(listings).toBeGreaterThan(0), 20_000);
+        expect(sent).toEqual([]);
+        // Back, through the service's own call: the commit's reaction wakes the coordinator.
+        if (back === "resume")
+          await service.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+        else if (back === "recovery") await health("connected");
+        else await service.checkConnection(configured.connection.id, fixture.userId);
+        await vi.waitFor(() => expect(sent).toHaveLength(1), 20_000);
+        expect(sent[0]).toMatchObject({ type: "run.execute" });
+      } finally {
+        await coordinator.stop();
+        unhook();
+        await service.close();
+      }
+    });
+
+  it("holds a chat's Run paused between its listing and its claim: no failure, no notice, its message kept", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("dispatch-claim-race");
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the chat" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "dispatch-claim-race",
+    });
+    if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+    // A dispatcher listed it while the chat was live; then the chat is paused; then it claims.
+    expect((await store.listPendingCommands()).map(({ id }) => id)).toContain(queued.command.id);
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    const claimed = await store.claimCommand(queued.command.id, "dispatch-claim-race");
+    expect(claimed?.terminalFailure).toBeUndefined();
+    expect(claimed).toBeNull();
+    expect(
+      await database
+        .selectFrom("runs")
+        .innerJoin("commands", "commands.runId", "runs.id")
+        .innerJoin("threadInputs", "threadInputs.messageId", "runs.seedInputId")
+        .select(["runs.status as run", "commands.status as command", "threadInputs.state as input"])
+        .where("commands.id", "=", queued.command.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ run: "queued", command: "pending", input: "pending" });
+    expect(
+      await database
+        .selectFrom("bridgeDeliveries")
+        .select("id")
+        .where("bridgeId", "=", bridgeId!)
+        .execute(),
+    ).toEqual([]);
+    // Claiming the next command for its computer leaves it out, as the listing does.
+    expect(await store.claimNextCommand(fixture.environmentId, "dispatch-claim-race")).toBeNull();
+    expect((await store.listPendingCommands()).map(({ id }) => id)).not.toContain(
+      queued.command.id,
+    );
+  });
+
+  it("holds an automation of a paused chat: it neither fails nor piles up, and is listed again when the chat is back", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("dispatch-automation");
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const triggers = new TriggerStore(database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.thread.id,
+      createdBy: fixture.userId,
+      idempotencyKey: "dispatch-automation",
+      name: "Every minute",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default () => {}",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "* * * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const due = () =>
+      database
+        .updateTable("triggers")
+        .set({ nextFireAt: new Date(Date.now() - 60_000) })
+        .where("id", "=", trigger.id)
+        .execute();
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    await due();
+    await triggers.claimDueSchedules(new Date());
+    // Still active: a pause is not an end.
+    expect(
+      await database
+        .selectFrom("triggers")
+        .select("status")
+        .where("id", "=", trigger.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "active" });
+    // Due again and again while it waits: one occurrence is kept, however long the pause.
+    await due();
+    await triggers.claimDueSchedules(new Date());
+    const occurrences = await database
+      .selectFrom("triggerOccurrences")
+      .select(["id", "status", "commandId"])
+      .where("triggerId", "=", trigger.id)
+      .execute();
+    expect(occurrences).toHaveLength(1);
+    const [occurrence] = occurrences;
+    // Held: not listed while the chat waits, and if taken anyway it is held, not failed.
+    expect((await store.listPendingCommands()).map(({ id }) => id)).not.toContain(
+      occurrence!.commandId,
+    );
+    const claimed = await store.claimCommand(occurrence!.commandId, "dispatch-automation");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {} },
+      [],
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect((failure as CommandDispatchError).disposition).toBe("held");
+    await store.retryCommand(occurrence!.commandId, failure);
+    expect(
+      await database
+        .selectFrom("triggerOccurrences")
+        .select("status")
+        .where("id", "=", occurrence!.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "pending" });
+    // Back: it is listed again, to run once.
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+    expect((await store.listPendingCommands()).map(({ id }) => id)).toContain(
+      occurrence!.commandId,
+    );
   });
 
   it("ends a connected Run locally when revoke wins before its handoff stamp", async ({

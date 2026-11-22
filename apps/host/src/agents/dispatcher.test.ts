@@ -161,30 +161,25 @@ describe("HostCommandDispatcher Request responses", () => {
   });
 });
 describe("HostCommandDispatcher steering", () => {
-  it("does not send an external steer when access was revoked after claim", async () => {
+  it("never sends a message a chat queued before the update", async () => {
     const runnersDispatch = vi.fn(async () => undefined);
-    const dispatchChannelCommand = vi.fn(async () => {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before dispatch",
-      });
-    });
-    const dispatcher = steerDispatcher({
-      dispatchChannelCommand,
-      runnersDispatch,
-      refuseSteer: vi.fn(async () => undefined),
-      succeedCommand: vi.fn(async () => undefined),
-    });
+    const refuseSteer = vi.fn(async () => undefined);
+    const succeedCommand = vi.fn(async () => undefined);
+    const dispatcher = steerDispatcher({ runnersDispatch, refuseSteer, succeedCommand });
     const command = {
       ...steerCommand(),
       authoritySource: {
         kind: "channel-ingress",
       },
     };
-    await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    expect(dispatchChannelCommand).toHaveBeenCalledWith(command.id, expect.any(Function));
+    await dispatcher.dispatch(command, new AbortController().signal);
+    // Refused through the inbox, which cancels the message; it never reaches the Runner.
+    expect(refuseSteer).toHaveBeenCalledWith(
+      command.id,
+      "Messages from before the update are not run.",
+      undefined,
+    );
+    expect(succeedCommand).not.toHaveBeenCalled();
     expect(runnersDispatch).not.toHaveBeenCalled();
   });
   it.each([undefined, "request-pending"])(
@@ -1122,7 +1117,6 @@ describe("HostCommandDispatcher run planning", () => {
   );
 });
 function steerDispatcher(input: {
-  readonly dispatchChannelCommand?: OpensteerStore["dispatchChannelCommand"];
   readonly refuseSteer: OpensteerStore["refuseSteer"];
   readonly runnersDispatch: () => Promise<undefined>;
   readonly succeedCommand: OpensteerStore["succeedCommand"];
@@ -1146,7 +1140,6 @@ function steerDispatcher(input: {
       dispatch: input.runnersDispatch,
     } as never,
     store: {
-      dispatchChannelCommand: input.dispatchChannelCommand,
       loadSteerDispatchInput: async () => ({
         message: steerMessage(),
         runId: createId("run"),

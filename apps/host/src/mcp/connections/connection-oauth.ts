@@ -474,7 +474,7 @@ export class ConnectionOAuth {
     if (!(await this.store.activate(pending.connectionId, credentialHash(credential))))
       throw new ConnectionOAuthError("invalid_grant");
     const connection = await this.store.authenticate(credentialHash(credential), resource);
-    if (!connection) throw new ConnectionOAuthError("invalid_grant");
+    if (!connection?.expiresAt) throw new ConnectionOAuthError("invalid_grant");
     return {
       access_token: credential,
       token_type: "Bearer",

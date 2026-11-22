@@ -1153,7 +1153,17 @@ export async function revokeRunner(
         };
 
         // A messaging service's accounts may move to another; a channel pinned
-        // to this computer went with its app connection above.
+        // to this computer went with its app connection above. Each set of rows is
+        // locked in id order before it changes.
+        await transaction
+          .selectFrom("integrationConnections")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("connectionKind", "=", "channel")
+          .where("transportKind", "!=", "computer")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
         await transaction
           .updateTable("integrationConnections")
           .set({
@@ -1165,7 +1175,37 @@ export async function revokeRunner(
           .where("transportKind", "!=", "computer")
           .execute(databaseOperationOptions());
         await transaction
+          .selectFrom("channelDeliveries")
+          .select("id")
+          .where("claimOwner", "=", runnerId)
+          .where("status", "=", "leased")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
+        await transaction
           .updateTable("channelDeliveries")
+          .set({
+            claimExpiresAt: null,
+            claimOwner: null,
+            claimTokenHash: null,
+            nextAttemptAt: sql<Date>`statement_timestamp()`,
+            status: "pending",
+            updatedAt: revokedAt,
+          })
+          .where("claimOwner", "=", runnerId)
+          .where("status", "=", "leased")
+          .execute(databaseOperationOptions());
+        // A bridge's reply this computer held but never started goes to whichever takes over.
+        await transaction
+          .selectFrom("bridgeDeliveries")
+          .select("id")
+          .where("claimOwner", "=", runnerId)
+          .where("status", "=", "leased")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
+        await transaction
+          .updateTable("bridgeDeliveries")
           .set({
             claimExpiresAt: null,
             claimOwner: null,

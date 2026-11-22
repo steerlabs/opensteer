@@ -12,6 +12,7 @@ import type {
   AgentConnectionConsent,
   AgentConnectionIdentityPresentation,
 } from "@opensteer/protocol";
+import { channelProviderCatalog, type ChannelDashboard } from "@opensteer/channel-core";
 
 /**
  * Connected agents a preview opens on (`?mock-agents`): one per state the list and an
@@ -20,7 +21,10 @@ import type {
  * other scenes change only who asks and which Chrome can share tabs: `verified` (a verified
  * platform, no Chrome paired), `pair` (a verified pairing, two Chromes), `repair` (a Chrome
  * that must be paired again), `local` (an app on this computer), `long` (long names) and
- * `changed` (verified when read, no longer by the time the person allows it).
+ * `changed` (verified when read, no longer by the time the person allows it). `chats` adds
+ * chats in each state a person can see (live, paused by the person on Slack and on iMessage,
+ * paused because its account needs attention, ended), with the Messaging accounts they speak
+ * through; `chats-empty` has those accounts and no chat yet.
  */
 export const mockConnectedAgentScenes = [
   "seeded",
@@ -31,6 +35,8 @@ export const mockConnectedAgentScenes = [
   "local",
   "long",
   "changed",
+  "chats",
+  "chats-empty",
 ] as const;
 export type MockConnectedAgentScene = (typeof mockConnectedAgentScenes)[number];
 
@@ -167,11 +173,221 @@ function agent(input: {
 /** Who a mock agent is, as a Home records and presents it, for fixtures elsewhere. */
 export const mockAgentIdentity = { verifiedPlatform, selfNamed } as const;
 
+const slackAccount = "cha_00000000-0000-4000-8000-0000000000c1";
+const slackChannel = "con_00000000-0000-4000-8000-0000000000c1";
+const messagesAccount = "cha_00000000-0000-4000-8000-0000000000c2";
+const messagesChannel = "con_00000000-0000-4000-8000-0000000000c2";
+const pagerAccount = "cha_00000000-0000-4000-8000-0000000000c3";
+const pagerChannel = "con_00000000-0000-4000-8000-0000000000c3";
+
+/** The Messaging accounts the mock chats speak through, as `channels.get` lists them. */
+function mockChannels(now: Date): ChannelDashboard {
+  const at = new Date(now.getTime() - 20 * day).toISOString();
+  const channel = (
+    id: string,
+    provider: "slack" | "imessage",
+    displayName: string,
+    status: "connected" | "paused" | "needs-attention",
+    statusDetail: string | null = null,
+  ) => ({
+    capabilities: [],
+    connectionMethod: provider === "imessage" ? ("computer" as const) : ("api-key" as const),
+    createdAt: at,
+    displayName,
+    externalIdentityId: null,
+    externalTenantId: null,
+    id: id as never,
+    ownerUserId: mockUserId,
+    provider,
+    status,
+    statusDetail,
+    statusReason: status === "needs-attention" ? ("credentials" as const) : null,
+    transportKind: provider === "imessage" ? ("computer" as const) : ("socket" as const),
+    updatedAt: at,
+  });
+  const account = (
+    id: string,
+    connectionId: string,
+    provider: "slack" | "imessage",
+    displayName: string,
+    status: "connected" | "paused" | "needs-attention",
+  ) => ({
+    connectionId: connectionId as never,
+    createdAt: at,
+    displayName,
+    externalAccountId: `T-${id.slice(-2)}`,
+    handle: null,
+    id: id as never,
+    metadata: {},
+    provider,
+    routingMode: "dedicated" as const,
+    status,
+    updatedAt: at,
+  });
+  return {
+    accounts: [
+      account(slackAccount, slackChannel, "slack", "Workshop", "connected"),
+      account(messagesAccount, messagesChannel, "imessage", "tim@example.com", "paused"),
+      account(pagerAccount, pagerChannel, "slack", "On-call", "needs-attention"),
+    ],
+    connections: [
+      channel(slackChannel, "slack", "Workshop", "connected"),
+      channel(messagesChannel, "imessage", "Messages on Studio Mac", "paused"),
+      channel(
+        pagerChannel,
+        "slack",
+        "On-call",
+        "needs-attention",
+        "Slack says the token was revoked.",
+      ),
+    ],
+    deliveriesNeedingAttention: 0,
+    me: [
+      { accountId: slackAccount as never, displayName: "Tim", externalUserId: "U-TIM" },
+      {
+        accountId: messagesAccount as never,
+        displayName: "+1 415 555 0100",
+        externalUserId: "+14155550100",
+      },
+    ],
+    providers: [...channelProviderCatalog],
+  };
+}
+
+/** Chats in each state a person can see, each a connection with a grant like any agent. */
+function mockChats(now: Date): readonly AgentConnection[] {
+  const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
+  const chat = (input: {
+    readonly n: number;
+    readonly label: string;
+    readonly provider: string;
+    readonly accountId: string;
+    readonly accountName: string;
+    readonly channelConnectionId: string;
+    readonly conversation?: { readonly id: string; readonly name: string };
+    readonly senders: "owner" | "anyone";
+    readonly me?: { readonly displayName: string; readonly externalUserId: string } | null;
+    readonly state: NonNullable<AgentConnection["state"]>;
+    readonly bridge?: Partial<NonNullable<AgentConnection["bridge"]>>;
+  }): AgentConnection => ({
+    ...agent({
+      n: input.n,
+      label: input.label,
+      origin: "",
+      accessMode: "approval-required",
+      grant: tasksOnly,
+      state: input.state,
+      lastUsedMinutes: 25,
+      now,
+    }),
+    id: `mcn_00000000-0000-4000-8000-0000000000c${input.n}`,
+    clientName: input.provider,
+    client: { fingerprint: null, redirectOrigin: null },
+    expiresAt: null,
+    bridge: {
+      accountId: input.accountId,
+      provider: input.provider,
+      conversationId: input.conversation?.id ?? null,
+      senders: input.senders,
+      accountName: input.accountName,
+      conversationName: input.conversation?.name ?? null,
+      channelConnectionId: input.channelConnectionId,
+      me: input.me ?? null,
+      unknownReplies: 0,
+      tasks: [],
+      ...input.bridge,
+    },
+  });
+  const tim = { displayName: "Tim", externalUserId: "U-TIM" };
+  return [
+    chat({
+      n: 1,
+      label: "Slack",
+      provider: "Slack",
+      accountId: slackAccount,
+      accountName: "Workshop",
+      channelConnectionId: slackChannel,
+      senders: "owner",
+      me: tim,
+      state: "active",
+      bridge: {
+        tasks: [
+          {
+            id: "thr_00000000-0000-4000-8000-0000000000c1",
+            title: "Summarize my week",
+            running: true,
+          },
+          {
+            id: "thr_00000000-0000-4000-8000-0000000000c2",
+            title: "Book the dentist",
+            running: false,
+          },
+        ],
+      },
+    }),
+    chat({
+      n: 2,
+      label: "Slack · #team",
+      provider: "Slack",
+      accountId: slackAccount,
+      accountName: "Workshop",
+      channelConnectionId: slackChannel,
+      conversation: { id: "C-TEAM", name: "#team" },
+      senders: "anyone",
+      state: "paused",
+      bridge: { pausedBy: "you", pauseDetail: null, pausedMessages: "lost" },
+    }),
+    chat({
+      n: 3,
+      label: "iMessage",
+      provider: "iMessage",
+      accountId: messagesAccount,
+      accountName: "tim@example.com",
+      channelConnectionId: messagesChannel,
+      senders: "owner",
+      me: { displayName: "+1 415 555 0100", externalUserId: "+14155550100" },
+      state: "paused",
+      bridge: { pausedBy: "you", pauseDetail: null, pausedMessages: "kept" },
+    }),
+    chat({
+      n: 4,
+      label: "Slack · On-call",
+      provider: "Slack",
+      accountId: pagerAccount,
+      accountName: "On-call",
+      channelConnectionId: pagerChannel,
+      senders: "owner",
+      me: tim,
+      state: "paused",
+      bridge: {
+        pausedBy: "needs-attention",
+        pauseDetail: "Slack says the token was revoked.",
+        pausedMessages: "lost",
+        unknownReplies: 1,
+      },
+    }),
+    chat({
+      n: 5,
+      label: "Slack · #standup",
+      provider: "Slack",
+      accountId: slackAccount,
+      accountName: "Workshop",
+      channelConnectionId: slackChannel,
+      conversation: { id: "C-STANDUP", name: "#standup" },
+      senders: "anyone",
+      state: "stopped",
+      bridge: { endedBy: "you" },
+    }),
+  ];
+}
+
 export function mockConnectedAgents(
   scene: MockConnectedAgentScene,
   now = new Date(),
 ): {
   readonly connections: readonly AgentConnection[];
+  /** The Messaging accounts behind the scene's chats. */
+  readonly channels?: ChannelDashboard;
   readonly connectionConsent?: AgentConnectionConsent;
   readonly chromeTabs?: ChromeTabGrantCatalog;
   readonly connectionConsentChange?: AgentConnectionConsent;
@@ -262,6 +478,8 @@ export function mockConnectedAgents(
     }),
   ];
   if (scene === "expired") return { connections };
+  if (scene === "chats") return { connections: mockChats(now), channels: mockChannels(now) };
+  if (scene === "chats-empty") return { connections: [], channels: mockChannels(now) };
   const chrome = (computerName: string, n: number, paired = true) => ({
     sourceId: BrowserSourceIdSchema.parse(`bsr_00000000-0000-4000-8000-00000000000${n}`),
     computerName,

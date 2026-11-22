@@ -62,6 +62,7 @@ import {
   type Run,
 } from "@opensteer/core";
 import { type InsertObject, type Transaction, sql, type Kysely } from "kysely";
+import { connectionState } from "./connection-liveness.js";
 import {
   jsonValue,
   threadExecutionIsAvailableToUser,
@@ -75,10 +76,6 @@ import {
   returnRunToQueue,
   safeError,
 } from "./store-primitives.js";
-import {
-  channelRunAuthorityIsCurrent,
-  channelInputAuthorityIsCurrent,
-} from "./channel-execution.js";
 import {
   claimConversationBatch,
   claimRunInputBatch,
@@ -103,8 +100,15 @@ import {
   endStoppedUnconfirmedRun,
   finalizeRunTransaction,
 } from "./run-finalization.js";
-import { liveAgentConnection, meetsConnectionFloor, sendEligible } from "./resource-access.js";
+import {
+  connectionWaiting,
+  liveAgentConnection,
+  meetsConnectionFloor,
+  sendEligible,
+} from "./resource-access.js";
 import { lockLineageConnection } from "./thread-caller.js";
+import { senderUnlinkedFailure } from "./bridge-admission.js";
+import { chatSenderMaySpeak } from "./thread-inbox.js";
 import { isWorkHomeDatabase } from "./work-home-context.js";
 
 export type RunnerControlInput =
@@ -315,6 +319,14 @@ async function claimObservedCommand(
         throw error;
       },
     );
+    // A chat paused after this command was listed: its Run is held, pending and queued, with its
+    // message kept, and is listed again when the chat is back. Only an end is terminal.
+    if (
+      !connection &&
+      observed.type === "run.execute" &&
+      (await connectionWaiting(transaction, observed.requestedBy, lineage))
+    )
+      return null;
     if (
       !connection ||
       !agentGrantAllowsTasks(connection.grant) ||
@@ -326,14 +338,19 @@ async function claimObservedCommand(
       if (observed.type === "run.execute") terminalFailureInput = "seed-input";
     }
   }
-  if (
-    run &&
-    observed.type === "run.execute" &&
-    !terminalFailure &&
-    !(await channelRunAuthorityIsCurrent(transaction, run.id))
-  ) {
-    terminalFailure = "Messaging access changed before this Run could start.";
-    terminalFailureInput = "seed-input";
+  // A Run whose message's sender may no longer speak (the person linked "me" to another
+  // identity) ends at its claim, as a queued message is cancelled at its turn: its message is
+  // cancelled with it, and the chat hears nothing (run-finalization reads this failure).
+  if (lineage && run && observed.type === "run.execute" && !terminalFailure && workIsAvailable) {
+    const seed = await transaction
+      .selectFrom("threadInputs")
+      .select(["authoritySource", "connectionId", "requestedBy", "state"])
+      .where("messageId", "=", run.seedInputId)
+      .executeTakeFirst();
+    if (seed && seed.state === "pending" && !(await chatSenderMaySpeak(transaction, seed))) {
+      terminalFailure = senderUnlinkedFailure;
+      terminalFailureInput = "seed-input";
+    }
   }
   if (observed.type === "run.execute" && !terminalFailure && !workIsAvailable) {
     terminalFailure = "The queued work item is no longer available.";
@@ -345,9 +362,6 @@ async function claimObservedCommand(
       .select(["messageId", "runId", "state"])
       .where("steerCommandId", "=", observed.id)
       .executeTakeFirst();
-    if (steer && !(await channelInputAuthorityIsCurrent(transaction, steer.messageId))) {
-      terminalFailure = "Messaging access changed before this message could be delivered.";
-    }
     await lockThreadRow(transaction, run.threadId);
     const currentThread = await transaction
       .selectFrom("threads")
@@ -1204,6 +1218,7 @@ export async function claimNextCommand(
       ])
       .where("commands.environmentId", "=", environmentId)
       .where("commands.status", "=", "pending")
+      .where((expression) => expression.not(chatWorkHeld(transaction)))
       .where((expression) =>
         expression.or([
           expression("commands.type", "!=", "run.execute"),
@@ -1414,99 +1429,6 @@ export async function dispatchRequestResponse(
   return result;
 }
 
-export async function dispatchChannelCommand(
-  database: Kysely<DatabaseSchema>,
-  commandId: CommandRow["id"],
-  send: (beforeAck: () => Promise<void>) => Promise<void>,
-): Promise<SucceededCommand> {
-  const lockIntent = async (transaction: Transaction<DatabaseSchema>) => {
-    const observed = await transaction
-      .selectFrom("commands")
-      .innerJoin("threads", "threads.id", "commands.threadId")
-      .select(["commands.runId", "commands.type", "commands.authoritySource"])
-      .where("commands.id", "=", commandId)
-      .where("commands.status", "=", "dispatched")
-      .executeTakeFirst();
-    if (
-      !observed?.runId ||
-      observed.authoritySource.kind !== "channel-ingress" ||
-      (observed.type !== "run.execute" && observed.type !== "run.steer")
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging command is no longer dispatchable",
-      });
-    }
-    const run = await transaction
-      .selectFrom("runs")
-      .select(["status", "threadId", "requestedBy", "finishIntent"])
-      .where("id", "=", observed.runId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (
-      run.finishIntent !== null ||
-      (observed.type === "run.execute"
-        ? run.status !== "starting"
-        : !["running", "waiting"].includes(run.status))
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging Run is no longer active",
-      });
-    }
-    const steer =
-      observed.type === "run.steer"
-        ? await transaction
-            .selectFrom("threadInputs")
-            .select("messageId")
-            .where("steerCommandId", "=", commandId)
-            .executeTakeFirst()
-        : null;
-    const authorized =
-      observed.type === "run.execute"
-        ? await channelRunAuthorityIsCurrent(transaction, observed.runId)
-        : steer !== undefined &&
-          steer !== null &&
-          (await channelInputAuthorityIsCurrent(transaction, steer.messageId));
-    if (
-      !authorized ||
-      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before dispatch",
-      });
-    }
-    await lockThreadRow(transaction, run.threadId);
-    const command = await transaction
-      .selectFrom("commands")
-      .select("status")
-      .where("id", "=", commandId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (command.status !== "dispatched") {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Messaging command is no longer dispatchable",
-      });
-    }
-  };
-  await commitPersonalMutation(database, async (tx) => {
-    await lockIntent(tx);
-    await stampDispatchIntent(tx, commandId);
-  });
-  let result: SucceededCommand | undefined;
-  await send(async () => {
-    result = await commitPersonalMutation(database, async (tx) => {
-      await lockIntent(tx);
-      return succeedCommandInTransaction(tx, commandId);
-    });
-  });
-  if (!result)
-    throw new OpensteerError({ code: "conflict", message: "Messaging command was not accepted" });
-  return result;
-}
-
 async function stampDispatchIntent(
   transaction: Transaction<DatabaseSchema>,
   commandId: CommandRow["id"],
@@ -1523,42 +1445,70 @@ export async function listPendingCommands(
   database: Kysely<DatabaseSchema>,
   limit = 500,
 ): Promise<readonly PendingCommandRow[]> {
-  return database
-    .selectFrom("commands")
-    .leftJoin("threads", "threads.id", "commands.threadId")
-    .leftJoin("runs", "runs.id", "commands.runId")
-    .selectAll("commands")
-    .select("runs.harnessInstanceId as runHarnessInstanceId")
-    .where("commands.status", "=", "pending")
-    .where("runs.finishIntent", "is", null)
-    .where((expression) =>
-      expression.or([
-        expression("commands.type", "!=", "run.execute"),
-        expression.and([
-          expression("threads.inputQueuePaused", "=", false),
-          expression("runs.status", "=", "queued"),
+  return (
+    database
+      .selectFrom("commands")
+      .leftJoin("threads", "threads.id", "commands.threadId")
+      .leftJoin("runs", "runs.id", "commands.runId")
+      .selectAll("commands")
+      .select("runs.harnessInstanceId as runHarnessInstanceId")
+      .where("commands.status", "=", "pending")
+      .where("runs.finishIntent", "is", null)
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "run.execute"),
+          expression.and([
+            expression("threads.inputQueuePaused", "=", false),
+            expression("runs.status", "=", "queued"),
+          ]),
         ]),
-      ]),
-    )
-    .where((expression) =>
-      expression.or([
-        expression("commands.type", "!=", "run.execute"),
-        expression.not(
-          expression.exists(
-            expression
-              .selectFrom("runs as predecessor")
-              .innerJoin("runs as candidate", "candidate.threadId", "predecessor.threadId")
-              .select("predecessor.id")
-              .whereRef("candidate.id", "=", "commands.runId")
-              .whereRef("predecessor.runOrdinal", "<", "candidate.runOrdinal")
-              .where("predecessor.status", "in", nonTerminalRunStatuses),
+      )
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "run.execute"),
+          expression.not(
+            expression.exists(
+              expression
+                .selectFrom("runs as predecessor")
+                .innerJoin("runs as candidate", "candidate.threadId", "predecessor.threadId")
+                .select("predecessor.id")
+                .whereRef("candidate.id", "=", "commands.runId")
+                .whereRef("predecessor.runOrdinal", "<", "candidate.runOrdinal")
+                .where("predecessor.status", "in", nonTerminalRunStatuses),
+            ),
           ),
-        ),
-      ]),
-    )
-    .orderBy("commands.createdAt", "asc")
-    .limit(Math.min(Math.max(limit, 1), 20_000))
-    .execute();
+        ]),
+      )
+      // A paused chat's work waits for the chat, not for time: it is not listed until it is back.
+      .where((expression) => expression.not(chatWorkHeld(database)))
+      .orderBy("commands.createdAt", "asc")
+      .limit(Math.min(Math.max(limit, 1), 20_000))
+      .execute()
+  );
+}
+/**
+ * The command is a paused chat's work, held until the chat is back (asked of the one state
+ * function): a Run in the chat's lineage, or an automation's run whose lineage is the chat. A
+ * schedule's ticks collapse while one waits (`pendingScheduleOccurrenceExists`), so a pause of
+ * any length keeps at most one. Reads `commands` and the left-joined `runs`.
+ */
+function chatWorkHeld(database: object) {
+  return sql<boolean>`((commands.type = 'run.execute' and runs.connection_id is not null
+      and exists (
+        select 1 from agent_connections
+        where agent_connections.id = runs.connection_id
+          and agent_connections.bridge_account_id is not null
+          and ${connectionState(database)} = 'waiting'))
+    or (commands.type = 'trigger.execute' and exists (
+        select 1 from trigger_occurrences held_occurrence
+        join triggers held_trigger on held_trigger.id = held_occurrence.trigger_id
+        join threads held_anchor on held_anchor.id = held_trigger.anchor_thread_id
+        join agent_connections
+          on agent_connections.id = coalesce(held_occurrence.connection_id,
+            held_trigger.origin_connection_id, held_anchor.origin_connection_id)
+        where held_occurrence.command_id = commands.id
+          and agent_connections.bridge_account_id is not null
+          and ${connectionState(database)} = 'waiting')))`;
 }
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,

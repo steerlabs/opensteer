@@ -17,6 +17,7 @@ import {
   type PersonalRemoteAdministrationStatus,
 } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
+import { connectionStateEnded } from "./connected-agent-view.js";
 import type { HostClient } from "./client.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 import { formatRelativeTime } from "./thread-list-model.js";
@@ -125,7 +126,9 @@ export class ConnectedAgentsClient {
       reconcile: async (connectionId) => {
         const { connections } = await readConnectedAgents(client);
         const row = connections.find((candidate) => candidate.id === connectionId);
-        return !row || row.revokedAt || (row.state !== undefined && row.state !== "active")
+        // Only an ended state proves it: a paused chat, or a state this app does not know, is
+        // not a Disconnect.
+        return !row || row.revokedAt || connectionStateEnded(row.state)
           ? { kind: "confirmed", value: undefined }
           : null;
       },
@@ -186,8 +189,7 @@ export class ConnectedAgentsClient {
     if (connections && this.#revoked.size) {
       for (const id of this.#revoked) {
         const row = connections.find((candidate) => candidate.id === id);
-        if (!row || (row.state !== undefined && row.state !== "active") || row.revokedAt)
-          this.#revoked.delete(id);
+        if (!row || connectionStateEnded(row.state) || row.revokedAt) this.#revoked.delete(id);
       }
     }
     this.#publish({

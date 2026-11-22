@@ -1,9 +1,12 @@
 import { whoLines } from "../thread/agent-session-model.js";
+import { failureWords } from "../ui/client-feedback.js";
 import {
   agentBrowserOptions,
   agentHomeName,
   agentWords,
   workWords,
+  chatFacts,
+  connectedAgentConnected,
   connectedAgentDetail,
   createDedicatedProfile,
   draftFromGrant,
@@ -222,6 +225,15 @@ export function ConnectedAgentController(props: {
           onRemove: remove,
           onScope: changeScope,
           onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
+          onStop: (threadId) =>
+            void host.stopRun(threadId).catch((error: unknown) => {
+              const words = failureWords(error, {
+                label: "stop this task",
+                done: "stopped",
+                happened: "the task was stopped",
+              });
+              if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
+            }),
           onChromeTab: (resource, on) =>
             void save({ draft: toggleDraftResource(current, resource, on) }),
           onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
@@ -267,6 +279,8 @@ export function connectedAgentSections(props: {
   readonly onChromeTab: Parameters<typeof agentGrantSections>[0]["onChromeTab"];
   readonly onTasks: (on: boolean) => void;
   readonly onWatch: (threadId: string) => void;
+  /** Stops a chat's running task; one it can't stop says why. */
+  readonly onStop?: (threadId: string) => void;
   readonly pending: "revoke" | "update" | "remove" | null;
   /** Under a work Home's ceiling the choices wait for it, so none is offered and then refused. */
   readonly workPolicyRead?: boolean;
@@ -275,7 +289,10 @@ export function connectedAgentSections(props: {
   const watchThreadId = detail.live?.threadId;
   const agent = detail.row.identity.label;
   const who = whoLines(detail.row.identity.who, { consent: false });
-  const active = detail.row.phase === "active";
+  // Still connected (active, paused, or a state this app doesn't know): it can be disconnected.
+  const active = connectedAgentConnected(detail.row.phase);
+  // A chat is a connected agent with two facts of its own: where it listens, who may speak.
+  const chat = chatFacts(detail.row.connection, detail.row.phase);
   const disconnectRow = (): NativeSettingsRow => ({
     key: "disconnect",
     kind: "button",
@@ -362,6 +379,69 @@ export function connectedAgentSections(props: {
       },
     },
   ];
+  if (chat) {
+    if (chat.ended)
+      sections.push({
+        key: "chat-ended",
+        title: "",
+        rows: [{ key: "ended", kind: "text", label: chat.ended }],
+      });
+    if (chat.unknownReplies)
+      sections.push({
+        key: "chat-unknown",
+        title: "",
+        rows: [{ key: "unknown", kind: "status", tone: "attention", label: chat.unknownReplies }],
+      });
+    sections.push(
+      {
+        key: "chat-where",
+        title: agentWords("chat.where.title"),
+        rows: [{ key: "where", kind: "text", label: chat.where }],
+      },
+      {
+        key: "chat-speakers",
+        title: agentWords("chat.speakers.title"),
+        rows: [
+          {
+            key: "speakers",
+            kind: "text",
+            label: chat.speakers.title,
+            detail: chat.speakers.detail,
+          },
+        ],
+        footer: { text: chat.fixed },
+      },
+      {
+        key: "chat-tasks",
+        title: agentWords("chat.tasks.title"),
+        rows:
+          chat.tasks.length === 0
+            ? [{ key: "none", kind: "text", label: agentWords("chat.tasks.empty") }]
+            : chat.tasks.flatMap((task): NativeSettingsRow[] => [
+                {
+                  key: task.id,
+                  kind: "button",
+                  label: task.title,
+                  detail: agentWords(task.running ? "chat.tasks.running" : "chat.tasks.done"),
+                  opens: true,
+                  onPress: () => props.onWatch(task.id),
+                },
+                ...(active && task.running && props.onStop
+                  ? [
+                      {
+                        key: `${task.id}-stop`,
+                        kind: "button" as const,
+                        label: agentWords("chat.tasks.stop"),
+                        destructive: true,
+                        disabled: props.busy,
+                        onPress: () => props.onStop?.(task.id),
+                      },
+                    ]
+                  : []),
+              ]),
+      },
+    );
+  }
   if (props.error !== null)
     sections.push({
       key: "error",

@@ -18,6 +18,7 @@ import {
   PluginAgentStore,
   TriggerStore,
   type DatabaseSchema,
+  liveConnection,
 } from "@opensteer/database";
 import type { Transaction } from "kysely";
 import { callerLineage, type AgentCaller } from "../mcp/agent-caller.js";
@@ -395,9 +396,7 @@ export class PluginAuthority {
         .select("id")
         .where("id", "=", caller.connectionId)
         .where("userId", "=", owner)
-        .where("revokedAt", "is", null)
-        .where("tokenHash", "is not", null)
-        .where("expiresAt", ">", new Date())
+        .where(liveConnection(store.database))
         .executeTakeFirst();
       if (!live || (!discovery.has(input.operation) && input.operation !== "resultAccess"))
         return { allowed: false };

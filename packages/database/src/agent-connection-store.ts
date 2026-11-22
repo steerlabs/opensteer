@@ -3,6 +3,7 @@ import { withPersonalTransaction } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   AgentGrantSchema,
+  agentGrantAllowsTasks,
   OpensteerError,
   agentGrantNarrowed,
   everythingAgentGrant,
@@ -31,12 +32,23 @@ import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
 import {
   connectionAttempts,
+  endConvertedRoutes,
   latestConnectionUncertainty,
   outstandingAttempts,
 } from "./connection-disconnect.js";
 import { jsonValue } from "./store-primitives.js";
 import { connectionPolicyMode } from "./work-policy.js";
 import { closeObsoleteAgentOperationRequests } from "./agent-session-store.js";
+import {
+  chatEndReason,
+  chatEndedUnrevoked,
+  connectionState,
+  bridgeStoredExpiry,
+  connectionActive,
+  expiresByTime,
+} from "./connection-liveness.js";
+import type { BridgeEndedBy, BridgeSenders } from "./schema.js";
+import { channelProviderCatalog, type ChannelAccountId } from "@opensteer/channel-core";
 
 interface AgentConnectionEdit {
   readonly connectionId: string;
@@ -46,8 +58,25 @@ interface AgentConnectionEdit {
   readonly grant?: AgentGrant;
 }
 
+/** What a new messaging bridge covers and who may speak to it, chosen on its consent. */
+export interface BridgeConsent {
+  readonly userId: UserId;
+  readonly accountId: ChannelAccountId;
+  /** One named channel or group; absent covers direct messages to the bot or account. */
+  readonly conversation?: { readonly id: string; readonly name: string } | undefined;
+  readonly senders: BridgeSenders;
+  readonly accessMode: AgentConnection["accessMode"];
+  readonly grant: AgentGrant;
+  readonly label?: string | undefined;
+}
+
 export type WorkPolicyConnectionChange = { readonly userId: UserId } & (
-  | { readonly kind: "revoke"; readonly connectionId: string }
+  | {
+      readonly kind: "revoke";
+      readonly connectionId: string;
+      /** Why, for a chat: the organization's policy, or its work Home closing. */
+      readonly endedBy?: BridgeEndedBy;
+    }
   | ({ readonly kind: "update" } & AgentConnectionEdit)
 );
 
@@ -115,6 +144,74 @@ export class AgentConnectionStore {
         })
         .returningAll()
         .executeTakeFirstOrThrow();
+      return view(row, "active");
+    });
+  }
+  /**
+   * A messaging bridge: the same row a connected agent has, reached through a chat. It has no
+   * credential and no expiry, holds `tasks` always, and on a work Home sits under the
+   * organization's ceiling exactly as a connected agent does.
+   */
+  async createBridge(input: BridgeConsent): Promise<AgentConnection> {
+    const grant = AgentGrantSchema.parse(input.grant);
+    assertBridgeGrant(input.senders, input.conversation !== undefined, grant);
+    return commitPersonalMutation(this.database, async (tx) => {
+      await requirePersonalOwner(tx, input.userId);
+      const account = await tx
+        .selectFrom("channelAccounts")
+        .innerJoin(
+          "integrationConnections",
+          "integrationConnections.id",
+          "channelAccounts.connectionId",
+        )
+        .select(["channelAccounts.provider", "channelAccounts.status"])
+        .where("channelAccounts.id", "=", input.accountId)
+        .where("integrationConnections.ownerUserId", "=", input.userId)
+        .where("integrationConnections.status", "!=", "revoked")
+        .executeTakeFirst();
+      if (!account || account.status === "revoked")
+        throw new OpensteerError({
+          code: "not_found",
+          message: "That messaging account is no longer connected.",
+        });
+      const accessMode = await connectionPolicyMode(tx, grant, input.accessMode);
+      await assertGrantable(tx, input.userId, grant);
+      const provider = bridgeProviderLabel(account.provider);
+      const row = await tx
+        .insertInto("agentConnections")
+        .values({
+          id: `mcn_${randomUUID()}`,
+          userId: input.userId,
+          label: (input.label ?? bridgeLabel(provider, input.conversation?.name)).slice(0, 120),
+          clientName: provider,
+          accessMode,
+          resource: bridgeResource,
+          createdAt: this.now(),
+          expiresAt: bridgeStoredExpiry,
+          tokenHash: null,
+          lastUsedAt: null,
+          revokedAt: null,
+          grant: jsonValue(grant),
+          consentVersion: 2,
+          bridgeAccountId: input.accountId,
+          bridgeConversationId: input.conversation?.id ?? null,
+          bridgeSenders: input.senders,
+          bridgeConversationName: input.conversation?.name ?? null,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow()
+        .catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            "constraint" in error &&
+            error.constraint === "agent_connections_bridge_cover"
+          )
+            throw new OpensteerError({
+              code: "conflict",
+              message: "Another chat already answers in this conversation.",
+            });
+          throw error;
+        });
       return view(row, "active");
     });
   }
@@ -213,12 +310,12 @@ export class AgentConnectionStore {
     const { rows } = await sql<{ next: Date | null }>`
       select least(
         (select min(expires_at) from agent_connections
-          where removed_at is null and revoked_at is null
+          where removed_at is null and revoked_at is null and ${expiresByTime}
             and (cleanup_reason is null or cleanup_reason = 'narrowed')),
         (select ${retryAt}::timestamptz where exists (
           select 1 from agent_connections
-          where removed_at is null and cleanup_requested_at is not null
-            and cleanup_completed_at is null
+          where removed_at is null and ((cleanup_requested_at is not null
+            and cleanup_completed_at is null) or ${chatEndedUnrevoked(this.database, this.now())})
         )),
         (select ${this.now()}::timestamptz + (min(expires_at) - clock_timestamp())
           from agent_embedder_assertion_claims)
@@ -235,6 +332,7 @@ export class AgentConnectionStore {
       })
       .where("id", "=", id)
       .where("tokenHash", "is", null)
+      .where("bridgeAccountId", "is", null)
       .where("revokedAt", "is", null)
       .where("expiresAt", ">", this.now())
       .returning("id")
@@ -253,6 +351,7 @@ export class AgentConnectionStore {
         lastUsedAt: now,
       })
       .where("tokenHash", "=", tokenHash)
+      .where("bridgeAccountId", "is", null)
       .where("revokedAt", "is", null)
       .where("expiresAt", ">", now)
       .where(({ exists, selectFrom }) =>
@@ -283,29 +382,47 @@ export class AgentConnectionStore {
     const rows = await this.database
       .selectFrom("agentConnections")
       .selectAll()
+      .select(connectionState(this.database, now).as("connectionState"))
       .where("userId", "=", userId)
       .$if(!options.includeRevoked, (query) =>
-        query.where("revokedAt", "is", null).where("expiresAt", ">", now),
+        query
+          .where("revokedAt", "is", null)
+          .where((eb) => eb.or([eb("bridgeAccountId", "is not", null), eb("expiresAt", ">", now)])),
       )
       .$if(options.includeRevoked === true, (query) => query.where("removedAt", "is", null))
       .orderBy("createdAt", "desc")
       .execute();
+    const facts = await chatFacts(
+      this.database,
+      rows.filter((row) => row.bridgeAccountId !== null).map((row) => row.id),
+    );
     // Derived from the durable cleanup record and what its lineage still holds.
     return Promise.all(
-      rows.map(async (row) => {
-        const active = row.revokedAt === null && row.expiresAt > now;
+      rows.map(async ({ connectionState: chatState, ...row }) => {
+        const view = (input: Selectable<AgentConnectionTable>, state: AgentConnectionState) =>
+          connectionView(input, state, facts.get(row.id));
+        const chat = row.bridgeAccountId !== null;
+        // A chat reads as what it is: live is active, waiting is paused, ended is stopping until
+        // nothing in its lineage is outstanding, then stopped. It never reads as active once it
+        // is not live.
+        const active = chat ? chatState === "live" : connectionActive(row, now);
+        if (chat && chatState === "waiting") return view(row, "paused");
         if (active && row.cleanupRequestedAt === null) return view(row, "active");
         const attempts = await connectionAttempts(this.database, row.id);
         const outstanding = outstandingAttempts(attempts);
         const state = active
           ? "active"
-          : outstanding.some((attempt) => attempt.handedOff)
-            ? "stopping"
-            : outstanding.length === 0
+          : chat
+            ? outstanding.length === 0 && row.revokedAt !== null
               ? "stopped"
-              : row.revokedAt === null
-                ? "expired"
-                : "revoked";
+              : "stopping"
+            : outstanding.some((attempt) => attempt.handedOff)
+              ? "stopping"
+              : outstanding.length === 0
+                ? "stopped"
+                : row.revokedAt === null
+                  ? "expired"
+                  : "revoked";
         return view(
           { ...row, ...(await latestConnectionUncertainty(this.database, row, attempts)) },
           state,
@@ -343,32 +460,62 @@ export class AgentConnectionStore {
     await commitPersonalMutation(this.database, async (tx) => {
       const store = new AgentConnectionStore(tx, this.now);
       const changedIds: string[] = [];
+      const revokedIds: string[] = [];
       for (const change of changes.toSorted((a, b) =>
         a.connectionId.localeCompare(b.connectionId),
       )) {
         const changed =
           change.kind === "revoke"
-            ? await store.revoke(change.userId, change.connectionId)
-            : (await this.#writeUpdate(tx, change.userId, change)).changed;
+            ? await store.revoke(change.userId, change.connectionId, {
+                routes: "later",
+                endedBy: change.endedBy ?? "organization",
+              })
+            : (await this.#writeUpdate(tx, change.userId, change, "organization")).changed;
         if (changed) changedIds.push(change.connectionId);
+        if (changed && change.kind === "revoke") revokedIds.push(change.connectionId);
       }
+      // Every connection first, in id order; then the old routes of the converted chats among
+      // them, in one ordered statement.
+      await endConvertedRoutes(tx, revokedIds, this.now());
       await closeObsoleteAgentOperationRequests(tx, changedIds, this.now());
     });
   }
 
-  async #writeUpdate(tx: Transaction<DatabaseSchema>, userId: UserId, input: AgentConnectionEdit) {
+  async #writeUpdate(
+    tx: Transaction<DatabaseSchema>,
+    userId: UserId,
+    input: AgentConnectionEdit,
+    by: "person" | "organization" = "person",
+  ) {
     await requirePersonalOwner(tx, userId);
-    const current = await tx
+    const found = await tx
       .selectFrom("agentConnections")
       .selectAll()
+      .select(connectionState(tx, this.now()).as("connectionState"))
       .where("id", "=", input.connectionId)
       .where("userId", "=", userId)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (!current || current.revokedAt !== null || current.expiresAt <= this.now())
+    // A chat that ended is edited no more (the organization may still narrow it); a paused
+    // one may be.
+    if (
+      !found ||
+      (found.bridgeAccountId !== null
+        ? found.revokedAt !== null || (by === "person" && found.connectionState === "ended")
+        : !connectionActive(found, this.now()))
+    )
       throw new OpensteerError({
         code: "not_found",
         message: "This connected agent is no longer connected.",
+      });
+    const { connectionState: chatState, ...current } = found;
+    // Who may speak is chosen when a bridge is made and never changes on that row.
+    if ("senders" in input || "bridgeSenders" in input)
+      throw new OpensteerError({
+        code: "bad_request",
+        reason: "bridge-senders-fixed",
+        message:
+          "Who may message a chat connection is chosen when it is set up. Disconnect it and set it up again to change it.",
       });
     if (current.grantRevision !== input.expectedRevision)
       throw new OpensteerError({
@@ -378,6 +525,10 @@ export class AgentConnectionStore {
       });
     const grant = input.grant ? AgentGrantSchema.parse(input.grant) : current.grant;
     if (input.grant) await assertGrantable(tx, userId, grant);
+    // The person chooses only what a bridge may hold. An organization's policy only ever
+    // narrows, and is always written: a bridge it leaves without tasks is not live and ends.
+    if (by === "person" && current.bridgeAccountId !== null && current.bridgeSenders !== null)
+      assertBridgeGrant(current.bridgeSenders, current.bridgeConversationId !== null, grant);
     const accessMode = await connectionPolicyMode(
       tx,
       grant,
@@ -407,7 +558,22 @@ export class AgentConnectionStore {
       .where("id", "=", current.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    return { connection: view(row, "active"), narrowed, changed };
+    return {
+      // As the list reads it: a chat that had ended, or that this edit left without tasks, is
+      // ending; a paused one is paused.
+      connection: view(
+        row,
+        row.bridgeAccountId === null
+          ? "active"
+          : chatState === "ended" || !agentGrantAllowsTasks(grant)
+            ? "stopping"
+            : chatState === "waiting"
+              ? "paused"
+              : "active",
+      ),
+      narrowed,
+      changed,
+    };
   }
   /**
    * Disconnect's durable decision. Inside the personal fence the owner-filtered row is locked
@@ -415,7 +581,11 @@ export class AgentConnectionStore {
    * under a row this sweep later locks), so once this commits no new work in the lineage starts.
    * Idempotent and owner-filtered; a foreign ID discloses nothing. Returns whether it was live.
    */
-  async revoke(userId: UserId, id: string): Promise<boolean> {
+  async revoke(
+    userId: UserId,
+    id: string,
+    options: { readonly routes?: "now" | "later"; readonly endedBy?: BridgeEndedBy } = {},
+  ): Promise<boolean> {
     return commitPersonalMutation(this.database, async (tx) => {
       await requirePersonalOwner(tx, userId);
       const row = await tx
@@ -437,9 +607,13 @@ export class AgentConnectionStore {
           cleanupReason: "revoked",
           cleanupRequestedAt: this.now(),
           cleanupCompletedAt: null,
+          // A chat remembers why it ended; the person disconnecting it is the default.
+          bridgeEndedBy: sql<BridgeEndedBy | null>`case when bridge_account_id is not null
+            then ${options.endedBy ?? "you"} end`,
         })
         .where("id", "=", row.id)
         .execute();
+      if (options.routes !== "later") await endConvertedRoutes(tx, [row.id], this.now());
       return true;
     });
   }
@@ -452,6 +626,7 @@ export class AgentConnectionStore {
         .select([
           "revokedAt",
           "expiresAt",
+          "bridgeAccountId",
           "cleanupRequestedAt",
           "cleanupCompletedAt",
           "acknowledgedUncertaintyAt",
@@ -462,7 +637,7 @@ export class AgentConnectionStore {
         .where("userId", "=", userId)
         .executeTakeFirst();
       if (!row) return;
-      if (row.revokedAt === null && row.expiresAt > this.now())
+      if (connectionActive(row, this.now()))
         throw new OpensteerError({
           code: "conflict",
           message: "Disconnect this agent before removing it.",
@@ -496,7 +671,108 @@ export class AgentConnectionStore {
     });
   }
 }
+/** What a person reads about a chat beside its row: where, who "me" is, why it is paused or ended. */
+interface ChatFacts {
+  readonly accountName: string;
+  readonly channelConnectionId: string;
+  readonly me: { readonly displayName: string; readonly externalUserId: string } | null;
+  readonly pausedBy: "you" | "needs-attention";
+  readonly pauseDetail: string | null;
+  /** What becomes of a message sent while it is paused, from its transport; never promised. */
+  readonly pausedMessages: "kept" | "lost";
+  readonly endedBy: BridgeEndedBy;
+  readonly unknownReplies: number;
+  readonly tasks: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly running: boolean;
+  }[];
+}
+
+/** The chat facts of the listed chats, in one statement; none is read for a connected agent. */
+async function chatFacts(
+  database: Kysely<DatabaseSchema>,
+  chatIds: readonly string[],
+): Promise<ReadonlyMap<string, ChatFacts>> {
+  if (chatIds.length === 0) return new Map();
+  const rows = await database
+    .selectFrom("agentConnections")
+    .innerJoin("channelAccounts", "channelAccounts.id", "agentConnections.bridgeAccountId")
+    .innerJoin(
+      "integrationConnections",
+      "integrationConnections.id",
+      "channelAccounts.connectionId",
+    )
+    .select([
+      "agentConnections.id",
+      "agentConnections.bridgeEndedBy",
+      "channelAccounts.displayName",
+      "channelAccounts.handle",
+      "channelAccounts.provider",
+      "channelAccounts.status as accountStatus",
+      "channelAccounts.connectionId",
+      "integrationConnections.statusDetail",
+      chatEndReason(database).as("endReason"),
+      sql<string | null>`(select me.display_name from channel_identities me
+        where me.account_id = channel_accounts.id and me.status = 'linked'
+          and me.linked_user_id = agent_connections.user_id limit 1)`.as("meName"),
+      sql<string | null>`(select me.external_user_id from channel_identities me
+        where me.account_id = channel_accounts.id and me.status = 'linked'
+          and me.linked_user_id = agent_connections.user_id limit 1)`.as("meId"),
+      sql<number>`(select count(*)::integer from bridge_deliveries unknown
+        where unknown.bridge_id = agent_connections.id and unknown.status = 'unknown')`.as(
+        "unknownReplies",
+      ),
+    ])
+    .where("agentConnections.id", "in", chatIds)
+    .execute();
+  // Each chat's most recent tasks, newest first.
+  const tasks = await database
+    .selectFrom("threads")
+    .select(["id", "title", "status", "originConnectionId"])
+    .where("originConnectionId", "in", chatIds)
+    .where("removedAt", "is", null)
+    .where("parentThreadId", "is", null)
+    .orderBy("updatedAt", "desc")
+    .limit(5 * chatIds.length)
+    .execute();
+  const tasksOf = (id: string) =>
+    tasks
+      .filter((task) => task.originConnectionId === id)
+      .slice(0, 5)
+      .map((task) => ({ id: task.id, title: task.title, running: task.status === "running" }));
+  return new Map(
+    rows.map((row) => [
+      row.id,
+      {
+        accountName: (row.handle ?? row.displayName).slice(0, 160),
+        channelConnectionId: row.connectionId,
+        me:
+          row.meName !== null && row.meId !== null
+            ? { displayName: row.meName.slice(0, 160), externalUserId: row.meId }
+            : null,
+        pausedBy: row.accountStatus === "needs-attention" ? "needs-attention" : "you",
+        pauseDetail: row.accountStatus === "needs-attention" ? row.statusDetail : null,
+        pausedMessages:
+          channelProviderCatalog.find((entry) => entry.provider === row.provider)?.pausedMessages ??
+          "lost",
+        endedBy: row.bridgeEndedBy ?? row.endReason,
+        unknownReplies: row.unknownReplies,
+        tasks: tasksOf(row.id),
+      },
+    ]),
+  );
+}
+
 function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState): AgentConnection {
+  return connectionView(row, state, undefined);
+}
+
+function connectionView(
+  row: Selectable<AgentConnectionTable>,
+  state: AgentConnectionState,
+  chat: ChatFacts | undefined,
+): AgentConnection {
   let redirectOrigin: string | null = null;
   try {
     redirectOrigin = row.redirectUri ? new URL(row.redirectUri).origin : null;
@@ -532,8 +808,81 @@ function view(row: Selectable<AgentConnectionTable>, state: AgentConnectionState
       : {}),
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
-    expiresAt: row.expiresAt.toISOString(),
+    // A bridge does not expire; what its row stores there is never shown.
+    expiresAt: row.bridgeAccountId === null ? row.expiresAt.toISOString() : null,
+    ...(row.bridgeAccountId !== null && row.bridgeSenders !== null
+      ? {
+          bridge: {
+            accountId: row.bridgeAccountId,
+            provider: row.clientName,
+            conversationId: row.bridgeConversationId,
+            senders: row.bridgeSenders,
+            ...(row.bridgeNotice ? { notice: row.bridgeNotice } : {}),
+            conversationName: row.bridgeConversationName,
+            ...(chat
+              ? {
+                  accountName: chat.accountName,
+                  channelConnectionId: chat.channelConnectionId,
+                  me: chat.me,
+                  unknownReplies: chat.unknownReplies,
+                  tasks: [...chat.tasks],
+                  ...(state === "paused"
+                    ? {
+                        pausedBy: chat.pausedBy,
+                        pauseDetail: chat.pauseDetail,
+                        pausedMessages: chat.pausedMessages,
+                      }
+                    : {}),
+                  ...(state === "stopping" || state === "stopped" ? { endedBy: chat.endedBy } : {}),
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
+}
+
+/** The resource a bridge's row names where an MCP connection names its resource URL. */
+export const bridgeResource = "opensteer:bridge";
+
+function bridgeProviderLabel(provider: string): string {
+  return channelProviderCatalog.find((entry) => entry.provider === provider)?.label ?? provider;
+}
+
+function bridgeLabel(provider: string, conversation: string | undefined): string {
+  return conversation ? `${provider} · ${conversation}` : provider;
+}
+
+/**
+ * What a bridge may hold: `tasks` always; with anyone in its one conversation speaking, only
+ * `tasks` and selected plugins. Direct messages are always "only me".
+ */
+export function assertBridgeGrant(
+  senders: BridgeSenders,
+  coversOneConversation: boolean,
+  grant: AgentGrant,
+): void {
+  if (grant.scope === "selected" && !grant.tasks)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "A chat can only ask your agents to work, so it always needs tasks.",
+    });
+  if (senders !== "anyone") return;
+  if (!coversOneConversation)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Direct messages answer only you.",
+    });
+  if (
+    grant.scope === "everything" ||
+    grant.resources.some((resource) => resource.kind !== "plugin")
+  )
+    throw new OpensteerError({
+      code: "bad_request",
+      reason: "bridge-anyone-grant",
+      message:
+        "When anyone in the conversation can message it, it can use only tasks and the plugins you choose.",
+    });
 }
 
 /**

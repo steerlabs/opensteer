@@ -66,6 +66,7 @@ import {
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import {
+  lineagePersonalContext,
   liveDelegatingConnection,
   meetsConnectionFloor,
   sendEligible,
@@ -81,7 +82,9 @@ import type {
 import { admitThreadExecution } from "./execution-authority.js";
 import { isFinalScheduledOccurrence, recordAutomationFailure } from "./automation-failure-store.js";
 import { runFromRow } from "./thread-row-mappers.js";
-import { createThreadInTransaction, getThreadForOwner } from "./thread-store.js";
+import { createThreadInTransaction, readTask } from "./thread-store.js";
+import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js";
+import { connectionState } from "./connection-liveness.js";
 import { assertDelegationDepth } from "./thread-lineage.js";
 import type { Thread } from "@opensteer/core";
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
@@ -357,7 +360,14 @@ export async function createTriggerInTransaction(
   const nextFireAt =
     !managed?.paused && source.kind === "schedule" ? firstTriggerFireAt(source.schedule) : null;
   // An automation works for whoever defined it: the authenticated actor's connection, if any.
-  const originConnectionId = input.actorConnectionId ?? null;
+  // One the person makes on a task without their personal context (from a chat anyone may
+  // speak in) works in that task's lineage, so what its program starts never gains it.
+  const originConnectionId =
+    input.actorConnectionId ??
+    (anchor.originConnectionId !== null &&
+    !(await lineagePersonalContext(transaction, anchor.originConnectionId))
+      ? anchor.originConnectionId
+      : null);
   await transaction
     .insertInto("triggers")
     .values({
@@ -806,6 +816,16 @@ export class TriggerStore {
       return triggerFromRow(updated);
     });
   }
+  /** The command runs an automation whose chat is paused: its work is held until it is back. */
+  async commandChatWaiting(commandId: CommandId): Promise<boolean> {
+    const trigger = await this.#database
+      .selectFrom("triggerOccurrences")
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .select(["triggers.anchorThreadId", "triggers.originConnectionId"])
+      .where("triggerOccurrences.commandId", "=", commandId)
+      .executeTakeFirst();
+    return trigger ? triggerChatWaiting(this.#database, trigger) : false;
+  }
   async listForOwner(input: {
     readonly anchorThreadId?: ThreadId;
     readonly limit?: number;
@@ -813,6 +833,8 @@ export class TriggerStore {
     readonly systemRole?: TriggerSystemRole;
     /** Only the automations in one connected agent's lineage. */
     readonly originConnectionId?: string;
+    /** Who reads: a memory pass's lineage sees only automations with personal context. */
+    readonly reader: TaskReader;
   }): Promise<readonly TriggerSummary[]> {
     await requirePersonalOwner(this.#database, input.ownerId);
     let query = this.#database
@@ -821,6 +843,7 @@ export class TriggerStore {
       .selectAll("triggers")
       .select("threads.title as anchorThreadTitle")
       .where("triggers.createdBy", "=", input.ownerId)
+      .$if(input.reader.kind === "work", (q) => q.where(automationReaderSees(input.reader)))
       .$if(input.originConnectionId !== undefined, (q) =>
         q.where("triggers.originConnectionId", "=", input.originConnectionId!),
       );
@@ -1260,19 +1283,24 @@ export class TriggerStore {
     triggerId: TriggerId,
     ownerId: UserId,
     occurrenceLimit: number,
+    /** Who reads: one a memory pass's lineage may not read is null, as a missing one. */
+    reader: TaskReader,
   ): Promise<TriggerDetail | null> {
     await requirePersonalOwner(this.#database, ownerId);
     let query = this.#database
       .selectFrom("triggers")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .selectAll("triggers")
-      // The author is named only when the reader could reach that Thread itself.
+      // The author is named only when the reader could reach that Thread itself, by the one rule.
       .leftJoin("threads as authorThread", (join) =>
-        join.onRef("authorThread.id", "=", "triggers.createdByThreadId"),
+        join
+          .onRef("authorThread.id", "=", "triggers.createdByThreadId")
+          .on(readerSees(reader, sql.ref("authorThread.origin_connection_id"))),
       )
       .select(["threads.title as anchorThreadTitle", "authorThread.title as createdByThreadTitle"])
       .where("triggers.id", "=", triggerId)
-      .where("triggers.createdBy", "=", ownerId);
+      .where("triggers.createdBy", "=", ownerId)
+      .$if(reader.kind === "work", (q) => q.where(automationReaderSees(reader)));
     const row = await query.executeTakeFirst();
     if (!row) return null;
     const { anchorThreadTitle, createdByThreadTitle, ...trigger } = row;
@@ -1309,6 +1337,9 @@ export class TriggerStore {
               "triggerOccurrences.causalChainId",
               "runs.causalChainId",
             )
+            .$if(reader.kind === "work", (q) =>
+              q.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
+            )
             .selectAll("runs")
             .select(["threads.title as threadTitle", "triggerOccurrences.id as occurrenceId"])
             .distinct()
@@ -1334,6 +1365,9 @@ export class TriggerStore {
               "triggerOccurrences",
               "triggerOccurrences.causalChainId",
               "threadInputs.causalChainId",
+            )
+            .$if(reader.kind === "work", (q) =>
+              q.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
             )
             .selectAll("runs")
             .select(["threads.title as threadTitle", "triggerOccurrences.id as occurrenceId"])
@@ -1363,7 +1397,7 @@ export class TriggerStore {
     const parsed = revisionFromRow(revision);
     return {
       activation: activation ? watchActivationFromRow(activation) : null,
-      anchorThread: await getThreadForOwner(this.#database, trigger.anchorThreadId, ownerId),
+      anchorThread: await readTask(this.#database, reader, trigger.anchorThreadId, ownerId),
       anchorThreadTitle,
       createdByThreadTitle,
       downstreamRuns: downstreamRunRows.slice(0, 100).map((row) => ({
@@ -1645,7 +1679,12 @@ export class TriggerStore {
       ): Promise<TriggerOccurrence | undefined> => {
         if (!trigger.nextFireAt) return undefined;
         let occurrence: TriggerOccurrence | undefined;
-        if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
+        // A chat that is only paused keeps its automation: the tick is enqueued and held with the
+        // chat's work (ticks collapse while one waits), and runs once when the chat is back.
+        if (
+          !(await triggerExecutionAuthorityAvailable(transaction, trigger)) &&
+          !(await triggerChatWaiting(transaction, trigger))
+        ) {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
           // condition.
@@ -2346,10 +2385,11 @@ async function requireAnchorThread(
 ): Promise<{
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
+  readonly originConnectionId: string | null;
 }> {
   const anchor = await transaction
     .selectFrom("threads")
-    .select(["purpose", "doneAt", "status"])
+    .select(["purpose", "doneAt", "status", "originConnectionId"])
     .where("id", "=", threadId)
     .executeTakeFirst();
   if (
@@ -2371,6 +2411,7 @@ async function requireAnchorThread(
   return {
     environmentId: admission.environmentId,
     id: threadId,
+    originConnectionId: anchor.originConnectionId,
   };
 }
 type LockedTriggerAuthority = {
@@ -2421,11 +2462,19 @@ async function lockTriggerForMutation(
   },
   requiredAccess: "control" | "define",
 ): Promise<TriggerRow> {
+  // Work acting from a task reads its automations as it reads them anywhere: one it may not
+  // read (a memory worker's own task tree, an automation without personal context) is missing.
+  const reader: TaskReader =
+    input.actorThreadId === null
+      ? personTaskReader
+      : { kind: "work", threadId: input.actorThreadId };
   const observed = await transaction
     .selectFrom("triggers")
-    .select("anchorThreadId")
-    .where("id", "=", input.triggerId)
-    .where("createdBy", "=", input.ownerId)
+    .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+    .select("triggers.anchorThreadId")
+    .where("triggers.id", "=", input.triggerId)
+    .where("triggers.createdBy", "=", input.ownerId)
+    .$if(reader.kind === "work", (q) => q.where(automationReaderSees(reader)))
     .executeTakeFirst();
   if (!observed) throw notFound();
   const authority = await lockTriggerAuthorityThreads(
@@ -2604,6 +2653,24 @@ async function automationHandoffWitness(
  * A new occurrence, dispatch or program call: its anchor's environment and, for an automation a
  * connection made, that connection still live and still granted Tasks.
  */
+/**
+ * The automation works for a chat that is paused (its own lineage, or its anchor task's), asked
+ * of the one state function. Its work is held, not failed and not paused.
+ */
+export async function triggerChatWaiting(
+  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "originConnectionId">,
+): Promise<boolean> {
+  const { rows } = await sql<{ waiting: boolean }>`
+    select ${connectionState(database)} = 'waiting' as waiting
+    from agent_connections
+    where agent_connections.bridge_account_id is not null
+      and agent_connections.id = coalesce(${trigger.originConnectionId}::text,
+        (select origin_connection_id from threads where id = ${trigger.anchorThreadId}))`.execute(
+    database,
+  );
+  return rows[0]?.waiting === true;
+}
 async function triggerExecutionAuthorityAvailable(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
@@ -2852,4 +2919,13 @@ async function admitTriggerActor<
     ? minThreadAccessMode(input.actorAccessMode, connection.accessMode)
     : connection.accessMode;
   return { input: { ...input, actorAccessMode }, connection };
+}
+
+/** An automation as a reader may see it: by its anchor task's lineage and its own. */
+function automationReaderSees(reader: TaskReader) {
+  return readerSees(
+    reader,
+    sql.ref("threads.origin_connection_id"),
+    sql.ref("triggers.origin_connection_id"),
+  );
 }

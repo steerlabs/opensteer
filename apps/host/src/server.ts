@@ -48,7 +48,7 @@ import {
   signOutDeviceSession,
 } from "./administration/device-removal.js";
 import { RunnerLeaveRequestSchema, RunnerLeaveResponseSchema } from "@opensteer/protocol";
-import { requirePersonalOwner, needsYouPage } from "@opensteer/database";
+import { requirePersonalOwner, needsYouPage, personTaskReader } from "@opensteer/database";
 import type { PersonalExecution } from "./runtime/personal-execution.js";
 
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
@@ -1624,6 +1624,7 @@ export async function createHostServer(
       const assignment = await dependencies.store.getAssignmentForOwner({
         assignmentId: input.assignmentId,
         ownerId: requireRpcSession(context).user.id,
+        reader: personTaskReader,
       });
       if (!assignment) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(assignment);

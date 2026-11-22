@@ -86,6 +86,13 @@ export const ChannelProviderManifestSchema = z
      * becomes deliveries, so the adapter never has to.
      */
     maxMessageChars: z.number().int().min(200).max(100_000),
+    /**
+     * What happens to a message sent while a connection is paused or needs attention: `kept`
+     * when the transport reads it on resume (iMessage reads its Mac's Messages history from where
+     * it stopped), `lost` when the provider does not hold it for a closed connection (Slack's
+     * Socket Mode, with no history read on reconnect).
+     */
+    pausedMessages: z.enum(["kept", "lost"]).optional(),
     provider: ChannelProviderSchema,
     setupUrl: z.url().nullable(),
     setupArtifact: z
@@ -423,20 +430,25 @@ export const ChannelDeliverySchema = z.strictObject({
 });
 export type ChannelDelivery = z.infer<typeof ChannelDeliverySchema>;
 
+/** Who "me" is on a chat account: the one identity linked to the person. */
+export const ChannelAccountMeSchema = z.strictObject({
+  accountId: ChannelAccountIdSchema,
+  displayName: z.string().trim().min(1).max(160),
+  externalUserId: ExternalIdSchema,
+});
 export const ChannelDashboardSchema = z.strictObject({
-  accessGrants: z.array(ChannelAccessGrantSchema).max(10_000),
   accounts: z.array(ChannelAccountSchema).max(500),
-  bindings: z.array(ChannelBindingSchema).max(2_000),
   connections: z.array(IntegrationConnectionSchema).max(500),
   deliveriesNeedingAttention: z.number().int().nonnegative(),
+  /** Who "me" is on each account that has one linked. */
+  me: z.array(ChannelAccountMeSchema).max(500).optional(),
   providers: z.array(ChannelProviderManifestSchema),
 });
 export const ChannelDashboardViewSchema = z.object({
   ...ChannelDashboardSchema.shape,
-  accessGrants: z.array(ChannelAccessGrantViewSchema).max(10_000),
   accounts: z.array(ChannelAccountViewSchema).max(500),
-  bindings: z.array(ChannelBindingViewSchema).max(2_000),
   connections: z.array(IntegrationConnectionViewSchema).max(500),
+  me: z.array(z.object(ChannelAccountMeSchema.shape)).max(500).optional(),
   providers: z.array(ChannelProviderManifestSchema),
 });
 export type ChannelDashboard = z.infer<typeof ChannelDashboardSchema>;

@@ -1,4 +1,5 @@
 import { lockRequestThreads } from "./request-persistence.js";
+import { liveConnection } from "./connection-liveness.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   getDeviceSelfRunnerId,
@@ -279,9 +280,7 @@ export abstract class IntegrationPlatformStoreBase {
       .select("id")
       .where("id", "=", connectionId)
       .where("userId", "=", userId)
-      .where("revokedAt", "is", null)
-      .where("tokenHash", "is not", null)
-      .where("expiresAt", ">", new Date())
+      .where(liveConnection(this.database))
       .executeTakeFirst();
     if (!connection)
       throw new OpensteerError({ code: "forbidden", message: "Connection is unavailable" });

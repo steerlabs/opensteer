@@ -5,7 +5,12 @@ import {
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import type { AgentConnectionAuthority, OpensteerStore } from "@opensteer/database";
+import type {
+  AgentConnectionAuthority,
+  BridgeChatSource,
+  OpensteerStore,
+  TaskReader,
+} from "@opensteer/database";
 import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type {
   TriggerControlScope,
@@ -42,6 +47,11 @@ export interface ConnectionCaller extends AgentCallerBase {
   readonly grantRevision: number;
   /** When the credential stops working, in epoch milliseconds. */
   readonly expiresAt?: number;
+  /**
+   * Set only by the Home for a messaging bridge: the conversation a message came from and who
+   * wrote it. Never taken from a tool's input.
+   */
+  readonly chat?: BridgeChatSource;
 }
 export type AgentCaller = RunCaller | ProgramCaller | ConnectionCaller;
 
@@ -147,6 +157,7 @@ export class AgentCallerResolver {
           grantRevision: connection.grantRevision,
           consentVersion: connection.consentVersion,
           accessMode: connection.accessMode,
+          bridgeSenders: null,
         },
       };
     }
@@ -222,6 +233,16 @@ export function callerLineage(caller: AgentCaller): {
         revision: caller.agentConnection.grantRevision,
       }
     : null;
+}
+/**
+ * Who reads a task when this caller does: work reads as the task it runs in, so a managed
+ * memory pass's lineage sees only tasks with personal context. Every agent tool that returns
+ * anything derived from a task reads it as this.
+ */
+export function callerReader(caller: AgentCaller): TaskReader {
+  return caller.kind === "connection"
+    ? { kind: "connection" }
+    : { kind: "work", threadId: callerThread(caller).id };
 }
 export function callerThread(caller: AgentCaller): Thread {
   if (caller.kind === "connection") throw unavailable();

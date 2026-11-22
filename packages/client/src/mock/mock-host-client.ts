@@ -594,10 +594,6 @@ const mockInstalledApps: readonly ComputerAppIdentity[] = [
   { bundleId: "com.apple.systempreferences", displayName: "System Settings", teamId: null },
 ];
 
-type CommandInputOf<Type extends HostApiCommandInput["type"]> = Extract<
-  HostApiCommandInput,
-  { readonly type: Type }
->;
 type ParsedCommandOf<Type extends HostApiCommand["type"]> = Extract<
   HostApiCommand,
   { readonly type: Type }
@@ -1862,6 +1858,8 @@ export interface MockHostClientOptions {
   /** The sessions `sessions.list` reports; one current session by default. */
   sessions?: readonly AuthSessionSummary[];
   connections?: readonly import("@opensteer/protocol").AgentConnection[];
+  /** The Messaging accounts `channels.get` lists; none by default. */
+  channels?: import("@opensteer/channel-core").ChannelDashboard;
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
   /**
    * The consent as the Home presents it once its verification changes: the first approval is
@@ -3485,26 +3483,25 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "channel.connection.create":
       await client.createChannelConnection({
-        accessPolicy: command.accessPolicy,
         credentials: command.credentials,
         provider: command.provider,
         routingMode: command.routingMode,
         deploymentId: client.getSnapshot().deploymentId!,
       });
       return unsupportedMockRpc();
-    case "channel.binding.create":
-      await client.createChannelBinding(command);
-      return unsupportedMockRpc();
-    case "channel.binding.update":
-    case "channel.access.review":
+    case "channel.chat.create":
+      try {
+        return rpcSuccess({ connection: client.createChat(command), type: command.type });
+      } catch (error) {
+        return mockRefusal(error);
+      }
     case "channel.connection.computer.create":
       return unsupportedMockRpc();
-    case "channel.binding.revoke":
-      await client.revokeChannelBinding(command.bindingId);
-      return rpcSuccess({ type: command.type });
-    case "channel.identity.link":
+    case "channel.me.link":
+      // A preview shows the code the person would send; the mock Host links nobody.
       return rpcSuccess({
-        ...(await client.linkChannelIdentity(command.code)),
+        code: "MOCKCODE",
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
         type: command.type,
       });
     case "channel.connection.credentials.replace":
@@ -5909,6 +5906,7 @@ class MockHostState {
   readonly automaticModels: NonNullable<MockHostClientOptions["automaticModels"]>;
   readonly grantsAvailable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
+  private channels: import("@opensteer/channel-core").ChannelDashboard | null;
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   readonly chromeTabs: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   workPolicy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
@@ -5992,7 +5990,8 @@ class MockHostState {
       (row) =>
         row.userId === this.snapshot.user?.id &&
         (includeRevoked ||
-          (row.state !== "stopped" && Date.parse(row.expiresAt) > this.now().getTime())),
+          (row.state !== "stopped" &&
+            (row.expiresAt === null || Date.parse(row.expiresAt) > this.now().getTime()))),
     );
   }
   revokeConnection(id: string) {
@@ -6828,6 +6827,7 @@ class MockHostState {
         },
       };
     this.connections = [...(options.connections ?? [])];
+    this.channels = options.channels ?? null;
     this.pendingConnectionConsent = options.connectionConsent ?? null;
     this.chromeTabs = options.chromeTabs ?? {};
     this.workPolicy = options.workPolicy ?? null;
@@ -10910,14 +10910,62 @@ class MockHostState {
   }
 
   async loadChannels() {
-    return {
-      accessGrants: [],
-      accounts: [],
-      bindings: [],
-      connections: [],
-      deliveriesNeedingAttention: 0,
-      providers: [...channelProviderCatalog],
+    return (
+      this.channels ?? {
+        accounts: [],
+        connections: [],
+        deliveriesNeedingAttention: 0,
+        providers: [...channelProviderCatalog],
+      }
+    );
+  }
+
+  /** A chat added on a mock account: a connection with a grant, live at once. */
+  createChat(input: {
+    readonly accountId: string;
+    readonly conversation: { readonly id: string; readonly name: string } | null;
+    readonly senders: "owner" | "anyone";
+    readonly accessMode: import("@opensteer/core").ThreadAccessMode;
+    readonly grant: import("@opensteer/core").AgentGrant;
+  }): import("@opensteer/protocol").AgentConnection {
+    const account = this.channels?.accounts.find(({ id }) => id === input.accountId);
+    if (!account) throw new Error("Messaging account not found.");
+    const provider =
+      channelProviderCatalog.find((entry) => entry.provider === account.provider)?.label ??
+      account.provider;
+    const me = this.channels?.me?.find(({ accountId }) => accountId === account.id) ?? null;
+    const now = this.now().toISOString();
+    const chat: import("@opensteer/protocol").AgentConnection = {
+      id: `mcn_${crypto.randomUUID()}`,
+      userId: this.snapshot.user!.id,
+      label: input.conversation ? `${provider} · ${input.conversation.name}` : provider,
+      clientName: provider,
+      accessMode: input.accessMode,
+      grant: input.grant,
+      grantRevision: 1,
+      consentVersion: 2,
+      client: { fingerprint: null, redirectOrigin: null },
+      state: account.status === "connected" ? "active" : "paused",
+      lastActionUncertain: false,
+      revokedAt: null,
+      createdAt: now,
+      lastUsedAt: null,
+      expiresAt: null,
+      bridge: {
+        accountId: account.id,
+        provider,
+        conversationId: input.conversation?.id ?? null,
+        senders: input.senders,
+        accountName: account.handle ?? account.displayName,
+        conversationName: input.conversation?.name ?? null,
+        channelConnectionId: account.connectionId,
+        me: me ? { displayName: me.displayName, externalUserId: me.externalUserId } : null,
+        unknownReplies: 0,
+        tasks: [],
+      },
     };
+    this.connections = [...this.connections, chat];
+    return chat;
   }
 
   async loadIntegrations(): Promise<RpcData<"integrations.get">> {
@@ -11005,26 +11053,60 @@ class MockHostState {
     throw new Error("The mock Host does not persist channel connections.");
   }
 
-  async createChannelBinding(
-    _input: Omit<CommandInputOf<"channel.binding.create">, "idempotencyKey" | "type">,
-  ): Promise<CommandOutputOf<"channel.binding.create">["binding"]> {
-    throw new Error("The mock Host does not persist channel bindings.");
-  }
-
-  async revokeChannelBinding(_bindingId: string): Promise<void> {
-    throw new Error("The mock Host does not persist channel bindings.");
-  }
-
-  async linkChannelIdentity(
-    _code: string,
-  ): Promise<Omit<CommandOutputOf<"channel.identity.link">, "type">> {
-    throw new Error("The mock Host does not persist channel identities.");
-  }
-
+  /** Pausing or resuming an account pauses or resumes every chat that speaks through it. */
   async setChannelConnectionStatus(
-    _connectionId: string,
-    _status: "connected" | "paused" | "revoked",
-  ): Promise<void> {}
+    connectionId: string,
+    status: "connected" | "paused" | "revoked",
+  ): Promise<void> {
+    if (!this.channels) return;
+    const accountStatus = status === "revoked" ? "revoked" : status;
+    this.channels = {
+      ...this.channels,
+      accounts: this.channels.accounts.map((account) =>
+        account.connectionId === connectionId ? { ...account, status: accountStatus } : account,
+      ),
+      connections: this.channels.connections.map((connection) =>
+        connection.id === connectionId
+          ? {
+              ...connection,
+              status: status === "connected" ? "connected" : status,
+              statusDetail: null,
+            }
+          : connection,
+      ),
+    };
+    const ended = new Date().toISOString();
+    this.connections = this.connections.map((row) => {
+      if (row.bridge?.channelConnectionId !== connectionId || row.revokedAt) return row;
+      if (status === "revoked")
+        return {
+          ...row,
+          state: "stopped",
+          revokedAt: ended,
+          bridge: { ...row.bridge, endedBy: "account" },
+        };
+      const {
+        pausedBy: _by,
+        pauseDetail: _detail,
+        pausedMessages: _messages,
+        ...bridge
+      } = row.bridge;
+      return status === "paused"
+        ? {
+            ...row,
+            state: "paused",
+            bridge: {
+              ...bridge,
+              pausedBy: "you",
+              pauseDetail: null,
+              pausedMessages:
+                channelProviderCatalog.find(({ label }) => label === bridge.provider)
+                  ?.pausedMessages ?? "lost",
+            },
+          }
+        : { ...row, state: "active", bridge };
+    });
+  }
 
   /** A person included this page in a message to the conversation, which now uses it. */
   includeBrowserPage(page: BrowserPageContentPart, threadId: string): void {

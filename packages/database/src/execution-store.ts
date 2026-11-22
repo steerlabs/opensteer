@@ -2,7 +2,7 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { runAllowsPersonalContext } from "./run-personal-context.js";
+import { lineagePersonalContext } from "./resource-access.js";
 import { personalSettings } from "./personal-settings-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
@@ -63,7 +63,6 @@ import {
 import { readRunThreadState } from "./run-thread-state.js";
 import { newestMessageWindow } from "./message-window.js";
 
-import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
 import { assertSendEligible } from "./resource-access.js";
 import { hasUncertainEarlierExecution } from "./personal-run-state.js";
 import {
@@ -517,7 +516,7 @@ export async function loadRunDispatchContext(
         ? executionBindingFromRow(bindingRow)
         : null,
     providerSessionStateLayout: bindingRow.stateLayout,
-    personalContext: await runAllowsPersonalContext(database, runRow.id),
+    personalContext: await lineagePersonalContext(database, runRow.connectionId),
     history: historyWindow.items,
     initialContext: initialContext
       ? {
@@ -670,12 +669,6 @@ export async function acquireExecutionBinding(
         message: "AI engine is unavailable",
       });
     }
-    if (!(await channelRunAuthorityIsCurrent(transaction, input.runId))) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Messaging access changed before this Run could start",
-      });
-    }
     const thread = await transaction
       .selectFrom("threads")
       .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
@@ -746,7 +739,7 @@ export async function acquireExecutionBinding(
       ))
     )
       throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
-    const personalContext = await runAllowsPersonalContext(transaction, input.runId);
+    const personalContext = await lineagePersonalContext(transaction, run.connectionId);
     if (
       (input.personalContext !== undefined && input.personalContext !== personalContext) ||
       (session.personalContext !== personalContext && session.providerSessionReference !== null)

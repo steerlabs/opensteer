@@ -90,18 +90,17 @@ export class ChannelDeliveryWorker {
         signal: AbortSignal.any([streamSignal, AbortSignal.timeout(15_000)]),
       };
       // An attempt whose outcome was lost may already have reached the
-      // provider; ask before sending, or the person reads the reply twice.
+      // provider. Its outcome stays unknown and it is never sent again. A Home
+      // of this release never hands one out (the field stays on the wire, always
+      // false, for the Runners that read it); one before it may.
       if (claim.mayHaveBeenSent) {
-        const reconciled = await adapter.outbound.reconcile(input);
-        if (reconciled.kind === "sent") {
-          await this.#host.finishDelivery({
-            claimToken: claim.claimToken,
-            deliveryId: claim.delivery.id,
-            outcome: "sent",
-            receipt: reconciled.receipt,
-          });
-          return;
-        }
+        await this.#host.finishDelivery({
+          claimToken: claim.claimToken,
+          deliveryId: claim.delivery.id,
+          error: "An earlier attempt may already have sent this, so it is not sent again.",
+          outcome: "unknown",
+        });
+        return;
       }
       const result = await adapter.outbound.send(input);
       await this.#host.finishDelivery({

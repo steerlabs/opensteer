@@ -67,6 +67,8 @@ export const slackChannelProviderManifest = {
   description: "Route Slack channels, threads, and direct messages to tasks.",
   label: "Slack",
   maxMessageChars: 3_800,
+  // Socket Mode holds nothing for a closed connection, and nothing reads history on reconnect.
+  pausedMessages: "lost",
   provider: "slack",
   // Only people inside the Slack workspace can write to the bot.
   senders: "members",
@@ -99,6 +101,8 @@ export const imessageChannelProviderManifest = {
   label: "iMessage",
   // What the helper sends in one message.
   maxMessageChars: 4_000,
+  // The Mac's cursor in Messages history stays where it stopped, and reads on from there.
+  pausedMessages: "kept",
   provider: "imessage",
   // Anybody who knows the address can text it.
   senders: "anyone",

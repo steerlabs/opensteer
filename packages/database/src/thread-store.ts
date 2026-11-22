@@ -1,4 +1,8 @@
-import { commitPersonalMutation, threadPendingRequestsCount } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  threadPendingRequestsCount,
+  wakeExecutionCommands,
+} from "./personal-mutation.js";
 import { closeAgentOperationRequestsAboveMode } from "./agent-session-store.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
@@ -137,6 +141,8 @@ import {
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
+import { lineagePersonalContext } from "./resource-access.js";
+import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js";
 import {
   projectThreadState,
   publishRunQueue,
@@ -176,6 +182,13 @@ export interface ThreadUpdateResult {
  * Thread and Run copied from the sending Run's authenticated capability, never
  * a value the sending model supplied.
  */
+export interface BridgeChatSource {
+  readonly conversationId: string;
+  /** The bridge's revision when the message was admitted; any other is refused. */
+  readonly revision: number;
+  /** Who wrote it on the provider: whether that is the person is read, never claimed. */
+  readonly sender: { readonly displayName: string; readonly externalUserId: string };
+}
 export type ThreadInputSource =
   | {
       readonly kind: "human";
@@ -186,6 +199,11 @@ export type ThreadInputSource =
   | {
       readonly kind: "connection";
       readonly connectionId: string;
+      /**
+       * A message that came through a messaging bridge: the conversation the reply goes back
+       * to and who wrote it. Set by the Home from the chat, never from a tool's input.
+       */
+      readonly chat?: BridgeChatSource;
     }
   | {
       readonly kind: "agent";
@@ -217,12 +235,6 @@ export type ThreadInputSource =
       readonly kind: "automation";
       readonly noticeId: string;
       readonly triggerId: TriggerId;
-    }
-  | {
-      readonly kind: "channel";
-      readonly conversationId: string;
-      readonly ingressId: string;
-      readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
   readonly compaction?: import("@opensteer/core").CompactionSendChoice;
@@ -672,6 +684,8 @@ export async function getAssignmentForOwner(
   input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
+    /** Who reads: one whose worker its reader may not read is null, as a missing one. */
+    readonly reader: TaskReader;
   },
 ): Promise<AssignmentView | null> {
   return withPersonalReadTransaction(
@@ -683,6 +697,9 @@ export async function getAssignmentForOwner(
         .innerJoin("threads as workerThread", "workerThread.id", "delegations.childThreadId")
         .selectAll("delegations")
         .where("delegations.id", "=", input.assignmentId)
+        .$if(input.reader.kind === "work", (query) =>
+          query.where(readerSees(input.reader, sql.ref("workerThread.origin_connection_id"))),
+        )
         .executeTakeFirst();
       if (!row) return null;
       const parent = await transaction
@@ -797,6 +814,8 @@ export async function agentThreadPageForOwner(
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
+    /** Who reads: a memory pass's lineage sees only tasks with personal context. */
+    readonly reader: TaskReader;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
@@ -826,6 +845,9 @@ export async function agentThreadPageForOwner(
         .selectFrom("threads")
         .where("threads.removedAt", "is", null)
         .$if(input.nativeOnly === true, (q) => q.where("threads.worker", "=", "native"))
+        .$if(input.reader.kind === "work", (query) =>
+          query.where(readerSees(input.reader, sql.ref("threads.origin_connection_id"))),
+        )
         .$if(since !== null, (query) =>
           query.innerJoin(changedThreads(transaction, since!).as("changed"), (join) =>
             join.onRef("changed.threadId", "=", "threads.id"),
@@ -996,13 +1018,31 @@ function changedThreads(transaction: Transaction<DatabaseSchema>, since: Date) {
     .where(changedAt, ">", since)
     .groupBy("messages.threadId");
 }
-export async function getThreadForOwner(
+/** A task as the person reads it. Work reading a task reads it through `readTask`. */
+export function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
   lineageConnectionId?: string,
   nativeOnly?: boolean,
 ): Promise<Thread | null> {
+  return readTask(database, personTaskReader, threadId, ownerId, {
+    ...(lineageConnectionId === undefined ? {} : { lineageConnectionId }),
+    ...(nativeOnly === undefined ? {} : { nativeOnly }),
+  });
+}
+/**
+ * A task as its reader may see it: one a memory pass's lineage may not read is null, exactly as
+ * a task that does not exist.
+ */
+export async function readTask(
+  database: Kysely<DatabaseSchema>,
+  reader: TaskReader,
+  threadId: ThreadId,
+  ownerId: UserId,
+  options: { readonly lineageConnectionId?: string; readonly nativeOnly?: boolean } = {},
+): Promise<Thread | null> {
+  const { lineageConnectionId, nativeOnly } = options;
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
     const row = await tx
@@ -1020,6 +1060,9 @@ export async function getThreadForOwner(
       .$if(nativeOnly === true, (query) => query.where("threads.worker", "=", "native"))
       .$if(lineageConnectionId !== undefined, (query) =>
         query.where("threads.originConnectionId", "=", lineageConnectionId!),
+      )
+      .$if(reader.kind === "work", (query) =>
+        query.where(readerSees(reader, sql.ref("threads.origin_connection_id"))),
       )
       .executeTakeFirst();
     return row
@@ -1158,7 +1201,10 @@ export async function createThreadInTransaction(
     icon: input.icon ?? null,
     iconSource: input.icon ? "chosen" : "provisional",
   });
-  await ensureSelectedProviderSession(transaction, thread);
+  // Work in a lineage without the person's personal context never has a personal session.
+  await ensureSelectedProviderSession(transaction, thread, {
+    personalContext: await lineagePersonalContext(transaction, originConnectionId),
+  });
   if (purpose === "voice")
     await transaction
       .updateTable("personalSettings")
@@ -1589,6 +1635,47 @@ export async function updateThreadExecutionSelection(
     }),
   );
 }
+/**
+ * A chat that is back wakes the work it held: each task in its lineage with a message waiting
+ * starts it, in queue order, each in its own transaction (the task first, then what its Run
+ * needs, as any queued Run is started); and its Runs that were held, unlisted, while it waited
+ * are listed again (the dispatcher is woken once). The Home's messages that waited are woken by
+ * the service with this (`ChannelService`).
+ */
+export async function wakeChatQueues(
+  database: Kysely<DatabaseSchema>,
+  channelConnectionId: string,
+): Promise<void> {
+  const tasks = await database
+    .selectFrom("threads")
+    .innerJoin("agentConnections", "agentConnections.id", "threads.originConnectionId")
+    .innerJoin("channelAccounts", "channelAccounts.id", "agentConnections.bridgeAccountId")
+    .select("threads.id")
+    .where("channelAccounts.connectionId", "=", channelConnectionId as never)
+    .where(({ exists, selectFrom }) =>
+      exists(
+        selectFrom("threadInputs")
+          .select("threadInputs.messageId")
+          .whereRef("threadInputs.threadId", "=", "threads.id")
+          .where("threadInputs.state", "=", "pending")
+          .where("threadInputs.policy", "=", "queue"),
+      ),
+    )
+    .orderBy("threads.id")
+    .execute();
+  for (const task of tasks)
+    await commitPersonalMutation(database, async (transaction) => {
+      await lockThreadRow(transaction, task.id);
+      const thread = await transaction
+        .selectFrom("threads")
+        .selectAll()
+        .where("id", "=", task.id)
+        .executeTakeFirst();
+      if (thread) await ensureQueuedRun(transaction, thread);
+    });
+  await commitPersonalMutation(database, (transaction) => wakeExecutionCommands(transaction));
+}
+
 export async function resumeThreadInputQueue(
   database: Kysely<DatabaseSchema>,
   input: {

@@ -1,4 +1,5 @@
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
+import { liveConnection } from "./connection-liveness.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
@@ -224,7 +225,7 @@ interface PendingRequestContinuation {
  * changes remain explicit callers of this store, but creation, visibility,
  * replay, withdrawal, cancellation, and continuation bookkeeping do not fork.
  */
-const personAuthorities = ["user-session", "channel-ingress"];
+const personAuthorities = ["user-session"];
 export class RequestStore {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #links: ChannelLinks;
@@ -1780,8 +1781,7 @@ export class RequestStore {
         .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
         .select("agentConnections.id")
         .where("agentSessions.id", "=", input.originatingAgentSessionId)
-        .where("agentConnections.revokedAt", "is", null)
-        .where("agentConnections.expiresAt", ">", new Date())
+        .where(liveConnection(tx))
         .where("agentConnections.grantRevision", "=", input.grantRevision)
         .forShare("agentConnections")
         .executeTakeFirst();
@@ -3024,7 +3024,8 @@ async function createRequestInTransaction(
       const target = run.replyTarget;
       await enqueueChannelConversationStatus(transaction, {
         conversationId: target.conversationId,
-        text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(canonical.originatingThreadId)}`,
+        // One line and a link: what is asked, and every answer, stay in Opensteer.
+        text: `This task needs you: ${links.threadUrl(canonical.originatingThreadId)}`,
       });
     }
   }
@@ -3468,8 +3469,7 @@ export async function lockActiveDurableRequestAuthority(
       .where("agentSessions.id", "=", request.originatingAgentSessionId)
       .where("agentSessions.status", "=", "active")
       .whereRef("agentConnections.grantRevision", "=", "agentOperations.grantRevision")
-      .where("agentConnections.revokedAt", "is", null)
-      .where("agentConnections.expiresAt", ">", new Date())
+      .where(liveConnection(transaction))
       .forShare("agentConnections")
       .executeTakeFirst();
     if (!live)
