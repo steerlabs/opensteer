@@ -8,6 +8,7 @@ import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { useNativeBrowserPicture } from "../../../../src/browser/native-browser-picture.js";
 import { decodeDisplayFrame } from "../../../../src/computers/phone-display.js";
 import {
+  decoderFunctions,
   NativeDisplay,
   nativePictureView,
   phoneDisplayBinary,
@@ -431,7 +432,8 @@ function Journey() {
     const video = async () => {
       setVideoMounted(true);
       await keyframes.next(() => true, "keyframe request when the display joins the window");
-      const native = decoder.current;
+      // Called by the view's tag, as the app calls it: never with the view as an argument.
+      const native = decoderFunctions(decoder.current);
       if (native === null) throw new Error("display decoder ref missing");
       const binary = phoneDisplayBinary();
       const [key, delta] = await Promise.all([

@@ -14,10 +14,10 @@ public final class PhoneDisplayModule: Module {
     // which deadlocks while React holds the main thread in a synchronous event beat waiting for
     // JavaScript. These take the tag, a number, and find the view on the main queue they run on.
     Constant("viewTagFunctions") { 1 }
-    AsyncFunction("resetForView") { (tag: Int, epoch: String) in
+    AsyncFunction("resetForView") { (tag: Int, epoch: String) -> Void in
       self.view(tag, PhoneDisplayView.self)?.reset(epoch)
     }.runOnQueue(.main)
-    AsyncFunction("resetKeepingPictureForView") { (tag: Int, epoch: String) in
+    AsyncFunction("resetKeepingPictureForView") { (tag: Int, epoch: String) -> Void in
       self.view(tag, PhoneDisplayView.self)?.reset(epoch, keepPicture: true)
     }.runOnQueue(.main)
     AsyncFunction("decodeForView") { (tag: Int, frame: FramePacket) -> Bool in
@@ -29,7 +29,7 @@ public final class PhoneDisplayModule: Module {
     AsyncFunction("decodeBytesForView") { (tag: Int, bytes: Data, metadata: FrameMetadata) -> Bool in
       self.view(tag, PhoneDisplayView.self)?.decode(bytes, metadata) ?? false
     }.runOnQueue(.main)
-    AsyncFunction("clearForView") { (tag: Int, generation: Int) in
+    AsyncFunction("clearForView") { (tag: Int, generation: Int) -> Void in
       self.view(tag, PhoneDisplayPictureView.self)?.clear(generation)
     }.runOnQueue(.main)
     AsyncFunction("presentForView") { (tag: Int, bytes: Data, metadata: PictureMetadata, promise: Promise) in
@@ -284,6 +284,11 @@ final class PhoneDisplayPictureView: ExpoView {
     #endif
   }
   func clear(_ generation: Int) {
+    // Stale: this view already took a newer generation from a picture. Its picture stays.
+    guard generation >= queue.generation else {
+      trace("stale-clear generation=\(generation) queue=\(queue.generation)")
+      return
+    }
     queue.clear(generation)
     remove()
   }

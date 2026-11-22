@@ -185,7 +185,14 @@ export function useNativeBrowserPicture(input: {
             )
               setDrawn(latest);
           },
-          () => undefined,
+          // Refused before it reached the view (no tag yet): dropped, and offered again when the
+          // view says it is shown.
+          () => {
+            tally.current.dropped += 1;
+            tracePicture(
+              `answered surface=${tabId} picture=${picture} outcome=dropped reason=refused`,
+            );
+          },
         )
         .finally(() => release(latest));
     };

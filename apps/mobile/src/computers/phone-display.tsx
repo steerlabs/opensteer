@@ -527,6 +527,13 @@ export function ComputerDisplay({
           ref={decoder}
           style={[StyleSheet.absoluteFill, (restarting || timedOut) && { opacity: 0 }]}
           onNeedsKeyframe={({ nativeEvent }) => {
+            // A view whose reset was made before it existed joins its window at the empty
+            // epoch and would refuse every frame of this one: reset it now, then ask for a key.
+            if (nativeEvent.epoch === "" && epoch.current > 0) {
+              resetDecoder(epoch.current);
+              requestKeyframe.current?.();
+              return;
+            }
             if (nativeEvent.epoch !== String(epoch.current)) return;
             if (nativeEvent.pictureGone) {
               controls.current?.resetInput();

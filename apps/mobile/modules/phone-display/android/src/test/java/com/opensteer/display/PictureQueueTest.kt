@@ -75,6 +75,19 @@ class PictureQueueTest {
     assertEquals(3, queue.generation)
   }
 
+  // A clear for an older generation than one the queue took from a picture is stale: the
+  // generation stays, and the picture it is decoding still draws.
+  @Test fun aStaleClearNeverLowersTheGenerationNorDropsItsPictures() {
+    val queue = PictureQueue<String>()
+    assertEquals("new", queue.submit(request(3), "new", receipt("new"))?.payload)
+    queue.clear(2)
+    assertEquals(3, queue.generation)
+    assertNull(outcomes["new"])
+    assertEquals("new", queue.complete(true).first?.payload)
+    assertNull(queue.submit(request(2), "old", receipt("old")))
+    assertEquals(listOf(PictureOutcome.DROPPED), outcomes["old"])
+  }
+
   @Test fun laysOutLikeTheSharedBrowserPresentation() {
     assertArrayEquals(doubleArrayOf(0.0, 150.0, 400.0, 450.0), request().rect(400.0, 600.0), 0.0)
     assertArrayEquals(doubleArrayOf(196.0, 297.0, 204.0, 303.0), request(upscale = false).rect(400.0, 600.0), 0.0)

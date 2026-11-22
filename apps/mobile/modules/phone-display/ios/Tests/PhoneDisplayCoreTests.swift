@@ -83,6 +83,19 @@ final class PictureQueueTests: XCTestCase {
     XCTAssertEqual(queue.generation, 3)
   }
 
+  // A clear for an older generation than one the queue took from a picture is stale: the
+  // generation stays, and the picture it is decoding still draws.
+  func testAStaleClearNeverLowersTheGenerationNorDropsItsPictures() {
+    let queue = PictureQueue<String>()
+    XCTAssertEqual(queue.submit(request(3), "new", receipt("new"))?.payload, "new")
+    queue.clear(2)
+    XCTAssertEqual(queue.generation, 3)
+    XCTAssertNil(outcomes["new"])
+    XCTAssertEqual(queue.complete(decoded: true).shown?.payload, "new")
+    XCTAssertNil(queue.submit(request(2), "old", receipt("old")))
+    XCTAssertEqual(outcomes["old"], [.dropped])
+  }
+
   func testTakingANewerGenerationDropsWhatTheOlderOneLeftWaiting() {
     let queue = PictureQueue<String>()
     _ = queue.submit(request(0), "1", receipt("1"))

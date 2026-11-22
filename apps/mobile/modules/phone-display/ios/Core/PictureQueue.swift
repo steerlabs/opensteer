@@ -112,8 +112,11 @@ final class PictureQueue<Payload> {
     return (shown, next)
   }
 
-  /// Drops every delivery not yet shown; only `generation` may draw afterwards.
+  /// Drops every delivery not yet shown; only `generation` may draw afterwards. A clear for an
+  /// older generation than the queue holds is stale (the queue already took a newer one from a
+  /// picture) and changes nothing: generations never go down.
   func clear(_ generation: Int) {
+    guard generation >= self.generation else { return }
     self.generation = generation
     decoding?.receipt(.dropped)
     decoding = nil

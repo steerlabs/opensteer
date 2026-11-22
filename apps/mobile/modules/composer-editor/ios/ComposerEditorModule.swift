@@ -42,9 +42,9 @@ public final class ComposerEditorModule: Module {
     // which deadlocks while React holds the main thread waiting for JavaScript. These take the
     // tag and find the view on the main queue they run on.
     Constant("viewTagFunctions") { 1 }
-    AsyncFunction("focusForView") { (tag: Int) in self.editor(tag)?.focusEditor() }.runOnQueue(.main)
-    AsyncFunction("blurForView") { (tag: Int) in self.editor(tag)?.blurEditor() }.runOnQueue(.main)
-    AsyncFunction("setSelectionForView") { (tag: Int, start: Int, end: Int) in
+    AsyncFunction("focusForView") { (tag: Int) -> Void in self.editor(tag)?.focusEditor() }.runOnQueue(.main)
+    AsyncFunction("blurForView") { (tag: Int) -> Void in self.editor(tag)?.blurEditor() }.runOnQueue(.main)
+    AsyncFunction("setSelectionForView") { (tag: Int, start: Int, end: Int) -> Void in
       self.editor(tag)?.setSelection(start: start, end: end)
     }.runOnQueue(.main)
     AsyncFunction("readStateForView") { (tag: Int) -> [String: Any] in

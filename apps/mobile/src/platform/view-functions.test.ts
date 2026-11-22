@@ -78,6 +78,7 @@ describe("a native view's functions", () => {
   it.each([
     ["Android, whose view functions run on the main queue", "android", { viewTagFunctions: 1 }],
     ["an older iOS binary without calls by tag", "ios", {}],
+    ["an iOS binary that declares no version of them", "ios", { viewTagFunctions: 0 }],
   ] as const)("stay the view's own on %s", async (_name, os, module) => {
     platform.OS = os;
     modules.set("PhoneDisplay", { ...module, presentForView: vi.fn() });

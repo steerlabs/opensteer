@@ -30,10 +30,8 @@ export function viewTagModule(moduleName: string): Record<string, unknown> | nul
       Platform.OS === "ios"
         ? requireOptionalNativeModule<Record<string, unknown>>(moduleName)
         : null;
-    declared.set(
-      moduleName,
-      module !== null && typeof module["viewTagFunctions"] === "number" ? module : null,
-    );
+    const version = module?.["viewTagFunctions"];
+    declared.set(moduleName, typeof version === "number" && version >= 1 ? module : null);
   }
   return declared.get(moduleName) ?? null;
 }

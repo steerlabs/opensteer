@@ -43,15 +43,29 @@ const native = vi.hoisted(() => ({
   geometry: "side:page@0",
   /** Which presenter the installed binary offers: Image data URIs, or the native picture view. */
   presenter: "image" as "image" | "picture",
-  /** The native picture view's pending presentations and the generation it last cleared to. */
+  /**
+   * The native picture views' queues, as PictureQueue.swift holds each: per view, the delivery
+   * decoding first, then at most one waiting, each settled once.
+   */
   presented: [] as {
+    view: number;
     bytes: Uint8Array;
     metadata: PictureMetadata;
     settle: (outcome: PictureOutcome) => void;
   }[],
-  generation: -1,
+  /** Each mounted view's generation, by its tag: 0 when it is made. */
+  views: new Map<number, { generation: number }>(),
+  /** The view mounted last: the one a test reads the generation of. */
+  latest: 0,
+  get generation(): number {
+    return this.views.get(this.latest)?.generation ?? 0;
+  },
+  /** Whether Expo's component has its tag yet (componentDidMount): before, a call is refused. */
+  tagged: true,
   /** Whether the native view exists yet: a call by its tag before then finds no view. */
   mounted: true,
+  /** Whether the view is in its window with the app in front: one that is not drops pictures. */
+  showing: true,
   cleared: null as null | ((event: { nativeEvent: { generation: number } }) => void),
   /** The view's word that it can draw again, after leaving its window or the foreground. */
   shown: null as null | ((event: { nativeEvent: { generation: number } }) => void),
@@ -67,8 +81,55 @@ vi.mock("../ui/motion.js", () => ({ appear: undefined, dim: undefined, exit: und
 vi.mock("../ui/last-picture-chip.js", () => ({
   LastPictureChip: ({ label }: { label?: string }) => <span>{label ?? "Last picture"}</span>,
 }));
+vi.mock("expo", () => ({ requireOptionalNativeModule: () => null }));
 vi.mock("../computers/phone-display-native.js", async () => {
   const React = await import("react");
+  const { viewFunctionsOf } = await import("../platform/view-functions.js");
+  let tags = 0;
+  // Drops every delivery of one view not yet shown, as its queue's clear and deinit do.
+  const dropAll = (tag: number) => {
+    for (const job of native.presented.filter((job) => job.view === tag)) {
+      native.presented.splice(native.presented.indexOf(job), 1);
+      job.settle("dropped");
+    }
+  };
+  // As PhoneDisplayModule.swift's clearForView and presentForView answer, with
+  // PictureQueue.swift's rules: no view yet, nothing cleared and the picture dropped; a view
+  // not showing drops the picture and keeps its generation; a stale clear changes nothing; an
+  // older generation is dropped and a newer one taken as its clear would have; one decoding and
+  // the newest waiting.
+  const clear = (tag: number, generation: number) => {
+    const view = native.views.get(tag);
+    if (view === undefined || generation < view.generation) return;
+    view.generation = generation;
+    dropAll(tag);
+  };
+  const byTag = {
+    viewTagFunctions: 1,
+    clearForView: async (tag: number, generation: number) => {
+      if (native.mounted) clear(tag, generation);
+    },
+    presentForView: (tag: number, bytes: Uint8Array, metadata: PictureMetadata) =>
+      new Promise<PictureOutcome>((settle) => {
+        const view = native.views.get(tag);
+        if (
+          view === undefined ||
+          !native.mounted ||
+          !native.showing ||
+          metadata.generation < view.generation
+        ) {
+          settle("dropped");
+          return;
+        }
+        if (metadata.generation > view.generation) clear(tag, metadata.generation);
+        const queued = native.presented.filter((job) => job.view === tag);
+        if (queued.length > 1) {
+          native.presented.splice(native.presented.indexOf(queued[1]!), 1);
+          queued[1]!.settle("dropped");
+        }
+        native.presented.push({ view: tag, bytes, metadata, settle });
+      }),
+  };
   const Picture = React.forwardRef(
     (
       props: {
@@ -81,27 +142,27 @@ vi.mock("../computers/phone-display-native.js", async () => {
       native.cleared = props.onCleared ?? null;
       native.shown = props.onShown ?? null;
       native.renders++;
-      // As PhoneDisplayModule.swift's clearForView and presentForView answer, with
-      // PictureQueue.swift's generation rule: no view yet, nothing cleared and the picture
-      // dropped; an older generation dropped; a newer one taken as its clear would have.
-      React.useImperativeHandle(ref, () => ({
-        clear: async (generation: number) => {
-          if (!native.mounted) return;
-          native.generation = generation;
-          for (const { settle } of native.presented.splice(0)) settle("dropped");
+      // A native view of its own, made at generation 0 and gone with its deliveries.
+      const [tag] = React.useState(() => {
+        const made = ++tags;
+        native.views.set(made, { generation: 0 });
+        native.latest = made;
+        return made;
+      });
+      React.useLayoutEffect(
+        () => () => {
+          dropAll(tag);
+          native.views.delete(tag);
         },
-        present: (bytes: Uint8Array, metadata: PictureMetadata) =>
-          new Promise<PictureOutcome>((settle) => {
-            if (!native.mounted || metadata.generation < native.generation) {
-              settle("dropped");
-              return;
-            }
-            if (metadata.generation > native.generation) {
-              native.generation = metadata.generation;
-              for (const { settle: earlier } of native.presented.splice(0)) earlier("dropped");
-            }
-            native.presented.push({ bytes, metadata, settle });
-          }),
+        [tag],
+      );
+      // Expo's component instance: its tag once mounted, and view functions iOS never calls.
+      React.useImperativeHandle(ref, () => ({
+        get nativeTag() {
+          return native.tagged ? tag : null;
+        },
+        clear: () => Promise.reject(new Error("called with the view as its argument")),
+        present: () => Promise.reject(new Error("called with the view as its argument")),
       }));
       // Something is on screen exactly while the view says what it shows.
       return props.accessibilityLabel ? <img alt={props.accessibilityLabel} /> : null;
@@ -109,8 +170,9 @@ vi.mock("../computers/phone-display-native.js", async () => {
   );
   return {
     nativePictureView: () => (native.presenter === "picture" ? Picture : null),
-    // The binary's calls by tag are the view's own here: the handle above answers as they do.
-    pictureFunctions: (instance: unknown) => instance,
+    // The app's adapter itself, over this binary's calls by tag.
+    pictureFunctions: (instance: unknown) =>
+      viewFunctionsOf(byTag, instance as never, ["clear", "present"]),
   };
 });
 
@@ -184,8 +246,11 @@ afterEach(() => {
   native.geometry = "side:page@0";
   native.presenter = "image";
   native.presented = [];
-  native.generation = -1;
+  native.views.clear();
+  native.latest = 0;
+  native.tagged = true;
   native.mounted = true;
+  native.showing = true;
   native.cleared = null;
   native.shown = null;
   native.renders = 0;
@@ -346,7 +411,12 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
     await act(async () => {
       const picture = native.presented.shift();
       if (!picture) throw new Error("The subscribed stream did not deliver a picture.");
-      picture.settle(outcome);
+      // As PictureQueue.complete: a waiting picture under another fence supersedes this one.
+      const superseded =
+        outcome === "presented" &&
+        native.presented[0] !== undefined &&
+        native.presented[0].metadata.fence !== picture.metadata.fence;
+      picture.settle(superseded ? "dropped" : outcome);
     });
   };
   return {
@@ -994,6 +1064,38 @@ describe("native browser picture presenter", () => {
     }
   });
 
+  // Before Expo's component has its tag, a call by tag is refused before it reaches the view:
+  // the walk must read that as a dropped picture, and the picture must still appear.
+  it("counts a picture refused before its view has a tag as dropped, and offers it again", async () => {
+    const { setPictureTraceSink } = await import("./picture-trace.js");
+    const lines: string[] = [];
+    const previous = setPictureTraceSink((line) => lines.push(line));
+    vi.useFakeTimers();
+    try {
+      native.presenter = "picture";
+      native.tagged = false;
+      const { container, decode, emit, render } = setup();
+      render("synchronized");
+      emit();
+      await act(async () => undefined);
+      expect(native.presented).toHaveLength(0);
+      expect(lines).toContainEqual(
+        expect.stringMatching(
+          /^\[opensteer-picture\] answered surface=\S+ picture=1 outcome=dropped reason=refused$/u,
+        ),
+      );
+      await act(async () => vi.advanceTimersByTimeAsync(4000));
+      expect(lines.at(-1)).toMatch(/the view dropped every picture so far \(1\)$/u);
+      native.tagged = true;
+      act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+      expect(native.presented.map(({ bytes }) => [...bytes])).toEqual([[0xff, 0xd8, 0xff]]);
+      await decode();
+      expect(container.textContent).not.toContain("Loading the page…");
+    } finally {
+      setPictureTraceSink(previous);
+    }
+  });
+
   it("says nothing of its pictures where it does not trace", async () => {
     const { setPictureTraceSink } = await import("./picture-trace.js");
     const previous = setPictureTraceSink(null);
@@ -1024,7 +1126,7 @@ describe("native browser picture presenter", () => {
     await act(async () => undefined);
     expect(native.presented).toHaveLength(0);
     expect(container.textContent).toContain("Loading the page…");
-    expect(native.generation).toBe(-1);
+    expect(native.generation).toBe(0);
     native.mounted = true;
     act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
     expect(native.presented).toHaveLength(1);

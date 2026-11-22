@@ -299,6 +299,8 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
   }
   private val showing get() = attached && visible && !destroyed
   fun clear(generation: Int) {
+    // Stale: this view already took a newer generation from a picture. Its picture stays.
+    if (generation < queue.generation) return
     queue.clear(generation)
     picture.show(null, null)
   }

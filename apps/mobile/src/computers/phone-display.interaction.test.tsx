@@ -34,6 +34,8 @@ const state = vi.hoisted(() => ({
   retentionSupported: true,
   geometry: "side:display@0",
   epoch: "",
+  /** Whether the native view exists yet: a call by its tag before then reaches nothing. */
+  mounted: true,
   pixels: false,
   resets: [] as { epoch: string; keepPicture: boolean }[],
   ready: null as
@@ -122,7 +124,9 @@ vi.mock("expo", async () => {
           state.ready = props.onReady;
           state.needsKeyframe = props.onNeedsKeyframe;
           React.useImperativeHandle(ref, () => ({
+            // As resetForView answers: no view yet, nothing reset, and no refusal.
             reset: async (epoch: string) => {
+              if (!state.mounted) return;
               state.epoch = epoch;
               state.pixels = false;
               state.resets.push({ epoch, keepPicture: false });
@@ -130,6 +134,7 @@ vi.mock("expo", async () => {
             ...(state.retentionSupported
               ? {
                   resetKeepingPicture: async (epoch: string) => {
+                    if (!state.mounted) return;
                     state.epoch = epoch;
                     state.resets.push({ epoch, keepPicture: true });
                   },
@@ -271,6 +276,7 @@ afterEach(async () => {
   state.proxy = null;
   state.decoded = [];
   state.epoch = "";
+  state.mounted = true;
   state.pixels = false;
   state.resets = [];
   state.decodeResult = null;
@@ -1080,6 +1086,36 @@ it.each([0, 1])(
     ).toEqual([1, 2, 3, 4, 5]);
   },
 );
+
+// The screen video's version of the page that never painted: its reset was made before the
+// native view existed, so the view stayed at its empty epoch and refused every frame while the
+// app kept asking for keys. The view says its epoch when it joins its window.
+it("resets a display view that missed its reset once it joins its window, so its picture appears", async () => {
+  state.mounted = false;
+  await setup();
+  expect(state.epoch).toBe("");
+  expect(state.decoded).toEqual([]);
+  state.mounted = true;
+  await act(async () => state.needsKeyframe?.({ nativeEvent: { epoch: "" } }));
+  expect(state.epoch).not.toBe("");
+  await act(async () => {
+    socket.emit("message", {
+      data: encodeDisplayViewerFrame(
+        {
+          generation: 1,
+          sequence: 2,
+          ptsUs: 2000,
+          width: 200,
+          height: 400,
+          key: true,
+          codec: "avc1.42C01F",
+        },
+        Uint8Array.of(0, 0, 1, 0x65),
+      ).slice().buffer,
+    });
+  });
+  expect(state.decoded).toEqual([{ epoch: state.epoch, bytes: [0, 0, 1, 0x65] }]);
+});
 
 it("holds every delta after a frame it had no room for until a key arrives", async () => {
   await setup();

@@ -103,8 +103,13 @@ class PictureQueue<Payload> {
     return shown to next
   }
 
-  /** Drops every delivery not yet shown; only [next] may draw afterwards. */
+  /**
+   * Drops every delivery not yet shown; only [next] may draw afterwards. A clear for an older
+   * generation than the queue holds is stale (it already took a newer one from a picture) and
+   * changes nothing: generations never go down.
+   */
   fun clear(next: Int) {
+    if (next < generation) return
     generation = next
     decoding?.receipt?.invoke(PictureOutcome.DROPPED)
     decoding = null
