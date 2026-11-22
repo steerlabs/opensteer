@@ -161,7 +161,7 @@ describe("BrowserModuleRelay native profiles", () => {
   it.each([
     [true, 1011, "a pool guest's runtime that did not take the close"],
     [false, 1000, "a local runtime, as before"],
-  ] as const)("answers a Host's close with %s → %s (%s)", async (pooled, code) => {
+  ] as const)("answers a Host's close with %s → %s (%s)", async (pooled, code, _case) => {
     const f = fixture();
     vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
     vi.spyOn(f.bridge, "pooled", "get").mockReturnValue(pooled);

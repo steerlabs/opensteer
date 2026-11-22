@@ -1101,6 +1101,7 @@ it("neither reuses nor ends a pooled session a Stop left closing, at any door", 
     const started = await home.service
       .start({
         ownerId: j.task.userId,
+        fresh: true,
         reuseExisting: true,
         placement: { kind: "runner", runnerId: j.task.runnerId },
         operationBudget: { signal: AbortSignal.timeout(2_000), expiresAt: Date.now() + 2_000 },
@@ -1217,6 +1218,7 @@ it("keeps a pooled Trigger's stopped session closing while the runtime is silent
     const home = await j.startHome();
     const { session } = await home.service.start({
       ownerId: j.task.userId,
+      fresh: true,
       origin: "trigger",
       placement: { kind: "runner", runnerId: j.task.runnerId },
     });
