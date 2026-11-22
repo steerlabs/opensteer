@@ -68,3 +68,28 @@ export function judgeFirstRunTrial(evidence: FirstRunTrialEvidence): FirstRunTri
 function occurrences(text: string, needle: string): number {
   return text.split(needle).length - 1;
 }
+
+/** What the Mac app logs when the operating system's protected storage refuses it. */
+export const protectedStorageRefused = "desktop.protected-storage.verification-failed";
+
+/**
+ * Why a trial found no account to sign in to: the Mac app keeps its sign-in in protected storage,
+ * and when that refuses it the first screen is the welcome of a build without an account.
+ */
+export function noAccountReason(log: string): string {
+  return log.includes(protectedStorageRefused)
+    ? "the Mac app's first screen has no account to sign in to: macOS protected storage refused it " +
+        `(${protectedStorageRefused} in its log), so its sign-in and this Mac's Home cannot keep their secrets in this guest`
+    : "the Mac app's first screen has no account to sign in to";
+}
+
+/** A trial that stopped before the phone step: failed, with the reason and what its log shows. */
+export function stoppedTrial(reason: string, log: string): FirstRunTrialVerdict {
+  const verdict = judgeFirstRunTrial({ accountLink: null, log, provider: [], screen: "" });
+  // Of the judgement, only what the log says: the screen and the link were never reached.
+  const fromLog = verdict.failures.filter(
+    (failure) =>
+      !failure.startsWith("this Mac's Home is not") && !failure.startsWith("the phone step never"),
+  );
+  return { ...verdict, failures: [`the trial stopped: ${reason}`, ...fromLog] };
+}

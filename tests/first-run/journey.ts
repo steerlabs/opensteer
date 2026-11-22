@@ -31,7 +31,14 @@ import {
   startJourneyPostgres,
 } from "./account-service.js";
 import { signInAtAccount } from "./browser.js";
-import { helperMissingSentence, judgeFirstRunTrial, type FirstRunTrialVerdict } from "./verdict.js";
+import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
+import {
+  helperMissingSentence,
+  judgeFirstRunTrial,
+  noAccountReason,
+  stoppedTrial,
+  type FirstRunTrialVerdict,
+} from "./verdict.js";
 
 type Trial = "settled" | "racing";
 const trials: readonly Trial[] = ["settled", "racing"];
@@ -99,6 +106,8 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
     app.process().stdout?.on("data", (chunk: Buffer) => log.push(chunk.toString("utf8")));
     app.process().stderr?.on("data", (chunk: Buffer) => log.push(chunk.toString("utf8")));
     const page = await app.firstWindow();
+    // The first screen decides whether there is an account to sign in to at all.
+    await firstScreen(page, log);
     await signIn(app, page, account.origin);
     await screen(page, "Where should your Opensteer live?");
     await page.getByRole("button", { name: /^On this Mac/u }).click();
@@ -133,6 +142,23 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
       JSON.stringify(account.provider.calls, null, 2) + "\n",
     );
     return verdict;
+  } catch (error) {
+    // Whatever stopped the trial is its result, with the screen it stopped on: never a crash
+    // that hides it.
+    const reason = error instanceof Error ? error.message : String(error);
+    await writeFile(path.join(directory, "stopped.txt"), `${reason}\n`);
+    const page = app?.windows()[0];
+    if (page) {
+      await page.screenshot({ path: path.join(directory, "stopped.png") }).catch(() => undefined);
+      const text = await page
+        .locator("body")
+        .innerText()
+        .catch(() => "");
+      await writeFile(path.join(directory, "stopped-screen.txt"), text);
+    }
+    const verdict = stoppedTrial(reason, log.join(""));
+    await writeFile(path.join(directory, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n");
+    return verdict;
   } finally {
     await writeFile(path.join(directory, "app.log"), log.join(""));
     if (app) await quit(app);
@@ -140,21 +166,23 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
   }
 }
 
+/** The Mac app's first screen: Sign in, or the welcome of a build with no account here. */
+async function firstScreen(page: Page, log: readonly string[]): Promise<void> {
+  const signIn = page.getByRole("button", { name: "Sign in", exact: true });
+  const noAccount = page.getByText("Welcome to Opensteer", { exact: true });
+  await signIn.or(noAccount).first().waitFor({ timeout: settleMs });
+  if (await noAccount.isVisible()) throw new Error(noAccountReason(log.join("")));
+}
+
 /** Sign in, through the account service's own pages, and hand the app its callback. */
 async function signIn(app: ElectronApplication, page: Page, accountOrigin: string): Promise<void> {
-  // The system browser, for a journey with no person at it: the app's openExternal is where the
-  // operating system would take over, so the address it opens comes here instead.
-  const opened = app.evaluate(
-    ({ shell }, origin) =>
-      new Promise<string>((resolve) => {
-        shell.openExternal = async (url: string) => {
-          if (url.startsWith(`${origin}/api/auth/oauth2/authorize`)) resolve(url);
-        };
-      }),
-    accountOrigin,
+  // The system browser: the address the app opens on Sign in comes back as an event.
+  const authorizeUrl = await openedByPress(
+    app as unknown as ElectronAppCalls,
+    `${accountOrigin}/api/auth/oauth2/authorize`,
+    () => page.getByRole("button", { name: "Sign in", exact: true }).click(),
+    settleMs,
   );
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  const authorizeUrl = await bounded(opened, "the app opening the account's sign-in");
   const { callback } = await signInAtAccount({
     authorizeUrl,
     email: journeyAccount.email,

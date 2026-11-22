@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { pageForm } from "./browser.js";
-import { helperMissingSentence, judgeFirstRunTrial } from "./verdict.js";
+import {
+  helperMissingSentence,
+  judgeFirstRunTrial,
+  noAccountReason,
+  stoppedTrial,
+} from "./verdict.js";
 
 /*
  * The first-run journey's own judgement, without the VM: what passes it, what fails it, and what
@@ -84,5 +89,39 @@ describe("the browser stand-in's reading of a page's form", () => {
     expect(form.action.toString()).toBe("http://127.0.0.1:4142/sign-in/app-review");
     expect([...form.fields]).toEqual([["oauth_query", "client_id=desktop&state=s&sig=a%2Bb"]]);
     expect(() => pageForm(page, "/consent")).toThrow("/sign-in has no form that posts to /consent");
+  });
+});
+
+describe("a trial that stops before the phone step", () => {
+  const refused =
+    '{"event":"desktop.protected-storage.verification-failed","message":"encrypt: Error while encrypting the text provided to safeStorage.encryptStringAsync."}';
+
+  it("says the first screen had no account, and why when the log says protected storage refused", () => {
+    expect(noAccountReason(refused)).toBe(
+      "the Mac app's first screen has no account to sign in to: macOS protected storage refused it " +
+        "(desktop.protected-storage.verification-failed in its log), so its sign-in and this Mac's Home cannot keep their secrets in this guest",
+    );
+    expect(noAccountReason("")).toBe("the Mac app's first screen has no account to sign in to");
+  });
+
+  it("fails with its reason first and keeps what its log shows, never a pass", () => {
+    const verdict = stoppedTrial(
+      "Timed out waiting for the phone step",
+      [
+        refused,
+        '{"event":"desktop.personal.remote-access.initialize-failed","message":"x"}',
+        "Error: Another deployment access operation is already running.",
+      ].join("\n"),
+    );
+    expect(verdict).toMatchObject({
+      alreadyRunningLogged: 1,
+      initializeFailedLogged: 1,
+      linked: false,
+      passed: false,
+    });
+    expect(verdict.failures).toEqual([
+      "the trial stopped: Timed out waiting for the phone step",
+      'the log says "Another deployment access operation is already running" 1 times',
+    ]);
   });
 });
