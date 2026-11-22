@@ -7,10 +7,10 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { afterEach, describe, expect, it } from "vitest";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
@@ -25,18 +25,6 @@ function isolatedDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
   return dir;
-}
-
-function freePort(): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      server.close((error) => (error ? reject(error) : resolvePort(port)));
-    });
-  });
 }
 
 function waitForOutput(
