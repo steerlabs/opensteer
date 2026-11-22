@@ -2470,8 +2470,14 @@ class ElectronDebuggerHub {
   readonly #screencastOwners = new Map<ElectronCdpChannel, Record<string, unknown> | undefined>();
   /** The cast's latest frame, for an owner that joins it: a still page sends no other. */
   #lastScreencastFrame: Record<string, unknown> | null = null;
-  /** Frames whose ack Chromium has had: it hears one a frame, whoever of the owners saw it. */
-  readonly #ackedScreencastFrames = new Set<unknown>();
+  /** Whether Chromium is casting for the owners: only a start sends it, and an end clears it. */
+  #castRunning = false;
+  /**
+   * Frames Chromium sent in this cast and has had no ack for. A frame's ack names the cast, not
+   * the frame, and Chromium sends no more while two wait: every one it sent is acked once, and a
+   * frame the hub replayed to a joiner, never.
+   */
+  #framesAwaitingAck = 0;
   readonly #webContents: WebContents;
   readonly #setRenderingDemand: (demanded: boolean) => void;
   readonly #prepareInput: () => Promise<void>;
@@ -2554,7 +2560,10 @@ class ElectronDebuggerHub {
       const pageEvent = this.#agentWorlds.observe(method, record);
       if (method.startsWith("Runtime.executionContext"))
         for (const channel of this.#channels) channel.observeContextEvent(method, record);
-      if (method === "Page.screencastFrame") this.#lastScreencastFrame = record;
+      if (method === "Page.screencastFrame") {
+        this.#lastScreencastFrame = record;
+        this.#framesAwaitingAck += 1;
+      }
       const recipients =
         method === "Page.screencastFrame"
           ? [...this.#screencastOwners.keys()]
@@ -2569,12 +2578,15 @@ class ElectronDebuggerHub {
       }
     });
     this.#debugger.on("detach", (_event, reason) => {
+      // The session that ran the cast is gone, and its cast with it.
+      this.#castEnded();
       this.#interrupt(new Error(`Electron CDP debugger detached: ${reason}.`));
       this.#forgetContexts();
       this.#events.emit("detach", reason);
     });
     webContents.on("render-process-gone", (_event, details) => {
       this.#crashed = true;
+      this.#castEnded();
       this.#interrupt(
         new Error(
           `Electron browser page crashed (${details.reason}); reload the page to continue.`,
@@ -2590,6 +2602,8 @@ class ElectronDebuggerHub {
     // hidden in the transparent resting window: until throttling is set again
     // it draws nothing, takes no clicks and gives a screencast no frame.
     webContents.on("did-navigate", () => {
+      // The latest frame was the last document's: no one is handed it now.
+      this.#lastScreencastFrame = null;
       this.#crashed = false;
       this.#inputReady = null;
       this.#updateThrottling();
@@ -2702,6 +2716,9 @@ class ElectronDebuggerHub {
     parameters?: Record<string, unknown>,
     cleanup = false,
   ): Promise<unknown> {
+    // A new size makes the latest frame the wrong shape for anyone who joins after it.
+    if (method.startsWith("Emulation.set") || method === "Emulation.clearDeviceMetricsOverride")
+      this.#lastScreencastFrame = null;
     const command = Promise.withResolvers<unknown>();
     this.#pending.add(command.reject);
     try {
@@ -2846,10 +2863,11 @@ class ElectronDebuggerHub {
         this.#updateThrottling();
         const deciding = this.#deciding()?.[1];
         // One cast serves everyone who wants this page's picture: an owner that asks for what is
-        // already being cast joins it, with no stop and no new start, and has its latest frame.
-        if (casting && sameCast(running, deciding)) {
+        // already being cast joins it, with no stop and no new start, and has its latest frame
+        // (one that asks again has reset what it shows, and gets it too).
+        if (casting && this.#castRunning && sameCast(running, deciding)) {
           const frame = this.#lastScreencastFrame;
-          if (frame !== null && !restarted) channel.emit("Page.screencastFrame", frame);
+          if (frame !== null) channel.emit("Page.screencastFrame", frame);
           return {};
         }
         try {
@@ -2857,7 +2875,9 @@ class ElectronDebuggerHub {
           // A new start replaces the running cast's settings: no stop between, so no one
           // watching sees the page go stale or blank while it changes.
           await send(method, deciding);
+          this.#castRunning = true;
           this.#lastScreencastFrame = null;
+          this.#framesAwaitingAck = 0;
           return {};
         } catch (error) {
           this.#screencastOwners.delete(channel);
@@ -2874,20 +2894,18 @@ class ElectronDebuggerHub {
         if (!this.#screencastOwners.delete(channel)) return {};
         this.#updateThrottling();
         if (this.#screencastOwners.size === 0) {
-          this.#lastScreencastFrame = null;
+          this.#castEnded();
           await send(method, parameters);
         }
         return {};
       });
     }
     if (method === "Page.screencastFrameAck") {
-      // The deciding owner paces the cast; Chromium hears one ack a frame, never one again.
-      const frame = asRecord(parameters).sessionId;
-      if (this.#deciding()?.[0] !== channel || this.#ackedScreencastFrames.has(frame))
+      // The deciding owner paces the cast: one ack for each frame Chromium sent, and none for
+      // a frame the hub replayed.
+      if (this.#deciding()?.[0] !== channel || this.#framesAwaitingAck === 0)
         return Promise.resolve({});
-      this.#ackedScreencastFrames.add(frame);
-      if (this.#ackedScreencastFrames.size > 64)
-        this.#ackedScreencastFrames.delete(this.#ackedScreencastFrames.values().next().value);
+      this.#framesAwaitingAck -= 1;
     }
     if (method === "Target.setAutoAttach" || method === "Target.sendMessageToTarget") {
       // Out-of-process frames' sessions are the platform's, as the agent
@@ -3224,7 +3242,7 @@ class ElectronDebuggerHub {
     this.#interrupt(error);
     this.#domainOwners.clear();
     this.#screencastOwners.clear();
-    this.#lastScreencastFrame = null;
+    this.#castEnded();
     this.#renderingOwners.clear();
     this.#updateThrottling();
     const teardown = (async () => {
@@ -3333,6 +3351,13 @@ class ElectronDebuggerHub {
     for (const channel of this.#domainOwners.get("Runtime") ?? []) {
       channel.emit("Runtime.executionContextsCleared", {});
     }
+  }
+
+  /** Chromium casts no more: the next start is sent, and no old frame is handed to anyone. */
+  #castEnded(): void {
+    this.#castRunning = false;
+    this.#lastScreencastFrame = null;
+    this.#framesAwaitingAck = 0;
   }
 
   /** The screencasting channel whose parameters Chromium's cast uses, with them. */

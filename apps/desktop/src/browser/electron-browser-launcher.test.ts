@@ -1636,6 +1636,8 @@ describe("Electron debugger teardown", () => {
     const agent = await hub.page.agentCdp();
     const before = hub.contents.debugger.sendCommand.mock.calls.length;
     await agent.send("Page.startScreencast", { format: "jpeg", quality: 30 });
+    // Its first frame, which it acks: an ack is forwarded only for a frame Chromium sent.
+    hub.deliver("Page.screencastFrame", { data: "AAAA", metadata: {}, sessionId: 7 });
     await agent.send("Page.screencastFrameAck", { sessionId: 7 });
     expect(
       hub.contents.debugger.sendCommand.mock.calls
@@ -1677,7 +1679,8 @@ describe("Electron debugger teardown", () => {
     await stream.send("Page.startScreencast", cast);
     expect(hub.sent("Page.startScreencast")).toHaveLength(1);
     expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
-    expect(frames.stream).toEqual([frame]);
+    // The page's own channel asked again, so it reset what it shows: it has the frame again.
+    expect(frames.stream).toEqual([frame, frame]);
     expect(frames.picture).toEqual([frame]);
     // One that joins after the frame has it at once: a still page sends no other.
     const late = await hub.page.agentCdp();
@@ -1702,6 +1705,78 @@ describe("Electron debugger teardown", () => {
     expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
     await stream.send("Page.stopScreencast");
     expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
+    await hub.browser.close();
+  });
+
+  // A frame's ack names the cast, not the frame, and Chromium sends no more while two wait.
+  it("acks every frame Chromium sent once, from the owner that paces it, and never a replay", async () => {
+    const hub = await hubPage("22");
+    const page = await hub.page.cdp();
+    const slow = await hub.page.agentCdp();
+    const cast = { format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    const seen: unknown[] = [];
+    page.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame") seen.push(parameters);
+    });
+    await page.send("Page.startScreencast", cast);
+    await slow.send("Page.startScreencast", cast);
+    for (let index = 1; index <= 20; index += 1) {
+      hub.deliver("Page.screencastFrame", { data: `${index}`, metadata: {}, sessionId: 1 });
+      await page.send("Page.screencastFrameAck", { sessionId: 1 });
+      // The other owner acks now and then, late; its acks pace nothing.
+      if (index % 7 === 0) await slow.send("Page.screencastFrameAck", { sessionId: 1 });
+    }
+    expect(seen).toHaveLength(20);
+    expect(hub.sent("Page.screencastFrameAck")).toHaveLength(20);
+    // One who joins is handed the latest frame; its ack of that is the hub's to answer.
+    const joiner = await hub.page.cdp();
+    await joiner.send("Page.startScreencast", cast);
+    await joiner.send("Page.screencastFrameAck", { sessionId: 1 });
+    expect(hub.sent("Page.screencastFrameAck")).toHaveLength(20);
+    await hub.browser.close();
+  });
+
+  it("starts the cast again after the debugger lets go, though the settings are the same", async () => {
+    const hub = await hubPage("23");
+    const page = await hub.page.cdp();
+    const cast = { format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    await page.send("Page.startScreencast", cast);
+    for (const [event, listener] of hub.contents.debugger.on.mock.calls)
+      if (event === "detach") listener({}, "target closed");
+    await page.send("Page.startScreencast", cast).catch(() => undefined);
+    await vi.waitFor(() => expect(hub.sent("Page.startScreencast")).toHaveLength(2));
+    await hub.browser.close();
+  });
+
+  it("hands no one a frame of the old size, and an owner asking again the latest", async () => {
+    const hub = await hubPage("24");
+    const page = await hub.page.cdp();
+    const agent = await hub.page.agentCdp();
+    const cast = { format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    const seen: unknown[] = [];
+    agent.onEvent((method, parameters) => {
+      if (method === "Page.screencastFrame") seen.push(parameters);
+    });
+    await page.send("Page.startScreencast", cast);
+    await agent.send("Page.startScreencast", cast);
+    hub.deliver("Page.screencastFrame", {
+      data: "old",
+      metadata: { deviceWidth: 800 },
+      sessionId: 1,
+    });
+    expect(seen).toHaveLength(1);
+    // The page changes size, as a repair does; one who comes back is not handed the old picture.
+    await page.send("Emulation.setVisibleSize", { height: 700, width: 1_000 });
+    await agent.send("Page.stopScreencast");
+    await agent.send("Page.startScreencast", cast);
+    expect(seen).toHaveLength(1);
+    hub.deliver("Page.screencastFrame", {
+      data: "new",
+      metadata: { deviceWidth: 1_000 },
+      sessionId: 1,
+    });
+    await agent.send("Page.startScreencast", cast);
+    expect(seen.map((frame) => (frame as { data: string }).data)).toEqual(["old", "new", "new"]);
     await hub.browser.close();
   });
 
