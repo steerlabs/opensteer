@@ -239,7 +239,12 @@ async function waitForDisconnect(client: Browser, signal: AbortSignal): Promise<
   }
 }
 
-async function checkPageCdp(owned: Page, signal: AbortSignal): Promise<void> {
+async function checkPageCdp(
+  owned: Page,
+  signal: AbortSignal,
+  /** Work under a connection's authority, which hears the one method sentence. */
+  connection = false,
+): Promise<void> {
   await withTimeout(
     (async () => {
       const cdp = await owned.context().newCDPSession(owned);
@@ -257,7 +262,12 @@ async function checkPageCdp(owned: Page, signal: AbortSignal): Promise<void> {
         cdp.send("Network.enable"),
         ...fills.map(([method, parameters]) => {
           const fill: Promise<unknown> = Reflect.apply(cdp.send, cdp, [method, parameters]);
-          return expect(fill).rejects.toThrow("Saved login and card fills use browser_use");
+          // A connection's refused command answers the one method sentence, naming no Home.
+          return expect(fill).rejects.toThrow(
+            connection
+              ? `${method} is not available to a connected agent.`
+              : "Saved login and card fills use browser_use",
+          );
         }),
       ]);
       await cdp.detach();
@@ -510,7 +520,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     const { client, page: before } = await connect("full-access");
     await before.goto(origin);
     expect(await before.title()).toBe("Home CDP fixture");
-    await checkPageCdp(before, signal);
+    await checkPageCdp(before, signal, true);
     await Promise.all([
       waitForDisconnect(client, signal),
       store.updateThreadAccessMode({

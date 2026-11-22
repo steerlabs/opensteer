@@ -25,4 +25,3 @@ Lending a computer, connecting plugin accounts and wiring messaging.
 - [Computers](references/computers.md): enrollment, app access, agent SSH.
 - [Plugin account OAuth](references/plugin-accounts.md): managed and custom apps, checks.
 - [Messaging](references/messaging.md): Slack, new providers, checks.
-- [Team server](../team-server/SKILL.md): Docker testing and first-owner setup renewal.

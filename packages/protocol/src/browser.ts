@@ -732,6 +732,12 @@ const BaselineBrowserClientMessageSchema = z
       scriptEventBudget: BrowserCdpReplyBudgetSchema.optional(),
       actorToken: z.uuid().optional(),
       attachmentId: z.uuid().optional(),
+      /**
+       * The command is a connected agent's work, as the Home decided for its attachment. Sent only
+       * to a runtime advertising `connectionCommands`, which then holds the standard CDP lists, the
+       * auto-attach limit and the clipboard and permission rules itself.
+       */
+      connection: z.literal(true).optional(),
       /** Host-only attribution for Page.navigate and Opensteer.openTab. */
       navigationId: z.uuid().optional(),
       type: z.literal("cdp.command"),

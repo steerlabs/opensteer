@@ -78,10 +78,8 @@ export const processSupervisorBuild = [
 
 export function developmentPreflightCommands(
   services: readonly ServiceName[],
-  kind: ReturnType<typeof developmentKind> = "personal",
 ): readonly (readonly string[])[] {
-  if (!services.includes("runner") && !(kind === "personal" && services.includes("host")))
-    return [];
+  if (!services.includes("runner") && !services.includes("host")) return [];
   return [
     ["--filter", "@opensteer/runner", "build:native-fs"],
     ...(process.platform === "darwin"
@@ -99,17 +97,7 @@ export async function runDevelopmentStack(
   const deploymentShape = developmentKind(environment);
   assertDevelopmentEnvironment(environment);
   configureDevelopmentEnvironment(deploymentShape, environment);
-  const requestedServices = parseServices(environment.OPENSTEER_DEV_SERVICES);
-  const services =
-    deploymentShape === "team"
-      ? requestedServices.filter((service) => service === "host" || service === "web")
-      : requestedServices;
-  if (
-    deploymentShape === "team" &&
-    environment.OPENSTEER_DEV_SERVICES &&
-    requestedServices.some((service) => service !== "host" && service !== "web")
-  )
-    throw new Error("Team development runs only host and web");
+  const services = parseServices(environment.OPENSTEER_DEV_SERVICES);
   await configureDevelopmentBrowserRuntimeEnvironment(services, environment);
   const shutdownGraceMs = parseShutdownGraceMs(environment.OPENSTEER_DEV_SHUTDOWN_GRACE_MS);
   const pnpm = pnpmInvocation(environment);
@@ -126,7 +114,7 @@ export async function runDevelopmentStack(
   try {
     await assertDevelopmentListenersAvailable(developmentListeners(services, environment));
     await buildProcessSupervisor(pnpm, environment, signal);
-    for (const command of developmentPreflightCommands(services, deploymentShape)) {
+    for (const command of developmentPreflightCommands(services)) {
       if (signal?.aborted) return;
       await runSupervisedPreflight(supervisor, [...pnpm, ...command], environment, signal);
     }
@@ -354,24 +342,13 @@ export function configureDevelopmentEnvironment(
   environment: NodeJS.ProcessEnv,
 ): void {
   environment.OPENSTEER_DEPLOYMENT_KIND = kind;
-  environment.OPENSTEER_DEPLOYMENT_NAME ||=
-    kind === "personal" ? "Development" : "Development team";
+  environment.OPENSTEER_DEPLOYMENT_NAME ||= "Development";
   const supervisor =
     environment[processSupervisorExecutableVariable]?.trim() ||
     builtProcessSupervisor(repositoryRoot);
   if (!isAbsolute(supervisor))
     throw new Error("The development process supervisor path must be absolute");
   environment[processSupervisorExecutableVariable] = supervisor;
-  if (kind === "team") {
-    environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN ||= createHmac(
-      "sha256",
-      environment.OPENSTEER_AUTH_SECRET || "",
-    )
-      .update("development-team-setup")
-      .digest("base64url");
-    environment.OPENSTEER_HOST_DATA_DIR = resolve(repositoryRoot, ".opensteer/team-host");
-    return;
-  }
   environment.OPENSTEER_RUNNER_DATA_DIR = resolve(
     repositoryRoot,
     "apps",
@@ -442,15 +419,12 @@ async function startDevelopmentServices(
       "host",
       messagingToken ? { OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: messagingToken } : {},
     );
-    if (environment.OPENSTEER_DEPLOYMENT_KIND === "personal")
-      bootstrap = await waitForLocalBootstrap(
-        hostUrl(environment),
-        signal,
-        undefined,
-        environment.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN,
-      );
-    else if (!(await waitForOrigin(new URL("/healthz", hostUrl(environment)), signal)))
-      throw new Error("The team Host did not become ready");
+    bootstrap = await waitForLocalBootstrap(
+      hostUrl(environment),
+      signal,
+      undefined,
+      environment.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN,
+    );
   }
   if (signal.aborted) return;
 
@@ -481,13 +455,7 @@ async function startDevelopmentServices(
   // The summary and its link always print. `OPENSTEER_OPEN_BROWSER=false`
   // declines the browser, not the information — suppressing both would leave a
   // headless or CI run with no way to reach setup at all.
-  const url =
-    environment.OPENSTEER_DEPLOYMENT_KIND === "team"
-      ? new URL(
-          `/setup#${environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN}`,
-          publicUrl(environment),
-        ).toString()
-      : (bootstrap?.setupUrl ?? publicUrl(environment).toString());
+  const url = bootstrap?.setupUrl ?? publicUrl(environment).toString();
   const openingBrowser =
     webReady &&
     Boolean(bootstrap?.setupUrl) &&
@@ -622,18 +590,6 @@ async function runSupervisedPreflight(
   }
 }
 
-/** `dev.ts team` is `pnpm dev:team`: a team Host and web, before `.env` is read. */
-export function selectDevelopmentShape(
-  arguments_: readonly string[],
-  environment: NodeJS.ProcessEnv,
-): void {
-  if (arguments_.length === 0) return;
-  if (arguments_.length !== 1 || arguments_[0] !== "team")
-    throw new Error("Usage: tsx scripts/dev.ts [team]");
-  environment.OPENSTEER_DEPLOYMENT_KIND = "team";
-  environment.OPENSTEER_DEV_SERVICES = "host,web";
-}
-
 async function main(): Promise<void> {
   const controller = new AbortController();
   let secondSignal = false;
@@ -653,7 +609,6 @@ async function main(): Promise<void> {
     process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
   for (const name of stopSignals) process.on(name, stop);
   try {
-    selectDevelopmentShape(process.argv.slice(2), process.env);
     await runDevelopmentStack(process.env, controller.signal);
   } finally {
     for (const name of stopSignals) process.off(name, stop);

@@ -3227,7 +3227,6 @@ export class RunnerRuntime {
           ...(context.maintenance ? { maintenance: context.maintenance } : {}),
           attachments,
           context: {
-            teamTurnContext: context.teamTurnContext,
             assignment: context.assignment,
             startedAt: new Date().toISOString(),
             threadState: context.threadState,

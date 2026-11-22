@@ -1,7 +1,6 @@
 import { useThreadTranscript } from "@opensteer/client/react";
 import { useOutboxTranscript } from "@opensteer/client/react";
 import { hostMessageOutbox, splitLocalMessages } from "@opensteer/client/host";
-import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
@@ -243,7 +242,6 @@ function ThreadView({
   cuts = 0,
   thread,
 }: ThreadViewProps) {
-  const teamSource = useTaskSourceView(thread.teamOrigin);
   const { dock: workspaceDock, nav, phone, selection, work } = useWorkspace();
   // A subagent opened from this conversation: in its column, or beside it when it stands alone and wide.
   const [searchParams] = useSearchParams();
@@ -1090,9 +1088,7 @@ function ThreadView({
   const startHold = live
     ? threadStartHold({ environments: snapshot.environments, runQueue: runQueue, thread })
     : null;
-  const composerPlaceholder = thread.teamOrigin
-    ? "Message your agent privately"
-    : threadComposerPlaceholder(conversation.length === 0);
+  const composerPlaceholder = threadComposerPlaceholder(conversation.length === 0);
   // The field names whom it writes to: the task by its name.
   const recipient = useMemo(() => ({ lead: "Reply to", name: thread.title }), [thread.title]);
   // A fact about this task's own computer, never about this app's connection.
@@ -1417,7 +1413,6 @@ function ThreadView({
                         <SessionActivity view={sessionView} />
                       ) : (
                         <AgentTranscript
-                          teamChannelName={teamSource?.channel.name ?? null}
                           revealMessage={revealMessage}
                           scroller={transcriptScroller}
                           key={thread.id}

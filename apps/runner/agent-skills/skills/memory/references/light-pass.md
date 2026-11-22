@@ -28,8 +28,7 @@ deep as the moment deserves. Skim what is routine; dig in when something might m
    follow `nextCursor` until you reach messages before its first new one, and read a clipped item
    whole by its `itemId` when it matters. Open the activity view when you need to know what really
    happened. If the wake says there are more, page `opensteer_task_list` as it says. Tasks linked
-   from the open list are items you raised: read them for the person's answers. A message from a team carries
-   `teamSource`, its channel and audience; keep it beside anything you repeat from it. Read
+   from the open list are items you raised: read them for the person's answers. Read
    the owner's mail plugins and device Messages and Calendar from where your last handoff
    stopped. Find read tools with `plugin_search` (for example, "mail", "messages" or "calendar"),
    follow its `next` input when needed, and read with `plugin_call` in small pages. When nothing

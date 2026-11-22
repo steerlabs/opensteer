@@ -1,7 +1,6 @@
 import type { NativeOAuthIdentity } from "@opensteer/client/auth";
 import {
   createId,
-  teamInviteSignInUrl,
   opensteerMobileAccountOAuthCallback,
   opensteerMobileHostOAuthCallback,
   opensteerMobileOAuthClientId,
@@ -137,7 +136,7 @@ describe("createIntegrationAuthorizationBrowser", () => {
 });
 
 describe("createAuthorizationBrowser", () => {
-  it("opens an invite continuation with the callback supplied by the OAuth owner", async () => {
+  it("opens an authorization with the callback supplied by the OAuth owner", async () => {
     const browser = new FakeBrowser();
     browser.result = { type: "success", url: `${oauth.hostCallback}?code=abc&state=abc` };
     const open = createAuthorizationBrowser({
@@ -145,12 +144,9 @@ describe("createAuthorizationBrowser", () => {
       oauth,
       broker: { accept: () => true, settled: async () => {} },
     });
-    const url = teamInviteSignInUrl(
-      authorizeUrl(oauth.hostCallback).replace(
-        "/oauth2/authorize",
-        "/v1/auth/native/oauth2/authorize",
-      ),
-      { selector: "s".repeat(32), verifier: "v".repeat(43) },
+    const url = authorizeUrl(oauth.hostCallback).replace(
+      "/oauth2/authorize",
+      "/v1/auth/native/oauth2/authorize",
     );
     await open(url, oauth.hostCallback);
     expect(browser.opened[0]?.redirect).toBe(oauth.hostCallback);

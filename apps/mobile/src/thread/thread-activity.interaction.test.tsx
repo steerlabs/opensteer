@@ -26,7 +26,6 @@ import { Message, TranscriptGroupRow, WorkingIndicator } from "./transcript.js";
 // primitives and animation drivers are outside this check.
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
-vi.mock("../team/team-context.js", () => ({ useTeamsSnapshot: () => ({ teams: [] }) }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", Version: "26" },
   useWindowDimensions: () => ({ fontScale: 1 }),
@@ -55,10 +54,7 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-chat-orb />,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-chat-orb /> }));
 vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("./message-hold.js", () => ({
   MessageHold: (props: { children: ReactNode }) => props.children,

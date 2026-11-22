@@ -1,13 +1,10 @@
 /** Weight in ms for a file without a recorded duration; also each recorded file's startup allowance. */
 export const unknownDuration = { tests: 1_500, integration: 3_000 };
 
-// Total duration alone can put a bulk seed and two-Host setup beside several
-// browser/runtime or migration suites, exhausting their operation budgets.
+// Total duration alone can put a bulk seed beside several browser/runtime or
+// migration suites, exhausting their operation budgets. No suite needs this today.
 export const integrationContention = {
-  files: [
-    "tests/team-history-plan.integration.test.ts",
-    "tests/team-share-files.integration.test.ts",
-  ],
+  files: [],
   maxCompanionDuration: 30_000,
 };
 

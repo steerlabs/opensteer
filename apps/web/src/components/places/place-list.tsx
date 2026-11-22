@@ -81,7 +81,7 @@ export function PlaceList({
                       </span>
                     ) : null}
                   </span>
-                  <PlaceDetail detail={row.detail} teams={row.facts?.teams ?? []} />
+                  <span className="place-row__detail">{row.detail}</span>
                 </span>
                 {row.facts ? <PlaceSignals facts={row.facts} /> : null}
                 <PlaceStatus status={row.status} />
@@ -136,40 +136,8 @@ export function PlaceList({
   );
 }
 
-/**
- * Where the place is and the teams it is in, on one line that never wraps:
- * facts read after the list opens fill this line instead of adding one, so
- * no row moves under a pointer on its way to it.
- */
-function PlaceDetail({
-  detail,
-  teams,
-}: {
-  readonly detail: string;
-  readonly teams: ComputerFacts["teams"];
-}) {
-  const names = teams.map((team) => team.name).join(", ");
-  return (
-    <span className="place-row__detail" title={names ? `${detail} · Teams: ${names}` : undefined}>
-      {detail}
-      {names ? (
-        <span className="place-row__teams">
-          <span aria-hidden className="place-row__dot">
-            ·
-          </span>
-          <Icon name="users" />
-          <span className="visually-hidden">Teams: </span>
-          {names}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 /** What waits for the person there, in the sidebar's own marks. */
 function PlaceSignals({ facts }: { readonly facts: ComputerFacts }) {
-  const mentioned = facts.teams.filter((team) => team.mentions);
-  const mentions = mentioned.reduce((total, team) => total + (team.mentions ?? 0), 0);
   return (
     <>
       {facts.needsYou ? (
@@ -184,16 +152,7 @@ function PlaceSignals({ facts }: { readonly facts: ComputerFacts }) {
           <span aria-hidden>{facts.needsYou}</span>
         </span>
       ) : null}
-      {mentions ? (
-        <span
-          aria-label={`${mentions} mentions`}
-          className="mention-count"
-          title={`Mentions: ${mentioned.map((team) => `${team.name} ${team.mentions}`).join(", ")}`}
-        >
-          @{mentions}
-        </span>
-      ) : null}
-      {facts.unread && !facts.needsYou && !mentions ? (
+      {facts.unread && !facts.needsYou ? (
         <span
           aria-label="Unread task results"
           className="task-row__unread"

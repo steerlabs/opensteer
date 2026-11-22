@@ -22,7 +22,7 @@ async function watch(host: PrivateMachineHost, threadId: ThreadId) {
   url.protocol = "ws:";
   const socket = new WebSocket(url, {
     headers: {
-      ...apiVersionHeaders("personal"),
+      ...apiVersionHeaders(),
       cookie: host.ownerHeaders.cookie!,
       origin: host.origin.origin,
     },

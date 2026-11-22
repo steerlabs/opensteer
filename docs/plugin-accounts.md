@@ -1,8 +1,7 @@
 # Plugin accounts and OAuth
 
 A custom OAuth app, a connected account and a plugin's reviewed account link are separate
-resources. The personal owner manages them; team membership never gives access to private
-credentials. Provider registration and real-provider checks belong to the
+resources. The personal owner manages them. Provider registration and real-provider checks belong to the
 [setup skill](../.agents/skills/setup/SKILL.md), never shipping code.
 
 ## Review and ownership

@@ -1,10 +1,7 @@
 import { useMemo } from "react";
-import type { HostClient, HostSnapshot } from "../host/client.js";
+import type { HostClient } from "../host/client.js";
 import { waitingInputs, type WaitingInput } from "../host/waiting-inputs.js";
 import { useThreadInputQueue } from "./use-thread-input-queue.js";
-import { useHostSelector } from "./use-host-snapshot.js";
-
-const selectNeedsYou = (snapshot: HostSnapshot) => snapshot.needsYou;
 
 /**
  * Everything waiting to reach the agent at the foot of one task
@@ -17,6 +14,5 @@ export function useWaitingInputs(
   observed = true,
 ): readonly WaitingInput[] | null {
   const queue = useThreadInputQueue(hostClient, threadId, observed);
-  const needsYou = useHostSelector(hostClient, selectNeedsYou);
-  return useMemo(() => queue && waitingInputs(queue, { needsYou }), [needsYou, queue]);
+  return useMemo(() => queue && waitingInputs(queue), [queue]);
 }

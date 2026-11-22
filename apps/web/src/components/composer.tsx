@@ -901,7 +901,6 @@ export function Composer({
       placeholder={fittedPlaceholder}
       readOnly={readOnly}
       ref={editorRef}
-      scope="personal"
       value={draft}
     />
   );

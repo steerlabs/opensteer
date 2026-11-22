@@ -2671,7 +2671,7 @@ export class LocalRunnerService {
       body: JSON.stringify(row.leaveProof),
       credentials: "omit",
       redirect: "error",
-      headers: { "content-type": "application/json", ...apiVersionHeaders("personal") },
+      headers: { "content-type": "application/json", ...apiVersionHeaders() },
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok || response.redirected || (response.url !== "" && response.url !== endpoint)) {

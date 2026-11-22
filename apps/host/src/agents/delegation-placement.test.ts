@@ -411,7 +411,6 @@ function thread(): Thread {
     lastVisitedAt: null,
     latestRunCompletedAt: null,
     accessMode: "full-access",
-    teamOrigin: null,
     continuationIdentity: null,
     doneAt: null,
     doneReason: null,

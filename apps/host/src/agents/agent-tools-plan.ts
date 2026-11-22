@@ -24,10 +24,7 @@ export function agentToolsPlanForRun(input: {
   readonly token: string;
   readonly purpose: TaskPurpose;
   readonly accessMode: ThreadAccessMode;
-  readonly teamsAvailable?: boolean;
   readonly personalContext?: boolean;
-  /** The owner is in a team and this Run may use their personal context. */
-  readonly knowledge?: boolean;
   /** Why settings.json in Agent home is invalid, for the agent that can fix it. */
   readonly settingsError?: AgentHomeSettingsError | undefined;
   /** The grant of the connection whose lineage this Run is in. */
@@ -38,8 +35,6 @@ export function agentToolsPlanForRun(input: {
     ...(input.grant ? { grant: input.grant } : {}),
     capabilities: input.capabilities,
     accessMode: input.accessMode,
-    teamsAvailable: input.teamsAvailable === true,
-    knowledge: input.knowledge === true,
   });
   const runToolsCatalog = runTools.map((tool) => ({
     name: tool.name,
@@ -52,9 +47,7 @@ export function agentToolsPlanForRun(input: {
     platformGuideForRun({
       purpose: input.purpose,
       capabilities: input.capabilities,
-      teamsAvailable: input.teamsAvailable === true,
       personalContext: input.personalContext !== false,
-      knowledge: input.knowledge === true,
     }) +
     (input.voiceCall ? `\n\n${voiceGuide}` : "") +
     (input.settingsError

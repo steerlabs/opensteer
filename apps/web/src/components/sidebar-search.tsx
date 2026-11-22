@@ -39,7 +39,6 @@ import { DeviceLabel } from "./computers/device-label.js";
 import { useScrollEdges } from "./workspace/scroll-edges.js";
 import { tabGroupStyle } from "./workspace/tab-group.js";
 import { TaskMark, TaskState } from "./workspace/task-mark.js";
-import { TeamSearchResults } from "../team/team-search-results.js";
 
 /** What search can find, as the sidebar holds it. */
 export interface SidebarSearchSources {
@@ -261,7 +260,6 @@ export function SidebarSearch({
         {showing ? (
           <section aria-label="Search results" className="side-results">
             <div className="side-results__scroll" data-scroll-edges="" ref={scrollRef}>
-              <TeamSearchResults onNavigate={onClose} query={query} />
               {results.length === 0 ? (
                 tabsSyncing ? (
                   loadingTabs ? (

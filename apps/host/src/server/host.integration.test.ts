@@ -2166,7 +2166,6 @@ describe("Thread input command boundary", () => {
     title: "Boundary",
     updatedAt: now,
     purpose: "task" as const,
-    teamOrigin: null,
   };
 
   function messageResult(policy: "queue" | "steer") {
@@ -2184,8 +2183,6 @@ describe("Thread input command boundary", () => {
         messageId,
         policy,
         replyTarget: null,
-        teamRequestId: null,
-        teamSource: null,
         runId: null,
         state: "pending" as const,
         threadId,
@@ -2515,7 +2512,6 @@ describe("durable harness catalogs", () => {
         title: "Created",
         updatedAt: "2026-09-15T09:00:00.000Z",
         purpose: "task" as const,
-        teamOrigin: null,
       },
       asOfSequence: "0",
       wasDuplicate: false,
@@ -2603,7 +2599,6 @@ describe("durable harness catalogs", () => {
           title: "Moved",
           updatedAt: "2026-09-15T09:00:00.000Z",
           purpose: "task" as const,
-          teamOrigin: null,
         },
       }),
     );
@@ -2658,7 +2653,7 @@ describe("durable harness catalogs", () => {
       notificationState: {
         quietTaskDaysFor: async () => 3,
         listWorkspacePreferences: async () => [
-          { purpose: "task" as const, teamOrigin: null, muted: false, revision: "0" },
+          { purpose: "task" as const, muted: false, revision: "0" },
         ],
       },
       listEnvironmentsForUser: async () => (options.visibleToUser === false ? [] : [environment]),
@@ -2726,7 +2721,6 @@ describe("durable harness catalogs", () => {
           title: "Access",
           updatedAt: "2026-09-15T09:00:00.000Z",
           purpose: "task" as const,
-          teamOrigin: null,
         },
       }),
     );

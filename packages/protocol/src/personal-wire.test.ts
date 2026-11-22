@@ -11,7 +11,6 @@ import { PersonalResourceDataSchema } from "./resources.js";
 import { TabCommandSchema, TabViewerSchema } from "./tabs.js";
 import { ScopedClientMessageSchema, ScopedHostMessageSchema } from "./personal-sync.js";
 import { hostApi } from "./host-api.js";
-import { TeamCommandSchema } from "./team-api.js";
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserBridgeAttachedSchema,
@@ -56,16 +55,11 @@ const retiredHostFrames = new Set([
 ]);
 
 function personalWire(): PersonalWire {
-  const teamCommands = new Set<string>(
-    TeamCommandSchema.options
-      .map((option) => option.shape.type.value)
-      .filter((type) => type.startsWith("team.")),
-  );
   const commandOptions = (union: z.ZodType, surface: "input" | "output") => {
     const byType = new Map<string, z.ZodType[]>();
     const collect = (schema: z.ZodType): void => {
       const [type] = schema._zod.propValues?.type ?? [];
-      if (typeof type !== "string" || teamCommands.has(type)) return;
+      if (typeof type !== "string") return;
       const options = byType.get(type) ?? [];
       options.push(schema);
       byType.set(type, options);
@@ -82,10 +76,7 @@ function personalWire(): PersonalWire {
       ]),
     );
   };
-  // `team.*` reads are a team Host's; everything else is a personal Host's.
-  const rpcs = Object.entries(hostApi).filter(
-    ([name]) => !name.startsWith("team.") && name !== "commands.dispatch",
-  );
+  const rpcs = Object.entries(hostApi).filter(([name]) => name !== "commands.dispatch");
   const frames = (union: z.ZodDiscriminatedUnion, prefix: string) =>
     Object.fromEntries(
       union.options.map((option) => [

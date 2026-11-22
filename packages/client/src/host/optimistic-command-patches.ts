@@ -18,7 +18,6 @@ import type {
   TaskListState,
   ThreadSummary,
 } from "./client.js";
-import { settleTeamAsk } from "./needs-you.js";
 import { isTerminalRunEntryStatus, upsertEntry, withEditedMessage } from "./transcript.js";
 
 import type { ThreadView } from "./thread-state.js";
@@ -94,12 +93,6 @@ type OptimisticCommandPatch =
       readonly messageId: string;
       readonly threadId: string;
       readonly type: Extract<CommandType, "thread.input.lease.release">;
-    }
-  | {
-      readonly decision: "approve" | "decline";
-      readonly requestId: string;
-      readonly teamId: string;
-      readonly type: Extract<CommandType, "teams.ask.decide">;
     }
   | {
       readonly runId: string;
@@ -188,7 +181,6 @@ export const optimisticCommandPatches = {
       transcripts: { ...snapshot.transcripts, [thread.id]: snapshot.transcripts[thread.id] ?? [] },
     };
   },
-  "teams.ask.decide": answerTeamAsk,
   "thread.execution.update": replaceThread,
   "thread.input.cancel": withdrawQueuedInput,
   "thread.input.edit": (snapshot, { edit, leaseId, message, threadId }) =>
@@ -243,8 +235,6 @@ export function applyOptimisticCommandPatch(
     case "thread.create":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.execution.update":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "teams.ask.decide":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.input.cancel":
       return optimisticCommandPatches[patch.type](snapshot, patch);
@@ -619,29 +609,8 @@ export function withEditedWaitingMessage(
   const transcript = snapshot.transcripts[threadId];
   const stale = (held: MessageView) =>
     edit !== undefined && (held.edit?.revision ?? 0) > edit.revision;
-  const needsYou = snapshot.needsYou;
-  const asks =
-    edit !== undefined &&
-    needsYou?.entries.some(
-      (entry) => entry.kind === "team-ask" && entry.task?.messageId === message.id,
-    );
   return {
     ...snapshot,
-    // An ask's Needs-you entry names the version an approval from it acts on.
-    ...(needsYou && asks && edit
-      ? {
-          needsYou: {
-            ...needsYou,
-            entries: needsYou.entries.map((entry) =>
-              entry.kind === "team-ask" &&
-              entry.task?.messageId === message.id &&
-              entry.task.revision < edit.revision
-                ? { ...entry, task: { ...entry.task, revision: edit.revision } }
-                : entry,
-            ),
-          },
-        }
-      : {}),
     inputQueues: patchQueueItem(
       snapshot.inputQueues,
       threadId,
@@ -666,38 +635,6 @@ export function withEditedWaitingMessage(
           },
         }
       : {}),
-  };
-}
-
-/**
- * An answered ask leaves Needs you at once. Declined, it leaves its task's
- * waiting list; approved, it stays there as approving, no longer editable,
- * until the team confirms and the Host moves it into line.
- */
-function answerTeamAsk(
-  snapshot: TranscriptFixtureSnapshot,
-  patch: {
-    readonly decision: "approve" | "decline";
-    readonly requestId: string;
-    readonly teamId: string;
-  },
-): TranscriptFixtureSnapshot {
-  let inputQueues = snapshot.inputQueues;
-  for (const threadId of Object.keys(inputQueues)) {
-    inputQueues = patchQueueItem(
-      inputQueues,
-      threadId,
-      (item) =>
-        item.input.state === "awaiting-approval" &&
-        item.input.teamRequestId === patch.requestId &&
-        item.input.teamSource?.teamId === patch.teamId,
-      (item) => (patch.decision === "decline" ? null : { ...item, canEdit: false, lease: null }),
-    );
-  }
-  return {
-    ...snapshot,
-    inputQueues,
-    needsYou: settleTeamAsk(snapshot.needsYou, patch.teamId, patch.requestId),
   };
 }
 

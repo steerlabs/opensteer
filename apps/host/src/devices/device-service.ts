@@ -1,3 +1,7 @@
+import {
+  computerActionsUseClipboard,
+  computerClipboardRefusal,
+} from "../computer-use/computer-clipboard.js";
 import { computerMachineProblem } from "./computer-use-discovery.js";
 import { gatherComputerAccess } from "./computer-access.js";
 import {
@@ -361,6 +365,8 @@ export class DeviceService {
       | "withDeviceAdmissions"
       | "requireDeviceAgentAccess"
       | "deviceStatus"
+      | "agentSessionGuardsSupported"
+      | "refuseOutdatedForAgentSession"
     >;
     /**
      * Sessions for the one definition whose connections name an app's whole
@@ -1292,8 +1298,32 @@ export class DeviceService {
             })!,
       );
     }
+    // A read-only session lists and binds windows without launching an app; a Runner that
+    // cannot read `noLaunch` would launch one, so it is refused before any frame.
+    if (
+      mac &&
+      caller.session?.readOnly &&
+      (operation === "windows" || operation === "bind") &&
+      !(await this.#deviceApps.agentSessionGuardsSupported(placement.deviceId))
+    ) {
+      await admit(async () => undefined);
+      throw new ComputerUseError(
+        "incompatible-version",
+        await this.#deviceApps.refuseOutdatedForAgentSession(
+          placement.deviceId,
+          "let a connected agent look at its apps without opening them",
+        ),
+      );
+    }
     const rawArgs = { ...args };
     delete rawArgs.emit;
+    // Refused before the action is sent: the Mac's clipboard is in no grant.
+    if (
+      row === "act" &&
+      (caller.session || caller.connectionWork) &&
+      computerActionsUseClipboard(rawArgs)
+    )
+      throw refused("forbidden", computerClipboardRefusal);
     const internalArgs = row === "observe" && mac ? { operation, ...rawArgs } : rawArgs;
     if (operation === "bind" && mac) {
       ComputerUseBindParamsSchema.parse(rawArgs);

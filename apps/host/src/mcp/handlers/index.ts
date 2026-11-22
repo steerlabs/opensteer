@@ -10,9 +10,6 @@ import type { AppService } from "../../apps/app-service.js";
 import type { ProductToolHandlers } from "./product.js";
 import type { DeviceToolHandlers } from "./devices.js";
 import type { TriggerToolHandlers } from "./triggers.js";
-import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
-import { knowledgeToolHandlers, teamToolHandlers } from "./team.js";
-import type { RunId, TeamAgentRequestId, ThreadId } from "@opensteer/core";
 
 export type { AgentToolHandlers, ToolCall, ToolInput } from "./types.js";
 import type { AgentToolHandlers, ToolCall } from "./types.js";
@@ -32,14 +29,6 @@ export function agentToolHandlers(options: {
   readonly browser?: BrowserToolHandlers;
   readonly plugins?: PluginToolHandlers;
   readonly localServers?: LocalServerRegistry;
-  readonly team?: TeamToolPort;
-  readonly knowledge?: TeamKnowledgePort;
-  /** Whether a Run may still use its owner's personal context, rechecked per call. */
-  readonly personalContextForRun: (runId: RunId) => Promise<boolean>;
-  readonly teamRequestForRun: (
-    runId: RunId,
-    threadId: ThreadId,
-  ) => Promise<TeamAgentRequestId | null>;
 }): Partial<AgentToolHandlers> {
   const p = options.product,
     d = options.devices,
@@ -150,12 +139,6 @@ export function agentToolHandlers(options: {
     computer_use: async (c) => await d.computer_use(c),
     computer_apps: async (c) => await d.computer_apps(c),
     app_access_request: async (c) => await d.app_access_request(c),
-    ...teamToolHandlers({ port: options.team, personalContext: options.personalContextForRun }),
-    ...knowledgeToolHandlers({
-      port: options.knowledge,
-      requestForRun: options.teamRequestForRun,
-      personalContext: options.personalContextForRun,
-    }),
   };
   if (options.discoverSources) {
     const discover = discoverHandler(handlers, options.discoverSources);

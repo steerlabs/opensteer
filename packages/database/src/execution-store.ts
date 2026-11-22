@@ -1,7 +1,6 @@
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
-import { runDeliverySelection } from "./thread-row-mappers.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { runAllowsPersonalContext } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
@@ -361,7 +360,6 @@ export async function loadRunDispatchContext(
   const runRow = await database
     .selectFrom("runs")
     .selectAll()
-    .select(runDeliverySelection)
     .where("id", "=", command.runId)
     .executeTakeFirstOrThrow();
   if (runRow.reportContext === null) {
@@ -1094,7 +1092,6 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
   const run = await database
     .selectFrom("runs")
     .selectAll()
-    .select(runDeliverySelection)
     .where("threadId", "=", threadId)
     .orderBy("runOrdinal", "asc")
     .limit(1)
@@ -1111,13 +1108,11 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
           .where((eb) =>
             eb.or([
               eb("threadInputs.state", "is", null),
-              eb("threadInputs.state", "not in", ["cancelled", "awaiting-approval"]),
+              eb("threadInputs.state", "not in", ["cancelled"]),
             ]),
           )
           .where("kind", "=", "input")
-          .where(
-            sql<boolean>`(author->>'kind' in ('human', 'agent', 'trigger', 'watch') or (author->>'kind' = 'team-member' and exists (select 1 from personal_team_requests p where p.local_input_id = messages.id and p.kind = 'ask' and p.released_at is not null)))`,
-          )
+          .where(sql<boolean>`author->>'kind' in ('human', 'agent', 'trigger', 'watch')`)
           .orderBy("messages.sequence", "asc")
           .limit(1)
           .executeTakeFirst()

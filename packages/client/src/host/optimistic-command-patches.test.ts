@@ -222,8 +222,6 @@ function queuedItem(text: string): ThreadInputQueue["items"][number] {
     canSteer: true,
     lease: null,
     input: {
-      teamRequestId: null,
-      teamSource: null,
       assignmentId: null,
       cancelReason: null,
       causalChainId: createId("causalChain"),

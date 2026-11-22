@@ -68,9 +68,8 @@ export function deploymentStatusSelectable(status: DeploymentStatus): boolean {
  * panel, Settings, and the Account portal. Every display kind is covered
  * here, so no surface has to invent a label for the one it did not expect.
  */
-export function deploymentKindLabel(kind: DeploymentDisplayKind): string {
-  if (kind === "personal") return "Personal";
-  return "Team";
+export function deploymentKindLabel(_kind: DeploymentDisplayKind): string {
+  return "Personal";
 }
 
 /**

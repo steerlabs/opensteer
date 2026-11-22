@@ -1,6 +1,6 @@
 import type { ClientSession } from "../connections/connection-controller.js";
 import { useMemo, useRef, useSyncExternalStore } from "react";
-import { PagedList, type PagedListState, type KeysetPage } from "../team/paged-list.js";
+import { PagedList, type PagedListState, type KeysetPage } from "../reads/paged-list.js";
 
 const idle: PagedListState<never, never> = {
   first: null,

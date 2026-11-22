@@ -25,7 +25,7 @@ export interface ConnectionDetailsSession {
 }
 
 export interface ConnectionDetailsProps {
-  /** The place's or team's mark, drawn beside its name. */
+  /** The place's mark, drawn beside its name. */
   readonly mark: ReactNode;
   readonly name: string;
   readonly state: string;

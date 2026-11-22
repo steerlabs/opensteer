@@ -1,21 +1,12 @@
 import {
-  DeploymentIdSchema,
-  mobileDeepLinkScheme,
   opensteerMobileClient,
-  parseTeamPageAppLink,
-  TeamNoticeIdSchema,
-  TeamOriginSchema,
-  teamPageUrl,
   parseMobileOpenDeepLink,
   parseMobileNeedsYouDeepLink,
   parseMobilePairingDeepLink,
   parseMobileSetupCode,
   parseMobileThreadDeepLink,
   type MobilePairingDeepLink,
-  type TeamPageLink,
 } from "@opensteer/core";
-import type { TopLevelTarget } from "./top-level.js";
-import { intentOf, type MobileTeam, type TeamLinkIntent } from "./team/mobile-teams.js";
 import { parseAgentConnectionDeepLink } from "@opensteer/protocol";
 
 /**
@@ -34,11 +25,6 @@ import { parseAgentConnectionDeepLink } from "@opensteer/protocol";
  * `authorize-agent` opens an agent's connection request for review. The link
  * carries no authority: the Host decides whether this phone's session may
  * answer it, and the person still chooses Allow or Deny.
- *
- * `team` is a team page a team's "Open in Opensteer" handed over: an invite
- * (its verifier stays in the page URL's fragment), a channel or a message. It
- * is opened only after the team itself says the reader may see it. `team-notice`
- * opens that team's notices.
  */
 export type ApplicationLinkOutcome =
   | { readonly kind: "pairing"; readonly offer: MobilePairingDeepLink }
@@ -56,18 +42,6 @@ export type ApplicationLinkOutcome =
       readonly messageId?: string;
       readonly threadId: string;
     }
-  | {
-      readonly kind: "team";
-      readonly page: string;
-      readonly origin: string;
-      readonly target: TeamPageLink["target"];
-    }
-  | {
-      readonly kind: "team-notice";
-      readonly origin: string;
-      readonly teamId: string;
-      readonly noticeId: string;
-    }
   | { readonly detail: string; readonly kind: "unknown-deployment" };
 
 export function resolveApplicationLink(
@@ -76,11 +50,6 @@ export function resolveApplicationLink(
 ): ApplicationLinkOutcome {
   const pairing = parseMobilePairingDeepLink(url);
   if (pairing !== null) return { kind: "pairing", offer: pairing };
-  const team = parseTeamPageAppLink(url, "mobile");
-  if (team !== null)
-    return { kind: "team", origin: team.origin, page: teamPageUrl(team), target: team.target };
-  const notice = parseTeamNoticeLink(url);
-  if (notice !== null) return { kind: "team-notice", ...notice };
   const agent = parseAgentConnectionDeepLink(url, opensteerMobileClient.applicationId);
   if (agent !== null)
     return knownDeploymentIds.includes(agent.deploymentId)
@@ -141,44 +110,6 @@ export function routeSetupCode(
   return true;
 }
 
-/**
- * A team notice's link, as the team's push publication spells it:
- * `com.opensteer.mobile:/team-notice?origin=…&teamId=…&noticeId=…`.
- */
-export function parseTeamNoticeLink(
-  value: string,
-): { readonly origin: string; readonly teamId: string; readonly noticeId: string } | null {
-  if (!value.startsWith(`${mobileDeepLinkScheme}:/team-notice?`) || value.includes("#"))
-    return null;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-  if (url.host || url.pathname !== "/team-notice" || url.searchParams.size !== 3) return null;
-  const origin = TeamOriginSchema.safeParse(url.searchParams.get("origin"));
-  const teamId = DeploymentIdSchema.safeParse(url.searchParams.get("teamId"));
-  const noticeId = TeamNoticeIdSchema.safeParse(url.searchParams.get("noticeId"));
-  if (!origin.success || !teamId.success || !noticeId.success) return null;
-  return { origin: origin.data, teamId: teamId.data, noticeId: noticeId.data };
-}
-
-/**
- * Which computer a team link should be shown on. The team is reached directly,
- * so its chat works whichever computer is in front; the drawer it belongs to is
- * that of a computer that is in it. Stays on the computer in front when it is
- * in the team or none is known to be; otherwise moves to one that is.
- */
-export function computerForTeam(input: {
-  readonly shown: string | null;
-  readonly computersInTeam: readonly string[];
-}): string | null {
-  if (input.computersInTeam.length === 0) return null;
-  if (input.shown !== null && input.computersInTeam.includes(input.shown)) return null;
-  return input.computersInTeam[0] ?? null;
-}
-
 export async function resolveRefreshedApplicationLink(
   url: string,
   ports: {
@@ -190,62 +121,4 @@ export async function resolveRefreshedApplicationLink(
   if (outcome.kind !== "unknown-deployment") return outcome;
   await ports.refreshDirectory();
   return resolveApplicationLink(url, await ports.knownDeployments());
-}
-
-/** Held team identities are pinned by discovery; a link's origin cannot select a different team. */
-export function teamLinkTarget(
-  outcome: Extract<ApplicationLinkOutcome, { kind: "team" | "team-notice" }>,
-  team: Pick<MobileTeam, "teamId" | "origin" | "onPhone" | "state"> | null,
-  externalIntent: number,
-): TopLevelTarget {
-  if (outcome.kind === "team-notice") {
-    if (team === null || !team.onPhone || team.teamId !== outcome.teamId)
-      throw new Error(
-        "That team is not on this phone. Add the team, then open the notification again.",
-      );
-    if (team.origin !== outcome.origin)
-      throw new Error("That notification's team address does not match the team on this phone.");
-    return { name: "TeamNotices", params: { teamId: outcome.teamId } };
-  }
-  const join = { name: "JoinTeam", params: { link: outcome.page, externalIntent } };
-  if (team === null || !team.onPhone || team.state === "join" || team.state === "removed")
-    return join;
-  const intent = intentOf({ origin: outcome.origin, target: outcome.target });
-  if (intent.kind === "invite" || intent.kind === "agent-link") return join;
-  return teamPlaceTarget(team.teamId, intent);
-}
-
-/** Message links land on the channel; its screen resolves replies and access once. */
-export function teamPlaceTarget(
-  teamId: string,
-  intent: Exclude<TeamLinkIntent, { kind: "invite" | "agent-link" }>,
-): TopLevelTarget {
-  switch (intent.kind) {
-    case "open":
-      return intent.threadRootId
-        ? {
-            name: "TeamThread",
-            params: {
-              teamId,
-              channelId: intent.channelId,
-              rootId: intent.threadRootId,
-              ...(intent.messageId ? { replyId: intent.messageId } : {}),
-            },
-          }
-        : {
-            name: "TeamChannel",
-            params: {
-              teamId,
-              channelId: intent.channelId,
-              ...(intent.messageId ? { messageId: intent.messageId } : {}),
-            },
-          };
-    case "knowledge-topic":
-      return { name: "TeamKnowledge", params: { teamId, topicId: intent.topicId } };
-    case "knowledge-note":
-      return {
-        name: "TeamNote",
-        params: { teamId, topicId: intent.topicId, noteId: intent.noteId },
-      };
-  }
 }

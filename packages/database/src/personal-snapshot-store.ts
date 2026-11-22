@@ -243,11 +243,10 @@ const attentionSnapshotRows = 200;
 async function readPendingAttention(tx: Tx) {
   const items: {
     id: string;
-    kind: "request" | "team-ask" | "failed-ask";
+    kind: "request";
     threadId: ThreadId | null;
     revision: string;
     title: string;
-    preview?: string;
   }[] = [];
   let bytes = 2;
   let before: { at: string; id: string } | undefined;
@@ -259,8 +258,7 @@ async function readPendingAttention(tx: Tx) {
         kind: entry.kind,
         threadId: entry.threadId,
         revision: entry.revision,
-        title: utf8Prefix(entry.title || (entry.kind === "request" ? "Request" : "Team ask"), 240),
-        ...(entry.blockedReason ? { preview: utf8Prefix(entry.blockedReason, 500) } : {}),
+        title: utf8Prefix(entry.title || "Request", 240),
       };
       const size = Buffer.byteLength(JSON.stringify(row)) + 1;
       if (bytes + size > attentionSnapshotBytes || items.length === attentionSnapshotRows)

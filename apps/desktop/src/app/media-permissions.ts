@@ -18,7 +18,7 @@ export function configureDesktopPermissions(
     if (permission === "usb") return usbDevices?.permitsRequest(origin) ?? false;
     return (
       (permission === "clipboard-sanitized-write" ||
-        // Team messages notify from the renderer's own team sockets.
+        // The app's own pages may check that they can show a notification.
         permission === "notifications" ||
         (permission === "media" && details.mediaType === "audio")) &&
       policy.isAppOrigin(origin) &&

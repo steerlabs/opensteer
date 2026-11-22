@@ -1,7 +1,7 @@
 import { isNetworkPath } from "./fileHref.js";
 import { hideIncompleteLinkTail } from "./markdown.js";
 import { markdownSourceTree, visitMarkdownSource } from "./markdownParser.js";
-import { teamMentionHandles, teamMentionHandleRanges } from "./teamMentions.js";
+import { mentionHandles, mentionHandleRanges } from "./mentionHandles.js";
 
 function privateDestination(url: string): boolean {
   let decoded = url;
@@ -126,8 +126,8 @@ export function stripRefs(markdown: string): string {
     if (pass === 31) result = stripPrivateLinks(result, true);
   }
   if (result === markdown) return result;
-  const originalHandles = new Set(teamMentionHandles(markdown));
-  for (const match of [...teamMentionHandleRanges(result)].reverse()) {
+  const originalHandles = new Set(mentionHandles(markdown));
+  for (const match of [...mentionHandleRanges(result)].reverse()) {
     if (!originalHandles.has(match.handle))
       result = result.slice(0, match.start) + "\\" + result.slice(match.start);
   }

@@ -178,7 +178,7 @@ export async function inputEditEligibility(
   if (
     thread.createdBy !== requestedBy ||
     row.policy !== "queue" ||
-    !["pending", "awaiting-approval"].includes(row.state) ||
+    row.state !== "pending" ||
     row.steerCommandId ||
     message.kind !== "input"
   )
@@ -194,17 +194,6 @@ export async function inputEditEligibility(
       .executeTakeFirst())
   )
     return false;
-  const mirror = row.teamRequestId
-    ? await transaction
-        .selectFrom("personalTeamRequests")
-        .selectAll()
-        .where("localInputId", "=", row.messageId)
-        .where("kind", "=", "ask")
-        .executeTakeFirst()
-    : null;
-  if (mirror?.localDecision === "approve" && !mirror.releasedAt) return false;
-  if (message.author.kind === "team-member")
-    return Boolean(mirror && !mirror.terminalState && mirror.localDecision !== "decline");
   return (
     message.author.kind === "human" &&
     message.author.userId === requestedBy &&

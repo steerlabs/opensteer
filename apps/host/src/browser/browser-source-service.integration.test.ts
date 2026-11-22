@@ -586,6 +586,9 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         passwordListeners.delete(listener);
       };
     },
+    // This release's Runner reads everything a connected agent's session adds.
+    agentSessionGuardsSupported: () => true,
+    refuseOutdatedForAgentSession: async () => "",
     passwordSignInSupported(runnerId: RunnerId) {
       return (
         runnerId === runtime.runnerId &&

@@ -479,7 +479,7 @@ integration("Opensteer web portal", () => {
 
     it("names what it removes, then deletes the Account and ends the session", async () => {
       const cookie = await portalSessionCookie();
-      await registerDeployment("Team server", "team-server");
+      await registerDeployment("Design server", "design-server");
       const page = await server.inject({
         headers: portalHeaders({ cookie }),
         method: "GET",
@@ -487,7 +487,7 @@ integration("Opensteer web portal", () => {
       });
       expect(page.statusCode, page.body).toBe(200);
       expect(page.body).toContain("portal-owner@example.test");
-      expect(page.body).toContain("Team server");
+      expect(page.body).toContain("Design server");
 
       const forged = await post(cookie, publicOrigin.origin);
       expect(forged.statusCode).toBe(403);
@@ -597,7 +597,7 @@ integration("Opensteer web portal", () => {
       hostInstanceId,
       hostKey: { algorithm: "Ed25519" as const },
       deploymentShape: {
-        kind: "team" as const,
+        kind: "personal" as const,
       },
     };
     const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse({

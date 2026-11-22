@@ -61,10 +61,8 @@ export function ThreadName(props: {
   );
 }
 
-/** The channel that asked, if any, and the task's state, apart from its mark. */
+/** The task's state, apart from its mark. */
 export function ThreadSubtitle(props: {
-  /** The team channel that asked, "#support". */
-  readonly placeName: string | null;
   readonly connectionLabel: string | null;
   readonly onRetry?: (() => void) | undefined;
   readonly task: Pick<TaskHeading, "moving" | "tone" | "word"> | null;
@@ -73,26 +71,12 @@ export function ThreadSubtitle(props: {
 }) {
   const { task } = props;
   if (props.line) return <ActionLine line={props.line} numberOfLines={1} />;
-  if (props.placeName === null && props.connectionLabel === null && task === null) return null;
+  if (props.connectionLabel === null && task === null) return null;
   return (
     <View accessibilityLiveRegion="polite" style={styles.row}>
       {task !== null && props.connectionLabel === null ? (
         <TaskStatus moving={task.moving} tone={task.tone} word={task.word} />
       ) : null}
-      {props.placeName === null ? null : (
-        <View style={[styles.row, styles.workspace]}>
-          <Symbol name="number" size={11} tint={color.muted} />
-          <AppText
-            maxFontSizeMultiplier={headerFontScaleLimit}
-            numberOfLines={1}
-            role="caption"
-            tone="muted"
-            style={styles.workspace}
-          >
-            {props.placeName}
-          </AppText>
-        </View>
-      )}
       {props.connectionLabel === null ? null : (
         <AppText
           numberOfLines={1}

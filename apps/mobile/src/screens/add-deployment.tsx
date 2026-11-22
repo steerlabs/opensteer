@@ -270,7 +270,7 @@ function manualDeploymentDoorRows(props: {
       title="Pair your Mac"
     />,
     <DeploymentDoorRow
-      description="The address of an Opensteer you run on your own server, or a team’s."
+      description="The address of an Opensteer you run on your own server."
       key="server"
       onPress={props.onServer}
       symbol="server"

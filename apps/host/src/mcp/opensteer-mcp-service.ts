@@ -141,7 +141,6 @@ export class OpensteerMcpService {
     readonly publicUrl: URL;
     readonly connectionPasswords?: boolean | (() => boolean);
     readonly savedLogins?: Pick<SavedLoginService, "replaySessionCredential">;
-    readonly teamsAvailable?: () => Promise<boolean>;
     /** A failure the caller was told only that something went wrong. */
     readonly onToolError?: (error: unknown, tool: string) => void;
   };
@@ -160,7 +159,6 @@ export class OpensteerMcpService {
     readonly publicUrl: URL;
     readonly connectionPasswords?: boolean | (() => boolean);
     readonly savedLogins?: Pick<SavedLoginService, "replaySessionCredential">;
-    readonly teamsAvailable?: () => Promise<boolean>;
     readonly onToolError?: (error: unknown, tool: string) => void;
   }) {
     this.options = options;
@@ -944,9 +942,6 @@ export class OpensteerMcpService {
       ...caller,
       // The same grant-derived set a lineage Run's dispatch plan carries.
       ...(callerLineage(caller) ? { grant: callerLineage(caller)!.grant } : {}),
-      teamsAvailable: caller.kind === "run" && (await this.options.teamsAvailable?.()) === true,
-      // Its handlers recheck personal context and a live team link on every call.
-      knowledge: caller.kind === "run",
     });
     const passwords = this.options.connectionPasswords;
     return caller.kind === "connection" &&

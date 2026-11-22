@@ -9,7 +9,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
@@ -56,9 +55,6 @@ import {
   type AttentionBadge,
   type ComputerAttention,
 } from "./computer-signals.js";
-import type { TeamSessionClient } from "@opensteer/client/team";
-import { MentionCount, TeamTile } from "../team/team-marks.js";
-import { useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
 import {
   useMobileClient,
   useMobileState,
@@ -230,8 +226,7 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
 });
 
 /**
- * What a computer has waiting: its own Needs you count or unread dot, and each
- * team it is in with that team's mentions of the reader. The shown computer
+ * What a computer has waiting: its own Needs you count or unread dot. The shown computer
  * speaks from its live snapshot; another from the one read made when the list
  * opened. Personal and work computers read alike, so the other is a glance away.
  */
@@ -240,19 +235,13 @@ function ComputerSignals(props: {
   readonly current: boolean;
   readonly read: ComputerAttention | null | undefined;
 }): ReactNode {
-  const teams = useMobileTeams();
-  useTeamsSnapshot();
-  const joined = teams.teamsOn(props.computerId);
   const host = useSelectedHostClient();
   const shown = props.current && host !== null;
   const read = computerBadge({ current: false, shown: null, read: props.read });
-  if (joined.length === 0 && !shown && read === null) return null;
+  if (!shown && read === null) return null;
   return (
     <View style={styles.signals}>
       {shown ? <ShownBadge host={host} /> : <Badge badge={read} />}
-      {joined.map(({ team, session }) => (
-        <TeamSignal key={team.teamId} name={team.teamName} session={session} teamId={team.teamId} />
-      ))}
     </View>
   );
 }
@@ -363,42 +352,6 @@ function useOtherComputersAttention(
   }, [asked, client]);
   return reads;
 }
-
-const TeamSignal = memo(function TeamSignal(props: {
-  readonly name: string;
-  readonly session: TeamSessionClient | null;
-  readonly teamId: string;
-}): ReactNode {
-  const { session } = props;
-  const mentions = useSyncExternalStore(
-    useCallback(
-      (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
-      [session],
-    ),
-    useCallback(() => session?.getSnapshot().sidebar?.totalMentionCount ?? 0, [session]),
-  );
-  return (
-    <View
-      accessibilityLabel={
-        mentions > 0
-          ? `${props.name}, ${mentions} ${mentions === 1 ? "mention" : "mentions"}`
-          : props.name
-      }
-      style={styles.teamSignal}
-    >
-      <TeamTile size={16} team={{ id: props.teamId, name: props.name, imageUri: null }} />
-      <AppText
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        numberOfLines={1}
-        role="caption"
-        tone="soft"
-      >
-        {props.name}
-      </AppText>
-      <MentionCount count={mentions} />
-    </View>
-  );
-});
 
 /**
  * The catalog: every place this phone knows about, and what state it is in.
@@ -876,7 +829,6 @@ const styles = StyleSheet.create({
     gap: space[8],
     marginTop: space[2],
   },
-  teamSignal: { alignItems: "center", flexDirection: "row", gap: space[4], maxWidth: "100%" },
   unavailable: {
     backgroundColor: color.surface,
     borderColor: color.line,

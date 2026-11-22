@@ -47,10 +47,10 @@ import {
   verifyAccessEndpoint,
   VerifiedAccessEndpointSchema,
   DeploymentConnectionInputSchema,
+  isVisiblyNotPersonal,
   type DeploymentCatalogStore,
   type AccountDeploymentConnectionSource,
 } from "./deployment-catalog.js";
-import { isNetworkedHome } from "./home-address.js";
 import {
   ClientOperationError,
   clientTimeoutError,
@@ -373,7 +373,9 @@ export class AccountDeploymentDirectoryService {
           sizeError: () => new Error("Account Host discovery response is too large."),
         }),
       ) as unknown;
-      return ListAccountDeploymentsResponseSchema.parse(decoded).deployments;
+      // An older Account may still list a team server: it is dropped here, by the rule the
+      // saved catalog applies, before anything counts or reconciles the list.
+      return ListAccountDeploymentsResponseSchema.parse(withoutRetiredRows(decoded)).deployments;
     } catch (error) {
       if (controller.signal.aborted) {
         throw controller.signal.reason instanceof Error
@@ -650,8 +652,8 @@ export class AccountDeploymentDirectoryService {
         connection: deploymentConnectionFromVerifiedEndpoints({
           accountAccess: deployment.access,
           endpoints: [verified],
-          // A Home on its own server is listed at its canonical origin, as a team is.
-          kind: isNetworkedHome(verified.discovery) ? "personal" : "team",
+          // A Home on its own server is listed at its canonical origin.
+          kind: "personal",
           name: deployment.name,
           source,
         }),
@@ -666,4 +668,12 @@ export class AccountDeploymentDirectoryService {
       return { deploymentId, reason: "host-unavailable" };
     }
   }
+}
+
+function withoutRetiredRows(decoded: unknown): unknown {
+  if (typeof decoded !== "object" || decoded === null || !("deployments" in decoded))
+    return decoded;
+  const { deployments } = decoded;
+  if (!Array.isArray(deployments)) return decoded;
+  return { ...decoded, deployments: deployments.filter((row) => !isVisiblyNotPersonal(row)) };
 }

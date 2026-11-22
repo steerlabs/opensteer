@@ -526,14 +526,14 @@ function ConversationMenu({
 
 /**
  * The head of a conversation-area page that is not a conversation — New
- * task, Voice, a team page: its name, and the computer's toggle.
+ * task, Voice: its name, and the computer's toggle.
  */
 export function AreaHeader({
   hostClient,
   mark,
   title,
 }: {
-  /** The personal Host, which Show computer opens; a team's own web app has none. */
+  /** The personal Host, which Show computer opens. */
   readonly hostClient: HostClient | null;
   readonly mark?: ReactNode;
   readonly title: string;

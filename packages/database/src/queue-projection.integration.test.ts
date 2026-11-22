@@ -32,7 +32,9 @@ describeStore("waiting queue projection", (it) => {
       const first = args[0] as string | { text?: string };
       const text = typeof first === "string" ? first : (first.text ?? "");
       if (
-        /from "thread_inputs" where "thread_id" = \$1 and "policy" = \$2 and "state" in/u.test(text)
+        /from "thread_inputs" where "thread_id" = \$1 and "policy" = \$2 and "state" = \$3/u.test(
+          text,
+        )
       )
         queueReads++;
       return (original as (...values: unknown[]) => unknown).apply(this, args);

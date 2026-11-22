@@ -108,7 +108,6 @@ export * from "./subagent-model.js";
 export * from "./subagent-now.js";
 export * from "./node-detail.js";
 
-export * from "./personal-team-links.js";
 export * from "./personal-stream-cache.js";
 export * from "./needs-you.js";
 

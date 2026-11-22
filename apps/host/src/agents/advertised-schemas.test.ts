@@ -17,13 +17,7 @@ it.each(["run", "program", "connection"] as const)(
     const specs = (kind === "connection" ? [...agentTools, discover] : agentTools).filter(
       (t) =>
         t.callers.some((c) => c === kind) &&
-        !(kind === "connection" && isRemovedConnectionTool(t.name)) &&
-        ![
-          "opensteer_team_file_download",
-          "opensteer_team_read",
-          "opensteer_team_search",
-          "opensteer_team_post",
-        ].includes(t.name),
+        !(kind === "connection" && isRemovedConnectionTool(t.name)),
     );
     expect(listed.map((t) => t.name)).toEqual(specs.map((t) => t.name));
     for (const spec of specs) {

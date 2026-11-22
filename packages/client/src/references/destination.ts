@@ -1,4 +1,3 @@
-import type { TeamPageLink, TeamPageTarget } from "@opensteer/core";
 import type { AvailableReference } from "@opensteer/protocol";
 import type { ReferenceDestination } from "./contracts.js";
 
@@ -35,19 +34,5 @@ export function refTarget(value: AvailableReference): ReferenceDestination {
       return { kind: value.kind, attachmentId: value.id };
     case "tab":
       return { kind: value.kind, tabId: value.id };
-  }
-}
-
-export type TeamPageDestination = Exclude<TeamPageTarget, { kind: "invite" }>;
-export function teamPageTarget(page: TeamPageLink): TeamPageDestination | null {
-  switch (page.target.kind) {
-    case "invite":
-      return null;
-    case "channel":
-    case "message":
-    case "thread":
-    case "knowledge-topic":
-    case "knowledge-note":
-      return page.target;
   }
 }

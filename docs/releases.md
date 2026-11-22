@@ -4,22 +4,17 @@ Release builders consume a green main SHA; there is no local release requalifica
 [release.yml](../.github/workflows/release.yml) and the [desktop-builds skill](../.agents/skills/desktop-builds/SKILL.md).
 Tim performs every credential operation; agents never read or operate on key material.
 
-## Fresh baseline and team servers
+## Fresh baseline
 
 Supported Personal databases upgrade in place. Migration 0038 converts Personal state after the
 plugin migrations. Desktop Start fresh renames personal data aside and creates a new Deployment
 identity. Phones then pair again, and the old Account/Connect entry remains removable. Test reset
 only in disposable fixtures or a VM.
 
-Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
-scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
-there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
-and each tag's version names the images it runs. The Personal Host and apps update together at
-Personal API version 65. Version 65 carries full inline transcript messages with 1 MiB detail
-snapshots and requires an update for clients on version 64 or older. Agent-enabled Runners update
-alongside the Host and negotiate
-`run-events-v2` separately. Team keeps its own API compatibility window.
-Hosted teams use the hosted release policy instead.
+The Personal Host and apps update together at Personal API version 66. Version 65 carried full
+inline transcript messages with 1 MiB detail snapshots; version 66 removed every team declaration
+from the wire, and both require an update for clients on an earlier version. Agent-enabled
+Runners update alongside the Host and negotiate `run-events-v2` separately.
 
 ## Build inputs and local proof
 
@@ -174,19 +169,6 @@ must never recreate or replace an established native directory, and named profil
 unavailable until every owning storage root reconciles its inventory ([profile
 authority](browser-sessions.md#profile-state)). Restoring runtime storage backwards too is outside
 this guarantee.
-
-## Team images
-
-The team Host (`host` target, kind set at runtime) and team gateway (`team-gateway`) publish to
-`ghcr.io/steerlabs/opensteer-team-host` and `-team-gateway` as one linux/amd64 and linux/arm64
-index per version, each architecture built on its own native runner. An insider publishes
-version `X.Y.Z` before its tag; Stable promotion reuses that `X.Y.Z`, so Stable
-runs the bytes Beta ran. GHCR tags are mutable, so [team-images.sh](../.github/scripts/team-images.sh)
-writes a version once and refuses one that records another source. There are no moving channel
-tags: the release tags are the channel feed. The `team-images` job outputs `host_image` and
-`gateway_image` as digest references; hosted teams take a Host digest only through
-promotion, and only self-hosted teams use the gateway. Tim makes both
-packages public once, after their first push.
 
 ## Account service
 

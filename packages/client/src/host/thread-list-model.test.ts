@@ -20,7 +20,6 @@ const threads: ThreadSummary[] = [
   {
     lastVisitedAt: null,
     latestRunCompletedAt: null,
-    teamOrigin: null,
     purpose: "task",
     doneAt: null,
     doneReason: null,
@@ -51,7 +50,6 @@ const threads: ThreadSummary[] = [
   {
     lastVisitedAt: null,
     latestRunCompletedAt: null,
-    teamOrigin: null,
     purpose: "task",
     doneAt: null,
     doneReason: null,
@@ -82,7 +80,6 @@ const threads: ThreadSummary[] = [
   {
     lastVisitedAt: null,
     latestRunCompletedAt: null,
-    teamOrigin: null,
     purpose: "task",
     doneAt: null,
     doneReason: null,

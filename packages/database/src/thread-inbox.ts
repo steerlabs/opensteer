@@ -345,7 +345,7 @@ export async function readThreadInputQueue(
   for (const row of rows) {
     const message = byId.get(row.messageId);
     if (!message) throw new Error("Pending input lost its message");
-    const own = row.state === "pending" && !row.teamRequestId && canManageQueuedInput(row, request);
+    const own = row.state === "pending" && canManageQueuedInput(row, request);
     const liveLease = liveInputLease(transaction, row);
     const lease = liveLease
       ? {
@@ -387,14 +387,6 @@ export async function readThreadInputQueue(
         state: row.state,
         queueRank: row.queueRank,
       },
-      ask:
-        row.teamRequestId && row.teamSource
-          ? {
-              teamId: row.teamSource.teamId,
-              requestId: row.teamRequestId,
-              audience: row.teamSource.audience,
-            }
-          : null,
       canEdit:
         !request.authority &&
         (await inputEditEligibility(
@@ -514,12 +506,7 @@ function compatibleSteeringTarget(
     readonly authoritySource: Readonly<Record<string, unknown>>;
   },
 ): boolean {
-  return (
-    isDeepStrictEqual(target, input.replyTarget) ||
-    (target?.kind === "team-thread" &&
-      input.replyTarget === null &&
-      input.authoritySource.kind === "user-session")
-  );
+  return isDeepStrictEqual(target, input.replyTarget);
 }
 
 async function conversationalReply(
@@ -2194,7 +2181,6 @@ async function lockThreadInputPreconditions(
     readonly source: ThreadInputSource;
     readonly threadId: ThreadId;
     readonly policy: "report" | "queue" | "steer";
-    readonly teamRequest?: EnqueueThreadInputRequest["teamRequest"];
     readonly memoryPass?: { readonly harnessInstanceId: HarnessInstanceId };
     readonly expectedHarnessRevision?: number;
   },
@@ -2231,11 +2217,9 @@ async function lockThreadInputPreconditions(
   const sourceRunId =
     input.source.kind === "agent"
       ? input.source.runId
-      : input.source.kind === "team-member"
-        ? (input.source.resumeRunId ?? null)
-        : input.source.kind === "platform"
-          ? input.source.sourceRunId
-          : null;
+      : input.source.kind === "platform"
+        ? input.source.sourceRunId
+        : null;
   const runIds = [
     ...new Set([active?.id, sourceRunId].filter((id): id is RunId => Boolean(id))),
   ].sort();
@@ -2277,34 +2261,6 @@ async function lockThreadInputPreconditions(
     .where("id", "=", input.threadId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  if (input.source.kind === "team-member" && input.source.resumeRunId) {
-    const run = await transaction
-      .selectFrom("runs")
-      .select(["threadId", "requestedBy", "assignmentId"])
-      .where("id", "=", input.source.resumeRunId)
-      .executeTakeFirst();
-    const assignment = run?.assignmentId
-      ? await transaction
-          .selectFrom("delegations")
-          .select("status")
-          .where("id", "=", run.assignmentId)
-          .executeTakeFirst()
-      : null;
-    if (
-      !run ||
-      run.threadId !== thread.id ||
-      run.requestedBy !== input.requestedBy ||
-      thread.createdBy !== input.requestedBy ||
-      thread.doneAt ||
-      thread.status === "archived" ||
-      (run.assignmentId && assignment?.status !== "open")
-    )
-      throw new OpensteerError({
-        code: "conflict",
-        reason: teamReturnUndeliverableReason,
-        message: "Team return is undeliverable.",
-      });
-  }
   if (input.source.kind === "platform" && input.source.cause === taskQuestionCause) {
     const question = await taskQuestionNoticeSource(
       transaction,
@@ -2340,7 +2296,6 @@ async function lockThreadInputPreconditions(
     thread.doneAt &&
     input.policy !== "report" &&
     input.source.kind !== "human" &&
-    !input.teamRequest &&
     !reopensDone &&
     !(
       input.source.kind === "trigger" &&
@@ -2389,7 +2344,7 @@ export async function assertThreadInputCapacity(
       sql<string>`coalesce(sum(octet_length(messages.content::text)), 0)`.as("bytes"),
     ])
     .where("threadInputs.threadId", "=", threadId)
-    .where("threadInputs.state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
+    .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
     .$if(replacingMessageId !== undefined, (query) =>
       query.where("threadInputs.messageId", "!=", replacingMessageId!),
@@ -2416,13 +2371,6 @@ export async function assertThreadInputCapacity(
 }
 function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSource {
   switch (source.kind) {
-    case "team-member":
-      return {
-        kind: "team-member",
-        teamId: source.teamId,
-        requestId: source.requestId,
-        ...(source.resumeRunId ? { resumeRunId: source.resumeRunId } : {}),
-      };
     case "human":
       return {
         kind: "human",
@@ -2624,43 +2572,27 @@ export async function enqueueThreadInputInTransaction(
       code: "bad_request",
       message: "freshContext requires queue delivery.",
     });
-  if (
-    request.teamRequest &&
-    (policy !== "queue" || !["human", "team-member"].includes(request.source.kind))
-  )
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "A team request must be its own queued input.",
-    });
   requireBoundedIdentity(request.idempotencyKey, "Thread input idempotency key", 255);
   const requestFingerprint = createHash("sha256")
     .update(
-      JSON.stringify(
-        request.teamRequest
+      JSON.stringify({
+        content,
+        ...(request.compaction ? { compaction: request.compaction } : {}),
+        policy,
+        ...(request.freshContext ? { freshContext: true } : {}),
+        source: normalizedThreadInputSource(request.source),
+        threadId: request.threadId,
+        ...(request.requireUnassigned
           ? {
-              ...(request.freshContext ? { freshContext: true } : {}),
-              requestId: request.teamRequest.id,
-              triggerMessageId: request.teamRequest.triggerMessageId,
+              requireUnassigned: true,
             }
-          : {
-              content,
-              ...(request.compaction ? { compaction: request.compaction } : {}),
-              policy,
-              ...(request.freshContext ? { freshContext: true } : {}),
-              source: normalizedThreadInputSource(request.source),
-              threadId: request.threadId,
-              ...(request.requireUnassigned
-                ? {
-                    requireUnassigned: true,
-                  }
-                : {}),
-              ...(request.quotedMessageId
-                ? {
-                    quotedMessageId: request.quotedMessageId,
-                  }
-                : {}),
-            },
-      ),
+          : {}),
+        ...(request.quotedMessageId
+          ? {
+              quotedMessageId: request.quotedMessageId,
+            }
+          : {}),
+      }),
       "utf8",
     )
     .digest("base64url");
@@ -2773,7 +2705,7 @@ export async function enqueueThreadInputInTransaction(
     // Writing to a Done task reopens it for whoever could reopen it by hand.
     const reopens =
       preconditions.reopensDone ||
-      ((request.source.kind === "human" || Boolean(request.teamRequest)) &&
+      (request.source.kind === "human" &&
         (await requireThreadWriteAuthority(
           transaction,
           thread,
@@ -2845,11 +2777,9 @@ export async function enqueueThreadInputInTransaction(
   const sourceRunId =
     request.source.kind === "agent"
       ? request.source.runId
-      : request.source.kind === "team-member"
-        ? (request.source.resumeRunId ?? null)
-        : request.source.kind === "platform"
-          ? request.source.sourceRunId
-          : null;
+      : request.source.kind === "platform"
+        ? request.source.sourceRunId
+        : null;
   const sourceRun = sourceRunId
     ? await transaction
         .selectFrom("runs")
@@ -2947,9 +2877,6 @@ export async function enqueueThreadInputInTransaction(
     !activeRun?.maintenance &&
     !request.freshContext &&
     request.source.kind !== "channel" &&
-    request.source.kind !== "team-member" &&
-    !request.teamRequest &&
-    activeRun?.replyTarget?.kind !== "team-thread" &&
     !conversational &&
     policy === "queue" &&
     activeRun?.phase === "background" &&
@@ -3082,33 +3009,14 @@ export async function enqueueThreadInputInTransaction(
       .executeTakeFirstOrThrow();
     await wakeExecutionCommands(transaction);
   }
-  const askGate = request.teamRequest
-    ? await transaction
-        .selectFrom("personalTeamRequests")
-        .select(["kind", "releasedAt"])
-        .where("teamDeploymentId", "=", request.teamRequest.source.teamId)
-        .where("requestId", "=", request.teamRequest.id)
-        .executeTakeFirst()
-    : null;
-  const gated = askGate?.kind === "ask" && !askGate.releasedAt;
   const inputRow = await transaction
     .insertInto("threadInputs")
     .values({
       // Its effective lineage, so reports and follow-ups batch with the work they belong to.
       ...(executionConnectionId ? { connectionId: executionConnectionId } : {}),
-      teamRequestId: request.teamRequest?.id ?? null,
-      teamSource: request.teamRequest?.source ?? null,
       assignmentId,
       actorPrincipalId: facts.actorPrincipalId,
-      authoritySource: jsonValue(
-        request.teamRequest
-          ? {
-              kind: "team-request",
-              teamId: request.teamRequest.source.teamId,
-              requestId: request.teamRequest.id,
-            }
-          : facts.authoritySource,
-      ),
+      authoritySource: jsonValue(facts.authoritySource),
       cancelReason: executionValid ? null : "execution-authority-unavailable",
       causalChainId,
       deliveredAt: null,
@@ -3116,30 +3024,12 @@ export async function enqueueThreadInputInTransaction(
       messageId,
       policy,
       queueRank: thread.nextMessageSequence,
-      replyTarget: request.teamRequest
-        ? jsonValue(
-            ReplyTargetSchema.parse({
-              kind: "team-thread",
-              teamId: request.teamRequest.source.teamId,
-              channelId: request.teamRequest.source.channelId,
-              threadRootId: request.teamRequest.source.threadRootId,
-              requestId: request.teamRequest.id,
-            }),
-          )
-        : facts.replyTarget
-          ? jsonValue(facts.replyTarget)
-          : null,
+      replyTarget: facts.replyTarget ? jsonValue(facts.replyTarget) : null,
       requestedBy: request.requestedBy,
       requestFingerprint,
       ...(request.freshContext ? { freshContext: true } : {}),
       runId: steerRun?.id ?? null,
-      state: executionValid
-        ? gated
-          ? "awaiting-approval"
-          : steer
-            ? "claimed"
-            : "pending"
-        : "cancelled",
+      state: executionValid ? (steer ? "claimed" : "pending") : "cancelled",
       steerCommandId,
       threadId: thread.id,
       updatedAt: new Date(),
@@ -3255,7 +3145,6 @@ export async function enqueueThreadInputInTransaction(
           .where("messageId", "=", messageId)
           .executeTakeFirstOrThrow();
   const finalInput = threadInputFromRow(finalInputRow);
-  if (gated) await projectThreadState(transaction, thread.id);
   return credited({
     command: queued?.run?.seedInputId === messageId ? queued.command : null,
     disposition:
@@ -3274,7 +3163,6 @@ export async function enqueueThreadInputInTransaction(
 
 /** The platform cause an automation that stopped working is told to its Thread with. */
 export const automationStoppedCause = "automation-stopped";
-export const teamReturnUndeliverableReason = "team-return-undeliverable";
 /** The connection whose lineage an input comes from, read from the source the Home verified. */
 async function threadInputLineageId(
   transaction: Transaction<DatabaseSchema>,
@@ -3319,73 +3207,6 @@ async function resolveThreadInputFacts(
   },
 ): Promise<ResolvedThreadInputFacts> {
   const { source } = input;
-  if (source.kind === "team-member") {
-    await requirePersonalOwner(transaction, input.requestedBy);
-    const mirror = await transaction
-      .selectFrom("personalTeamRequests")
-      .selectAll()
-      .where("teamDeploymentId", "=", source.teamId)
-      .where("requestId", "=", source.requestId)
-      .executeTakeFirstOrThrow();
-    const asker =
-      mirror.kind === "ask" &&
-      mirror.localDecision !== "decline" &&
-      !mirror.terminalState &&
-      mirror.consentExpiresAt !== null &&
-      (mirror.localDecision === "approve" || mirror.consentExpiresAt > executionDate(transaction))
-        ? mirror.presentation?.asker
-        : mirror.kind === "return"
-          ? mirror.returnPayload?.author
-          : null;
-    if (!asker)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Team input has no approved author.",
-      });
-    const resume = source.resumeRunId
-      ? await transaction
-          .selectFrom("runs")
-          .select(["causalChainId", "threadId", "requestedBy"])
-          .where("id", "=", source.resumeRunId)
-          .executeTakeFirst()
-      : null;
-    if (
-      mirror.kind === "return" &&
-      (!resume ||
-        mirror.returnPayload?.resumeRunId !== source.resumeRunId ||
-        resume.threadId !== input.targetThread.id ||
-        resume.requestedBy !== input.requestedBy)
-    )
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Team return does not belong to this task.",
-      });
-    const principal = await transaction
-      .selectFrom("principals")
-      .select("id")
-      .where("kind", "=", "user")
-      .where("userId", "=", input.requestedBy)
-      .executeTakeFirstOrThrow();
-    return {
-      actorPrincipalId: principal.id,
-      author: MessageAuthorSchema.parse({
-        kind: "team-member",
-        teamId: source.teamId,
-        teamUserId: asker.teamUserId,
-        displayName: asker.displayName,
-        actor: asker.actor,
-      }),
-      authoritySource: {
-        kind: "team-request",
-        teamId: source.teamId,
-        requestId: source.requestId,
-        userId: input.requestedBy,
-      },
-      causalChainId: resume?.causalChainId ?? null,
-      kind: "input",
-      replyTarget: null,
-    };
-  }
   if (source.kind === "channel") requireBoundedIdentity(source.ingressId, "Channel ingress", 255);
   if (source.kind === "human" || source.kind === "channel") {
     const channelSource =
@@ -3658,7 +3479,7 @@ async function resolveThreadInputFacts(
           .select("messageId")
           .where("threadId", "=", worker.id)
           .where("policy", "!=", "report")
-          .where("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"])
+          .where("state", "in", ["pending", "claimed", "unknown"])
           .executeTakeFirst(),
       ]);
       if (
@@ -4283,13 +4104,6 @@ export async function ensureQueuedRun(
   });
   await publishRunQueue(transaction, thread.id, runId);
   await projectThreadState(transaction, thread.id, new Date(), true);
-  if (seed.teamRequestId)
-    await transaction
-      .updateTable("personalTeamRequests")
-      .set({ runId })
-      .where("requestId", "=", seed.teamRequestId)
-      .where("localInputId", "=", seed.messageId)
-      .execute();
   return { command, run: runRow };
 }
 
@@ -4308,7 +4122,7 @@ async function waitingThreadInputs(
     .selectAll()
     .where("threadId", "=", threadId)
     .where("policy", "=", "queue")
-    .where("state", "in", ["pending", "awaiting-approval"])
+    .where("state", "=", "pending")
     .where(({ not, exists, selectFrom }) =>
       not(
         exists(
@@ -4319,7 +4133,6 @@ async function waitingThreadInputs(
         ),
       ),
     )
-    .orderBy(sql`approval_sort`)
     .orderBy("queueRank", "asc")
     .orderBy("messageId", "asc")
     .limit(threadInputMaxPendingEntries)
@@ -5956,9 +5769,6 @@ export async function delegateThreadInTransaction(
         ...(childConnectionId ? { originConnectionId: childConnectionId } : {}),
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
         purpose: "task",
-        teamId: null,
-        channelId: null,
-        threadRootId: null,
         createdByPrincipalId: actorPrincipalId,
         id: threadId,
         lineageRootThreadId: parent.lineageRootThreadId,

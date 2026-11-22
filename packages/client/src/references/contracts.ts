@@ -6,7 +6,6 @@ import type {
   RunId,
   RunnerId,
   TabId,
-  TeamPageLink,
   ThreadId,
   TriggerId,
 } from "@opensteer/core";
@@ -23,7 +22,6 @@ import type {
   TranscriptFileContent,
 } from "@opensteer/protocol";
 import type { HostClient } from "../host/client.js";
-import type { TeamSessionClient } from "../team/team-session-client.js";
 
 export type ReferenceDestination =
   | { kind: "task"; threadId: ThreadId }
@@ -44,9 +42,12 @@ export type ReferenceState =
   | { state: "available"; value: AvailableReference }
   | { state: "unavailable" }
   | { state: "failed" };
-export type ReferenceRenderContext =
-  | { kind: "personal"; deploymentId: string; client: HostClient; threadId: ThreadId | null }
-  | { kind: "team"; teamId: string; origin: string; client: TeamSessionClient | null };
+export interface ReferenceRenderContext {
+  readonly kind: "personal";
+  readonly deploymentId: string;
+  readonly client: HostClient;
+  readonly threadId: ThreadId | null;
+}
 export interface FileOpenInput {
   readonly source: FileSource;
   readonly line?: number;
@@ -55,7 +56,6 @@ export interface FileOpenInput {
 }
 export interface ReferenceNavigationPorts {
   readonly openReference: (destination: ReferenceDestination) => Promise<void>;
-  readonly openTeamPage: (page: TeamPageLink) => Promise<void>;
 }
 export interface PersonalReferenceNavigationPorts extends ReferenceNavigationPorts {
   readonly openFile: (input: FileOpenInput) => Promise<void>;

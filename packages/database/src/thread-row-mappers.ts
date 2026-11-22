@@ -66,9 +66,6 @@ type ThreadReadRow = {
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
   readonly purpose: Thread["purpose"];
-  readonly teamId: import("@opensteer/core").DeploymentId | null;
-  readonly channelId: import("@opensteer/core").TeamChannelId | null;
-  readonly threadRootId: import("@opensteer/core").TeamMessageId | null;
   readonly continuationIdentity: Thread["continuationIdentity"];
   readonly providerSessionId: ProviderSessionId | null;
   readonly id: ThreadId;
@@ -98,14 +95,6 @@ function threadValueFromRow(row: ThreadReadRow) {
     ...row,
     lastVisitedAt: row.lastVisitedAt?.toISOString() ?? null,
     latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
-    teamOrigin:
-      row.teamId && row.channelId && row.threadRootId
-        ? {
-            teamId: row.teamId,
-            channelId: row.channelId,
-            threadRootId: row.threadRootId,
-          }
-        : null,
     askedAt: row.askedAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
     doneAt: row.doneAt?.toISOString() ?? null,
@@ -118,11 +107,7 @@ export function messageEditFromRow(
   row: Pick<Selectable<MessageTable>, "revision" | "editedAt" | "author">,
 ) {
   return row.revision > 0 && row.editedAt
-    ? {
-        revision: row.revision,
-        editedAt: row.editedAt.toISOString(),
-        ...(row.author.kind === "team-member" ? { ownerEdited: true as const } : {}),
-      }
+    ? { revision: row.revision, editedAt: row.editedAt.toISOString() }
     : undefined;
 }
 
@@ -134,8 +119,24 @@ export function messageViewFromRow(row: Selectable<MessageTable>) {
 export function messageFromRow(row: Selectable<MessageTable>): Message {
   return MessageSchema.parse(messageValueFromRow(row));
 }
+/**
+ * A message a teammate wrote, kept by a database from before team removal. A Message has no way
+ * to say it without its author, so every read of Messages leaves it out: neither shown nor an
+ * error. A transcript item keeps its text without the author.
+ */
+export function isRetiredMessageRow(row: Pick<Selectable<MessageTable>, "author">): boolean {
+  return (row.author as { readonly kind?: unknown }).kind === "team-member";
+}
+/** The same rule as `isRetiredMessageRow`, for a query that pages or counts messages. */
+export const keptMessageSql = sql<boolean>`messages.author->>'kind' is distinct from 'team-member'`;
 export function messagesFromRows(rows: readonly Selectable<MessageTable>[]): Message[] {
-  return MessageSchema.array().parse(rows.map(messageValueFromRow));
+  return MessageSchema.array().parse(
+    rows.filter((row) => !isRetiredMessageRow(row)).map(messageValueFromRow),
+  );
+}
+/** A reply target of a kind this release no longer has (a team thread) reads as none. */
+export function personalReplyTarget(target: ReplyTarget | null): ReplyTarget | null {
+  return target?.kind === "channel" ? target : null;
 }
 /** Where a person sent a message from; absent for other authors and older apps. */
 export function messageOriginFromRow(
@@ -151,9 +152,6 @@ function messageValueFromRow(row: Selectable<MessageTable>) {
           quote: row.quote,
         }
       : {}),
-    ...(row.revision > 0 && row.author.kind === "team-member"
-      ? { ownerEdited: true as const }
-      : {}),
     author: row.author,
     content: row.content,
     createdAt: row.createdAt.toISOString(),
@@ -167,8 +165,6 @@ function messageValueFromRow(row: Selectable<MessageTable>) {
 export function threadInputFromRow(row: Selectable<ThreadInputTable>): ThreadInput {
   return ThreadInputSchema.parse({
     ...(row.freshContext ? { freshContext: true } : {}),
-    teamRequestId: row.teamRequestId,
-    teamSource: row.teamSource,
     assignmentId: row.assignmentId,
     cancelReason: row.cancelReason,
     causalChainId: row.causalChainId,
@@ -176,7 +172,7 @@ export function threadInputFromRow(row: Selectable<ThreadInputTable>): ThreadInp
     deliveredAt: row.deliveredAt?.toISOString() ?? null,
     messageId: row.messageId,
     policy: row.policy,
-    replyTarget: row.replyTarget,
+    replyTarget: personalReplyTarget(row.replyTarget),
     runId: row.runId,
     state: row.state,
     threadId: row.threadId,
@@ -197,7 +193,7 @@ export function assignmentFromRow(row: Selectable<DelegationTable>): Assignment 
     parentRunId: row.parentRunId,
     parentThreadId: row.parentThreadId,
     parentWatchActivationId: row.parentWatchActivationId,
-    replyTarget: row.replyTarget,
+    replyTarget: personalReplyTarget(row.replyTarget),
     resultRunId: row.resultRunId,
     resultText: row.resultText,
     returnAttemptedAt: row.resultAttemptedAt?.toISOString() ?? null,
@@ -210,20 +206,8 @@ export function assignmentFromRow(row: Selectable<DelegationTable>): Assignment 
     workerThreadId: row.childThreadId,
   });
 }
-export const runDeliverySelection = sql<import("@opensteer/core").TeamRunDelivery | null>`(
-  select jsonb_build_object(
-    'state',case p.publication_state when 'accepted' then 'sent' when 'blocked' then 'blocked' else 'sending' end,
-    'via',coalesce(p.delivery_via,case when p.explicit_reply then 'tool' else 'final' end),
-    'answerMessageId',p.answer_message_id,'teamMessageId',p.accepted_message_id::text,'reason',p.blocked_reason)
-  from personal_team_requests p where p.local_task_id=runs.thread_id and p.local_input_id=runs.seed_input_id
-    and runs.reply_target->>'kind'='team-thread' and runs.reply_target->>'teamId'=p.team_deployment_id
-    and runs.reply_target->>'requestId'=p.request_id
-    and (p.run_id is null or p.run_id=runs.id)
-    and (p.answer_payload is not null or p.publication_state in ('accepted','blocked'))
-)`.as("delivery");
 export function runFromRow(row: {
   readonly maintenance?: import("@opensteer/core").RunMaintenance | null;
-  readonly delivery?: import("@opensteer/core").TeamRunDelivery | null;
   readonly accessMode: ThreadAccessMode;
   readonly activationInputId: MessageId;
   readonly assignmentId: AssignmentId | null;
@@ -253,7 +237,6 @@ export function runFromRow(row: {
   const usage = runUsageFromRow(row);
   return RunSchema.parse({
     ...(row.maintenance ? { maintenance: row.maintenance } : {}),
-    delivery: row.delivery ?? null,
     accessMode: row.accessMode,
     activationInputId: row.activationInputId,
     assignmentId: row.assignmentId,
@@ -266,7 +249,7 @@ export function runFromRow(row: {
     id: row.id,
     providerSessionId: row.providerSessionId,
     modelSelection: row.modelSelection,
-    replyTarget: row.replyTarget,
+    replyTarget: personalReplyTarget(row.replyTarget),
     requestedBy: row.requestedBy,
     runOrdinal: row.runOrdinal,
     startedAt: row.startedAt?.toISOString() ?? null,

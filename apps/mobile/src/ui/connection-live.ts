@@ -112,7 +112,7 @@ export function notSent(
   state?: {
     readonly name: string | null;
     readonly network: string;
-    readonly target: "computer" | "team";
+    readonly target: "computer";
   },
 ): ClientIssue {
   return {

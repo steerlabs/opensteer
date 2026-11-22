@@ -91,9 +91,6 @@ export function createHostApiHandlers(
     | "attachment.content"
     | "attention.get"
     | "needsYou.get"
-    | "teams.links.list"
-    | "teams.threadTask.get"
-    | "teams.replyTask.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -171,11 +168,6 @@ export function createHostApiHandlers(
     ...browserSourceHandlers,
     ...coreHandlers,
     "commands.dispatch": async (command, context) => {
-      if (isTeamCommand(command))
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Team commands require a team Host",
-        });
       if (command.type === "computer.view.close" || command.type === "computer.view.renew") {
         const owner = requireSession(context).user.id;
         if (!computerViews)
@@ -280,11 +272,6 @@ function pluginsUnavailable(): ReturnType<PluginOwnerApi["reads"]> {
     "plugins.workflow.runs": refuse,
     "plugins.webhook.setup.get": refuse,
   };
-}
-
-type TeamCommand = Extract<HostApiCommand, { readonly type: `team.${string}` }>;
-function isTeamCommand(command: HostApiCommand): command is TeamCommand {
-  return command.type.startsWith("team.");
 }
 
 function isTriggerCommand(command: HostApiCommand): command is TriggerCommand {

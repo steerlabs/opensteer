@@ -1,6 +1,5 @@
 import { endAgentSessions, refuseUnsentAgentOperation } from "./agent-session-store.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { recoverRemovedAskTasks } from "./task-admission-store.js";
 import { recordThreadVisit } from "./thread-visits.js";
 import { installAssignmentReturnWake } from "./assignment-store.js";
 import { removeDevice } from "./device-removal-store.js";
@@ -34,7 +33,6 @@ import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import { readAgentHomeSettings } from "./agent-home-settings-store.js";
 import * as voiceStore from "./voice-store.js";
-import { messageTeamSources } from "./message-team-sources.js";
 
 import {
   replayAdministrationCommand,
@@ -1319,7 +1317,7 @@ export class OpensteerStore {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
   }
 
-  /** The name of the computer a personal Deployment runs on; null on a team server. */
+  /** The name of the computer a personal Deployment runs on; null before it has one. */
   async homeComputerName(): Promise<string | null> {
     const row = await this.#database
       .selectFrom("runners")
@@ -1835,9 +1833,6 @@ export class OpensteerStore {
   }): Promise<void> {
     return executionRecovery.failRunForRefusedRunnerEvent(this.#database, this.#links, input);
   }
-  recoverRemovedAskTasks(): Promise<void> {
-    return recoverRemovedAskTasks(this.#database);
-  }
   recordThreadVisit(input: Parameters<typeof recordThreadVisit>[1]) {
     return recordThreadVisit(this.#database, input);
   }
@@ -1973,7 +1968,6 @@ export class OpensteerStore {
       .where("threadInputs.messageId", "in", [...messageIds])
       .where("threadInputs.requestedBy", "=", ownerId)
       .where("threads.createdBy", "=", ownerId)
-      .where("threads.teamId", "is", null)
       .execute();
     return new Map(
       rows
@@ -1991,9 +1985,6 @@ export class OpensteerStore {
 
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
     return readThreadHistory(this.#database, input);
-  }
-  messageTeamSources(threadId: ThreadId, messageIds: readonly MessageId[]) {
-    return messageTeamSources(this.#database, threadId, messageIds);
   }
 }
 export { machineIsManagedBy, type MachineOwnershipRecord } from "./machine-ownership.js";

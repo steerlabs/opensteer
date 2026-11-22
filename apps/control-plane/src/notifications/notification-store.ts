@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
+  AccountNotificationKindSchema,
   NotificationDeviceSchema,
   type ControlPlaneAccountId,
   type HostNotificationPublication,
@@ -55,7 +56,6 @@ export interface ClaimedNotificationDelivery {
   readonly platform: NotificationDevicePlatform;
   readonly requestId: string | null;
   readonly threadId: ThreadId | null;
-  readonly teamTarget?: import("@opensteer/control-plane-protocol").TeamNotificationTarget | null;
   readonly token: string;
   /** Which registration this token was, so a rotation is not mistaken for it. */
   readonly tokenHash: string;
@@ -256,26 +256,11 @@ export class ControlPlaneNotificationStore {
       );
     }
     return this.#database.transaction().execute(async (transaction) => {
-      const deployment = await transaction
+      await transaction
         .selectFrom("deployments")
-        .select(["canonicalOrigin", "authorityEnvelope"])
+        .select("id")
         .where("id", "=", publication.deploymentId)
         .executeTakeFirstOrThrow();
-      const teamHost = (
-        await sql<{
-          team: boolean;
-        }>`select coalesce(authority_envelope->'document'->'deploymentShape'->>'kind','personal')='team' as team from deployments where id=${publication.deploymentId}`.execute(
-          transaction,
-        )
-      ).rows[0]!.team;
-      if (
-        teamHost !== publication.kind.startsWith("team-") ||
-        (publication.teamTarget && publication.teamTarget.origin !== deployment.canonicalOrigin)
-      )
-        throw new ControlPlaneError(
-          "forbidden",
-          "Notification target does not match Host authority",
-        );
       const receipt = await transaction
         .insertInto("notificationPublications")
         .values({
@@ -285,7 +270,6 @@ export class ControlPlaneNotificationStore {
           notificationId: publication.notificationId,
           receivedAt: now,
           threadId: publication.threadId,
-          teamTarget: publication.teamTarget ?? null,
         })
         .onConflict((conflict) => conflict.columns(["deploymentId", "notificationId"]).doNothing())
         .returning("notificationId")
@@ -340,9 +324,7 @@ export class ControlPlaneNotificationStore {
           .where("accountId", "in", chunk)
           .where("disabledAt", "is", null)
           .where(
-            publication.kind === "request-opened" || publication.kind === "team-agent-needs-you"
-              ? "approvalsEnabled"
-              : "runOutcomesEnabled",
+            publication.kind === "request-opened" ? "approvalsEnabled" : "runOutcomesEnabled",
             "=",
             true,
           )
@@ -373,7 +355,6 @@ export class ControlPlaneNotificationStore {
           requestId: publication.requestId,
           status: "pending" as const,
           threadId: publication.threadId,
-          teamTarget: publication.teamTarget ?? null,
         })),
       )
       .execute();
@@ -451,7 +432,6 @@ export class ControlPlaneNotificationStore {
           "notificationDeliveries.notificationId as notificationId",
           "notificationDeliveries.requestId as requestId",
           "notificationDeliveries.threadId as threadId",
-          "notificationDeliveries.teamTarget as teamTarget",
           "notificationDevices.accountId as accountId",
           "notificationDevices.platform as platform",
           "notificationDevices.apsEnvironment as apsEnvironment",
@@ -462,9 +442,8 @@ export class ControlPlaneNotificationStore {
         .where("notificationDeliveries.expiresAt", ">", now)
         .where("notificationDeliveries.nextAttemptAt", "<=", now)
         .where("notificationDevices.disabledAt", "is", null)
-        .where(
-          sql<boolean>`(notification_deliveries.team_target is null or exists(select 1 from deployment_directory_entries e where e.deployment_id=notification_deliveries.deployment_id and e.account_id=notification_devices.account_id and e.present))`,
-        )
+        // A delivery of a kind this release no longer sends (a team's) is left pending, unread.
+        .where("notificationDeliveries.kind", "in", AccountNotificationKindSchema.options)
         .where((expression) =>
           expression.or([
             expression("notificationDeliveries.leaseToken", "is", null),
@@ -509,7 +488,6 @@ export class ControlPlaneNotificationStore {
           platform: row.platform,
           requestId: row.requestId,
           threadId: row.threadId,
-          teamTarget: row.teamTarget,
           token: this.#cipher.open(row.accountId, row.tokenCiphertext),
           tokenHash: row.tokenHash,
         });
@@ -672,14 +650,7 @@ async function reachableAccounts(
     .where("accountId", "in", candidates)
     .execute();
   const reachable = new Set(members.map((row) => row.accountId));
-  const team = (
-    await sql<{
-      team: boolean;
-    }>`select coalesce(authority_envelope->'document'->'deploymentShape'->>'kind','personal')='team' as team from deployments where id=${deploymentId}`.execute(
-      transaction,
-    )
-  ).rows[0]?.team;
-  if (!team && candidates.includes(owner.ownerAccountId)) reachable.add(owner.ownerAccountId);
+  if (candidates.includes(owner.ownerAccountId)) reachable.add(owner.ownerAccountId);
   return candidates.filter((accountId) => reachable.has(accountId));
 }
 

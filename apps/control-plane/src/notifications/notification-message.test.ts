@@ -1,9 +1,4 @@
-import {
-  createId,
-  parseMobileNeedsYouDeepLink,
-  parseMobileThreadDeepLink,
-  parseTeamPageAppLink,
-} from "@opensteer/core";
+import { createId, parseMobileNeedsYouDeepLink, parseMobileThreadDeepLink } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { notificationCollapseId, notificationMessage } from "./notification-message.js";
 
@@ -23,23 +18,6 @@ describe("notificationMessage", () => {
     expect(parseMobileNeedsYouDeepLink(message.data.deepLink)).toEqual({ deploymentId });
     expect(message.data.threadId).toBeUndefined();
     expect(message.data.requestId).toBeUndefined();
-  });
-
-  it("opens a ready team's #general on the phone, naming nothing private", () => {
-    const channelId = createId("teamChannel");
-    const origin = "https://acme.teams.opensteer.com";
-    const message = notificationMessage({
-      deploymentId,
-      kind: "team-ready",
-      requestId: null,
-      threadId: null,
-      teamTarget: { kind: "team-ready", origin, teamId: deploymentId, channelId },
-    });
-    expect(message.body).toBe("Your team is ready");
-    expect(parseTeamPageAppLink(message.data.deepLink, "mobile")).toEqual({
-      origin,
-      target: { kind: "channel", channelId },
-    });
   });
 
   it("carries a deep link the phone's own parser accepts", () => {

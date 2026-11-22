@@ -33,8 +33,6 @@ import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   IssuePersonalAccountHostSessionGrantRequestSchema,
-  IssueTeamIdentityGrantRequestSchema,
-  IssueTeamIdentityGrantResponseSchema,
   PersonalHostAccountLinkChallengeIdSchema,
   PersonalHostAccountLinkOperationIdSchema,
   UnlinkPersonalHostRequestSchema,
@@ -55,7 +53,6 @@ import type { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
-import type { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import type { AccountProfiles } from "../account/account-profiles.js";
 
 const DeploymentParamsSchema = z.strictObject({ deploymentId: DeploymentIdSchema });
@@ -76,7 +73,6 @@ export function registerControlPlaneRoutes(
     readonly connectLifecycle: ConnectLifecycleService;
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
     readonly store: ControlPlaneStore;
-    readonly teamIdentityGrants?: TeamIdentityGrantService;
   },
 ): void {
   const profiles = () => {
@@ -84,8 +80,8 @@ export function registerControlPlaneRoutes(
       throw new ControlPlaneError("unavailable", "Account profiles are not configured");
     return dependencies.accountProfiles;
   };
-  // The person's own apps only: a team's sign-in token also carries `openid`, and a team may
-  // read a name through its sign-in but never change it.
+  // The person's own apps only: another client's sign-in token may also carry `openid`, and
+  // may read a name through its sign-in but never change it.
   const profilePrincipal = async (headers: Headers, mutation: boolean) => {
     const principal = await dependencies.authenticator.authenticate(headers, {
       mutation,
@@ -244,24 +240,6 @@ export function registerControlPlaneRoutes(
       return IssueAccountHostSessionGrantResponseSchema.parse(response);
     },
   );
-
-  app.post("/v1/account/deployments/:deploymentId/team-identity-grants", async (request, reply) => {
-    const { deploymentId } = DeploymentParamsSchema.parse(request.params);
-    const principal = await dependencies.authenticator.authenticate(toWebHeaders(request.headers), {
-      mutation: true,
-      scope: "deployments:read",
-    });
-    if (!dependencies.teamIdentityGrants) {
-      throw new ControlPlaneError("unavailable", "Team identity grants are not configured");
-    }
-    const response = await dependencies.teamIdentityGrants.issue(
-      principal.accountId,
-      deploymentId,
-      IssueTeamIdentityGrantRequestSchema.parse(request.body),
-    );
-    void reply.header("cache-control", "no-store");
-    return IssueTeamIdentityGrantResponseSchema.parse(response);
-  });
 
   app.put("/v1/account/deployments/:deploymentId/connect", async (request, reply) => {
     const { deploymentId } = DeploymentParamsSchema.parse(request.params);

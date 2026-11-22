@@ -89,7 +89,6 @@ export function previewPersonalHost(
     "plugin-webhook-sources": {},
     "plugin-schedules": {},
     "plugin-engine": { engine: { status: "idle" } },
-    "team-replies": {},
   } satisfies Record<PersonalResourceKind, object>;
   const shell = PersonalNetworkShellSnapshotSchema.parse({
     deploymentId: selected.id,

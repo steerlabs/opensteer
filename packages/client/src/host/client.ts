@@ -4,7 +4,7 @@ import { failureProvenance } from "../connections/operation-error.js";
 import type { ClientCommandInput } from "./device-commands.js";
 import type { MachineAccessUpdateInput, IphoneScreenAttachInput } from "./device-commands.js";
 import type { TabsClient } from "./tabs-contract.js";
-import type { AnsweredQuestion, TeamRunDelivery, TeamSource } from "@opensteer/core";
+import type { AnsweredQuestion } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
 import type {
@@ -254,7 +254,6 @@ export interface ThreadSummary {
   parentThreadId: string | null;
   pendingRequests: number;
   purpose: import("@opensteer/core").TaskPurpose;
-  teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
   runnerLabel: string;
   status: ThreadStatus;
   title: string;
@@ -319,7 +318,6 @@ export interface MessageEntry {
     readonly issue?: import("../feedback/client-issue.js").ClientIssue;
   };
   readonly clientSendKey?: string;
-  teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
   published?: boolean;
@@ -514,7 +512,6 @@ export type RunEntryStatus =
 
 export interface RunEntry {
   compaction?: import("@opensteer/core").NativeCompactionActivity;
-  delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
   startedAt?: string;
@@ -562,22 +559,7 @@ export interface WithdrawnEntry {
   kind: "withdrawn";
 }
 
-/**
- * What became of a message whose own entry this page does not hold: the
- * outcome its input reached, kept under the message's id so that joining the
- * page that holds the message lands the outcome on it. A null `delivery` is a
- * confirmation that clears a doubt an earlier page recorded.
- */
-export interface RunDeliveryEntry {
-  createdAt: string;
-  id: string;
-  kind: "run-delivery";
-  runId: string | null;
-  delivery: TeamRunDelivery;
-}
-
 export interface DeliveryEntry {
-  teamSource?: TeamSource;
   published?: boolean;
   /** The input's association, retained when its Message is on another history page. */
   inputRunId?: string | null;
@@ -629,7 +611,6 @@ export type TranscriptEntry =
   | AssignmentReturnEntry
   | DelegationEntry
   | DeliveryEntry
-  | RunDeliveryEntry
   | MessageEntry
   | PlaceEntry
   | ReasoningEntry
@@ -1126,16 +1107,6 @@ export interface WaitingMessageEditor {
   cancel(): Promise<void>;
 }
 
-/** A person's answer to a teammate's ask; approval names the revision they saw. */
-export type TeamAskDecision =
-  | {
-      readonly decision: "approve";
-      readonly expectedRevision: number;
-      readonly requestId: string;
-      readonly teamId: string;
-    }
-  | { readonly decision: "decline"; readonly requestId: string; readonly teamId: string };
-
 export interface HostClient extends TabsClient {
   readonly connection: import("../connections/connection-controller.js").ClientConnection;
   openConnection(
@@ -1379,14 +1350,6 @@ export interface HostClient extends TabsClient {
    * queue read never shows this device's own edit as someone else's.
    */
   ownsEditLease(leaseId: string): boolean;
-  /**
-   * Answers a teammate's ask awaiting this person. Approving names the
-   * version of the task's copy the person saw (`WaitingAsk.revision`, or the
-   * Needs-you entry's `task.revision`); the Host refuses it with `conflict`
-   * if that copy changed since. Until the team confirms, the ask stays in
-   * its task as approving; a decline cancels it there.
-   */
-  decideTeamAsk(decision: TeamAskDecision): Promise<void>;
   /** One page of a message's versions, newest first. */
   listMessageRevisions(
     threadId: string,

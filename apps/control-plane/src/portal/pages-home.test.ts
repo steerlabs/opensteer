@@ -7,7 +7,6 @@ const base = {
   account: { displayName: "Sam", email: "sam@example.com" },
   deleteAccountHref: "/account/delete",
   desktopDownloadUrl: "https://example.com/download",
-  hostedTeams: null,
   signOutAction: "/sign-out",
 };
 

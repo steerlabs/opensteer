@@ -58,13 +58,11 @@ export const darwinOnlyTests = [
   "apps/desktop/scripts/codesign-requirement.test.ts",
 ];
 // Opt-in measurements that skip every case unless their benchmark command supplies options, so
-// integration discovery leaves them out: `pnpm bench:mobile-network`, OPENSTEER_TEAM_PERF=1,
+// integration discovery leaves them out: `pnpm bench:mobile-network`,
 // OPENSTEER_PERSONAL_STATE_PERF=1 and OPENSTEER_PERSONAL_WRITE_PERF=1.
 export const optInIntegrationBenchmarks = [
   "packages/database/src/personal-state-performance.integration.test.ts",
   "packages/database/src/personal-write-performance.integration.test.ts",
-  "tests/team-mobile-network.integration.test.ts",
-  "tests/team-performance.integration.test.ts",
 ];
 // These write and verify a package of the most files one may hold, over 10,000 real files
 // each. They need the integration lane's time, not its database.

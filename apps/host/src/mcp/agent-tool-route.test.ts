@@ -31,7 +31,6 @@ function fixture(grant?: AgentGrant) {
     environmentId: createId("environment"),
     accessMode: "full-access",
     purpose: "task",
-    teamOrigin: null,
   } as Thread;
   let caller: RunCaller = {
     kind: "run",

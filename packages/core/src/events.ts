@@ -10,7 +10,6 @@ import {
   ProviderContextMeasurementSchema,
   NativeCompactionActivitySchema,
 } from "./idle-compaction.js";
-import { TeamRunDeliverySchema, TeamRunDeliveryViewSchema } from "./team.js";
 import {
   DelegationIdSchema,
   EnvironmentIdSchema,
@@ -194,7 +193,6 @@ const placeSiteSchema = z
   }, "Site must be an origin");
 
 const eventDataSchemas = {
-  "run.delivery-updated": z.strictObject({ delivery: TeamRunDeliverySchema }),
   "app.published": z.strictObject({
     appId: AppIdSchema,
     version: z.number().int().positive(),
@@ -291,11 +289,6 @@ const eventDataSchemas = {
     lease: ThreadInputEditLeaseViewSchema.nullable(),
   }),
   "thread.input-queue-updated": z.strictObject({ paused: z.boolean() }),
-  /**
-   * A task that only ever held a teammate's ask that never ran was removed
-   * after the ask ended. Stored without a Thread reference, which no longer exists.
-   */
-  "task.removed": z.strictObject({}),
   /**
    * A Thread's absolute list state at this sequence. `title` is its title then;
    * the Host includes it on every state change it writes, and a title change is
@@ -520,7 +513,6 @@ const runnerEventDataSchemas = {
 } as const;
 
 const eventDataViewSchemas = {
-  "run.delivery-updated": z.object({ delivery: TeamRunDeliveryViewSchema }),
   "app.published": z.object(eventDataSchemas["app.published"].shape),
   "place.entered": z.object({
     ...eventDataSchemas["place.entered"].shape,
@@ -695,7 +687,6 @@ export const AgentEventSchema = z
     makeEventVariant("message.placed"),
     makeEventVariant("message.updated"),
     makeEventVariant("reasoning.completed"),
-    makeEventVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventVariant("run.queued"),
     makeEventVariant("run.completed"),
     makeEventVariant("run.failed"),
@@ -719,7 +710,6 @@ export const AgentEventSchema = z
     makeEventVariant("thread-input.updated"),
     makeEventVariant("thread-input.lease-changed"),
     makeEventVariant("thread.input-queue-updated"),
-    makeEventVariant("task.removed"),
     makeEventVariant("thread.state-changed"),
     makeEventVariant("thread.continuation-established"),
     makeEventVariant("thread.access-mode-updated"),
@@ -754,7 +744,6 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("message.placed"),
     makeEventViewVariant("message.updated"),
     makeEventViewVariant("reasoning.completed"),
-    makeEventViewVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventViewVariant("run.queued"),
     makeEventViewVariant("run.completed"),
     makeEventViewVariant("run.failed"),
@@ -778,7 +767,6 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("thread-input.updated"),
     makeEventViewVariant("thread-input.lease-changed"),
     makeEventViewVariant("thread.input-queue-updated"),
-    makeEventViewVariant("task.removed"),
     makeEventViewVariant("thread.state-changed"),
     makeEventViewVariant("thread.continuation-established"),
     makeEventViewVariant("thread.access-mode-updated"),

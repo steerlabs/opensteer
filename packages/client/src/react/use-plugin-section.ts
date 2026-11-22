@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ClientSession } from "../connections/connection-controller.js";
-import type { KeysetPage } from "../team/paged-list.js";
+import type { KeysetPage } from "../reads/paged-list.js";
 import { usePagedList } from "./use-paged-list.js";
 
 /**

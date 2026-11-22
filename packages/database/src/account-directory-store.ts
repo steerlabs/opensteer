@@ -1,12 +1,6 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
-import { withDatabaseTransaction } from "./connection.js";
 import { randomBytes } from "node:crypto";
-import {
-  deploymentPolicy,
-  OpensteerError,
-  type DeploymentPolicy,
-  type UserId,
-} from "@opensteer/core";
+import { OpensteerError, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -29,15 +23,10 @@ export class AccountDirectoryStore {
   readonly #transaction: <Result>(
     action: (transaction: Transaction<DatabaseSchema>) => Promise<Result>,
   ) => Promise<Result>;
-  /** Only a Deployment with personal services has Personal event state to serialize behind. */
-  constructor(
-    database: Kysely<DatabaseSchema>,
-    policy: Pick<DeploymentPolicy, "services"> = deploymentPolicy({ kind: "personal" }),
-  ) {
+  /** Directory writes serialize behind the Home's Personal event state. */
+  constructor(database: Kysely<DatabaseSchema>) {
     this.#database = database;
-    this.#transaction = policy.services.personal
-      ? (action) => withPersonalTransaction(database, action)
-      : (action) => withDatabaseTransaction(database, action);
+    this.#transaction = (action) => withPersonalTransaction(database, action);
   }
   async configureProvider(input: {
     readonly issuer: string;
