@@ -205,6 +205,31 @@ class NativeField {
       },
     );
   }
+  /**
+   * RemoteInputEdits.deletion: the place, until an earlier deletion took its text; then the
+   * character before where it now stands.
+   */
+  private deletion(place: Place): { start: number; end: number } {
+    const current = this.current(place);
+    if (current.end > current.start || place.end === place.start) return current;
+    if (current.start === 0) return { start: 0, end: 0 };
+    return { start: previousCharacter(this.text, current.start), end: current.start };
+  }
+  /**
+   * A backspace as UIKit asks the delegate for it: the character before the caret (or the
+   * selection), named in the text as it stands now. UIKit asks nothing where it sees nothing.
+   */
+  backspace() {
+    const { start, end } = this.selection;
+    if (end === 0) return;
+    const from = start < end ? start : previousCharacter(this.text, end);
+    const typed = this.place(from, end);
+    this.change("deleteContentBackward", "", () => {
+      const target = this.deletion(typed);
+      this.replace(target.start, target.end, "");
+      this.selection = { start: target.start, end: target.start };
+    });
+  }
   /** replace(_:withText:): UIKit replaces a range it names, as autocorrect does. */
   replaceRange(start: number, end: number, replacement: string) {
     const typed = this.place(start, end);
@@ -245,6 +270,16 @@ class NativeField {
       this.notify({ type: "paste", items: [{ type: "text/plain", data }] });
     });
   }
+}
+
+/** Where the composed character before `offset` starts (NSString.rangeOfComposedCharacterSequence). */
+function previousCharacter(text: string, offset: number): number {
+  let start = 0;
+  for (const { index } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+    text.slice(0, offset),
+  ))
+    start = index;
+  return start;
 }
 
 /** The remote field: it takes an edit only where its own text says it goes. */
@@ -474,6 +509,26 @@ describe("typing into a remote field", () => {
     await keyboard((field) => field.replaceRange(0, 2, "AB"));
     await answerAll();
     expect(native.text).toBe("AB\n\ncd");
+  });
+
+  // The walk: 0123456789, then five backspaces in one burst, and 0123456 arrived.
+  it("deletes five for five backspaces named before any answer", async () => {
+    const { remote, native, keyboard, answerAll } = await open();
+    for (const digit of "0123456789") await keyboard((field) => field.type(digit));
+    await answerAll();
+    for (let press = 0; press < 5; press++) await keyboard((field) => field.backspace());
+    await answerAll();
+    expect(native.text).toBe("01234");
+    expect(remote.value).toBe("01234");
+  });
+
+  it("deletes five for five backspaces pressed while the ten still wait", async () => {
+    const { remote, native, keyboard, answerAll } = await open();
+    for (const digit of "0123456789") await keyboard((field) => field.type(digit));
+    for (let press = 0; press < 5; press++) await keyboard((field) => field.deleteBackward());
+    await answerAll();
+    expect(native.text).toBe("01234");
+    expect(remote.value).toBe("01234");
   });
 
   it("deletes what was typed last, however late its turn", async () => {

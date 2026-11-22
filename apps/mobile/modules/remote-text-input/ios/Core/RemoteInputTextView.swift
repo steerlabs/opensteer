@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 // tests/typing-order.interaction.test.tsx ports RemoteInputGate.swift, RemoteInputTextView.swift
 // and RemoteInputEdits.swift to TypeScript to test the JavaScript adapter: change it with them.
 import UIKit
@@ -91,9 +92,10 @@ import UniformTypeIdentifiers
       self.edit(self.select(typed)) { super.insertText(text) }
     }
   }
-  /// Replaces what UIKit named, wherever the edits applied since have moved it.
+  /// Replaces what UIKit named, wherever the edits applied since have moved it; a deletion whose
+  /// text an earlier one already took deletes the character before it instead (RemoteInputEdits).
   private func replaceTyped(_ typed: RemoteInputEdits.Place, with text: String) {
-    let target = range(typed)
+    let target = text.isEmpty ? edits.deletion(typed, in: self.text ?? "") : range(typed)
     guard let a = position(from: beginningOfDocument, offset: target.location), let b = position(from: a, offset: target.length), let current = textRange(from: a, to: b) else { return }
     edit(target) { super.replace(current, withText: text) }
   }
@@ -256,3 +258,4 @@ import UniformTypeIdentifiers
     } else if isFirstResponder { resignFirstResponder() }
   }
 }
+#endif

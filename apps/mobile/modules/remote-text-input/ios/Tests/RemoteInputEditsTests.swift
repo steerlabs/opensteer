@@ -32,6 +32,37 @@ import XCTest
         }
       }
     }
+    /// A backspace as UIKit asks the delegate for it: the character before the caret, named in
+    /// the text as it stands now. UIKit asks nothing where it sees nothing to delete.
+    func backspace() {
+      guard caret > 0 else { return }
+      let named = (string as NSString).rangeOfComposedCharacterSequence(at: caret - 1)
+      let place = edits.place(named.location, named.location + named.length)
+      gate.enqueue { [unowned self] in
+        gate.event(["type": "beforeinput"]) { [unowned self] in
+          let target = edits.deletion(place, in: string)
+          text.removeSubrange(target.location..<(target.location + target.length))
+          edits.record(start: target.location, removed: target.length, inserted: 0)
+          caret = target.location
+          gate.notify(["type": "input"])
+        }
+      }
+    }
+    /// deleteBackward(): where the caret was when pressed, carried; one character before it.
+    func deleteBackward() {
+      let place = edits.place(caret, caret)
+      gate.enqueue { [unowned self] in
+        gate.event(["type": "beforeinput"]) { [unowned self] in
+          let at = edits.current(place, length: text.count).start
+          guard at > 0 else { return }
+          let target = (string as NSString).rangeOfComposedCharacterSequence(at: at - 1)
+          text.removeSubrange(target.location..<(target.location + target.length))
+          edits.record(start: target.location, removed: target.length, inserted: 0)
+          caret = target.location
+          gate.notify(["type": "input"])
+        }
+      }
+    }
     /// JavaScript's answers arrive, one at a time, each after everything typed so far.
     func answerAll() {
       while !answers.isEmpty { gate.respond(answers.removeFirst()) }
@@ -112,6 +143,32 @@ import XCTest
     let range = edits.place(0, 5)
     edits.record(start: 1, removed: 2, inserted: 4)
     XCTAssertTrue(edits.current(range, length: 10) == (0, 7))
+  }
+
+  // The walk: 0123456789, then five backspaces in one burst, and 0123456 arrived.
+  func testFiveBackspacesNamedBeforeAnyAnswerDeleteFive() {
+    let field = Field()
+    for digit in "0123456789" { field.type(String(digit)) }
+    field.answerAll()
+    for _ in 0..<5 { field.backspace() }
+    field.answerAll()
+    XCTAssertEqual(field.string, "01234")
+  }
+  func testFiveBackspacesTypedWhileTheTenStillWaitDeleteFive() {
+    let field = Field()
+    for digit in "0123456789" { field.type(String(digit)) }
+    for _ in 0..<5 { field.deleteBackward() }
+    field.answerAll()
+    XCTAssertEqual(field.string, "01234")
+  }
+  func testABackspaceOverAnEmojiAlreadyDeletedDeletesTheCharacterBeforeIt() {
+    let field = Field()
+    field.type("a👩‍💻")
+    field.answerAll()
+    field.backspace()
+    field.backspace()
+    field.answerAll()
+    XCTAssertEqual(field.string, "")
   }
 
   func testAnEditAfterAPlaceDoesNotMoveIt() {

@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 import XCTest
 import UIKit
 @testable import RemoteTextInputCore
@@ -97,6 +98,25 @@ import UIKit
     XCTAssertEqual(view.text, "0123456789")
     XCTAssertEqual(view.selectedRange, NSRange(location: 10, length: 0))
   }
+  // The walk: 0123456789, then five backspaces in one burst, and 0123456 arrived. Each press
+  // named the character before the caret while the press before it still waited.
+  func testFiveBackspacesNamedBeforeAnyAnswerDeleteFive() {
+    let view = RemoteInputTextView()
+    var packets: [[String: Any]] = []
+    var next = 0
+    view.deliver = { packets.append($0) }
+    func answerAll() { while next < packets.count { view.respond(["id": packets[next]["id"]!]); next += 1 } }
+    for digit in "0123456789" { view.insertText(String(digit)) }
+    answerAll()
+    for _ in 0..<5 {
+      let caret = view.selectedRange.location
+      XCTAssertFalse(view.textView(view, shouldChangeTextIn: NSRange(location: caret - 1, length: 1), replacementText: ""))
+    }
+    for _ in 0..<5 { view.deleteBackward() }
+    answerAll()
+    XCTAssertEqual(view.text, "")
+    XCTAssertEqual(view.selectedRange, NSRange(location: 0, length: 0))
+  }
   func testAnAnswerArrivingAfterNewerTypingNeverMovesTheCaretBackOverIt() {
     let view = RemoteInputTextView()
     var packets: [[String: Any]] = []
@@ -173,3 +193,4 @@ import UIKit
   }
 
 }
+#endif

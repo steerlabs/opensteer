@@ -61,6 +61,17 @@ struct RemoteInputEdits {
     return (start, end)
   }
 
+  /// Where a deletion UIKit named is now, in `text`. A backspace pressed while the one before it
+  /// waits names the same character before the caret; once the earlier one has deleted it, the
+  /// place is empty and this one deletes the character before where it now stands. Five presses
+  /// are five deletions.
+  func deletion(_ place: Place, in text: String) -> NSRange {
+    let current = current(place, length: text.utf16.count)
+    if current.end > current.start || place.end == place.start { return NSRange(location: current.start, length: current.end - current.start) }
+    guard current.start > 0 else { return NSRange(location: 0, length: 0) }
+    return (text as NSString).rangeOfComposedCharacterSequence(at: current.start - 1)
+  }
+
   /// Nothing placed before now is still waiting for its turn: the edits so far move nothing.
   mutating func settle() {
     base = revision
