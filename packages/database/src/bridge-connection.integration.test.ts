@@ -199,6 +199,29 @@ describeStore("a bridge is made on the same consent as a connected agent", (it) 
         grant: tasksOnly,
       }),
     ).rejects.toMatchObject({ code: "conflict" });
+    // What the person may choose for it later is what they may choose when it is made.
+    await expect(
+      connections.update(fixture.userId, {
+        connectionId: bridge.id,
+        expectedRevision: bridge.grantRevision!,
+        grant: { scope: "selected", tasks: false, resources: [] },
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    const team = await connections.createBridge({
+      ...base,
+      conversation: { id: "C-team", name: "#team" },
+      senders: "anyone",
+      accessMode: "approval-required",
+      grant: tasksOnly,
+    });
+    await expect(
+      connections.update(fixture.userId, {
+        connectionId: team.id,
+        expectedRevision: team.grantRevision!,
+        grant: { scope: "everything" },
+      }),
+    ).rejects.toMatchObject({ code: "bad_request", reason: "bridge-anyone-grant" });
+    await connections.revoke(fixture.userId, team.id);
     // Listed with the connected agents; it does not expire.
     expect(await connections.list(fixture.userId)).toEqual([
       expect.objectContaining({ id: bridge.id, state: "active", expiresAt: null }),
@@ -230,6 +253,81 @@ describeStore("a bridge is made on the same consent as a connected agent", (it) 
         grant: tasksOnly,
       }),
     ).rejects.toMatchObject({ code: "forbidden", message: "Your organization doesn't allow this" });
+  });
+
+  it("ends through Disconnect when the organization takes tasks away, and never refuses the policy", async ({
+    storeFixture,
+  }) => {
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("bridge-off", {
+      bridge: false,
+    });
+    const { database } = storeFixture;
+    const { WorkHomeStore } = await import("./work-home.js");
+    const work = new WorkHomeStore(database);
+    const marker = {
+      organizationId: `org_${randomUUID()}` as never,
+      organizationName: "Workshop",
+      assignmentId: `was_${randomUUID()}` as never,
+    };
+    await work.initialize(marker, fixture.deploymentId);
+    const document = (revision: number, allowTasks: boolean) => ({
+      assignmentId: marker.assignmentId,
+      deploymentId: fixture.deploymentId,
+      policy: {
+        externalMaxMode: "full-access" as const,
+        allowEverything: false,
+        allowTasks,
+        devices: "assignee-may-enroll" as const,
+      },
+      revision,
+      state: "active" as const,
+    });
+    await work.apply(document(1, true));
+    const connections = new AgentConnectionStore(database);
+    const bridge = await connections.createBridge({
+      userId: fixture.userId,
+      accountId: configured.account.id,
+      senders: "owner",
+      accessMode: "approval-required",
+      grant: tasksOnly,
+    });
+    // The organization turns tasks off: the policy is written, whatever bridges exist.
+    await expect(work.apply(document(2, false))).resolves.toEqual({ revision: 2, changed: true });
+    const row = () =>
+      database
+        .selectFrom("agentConnections")
+        .select(["grant", "revokedAt", "cleanupReason"])
+        .where("id", "=", bridge.id)
+        .executeTakeFirstOrThrow();
+    expect((await row()).grant).toEqual({ ...tasksOnly, tasks: false });
+    // A bridge without tasks has no authority from that statement on, and its end is a
+    // Disconnect: the worker revokes it and shows the end with evidence.
+    await storeFixture.store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });
+    expect(await row()).toMatchObject({ cleanupReason: "revoked", revokedAt: expect.any(Date) });
+    expect(
+      (await connections.list(fixture.userId, { includeRevoked: true })).find(
+        ({ id }) => id === bridge.id,
+      ),
+    ).toMatchObject({ state: "stopped" });
+    // The image before this one writes the same narrowing in place, and is never refused.
+    const other = await connections
+      .createBridge({
+        userId: fixture.userId,
+        accountId: configured.account.id,
+        senders: "owner",
+        accessMode: "approval-required",
+        grant: tasksOnly,
+      })
+      .catch((error: unknown) => error);
+    expect(other).toMatchObject({ code: "forbidden" });
+    const previous = await insertBridgeRow(database, {
+      userId: fixture.userId,
+      accountId: configured.account.id,
+    });
+    await expect(
+      sql`update agent_connections set "grant" = jsonb_set("grant", '{tasks}', 'false')
+        where id = ${previous}`.execute(database),
+    ).resolves.toBeDefined();
   });
 });
 

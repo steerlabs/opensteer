@@ -440,14 +440,19 @@ export class AgentConnectionStore {
         const changed =
           change.kind === "revoke"
             ? await store.revoke(change.userId, change.connectionId)
-            : (await this.#writeUpdate(tx, change.userId, change)).changed;
+            : (await this.#writeUpdate(tx, change.userId, change, "organization")).changed;
         if (changed) changedIds.push(change.connectionId);
       }
       await closeObsoleteAgentOperationRequests(tx, changedIds, this.now());
     });
   }
 
-  async #writeUpdate(tx: Transaction<DatabaseSchema>, userId: UserId, input: AgentConnectionEdit) {
+  async #writeUpdate(
+    tx: Transaction<DatabaseSchema>,
+    userId: UserId,
+    input: AgentConnectionEdit,
+    by: "person" | "organization" = "person",
+  ) {
     await requirePersonalOwner(tx, userId);
     const current = await tx
       .selectFrom("agentConnections")
@@ -477,6 +482,10 @@ export class AgentConnectionStore {
       });
     const grant = input.grant ? AgentGrantSchema.parse(input.grant) : current.grant;
     if (input.grant) await assertGrantable(tx, userId, grant);
+    // The person chooses only what a bridge may hold. An organization's policy only ever
+    // narrows, and is always written: a bridge it leaves without tasks is not live and ends.
+    if (by === "person" && current.bridgeAccountId !== null && current.bridgeSenders !== null)
+      assertBridgeGrant(current.bridgeSenders, current.bridgeConversationId !== null, grant);
     const accessMode = await connectionPolicyMode(
       tx,
       grant,
