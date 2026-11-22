@@ -1,0 +1,29 @@
+{
+  "name": "@opensteer/pool-agent",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./test-support": "./src/test-support.ts"
+  },
+  "scripts": {
+    "build": "tsup && esbuild src/relay-main.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/relay.mjs && esbuild bench/real-host.ts --bundle --platform=node --target=node24 --format=esm --outfile=dist/real-host.mjs && esbuild bench/crash-main.ts --bundle --platform=node --target=node24 --format=esm --banner:js=\"import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);\" --outfile=dist/bench-agent.mjs",
+    "start": "node dist/main.js",
+    "test": "vitest run --root ../.. apps/pool-agent",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opensteer/access": "workspace:*",
+    "@opensteer/browser-runtime-core": "workspace:*",
+    "@opensteer/shared": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "esbuild": "0.28.2",
+    "tsup": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

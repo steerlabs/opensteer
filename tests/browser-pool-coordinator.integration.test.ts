@@ -10,7 +10,10 @@ import type {
   BrowserPoolControllerCall,
   BrowserPoolPhysicalController,
 } from "../apps/host/src/browser/browser-pool-controller.js";
-import { FakeBrowserPoolController } from "../apps/host/src/browser/browser-pool-controller.test-support.js";
+import {
+  createPoolController,
+  poolControllerKind,
+} from "./browser-pool-controller-under-test.test-support.js";
 import { type BrowserPoolControl } from "../packages/browser-runtime-core/src/browser-pool.js";
 import { BrowserRuntime } from "../packages/browser-runtime-core/src/runtime.js";
 import {
@@ -82,7 +85,10 @@ async function poolFixture(
   const fixture = await createStoreFixture();
   const task = await fixture.createRunFixture(key);
   const { database } = fixture;
-  const controller = new FakeBrowserPoolController({
+  // The agent cannot see a loopback runtime that outlives a start: against it every start is a
+  // new guest with an empty runtime, as on a real host.
+  if (poolControllerKind() === "agent") options = { ...options, freshGuests: true };
+  const controller = await createPoolController({
     slotId: `slot-${key}`,
     term: 1,
     ...(options.now ? { now: options.now } : {}),
@@ -295,6 +301,7 @@ async function poolFixture(
   const close = async () => {
     for (const coordinator of homes) coordinator.close();
     await runtime.shutdown();
+    await controller.close?.();
     await fixture.close();
   };
   return {
@@ -1611,7 +1618,7 @@ it("keeps a partial tab loss through a Home restart between the runtime's comple
 });
 
 it("consumes a saved state with exactly one resume, whatever the call id", async () => {
-  const controller = new FakeBrowserPoolController({ slotId: "slot-once", term: 1 });
+  const controller = await createPoolController({ slotId: "slot-once", term: 1 });
   const call = async (kind: "start" | "pause" | "resume", id = randomUUID()) => {
     const status = await controller.status("slot-once", 1);
     return controller.apply({
@@ -1650,6 +1657,7 @@ it("consumes a saved state with exactly one resume, whatever the call id", async
   expect(await resumeFrom(first)).toMatchObject({ applied: true });
   expect(await resumeFrom(randomUUID())).toMatchObject({ applied: false });
   expect(controller.effects).toEqual(["start", "pause", "resume"]);
+  await controller.close?.();
 });
 
 it("discards when the saved state passes its discard time on the controller's clock", async () => {
