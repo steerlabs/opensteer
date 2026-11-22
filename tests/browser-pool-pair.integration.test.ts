@@ -242,9 +242,14 @@ async function pair(key: string, mounted?: Awaited<ReturnType<typeof mountedAgen
   const apply = controller.apply.bind(controller);
   /** Each call the agent answered (or failed), by kind, once its request ended. */
   const answered: string[] = [];
+  /** When each answer came back, by kind. */
+  const answeredAt: { readonly kind: string; readonly at: number }[] = [];
   controller.apply = async (call) => {
     const starts = controller.effects.filter((effect) => effect === "start").length;
-    const result = await apply(call).finally(() => answered.push(call.kind));
+    const result = await apply(call).finally(() => {
+      answered.push(call.kind);
+      answeredAt.push({ kind: call.kind, at: Date.now() });
+    });
     if (controller.effects.filter((effect) => effect === "start").length > starts) {
       const old = runtime;
       runtime = newRuntime();
@@ -308,6 +313,8 @@ async function pair(key: string, mounted?: Awaited<ReturnType<typeof mountedAgen
   return {
     controller,
     answered,
+    /** When each answer of this kind came back. */
+    times: (kind: string) => answeredAt.filter((entry) => entry.kind === kind).map(({ at }) => at),
     home,
     slot: () => readBrowserPoolSlot(fixture.database, task.runnerId),
     runtime: () => runtime,
@@ -451,20 +458,20 @@ it("keeps a cold start the agent refuses for a missing profile disk not started,
   const mounted = await mountedAgentController("slot-disk-start");
   const p = await pair("disk-start", mounted);
   mounted.driver.profilesMounted = false;
-  const home = p.home();
+  const home = p.home(undefined, { extra: { refusedRetryMs: 300 } });
   const recovered = home.recover();
   void recovered.catch(() => undefined);
-  const starts = () => p.answered.filter((kind) => kind === "start").length;
-  await vi.waitFor(() => expect(starts()).toBeGreaterThan(0));
-  const refusedAt = Date.now();
-  const first = starts();
+  await vi.waitFor(() => expect(p.times("start").length).toBeGreaterThanOrEqual(3), {
+    timeout: 15_000,
+  });
+  const [first, second, third] = p.times("start");
   // Not a lost profile, not a deleted or replaced slot: nothing was booted and nothing ended.
   expect(p.controller.effects).toEqual([]);
   expect(await p.slot()).toBeUndefined();
   expect(mounted.agent.agent.slotIds()).toContain("slot-disk-start");
-  // Not asked again in a tight loop: one more ask at most in the next two seconds.
-  await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
-  expect(starts() - first).toBeLessThanOrEqual(1);
+  // Asked again later, each time later still: never in a loop.
+  expect(second! - first!).toBeGreaterThanOrEqual(250);
+  expect(third! - second!).toBeGreaterThanOrEqual(500);
   // The reason reaches the report, where the words a person sees are chosen.
   expect(home.report()).toMatchObject({ refused: "profile-disk-missing" });
   // The disk is back; the person asks for the browser: the same start goes through.
@@ -474,31 +481,32 @@ it("keeps a cold start the agent refuses for a missing profile disk not started,
   await recovered;
   expect(p.controller.effects).toEqual(["start"]);
   expect(home.report()).toBeUndefined();
-  expect(Date.now() - refusedAt).toBeLessThan(15_000);
 });
 
 it("keeps a parked browser whose wake from disk the agent refuses for a missing profile disk, and wakes it once the disk is back", async () => {
   const mounted = await mountedAgentController("slot-disk-wake");
   const p = await pair("disk-wake", mounted);
-  const home = p.home();
+  const home = p.home(undefined, { extra: { refusedRetryMs: 300 } });
   await home.recover();
   expect(await home.tryPark()).toBe("parked");
   // The host has written the parked guest to disk, and then lost its profile disk.
   const saved = (await p.status()).savedState!;
   await mounted.agent.agent.saveToDisk("slot-disk-wake", saved.id);
   mounted.driver.profilesMounted = false;
+  // A person waits for the browser all along.
   const waiting = home.gate.reserve(AbortSignal.timeout(30_000));
   void waiting.catch(() => undefined);
-  const resumes = () => p.answered.filter((kind) => kind === "resume").length;
-  await vi.waitFor(() => expect(resumes()).toBeGreaterThan(0));
-  const first = resumes();
-  await new Promise<void>((resolve) => setTimeout(resolve, 2_000));
+  await vi.waitFor(() => expect(p.times("resume").length).toBeGreaterThanOrEqual(3), {
+    timeout: 15_000,
+  });
+  const [first, second, third] = p.times("resume");
   // Its saved state is kept: never discarded for a fresh guest, nothing stopped or started.
   expect(p.controller.effects).toEqual(["start", "pause"]);
   expect((await p.status()).savedState?.id).toBe(saved.id);
   expect((await p.slot())?.phase).not.toBe("running");
-  // Not asked again in a tight loop.
-  expect(resumes() - first).toBeLessThanOrEqual(1);
+  // Asked again later, each time later still, though a person is waiting: never in a loop.
+  expect(second! - first!).toBeGreaterThanOrEqual(250);
+  expect(third! - second!).toBeGreaterThanOrEqual(500);
   expect(home.report()).toMatchObject({ refused: "profile-disk-missing" });
   // The disk is back: the same browser wakes, from the state it saved.
   mounted.driver.profilesMounted = true;
