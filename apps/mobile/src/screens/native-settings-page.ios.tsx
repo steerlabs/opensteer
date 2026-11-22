@@ -177,11 +177,21 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
     );
   if (row.kind === "text")
     return row.initial === undefined ? (
-      <Lines detail={row.detail ?? null} title={row.label} {...linesAddress(row.addressIn)} />
+      <Lines
+        detail={row.detail ?? null}
+        title={row.label}
+        titleParts={row.labelParts}
+        {...linesAddress(row.addressIn)}
+      />
     ) : (
       <HStack alignment="center" spacing={12}>
         <IdentityMark circular initial={row.initial} />
-        <Lines detail={row.detail ?? null} title={row.label} {...linesAddress(row.addressIn)} />
+        <Lines
+          detail={row.detail ?? null}
+          title={row.label}
+          titleParts={row.labelParts}
+          {...linesAddress(row.addressIn)}
+        />
       </HStack>
     );
   if (row.kind === "status") return <StatusRow row={row} />;

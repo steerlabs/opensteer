@@ -40,7 +40,8 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { color } from "../theme.js";
-import { addressWords } from "../ui/address-words.js";
+import { addressWords, isAddress } from "../ui/address-words.js";
+import { plainSentence, type SentencePart } from "../ui/sentence-parts.js";
 import type { NativeSettingsStep, NativeSettingsTone } from "./native-settings-page.types.js";
 import type { SettingsActionModel } from "./settings-model.js";
 
@@ -258,6 +259,8 @@ function drawnLine(value: string, address: boolean): string {
 export function LinkRow(props: {
   /** Which line is an email address, a host or a URL (`isAddress`). */
   readonly addressIn?: "title" | "detail" | undefined;
+  /** The title as a sentence holding addresses among its words: each drawn as one. */
+  readonly titleParts?: readonly SentencePart[] | undefined;
   readonly detail?: string | null | undefined;
   /** Amber for a thing that needs the person. */
   readonly detailTone?: "attention" | undefined;
@@ -274,11 +277,21 @@ export function LinkRow(props: {
   // node with a description is spoken as that alone. A row with an address says itself whole, as
   // written, and its lines have none of their own (the address line's would be all that is heard).
   // A button of its own in `trailing` (MenuRow's "…") is a node apart, with its own name.
-  const merged = props.addressIn !== undefined;
-  const title = drawnLine(props.title, props.addressIn === "title");
+  const merged = props.addressIn !== undefined || props.titleParts !== undefined;
+  const title = props.titleParts
+    ? props.titleParts
+        .map((part) =>
+          typeof part === "string"
+            ? part
+            : isAddress(part.address)
+              ? addressWords(part.address)
+              : part.address,
+        )
+        .join("")
+    : drawnLine(props.title, props.addressIn === "title");
   const detail = props.detail ? drawnLine(props.detail, props.addressIn === "detail") : null;
   const spoken = [
-    props.title,
+    props.titleParts ? plainSentence(props.titleParts) : props.title,
     props.detail,
     typeof props.trailing === "string" ? props.trailing : null,
   ]

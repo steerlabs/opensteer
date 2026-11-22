@@ -1,3 +1,4 @@
+import { sentenceWith } from "../ui/sentence-addresses.js";
 import {
   createPluginAccountAttempt,
   forgetPluginOAuthApp,
@@ -125,7 +126,15 @@ function ConnectBody(props: BodyProps & { signIn: readonly NativeSettingsSection
         author: review.plugin.author,
         pluginName: review.plugin.name,
         providerName: provider,
-      }).map((line) => ({ key: line.key, kind: "text" as const, label: line.text })),
+      }).map((line) => ({
+        key: line.key,
+        kind: "text" as const,
+        label: line.text,
+        // A decision: the sites it names are drawn whole, as addresses, in the sentence.
+        ...(line.addresses.length > 0
+          ? { labelParts: sentenceWith(line.text, line.addresses) }
+          : {}),
+      })),
       ...(action.footer ? { footer: action.footer } : {}),
     },
   ];

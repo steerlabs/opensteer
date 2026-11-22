@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import type { RowMark } from "../ui/integration-icon.js";
+import type { SentencePart } from "../ui/sentence-parts.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 
 /** Meaning colours only: green working, red broken, amber needs you, grey off. */
@@ -43,6 +44,11 @@ export type NativeSettingsRow =
       readonly key: string;
       readonly kind: "text";
       readonly label: string;
+      /**
+       * The label as words and addresses, where it is a sentence holding addresses among its
+       * words (`sentenceWith`): each address drawn as one, the sentence read as `label`.
+       */
+      readonly labelParts?: readonly SentencePart[];
       readonly detail?: string;
       /**
        * Which of its words is an email address, a host or a URL (`isAddress`): the row draws it as

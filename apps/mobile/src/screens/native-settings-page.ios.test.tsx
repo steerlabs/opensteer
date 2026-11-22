@@ -253,3 +253,54 @@ it("draws a status row's address whole, never selectable, heard and copied as it
     act(() => root.unmount());
   }
 });
+
+// Build 9's walk: on the GitHub plugin's consent at the largest size the hosts in its sentence were
+// drawn as words, and iOS hyphenated them ("api.github.-" / "com and" / "upload-" / ...). A row whose
+// label holds addresses among its words draws each as one, and is read as the sentence.
+it("draws the addresses among a row's words as addresses, and reads the sentence plainly", async () => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage
+          sections={[
+            {
+              key: "consent",
+              title: "What linking agrees to",
+              rows: [
+                {
+                  key: "sites",
+                  kind: "text",
+                  label:
+                    "Your GitHub credential can only be sent to api.github.com and uploads.github.com.",
+                  labelParts: [
+                    "Your GitHub credential can only be sent to ",
+                    { address: "api.github.com" },
+                    " and ",
+                    { address: "uploads.github.com" },
+                    ".",
+                  ],
+                },
+              ],
+            },
+          ]}
+        />,
+      ),
+    );
+    const line = [...container.querySelectorAll('[data-native="Text"]')].find((text) =>
+      (text.textContent ?? "").startsWith("Your GitHub credential"),
+    )!;
+    expect(line.textContent).toBe(
+      `Your GitHub credential can only be sent to ${addressWords("api.github.com")} and ${addressWords("uploads.github.com")}.`,
+    );
+    expect(line.getAttribute("data-modifiers")).toContain(
+      JSON.stringify({
+        accessibilityLabel:
+          "Your GitHub credential can only be sent to api.github.com and uploads.github.com.",
+      }).slice(1, -1),
+    );
+  } finally {
+    act(() => root.unmount());
+  }
+});

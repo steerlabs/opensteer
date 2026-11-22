@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import { addressWords } from "../ui/address-words.js";
 import { NativeSettingsPage } from "./native-settings-page.android.js";
 
 vi.mock(
@@ -185,6 +186,54 @@ it("has TalkBack hear every row with an address whole, its own button apart", as
       "Studio Mac, mac.tailnet.ts.net",
       "More actions for Studio Mac",
     ]);
+  } finally {
+    act(() => root.unmount());
+  }
+});
+
+// Build 9's walk: the GitHub plugin's consent sentence drew its hosts as words. A row whose label
+// holds addresses among its words draws each as one, and TalkBack hears the sentence plainly.
+it("draws the addresses among a row's words as addresses, heard as the sentence", async () => {
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  try {
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage
+          sections={[
+            {
+              key: "consent",
+              title: "What linking agrees to",
+              rows: [
+                {
+                  key: "sites",
+                  kind: "text",
+                  label:
+                    "Your GitHub credential can only be sent to api.github.com and uploads.github.com.",
+                  labelParts: [
+                    "Your GitHub credential can only be sent to ",
+                    { address: "api.github.com" },
+                    " and ",
+                    { address: "uploads.github.com" },
+                    ".",
+                  ],
+                },
+              ],
+            },
+          ]}
+        />,
+      ),
+    );
+    const line = [...element.querySelectorAll("span")].find((span) =>
+      (span.textContent ?? "").startsWith("Your GitHub credential"),
+    )!;
+    expect(line.textContent).toBe(
+      `Your GitHub credential can only be sent to ${addressWords("api.github.com")} and ${addressWords("uploads.github.com")}.`,
+    );
+    expect(line.closest("[aria-label]")?.getAttribute("aria-label")).toBe(
+      "Your GitHub credential can only be sent to api.github.com and uploads.github.com.",
+    );
+    expect(line.getAttribute("aria-label")).toBeNull();
   } finally {
     act(() => root.unmount());
   }

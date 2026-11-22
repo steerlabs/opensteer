@@ -14,7 +14,8 @@ import {
 } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
 import { color, deploymentPaint } from "../theme.js";
-import { addressWords } from "../ui/address-words.js";
+import { addressWords, isAddress } from "../ui/address-words.js";
+import { plainSentence, type SentencePart } from "../ui/sentence-parts.js";
 import type { DeploymentMark } from "../threads/deployment-identity.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 import type { NativeSettingsFooter } from "./native-settings-page.types.js";
@@ -36,12 +37,19 @@ export function Lines(props: {
    * whole and wrapping only at its joints, and read aloud as it is.
    */
   readonly addressIn?: "title" | "detail" | undefined;
+  /** The title as a sentence holding addresses among its words: each drawn as one. */
+  readonly titleParts?: readonly SentencePart[] | undefined;
 }): ReactNode {
   const words = (value: string, place: "title" | "detail") =>
     props.addressIn === place
       ? { modifiers: [accessibilityLabel(value)], text: addressWords(value) }
       : { modifiers: [], text: value };
-  const title = words(props.title, "title");
+  const title = props.titleParts
+    ? {
+        modifiers: [accessibilityLabel(plainSentence(props.titleParts))],
+        text: drawnSentence(props.titleParts),
+      }
+    : words(props.title, "title");
   const detail = props.detail === null ? null : words(props.detail, "detail");
   return (
     <VStack alignment="leading" spacing={2}>
@@ -64,6 +72,19 @@ export function Lines(props: {
       )}
     </VStack>
   );
+}
+
+/** A sentence as drawn: its words as words, each address in the characters that keep it whole. */
+export function drawnSentence(parts: readonly SentencePart[]): string {
+  return parts
+    .map((part) =>
+      typeof part === "string"
+        ? part
+        : isAddress(part.address)
+          ? addressWords(part.address)
+          : part.address,
+    )
+    .join("");
 }
 
 /** A row's `addressIn` as `Lines` names its lines. */

@@ -434,6 +434,9 @@ export function pluginAuthorText(author: PluginAuthor) {
  * linking places in that code, and who wrote it. "This plugin's code" rather
  * than the plugin's name, which is often the service's: it is not the
  * service's code.
+ *
+ * Each line names the addresses its words hold (`addresses`, in order, as written there), so a
+ * client draws them as addresses inside the sentence and reads the sentence plainly.
  */
 export function pluginConsentLines(input: {
   readonly consent: PluginConsentView;
@@ -441,7 +444,11 @@ export function pluginConsentLines(input: {
   readonly pluginName: string;
   /** Null where only the requirement is known, as on a Request card. */
   readonly providerName: string | null;
-}): readonly { readonly key: string; readonly text: string }[] {
+}): readonly {
+  readonly key: string;
+  readonly text: string;
+  readonly addresses: readonly string[];
+}[] {
   const { consent } = input;
   const sites = consent.sites.map((site) => site.replace(/^https?:\/\//u, ""));
   const credential = input.providerName
@@ -451,6 +458,7 @@ export function pluginConsentLines(input: {
   const sealed = consent.credential === "sealed";
   return [
     {
+      addresses: sites,
       key: "sites",
       // Plugin code that receives the credential itself can send it anywhere,
       // whatever sites it declares; only a sealed credential is confined to them.
@@ -463,16 +471,19 @@ export function pluginConsentLines(input: {
           : `This plugin doesn't say which sites it sends ${credential} to.`,
     },
     {
+      addresses: [],
       key: "credential",
       text: sealed
         ? `This plugin's code never sees ${credential}. It gets an account reference that only works for ${sites.length ? "those sites" : "the sites it declares"}.`
         : `This plugin's code receives ${credential} itself and could send it to any site.`,
     },
     {
+      addresses: [],
       key: "trust",
       text: "Linking trusts this plugin's code with this account. Its setup runs with the account before any tool asks for approval.",
     },
     {
+      addresses: [],
       key: "author",
       text:
         input.author === "catalog"

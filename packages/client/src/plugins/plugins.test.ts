@@ -643,6 +643,37 @@ describe("words a person reads", () => {
     expect(lines("sealed").join(" ")).not.toMatch(/sealed handle|Resend's code/u);
   });
 
+  // Build 9's walk: on the GitHub plugin's consent at the largest size the phone drew
+  // "api.github.-" / "com and" / "upload-" / "s.github.com.": the hosts were words in a sentence
+  // from the plugin's data. Each line names the addresses its words hold, so a client draws them
+  // as addresses, in the sentence, and reads the sentence plainly.
+  it("names the addresses each consent line holds, in order, as they are written there", () => {
+    const lines = pluginConsentLines({
+      consent: {
+        credential: "sealed",
+        digest: "a".repeat(64),
+        sites: ["https://api.github.com", "https://uploads.github.com"],
+      },
+      author: "catalog",
+      pluginName: "GitHub",
+      providerName: "GitHub",
+    });
+    for (const line of lines) {
+      let rest = line.text;
+      for (const address of line.addresses) {
+        expect(rest, `${line.key}: ${address}`).toContain(address);
+        rest = rest.slice(rest.indexOf(address) + address.length);
+      }
+    }
+    expect(lines.find((line) => line.key === "sites")?.addresses).toEqual([
+      "api.github.com",
+      "uploads.github.com",
+    ]);
+    expect(lines.filter((line) => line.key !== "sites").flatMap((line) => line.addresses)).toEqual(
+      [],
+    );
+  });
+
   it("says what to do when the sandbox can't run here from the Host's code, keeping its reason", () => {
     const reason = "Plugins are unavailable: workerd cannot run on this darwin/arm64 system";
     expect(

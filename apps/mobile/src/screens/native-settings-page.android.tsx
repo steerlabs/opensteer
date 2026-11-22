@@ -149,6 +149,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
           detail={row.detail}
           lead={row.initial === undefined ? null : <Avatar initial={row.initial} />}
           title={row.label}
+          titleParts={row.labelParts}
         />
       );
     case "status":
