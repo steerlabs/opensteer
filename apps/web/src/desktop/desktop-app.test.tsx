@@ -247,6 +247,75 @@ it("carries setup from creating this computer straight into the app it opens", a
   container.remove();
 });
 
+it("remembers to turn Remote access on for an Opensteer started here while signed in, and only then", async () => {
+  const personalId = createId("deployment");
+  const run = async (account: DeploymentAccessSnapshot["account"]) => {
+    localStorage.clear();
+    let access = snapshot({
+      account,
+      personalSetup: personalStatus({
+        canStart: true,
+        deploymentId: null,
+        name: "Studio Mac",
+        state: "stopped",
+        step: null,
+      }),
+    });
+    const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
+    const bridge = {
+      checkDeployments: vi.fn(async () => undefined),
+      cloudComputerRead: vi.fn(async () => ({
+        ok: false,
+        failure: { kind: "unavailable", message: "None in this test." },
+      })),
+      createPersonalDeployment: vi.fn(async () => undefined),
+      getDeploymentAccessSnapshot: async () => access,
+      onHostWebSocketEvent: () => () => undefined,
+      onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      onNotificationActivated: () => () => undefined,
+      getLocalExecutionStatus: async () => {
+        throw new Error("No local execution in this test.");
+      },
+      onLocalExecutionStatusChanged: () => () => undefined,
+    } as unknown as OpensteerDesktopBridge;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<DesktopApp bridge={bridge} />));
+    const start = await vi.waitFor(() => {
+      const found = [...container.querySelectorAll("button")].find((candidate) =>
+        candidate.textContent?.startsWith("Start Opensteer on this"),
+      );
+      if (!found) throw new Error(`No start in ${container.textContent ?? ""}`);
+      return found;
+    });
+    await act(async () => start.click());
+    access = snapshot({
+      account,
+      deployments: [{ ...accessDeployment("connecting"), ...personalSummary(personalId) }],
+      personalSetup: personalStatus({
+        deploymentId: personalId,
+        name: "Studio Mac",
+        step: "ready",
+      }),
+      revision: 5,
+      selectedDeploymentId: personalId,
+    });
+    await act(async () => {
+      for (const listener of listeners) listener(access);
+    });
+    const remembered = localStorage.getItem(`opensteer.setup.remote-access.v1:${personalId}`);
+    await act(async () => root.unmount());
+    container.remove();
+    return remembered;
+  };
+  expect(await run({ available: true, status: "signed-in" } as never)).toBe("wanted");
+  expect(await run({ available: true, status: "signed-out" } as never)).toBeNull();
+});
+
 it("opens this computer's Host only once main has attached it", async () => {
   const personalId = createId("deployment");
   const restarting = {

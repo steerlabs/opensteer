@@ -27,7 +27,11 @@ import { observeLocalExecutionStatus } from "./local-execution-status.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
 import { ComputerFactsStore, readComputerFacts } from "./computer-facts.js";
 import { thisComputerLabel } from "./places.js";
-import { pendingSetupStep } from "../components/first-run/setup-memory.js";
+import {
+  pendingSetupStep,
+  rememberRemoteAccessOnStart,
+} from "../components/first-run/setup-memory.js";
+import { remoteAccessOnWhenSignedInStart } from "@opensteer/client/host";
 import { SetupOpening } from "../components/first-run/setup-opening.js";
 import { StartupFailure } from "../components/onboarding-card.js";
 import { StartFreshScreen } from "../components/start-fresh-screen.js";
@@ -155,6 +159,9 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // opens. A later launch resumes only a setup left unfinished; after that,
   // setup stays one menu away.
   const [settingUpHere, setSettingUpHere] = useState(false);
+  // Started while signed in: once this computer's Opensteer is known, its setup turns
+  // Remote access on (remoteAccessOnWhenSignedInStart).
+  const [remoteAccessOnStart, setRemoteAccessOnStart] = useState(false);
   // Data an earlier Opensteer left, which this one can't open: offered a fresh
   // start until the person chooses another way on ("Not now").
   const startFresh = useStartFresh(bridge, snapshot?.personalSetup?.state === "repair-required");
@@ -220,6 +227,15 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     ({ id }) => id === snapshot.selectedDeploymentId,
   );
   const selected = selectedConnection ? desktopSummaryFromAccess(selectedConnection) : undefined;
+  const startedHereId =
+    remoteAccessOnStart && selected?.onThisComputer && selected.kind === "personal"
+      ? selected.id
+      : null;
+  useEffect(() => {
+    if (startedHereId === null) return;
+    rememberRemoteAccessOnStart(startedHereId);
+    setRemoteAccessOnStart(false);
+  }, [startedHereId]);
   // A Mac removed from the Opensteer on screen shows that before anything
   // signs in again, whichever arrived first: the session ending or the 4010.
   const [membership, setMembership] = useState<DesktopLocalExecutionStatus | null>(null);
@@ -613,6 +629,9 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         ? (name?: string) => {
             setScreen(null);
             setSettingUpHere(true);
+            setRemoteAccessOnStart(
+              remoteAccessOnWhenSignedInStart && snapshot.account.status === "signed-in",
+            );
             runBridgeOperation(bridge.createPersonalDeployment(name ? { name } : {}));
           }
         : null;

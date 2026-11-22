@@ -2,7 +2,7 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HostClientRequestError, type ThreadPlacementOption } from "@opensteer/client/host";
 import type { AddHarnessAccount } from "../account-sign-in-dialog.js";
 import { SetupPage } from "./setup-page.js";
@@ -835,4 +835,99 @@ it("leads a Home without an account with sign-in, and opens a private network fr
   // And back to the account, which is still one press.
   await act(async () => button("Use your Opensteer account instead").click());
   expect(button("Sign in and turn on Remote access")).toBeTruthy();
+});
+
+describe("Remote access on start", () => {
+  const wanted = () => `opensteer.setup.remote-access.v1:${shell.snapshot.deploymentId}`;
+  const unlinkedSignedIn = () => {
+    const { bridge } = desktopBridge();
+    const access = {
+      account: { available: true, status: "signed-in" },
+      personalAccountLink: { status: "unlinked" },
+    };
+    onThisMac(bridge, access);
+    shell.hostClient.dispatch.mockResolvedValue({
+      operation: { id: "8f0b6c6e-2a4b-4f6d-9e1a-888888888888", state: "pending" },
+      type: "personal.remoteAccess.request",
+    });
+    return { access, bridge };
+  };
+  const settle = async () => {
+    for (let flush = 0; flush < 6; flush += 1) await act(async () => undefined);
+  };
+
+  it("links and turns Remote access on by itself, once, for an Opensteer started while signed in", async () => {
+    const { access, bridge } = unlinkedSignedIn();
+    localStorage.setItem(wanted(), "wanted");
+    await mount();
+    await settle();
+    // On the first step already: nothing to press.
+    expect(container.textContent).toContain("Your AI");
+    expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
+    expect(bridge.signIn).not.toHaveBeenCalled();
+
+    const linked = { ...access, personalAccountLink: { status: "linked" } };
+    shell.deploymentAccess = linked;
+    await act(async () => {
+      for (const listener of state.accessListeners) listener(linked);
+    });
+    await remoteChanged({
+      ...remoteStatus,
+      access: { ...(remoteStatus.access as object), accountLink: { state: "active" } },
+      revision: 2,
+    });
+    await settle();
+    const requests = shell.hostClient.dispatch.mock.calls.filter(
+      ([command]) => (command as { type: string }).type === "personal.remoteAccess.request",
+    );
+    expect(requests).toEqual([
+      [
+        expect.objectContaining({
+          intent: { action: "configure", mode: "connect", privateOrigin: null },
+        }),
+      ],
+    ]);
+    await remoteChanged({
+      ...remoteStatus,
+      access: {
+        ...(remoteStatus.access as object),
+        accountLink: { state: "active" },
+        mode: "connect",
+        route: { document: { route: { origin: "https://studio.connect.test" } } },
+      },
+      revision: 3,
+    });
+    await settle();
+    // Done: never asked again, even on the next launch.
+    expect(localStorage.getItem(wanted())).toBeNull();
+    act(() => root?.unmount());
+    await mount();
+    await settle();
+    expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns nothing on for an Opensteer started without that wish", async () => {
+    const { bridge } = unlinkedSignedIn();
+    await mount();
+    await settle();
+    expect(bridge.linkPersonal).not.toHaveBeenCalled();
+    expect(shell.hostClient.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("leaves a private network someone chose as it is, and forgets the wish", async () => {
+    const { bridge } = unlinkedSignedIn();
+    localStorage.setItem(wanted(), "wanted");
+    remoteStatus = {
+      ...remoteStatus,
+      access: {
+        ...(remoteStatus.access as object),
+        mode: "private",
+        route: { document: { route: { origin: "https://mac.example.com" } } },
+      },
+    };
+    await mount();
+    await settle();
+    expect(bridge.linkPersonal).not.toHaveBeenCalled();
+    expect(localStorage.getItem(wanted())).toBeNull();
+  });
 });

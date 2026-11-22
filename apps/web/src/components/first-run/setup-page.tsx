@@ -12,6 +12,9 @@ import {
 } from "./setup-memory.js";
 import { HomeSetupStep } from "../devices/home-setup-step.js";
 import { SetupPhoneStep } from "./setup-phone-step.js";
+import { usePersonalRemoteAccess } from "@opensteer/client/react";
+import { useWebRemoteAccess } from "../../account/remote-access-port.js";
+import { useRemoteAccessOnStart } from "./remote-access-on-start.js";
 
 /**
  * Setup, in up to three short steps: the AI that does the work, Set up this
@@ -22,7 +25,7 @@ import { SetupPhoneStep } from "./setup-phone-step.js";
  * the computer menu any time after.
  */
 export function SetupPage() {
-  const { desktopBridge, desktopDeployment, snapshot } = useShell();
+  const { desktopBridge, desktopDeployment, hostClient, snapshot } = useShell();
   const navigate = useNavigate();
   const onThisComputer =
     desktopBridge !== null &&
@@ -31,6 +34,11 @@ export function SetupPage() {
   const mac = typeof navigator !== "undefined" && navigator.platform.startsWith("Mac");
   const steps = useMemo(() => setupSteps({ mac, onThisComputer }), [mac, onThisComputer]);
   const deploymentId = onThisComputer ? snapshot.deploymentId : null;
+  // One Remote access for the whole setup: the phone step shows what turning it on on start
+  // is doing, rather than starting a second one beside it.
+  const remote = usePersonalRemoteAccess(onThisComputer ? hostClient : null);
+  const connect = useWebRemoteAccess(remote);
+  useRemoteAccessOnStart(deploymentId, connect);
   const [step, setStep] = useState<SetupStepId>(() =>
     resumeStep(steps, deploymentId ? pendingSetupStep(deploymentId) : null),
   );
@@ -58,7 +66,14 @@ export function SetupPage() {
   }
   if (current === "phone" && desktopBridge) {
     return (
-      <SetupPhoneStep bridge={desktopBridge} onBack={back} onFinish={finish} progress={progress} />
+      <SetupPhoneStep
+        bridge={desktopBridge}
+        connect={connect}
+        onBack={back}
+        onFinish={finish}
+        progress={progress}
+        remote={remote}
+      />
     );
   }
   return (

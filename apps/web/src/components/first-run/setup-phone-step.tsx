@@ -1,8 +1,7 @@
 import { useCallback, useState } from "react";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
-import { usePersonalRemoteAccess, type RemoteAccessController } from "@opensteer/client/react";
-import { useWebRemoteAccess } from "../../account/remote-access-port.js";
+import type { RemoteAccessController, usePersonalRemoteAccess } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
 import { phoneConnectUrl, useNewPhoneSignIn } from "./phone-setup.js";
 import {
@@ -26,18 +25,20 @@ import { SetupList } from "./setup-list.js";
  */
 export function SetupPhoneStep({
   bridge,
+  connect,
   onBack,
   onFinish,
   progress,
+  remote,
 }: {
   readonly bridge: OpensteerDesktopBridge;
+  readonly connect: RemoteAccessController;
   readonly onBack?: (() => void) | undefined;
   readonly onFinish: () => void;
   readonly progress: { readonly count: number; readonly index: number };
+  readonly remote: ReturnType<typeof usePersonalRemoteAccess>;
 }) {
   const { deploymentAccess, hostClient, snapshot } = useShell();
-  const remote = usePersonalRemoteAccess(hostClient);
-  const connect = useWebRemoteAccess(remote);
   const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
   const connectUrl = phoneConnectUrl(connect.view, portalOrigin, snapshot.deploymentId);
   const connectAvailable =
@@ -179,14 +180,20 @@ function ConnectPanel({
   const { view } = connect;
   if (url) {
     return (
-      <ScanPanel
-        label="Code that opens this computer on your phone"
-        steps={[
-          "Scan this code with your phone’s camera.",
-          "Get the Opensteer app and sign in with the same account as this computer.",
-        ]}
-        value={url}
-      />
+      <>
+        <p className="setup-frame__note" role="status">
+          Remote access is on. Your phone and connected agents can reach {name} from anywhere. You
+          can turn it off in Settings › Account.
+        </p>
+        <ScanPanel
+          label="Code that opens this computer on your phone"
+          steps={[
+            "Scan this code with your phone’s camera.",
+            "Get the Opensteer app and sign in with the same account as this computer.",
+          ]}
+          value={url}
+        />
+      </>
     );
   }
   if (view.tone === "busy" && view.state !== "loading") {
