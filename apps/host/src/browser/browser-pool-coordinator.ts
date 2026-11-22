@@ -997,39 +997,26 @@ export class BrowserPoolCoordinator {
       } catch (error) {
         refusal = error;
       }
-      if (
-        answer?.outcome === "ended" &&
-        answer.state.phase === "running" &&
-        sameFence(answer.state.fence, fence)
-      ) {
-        await adopter.ended(sessionId);
-        continue;
-      }
-      // An answer, or a refusal, from a runtime that is not the running one under this fence:
-      // the guest is not what the slot says, and recovery replaces it; that end is the
-      // evidence for these rows (V4).
-      const state = answer
-        ? answer.state
-        : refusal !== undefined && !unknownAnswer(refusal)
-          ? await this.#runtimeState().catch(() => undefined)
-          : undefined;
-      if (
-        state !== undefined &&
-        (state === null || state.phase !== "running" || !sameFence(state.fence, fence))
-      ) {
+      const outcome = await browserPoolEndOutcome({
+        answer,
+        refusal,
+        fence,
+        runtimeState: () => this.#runtimeState(),
+      });
+      if (outcome === "ended") await adopter.ended(sessionId);
+      // The guest is not what the slot says: recovery replaces it, and that end is the evidence
+      // for these rows (V4).
+      else if (outcome === "recover") {
         this.#recovered = false;
         return;
-      }
-      if (refusal !== undefined) unknown ??= refusal;
+      } else if (outcome === "unknown")
+        unknown ??= refusal ?? new BrowserPoolUnanswered("The pooled runtime gave no answer.");
       else pending++;
     }
     // Not answered: unknown, asked again later and later (P18). Answered, not yet with the end:
     // asked again, later each time, as an answer.
-    if (unknown !== undefined)
-      throw unknownAnswer(unknown)
-        ? unknown
-        : new BrowserPoolUnanswered("A stopped session's end was refused.", { cause: unknown });
-    if (pending) throw new BrowserPoolPending("A stopped session's end is not answered yet.");
+    const failure = browserPoolEndFailure(pending, unknown);
+    if (failure) throw failure;
   }
 
   /** The removal, to its end; a turn that fails is tried again before anything else. */
@@ -2058,6 +2045,52 @@ const refusedRetryMaxMs = 5 * 60_000;
  * unsigned (a superseded term is answered only so), a relay that refused, a call past its
  * deadline. Not knowing: asked again later, never counted toward a discard or a failed start.
  */
+/**
+ * What one end request's answer, or its refusal, means for the end step (V4). Every way out is one
+ * of four: `ended` (the running runtime under this fence ended it), `recover` (an answer, or a
+ * refusal, from a runtime that is not the running one under this fence: recovery replaces the
+ * guest), `pending` (answered, not yet with the end) or `unknown` (no answer, or a refusal from the
+ * running runtime itself, which says nothing of the session: asked again later). Nothing else.
+ */
+export async function browserPoolEndOutcome(input: {
+  readonly answer: BrowserPoolEndAnswer | undefined;
+  readonly refusal: unknown;
+  readonly fence: BrowserPoolRuntimeFence;
+  /** The runtime's state, read when a refusal is an answer (not a non-answer). */
+  readonly runtimeState: () => Promise<BrowserPoolRuntimeState | null>;
+}): Promise<"ended" | "recover" | "pending" | "unknown"> {
+  const { answer, refusal, fence } = input;
+  const serving = (state: BrowserPoolRuntimeState | null) =>
+    state !== null && state.phase === "running" && sameFence(state.fence, fence);
+  if (answer) {
+    if (!serving(answer.state)) return "recover";
+    return answer.outcome === "ended" ? "ended" : "pending";
+  }
+  if (unknownAnswer(refusal)) return "unknown";
+  const state = await input.runtimeState().catch(() => undefined);
+  if (state !== undefined && !serving(state)) return "recover";
+  return "unknown";
+}
+
+/**
+ * What the end step throws once every session was asked: an unknown, as the loop's unknown (asked
+ * again later each time, never counted), or answers not yet with the end, as pending. Never a
+ * plain error (V4). Undefined: every session was ended.
+ */
+export function browserPoolEndFailure(pending: number, unknown: unknown): Error | undefined {
+  if (unknown !== undefined)
+    return unknownAnswer(unknown)
+      ? (unknown as Error)
+      : new BrowserPoolUnanswered("A stopped session's end was refused.", { cause: unknown });
+  if (pending) return new BrowserPoolPending("A stopped session's end is not answered yet.");
+  return undefined;
+}
+
+/** Whether the loop takes an error as not knowing (P18) or as an answer not yet the end. */
+export function browserPoolEndFailureIsHandled(error: unknown): boolean {
+  return unknownAnswer(error) || error instanceof BrowserPoolPending;
+}
+
 function unknownAnswer(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 4; depth++) {
     if (cause instanceof BrowserPoolAgentUnavailable || cause instanceof BrowserPoolUnanswered)
