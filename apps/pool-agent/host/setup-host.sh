@@ -346,7 +346,7 @@ ExecStart=$OPT/setup-host.sh boot
 [Install]
 WantedBy=multi-user.target
 EOF
-    cat > "$SYSTEMD_DIR/opensteer-pool-agent.service" <<EOF
+    cat > "$SYSTEMD_DIR"/opensteer-pool-agent.service <<EOF
 [Unit]
 Description=Opensteer pool agent
 Requires=opensteer-pool-host.service
@@ -653,8 +653,10 @@ check() {
     expect "ksm" "$(cat /sys/kernel/mm/ksm/run 2>/dev/null || echo 0)" "0"
     # Re-check finding 6: what the kernel answered when the agent moved each VMM's kvm-pit
     # thread into the VMM's cgroup (written by the agent once a guest has started).
-    if [[ -f "$RUN/kvm-pit.json" ]]; then
-        expect "kvm-pit refused" "$(sed -E 's/.*"refused":([0-9]+).*/\1/' "$RUN/kvm-pit.json")" "0"
+    local kvm_pit="/run/opensteer-pool/kvm-pit.json"
+    [[ -n ${OSP_RUN_DIR:-} ]] && kvm_pit="$OSP_RUN_DIR/kvm-pit.json"
+    if [[ -f "$kvm_pit" ]]; then
+        expect "kvm-pit refused" "$(sed -E 's/.*"refused":([0-9]+).*/\1/' "$kvm_pit")" "0"
     else
         printf '  ---- %-28s %s\n' "kvm-pit" "no guest started since boot"
     fi

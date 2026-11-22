@@ -12,7 +12,7 @@ import {
   type CloudComputerProviderWrite,
   type GoogleComputeServerRef,
 } from "@opensteer/control-plane-protocol";
-import { refused } from "@opensteer/core";
+import { refused, sameStringSet } from "@opensteer/core";
 import { z } from "zod";
 import { type ComputeAccessToken, googleMetadataAccessToken } from "./google-auth.js";
 import {
@@ -1587,12 +1587,6 @@ function googleVm(vm: Instance, generation?: number): VmServer<GoogleComputeServ
     bootstrapMetadata: bootstrapMetadata(vm),
     firewalls: vm.tags?.items.includes(firewallTag) ? [{ id: firewallId, status: "applied" }] : [],
   };
-}
-
-function sameStringSet(a: readonly string[], b: readonly string[]) {
-  if (a.length !== b.length) return false;
-  const set = new Set(a);
-  return b.every((item) => set.has(item));
 }
 
 function poolHostInstanceName(id: BrowserPoolHostId, generation: number) {
