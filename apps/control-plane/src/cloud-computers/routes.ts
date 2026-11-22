@@ -308,7 +308,10 @@ export function registerCloudComputerRoutes(
     await requireLease(request);
     const { slotId } = poolSlotParams.parse(request.params);
     return BrowserPoolSlotBumpTermResponseSchema.parse(
-      await store.bumpPoolSlotTerm(slotId, BrowserPoolSlotBumpTermRequestSchema.parse(request.body)),
+      await store.bumpPoolSlotTerm(
+        slotId,
+        BrowserPoolSlotBumpTermRequestSchema.parse(request.body),
+      ),
     );
   });
 

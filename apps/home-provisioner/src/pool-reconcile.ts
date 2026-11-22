@@ -333,7 +333,9 @@ export class PoolReconciler {
       }
       try {
         if (
-          !(await act((job, check) => provider.updatePoolHostBootstrap!(server.id, true, job, check)))
+          !(await act((job, check) =>
+            provider.updatePoolHostBootstrap!(server.id, true, job, check),
+          ))
         ) {
           throw new BootstrapScrubFailure();
         }
@@ -374,9 +376,7 @@ export class PoolReconciler {
                   server.status === "off"),
             )) ||
           (write.kind === "power-on" &&
-            servers.some(
-              (server) => server.id === write.serverRef && server.status === "running",
-            ))
+            servers.some((server) => server.id === write.serverRef && server.status === "running"))
         ) {
           await finish(write.token);
         }
@@ -385,7 +385,12 @@ export class PoolReconciler {
       if (state === "deleted") {
         // W10: never delete host VM or durable profile disk while any slot exists in Account or agent list.
         if (hasAccountSlots) return report("deleting");
-        if (current?.status === "running" && current.internalIpv4 && host.enrolled && host.hostKey) {
+        if (
+          current?.status === "running" &&
+          current.internalIpv4 &&
+          host.enrolled &&
+          host.hostKey
+        ) {
           try {
             const liveSlots = await agent.list(
               {
@@ -642,9 +647,7 @@ export class PoolReconciler {
     let term = slot.term;
     let revision = slot.revision;
 
-    const pending = new Map(
-      (slot.pendingAgentWrites ?? []).map((write) => [write.token, write]),
-    );
+    const pending = new Map((slot.pendingAgentWrites ?? []).map((write) => [write.token, write]));
     const finish = async (token: string) => {
       await this.#checkSlot(slotId, { operation: "finish-agent-write", token }, signal);
       pending.delete(token);
@@ -788,11 +791,7 @@ export class PoolReconciler {
         (slot.appliedHostGeneration !== undefined &&
           slot.appliedHostGeneration !== slot.hostGeneration);
       if (needsTermBump) {
-        const bumped = await account.bumpSlotTerm(
-          slotId,
-          { revision, expectedTerm: term },
-          signal,
-        );
+        const bumped = await account.bumpSlotTerm(slotId, { revision, expectedTerm: term }, signal);
         if (!bumped.bumped || bumped.term === undefined || bumped.revision === undefined) {
           throw new Superseded();
         }

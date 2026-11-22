@@ -349,8 +349,7 @@ export function advisoryLockResource(key: string, seed: number): string {
     return "advisory:cloud-computer-billing-reconcile";
   if (seed === 0 && key === "cloud-computer-backup-pool")
     return "advisory:cloud-computer-backup-pool";
-  if (seed === 0 && key === "browser-pool-capacity")
-    return "advisory:browser-pool-capacity";
+  if (seed === 0 && key === "browser-pool-capacity") return "advisory:browser-pool-capacity";
   if (seed === 2) return "advisory:adoption-proof";
   if (seed === 1) return "advisory:origin";
   if (seed !== 0) throw new Error(`Undeclared advisory hash seed: ${seed}`);

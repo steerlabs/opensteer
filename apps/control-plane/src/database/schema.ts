@@ -20,10 +20,7 @@ import type {
   CloudComputerStripeEventTable,
   CloudComputerTable,
 } from "../cloud-computers/tables.js";
-import type {
-  BrowserPoolHostTable,
-  BrowserPoolSlotTable,
-} from "../cloud-computers/pool-tables.js";
+import type { BrowserPoolHostTable, BrowserPoolSlotTable } from "../cloud-computers/pool-tables.js";
 import type { NotificationPreviewEnvelope } from "@opensteer/core";
 import type { DeploymentLifecycle } from "@opensteer/core";
 import type {

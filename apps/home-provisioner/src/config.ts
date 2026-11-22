@@ -50,9 +50,7 @@ const googleSchema = z.object({
   OPENSTEER_HOME_GCP_DISK_SIZE_GB: integer(10, 65_536).default(30),
 });
 
-const ipv4Cidr = z
-  .string()
-  .regex(/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/u);
+const ipv4Cidr = z.string().regex(/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/u);
 
 const poolSchema = z.object({
   OPENSTEER_POOL_HOME_CIDR: ipv4Cidr,

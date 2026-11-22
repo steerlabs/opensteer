@@ -69,9 +69,9 @@ describe("browser pool protocol", () => {
       },
     };
     expect(CloudComputerBootResponseSchema.parse(base).browserPool).toBeUndefined();
-    expect(
-      CloudComputerBootResponseSchema.parse({ ...base, browserPool: true }).browserPool,
-    ).toBe(true);
+    expect(CloudComputerBootResponseSchema.parse({ ...base, browserPool: true }).browserPool).toBe(
+      true,
+    );
   });
 
   it("validates pool host desired and report invariants", () => {
@@ -215,11 +215,9 @@ describe("browser pool protocol", () => {
       "opensteer-managed-browser-pool-registration-v1\0",
     );
 
-    expect(() =>
-      ManagedBrowserPoolTargetResponseSchema.parse({ status: "ready" }),
-    ).toThrow();
-    expect(
-      ManagedBrowserPoolTargetResponseSchema.parse({ status: "preparing" }).status,
-    ).toBe("preparing");
+    expect(() => ManagedBrowserPoolTargetResponseSchema.parse({ status: "ready" })).toThrow();
+    expect(ManagedBrowserPoolTargetResponseSchema.parse({ status: "preparing" }).status).toBe(
+      "preparing",
+    );
   });
 });

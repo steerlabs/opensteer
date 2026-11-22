@@ -333,7 +333,9 @@ function createHarness() {
       credentialsErased: false,
     });
 
-  let checkHostOverride: ((id: BrowserPoolHostId, check: BrowserPoolHostCheck) => Promise<boolean> | boolean) | undefined;
+  let checkHostOverride:
+    | ((id: BrowserPoolHostId, check: BrowserPoolHostCheck) => Promise<boolean> | boolean)
+    | undefined;
 
   const account: PoolAccountApi = {
     desiredHosts: vi.fn(async () => [...hosts.values()]),
@@ -354,7 +356,11 @@ function createHarness() {
         if (list.some((w) => w.kind === check.write.kind)) return false;
         row.pendingProviderWrites = [
           ...list,
-          { ...check.write, dispatched: false, recoverAfter: new Date(nowMs + 180_000).toISOString() },
+          {
+            ...check.write,
+            dispatched: false,
+            recoverAfter: new Date(nowMs + 180_000).toISOString(),
+          },
         ];
         return true;
       }
@@ -411,7 +417,11 @@ function createHarness() {
         if (list.some((w) => w.kind === check.write.kind)) return false;
         row.pendingAgentWrites = [
           ...list,
-          { ...check.write, dispatched: false, recoverAfter: new Date(nowMs + 180_000).toISOString() },
+          {
+            ...check.write,
+            dispatched: false,
+            recoverAfter: new Date(nowMs + 180_000).toISOString(),
+          },
         ];
         return true;
       }
@@ -807,7 +817,10 @@ describe("PoolReconciler (hosts and slots)", () => {
     h.setCheckHostOverride(() => {
       throw new RemoteRequestError("Account", 403);
     });
-    await expect(h.reconciler.pass(signal)).rejects.toMatchObject({ service: "Account", status: 403 });
+    await expect(h.reconciler.pass(signal)).rejects.toMatchObject({
+      service: "Account",
+      status: 403,
+    });
     h.setCheckHostOverride(undefined);
 
     // Host marked deleted while a live slot is still in Account desiredSlots -> VM/disk NOT deleted!

@@ -27,7 +27,9 @@ export type BrowserPoolSlotId = z.infer<typeof BrowserPoolSlotIdSchema>;
 
 export const BrowserPoolTermSchema = z.number().int().positive();
 export const BrowserPoolSpkiBase64Schema = z.string().regex(/^[A-Za-z0-9+/]{40,200}={0,2}$/u);
-export const BrowserPoolResourceNameSchema = z.string().regex(/^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$/u);
+export const BrowserPoolResourceNameSchema = z
+  .string()
+  .regex(/^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$/u);
 export const BrowserPoolDiskRefSchema = z
   .string()
   .regex(/^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?\/[1-9][0-9]{0,19}$/u);
@@ -371,8 +373,7 @@ export const BrowserPoolSlotReportSchema = z
     ) {
       context.addIssue({
         code: "custom",
-        message:
-          "A deleted browser slot requires slot, profile, and credential erasure evidence",
+        message: "A deleted browser slot requires slot, profile, and credential erasure evidence",
       });
     }
     if ((report.phase === "failed") !== (report.lastError !== null)) {

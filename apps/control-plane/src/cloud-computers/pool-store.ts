@@ -1170,7 +1170,12 @@ export class BrowserPoolStore {
       if (
         !pinnedKey ||
         sigBytes.byteLength !== 64 ||
-        !verify(null, managedBrowserPoolRegistrationSigningBytes(input.document), pinnedKey, sigBytes)
+        !verify(
+          null,
+          managedBrowserPoolRegistrationSigningBytes(input.document),
+          pinnedKey,
+          sigBytes,
+        )
       ) {
         throw new ControlPlaneError("unauthorized", "Invalid Home registration signature");
       }
@@ -1266,10 +1271,7 @@ export class BrowserPoolStore {
     return this.#targetResponse(slot, host);
   }
 
-  #targetResponse(
-    slot: PoolSlot,
-    host: PoolHost | undefined,
-  ): ManagedBrowserPoolTargetResponse {
+  #targetResponse(slot: PoolSlot, host: PoolHost | undefined): ManagedBrowserPoolTargetResponse {
     if (slot.keysRegisteredAt === null) {
       return ManagedBrowserPoolTargetResponseSchema.parse({ status: "unregistered" });
     }
@@ -1518,12 +1520,12 @@ function validPoolHostBoot(
   );
   return Boolean(
     row &&
-      valid &&
-      row.generation === input.generation &&
-      row.state !== "deleted" &&
-      row.bootstrapExpiresAt &&
-      row.bootstrapExpiresAt > now &&
-      !row.enrolledAt,
+    valid &&
+    row.generation === input.generation &&
+    row.state !== "deleted" &&
+    row.bootstrapExpiresAt &&
+    row.bootstrapExpiresAt > now &&
+    !row.enrolledAt,
   );
 }
 

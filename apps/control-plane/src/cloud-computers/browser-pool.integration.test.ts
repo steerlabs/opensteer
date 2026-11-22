@@ -59,6 +59,7 @@ import type { StripeBilling, StripeSubscription } from "./stripe.js";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 
 const url = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
+// Requires PostgreSQL via OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL; skip outside integration runs.
 const integration = url ? describe : describe.skip;
 
 const publicOrigin = new URL("https://account.browser-pool.example.test");
@@ -134,7 +135,12 @@ function keyPairSpkiBase64() {
   };
 }
 
-function makeDiscoveryEnvelope(origin: string, deploymentId: string, privateKey: KeyObject, spkiBase64Url: string) {
+function makeDiscoveryEnvelope(
+  origin: string,
+  deploymentId: string,
+  privateKey: KeyObject,
+  spkiBase64Url: string,
+) {
   const document = HostDiscoveryDocumentSchema.parse({
     deploymentId,
     deploymentShape: { kind: "personal" },
@@ -153,7 +159,10 @@ integration("Browser pool Account service", () => {
   const database = createControlPlaneDatabase({ connectionString: url!, maxConnections: 4 });
   const subscriptions = new Map<string, StripeSubscription>();
   const stripe: StripeBilling = {
-    checkout: vi.fn(async () => ({ id: `cs_${randomUUID()}`, url: "https://checkout.example.test" })),
+    checkout: vi.fn(async () => ({
+      id: `cs_${randomUUID()}`,
+      url: "https://checkout.example.test",
+    })),
     portal: vi.fn(async () => ({ url: "https://portal.example.test" })),
     subscription: vi.fn(async (id: string) => subscriptions.get(id)!),
     validateOffer: vi.fn(async () => {}),
@@ -415,7 +424,11 @@ integration("Browser pool Account service", () => {
           oidcClientId: boot.managedHome?.oidc.clientId ?? null,
           authorityEnvelope: envelope,
           directoryGeneration: 1,
-          accountLink: { generation: "a".repeat(43), issuer: publicOrigin.origin, subject: accountId },
+          accountLink: {
+            generation: "a".repeat(43),
+            issuer: publicOrigin.origin,
+            subject: accountId,
+          },
           createdAt: now,
           updatedAt: now,
         })
@@ -1209,9 +1222,11 @@ integration("Browser pool Account service", () => {
       for (const row of placed) counts.set(row.hostId!, (counts.get(row.hostId!) ?? 0) + 1);
       expect([...counts.values()].sort()).toEqual([1, 2]);
       expect(
-        (await sql<{ n: string }>`select count(*)::text as n from browser_pool_hosts`.execute(
-          database,
-        )).rows[0]?.n,
+        (
+          await sql<{ n: string }>`select count(*)::text as n from browser_pool_hosts`.execute(
+            database,
+          )
+        ).rows[0]?.n,
       ).toBe("2");
     } finally {
       await h.app.close();

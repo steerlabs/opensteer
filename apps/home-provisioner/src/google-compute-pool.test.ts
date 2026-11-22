@@ -5,7 +5,13 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "./config.js";
-import { ComputeFake, computeCreate, globalPath, regionPath, zonePath } from "./google-compute.test-support.js";
+import {
+  ComputeFake,
+  computeCreate,
+  globalPath,
+  regionPath,
+  zonePath,
+} from "./google-compute.test-support.js";
 import { renderPoolHostUserData } from "./pool-boot.js";
 import type { CreatePoolHostVm } from "./provider.js";
 

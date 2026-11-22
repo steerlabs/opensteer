@@ -237,7 +237,10 @@ export function accountClient(
             json(BrowserPoolSlotDesiredResponseSchema),
             { headers: await headers(signal) },
           );
-          if (page.next && (page.next <= (after ?? "") || page.next !== page.slots.at(-1)?.slotId)) {
+          if (
+            page.next &&
+            (page.next <= (after ?? "") || page.next !== page.slots.at(-1)?.slotId)
+          ) {
             throw new Error("Account returned an invalid browser pool slot cursor");
           }
           slots.push(...page.slots);

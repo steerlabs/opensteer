@@ -16,9 +16,7 @@ import { googleBootstrapReadyKey } from "./boot.js";
 export const poolProfileDiskDeviceName = "opensteer-profiles";
 export const poolProfileDiskDevicePath = `/dev/disk/by-id/google-${poolProfileDiskDeviceName}`;
 
-const ipv4Cidr = z
-  .string()
-  .regex(/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/u);
+const ipv4Cidr = z.string().regex(/^(?:\d{1,3}\.){3}\d{1,3}\/(?:[0-9]|[12][0-9]|3[0-2])$/u);
 
 const PoolHostBootSpecSchema = z.object({
   hostId: BrowserPoolHostIdSchema,

@@ -1136,7 +1136,8 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
       throw refused("conflict", "This Google provisioner serves a different pool host region");
     }
     const found = await this.#instance(name, signal);
-    if (found) return googlePoolHostVm(verifyNamedPoolHostInstance(found, id, generation), generation);
+    if (found)
+      return googlePoolHostVm(verifyNamedPoolHostInstance(found, id, generation), generation);
 
     const localSsds = Array.from({ length: input.localSsdCount }, () => ({
       type: "SCRATCH",

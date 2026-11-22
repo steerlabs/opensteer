@@ -255,18 +255,18 @@ pooling completely disabled.
 
 ### Pool variables and capacity sizing
 
-| Variable | Where | Value |
-| --- | --- | --- |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` | Account | Positive integer; enables pooling for newly created Cloud Computers. |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON` | Account | Pool host installer URL/SHA-256 and pinned agent/relay/rootfs/kernel/egress artifacts. |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_MACHINE_TYPE` | Account | Defaults to `n2-standard-8` (nested-virt-capable Intel Ice Lake/Cascade Lake). |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB` | Account | Per-slot profile size in MiB (`64`–`1048576`, default `2048`). |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB` | Account | Durable profile disk size in GiB (default `500`). Account refuses configurations where `slotsPerHost * profileMib` exceeds 90% of disk size (10% reserved for ext4 overhead). |
-| `OPENSTEER_POOL_PROVISIONER_KEY` (`_FILE`) | Provisioner | Ed25519 private key (base64 PKCS8 DER or PEM) used to sign admin requests to pool hosts. |
-| `OPENSTEER_POOL_HOME_CIDR` | Provisioner | Subnet CIDR of Cloud Computer Home VMs (for host-side `nftables` on 7310/7312). |
-| `OPENSTEER_POOL_PROVISIONER_CIDR` | Provisioner | Provisioner CIDR (for VPC firewall and host-side `nftables` on 7311). |
-| `OPENSTEER_POOL_LOCAL_SSD_COUNT` | Provisioner | NVMe Local SSDs attached per pool host (`1`–`24`, default `1`). |
-| `OPENSTEER_POOL_PROFILE_DISK_TYPE` | Provisioner | Durable profile disk type (`pd-ssd`, `pd-balanced`, `pd-standard`; default `pd-ssd`). |
+| Variable                                             | Where       | Value                                                                                                                                                                         |
+| ---------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`       | Account     | Positive integer; enables pooling for newly created Cloud Computers.                                                                                                          |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON`         | Account     | Pool host installer URL/SHA-256 and pinned agent/relay/rootfs/kernel/egress artifacts.                                                                                        |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_MACHINE_TYPE`         | Account     | Defaults to `n2-standard-8` (nested-virt-capable Intel Ice Lake/Cascade Lake).                                                                                                |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB`          | Account     | Per-slot profile size in MiB (`64`–`1048576`, default `2048`).                                                                                                                |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB` | Account     | Durable profile disk size in GiB (default `500`). Account refuses configurations where `slotsPerHost * profileMib` exceeds 90% of disk size (10% reserved for ext4 overhead). |
+| `OPENSTEER_POOL_PROVISIONER_KEY` (`_FILE`)           | Provisioner | Ed25519 private key (base64 PKCS8 DER or PEM) used to sign admin requests to pool hosts.                                                                                      |
+| `OPENSTEER_POOL_HOME_CIDR`                           | Provisioner | Subnet CIDR of Cloud Computer Home VMs (for host-side `nftables` on 7310/7312).                                                                                               |
+| `OPENSTEER_POOL_PROVISIONER_CIDR`                    | Provisioner | Provisioner CIDR (for VPC firewall and host-side `nftables` on 7311).                                                                                                         |
+| `OPENSTEER_POOL_LOCAL_SSD_COUNT`                     | Provisioner | NVMe Local SSDs attached per pool host (`1`–`24`, default `1`).                                                                                                               |
+| `OPENSTEER_POOL_PROFILE_DISK_TYPE`                   | Provisioner | Durable profile disk type (`pd-ssd`, `pd-balanced`, `pd-standard`; default `pd-ssd`).                                                                                         |
 
 Because `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` counts assigned slots rather than
 simultaneously active browsers, operators may oversubscribe host RAM (inactive guests park to
