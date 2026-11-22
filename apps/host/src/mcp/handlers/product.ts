@@ -491,6 +491,7 @@ export class ProductToolHandlers {
       ...(input.changedSince ? { changedSince: new Date(input.changedSince) } : {}),
       scope,
       ...(caller.kind === "connection" ? { nativeOnly: true } : {}),
+      ...(caller.kind === "run" ? { readerThreadId: callerThread(caller).id } : {}),
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
     });
     const response = {
@@ -541,6 +542,8 @@ export class ProductToolHandlers {
             threadId,
             claims.requestedBy,
             selectedLineageId(caller),
+            undefined,
+            caller.kind === "run" ? callerThread(caller).id : undefined,
           );
     if (!thread) throw forbidden("task is unavailable to this user");
 

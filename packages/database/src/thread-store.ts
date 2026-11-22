@@ -137,7 +137,7 @@ import {
   moveThreadInputInTransaction,
   readThreadInputQueue,
 } from "./thread-inbox.js";
-import { lineagePersonalContext } from "./resource-access.js";
+import { lineageHasPersonalContext, lineagePersonalContext } from "./resource-access.js";
 import {
   projectThreadState,
   publishRunQueue,
@@ -791,6 +791,19 @@ export async function listThreadAssignmentsForOwner(
     "repeatable read",
   );
 }
+/**
+ * What a reading Run may see of a task: everything, unless the Run is a managed memory pass, which
+ * sees only tasks that ran with the person's personal context, by the same predicate as its wake.
+ * A task it may not see reads exactly like one that does not exist.
+ */
+function memoryReaderSees(readerThreadId: ThreadId) {
+  return sql<boolean>`(not exists (
+      select 1 from triggers memory_reader
+      where memory_reader.anchor_thread_id = ${readerThreadId}
+        and memory_reader.system_role is not null
+    ) or ${lineageHasPersonalContext(sql.ref("threads.origin_connection_id"))})`;
+}
+
 export async function agentThreadPageForOwner(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -804,6 +817,8 @@ export async function agentThreadPageForOwner(
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
+    /** The task of the Run reading: a memory pass's sees only tasks with personal context. */
+    readonly readerThreadId?: ThreadId;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
@@ -833,6 +848,9 @@ export async function agentThreadPageForOwner(
         .selectFrom("threads")
         .where("threads.removedAt", "is", null)
         .$if(input.nativeOnly === true, (q) => q.where("threads.worker", "=", "native"))
+        .$if(input.readerThreadId !== undefined, (query) =>
+          query.where(memoryReaderSees(input.readerThreadId!)),
+        )
         .$if(since !== null, (query) =>
           query.innerJoin(changedThreads(transaction, since!).as("changed"), (join) =>
             join.onRef("changed.threadId", "=", "threads.id"),
@@ -1009,6 +1027,8 @@ export async function getThreadForOwner(
   ownerId: UserId,
   lineageConnectionId?: string,
   nativeOnly?: boolean,
+  /** The task of the Run reading: a memory pass's reads only tasks with personal context. */
+  readerThreadId?: ThreadId,
 ): Promise<Thread | null> {
   return withPersonalReadTransaction(database, async (tx) => {
     await requirePersonalOwner(tx, ownerId);
@@ -1028,6 +1048,7 @@ export async function getThreadForOwner(
       .$if(lineageConnectionId !== undefined, (query) =>
         query.where("threads.originConnectionId", "=", lineageConnectionId!),
       )
+      .$if(readerThreadId !== undefined, (query) => query.where(memoryReaderSees(readerThreadId!)))
       .executeTakeFirst();
     return row
       ? { ...threadFromRow(row), returnHint: await compactionReturnHint(tx, threadId) }

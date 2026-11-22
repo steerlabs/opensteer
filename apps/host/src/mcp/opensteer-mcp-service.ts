@@ -1012,7 +1012,15 @@ export class OpensteerMcpService {
     const selected = lineage?.grant.scope === "selected" ? lineage.agentConnectionId : undefined;
     return Promise.all(
       [...new Set(ids)].map(async (id) => {
-        const thread = await this.options.store.getThreadForOwner(id, caller.userId, selected);
+        // A memory pass's Run is refused a task without personal context here, where a task that
+        // does not exist is refused, in the same words.
+        const thread = await this.options.store.getThreadForOwner(
+          id,
+          caller.userId,
+          selected,
+          undefined,
+          caller.kind === "run" ? caller.claims.threadId : undefined,
+        );
         if (!thread)
           throw new OpensteerError({
             code: caller.kind === "connection" ? "not_found" : "forbidden",

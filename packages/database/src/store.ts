@@ -1409,6 +1409,7 @@ export class OpensteerStore {
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
+    readonly readerThreadId?: ThreadId;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }
@@ -1417,6 +1418,7 @@ export class OpensteerStore {
     ownerId: UserId,
     lineageConnectionId?: string,
     nativeOnly?: boolean,
+    readerThreadId?: ThreadId,
   ): Promise<Thread | null> {
     return threadStore.getThreadForOwner(
       this.#database,
@@ -1424,6 +1426,7 @@ export class OpensteerStore {
       ownerId,
       lineageConnectionId,
       nativeOnly,
+      readerThreadId,
     );
   }
 

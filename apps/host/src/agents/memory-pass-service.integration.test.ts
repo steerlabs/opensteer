@@ -34,6 +34,8 @@ import {
 import { expect, vi } from "vitest";
 import { MemoryPassService, memoryPassWaitingReason } from "./memory-pass-service.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
+import type { AgentCaller } from "../mcp/agent-caller.js";
+import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
 const computerZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 async function fixture(
   f: StoreFixture,
@@ -347,6 +349,41 @@ async function finish(
     })
     .where("messageId", "=", run.seedInputId)
     .execute();
+}
+/** A Run's own caller, as the Run's tool token would name it once its Runner holds it. */
+async function runCaller(
+  f: StoreFixture,
+  base: Awaited<ReturnType<typeof fixture>>,
+  runId: RunId,
+  commandId: string,
+  threadId: Thread["id"],
+): Promise<AgentCaller> {
+  await f.store.claimCommand(commandId as never, `caller-${runId}`);
+  const binding = await f.bindAgentControlRun(base, runId, `caller-${runId}`, threadId);
+  await f.database.updateTable("runs").set({ status: "running" }).where("id", "=", runId).execute();
+  const thread = (await f.store.getThreadForOwner(threadId, base.userId))!;
+  const epoch = Math.floor(Date.now() / 1000);
+  return {
+    kind: "run",
+    key: `run:${runId}`,
+    userId: base.userId,
+    accessMode: thread.accessMode,
+    thread,
+    claims: {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      jti: crypto.randomUUID(),
+      exp: epoch + 60,
+      iat: epoch,
+      environmentId: binding.environmentId,
+      runnerId: binding.runnerId,
+      runId,
+      bindingGeneration: binding.bindingGeneration,
+      runnerBootId: binding.runnerBootId,
+      requestedBy: base.userId,
+      threadId,
+    },
+  } as AgentCaller;
 }
 function wakeText(admitted: Awaited<ReturnType<typeof wake>>) {
   return admitted.message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
@@ -1213,6 +1250,129 @@ describeStore("managed memory passes", (it) => {
     const text = wakeText(second).join("\n");
     expect(text).toContain(own.id);
     expect(text).not.toContain(fromStrangers.id);
+  });
+
+  it("never lists or reads a task without personal context to a memory pass, through its own tools", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "memory-tools");
+    await service(f).instance.ensureForPersonal();
+    const light = (await role(f, base.userId)).trigger;
+    await serveMcp(f);
+    const task = async (title: string, extra: Record<string, unknown> = {}) =>
+      (
+        await f.store.createThread({
+          createdBy: base.userId,
+          environmentId: base.environmentId,
+          harnessInstanceId: base.harnessInstance.id,
+          idempotencyKey: `memory-tools-${title}`,
+          modelSelection: base.thread.modelSelection,
+          title,
+          ...extra,
+        })
+      ).thread;
+    // A chat where anyone may speak, its task and a task made under it.
+    await f.enrollMessagingRunner(testMessagingRunnerId, "Messaging");
+    const account = await new ChannelStore(f.database).createConnection({
+      account: { displayName: "Team", externalAccountId: "T-tools", routingMode: "dedicated" },
+      connection: {
+        runnerId: testMessagingRunnerId,
+        connectionMethod: "bring-your-own",
+        displayName: "Team",
+        externalIdentityId: "U-BOT-tools",
+        externalTenantId: "T-tools",
+        provider: "slack",
+        transportKind: "socket",
+      },
+      createdBy: base.userId,
+      credential: {
+        encryptedPayload: Buffer.from("tools"),
+        encryptionKeyVersion: 1,
+        id: createId("credential"),
+        name: "Team",
+        ownerId: base.userId,
+        provider: "channel:slack",
+      },
+    });
+    const anyone = await new AgentConnectionStore(f.database).createBridge({
+      userId: base.userId,
+      accountId: account.account.id,
+      conversation: { id: "C-tools", name: "#tools" },
+      senders: "anyone",
+      accessMode: "approval-required",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const fromStrangers = await task("From the channel", {
+      authority: {
+        kind: "connection",
+        connectionId: anyone.id,
+        userId: base.userId,
+        accessMode: "approval-required",
+      },
+    });
+    const under = await task("Under the channel's task", { parentThreadId: fromStrangers.id });
+    // A task that ran without personal context before the update.
+    const legacyId = `mcn_${crypto.randomUUID()}`;
+    await sql`insert into agent_connections (id, user_id, label, client_name, access_mode,
+        resource, token_hash, created_at, expires_at, revoked_at, "grant", grant_revision,
+        consent_version, cleanup_reason, cleanup_requested_at, bridge_senders)
+      values (${legacyId}, ${base.userId}, 'Messages before the update', 'Messaging',
+        'approval-required', 'opensteer:bridge', null, now(), now(), now(),
+        '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(),
+        'anyone')`.execute(f.database);
+    const legacy = await task("Before the update");
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: legacyId })
+      .where("id", "=", legacy.id)
+      .execute();
+    const own = await task("Own work");
+    // The light pass's own Run, as its Runner would hold it.
+    const admitted = await wake(f, light, (await tick(f, base, light)).occurrence.id, "tools-1");
+    if (!admitted.run || !admitted.command) throw new Error("Worker Run missing");
+    const caller = await runCaller(
+      f,
+      base,
+      admitted.run.id,
+      admitted.command.id,
+      light.anchorThreadId,
+    );
+    const call = (name: string, args: Record<string, unknown>, key: string) =>
+      lastService!.callTool("", name, args, { caller, operationKey: key });
+    const listed = (await call("opensteer_task_list", { limit: 50 }, "tools-list")) as {
+      readonly tasks: readonly { readonly id: string }[];
+    };
+    const ids = listed.tasks.map(({ id }) => id);
+    expect(ids).toContain(own.id);
+    for (const hidden of [fromStrangers, under, legacy]) expect(ids).not.toContain(hidden.id);
+    // Reading one reads exactly like reading a task that does not exist.
+    const missing = await call(
+      "opensteer_task_read",
+      { taskId: createId("thread") },
+      "tools-missing",
+    ).catch((error: unknown) => error);
+    for (const hidden of [fromStrangers, under, legacy])
+      await expect(
+        call("opensteer_task_read", { taskId: hidden.id }, `tools-read-${hidden.id}`),
+      ).rejects.toMatchObject({
+        code: (missing as { code: string }).code,
+        message: (missing as Error).message,
+      });
+    // The person's own agents still see their tasks as before.
+    const ownRun = await f.enqueueHumanTrigger({
+      content: [{ type: "text", text: "Look around" }],
+      idempotencyKey: "tools-own-run",
+      requestedBy: base.userId,
+      threadId: own.id,
+    });
+    const ownCaller = await runCaller(f, base, ownRun.run.id, ownRun.command.id, own.id);
+    const ownListed = (await lastService!.callTool(
+      "",
+      "opensteer_task_list",
+      { limit: 50 },
+      { caller: ownCaller, operationKey: "tools-own-list" },
+    )) as { readonly tasks: readonly { readonly id: string }[] };
+    expect(ownListed.tasks.map(({ id }) => id)).toContain(fromStrangers.id);
   });
 
   it("lists what a light pass must read, with no old wakes, and skips an idle wake", async ({
