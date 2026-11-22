@@ -107,7 +107,7 @@ export type BrowserPoolAgentAdminRequest =
       readonly term: number;
       /** SPKI DER, base64, of the Home's Ed25519 key. */
       readonly homeKey: string;
-      readonly guest: BrowserPoolAgentGuestSpec;
+      readonly guest: BrowserPoolAgentGuestRequest;
       /**
        * SPKI DER, base64: the key a Home's Host and Runner present to the relay for this slot.
        * It opens tunnels to the slot's bridge and nothing else. No relay without it.
@@ -130,8 +130,32 @@ export type BrowserPoolAgentAdminRequest =
       readonly ticketKey?: { readonly keyId: string; readonly spki: string };
     }
   /** Names the term it deletes: a replay after the slot was recreated at a higher term is refused. */
-  | { readonly op: "delete"; readonly slotId: string; readonly term: number }
+  | {
+      readonly op: "delete";
+      readonly slotId: string;
+      readonly term: number;
+      /**
+       * Round G: also remove the slot's profile disk (default false: it is left). Answered with
+       * `profileErased: true` only once the file is seen gone; for a slot the agent does not
+       * know, a leftover profile at that slot's path is removed the same way.
+       */
+      readonly eraseProfile?: boolean;
+    }
   | { readonly op: "list" };
+
+/**
+ * A guest as the provisioner asks for it (round G). The agent makes the slot's profile disk
+ * itself, at a path it derives from the slot id under its profiles root: `profileMib` is its
+ * size when it is made (a sparse file with an ext4 filesystem); a profile already there is kept
+ * exactly as it is. `profilePath`, the earlier form, is accepted only if it is that same path.
+ */
+export interface BrowserPoolAgentGuestRequest extends Omit<
+  BrowserPoolAgentGuestSpec,
+  "profilePath"
+> {
+  readonly profileMib?: number;
+  readonly profilePath?: string;
+}
 
 export interface BrowserPoolAgentGuestSpec {
   readonly vcpus: number;
@@ -176,7 +200,18 @@ export interface BrowserPoolAgentSlotSummary {
 
 export type BrowserPoolAgentAdminReply =
   | { readonly op: "create" | "replace-key"; readonly slot: BrowserPoolAgentSlotSummary }
-  | { readonly op: "delete"; readonly slotId: string; readonly erased: boolean }
+  | {
+      readonly op: "delete";
+      readonly slotId: string;
+      readonly erased: boolean;
+      /** Round G: present, and true, only when asked for and the profile is seen gone. */
+      readonly profileErased?: true;
+      /**
+       * Round G, B: present, and true, when the slot named upstream credential files and every
+       * one was seen gone (a file another live slot also names is kept, and this is absent).
+       */
+      readonly credentialsErased?: true;
+    }
   | { readonly op: "list"; readonly slots: readonly BrowserPoolAgentSlotSummary[] }
   | {
       readonly op: "refused";
@@ -228,6 +263,20 @@ export const browserPoolAgentSignatureHeader = "x-opensteer-pool-signature";
 
 export class BrowserPoolAgentUnavailable extends Error {
   override readonly name = "BrowserPoolAgentUnavailable";
+  /**
+   * Round G: set only when the pool host answered and its host key's signature over that
+   * answer verified. It is that answer's code. `conflict` and `unknown-slot` mean the call did
+   * nothing. A signed `unavailable` means the host answered but could not finish, so the effect
+   * may be partial; read the slot with `list`. Absent means no verified answer, so the effect is
+   * unknown. The host answers `bad-request`, `unauthenticated` and `stale-request` without a
+   * signature, so those arrive absent too.
+   */
+  readonly refusal?: BrowserPoolAgentRefusal | "conflict";
+
+  constructor(message: string, refusal?: BrowserPoolAgentRefusal | "conflict") {
+    super(message);
+    if (refusal !== undefined) this.refusal = refusal;
+  }
 }
 
 /**
@@ -327,7 +376,7 @@ export async function callBrowserPoolAgentAdmin(
     )
   )
     throw new BrowserPoolAgentUnavailable("The pool host's reply is not signed by its host key.");
-  if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message);
+  if (reply.op === "refused") throw new BrowserPoolAgentUnavailable(reply.message, reply.code);
   return reply;
 }
 

@@ -64,7 +64,8 @@ interface RealHost {
   /** The relay's own key's public half (PEM), pinned beside the host key. */
   readonly relayKeyFile: string;
   readonly provisionerKeyFile: string;
-  readonly profilePath: string;
+  /** Unused from round G: the agent makes the slot's profile itself. */
+  readonly profilePath?: string;
   readonly egress: Record<string, string>;
   /** The page the proof types into: served by the run's own upstream proxy. */
   readonly formUrl: string;
@@ -172,7 +173,8 @@ describe.skipIf(!real)("our runtime in a real pool guest", () => {
       term,
       // The provisioner's part: the slot, from the Home's public keys.
       ...registration,
-      guest: { vcpus: 2, memoryMib: 2048, profilePath: r.profilePath, egress: r.egress as never },
+      // Round G: the agent makes the slot's profile under its root.
+      guest: { vcpus: 2, memoryMib: 2048, profileMib: 2048, egress: r.egress as never },
     });
     if (created.op !== "create")
       throw new Error(`The slot was not created: ${JSON.stringify(created)}`);

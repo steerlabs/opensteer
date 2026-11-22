@@ -151,7 +151,8 @@ class Slot {
       guest: {
         vcpus: 2,
         memoryMib: this.#guest.memoryMib,
-        profilePath: `${options.profiles}/${this.id}.ext4`,
+        // Round G: the agent makes the slot's profile under its root.
+        profileMib: 1024,
         egress: {
           upstreamUrl: `https://192.0.43.10:${this.#guest.upstreamPort}`,
           usernameFile: `${options.credentials}/upstream-username`,
@@ -803,7 +804,6 @@ const refusalOf = (error: unknown) => ({
  * is refused as unauthenticated, after the replacement, and nothing is stored under its id.
  */
 async function oldKeyDuringReplacement() {
-  await helper({ cmd: "make-profile", name: "bench-e1" });
   const slot = new Slot("bench-e1", -1);
   await slot.create();
   await slot.call("start");
@@ -869,7 +869,6 @@ async function oldKeyDuringReplacement() {
  * left for the deleted slot, and the new slot's proxy carries its own upstream.
  */
 async function slowRevive() {
-  for (const name of ["bench-e2-old", "bench-e2-new"]) await helper({ cmd: "make-profile", name });
   const old = new Slot("bench-e2-old", -1, { upstreamPort: 8443 });
   await old.create();
   await old.call("start");
@@ -940,7 +939,6 @@ async function capacity(others: Slot[]) {
   const memoryMib = Math.floor((guestBytes / 4 / mib - 512) / 256) * 256;
   const holds = Math.floor(guestBytes / ((memoryMib + 512) * mib));
   const names = ["a", "b", "c", "d", "e", "f", "g", "h"];
-  for (const name of names) await helper({ cmd: "make-profile", name: `bench-cap-${name}` });
   const slots = Object.fromEntries(
     names.map((name) => [name, new Slot(`bench-cap-${name}`, -1, { memoryMib })]),
   ) as Record<string, Slot>;

@@ -73,6 +73,20 @@ export interface HypervisorDriver {
    * when it sets no bound. The agent admits a start or a wake by it.
    */
   memoryCapacity(): HostCapacity | null;
+  /** Round G: the slot's own profile path on this host, derived from its id (profiles.ts). */
+  profilePath(slotId: string): string;
+  /**
+   * Round G: makes the slot's profile (a sparse file of `sizeMib` with an ext4 filesystem) if
+   * none is there, and keeps one that is exactly as it is. A failed make leaves no file.
+   */
+  ensureProfile(
+    slotId: string,
+    sizeMib: number,
+  ): Promise<{ readonly path: string; readonly made: boolean }>;
+  /** Round G: removes the profile at `path` (directly under the root); resolves once it is gone. */
+  eraseProfile(path: string): Promise<void>;
+  /** Round G, B: removes a slot's upstream credential files (under the credentials root). */
+  eraseCredentials(files: readonly string[]): Promise<void>;
   /** Re-applies the host's own rules if they are gone; true if it had to. */
   ensureHost(): Promise<boolean>;
   /** Refuses a guest whose host paths are not inside the roots configured for them. */
