@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
@@ -664,6 +665,8 @@ async function proveChromeShares(
         ).rejects.toThrow("Browser permissions cannot be changed by a connected agent.");
       // A shared tab is one tab: its own cookies, never the rest of the person's Chrome.
       const tabOrigin = new URL(first.url()).origin;
+      const elsewhereSession = `sentinel-session-${crypto.randomUUID()}`;
+      const elsewhereSet = `sentinel-set-${crypto.randomUUID()}`;
       await chrome.addCookies([
         { name: "tab", value: "this-tab", url: tabOrigin },
         { name: "elsewhere", value: "sentinel-elsewhere", url: "https://elsewhere.test/" },
@@ -706,6 +709,98 @@ async function proveChromeShares(
       ]);
       expect(seen[3]).toBe('Network.getCookies: ["tab"]');
       expect(JSON.stringify(seen)).not.toContain('elsewhere"');
+      // Nor any other site's cookies through a credentialed request the tab makes: no event or
+      // result carries one, with Network and Fetch both enabled.
+      const elsewhere = createHttpServer((_request, response) => {
+        response.writeHead(200, {
+          "content-type": "text/plain",
+          "access-control-allow-origin": tabOrigin,
+          "access-control-allow-credentials": "true",
+          "set-cookie": `elsewhere-set=${elsewhereSet}; Path=/`,
+        });
+        response.end("ok");
+      });
+      elsewhere.listen(0, "127.0.0.1");
+      await once(elsewhere, "listening");
+      try {
+        // Another site than the tab's: a hostname that resolves to the same loopback server.
+        const elsewhereUrl = `http://elsewhere.localhost:${(elsewhere.address() as AddressInfo).port}/cookie`;
+        await chrome.addCookies([
+          { name: "elsewhere-session", value: elsewhereSession, url: elsewhereUrl },
+        ]);
+        const events: { method: string; params: unknown }[] = [];
+        const session = cdp as unknown as {
+          send(method: string, params?: object): Promise<unknown>;
+          on(method: string, listener: (params: unknown) => void): void;
+        };
+        for (const method of [
+          "Network.requestWillBeSent",
+          "Network.requestWillBeSentExtraInfo",
+          "Network.responseReceived",
+          "Network.responseReceivedExtraInfo",
+          "Network.loadingFinished",
+          "Network.loadingFailed",
+          "Fetch.requestPaused",
+        ])
+          session.on(method, (params) => {
+            events.push({ method, params });
+            if (method === "Fetch.requestPaused")
+              void session
+                .send("Fetch.continueRequest", {
+                  requestId: (params as { requestId: string }).requestId,
+                })
+                .catch(() => undefined);
+          });
+        await session.send("Network.enable", {});
+        await session.send("Fetch.enable", {
+          patterns: [
+            { urlPattern: "*elsewhere.localhost*", requestStage: "Request" },
+            { urlPattern: "*elsewhere.localhost*", requestStage: "Response" },
+          ],
+        });
+        await session.send("Runtime.evaluate", {
+          expression: `fetch(${JSON.stringify(elsewhereUrl)}, { credentials: "include" }).then((r) => r.text()).catch((e) => String(e))`,
+          awaitPromise: true,
+        });
+        await vi.waitFor(() =>
+          expect(
+            events.some(
+              ({ method }) =>
+                method === "Network.loadingFinished" || method === "Network.loadingFailed",
+            ),
+          ).toBe(true),
+        );
+        await session.send("Fetch.disable", {});
+        const carrying = events
+          .filter(({ params }) => {
+            const text = JSON.stringify(params);
+            return text.includes(elsewhereSession) || text.includes(elsewhereSet);
+          })
+          .map(({ method }) => method);
+        expect(carrying, "events that carried another site's cookie").toEqual([]);
+        expect(events.map(({ method }) => method)).toEqual(
+          expect.arrayContaining(["Network.responseReceived", "Fetch.requestPaused"]),
+        );
+      } finally {
+        elsewhere.close();
+      }
+      // The same command refused gives the same sentence at both doors.
+      const outsideSentence =
+        "Storage.clearDataForOrigin is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.";
+      await expect(
+        send.send("Storage.clearDataForOrigin", { origin: tabOrigin, storageTypes: "all" }),
+      ).rejects.toThrow(outsideSentence);
+      const sameSentence = (await browserTools.browser_use({
+        caller: agent.caller,
+        operationKey: "shared-sentence",
+        input: {
+          ...input,
+          code: `try { await (await openPage(${JSON.stringify(firstId)})).cdp("Storage.clearDataForOrigin", { origin: ${JSON.stringify(tabOrigin)}, storageTypes: "all" }); return "outcome:performed:end"; } catch (error) { return "outcome:" + encodeURIComponent(String(error && error.message)) + ":end"; }`,
+        },
+      })) as { content: unknown };
+      expect(
+        decodeURIComponent(/outcome:([^:"\\]*):end/u.exec(JSON.stringify(sameSentence))![1]!),
+      ).toContain(outsideSentence);
       const attempts = async () => {
         const row = await fixture.database
           .selectFrom("agentConnections")
