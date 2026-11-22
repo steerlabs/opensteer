@@ -118,7 +118,9 @@ async function launchWith(read: () => Promise<ChromiumTabEntry[]>) {
     await rm(directory, { recursive: true, force: true });
   });
   const handedOff: Page[] = [];
-  launched.context.handOff((page) => handedOff.push((page as unknown as { rawPage: Page }).rawPage));
+  launched.context.handOff((page) =>
+    handedOff.push((page as unknown as { rawPage: Page }).rawPage),
+  );
   /** Chromium announces a page: it joins the context's pages and its page event fires. */
   const arrive = (page: Page) => {
     livePages = [...livePages, page];
@@ -171,8 +173,9 @@ it("never publishes a restored page missing from the first read: closed with evi
   await vi.waitFor(
     () =>
       expect(
-        (launched as unknown as { contextHandle: { restored: Map<string, unknown> } }).contextHandle
-          .restored.has(surfLate),
+        (
+          launched as unknown as { contextHandle: { restored: Map<string, unknown> } }
+        ).contextHandle.restored.has(surfLate),
       ).toBe(true),
     { timeout: 3_000 },
   );
@@ -228,9 +231,9 @@ it("launches once more without the last session when launch has no read that agr
   ]);
   const preferences = JSON.parse(await readFile(join(directory, "Default", "Preferences"), "utf8"));
   expect(preferences.session.restore_on_startup).toBe(5);
-  expect(writes.filter((line) => line.includes('"browser-runtime.tab-restore-skipped"'))).toHaveLength(
-    1,
-  );
+  expect(
+    writes.filter((line) => line.includes('"browser-runtime.tab-restore-skipped"')),
+  ).toHaveLength(1);
   expect(launched.context.sessionRestore).toBeDefined();
   expect(launched.context.nativeProfile).toBe(true);
 });

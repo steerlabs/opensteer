@@ -714,7 +714,9 @@ integration("Linux cold-start session restore through Home BrowserService", () =
         .some((p) => p.url() === agentUrl),
     ).toBe(false);
     if (agentTarget)
-      await expect(stack1.getBrowser().cdp.attach(agentTarget)).rejects.toThrow(/not an attachable/);
+      await expect(stack1.getBrowser().cdp.attach(agentTarget)).rejects.toThrow(
+        /not an attachable/,
+      );
     // Its removal is `removed` or `unknown`, decided by the runtime within the background retry's
     // bound (K6): removed, with a read that agrees with itself showing no such tab; or reported
     // unconfirmed, with the name still guarded.
