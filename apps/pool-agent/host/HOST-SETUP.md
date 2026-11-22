@@ -136,7 +136,10 @@ slot's proxy ever connects directly, a create names no egress, and each slot's u
 credentials are pulled from the account service at its start, signed with the host key, into a
 root-only `driver.credentialsRoot` (`PROVISIONER.md`, section 8). Without the flag a slot's
 egress is what its create names, as before. `driver.profilesRoot` is the durable disk's mount
-point (`PROVISIONER.md`, section 7).
+point (`PROVISIONER.md`, section 7). With `driver.profilesMount` set, the agent checks that it is
+that mount, and that filesystem when a label is given (`profiles-mount.ts`, `checkProfilesMount`).
+It does not start without it, and it refuses to make, use or erase a profile when the mount goes
+away later.
 
 `/etc/opensteer-pool/agent.json` (mode 0600), for example:
 
@@ -162,6 +165,7 @@ point (`PROVISIONER.md`, section 7).
     "stateDirectory": "/var/lib/opensteer-pool/driver",
     "arrayIdFile": "/srv/opensteer-pool/array-id",
     "profilesRoot": "/var/lib/opensteer-pool/profiles",
+    "profilesMount": { "label": "osp-<12 hex of the host id's SHA-256>" },
     "credentialsRoot": "/etc/opensteer-pool/credentials",
     "slotUidBase": 200000,
     "egressUidBase": 300000,

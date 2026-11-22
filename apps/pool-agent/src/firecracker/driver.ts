@@ -44,6 +44,7 @@ import {
   writePulledEgress,
 } from "../slot-credentials.js";
 import type { SlotEgressAnswer } from "../slot-egress-fetch.js";
+import { checkProfilesMount, type ProfilesMountExpectation } from "../profiles-mount.js";
 import { guestCharge, hostCapacity, type HostCapacity } from "../capacity.js";
 import {
   ensureProfile,
@@ -126,6 +127,8 @@ export interface FirecrackerDriverConfig {
    * credentials are pulled at its start into files derived from its id under credentialsRoot.
    */
   readonly requireEgressUpstream?: boolean;
+  /** The profile disk must be the mount at `profilesRoot` (config.ts, `profilesMount`). */
+  readonly profilesMount?: ProfilesMountExpectation | undefined;
 }
 
 const execName = "firecracker";
@@ -208,6 +211,11 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   profilePath(slotId: string): string {
     return profilePathFor(this.#config.profilesRoot, slotId);
+  }
+
+  async profilesMountProblem(): Promise<string | undefined> {
+    const expected = this.#config.profilesMount;
+    return expected ? checkProfilesMount(this.#config.profilesRoot, expected) : undefined;
   }
 
   ensureProfile(slotId: string, sizeMib: number) {

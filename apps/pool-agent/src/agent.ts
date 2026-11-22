@@ -258,6 +258,12 @@ export class PoolAgent {
    */
   async start(): Promise<void> {
     await this.#journal.open();
+    // A provisioned host's profile disk is the mount it was told to expect, or the agent does
+    // not serve at all: its unit fails visibly, and systemd starts it again with a growing
+    // delay, so a disk that attaches late is picked up without anyone's help.
+    const unmounted = await this.#driver.profilesMountProblem();
+    if (unmounted)
+      throw new Error(`The profile disk is not mounted (${unmounted}); the agent does not serve.`);
     // Round H: a host that pulls its slots' credentials has a way to fetch them, and only it.
     if (this.#driver.pullsEgress !== (this.#options.egressFetch !== undefined))
       throw new Error("The agent fetches slot egress exactly when its driver pulls it.");
@@ -636,6 +642,7 @@ export class PoolAgent {
     // Round G: the slot's profile is its own. The agent derives its path from the slot id, makes
     // it when none is there and keeps one that is exactly as it is; a path the provisioner
     // names must be that same path. A make that failed leaves no slot and no file.
+    await this.#profilesMounted();
     const { profileMib, profilePath: named, ...spec } = input.guest;
     // Round H: a host that pulls its slots' credentials takes none from a create.
     if (this.#driver.pullsEgress && spec.egress !== undefined)
@@ -829,6 +836,9 @@ export class PoolAgent {
     // Re-check finding 5: the administration lane, then the slot's own run wrapper. A create
     // waits for a delete in progress, and a delete that fails leaves the slot with its timers.
     return this.#admin.run(async () => {
+      // Never a delete, and never profileErased, while the profile disk is not the mount: the
+      // file at the derived path would be one on the boot disk, not the person's profile.
+      await this.#profilesMounted();
       const slot = this.#slots.get(slotId);
       if (!slot || slot.deleted) {
         // Round I, U8: a delete naming a tombstoned slot carries a term not lower than its
@@ -920,6 +930,7 @@ export class PoolAgent {
     if (refusal) return this.#store(slot, record, refused(call.id, refusal, record));
     switch (call.kind) {
       case "start":
+        if (await this.#profilesUnmounted(slot, call)) return this.#profilesRefusal(slot, call);
         return this.#withEgress(slot, call, () =>
           this.#admitted(slot, () => this.#start(slot, call)),
         );
@@ -927,6 +938,8 @@ export class PoolAgent {
         return this.#pause(slot, call);
       case "resume":
         // A wake from memory keeps the memory it holds; a wake from disk needs room.
+        if (slot.record.saved?.tier === "disk" && (await this.#profilesUnmounted(slot, call)))
+          return this.#profilesRefusal(slot, call);
         return slot.record.saved?.tier === "disk"
           ? this.#withEgress(slot, call, () => this.#admitted(slot, () => this.#resume(slot, call)))
           : this.#resume(slot, call);
@@ -1031,6 +1044,30 @@ export class PoolAgent {
     const written = await this.#driver.writePulledEgress(slotId, answer);
     this.#log({ event: "egress.fetched", slotId, changed: written });
     return work();
+  }
+
+  /**
+   * The profile disk must be the mount expected (`driver.profilesMount`) before a create, a
+   * start, a wake from disk or a delete. A wake from memory and a park do not open the profile
+   * again: the guest's VMM holds it open.
+   */
+  async #profilesMounted(): Promise<void> {
+    const problem = await this.#driver.profilesMountProblem();
+    if (problem) {
+      this.#log({ event: "profiles.unmounted", problem });
+      throw new ProfilesNotMounted(`The profile disk is not mounted: ${problem}.`);
+    }
+  }
+
+  async #profilesUnmounted(slot: Slot, _call: BrowserPoolAgentCall): Promise<boolean> {
+    const problem = await this.#driver.profilesMountProblem();
+    if (problem) this.#log({ event: "profiles.unmounted", slotId: slot.record.slotId, problem });
+    return problem !== undefined;
+  }
+
+  /** A start or wake from disk while the profile disk is missing: stored, signed, nothing booted. */
+  #profilesRefusal(slot: Slot, call: BrowserPoolAgentCall): Promise<BrowserPoolAgentResult> {
+    return this.#store(slot, slot.record, refused(call.id, "profile-disk-missing", slot.record));
   }
 
   /** The charges of every other guest in memory: running, paused there, or being let in. */
@@ -1914,6 +1951,14 @@ export class PoolAgent {
 
 export class SlotConflict extends Error {
   override readonly name = "SlotConflict";
+}
+
+/**
+ * The profile disk is not the mount this host was told to expect: nothing that would make,
+ * use or erase a profile is done. A definite refusal on the administration interface.
+ */
+export class ProfilesNotMounted extends Error {
+  override readonly name = "ProfilesNotMounted";
 }
 
 export function statusOf(record: SlotRecord): BrowserPoolAgentStatus {

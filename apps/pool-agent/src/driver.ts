@@ -74,6 +74,11 @@ export interface HypervisorDriver {
    * when it sets no bound. The agent admits a start or a wake by it.
    */
   memoryCapacity(): HostCapacity | null;
+  /**
+   * What is wrong with the profile disk when the host was told to expect it mounted
+   * (`driver.profilesMount`), or undefined: it is that mount, or nothing is expected.
+   */
+  profilesMountProblem(): Promise<string | undefined>;
   /** Round G: the slot's own profile path on this host, derived from its id (profiles.ts). */
   profilePath(slotId: string): string;
   /**

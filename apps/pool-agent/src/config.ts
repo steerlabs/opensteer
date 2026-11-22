@@ -45,6 +45,19 @@ export const agentConfigSchema = z
       arrayIdFile: path,
       cgroupBase: z.string().max(255).optional(),
       profilesRoot: path,
+      /**
+       * A provisioned host: `profilesRoot` must be the mount of the durable profile disk, and
+       * with `label` that filesystem (`osp-` and 12 hex characters of the host id's SHA-256).
+       * Absent: no check, as before (the bench, the proof).
+       */
+      profilesMount: z
+        .strictObject({
+          label: z
+            .string()
+            .regex(/^osp-[0-9a-f]{12}$/u)
+            .optional(),
+        })
+        .optional(),
       credentialsRoot: path,
       slotUidBase: z.number().int().min(10_000),
       egressUidBase: z.number().int().min(10_000),
