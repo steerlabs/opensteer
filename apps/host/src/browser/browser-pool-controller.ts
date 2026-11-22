@@ -10,6 +10,11 @@ import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
+/** No answer came in time: not knowing, never a failure (P18). */
+export class BrowserPoolUnanswered extends Error {
+  override readonly name = "BrowserPoolUnanswered";
+}
+
 /** A guest's saved live state: consumed by exactly one resume, discarded at `discardAt`. */
 export interface BrowserPoolSavedState {
   readonly id: string;
@@ -137,7 +142,7 @@ export class BrowserPoolControllerJournal {
   /** A read of the slot: it changes nothing, so it carries no journal row. */
   status(slotId: string, term: number, signal?: AbortSignal) {
     return withTimeout(this.#controller.status(slotId, term), this.#timeoutMs, {
-      timeoutError: () => new Error("The pool controller did not answer in time."),
+      timeoutError: () => new BrowserPoolUnanswered("The pool controller did not answer in time."),
       ...(signal ? { signal } : {}),
     });
   }
@@ -213,7 +218,8 @@ export class BrowserPoolControllerJournal {
     // Every call has a deadline. Past it the outcome is unknown and is read by the call's id.
     const bounded = <T>(work: Promise<T>) =>
       withTimeout(work, this.#timeoutMs, {
-        timeoutError: () => new Error("The pool controller did not answer in time."),
+        timeoutError: () =>
+          new BrowserPoolUnanswered("The pool controller did not answer in time."),
         ...(signal ? { signal } : {}),
       });
     let result: BrowserPoolControllerResult | null;

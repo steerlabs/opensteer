@@ -41,9 +41,13 @@ import {
   type BrowserPoolControllerResult,
   type BrowserPoolPhysicalController,
   type BrowserPoolPhysicalStatus,
+  BrowserPoolUnanswered,
 } from "./browser-pool-controller.js";
 import { BrowserPoolGate } from "./browser-pool-gate.js";
-import { BrowserPoolAgentSlotDeleted } from "./browser-pool-agent-client.js";
+import {
+  BrowserPoolAgentSlotDeleted,
+  BrowserPoolAgentUnavailable,
+} from "./browser-pool-agent-client.js";
 
 /** The runtime's signed control channel; in-process for the loopback target. */
 /**
@@ -428,6 +432,8 @@ export class BrowserPoolCoordinator {
    */
   async #run(): Promise<void> {
     let failures = 0;
+    /** Answers that did not come, or came unsigned, in a row: paced apart, never counted (P18). */
+    let unanswered = 0;
     let failing: string | undefined;
     let refusals = 0;
     /** Since when this target's steps have failed, and when it was last suspected for it. */
@@ -500,6 +506,7 @@ export class BrowserPoolCoordinator {
           this.#signal = undefined;
         }
         if (failing === step.name) failures = 0;
+        unanswered = 0;
         refusals = 0;
         failingSince = undefined;
         suspectedAt = undefined;
@@ -555,11 +562,25 @@ export class BrowserPoolCoordinator {
           ).catch(() => undefined);
           continue;
         }
+        if (unknownAnswer(error)) {
+          // Not knowing (P18): asked again, later each time; it never counts toward a discard,
+          // and nothing of the guest is given up for it.
+          await delay(
+            Math.min(
+              (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
+              unansweredRetryMaxMs,
+            ),
+            undefined,
+            { signal: changed },
+          ).catch(() => undefined);
+          continue;
+        }
         if (step) {
           failures = failing === step.name ? failures + 1 : 1;
           failing = step.name;
           // Once the attempts are used, live state is given up for behind a fresh guest (R3):
-          // the next turn chooses again, so anything wanted above it goes first.
+          // the next turn chooses again, so anything wanted above it goes first. Only answers
+          // count: none of these attempts was one that did not come.
           if (step.discards && failures >= discardAfterAttempts)
             this.#discardWanted = "unrecoverable";
         }
@@ -852,7 +873,8 @@ export class BrowserPoolCoordinator {
           this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
           {
             signal,
-            timeoutError: () => new Error("The pooled runtime did not answer in time."),
+            timeoutError: () =>
+              new BrowserPoolUnanswered("The pooled runtime did not answer in time."),
           },
         ).catch((error: unknown) => {
           this.#options.onError?.(error);
@@ -1055,7 +1077,7 @@ export class BrowserPoolCoordinator {
       this.#options.runtime.poolState(this.#signal),
       this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
       {
-        timeoutError: () => new Error("The pooled runtime did not answer in time."),
+        timeoutError: () => new BrowserPoolUnanswered("The pooled runtime did not answer in time."),
         ...(this.#signal ? { signal: this.#signal } : {}),
       },
     );
@@ -1157,7 +1179,7 @@ export class BrowserPoolCoordinator {
         this.#options.runtime.controlPool(control, Buffer.from(signature, "base64")),
         this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
         {
-          timeoutError: () => new Error("The runtime did not answer in time."),
+          timeoutError: () => new BrowserPoolUnanswered("The runtime did not answer in time."),
           // The control is not cancelled: the runtime orders controls by sequence, and the
           // next one the loop sends (a release, a newer intent) is applied after it.
           ...(this.#signal ? { signal: this.#signal } : {}),
@@ -1343,14 +1365,20 @@ export class BrowserPoolCoordinator {
     let slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed();
     if (slot.phase === "running") return;
-    if (slot.phase === "parked") slot = await this.#advance(slot, { phase: "waking" });
+    let read: BrowserPoolPhysicalStatus | undefined;
+    if (slot.phase === "parked") {
+      // The guest's status is read before the slot leaves parked: a read that does not come
+      // leaves it parked, with nothing to recover (P18).
+      read = await this.#status();
+      slot = await this.#advance(slot, { phase: "waking" });
+    }
     if (slot.phase !== "waking") throw new Error(`Cannot wake from ${slot.phase}.`);
-    return this.#continueWake(slot);
+    return this.#continueWake(slot, read);
   }
 
-  async #continueWake(slot: BrowserPoolSlot): Promise<void> {
+  async #continueWake(slot: BrowserPoolSlot, read?: BrowserPoolPhysicalStatus): Promise<void> {
     const saved = slot.savedState as { id?: string } | null;
-    let status = await this.#status();
+    let status = read ?? (await this.#status());
     let resumed = await this.#appliedResume(slot);
     if (!resumed) {
       if (
@@ -1494,6 +1522,11 @@ export class BrowserPoolCoordinator {
     } catch (error) {
       // A fresh start that did not come up: the person sees it failed, and how often. One the
       // controller refused is not a failed start: it is reported with its reason instead.
+      // One whose answer did not come is not known to have failed: it is asked again (P18).
+      if (unknownAnswer(error)) {
+        this.#display = { phase: reason === "person" ? "restarting" : "starting", since };
+        throw error;
+      }
       this.#display = { phase: "failed", since: new Date() };
       if (!(error instanceof BrowserPoolNotStarted))
         await recordBrowserPoolStartFailure(this.#options.database, slot.runnerId).catch(
@@ -1787,6 +1820,40 @@ const refusedRetryMaxMs = 5 * 60_000;
  * slot was deleted, or a stored answer that the call's term is not the slot's (`fenced`).
  * Unsigned refusals are not this: they stay "unknown, ask again".
  */
+/**
+ * No answer, or none signed (P18): a pool host that cannot be reached, one that answered
+ * unsigned (a superseded term is answered only so), a relay that refused, a call past its
+ * deadline. Not knowing: asked again later, never counted toward a discard or a failed start.
+ */
+function unknownAnswer(error: unknown): boolean {
+  for (let cause = error, depth = 0; cause && depth < 4; depth++) {
+    if (cause instanceof BrowserPoolAgentUnavailable || cause instanceof BrowserPoolUnanswered)
+      return true;
+    const { name, code, message } = cause as { name?: unknown; code?: unknown; message?: unknown };
+    if (name === "PoolRelayRefused" || name === "TimeoutError" || name === "AbortError")
+      return true;
+    if (typeof code === "string" && networkCodes.has(code)) return true;
+    if (cause instanceof TypeError && message === "fetch failed") return true;
+    cause = (cause as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+const networkCodes = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
 function targetOver(error: unknown): string | undefined {
   if (error instanceof BrowserPoolAgentSlotDeleted) return "slot-deleted";
   if (error instanceof BrowserPoolNotStarted && error.reason === "fenced") return "fenced";
@@ -1809,6 +1876,8 @@ class BrowserPoolNotStarted extends Error {
 const defaultStepMs = 60_000;
 /** How long a restart waits for admitted sends to finish once each was asked to stop. */
 const quiesceMs = 15_000;
+/** The longest wait before an unanswered call is asked again. */
+const unansweredRetryMaxMs = 30_000;
 /** The bound of a refusal's announcement to clients, outside any step. */
 const announceMs = 5_000;
 const restartKeysKept = 64;

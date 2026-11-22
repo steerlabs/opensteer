@@ -208,12 +208,27 @@ async function mountedAgentController(
     format: "der",
     type: "spki",
   });
+  // How the pool host answers the Home: signed, unsigned (as it answers a superseded term), or
+  // not at all.
+  let answers: "signed" | "unsigned" | "unreachable" = "signed";
+  let unknown = 0;
   const client = new BrowserPoolAgentClient({
     url: agent.url,
     homeKey: home.privateKey,
     agentKey: publicKey,
     // The host key alone signs the answer that the slot was deleted.
     hostKey: agent.hostPublicKey,
+    fetch: async (input, init) => {
+      if (answers === "signed") return fetch(input, init);
+      unknown++;
+      if (answers === "unreachable") throw new TypeError("fetch failed");
+      return new Response(
+        JSON.stringify({
+          reply: { op: "refused", code: "unauthenticated", message: "Not authenticated." },
+        }),
+        { status: 401, headers: { "content-type": "application/json" } },
+      );
+    },
   });
   const visible = new Set(["start", "pause", "resume", "stop"]);
   /** The ids the Home asked the result of: it does so when a call's answer did not come. */
@@ -222,6 +237,10 @@ async function mountedAgentController(
     driver,
     agent,
     asked,
+    answer: (mode: typeof answers) => {
+      answers = mode;
+    },
+    unknown: () => unknown,
     controller: {
       publicKey,
       get effects() {
@@ -914,3 +933,53 @@ it("ends a pool transaction blocked on the global row with its operation's signa
     await holder;
   }
 });
+
+// ---- P18: an answer that did not come, or came unsigned, is unknown and destroys nothing ------
+
+it.each(["unsigned", "unreachable"] as const)(
+  "keeps a parked browser's saved state through many %s answers, counts no failed start, and wakes it once the host answers",
+  async (mode) => {
+    const mounted = await mountedAgentController(`slot-unknown-parked-${mode}`);
+    const p = await pair(`unknown-parked-${mode}`, mounted);
+    const home = p.home();
+    await home.recover();
+    expect(await home.tryPark()).toBe("parked");
+    mounted.answer(mode);
+    const wanting = home.gate.reserve(AbortSignal.timeout(60_000));
+    await vi.waitFor(() => expect(mounted.unknown()).toBeGreaterThanOrEqual(8), {
+      timeout: 30_000,
+    });
+    // Nothing was given up while nothing was known: the slot is still parked, no start failed.
+    expect(await p.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
+    expect(p.controller.effects).toEqual(["start", "pause"]);
+    mounted.answer("signed");
+    (await wanting).release();
+    // The same browser wakes, from the state it saved.
+    expect(p.controller.effects).toEqual(["start", "pause", "resume"]);
+    expect(await p.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+  },
+);
+
+it.each(["unsigned", "unreachable"] as const)(
+  "keeps a running browser through many %s answers to a Home that starts again, and recovers the same guest",
+  async (mode) => {
+    const mounted = await mountedAgentController(`slot-unknown-running-${mode}`);
+    const p = await pair(`unknown-running-${mode}`, mounted);
+    const first = p.home();
+    await first.recover();
+    first.close();
+    mounted.answer(mode);
+    const next = p.home();
+    const recovering = next.recover();
+    await vi.waitFor(() => expect(mounted.unknown()).toBeGreaterThanOrEqual(8), {
+      timeout: 30_000,
+    });
+    expect(await p.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+    mounted.answer("signed");
+    await recovering;
+    // No discard, no fresh start: the guest it had.
+    expect(p.controller.effects).toEqual(["start"]);
+    expect(await p.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+    expect(next.report()).toBeUndefined();
+  },
+);
