@@ -478,7 +478,8 @@ it("lets a Stop asked as the reattach ticket leaves wait for the broker, and clo
     }
     expect(stopping).toBeDefined();
     await stopping;
-    expect((await j.row(sessionId))?.state).toBe("closed");
+    // Closed once the runtime has said the session ended (P5), not the moment Stop returns.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
     // Stop found the registered broker and closed it: the page ends now, not at a deadline.
     await until(() => expect(page.page.isClosed()).toBe(true));
     expect(home.service.pageInventory(sessionId)?.records.has(tabId) ?? false).toBe(false);
@@ -1047,6 +1048,41 @@ it("lets a Stop during a reconnect end that session's wait at once, and say clos
     expect(j.issued.length).toBeGreaterThan(ticketsBefore);
   } finally {
     j.runnerUp();
+    await j.close();
+  }
+});
+
+it("never reads a pooled Stop closed while the guest still holds the page, whatever the Runner answers", async () => {
+  const j = await journey("stop-runner-ack");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-ack"));
+    const page = await j.draft();
+    // The tunnel to the guest breaks as the Stop's close leaves; the Runner answers 1000 for the
+    // close it merely queued, as its relay does.
+    const acked = vi
+      .spyOn(TestRuntimeConnection.prototype, "close")
+      .mockImplementationOnce(function (this: TestRuntimeConnection) {
+        j.tunnelBreaks();
+        this.lose(1000, "closed");
+      });
+    try {
+      await home.service.stop(j.task.userId, sessionId);
+    } finally {
+      acked.mockRestore();
+    }
+    // The row leaves closing only for closed, and only once the guest's runtime ended the page.
+    const ended = await vi.waitFor(
+      async () => {
+        const state = (await j.row(sessionId))?.state;
+        expect(state).not.toBe("closing");
+        return state;
+      },
+      { timeout: 20_000 },
+    );
+    expect(ended).toBe("closed");
+    expect(page.page.isClosed()).toBe(true);
+  } finally {
     await j.close();
   }
 });

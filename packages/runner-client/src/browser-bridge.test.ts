@@ -71,6 +71,31 @@ describe("LocalBrowserRuntimeBridge", () => {
       await old.close();
     }
   });
+  it("answers a channel's close with the runtime's own close code, and 1006 when none comes", async () => {
+    const f = await fixture();
+    const silent = new Set<string>();
+    f.sockets.on("connection", (socket, request) => {
+      socket.send(JSON.stringify({ type: "browser.attached" }));
+      // A runtime that never reads the close: it neither answers nor ends the channel.
+      if (silent.size && request.headers["x-opensteer-browser-bridge-token"])
+        (socket as unknown as { _socket: { pause(): void } })._socket.pause();
+    });
+    const sink = { onClosed() {}, onFrame() {}, onServerMessage() {} };
+    try {
+      const taken = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await f.bridge.attach(taken, "abc.def.ghi", sink);
+      await expect(f.bridge.closeWithReceipt(taken, 5_000)).resolves.toBe(1000);
+      // A channel the bridge no longer holds is lost, never cleanly closed.
+      await expect(f.bridge.closeWithReceipt(taken, 5_000)).resolves.toBe(1006);
+      silent.add("next");
+      const unanswered = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      await f.bridge.attach(unanswered, "abc.def.ghi", sink);
+      await expect(f.bridge.closeWithReceipt(unanswered, 300)).resolves.toBe(1006);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("opens local relay channel 33", async () => {
     const f = await fixture();
     f.sockets.on("connection", (socket) =>

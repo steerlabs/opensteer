@@ -158,6 +158,38 @@ it("relays a person's attachment in stopped mode", async () => {
 });
 
 describe("BrowserModuleRelay native profiles", () => {
+  it.each([
+    [true, 1011, "a pool guest's runtime that did not take the close"],
+    [false, 1000, "a local runtime, as before"],
+  ] as const)("answers a Host's close with %s → %s (%s)", async (pooled, code) => {
+    const f = fixture();
+    vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+    vi.spyOn(f.bridge, "pooled", "get").mockReturnValue(pooled);
+    const receipt = vi.spyOn(f.bridge, "closeWithReceipt").mockResolvedValue(1011);
+    const close = vi.spyOn(f.bridge, "close");
+    try {
+      await f.relay.attach(f.stream);
+      await f.send({ type: "capability.grant", lease: f.lease });
+      const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+      const attached = f.wait("browser.attached");
+      await f.send({
+        type: "browser.attach",
+        capability: f.capability,
+        channelId,
+        attachTicket: "abc.def.ghi",
+      });
+      await attached;
+      const closed = f.wait("browser.closed");
+      await f.send({ type: "browser.close", capability: f.capability, channelId });
+      await closed;
+      expect(f.messages.at(-1)).toMatchObject({ type: "browser.closed", channelId, code });
+      expect(receipt).toHaveBeenCalledTimes(pooled ? 1 : 0);
+      expect(close).toHaveBeenCalledTimes(pooled ? 0 : 1);
+    } finally {
+      f.relay.detach();
+    }
+  });
+
   it("opens relay channel 33", async () => {
     const f = fixture();
     vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });

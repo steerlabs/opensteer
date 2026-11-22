@@ -96,17 +96,20 @@ export interface BrowserPoolAdopter {
   ending?(runtimeId: string): Promise<readonly BrowserSessionId[]>;
   /**
    * Reattaches a stopped session under a fresh attempt and closes it the way Stop does.
-   * `closed`: the runtime took the close, and the row says so; `gone`: the runtime answered that
-   * it has no such session; `unanswered`: nothing was heard, and the row stays closing.
+   * `acked`: the runtime took the close (the row is not written: the next reattach asks);
+   * `gone`: the runtime answered that it has no such session; `unanswered`: nothing was heard,
+   * and the row stays closing.
    */
   end?(input: {
     readonly sessionId: BrowserSessionId;
     readonly fence: BrowserPoolRuntimeFence;
     readonly attempt: number;
     readonly signal?: AbortSignal;
-  }): Promise<"closed" | "gone" | "unanswered">;
+  }): Promise<"acked" | "gone" | "unanswered">;
   /** The runtime that serves this fence answered that the stopped session is gone. */
   ended?(sessionId: BrowserSessionId): Promise<void>;
+  /** Whether the runtime can be reached now: no attempt is spent while it cannot. */
+  reachable?(): boolean;
 }
 
 export type BrowserPoolRuntimeFault = "request" | "reply";
@@ -633,28 +636,47 @@ export class BrowserPoolCoordinator {
   ): Promise<void> {
     const adopter = this.#adopter;
     if (!adopter?.end || !adopter.ended) return;
-    const advanced = await this.#advance(slot, {
-      phase: slot.phase,
-      attachmentGeneration: slot.attachmentGeneration + 1,
-    });
-    const fence = fenceOf(advanced);
+    // A guest that died or changed under a running slot is recovery's: it replaces the guest and
+    // ends these rows with that evidence.
+    const status = await this.#status();
+    if (status.phase !== "running" || !sameFence(statusFence(status), fenceOf(slot))) {
+      this.#recovered = false;
+      return;
+    }
+    // Nothing is attempted, and no attachment spent, while the runtime cannot be reached.
+    if (adopter.reachable && !adopter.reachable())
+      throw new Error("A stopped session's runtime cannot be reached yet.");
+    let current = slot;
     let unanswered = 0;
     for (const sessionId of sessions) {
-      signal.throwIfAborted();
-      const answer = await adopter.end({
-        sessionId,
-        fence,
-        attempt: advanced.attachmentGeneration,
-        signal,
-      });
-      if (answer === "gone") {
-        // "Ended" means gone only from a runtime that serves traffic under this fence: a retired
-        // or sealed one says the same of a session it holds.
-        const state = await this.#runtimeState();
-        if (state?.phase === "running" && sameFence(state.fence, fence))
-          await adopter.ended(sessionId);
-        else unanswered++;
-      } else if (answer === "unanswered") unanswered++;
+      // The close first; then the runtime's own word, on a reattach, that the session is gone.
+      let ended = false;
+      for (let tries = 0; tries < 2 && !ended; tries++) {
+        signal.throwIfAborted();
+        current = await this.#advance(current, {
+          phase: current.phase,
+          attachmentGeneration: current.attachmentGeneration + 1,
+        });
+        const fence = fenceOf(current);
+        const answer = await adopter.end({
+          sessionId,
+          fence,
+          attempt: current.attachmentGeneration,
+          signal,
+        });
+        if (answer === "acked") continue;
+        if (answer === "gone") {
+          // "Ended" means gone only from a runtime that serves traffic under this fence: a
+          // retired or sealed one says the same of a session it holds.
+          const state = await this.#runtimeState();
+          if (state?.phase === "running" && sameFence(state.fence, fence)) {
+            await adopter.ended(sessionId);
+            ended = true;
+          }
+        }
+        break;
+      }
+      if (!ended) unanswered++;
     }
     if (unanswered) throw new Error("A stopped session's end is not answered yet.");
   }

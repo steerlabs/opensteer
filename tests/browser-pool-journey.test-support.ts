@@ -107,13 +107,21 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
     queueMicrotask(() => this.emit("close", code, Buffer.from(reason)));
   }
 
+  /**
+   * As the Runner's relay does for a pool guest: the close goes to the runtime, and the code the
+   * Home sees is the runtime's own answer (1006 when none comes), never one made up here.
+   */
   close(): void {
-    this.bridge.close(this.channel);
-    this.end(1000, "closed");
+    if (this.readyState === 3) return;
+    this.readyState = 2;
+    void this.bridge
+      .closeWithReceipt(this.channel, 5_000)
+      .then((code) => this.end(code, code === 1000 ? "closed" : "runtime did not answer"));
   }
 
   terminate(): void {
-    this.close();
+    this.bridge.close(this.channel);
+    this.end(1006, "terminated");
   }
 }
 
@@ -469,6 +477,11 @@ export async function journey(
      * code the Home sees; the runtime always sees the Runner's own 1011 (a 1000 reaches it only
      * as the relay of the Home's own close).
      */
+    /**
+     * The tunnel from the Runner to the guest breaks: the runtime sees every channel drop (1011)
+     * and keeps its sessions, while the Home's channels are left as they are.
+     */
+    tunnelBreaks: () => bridge.closeAll(1011, "pool tunnel broke"),
     runnerDown: (homeCode = 1011) => {
       runnerDown = true;
       bridge.closeAll(1011, "runner restarting");

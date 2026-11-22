@@ -481,7 +481,8 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
   closeConnection(connection: RunnerBrowserConnection, code: number, reason: string): void {
     const channel = [...this.#channels.values()].find((entry) => entry.connection === connection);
     if (!channel) {
-      connection.acceptClose(code, reason);
+      // The Runner no longer holds this channel: it is lost, never cleanly closed.
+      connection.acceptClose(1006, reason);
       return;
     }
     void this.#closeChannel(channel, code, reason).catch((error: unknown) => {

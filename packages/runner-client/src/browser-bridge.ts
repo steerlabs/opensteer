@@ -471,6 +471,32 @@ export class LocalBrowserRuntimeBridge {
     });
   }
 
+  /** A bridge to a pool guest's runtime through its relay tunnel, not a local runtime. */
+  get pooled(): boolean {
+    return this.#transport !== undefined;
+  }
+
+  /**
+   * Closes a channel the way `close` does and waits for the runtime's own close of it: its code
+   * is what the runtime answered, 1000 only when it took the close. A runtime that does not
+   * answer within the bound, or a tunnel that broke, answers 1006: never a clean close.
+   */
+  async closeWithReceipt(
+    channelId: BrowserChannelId,
+    timeoutMs: number,
+    reason = "relay closed",
+  ): Promise<number> {
+    const socket = this.#channels.get(channelId)?.socket;
+    if (!socket) return 1006;
+    this.#channels.delete(channelId);
+    if (socket.readyState !== WebSocket.OPEN && socket.readyState !== WebSocket.CONNECTING) {
+      return socket.readyState === WebSocket.CLOSED ? 1006 : await closeCode(socket, timeoutMs);
+    }
+    const answered = closeCode(socket, timeoutMs);
+    socket.close(1000, reason);
+    return answered;
+  }
+
   close(channelId: BrowserChannelId, code = 1000, reason = "relay closed"): void {
     const socket = this.#channels.get(channelId)?.socket;
     if (!socket) return;
@@ -482,6 +508,21 @@ export class LocalBrowserRuntimeBridge {
     // Closing removes the channel, so iterate a snapshot of the keys.
     for (const channelId of Array.from(this.#channels.keys())) this.close(channelId, code, reason);
   }
+}
+
+/** The code the peer closed with, or 1006 once the bound passes (the socket is then ended). */
+function closeCode(socket: WebSocket, timeoutMs: number): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const timer = setTimeout(() => {
+      socket.terminate();
+      resolve(1006);
+    }, timeoutMs);
+    timer.unref();
+    socket.once("close", (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
+  });
 }
 
 async function waitForOpen(socket: WebSocket, timeoutMs: number): Promise<void> {
