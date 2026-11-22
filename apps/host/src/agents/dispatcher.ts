@@ -23,7 +23,9 @@ import {
   SequenceSchema,
   ThreadIdSchema,
   type EnvironmentId,
+  type RunnerId,
   type ThreadId,
+  type TriggerOccurrenceId,
   type RunId,
   type UserId,
 } from "@opensteer/core";
@@ -162,6 +164,22 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #catalogs: HarnessCatalogRecorder;
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
+  readonly #dispatchingTriggers = new Map<
+    TriggerOccurrenceId,
+    { readonly runnerBootId: string; readonly runnerId: RunnerId }
+  >();
+  inFlightTriggerOccurrenceIds(
+    runnerId: RunnerId,
+    runnerBootId: string,
+  ): readonly TriggerOccurrenceId[] {
+    const ids: TriggerOccurrenceId[] = [];
+    for (const [occurrenceId, entry] of this.#dispatchingTriggers) {
+      if (entry.runnerId === runnerId && entry.runnerBootId === runnerBootId) {
+        ids.push(occurrenceId);
+      }
+    }
+    return ids;
+  }
   constructor(options: {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
@@ -876,94 +894,31 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    const { context, executionGeneration, connectionId } = await heldIfChatWaits(() =>
-      this.#triggers.startExecution({
-        commandId: command.id,
-        runnerBootId: identity.bootId,
-        runnerId: identity.runnerId,
-      }),
-    );
-    const notAdmitted = connectionId
-      ? () => this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
-      : undefined;
-    this.#onTriggerChanged();
-    const program = context.revision.program;
-    if (!isExecutableTriggerProgram(program)) {
-      await notAdmitted?.();
-      throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
-    }
-    const { capabilityToken, hasBrowser } = await (async () => {
-      try {
-        const capabilityToken = this.#triggerControlTokens.issue({
-          environmentId: context.anchorThread.environmentId,
-          executionGeneration,
-          occurrenceId: context.occurrence.id,
-          requestedBy: context.trigger.createdBy,
-          runnerBootId: identity.bootId,
-          runnerId: identity.runnerId,
-          threadId: context.anchorThread.id,
-          toolContractVersion: program.toolContractVersion,
-        });
-        const hasBrowser = await this.#browser.hasBrowserProfiles(
-          context.trigger.createdBy,
-          `trigger:${context.occurrence.id}`,
-        );
-        signal.throwIfAborted();
-        return { capabilityToken, hasBrowser };
-      } catch (error) {
-        await notAdmitted?.();
-        throw error;
-      }
-    })();
-    const digest = createHash("sha256")
-      .update(`trigger.execute:${command.id}:${executionGeneration}`)
-      .digest("hex");
-    const attemptCommandId = CommandIdSchema.parse(
-      `cmd_${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
-    );
-    const runnerCommand: RunnerCommand = {
-      commandId: attemptCommandId,
-      context: {
-        anchorThreadId: context.anchorThread.id,
-        browserCdp: hasBrowser
-          ? {
-              token: capabilityToken,
-              url: this.#browserCdpUrl,
-            }
-          : null,
-        event: context.occurrence.event,
-        executionGeneration,
-        mcp: {
-          token: capabilityToken,
-          url: this.#agentToolsUrl,
-        },
-        occurrenceId: context.occurrence.id,
-        program,
-        revisionId: context.revision.id,
-        triggerId: context.trigger.id,
-      },
-      correlationId: CorrelationIdSchema.parse(attemptCommandId),
-      environmentId: context.anchorThread.environmentId,
-      agentHome: context.agentHome,
-      type: "trigger.execute",
-    };
-    // Trigger setup can cross a stop transaction. Make the
-    // running occurrence generation and its execution authority current at the
-    // same boundary where the command leaves the Host.
-    await this.#runners.dispatch(runnerCommand, signal, {
-      connectionGeneration: identity.connectionGeneration,
-      beforeAck: () =>
-        this.#triggers.acceptExecution({
+    this.#dispatchingTriggers.set(initial.occurrence.id, {
+      runnerBootId: identity.bootId,
+      runnerId: identity.runnerId,
+    });
+    try {
+      const { context, executionGeneration, connectionId } = await heldIfChatWaits(() =>
+        this.#triggers.startExecution({
           commandId: command.id,
-          executionGeneration,
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
         }),
-      // Held here, the Runner never had it: the registry records it not admitted, which undoes
-      // the running stamp, and the coordinator returns it to pending.
-      beforeSend: async () => {
-        await heldIfChatWaits(() =>
-          this.#triggers.assertActiveExecutionBinding({
+      );
+      const notAdmitted = connectionId
+        ? () =>
+            this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
+        : undefined;
+      this.#onTriggerChanged();
+      const program = context.revision.program;
+      if (!isExecutableTriggerProgram(program)) {
+        await notAdmitted?.();
+        throw new CommandDispatchError(TRIGGER_PROGRAM_VERSION_REFUSAL, "failed");
+      }
+      const { capabilityToken, hasBrowser } = await (async () => {
+        try {
+          const capabilityToken = this.#triggerControlTokens.issue({
             environmentId: context.anchorThread.environmentId,
             executionGeneration,
             occurrenceId: context.occurrence.id,
@@ -971,14 +926,86 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
             threadId: context.anchorThread.id,
+            toolContractVersion: program.toolContractVersion,
+          });
+          const hasBrowser = await this.#browser.hasBrowserProfiles(
+            context.trigger.createdBy,
+            `trigger:${context.occurrence.id}`,
+          );
+          signal.throwIfAborted();
+          return { capabilityToken, hasBrowser };
+        } catch (error) {
+          await notAdmitted?.();
+          throw error;
+        }
+      })();
+      const digest = createHash("sha256")
+        .update(`trigger.execute:${command.id}:${executionGeneration}`)
+        .digest("hex");
+      const attemptCommandId = CommandIdSchema.parse(
+        `cmd_${digest.slice(0, 8)}-${digest.slice(8, 12)}-8${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`,
+      );
+      const runnerCommand: RunnerCommand = {
+        commandId: attemptCommandId,
+        context: {
+          anchorThreadId: context.anchorThread.id,
+          browserCdp: hasBrowser
+            ? {
+                token: capabilityToken,
+                url: this.#browserCdpUrl,
+              }
+            : null,
+          event: context.occurrence.event,
+          executionGeneration,
+          mcp: {
+            token: capabilityToken,
+            url: this.#agentToolsUrl,
+          },
+          occurrenceId: context.occurrence.id,
+          program,
+          revisionId: context.revision.id,
+          triggerId: context.trigger.id,
+        },
+        correlationId: CorrelationIdSchema.parse(attemptCommandId),
+        environmentId: context.anchorThread.environmentId,
+        agentHome: context.agentHome,
+        type: "trigger.execute",
+      };
+      // Trigger setup can cross a stop transaction. Make the
+      // running occurrence generation and its execution authority current at the
+      // same boundary where the command leaves the Host.
+      await this.#runners.dispatch(runnerCommand, signal, {
+        connectionGeneration: identity.connectionGeneration,
+        beforeAck: () =>
+          this.#triggers.acceptExecution({
+            commandId: command.id,
+            executionGeneration,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
           }),
-        );
-        // Stamp frame_sent_at right before the wire send so retryCommand can never reset a
-        // firing that may have left the Home without explicit pre-execution Runner refusal (T12).
-        await this.#store.markCommandFrameSent(command.id);
-      },
-      ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
-    });
+        // Held here, the Runner never had it: the registry records it not admitted, which undoes
+        // the running stamp, and the coordinator returns it to pending.
+        beforeSend: async () => {
+          await heldIfChatWaits(() =>
+            this.#triggers.assertActiveExecutionBinding({
+              environmentId: context.anchorThread.environmentId,
+              executionGeneration,
+              occurrenceId: context.occurrence.id,
+              requestedBy: context.trigger.createdBy,
+              runnerBootId: identity.bootId,
+              runnerId: identity.runnerId,
+              threadId: context.anchorThread.id,
+            }),
+          );
+          // Stamp frame_sent_at right before the wire send so retryCommand can never reset a
+          // firing that may have left the Home without explicit pre-execution Runner refusal (T12).
+          await this.#store.markCommandFrameSent(command.id);
+        },
+        ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
+      });
+    } finally {
+      this.#dispatchingTriggers.delete(initial.occurrence.id);
+    }
   }
   async #dispatchControl(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId)

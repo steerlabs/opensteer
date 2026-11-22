@@ -254,6 +254,7 @@ const TriggerOccurrenceStatusSchema = z.enum([
 export const TriggerOccurrenceSchema = z.strictObject({
   commandId: CommandIdSchema,
   completedAt: IsoDateTimeSchema.nullable(),
+  contactLostAt: IsoDateTimeSchema.nullable().optional(),
   createdAt: IsoDateTimeSchema,
   environmentId: EnvironmentIdSchema,
   error: z.unknown().nullable(),
@@ -287,6 +288,7 @@ export const TriggerSummarySchema = z.strictObject({
   latestOccurrence: z
     .strictObject({
       completedAt: IsoDateTimeSchema.nullable(),
+      contactLostAt: IsoDateTimeSchema.nullable().optional(),
       createdAt: IsoDateTimeSchema,
       error: z.string().nullable(),
       id: TriggerOccurrenceIdSchema,

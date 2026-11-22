@@ -71,7 +71,13 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
   if (summary.nextFireAt) return { group: "upcoming", problem: null };
   switch (summary.latestOccurrence?.status) {
     case "pending":
+      return { group: "upcoming", problem: null };
     case "running":
+      if (summary.latestOccurrence.contactLostAt) {
+        return attention(
+          `Running as far as Opensteer knows — contact lost ${formatMoment(summary.latestOccurrence.contactLostAt, now, true)}.`,
+        );
+      }
       return { group: "upcoming", problem: null };
     case "failed":
       return attention("It failed when it ran.");
@@ -317,7 +323,12 @@ export function latestRun(
     case "canceled":
       return { text: "Last run canceled", tone: "muted" };
     case "running":
-      return { text: "Running now", tone: "accent" };
+      return occurrence.contactLostAt
+        ? {
+            text: `Running — contact lost ${formatMoment(occurrence.contactLostAt, now, true)}`,
+            tone: "warn",
+          }
+        : { text: "Running now", tone: "accent" };
     case "pending":
       return now - Date.parse(occurrence.createdAt) < startGraceMilliseconds
         ? { text: "Starting", tone: "accent" }
@@ -337,7 +348,9 @@ export function runOutcome(
         ? "Starting"
         : "Waiting for its computer";
     case "running":
-      return "Running now";
+      return occurrence.contactLostAt
+        ? `Running as far as Opensteer knows — contact lost ${formatMoment(occurrence.contactLostAt, now, true)}`
+        : "Running now";
     case "canceled":
       return "Canceled";
     case "failed":

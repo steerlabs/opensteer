@@ -2247,6 +2247,10 @@ export async function createHostRuntime(
     let renewProxyToken:
       | NonNullable<ConstructorParameters<typeof RunnerRegistry>[0]["hooks"]["onRenewProxyToken"]>
       | undefined;
+    let inFlightTriggerOccurrenceIds: (
+      runnerId: RunnerIdentity["runnerId"],
+      runnerBootId: string,
+    ) => readonly import("@opensteer/core").TriggerOccurrenceId[] = () => [];
     const runners: RunnerRegistry = new RunnerRegistry({
       ...(options.executionClock ? { now: executionNow } : {}),
       executionLeaseMs: config.executionLeaseMs,
@@ -2563,7 +2567,10 @@ export async function createHostRuntime(
         },
         onAttachFirings: async (identity, firings) => {
           const attached = await triggerStore.attachRunnerFirings({
-            dispatchingOccurrenceIds: [],
+            dispatchingOccurrenceIds: inFlightTriggerOccurrenceIds(
+              identity.runnerId,
+              identity.bootId,
+            ),
             firings,
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
@@ -2937,6 +2944,8 @@ export async function createHostRuntime(
       triggerControlTokens,
       triggers: triggerStore,
     });
+    inFlightTriggerOccurrenceIds = (runnerId, runnerBootId) =>
+      dispatcher.inFlightTriggerOccurrenceIds(runnerId, runnerBootId);
     let reportDispatchError: (error: unknown, commandId: string) => void = (error, commandId) =>
       console.error("Runner command dispatch failed", commandId, error);
     const coordinator = new ExecutionCoordinator({

@@ -894,7 +894,17 @@ export class TriggerStore {
         .execute(),
       this.#database
         .selectFrom("triggerOccurrences")
-        .select(["completedAt", "createdAt", "error", "event", "id", "status", "triggerId"])
+        .select([
+          "completedAt",
+          "contactLostAt",
+          "createdAt",
+          "error",
+          "event",
+          "id",
+          "outcome",
+          "status",
+          "triggerId",
+        ])
         .distinctOn("triggerId")
         .where("triggerId", "in", triggerIds)
         .orderBy("triggerId")
@@ -925,11 +935,12 @@ export class TriggerStore {
         latestOccurrence: occurrence
           ? {
               completedAt: occurrence.completedAt?.toISOString() ?? null,
+              contactLostAt: occurrence.contactLostAt?.toISOString() ?? null,
               createdAt: occurrence.createdAt.toISOString(),
               error: triggerOccurrenceErrorMessage(occurrence.error),
               id: occurrence.id,
               source: TriggerProgramEventSchema.parse(occurrence.event).source.kind,
-              status: occurrence.status,
+              status: occurrence.outcome ?? occurrence.status,
             }
           : null,
         source: withoutSchedulePayload(TriggerSourceSchema.parse(revision?.source)),
@@ -2204,7 +2215,9 @@ export class TriggerStore {
             readonly status: "revoked";
           }
       )[] = [];
-      const heldIds = new Set<TriggerOccurrenceId>(input.dispatchingOccurrenceIds);
+      const heldIds = new Set<TriggerOccurrenceId>();
+      const attachedRunningIds: TriggerOccurrenceId[] = [];
+      const dispatchingIds = new Set<TriggerOccurrenceId>(input.dispatchingOccurrenceIds);
 
       const sortedFirings = [...input.firings].toSorted((a, b) =>
         a.occurrenceId.localeCompare(b.occurrenceId),
@@ -2216,6 +2229,7 @@ export class TriggerStore {
           .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
           .select([
             "triggerOccurrences.connectionId",
+            "triggerOccurrences.contactLostAt",
             "triggerOccurrences.environmentId",
             "triggerOccurrences.executionGeneration",
             "triggerOccurrences.id",
@@ -2223,6 +2237,7 @@ export class TriggerStore {
             "triggerOccurrences.runnerBootId",
             "triggerOccurrences.runnerId",
             "triggerOccurrences.status",
+            "triggerOccurrences.terminalEvidenceAt",
             "triggers.status as triggerStatus",
           ])
           .where("triggerOccurrences.id", "=", firing.occurrenceId)
@@ -2258,11 +2273,34 @@ export class TriggerStore {
           });
           continue;
         }
+        if (
+          row.status === "running" &&
+          row.contactLostAt !== null &&
+          row.terminalEvidenceAt === null
+        ) {
+          attachedRunningIds.push(row.id);
+        }
         results.push({ occurrenceId: firing.occurrenceId, status: "attached" });
+      }
+
+      if (attachedRunningIds.length > 0) {
+        await transaction
+          .updateTable("triggerOccurrences")
+          .set({ contactLostAt: null, updatedAt: new Date() })
+          .where("id", "in", attachedRunningIds)
+          .where("status", "=", "running")
+          .where("terminalEvidenceAt", "is", null)
+          .execute();
       }
 
       const settledUnknownCount = await this.#markActiveUnknownInTransaction(transaction, {
         excludeOccurrenceIds: [...heldIds],
+        ...(dispatchingIds.size > 0
+          ? {
+              excludeSameBootOccurrenceIds: [...dispatchingIds],
+              sameBootId: input.runnerBootId,
+            }
+          : {}),
         message: "Outcome unknown: the computer reconnected without this firing.",
         runnerId: input.runnerId,
       });
@@ -2289,9 +2327,11 @@ export class TriggerStore {
     transaction: Transaction<DatabaseSchema>,
     input: {
       readonly excludeOccurrenceIds?: readonly TriggerOccurrenceId[];
+      readonly excludeSameBootOccurrenceIds?: readonly TriggerOccurrenceId[];
       readonly message: string;
       readonly runnerBootId?: string;
       readonly runnerId: RunnerId;
+      readonly sameBootId?: string;
     },
   ): Promise<number> {
     let query = transaction
@@ -2302,6 +2342,17 @@ export class TriggerStore {
     if (input.runnerBootId) query = query.where("runnerBootId", "=", input.runnerBootId);
     if (input.excludeOccurrenceIds && input.excludeOccurrenceIds.length > 0) {
       query = query.where("id", "not in", input.excludeOccurrenceIds);
+    }
+    if (
+      input.excludeSameBootOccurrenceIds &&
+      input.excludeSameBootOccurrenceIds.length > 0 &&
+      input.sameBootId
+    ) {
+      const protectedIds = input.excludeSameBootOccurrenceIds;
+      const sameBootId = input.sameBootId;
+      query = query.where((eb) =>
+        eb.not(eb.and([eb("id", "in", protectedIds), eb("runnerBootId", "=", sameBootId)])),
+      );
     }
     const rows = await query.orderBy("id", "asc").forNoKeyUpdate().execute();
     if (rows.length === 0) return 0;
@@ -3026,6 +3077,7 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
   return TriggerOccurrenceSchema.parse({
     commandId: CommandIdSchema.parse(row.commandId),
     completedAt: row.completedAt?.toISOString() ?? null,
+    contactLostAt: row.contactLostAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     environmentId: row.environmentId,
     error: row.error,

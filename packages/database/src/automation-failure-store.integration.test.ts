@@ -693,6 +693,123 @@ integration.sequential("automation failure notices", () => {
     expect(lateSettled?.exitCode).toBe(0);
     expect(lateSettled?.stdout).toBe("finished before restart\n");
   });
+
+  it("handles dispatch racing attach in both orders and isolates a week-gone computer's firing to its own automation", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, detail, start, store, triggers } = storeFixture;
+    const fixture = await createFixture("dispatch-attach-race");
+    const makeCron = (key: string, name: string) =>
+      triggers.create({
+        actorThreadId: null,
+        anchorThreadId: fixture.threadId,
+        createdBy: fixture.userId,
+        idempotencyKey: key,
+        name,
+        program: {
+          language: "javascript",
+          source: "export default async () => ({ ok: true })",
+          toolContractVersion: 5,
+        },
+        source: {
+          kind: "schedule",
+          schedule: { expression: "0 * * * *", kind: "cron", timezone: "UTC" },
+        },
+      });
+    const racingTrigger = await makeCron("race-trigger", "Racing trigger");
+    const siblingTrigger = await makeCron("sibling-trigger", "Sibling trigger");
+
+    const racingRun = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: racingTrigger.trigger.id,
+    });
+    const started = await start(fixture, racingRun, "boot-same");
+
+    // Order A: dispatch is still in flight on the same boot when attach arrives without it.
+    // The firing must NOT be settled unknown; when it finishes it commits succeeded.
+    const sameBootAttach = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [started.id],
+      firings: [],
+      runnerBootId: "boot-same",
+      runnerId: fixture.runnerId,
+    });
+    expect(sameBootAttach.settledUnknownCount).toBe(0);
+    const stillRunning = await detail(racingTrigger.trigger.id, fixture.userId);
+    expect(stillRunning.occurrences[0]?.status).toBe("running");
+
+    // If the computer disconnects without returning, contactLostAt is stamped on the running firing
+    // while leaving sibling automations on the same computer completely unblocked.
+    await store.markConnectionAttemptsContactLost({
+      runnerBootId: "boot-same",
+      runnerId: fixture.runnerId,
+    });
+    const summaries = await triggers.listForOwner({
+      ownerId: fixture.userId,
+      reader: personTaskReader,
+    });
+    const racingSummary = summaries.find((item) => item.id === racingTrigger.trigger.id)!;
+    expect(racingSummary.latestOccurrence?.status).toBe("running");
+    expect(racingSummary.latestOccurrence?.contactLostAt).toBeTruthy();
+
+    // Sibling automation is completely unaffected and can enqueue & run normally.
+    const siblingRun = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: siblingTrigger.trigger.id,
+    });
+    expect(siblingRun.status).toBe("pending");
+
+    // Reattaching on the same boot with the firing clears contactLostAt.
+    const reattached = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [
+        {
+          environmentId: fixture.environmentId,
+          executionGeneration: started.executionGeneration,
+          occurrenceId: started.id,
+          terminal: false,
+        },
+      ],
+      runnerBootId: "boot-same",
+      runnerId: fixture.runnerId,
+    });
+    expect(reattached.results).toEqual([{ occurrenceId: started.id, status: "attached" }]);
+    const clearedDetail = await detail(racingTrigger.trigger.id, fixture.userId);
+    expect(clearedDetail.occurrences[0]?.contactLostAt).toBeNull();
+
+    // Order B (opposite): Runner restarts with a new boot (even if an old dispatch was unwinding);
+    // attach settles the old-boot firing to unknown, and a stale beforeSend authority check is refused.
+    const newBootAttach = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [started.id],
+      firings: [],
+      runnerBootId: "boot-restarted",
+      runnerId: fixture.runnerId,
+    });
+    expect(newBootAttach.settledUnknownCount).toBe(1);
+    const settledDetail = await detail(racingTrigger.trigger.id, fixture.userId);
+    expect(settledDetail.occurrences[0]?.status).toBe("unknown");
+    await expect(
+      triggers.assertActiveExecutionBinding({
+        environmentId: fixture.environmentId,
+        executionGeneration: started.executionGeneration,
+        occurrenceId: started.id,
+        requestedBy: fixture.userId,
+        runnerBootId: "boot-same",
+        runnerId: fixture.runnerId,
+        threadId: fixture.threadId,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+
+    // Confirm raw row outcome in DB matches unknown.
+    const raw = await database
+      .selectFrom("triggerOccurrences")
+      .select(["outcome", "status"])
+      .where("id", "=", started.id)
+      .executeTakeFirstOrThrow();
+    expect(raw.outcome).toBe("unknown");
+    expect(raw.status).toBe("failed");
+  });
   it("records one notice when a crash-looping watch is auto-paused", async ({ storeFixture }) => {
     const { createFixture, triggers, storedNotices, detail } = storeFixture;
     const fixture = await createFixture("watch");

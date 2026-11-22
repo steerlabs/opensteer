@@ -67,6 +67,30 @@ describe("placing automations", () => {
     });
     expect(runOutcome(unknownOccurrence as never, null, null, now)).toBe("Outcome unknown");
   });
+
+  it("reports a running firing whose computer lost contact on list and detail", () => {
+    const contactLostAt = at(-1, 14, 15);
+    const lostRunning = {
+      completedAt: null,
+      contactLostAt,
+      createdAt: at(-1, 14, 0),
+      status: "running",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+    const once = automation({
+      latestOccurrence: lostRunning,
+      nextFireAt: null,
+      source: { kind: "schedule", schedule: { at: at(-1, 14, 0), kind: "at" } },
+    });
+    expect(placeAutomation(once, now).group).toBe("attention");
+    expect(placeAutomation(once, now).problem).toContain("Running as far as Opensteer knows");
+    expect(latestRun(lostRunning, now)).toEqual({
+      text: expect.stringMatching(/^Running — contact lost yesterday,/u),
+      tone: "warn",
+    });
+    expect(runOutcome(lostRunning as never, null, null, now)).toMatch(
+      /^Running as far as Opensteer knows — contact lost yesterday,/u,
+    );
+  });
 });
 
 describe("the next run", () => {
