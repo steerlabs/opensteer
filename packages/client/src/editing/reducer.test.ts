@@ -149,6 +149,75 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       { kind: "command", command: "moveBackward" },
     ]);
   });
+  // CR2: after a cancelled composition's restated text, the far caret is after it. A target
+  // without commands cannot move it to the native caret, so the mirror is reset; a native
+  // selection that is not a caret leaves the far caret recorded where the restated text ended.
+  const cancelOverSelection = (value: string, rest: string, after = proxy(rest, 0)) => {
+    const marked = (text: string, start: number, end: number) => ({
+      ...proxy(text, end),
+      markedRange: { start, end },
+    });
+    return [
+      { type: "beforeinput", inputType: "insertText", data: value },
+      input(value),
+      { type: "selection", proxy: proxy(value, 0, 2) },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "に" },
+      { type: "compositionstart", proxy: proxy(value, 0, 2) },
+      { type: "compositionupdate", data: "に", proxy: marked("に" + rest, 0, 1) },
+      {
+        type: "input",
+        inputType: "insertCompositionText",
+        composing: true,
+        proxy: marked("に" + rest, 0, 1),
+      },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "" },
+      { type: "compositionend", data: "", proxy: after },
+    ] satisfies EditingProxyEvent[];
+  };
+  it("resets the mirror when a cancel's restated text leaves the far caret where no command can move it", () => {
+    const result = replay(cancelOverSelection("abx", "x"), "ios", {
+      ...abilities,
+      commands: false,
+    });
+    expect(result.operations.at(-1)).toEqual({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "x", before: "", after: "" },
+    });
+    expect(result.state.proxy).toEqual(proxy(""));
+    expect(result.state.caret).toBe(0);
+  });
+  it("records the far caret after a cancel's restated text when the native selection is a range", () => {
+    const result = replay(cancelOverSelection("abxy", "xy", proxy("xy", 0, 1)), "ios");
+    expect(result.operations.at(-1)).toEqual({
+      kind: "edit",
+      edit: { contextId: context.contextId, text: "xy", before: "", after: "" },
+    });
+    expect(result.state.caret).toBe(2);
+  });
+  // CR1: a real browser has no marked range, and its cancel sends compositionupdate("") and an
+  // input while composing before compositionend(""). Over "ab" selected in "aba", the text after
+  // the selection begins with the selection's own first character: the cancel's input must keep
+  // the composition's range, so the restated "a" stays.
+  it("keeps the restated text when a browser cancels a composition over a selection", () => {
+    const at = (value: string, start: number, end = start) => proxy(value, start, end);
+    const result = replay([
+      { type: "beforeinput", inputType: "insertText", data: "aba" },
+      input("aba"),
+      { type: "selection", proxy: at("aba", 0, 2) },
+      { type: "compositionstart", proxy: at("aba", 0, 2) },
+      { type: "compositionupdate", data: "に", proxy: at("aba", 0, 2) },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "に" },
+      { type: "input", inputType: "insertCompositionText", composing: true, proxy: at("にa", 1) },
+      { type: "compositionupdate", data: "", proxy: at("にa", 0, 1) },
+      { type: "beforeinput", inputType: "insertCompositionText", data: "" },
+      { type: "input", inputType: "insertCompositionText", composing: true, proxy: at("a", 0) },
+      { type: "compositionend", data: "", proxy: at("a", 0) },
+    ]);
+    expect(result.operations.slice(-2)).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      { kind: "command", command: "moveBackward" },
+    ]);
+  });
   // The suppression's purpose: on a target without range edits a Backspace is sent as a command
   // and the mirror reset, and a deletion the adapter could not prevent still arrives as input.
   // That input is the deletion already sent, never a second edit.
@@ -183,6 +252,37 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       { kind: "command", command: "deleteBackward" },
       { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
       { kind: "edit", edit: { contextId: context.contextId, text: "", before: "a", after: "" } },
+    ]);
+  });
+  // CR6: an input that arrives alone ends Enter's suppression too. No recorded trace puts an
+  // input that is not a composition's between an Enter key and its own line break (the inputs
+  // there are IME commits, which never reach the suppression), so a later line break that
+  // arrives alone is its own Enter.
+  it("sends a later line break after an unrelated input ended Enter's suppression", () => {
+    const enter = (action: "down" | "up") => ({
+      kind: "key",
+      keystroke: { action, key: "Enter", code: "Enter", modifiers: [] },
+    });
+    const result = replay(
+      [
+        key("Enter"),
+        { ...key("Enter"), type: "keyup" },
+        input("a", "insertReplacementText"),
+        input("a\n", "insertLineBreak"),
+      ],
+      "android",
+    );
+    // The hardware Enter, then the edit, then the line break's own Enter.
+    const hardware = (action: "down" | "up") => {
+      const sent = enter(action);
+      return { ...sent, keystroke: { ...sent.keystroke, location: 0, repeat: false } };
+    };
+    expect(result.operations).toEqual([
+      hardware("down"),
+      hardware("up"),
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      enter("down"),
+      enter("up"),
     ]);
   });
   it.each(["insertLineBreak", "insertParagraph"])(

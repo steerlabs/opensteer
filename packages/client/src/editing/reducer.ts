@@ -237,6 +237,24 @@ function composingValue(
       if (range) return compositionText(transaction, range.start, range.end, nativeText);
     }
   }
+  // An emptied composition is still its own range when the text outside it is unchanged (a
+  // browser cancels with compositionupdate("") and an input, or Safari with deleteCompositionText,
+  // before compositionend): a plain diff would widen it over a neighbour that repeats the
+  // selection's first character.
+  if (commitText === undefined) {
+    const range = snapshotCompositionRange(
+      transaction.base.value,
+      proxy,
+      transaction.rawStart,
+      transaction.rawStart,
+    );
+    if (
+      range?.end === transaction.rawEnd &&
+      proxy.selectionStart === transaction.rawStart &&
+      proxy.selectionEnd === transaction.rawStart
+    )
+      return compositionText(transaction, range.start, range.end, "");
+  }
   if (commitText !== undefined)
     return compositionText(transaction, transaction.rawStart, transaction.rawEnd, commitText);
   const diff = difference(transaction.base.value, proxy.value);
@@ -532,8 +550,14 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           const restated =
             transaction.base.value.slice(transaction.start, transaction.rawStart) +
             transaction.base.value.slice(transaction.rawEnd, transaction.end);
-          if (transaction.sent && restated && proxy.selectionStart === proxy.selectionEnd)
-            move(transaction.start + restated.length, proxy.selectionEnd, proxy.value);
+          if (transaction.sent && restated) {
+            const appliedCaret = transaction.start + restated.length;
+            if (proxy.selectionStart === proxy.selectionEnd) {
+              move(appliedCaret, proxy.selectionEnd, proxy.value);
+              if (!state.abilities.commands && appliedCaret !== proxy.selectionEnd)
+                state.resetPending = true;
+            } else remoteCaret = appliedCaret;
+          }
         } else {
           const final = composingValue(transaction, event.proxy, event.data);
           commit(final, final.text);
@@ -745,9 +769,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         break;
       }
       // Another input means the suppressed one is not coming (an adapter that reports input
-      // without a beforeinput): a later deletion's input is its own. Enter's suppression is
-      // consumed only by its line break.
-      if (state.suppressedInput !== "return") state.suppressedInput = null;
+      // without a beforeinput): a later deletion's input, or line break, is its own. No recorded
+      // browser puts such an input between an Enter key and its own line break; the inputs there
+      // are an IME's commit, which return above.
+      state.suppressedInput = null;
       const echo = state.pendingEcho;
       state.pendingEcho = null;
       const base = echo?.expected ?? state.proxy;

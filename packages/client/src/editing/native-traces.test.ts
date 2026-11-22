@@ -475,3 +475,134 @@ describe("recorded native proxy traces and independent platform controls", () =>
     });
   }
 });
+
+/**
+ * A far field as a page applies the operations (the shape tests/editing-far-model.test.ts holds
+ * the mobile model to): an edit or a first composition at the caret with its before and after, a
+ * later one over the composition, a caret command by one code unit (these texts have no
+ * clusters).
+ */
+function applyFar(
+  far: { value: string; caret: number; composition: [number, number] | null },
+  operation: EditingOperation,
+) {
+  const replace = (start: number, end: number, text: string) => {
+    far.value = far.value.slice(0, start) + text + far.value.slice(end);
+    far.caret = start + text.length;
+  };
+  if (operation.kind === "edit" || operation.kind === "compose") {
+    const change = operation.kind === "edit" ? operation.edit : operation.composition;
+    const [start, end] = far.composition ?? [
+      far.caret - (change.before ?? "").length,
+      far.caret + (change.after ?? "").length,
+    ];
+    if (operation.kind === "compose") {
+      replace(start, end, change.text);
+      far.composition = change.text ? [start, start + change.text.length] : null;
+      far.caret = start + operation.composition.selectionEnd;
+    } else if (change.text || end > start) {
+      replace(start, end, change.text);
+      far.composition = null;
+    } else if (far.caret > 0) replace(far.caret - 1, far.caret, "");
+  } else if (operation.kind === "command" && operation.command === "moveBackward")
+    far.caret = Math.max(0, far.caret - 1);
+  else if (operation.kind === "command" && operation.command === "moveForward")
+    far.caret = Math.min(far.value.length, far.caret + 1);
+}
+
+// CR1 on the recorded browsers: each cancel trace, replayed as if "ab" were selected in "aba"
+// when the composition began. Before the first composition input the field holds "aba" with
+// "ab" selected; from it on the composition replaces "ab" and the "a" after it stays. The far
+// field must end as the browser's own field did: "a".
+describe("a recorded composition cancel, over a selection followed by its own first letter", () => {
+  const cancels = [
+    ["macos1-chrome-japanese-cancel.json", macIme8],
+    ["macos2-chrome-japanese-cancel.json", macSecond21],
+    ["macos1-electron-japanese-cancel.json", macIme6],
+    ["macos2-electron-japanese-cancel.json", macSecond17],
+    ["macos1-safari-japanese-cancel.json", macSafariCancel],
+    ["macos3-firefox-japanese-cancel.json", macFinal10],
+  ] as const;
+  for (const [name, source] of cancels)
+    it(name, () => {
+      const trace = schema.parse(source);
+      let state = createEditingState("mac", {
+        composition: true,
+        rangeEdits: true,
+        commands: true,
+        clipboard: "full",
+      });
+      const far = { value: "", caret: 0, composition: null as [number, number] | null };
+      const run = (event: EditingProxyEvent) => {
+        const step = reduceEditing(state, event);
+        expect(step.refusal, `${event.type} refused`).toBeUndefined();
+        state = step.state;
+        for (const operation of step.operations) applyFar(far, operation);
+      };
+      run({
+        type: "context",
+        context: {
+          contextId,
+          field: { kind: "text", multiline: true, sensitive: false },
+          caret: null,
+        },
+      });
+      run({ type: "beforeinput", inputType: "insertText", data: "aba" });
+      run({
+        type: "input",
+        inputType: "insertText",
+        composing: false,
+        proxy: { value: "aba", selectionStart: 3, selectionEnd: 3 },
+      });
+      run({ type: "selection", proxy: { value: "aba", selectionStart: 0, selectionEnd: 2 } });
+      let replaced = false;
+      for (const recorded of trace.events) {
+        if (!replaced && recorded.type === "selection") continue;
+        if (recorded.type === "input" && recorded.inputType?.includes("Composition"))
+          replaced = true;
+        const proxy = replaced
+          ? {
+              value: recorded.value + "a",
+              selectionStart: recorded.selectionStart,
+              selectionEnd: recorded.selectionEnd,
+              ...(recorded.markedRange ? { markedRange: recorded.markedRange } : {}),
+            }
+          : { value: "aba", selectionStart: 0, selectionEnd: 2 };
+        if (recorded.type === "keydown" || recorded.type === "keyup")
+          run({
+            type: recorded.type,
+            key: recorded.key!,
+            code: recorded.code!,
+            alt: false,
+            control: false,
+            meta: false,
+            shift: false,
+            altGraph: false,
+            location: recorded.location ?? 0,
+            repeat: recorded.repeat ?? false,
+            composing: recorded.composing === true || recorded.keyCode === 229,
+          });
+        else if (recorded.type === "beforeinput")
+          run({
+            type: "beforeinput",
+            inputType: recorded.inputType ?? "",
+            data: recorded.data ?? null,
+          });
+        else if (recorded.type === "input")
+          run({
+            type: "input",
+            inputType: recorded.inputType ?? "",
+            composing: recorded.composing ?? false,
+            proxy,
+          });
+        else if (recorded.type === "compositionstart") run({ type: "compositionstart", proxy });
+        else if (recorded.type === "compositionupdate" || recorded.type === "compositionend")
+          run({ type: recorded.type, data: recorded.data ?? "", proxy });
+        else if (recorded.type === "selection") run({ type: "selection", proxy });
+      }
+      expect(trace.events.at(-1)?.value).toBe("");
+      expect(far.value).toBe("a");
+      expect(far.caret).toBe(state.caret);
+      expect(state.proxy.value).toBe("a");
+    });
+});
