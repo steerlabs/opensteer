@@ -865,7 +865,7 @@ function Focused(
   const notices =
     opening.line === null ? null : (
       <View style={styles.pageLine}>
-        <ActionLine line={opening.line} numberOfLines={2} onDismiss={opening.dismiss} />
+        <ActionLine line={opening.line} onDismiss={opening.dismiss} />
       </View>
     );
   return (

@@ -33,10 +33,9 @@ export function AccountIdentityRow(props: {
         </AppText>
       </View>
       <View style={styles.accountCopy}>
-        <AppText numberOfLines={1} role="title">
-          {props.email}
-        </AppText>
-        <AppText numberOfLines={1} role="caption" tone="muted">
+        {/* Addresses read whole: they wrap, breaking anywhere an address must. */}
+        <AppText role="title">{props.email}</AppText>
+        <AppText role="caption" tone="muted">
           {props.issuer}
         </AppText>
       </View>
@@ -168,10 +167,7 @@ export function AddDeploymentScreen(): ReactNode {
           say it a second time in the display face; the doors are the content. */}
       <ScrollView contentContainerStyle={[styles.content, column]}>
         {failure === null ? null : (
-          <ActionLine
-            line={{ key: failure, text: failure, tone: "muted", haptic: "warning" }}
-            numberOfLines={2}
-          />
+          <ActionLine line={{ key: failure, text: failure, tone: "muted", haptic: "warning" }} />
         )}
         {identity === null ? (
           <AddDeploymentDoors

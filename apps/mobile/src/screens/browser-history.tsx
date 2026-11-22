@@ -169,7 +169,7 @@ function HistoryList({
               }
             />
             {change.line === null ? null : (
-              <ActionLine line={change.line} numberOfLines={2} onDismiss={change.dismiss} />
+              <ActionLine line={change.line} onDismiss={change.dismiss} />
             )}
           </View>
         }

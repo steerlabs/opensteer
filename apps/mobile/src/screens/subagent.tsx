@@ -511,7 +511,7 @@ function WatchFooter(props: {
       {narrow ? null : <Symbol name="eye" size={14} tint={color.muted} />}
       {line !== null ? (
         <View style={styles.barWords}>
-          <ActionLine line={line} numberOfLines={2} />
+          <ActionLine line={line} />
         </View>
       ) : (
         <AppText role="caption" style={styles.barWords} tone="muted">

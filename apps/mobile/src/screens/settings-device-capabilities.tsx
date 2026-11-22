@@ -179,7 +179,6 @@ export function SettingsDeviceCapabilities({
       ) : line ? (
         <ActionLine
           line={line}
-          numberOfLines={2}
           onDismiss={() => {
             access.dismiss();
             removal.dismiss();

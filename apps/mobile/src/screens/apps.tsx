@@ -355,7 +355,6 @@ const AppRow = memo(function AppRow(props: {
             void list.reload();
             list.dismissFailure(app.appId);
           })}
-          numberOfLines={2}
         />
       )}
     </View>

@@ -1406,7 +1406,6 @@ function ThreadPaneForUser(
             label: "Try again",
             onPress: () => hostClient.activateThread(threadId),
           })}
-          numberOfLines={2}
         />
       </View>
     ) : null;

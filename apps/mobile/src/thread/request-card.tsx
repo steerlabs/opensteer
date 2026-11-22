@@ -305,7 +305,7 @@ function AnswerCard(props: RequestCardProps): ReactNode {
       />
       {session.failure === null ? null : (
         <View style={styles.failure}>
-          <ActionLine line={session.failure} numberOfLines={2} />
+          <ActionLine line={session.failure} />
         </View>
       )}
     </View>

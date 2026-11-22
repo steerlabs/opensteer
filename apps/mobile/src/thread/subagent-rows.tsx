@@ -315,7 +315,7 @@ export function AgentStep(props: AgentRowProps): ReactNode {
               phrases={card.detail}
             />
           ) : (
-            <ActionLine line={line} numberOfLines={1} />
+            <ActionLine line={line} />
           )}
         </View>
       )}

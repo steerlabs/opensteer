@@ -70,7 +70,7 @@ export function ThreadSubtitle(props: {
   readonly line?: ActionLineValue | null;
 }) {
   const { task } = props;
-  if (props.line) return <ActionLine line={props.line} numberOfLines={1} />;
+  if (props.line) return <ActionLine line={props.line} />;
   if (props.connectionLabel === null && task === null) return null;
   return (
     <View accessibilityLiveRegion="polite" style={styles.row}>

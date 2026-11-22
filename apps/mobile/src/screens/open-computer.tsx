@@ -78,7 +78,6 @@ export function OpenComputer(): ReactNode {
               text: failure ?? account.account.detail ?? "",
               tone: "muted",
             }}
-            numberOfLines={2}
           />
         ) : null}
         <SecondaryButton label="Cancel" onPress={() => client.cancelOpenComputer()} />

@@ -60,7 +60,7 @@ export function ChromeScreen({ route }: StaticScreenProps<ChromeDestination>): R
               ? "This deployment is no longer on this phone."
               : `Open ${row.name} to manage its Chrome.`}
           </AppText>
-          {failure === null ? null : <ActionLine line={failure} numberOfLines={2} />}
+          {failure === null ? null : <ActionLine line={failure} />}
           {row === undefined ? null : (
             <SecondaryButton
               busy={opening}
@@ -392,11 +392,7 @@ function SourceRow(props: {
         </>
       )}
       {line === null ? null : (
-        <ActionLine
-          line={line}
-          numberOfLines={2}
-          onDismiss={renaming.line ? renaming.dismiss : revoking.dismiss}
-        />
+        <ActionLine line={line} onDismiss={renaming.line ? renaming.dismiss : revoking.dismiss} />
       )}
     </View>
   );
@@ -444,7 +440,7 @@ function SiteRow(props: {
             : `Last signed in ${formatRelativeTime(grant.lastSignedInAt)}`}
         </AppText>
         {removal.line === null ? null : (
-          <ActionLine line={removal.line} numberOfLines={2} onDismiss={removal.dismiss} />
+          <ActionLine line={removal.line} onDismiss={removal.dismiss} />
         )}
       </View>
       <SecondaryButton

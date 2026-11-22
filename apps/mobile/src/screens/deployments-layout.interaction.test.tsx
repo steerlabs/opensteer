@@ -254,3 +254,55 @@ describe("what a Home's row says", () => {
         }
       });
 });
+
+describe("a failure line above the Homes list", () => {
+  const sentence = "Opensteer couldn't save your sign-in on this iPhone. Try again.";
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`reads whole on ${phone.name} at text size ${fontScale}`, async () => {
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        // The list's own line, not the stand-in the rest of this file draws nothing for.
+        const { ActionLine } =
+          await vi.importActual<typeof import("../ui/action-line.js")>("../ui/action-line.js");
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        const none = () => undefined;
+        await act(async () =>
+          root.render(
+            <View
+              style={{
+                gap: 12,
+                paddingLeft: 16 + phone.insets.left,
+                paddingRight: 16 + phone.insets.right,
+                width: phone.window.width,
+              }}
+            >
+              <ActionLine
+                line={{ key: "failed", text: sentence, tone: "muted" }}
+                onDismiss={none}
+              />
+              <DeploymentListRow
+                attention={null}
+                current={false}
+                onDetails={none}
+                onOpen={none}
+                onPair={none}
+                onRemove={none}
+                onSignOut={none}
+                row={row(homes[0]!)}
+              />
+            </View>,
+          ),
+        );
+        const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
+        const text = textElement(container, sentence);
+        expect(frames.shown(text), "the failure is cut").toBe(sentence);
+        expect(
+          frames.frame(text).x + frames.frame(text).width,
+          "the failure runs past the screen's gutter",
+        ).toBeLessThanOrEqual(phone.window.width - phone.insets.right - 16 + 0.5);
+      });
+});

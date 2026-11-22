@@ -891,7 +891,6 @@ function ModelPickerList(
       {props.failure ? (
         <ActionLine
           line={{ key: props.failure, text: props.failure, tone: "muted", haptic: "warning" }}
-          numberOfLines={2}
           onDismiss={props.onDismissFailure}
         />
       ) : null}

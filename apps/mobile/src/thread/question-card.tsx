@@ -333,9 +333,7 @@ export function QuestionRequestCard(props: QuestionRequestCardProps): ReactNode 
               {reason}
             </AppText>
           )}
-          {session.failure === null ? null : (
-            <ActionLine line={session.failure} numberOfLines={2} />
-          )}
+          {session.failure === null ? null : <ActionLine line={session.failure} />}
         </View>
       )}
       {question.dismiss === null &&

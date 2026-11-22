@@ -110,10 +110,7 @@ export function AddPersonalScreen(): ReactNode {
 
   const failureNotice =
     failure === null ? null : (
-      <ActionLine
-        line={{ key: failure, text: failure, tone: "danger", haptic: "error" }}
-        numberOfLines={2}
-      />
+      <ActionLine line={{ key: failure, text: failure, tone: "danger", haptic: "error" }} />
     );
 
   if (confirming) {

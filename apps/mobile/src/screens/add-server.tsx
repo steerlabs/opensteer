@@ -90,7 +90,6 @@ export function AddServerScreen(): ReactNode {
               haptic: "warning",
               link: verified === null ? { label: "Try again", onPress: verify } : null,
             }}
-            numberOfLines={2}
           />
         )}
         {verified === null ? (

@@ -284,7 +284,7 @@ function ReferencedRequest(props: {
     const line = readLine(read, read.refresh);
     return (
       <View style={[styles.gone, styles.referenced]}>
-        {line === null ? null : <ActionLine line={line} numberOfLines={2} />}
+        {line === null ? null : <ActionLine line={line} />}
         <AnswerRow>
           <AnswerPill label="Back" onPress={() => navigation.goBack()} tone="secondary" />
         </AnswerRow>
@@ -759,7 +759,7 @@ function ResponseStatus(props: {
           {props.reason}
         </AppText>
       )}
-      {props.failure === null ? null : <ActionLine line={props.failure} numberOfLines={2} />}
+      {props.failure === null ? null : <ActionLine line={props.failure} />}
     </View>
   );
 }

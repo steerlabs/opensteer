@@ -691,9 +691,7 @@ export function DeploymentsScreen(): ReactNode {
           ) : undefined
         }
       >
-        {failure === null ? null : (
-          <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
-        )}
+        {failure === null ? null : <ActionLine line={failure} onDismiss={() => setFailure(null)} />}
         {identity === null ? null : (
           <RowGroup>
             {[

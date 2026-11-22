@@ -29,6 +29,23 @@ const geometry = vi.hoisted(() => ({
   header: 0,
   insets: { bottom: 0, left: 0, right: 0, top: 0 },
 }));
+/** What the last answer came to, when a case says it failed: the card's own outcome line. */
+const answered = vi.hoisted(() => ({ failure: null as null | { key: string; text: string } }));
+vi.mock("./use-question-answering.js", async (actual) => {
+  const real = await actual<typeof import("./use-question-answering.js")>();
+  return {
+    ...real,
+    useQuestionAnswering: (input: Parameters<typeof real.useQuestionAnswering>[0]) => {
+      const question = real.useQuestionAnswering(input);
+      if (answered.failure === null) return question;
+      const failure = { ...answered.failure, tone: "danger" as const };
+      return {
+        ...question,
+        responder: { ...question.responder, session: { ...question.responder.session, failure } },
+      };
+    },
+  };
+});
 
 vi.mock(
   "react-native",
@@ -131,6 +148,7 @@ afterEach(() => {
   host?.dispose();
   document.body.replaceChildren();
   layoutWindow.fontScale = 1;
+  answered.failure = null;
 });
 
 const phones = layoutPhones;
@@ -292,5 +310,19 @@ describe("what a person reads and presses in a connected agent's task", () => {
         expect(frames.frame(stop).y + frames.frame(stop).height).toBeLessThanOrEqual(
           phone.window.height - phone.insets.bottom + 0.5,
         );
+      });
+});
+
+describe("an answer that didn't go through, on the agent's question", () => {
+  const sentence = "Couldn't send your answer. Check that this phone is online, then answer again.";
+  for (const phone of phones)
+    for (const fontScale of textSizes)
+      it(`says so whole and clear on ${phone.name} at text size ${fontScale}`, async () => {
+        answered.failure = { key: "answer-failed", text: sentence };
+        const { container, frames } = await draw(phone, fontScale);
+        const text = textElement(container, sentence);
+        expect(frames.cut(text), "the failure is cut").toBe(false);
+        expect(frames.shown(text), "the failure is cut").toBe(sentence);
+        expectClear(container, frames, phone, text, "the failure");
       });
 });
