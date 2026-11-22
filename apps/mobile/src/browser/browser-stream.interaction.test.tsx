@@ -1402,3 +1402,54 @@ describe("a Cloud Computer's browser waking", () => {
     expect(pooled.container.innerHTML).toBe(before);
   });
 });
+
+/*
+ * The phone walk's page that stayed on "Loading the page…" while the mock Home reported a
+ * live picture: the mock Home's own feed, through the native picture view, as a phone opens it.
+ */
+describe("the mock Home's page through the native picture view", () => {
+  it("asks the view to present the tab's picture, and shows it once presented", async () => {
+    const { MockHostClient, mockConnectedAgents } = await import("@opensteer/client/mock");
+    native.presenter = "picture";
+    const host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("seeded") });
+    try {
+      host.mockAgentWork({ question: false });
+      await host.load();
+      const tabId = "mock-tab-1-0";
+      const page = host
+        .getSnapshot()
+        .browserSessions.find((candidate) => candidate.surfaces.some(({ id }) => id === tabId))!;
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      await act(async () =>
+        root!.render(
+          <BrowserStream
+            active
+            hostClient={host}
+            interactive
+            label="Travel"
+            session={page}
+            tabId={tabId}
+          />,
+        ),
+      );
+      await vi.waitFor(() => expect(native.presented.length).toBeGreaterThan(0));
+      const first = native.presented[0]!;
+      expect(first.metadata).toMatchObject({ height: 600, width: 960 });
+      const generation = native.generation;
+      await act(async () => first.settle("presented"));
+      await vi.waitFor(() => expect(container.textContent).not.toContain("Loading the page"));
+      // The mock world keeps working for a while: the page stays drawn, never cleared under it.
+      const clears: number[] = [];
+      for (let step = 0; step < 30; step += 1) {
+        await act(async () => new Promise((resolve) => setTimeout(resolve, 100)));
+        clears.push(native.generation);
+      }
+      expect(new Set(clears)).toEqual(new Set([generation]));
+      expect(container.textContent).not.toContain("Loading the page");
+    } finally {
+      host.dispose();
+    }
+  });
+});
