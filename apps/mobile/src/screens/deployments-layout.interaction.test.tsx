@@ -130,6 +130,7 @@ describe("Homes in the list", () => {
           ),
         );
         const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
         const [first, second] = homes.map((home) => {
           const name = [...container.querySelectorAll('[data-rn="Text"]')].find(
             (text) => text.textContent === home.name,

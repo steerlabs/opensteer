@@ -98,7 +98,10 @@ async function draw(phone: LayoutPhone, fontScale: number) {
       </View>,
     ),
   );
-  return { container, frames: await layout(container, phone.window) };
+  const frames = await layout(container, phone.window);
+  // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
+  expect(frames.settled, "the layout never comes to rest").toBe(true);
+  return { container, frames };
 }
 
 describe("a Home that is no longer here, at every text size", () => {

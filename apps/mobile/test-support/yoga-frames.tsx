@@ -423,6 +423,11 @@ function build(element: Element): Laid[] {
 }
 
 export interface Frames {
+  /**
+   * Whether the layout came to rest: a pass in which no view's layout event changed anything.
+   * One that never does is a measure loop, which keeps a phone's main thread busy for good.
+   */
+  readonly settled?: boolean;
   /** The frame of an element drawn by these stand-ins, in the window's points. */
   readonly frame: (element: Element) => Rect;
   /** The frame of what is visible of an element: clipped by every scroll view around it. */
@@ -441,16 +446,20 @@ export interface Frames {
  */
 export async function layout(container: Element, window: { width: number; height: number }) {
   let frames: Frames | null = null;
-  for (let pass = 0; pass < 6; pass += 1) {
+  let settled = false;
+  for (let pass = 0; pass < 8; pass += 1) {
     const result = once(container, window);
     frames = result.frames;
     let changed = false;
     await act(async () => {
       changed = result.notify();
     });
-    if (!changed) break;
+    if (!changed) {
+      settled = true;
+      break;
+    }
   }
-  return frames!;
+  return { ...frames!, settled };
 }
 
 const layoutEvents = new WeakMap<Element, string>();

@@ -93,7 +93,7 @@ const sizes = [
   { name: "the smallest phone", width: 320, height: 568 },
   { name: "beside iPhone Duo's vertical bar", width: 382, height: 678 },
 ] as const;
-const textSizes = [1, 1.35, 3.1] as const;
+const textSizes = [1, 1.35, 3.571] as const;
 
 /** The foot of a page: the stage's own row, which the page makes room for. */
 function StageFoot(): ReactNode {
@@ -123,7 +123,10 @@ async function draw(
       </View>,
     ),
   );
-  return { container, frames: await layout(container, window) };
+  const frames = await layout(container, window);
+  // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
+  expect(frames.settled, "the layout never comes to rest").toBe(true);
+  return { container, frames };
 }
 
 function expectReadable(
@@ -182,7 +185,7 @@ describe("who is using a tab, and for what, with Answer beside Stop", () => {
         });
 
   it("keeps your own agent's task named beside Answer and Stop", async () => {
-    layoutWindow.fontScale = 3.1;
+    layoutWindow.fontScale = 3.571;
     const { container, frames } = await draw(
       <PlaceStatusRow
         agent={

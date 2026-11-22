@@ -67,6 +67,7 @@ describe("Fit to screen", () => {
           ),
         );
         const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
         const words = textElement(container, "Fit to screen");
         const chip = container.querySelector('[aria-label="Fit to screen"]')!;
         expect(frames.cut(words), "the words are cut").toBe(false);

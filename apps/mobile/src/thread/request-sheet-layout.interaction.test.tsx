@@ -1,6 +1,10 @@
 // @vitest-environment happy-dom
 import type { SurfaceModel } from "@opensteer/client/host";
-import { mockCardUseRequest, mockPasswordSignInRequest } from "@opensteer/client/mock";
+import {
+  mockBrowserSignInRequest,
+  mockCardUseRequest,
+  mockPasswordSignInRequest,
+} from "@opensteer/client/mock";
 import { controlledClientSession } from "@opensteer/client/test-support";
 import type { Request } from "@opensteer/core";
 import { act, type ReactNode } from "react";
@@ -114,6 +118,14 @@ afterEach(() => {
 
 const card = mockCardUseRequest({ index: 4, site: "https://shop.example.com" });
 const login = mockPasswordSignInRequest({ index: 3 });
+const named = mockBrowserSignInRequest("https://github.com", 7);
+const signIn = { ...named, payload: { ...named.payload, tabId: "mock-tab-2-0" } } as Request;
+const tabRows = new Map([["mock-tab-2-0", { tabId: "mock-tab-2-0", kind: "page", usedBy: [] }]]);
+const tabs = {
+  get: (id: string) => tabRows.get(id),
+  rows: tabRows,
+  subscribe: () => () => undefined,
+};
 const reads = {
   card: {
     stage: "card-approval",
@@ -161,19 +173,23 @@ async function draw(phone: LayoutPhone, fontScale: number, request: Request, rea
             {
               connection: session.connection,
               dispatch: async () => undefined,
-              getSnapshot: () => ({ machines: [], threads: [], harnesses: [] }),
+              getSnapshot: () => ({ machines: [], threads: [], harnesses: [], tabs }),
               getThreadTranscript: () => undefined,
               load: async () => undefined,
               refresh: async () => undefined,
               rpc: {
                 "browser.password-sign-in.get": async () => ({ ok: true, data: read }),
-                "browser.sources.inspect": async () => ({ ok: false }),
+                "browser.sources.inspect": async () => ({
+                  ok: true,
+                  data: { candidates: [], site: "https://github.com" },
+                }),
               },
               subscribe: () => () => undefined,
             } as never
           }
           machines={[]}
           onClose={() => undefined}
+          onOpenPage={() => undefined}
           reason={false}
           surface={surface}
         />
@@ -181,9 +197,14 @@ async function draw(phone: LayoutPhone, fontScale: number, request: Request, rea
     ),
   );
   await vi.waitFor(() =>
-    expect(container.textContent).toMatch(/Expires in|Expired|no longer running/u),
+    expect(container.textContent).toMatch(
+      /Expires in|Expired|no longer running|Allow signs|Chrome/u,
+    ),
   );
-  return { container, frames: await layout(container, phone.window) };
+  const frames = await layout(container, phone.window);
+  // A layout that never comes to rest is a measure loop: the phone's main thread stays busy.
+  expect(frames.settled, "the layout never comes to rest").toBe(true);
+  return { container, frames };
 }
 
 const sheets = [
@@ -202,6 +223,24 @@ const sheets = [
     copy: "It isn't handed to the agent",
   },
 ] as const;
+
+/*
+ * The named sign-in the walk opened its page from: at the largest text size, "Open the page"
+ * hung the phone. Its sheet comes to rest, says its title once, and its link is reachable.
+ */
+describe("a sign-in that names its tab", () => {
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`comes to rest with its link in reach on ${phone.name} at text size ${fontScale}`, async () => {
+        const { container, frames } = await draw(phone, fontScale, signIn, reads.login);
+        expect(container.textContent!.split("Sign in to github.com").length - 1).toBe(1);
+        const link = container.querySelector('[aria-label="Open the page"]');
+        if (!link) throw new Error(`No Open the page: ${container.textContent}`);
+        expect(reachable(frames, link, phone.window), "Open the page can't be reached").toBe(true);
+        expect(frames.frame(link).height).toBeGreaterThanOrEqual(43.5);
+        expect(frames.cut(textElement(container, "Open the page"))).toBe(false);
+      });
+});
 
 describe("the saved login and card sheets", () => {
   for (const sheet of sheets)
