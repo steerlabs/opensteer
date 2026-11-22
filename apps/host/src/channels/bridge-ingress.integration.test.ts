@@ -5,7 +5,12 @@ import {
   ChannelStore,
   lineagePersonalContext,
 } from "@opensteer/database";
-import { createStoreFixture, testMessagingRunnerId } from "@opensteer/database/test-support/store";
+import {
+  createStoreFixture,
+  pendingEvent,
+  testContinuationIdentity,
+  testMessagingRunnerId,
+} from "@opensteer/database/test-support/store";
 import { describe, expect, it, vi } from "vitest";
 import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
 import { ChannelService } from "./channel-service.js";
@@ -183,6 +188,107 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
           },
         ),
       ).rejects.toMatchObject({ code: "not_found" });
+    } finally {
+      await f.service.close();
+      await storeFixture.close();
+    }
+  });
+
+  it("asks the person in Opensteer, sends the chat only a link, and takes no answer from it", async () => {
+    const storeFixture = await createStoreFixture();
+    const f = await host(storeFixture, {}, "needs-you");
+    try {
+      expect(await f.send({ eventId: "r1", text: "Read my email" })).toMatchObject({
+        status: "adopted",
+      });
+      const [task] = await f.tasks();
+      const [run] = await f.runsOf(task!.id);
+      // Its Run starts on the person's computer, as a Runner would start it.
+      const { store } = storeFixture;
+      const execute = await storeFixture.database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", run!.id as never)
+        .where("type", "=", "run.execute")
+        .executeTakeFirstOrThrow();
+      await store.claimCommand(execute.id, "needs-you-dispatcher");
+      const harness = await storeFixture.database
+        .selectFrom("runs")
+        .select("harnessInstanceId")
+        .where("id", "=", run!.id as never)
+        .executeTakeFirstOrThrow();
+      const binding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: harness.harnessInstanceId,
+        leaseTokenHash: "needs-you-lease",
+        runnerBootId: "needs-you-boot",
+        runnerId: f.fixture.runnerId,
+        runId: run!.id as never,
+        threadId: task!.id,
+      });
+      await store.commitRunnerEvent({
+        environmentId: f.fixture.environmentId,
+        runnerId: f.fixture.runnerId,
+        runnerBootId: "needs-you-boot",
+        event: pendingEvent({
+          bindingGeneration: binding.bindingGeneration,
+          environmentId: f.fixture.environmentId,
+          runId: run!.id as never,
+          threadId: task!.id,
+          ordinal: 0,
+          type: "run.started",
+          data: { status: "running" },
+        }),
+      });
+      // The task's Run needs the person: a Request, as any Run would raise it.
+      const { request } = await storeFixture.store.requests.create({
+        callId: "needs-profile",
+        kind: "browser.access",
+        mode: "durable",
+        originatingRunId: run!.id as never,
+        originatingThreadId: task!.id,
+        requestedBy: f.fixture.userId,
+        requiredActor: "requester",
+        payload: {
+          kind: "browser.access",
+          reason: "Read email",
+          suggestion: { kind: "user_choice" },
+        },
+        presentation: {
+          kind: "external",
+          title: "Choose a profile",
+          subject: { kind: "task", id: task!.id },
+        },
+      });
+      // It is in Needs you.
+      expect(
+        await storeFixture.database
+          .selectFrom("personalAttention")
+          .select(["kind", "requestId"])
+          .where("requestId", "=", request.id)
+          .execute(),
+      ).toEqual([{ kind: "request", requestId: request.id }]);
+      // The chat hears one line with the task's link, and nothing of what was asked.
+      const notices = await storeFixture.database
+        .selectFrom("bridgeDeliveries")
+        .select(["content", "kind"])
+        .where("bridgeId", "=", f.bridge.id)
+        .where("kind", "=", "status")
+        .execute();
+      expect(notices).toHaveLength(1);
+      const text = JSON.stringify(notices[0]!.content);
+      expect(text).toContain("This task needs you:");
+      expect(text).toContain(task!.id);
+      expect(text).not.toContain("Choose a profile");
+      expect(text).not.toContain("Read email");
+      // An answer typed in the chat is a message to the task, never an answer to the Request.
+      expect(await f.send({ eventId: "r2", text: "yes, allow it" })).toMatchObject({
+        status: "adopted",
+      });
+      expect(await storeFixture.store.requests.get(request.id)).toMatchObject({
+        status: "pending",
+      });
     } finally {
       await f.service.close();
       await storeFixture.close();

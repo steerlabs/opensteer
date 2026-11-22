@@ -238,7 +238,7 @@ describeStore("Request continuation admission", (it) => {
         .where("kind", "=", "status")
         .execute();
       expect(notices).toHaveLength(1);
-      expect(JSON.stringify(notices)).toContain("The agent has asked for your input.");
+      expect(JSON.stringify(notices)).toContain("This task needs you:");
       expect(JSON.stringify(notices)).toContain(fixture.thread.id);
     });
   }

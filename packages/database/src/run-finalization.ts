@@ -587,8 +587,8 @@ async function finalizeRunOutcome(
       conversationId: replyTarget.conversationId,
       text:
         input.status === "failed"
-          ? `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the Thread in Opensteer: ${threadUrl}`
-          : `The agent was stopped. Open the Thread in Opensteer: ${threadUrl}`,
+          ? `Something went wrong and the agent could not finish. ${failureSummary(input.failure)} Open the task in Opensteer: ${threadUrl}`
+          : `The agent was stopped. Open the task in Opensteer: ${threadUrl}`,
     });
   }
   await recordPersonWaited(transaction, run.id);

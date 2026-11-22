@@ -3024,7 +3024,8 @@ async function createRequestInTransaction(
       const target = run.replyTarget;
       await enqueueChannelConversationStatus(transaction, {
         conversationId: target.conversationId,
-        text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(canonical.originatingThreadId)}`,
+        // One line and a link: what is asked, and every answer, stay in Opensteer.
+        text: `This task needs you: ${links.threadUrl(canonical.originatingThreadId)}`,
       });
     }
   }

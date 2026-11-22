@@ -651,7 +651,8 @@ async function applyEventProjection(
         if (replyTarget?.kind === "channel") {
           await enqueueChannelConversationStatus(transaction, {
             conversationId: replyTarget.conversationId,
-            text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(event.threadId)}`,
+            // One line and a link: what is asked, and every answer, stay in Opensteer.
+            text: `This task needs you: ${links.threadUrl(event.threadId)}`,
           });
         }
       }
