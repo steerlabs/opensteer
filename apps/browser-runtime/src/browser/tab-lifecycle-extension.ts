@@ -219,7 +219,11 @@ export async function ensureTabLifecycleExtension(profileDirectory: string): Pro
  */
 export async function tabLifecycleExtensionIds(extensionDir: string): Promise<readonly string[]> {
   const idFor = (dir: string) =>
-    [...createHash("sha256").update(dir).digest("hex").slice(0, 32)]
+    createHash("sha256")
+      .update(dir)
+      .digest("hex")
+      .slice(0, 32)
+      .split("")
       .map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16)))
       .join("");
   const resolved = await realpath(extensionDir).catch(() => extensionDir);
