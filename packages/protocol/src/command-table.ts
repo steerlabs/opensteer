@@ -105,6 +105,8 @@ export type CommandResourceKind =
   | "device-app"
   | "device-data"
   | "local-server"
+  | "device-plugin"
+  | "plugin-setting"
   | "chat-account"
   | "home";
 
@@ -122,7 +124,7 @@ export interface CommandRow<K extends CommandType = CommandType> {
   readonly stepFor?: {
     /** Refused to any connection lineage (plugin resources, `plugin-authority.ts`). */
     readonly connections?: "B";
-    /** Refused to a selected grant (`admitSettingsCaller` required `everything`). */
+    /** Refused to a selected grant (the administration identity required `everything`). */
     readonly selected?: "B";
   };
   /** `faces[0]` is the primary class. */
@@ -612,7 +614,7 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     faces: one("destroy"),
-    governs: (c) => resource("local-server", c.pluginId),
+    governs: (c) => resource("device-plugin", c.pluginId),
   },
   "integration.server.secrets.set": {
     family: "device-apps",
@@ -628,7 +630,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: two({ class: "narrow" }, { class: "approve" }),
     face: (c) => (c.enabled ? 1 : 0),
-    governs: (c) => resource("plugin", JSON.stringify(c.target)),
+    governs: (c) => resource("plugin-setting", JSON.stringify(c.target)),
   },
 
   // Remote access, account link, sign-ins

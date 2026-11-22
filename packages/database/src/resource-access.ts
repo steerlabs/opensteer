@@ -23,11 +23,16 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import type {
-  CommandFace,
-  CommandRow,
-  CommandScope,
-  EffectClass,
+import {
+  commandFace,
+  commandFaceStep,
+  commandRow,
+  type Command,
+  type CommandFace,
+  type CommandResource,
+  type CommandRow,
+  type CommandScope,
+  type EffectClass,
 } from "@opensteer/protocol/command-table";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import type { BridgeSenders, DatabaseSchema } from "./schema.js";
@@ -787,6 +792,174 @@ function classRule(
     !face.fullAccess &&
     (effect === "preference" || effect === "narrow" || effect === "widen-self");
   return ownTaskWork ? { answer: "now" } : { answer: "ask", reason: "mode" };
+}
+
+/** What the Home answers a command, and on which face it decided. */
+export interface CommandAdmission {
+  readonly answer: CommandAnswer;
+  /** Undefined while only the stored state can tell: the strictest face was applied. */
+  readonly face: number | undefined;
+  readonly reason?: CommandAskReason;
+  /** Null for the person, who is admitted by the session and reads nothing. */
+  readonly execution: ExecutionAuthority | null;
+}
+
+/** The store's own view of what a two-faced command does, reported inside its transaction. */
+export interface CommandStoredFace {
+  readonly face: EffectClass;
+}
+
+/** The subject an agent's credential speaks for: its connection, or the execution it is bound to. */
+export function commandSubject(callerKey: string): AuthoritySubject {
+  return callerKey.startsWith("connection:")
+    ? { kind: "connection", agentConnectionId: callerKey.slice("connection:".length) }
+    : { kind: "binding", bindingId: callerKey };
+}
+
+/**
+ * The one admission for Home commands: `now`, `ask` the person, or `not_found`. The person is
+ * admitted by the session and reads nothing. An agent's execution is read live (its binding, every
+ * mode in its lineage, its connection's grant with the organization's ceiling in the same
+ * statement), then the rule decides. A handler that is not yet written for agents turns its `now`
+ * into `ask` (its step). With `lock`, at commit, the connection row is held `FOR SHARE` so a
+ * Disconnect or a narrowed grant cannot pass the effect. With `stored`, the store's own view picks
+ * the face.
+ */
+export async function admitCommand(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly ownerUserId: UserId;
+    readonly subject: AuthoritySubject;
+    readonly command: Command;
+    readonly stored?: CommandStoredFace | undefined;
+    /** The face the caller was admitted on, before the store could tell. */
+    readonly face?: number | undefined;
+    readonly lock?: true;
+  },
+): Promise<CommandAdmission> {
+  const row = commandRow(input.command.type) as CommandRow;
+  const face = commandFaceFor(row, input);
+  if (input.subject.kind === "person") return { answer: "now", face, execution: null };
+  if (input.lock) {
+    const connectionId =
+      input.subject.kind === "connection"
+        ? input.subject.agentConnectionId
+        : await bindingAgentConnectionId(database, input.subject.bindingId);
+    if (connectionId)
+      await database
+        .selectFrom("agentConnections")
+        .select("id")
+        .where("id", "=", connectionId)
+        .forShare()
+        .executeTakeFirst();
+  }
+  const execution = await admitExecution(database, {
+    ownerUserId: input.ownerUserId,
+    subject: input.subject,
+  });
+  const connection = execution.agentConnection;
+  const rule = commandRule(row, face, {
+    // Work from a chat anyone may speak in reaches no more than a selected grant would.
+    connection: connection
+      ? { grant: lineageAllowsPersonalContext(connection) ? connection.grant.scope : "selected" }
+      : null,
+    mode: execution.mode,
+    reach: commandReach(execution, row, row.governs(input.command as never)),
+  });
+  if (rule.answer !== "now") return { ...rule, face, execution };
+  const caller = {
+    connection: connection !== null,
+    selected: connection !== null && connection.grant.scope === "selected",
+  };
+  const faces = face === undefined ? row.faces.map((_, index) => index) : [face];
+  if (faces.some((index) => commandFaceStep(row, index, caller) !== "A"))
+    return { answer: "ask", reason: "step", face, execution };
+  return { answer: "now", face, execution };
+}
+
+/**
+ * At commit, inside the effect's transaction: the command must still be `now` for this agent, on
+ * the face the store sees. Anything else refuses and nothing is written; the agent asks again and
+ * is told what it may do now.
+ */
+export async function assertCommandAdmitted(
+  transaction: Kysely<DatabaseSchema>,
+  input: Omit<Parameters<typeof admitCommand>[1], "lock">,
+): Promise<void> {
+  const admission = await admitCommand(transaction, { ...input, lock: true });
+  if (admission.answer !== "now")
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: "access-changed",
+      message:
+        admission.reason === "mode"
+          ? "Changing settings requires full-access"
+          : "This agent's access changed before the change was made.",
+    });
+}
+
+function commandFaceFor(
+  row: CommandRow,
+  input: {
+    readonly command: Command;
+    readonly stored?: CommandStoredFace | undefined;
+    readonly face?: number | undefined;
+  },
+): number | undefined {
+  const fromInput = commandFace(input.command);
+  if (!input.stored) return fromInput ?? input.face;
+  // The store's view decides; an input that says otherwise is not the command that was admitted.
+  const index = row.faces.findIndex(
+    (face, at) =>
+      face.class === input.stored!.face && (fromInput === undefined || fromInput === at),
+  );
+  return index === -1 ? (row.faces.length > 1 ? undefined : 0) : index;
+}
+
+/**
+ * Whether the governed resource is within the agent's reach, from facts already read. A task's
+ * own store admits its caller against the task in the effect's transaction (`assertThreadCaller`),
+ * so a task row reads nothing more here. A selected grant reaches a nameable thing only when the
+ * input names it the way the grant does; one the Home would have to read first (a device app, a
+ * device-data grant, a plugin account) is outside until its store resolves it.
+ */
+function commandReach(
+  execution: ExecutionAuthority,
+  row: CommandRow,
+  resource: CommandResource,
+): boolean {
+  const connection = execution.agentConnection;
+  switch (row.scope) {
+    case "task":
+    case "home":
+    case "new":
+      return true;
+    case "other-connection":
+      return connection === null;
+    case "connection":
+      return connection === null || resource.id === connection.agentConnectionId;
+    case "nameable": {
+      if (!connection || connection.grant.scope === "everything") return true;
+      const target = grantTargetOf(resource);
+      return target !== null && authorizeTarget(execution, target) !== null;
+    }
+  }
+}
+
+function grantTargetOf(resource: CommandResource): AgentGrantTarget | null {
+  if (resource.id === null) return null;
+  switch (resource.kind) {
+    case "browser-profile":
+      return { kind: "browser-profile", profileId: resource.id };
+    case "chrome":
+      return { kind: "chrome-tabs", sourceId: resource.id };
+    case "plugin":
+      return { kind: "plugin", target: { kind: "installed", pluginId: resource.id } };
+    case "local-server":
+      return { kind: "plugin", target: { kind: "local-server", serverId: resource.id } };
+    default:
+      return null;
+  }
 }
 
 export async function assertLineageCompatibleReuse(

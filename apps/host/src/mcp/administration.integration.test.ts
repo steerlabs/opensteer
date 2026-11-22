@@ -6,7 +6,7 @@ import {
   personalBrowserRepository,
 } from "@opensteer/database/test-support/store";
 import { createId, DeviceIdSchema, type UserId } from "@opensteer/core";
-import { admitSettingsCaller, AgentConnectionStore, BrowserSourceStore } from "@opensteer/database";
+import { AgentConnectionStore, BrowserSourceStore, commandAdmission } from "@opensteer/database";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { RealtimeHub } from "@opensteer/orchestration";
@@ -196,11 +196,16 @@ describeStore("MCP administration", (it) => {
               type: "machine.rename",
               request: { machineId: run.runnerId, name: "After" },
               authoritySource: { kind: "mcp" },
-              admit: (transaction) =>
-                admitSettingsCaller(transaction, {
-                  ownerUserId: run.userId,
-                  callerKey: `connection:${agent.connection.id}`,
-                }),
+              ...commandAdmission({
+                ownerUserId: run.userId,
+                callerKey: `connection:${agent.connection.id}`,
+                command: {
+                  type: "machine.rename",
+                  idempotencyKey: randomUUID(),
+                  machineId: run.runnerId as never,
+                  name: "After",
+                },
+              }),
             },
           }),
         ).rejects.toMatchObject({ code: "forbidden" });

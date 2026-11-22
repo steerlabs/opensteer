@@ -91,6 +91,11 @@ const agents: readonly (readonly [string, AgentCaller])[] = [
   ["a connection with a selected grant", connection("full-access", selected)],
 ];
 
+/** Refuses at once: a secret field must be refused before any admission is read. */
+const admitNothing = async (): Promise<never> => {
+  throw new Error("admitted");
+};
+
 describe("dispatchCommand", () => {
   it("runs the person's command in the handler registered for its type, once", async () => {
     for (const type of types) {
@@ -104,40 +109,56 @@ describe("dispatchCommand", () => {
   });
 
   describe.each(agents)("for %s", (_name, agent) => {
-    it("never gives a command to a handler written for the person, for any type", async () => {
-      // Generated from the table: every family, every type. A handler that takes the session's
-      // user as authority would make the agent the owner; the agent's command waits instead.
-      const { registry, calls } = spyRegistry();
-      for (const type of types) {
-        const row = commandTable[type] as CommandRow;
-        const outcome = dispatchCommand(agent, sample(type), { registry });
-        const rule = commandRule(row, commandFace(sample(type)), {
-          connection:
-            agent.kind === "connection"
-              ? { grant: agent.grant.scope }
-              : agent.agentConnection
-                ? { grant: agent.agentConnection.grant.scope }
-                : null,
-          mode: agent.accessMode,
-          reach: false,
-        });
-        if (rule.answer === "not_found")
-          await expect(outcome, type).rejects.toMatchObject({
-            code: "not_found",
-            message: "That item is unavailable.",
-          });
-        else await expect(outcome, type).resolves.toMatchObject({ status: "ask" });
-      }
-      expect(calls).toEqual([]);
-    });
+    /** The rule's own answer for this agent, as `admitCommand` would give it on live facts. */
+    const byRule = async (caller: AgentCaller, command: HostApiCommand) => {
+      const face = commandFace(command);
+      const rule = commandRule(commandTable[command.type] as CommandRow, face, {
+        connection:
+          caller.kind === "connection"
+            ? { grant: caller.grant.scope }
+            : caller.agentConnection
+              ? { grant: caller.agentConnection.grant.scope }
+              : null,
+        mode: caller.accessMode,
+        reach: true,
+      });
+      return { ...rule, face, execution: null };
+    };
+    /** An admission that lets everything through: the door alone must still hold the line. */
+    const always = async () => ({ answer: "now" as const, face: 0, execution: null });
+
+    it.each([
+      ["the rule", byRule],
+      ["an admission that says now to everything", always],
+    ])(
+      "never gives a command to a handler written for the person, for any type (%s)",
+      async (_admission, admit) => {
+        // Generated from the table: every family, every type. A handler that takes the session's
+        // user as authority would make the agent the owner; the agent's command waits instead.
+        const { registry, calls } = spyRegistry();
+        for (const type of types) {
+          const command = sample(type);
+          const answer = (await admit(agent, command)).answer;
+          const outcome = dispatchCommand(agent, command, { registry, admit });
+          if (answer === "not_found")
+            await expect(outcome, type).rejects.toMatchObject({
+              code: "not_found",
+              message: "That item is unavailable.",
+            });
+          else await expect(outcome, type).resolves.toMatchObject({ status: "ask" });
+        }
+        expect(calls).toEqual([]);
+      },
+    );
 
     it("reads every command the person's own screen holds as not found", async () => {
       const { registry } = spyRegistry();
       for (const type of types)
         if ((commandTable[type] as CommandRow).faces.every((f) => f.class === "person-view"))
-          await expect(dispatchCommand(agent, sample(type), { registry }), type).rejects.toThrow(
-            "That item is unavailable.",
-          );
+          await expect(
+            dispatchCommand(agent, sample(type), { registry, admit: byRule }),
+            type,
+          ).rejects.toThrow("That item is unavailable.");
     });
   });
 
@@ -150,7 +171,7 @@ describe("dispatchCommand", () => {
           dispatchCommand(
             run("full-access"),
             { ...sample(type), [field]: "typed-by-the-agent" } as HostApiCommand,
-            { registry },
+            { registry, admit: admitNothing },
           ),
           `${type}.${field}`,
         ).rejects.toMatchObject({ code: "bad_request" });
@@ -169,9 +190,10 @@ describe("dispatchCommand", () => {
       void handler.run(agent, command, context);
       void forged;
     }
-    expectTypeOf(
-      dispatchCommand(agent, command, { registry: spyRegistry().registry }),
-    ).toEqualTypeOf<Promise<CommandAsk>>();
+    const dispatchAsAgent = () =>
+      dispatchCommand(agent, command, { registry: spyRegistry().registry, admit: admitNothing });
+    // An agent's dispatch never hands back a handler's output: only what waits for the person.
+    expectTypeOf<ReturnType<typeof dispatchAsAgent>>().toEqualTypeOf<Promise<CommandAsk>>();
     expect(() => personActor({ session: null } as unknown as HostApiServerContext)).toThrow(
       "Authentication required",
     );

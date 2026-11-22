@@ -3,7 +3,7 @@ import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
 import {
-  admitSettingsCaller,
+  commandAdmission,
   type AdministrationCommandIdentity,
   requirePersonalOwner,
 } from "@opensteer/database";
@@ -209,8 +209,8 @@ export class AdministrationService {
         callerKind: caller.kind,
         callerKey: caller.key,
       },
-      admit: (transaction) =>
-        admitSettingsCaller(transaction, { ownerUserId: caller.userId, callerKey: caller.key }),
+      // The one command rule, at commit: what an agent may change is the table's, not this list's.
+      ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
       output: async (result) => {
         let fields: Record<string, unknown> = {};
         if (command.type.startsWith("harness.")) {
