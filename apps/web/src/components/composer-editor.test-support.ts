@@ -65,7 +65,7 @@ export function rewrite(field: Element, text: string): void {
   const { view } = editorOf(field);
   act(() => {
     const { doc, schema } = view.state;
-    const nodes = composerInline(schema, text, composerTokens(text, "personal"));
+    const nodes = composerInline(schema, text, composerTokens(text));
     const tr = view.state.tr.replaceWith(1, doc.content.size - 1, nodes);
     view.dispatch(tr.setSelection(TextSelection.create(tr.doc, tr.doc.content.size - 1)));
   });

@@ -40,18 +40,7 @@ describe("composer source tokens", () => {
       collectComposerTokens(link.slice(0, -1), { previous: tokens, commitTrailing: true }),
     ).toEqual([]);
   });
-  it("collects only team links in a team composer", () => {
-    const team = "[channel](https://team.example/c/tch_12345678-1234-4234-8234-123456789abc)";
-    const text = link + " [file](/tmp/a.ts:2) " + team;
-    expect(
-      collectComposerTokens(text, { scope: "team", commitTrailing: true }).map(
-        (token) => token.source,
-      ),
-    ).toEqual([team]);
-    expect(
-      collectComposerTokens(text, { commitTrailing: true }).map((token) => token.kind),
-    ).toEqual(["personal", "file", "team"]);
-  });
+
   it("snaps caret motion and atomically replaces partially selected destinations", () => {
     const text = "🦊 " + link + " end";
     const tokens = collectComposerTokens(text);

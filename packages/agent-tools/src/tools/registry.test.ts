@@ -1,11 +1,8 @@
-import { TeamChannelSummarySchema, TeamKnowledgeWriteResultSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   agentTools,
-  AgentTeamChannelSummarySchema,
-  opensteer_knowledge_save,
   computer_use,
   opensteer_task_delegate,
   opensteer_request_answer,
@@ -208,7 +205,6 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
       parentTaskId: null,
       pendingRequests: 0,
       purpose: "task" as const,
-      teamOrigin: null,
       status: "idle" as const,
       title: "t".repeat(240),
       updatedAt: new Date().toISOString(),
@@ -380,38 +376,4 @@ it("fits a full Thread listing page and requires explicit agent message delivery
     limit: 25,
   });
   expect(opensteer_task_list.input.safeParse({ limit: 51 }).success).toBe(false);
-});
-
-it("retains links in strict agent projections without widening canonical team records", () => {
-  const link = "[channel](https://team.example/c/example)";
-  const channel = {
-    id: createId("teamChannel"),
-    kind: "public",
-    name: "general",
-    peopleOnly: false,
-    archivedAt: null,
-    changeSeq: "1",
-    latestMessageId: null,
-    can: { read: true, post: true, manage: true, join: false, leave: true, wakeOwnAgent: true },
-    link,
-  };
-  expect(AgentTeamChannelSummarySchema.parse(channel)).toEqual(channel);
-  expect(TeamChannelSummarySchema.safeParse(channel).success).toBe(false);
-  const conflict = {
-    written: false,
-    current: {
-      id: createId("knowledgeNote"),
-      topicId: createId("knowledgeTopic"),
-      version: 1,
-      title: "Note",
-      body: "Body",
-      deleted: false,
-      writtenAt: new Date(0).toISOString(),
-      writer: { kind: "human", userId: createId("user"), name: "Person" },
-      source: null,
-      link,
-    },
-  };
-  expect(opensteer_knowledge_save.output.parse(conflict)).toEqual(conflict);
-  expect(TeamKnowledgeWriteResultSchema.safeParse(conflict).success).toBe(false);
 });

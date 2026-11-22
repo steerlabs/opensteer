@@ -4,7 +4,6 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import { expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
-import { createTeamFixture } from "./team-fixture.test-support.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
 
 it("seeds one private owner with the hosting computer and no team membership", async () => {
@@ -66,17 +65,5 @@ it("seeds one private owner with the hosting computer and no team membership", a
   } finally {
     await database.destroy();
     await clone.drop();
-  }
-});
-it("seeds a team without private settings, computers or tasks", async () => {
-  const fixture = await createTeamFixture();
-  try {
-    expect(
-      (await sql`select user_id,role from team_members`.execute(fixture.database)).rows,
-    ).toEqual([{ userId: fixture.userId, role: "owner" }]);
-    for (const table of ["personal_settings", "runners", "threads"])
-      expect((await sql.raw(`select * from ${table}`).execute(fixture.database)).rows).toEqual([]);
-  } finally {
-    await fixture.close();
   }
 });

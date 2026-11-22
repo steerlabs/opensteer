@@ -50,7 +50,6 @@ import {
 import { RunnerLeaveRequestSchema, RunnerLeaveResponseSchema } from "@opensteer/protocol";
 import { requirePersonalOwner, needsYouPage } from "@opensteer/database";
 import type { PersonalExecution } from "./runtime/personal-execution.js";
-import type { PersonalTeamLinks } from "./team-links/service.js";
 
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
@@ -385,7 +384,6 @@ export interface HostServerDependencies {
      */
     readonly initialized: () => boolean;
   };
-  readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
   readonly connectionEffects?: ConnectionCommandEffects;
   /** Settles a person's answer to a Request about an external agent's direct operation. */
@@ -419,9 +417,6 @@ export interface HostServerDependencies {
   /** Which forwarding headers to believe; absent keeps the loopback tunnel connector's. */
   readonly trustedProxy?: import("@opensteer/config").TrustedProxy;
   readonly requestResponseVault: RequestResponseVault;
-  /** Present when account attachment uses adoption. */
-  readonly accountAdoption?:
-    { readonly acknowledge: (proofId: string) => Promise<void> } | undefined;
   readonly runToolTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
@@ -484,7 +479,7 @@ export interface HostServerDependencies {
   };
   /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
   readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
-  /** The personal owner's name; absent on a team Host. */
+  /** The personal owner's name; absent before the Home has an owner. */
   readonly ownerProfile?: OwnerProfileService;
   /** What active Runs are streaming, for readers that open a Thread mid-turn. */
   readonly onPersonalScopeCut?: (
@@ -673,9 +668,6 @@ export async function createHostServer(
         ),
     });
   registerIdentityRoutes(app, dependencies.authenticator, {
-    ...(dependencies.accountAdoption
-      ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
-      : {}),
     assertOwner: (userId) => requirePersonalOwner(dependencies.store.database, userId),
   });
   const connectionRoutes = dependencies.connections
@@ -1677,18 +1669,6 @@ export async function createHostServer(
           userId: requireRpcSession(context).user.id,
         }),
       ),
-    "teams.links.list": async (_input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      return rpcSuccess({ links: await (await dependencies.teamLinks()).list() });
-    },
-    "teams.threadTask.get": async (input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      return rpcSuccess({ taskId: await (await dependencies.teamLinks()).task(input) });
-    },
-    "teams.replyTask.get": async (input, context) => {
-      const ownerId = requireRpcSession(context).user.id;
-      return rpcSuccess(await (await dependencies.teamLinks()).replyTask(ownerId, input));
-    },
     "tasks.list": async ({ active: _active, deviceAccessRequests: _requests, ...input }, context) =>
       personalReads.handlers["tasks.page"](input, context),
     ...personalReads.handlers,
@@ -1714,9 +1694,6 @@ export async function createHostServer(
     | "attachment.content"
     | "attention.get"
     | "needsYou.get"
-    | "teams.links.list"
-    | "teams.threadTask.get"
-    | "teams.replyTask.get"
     | "harness.authentication.get"
     | "automaticModels.get"
     | "harness.catalog.refresh"
@@ -1773,27 +1750,6 @@ export async function createHostServer(
         );
         return result;
       }
-      case "teams.link.join":
-        return {
-          type: command.type,
-          link: await (await dependencies.teamLinks()).join(command.link),
-        };
-      case "teams.ask.decide":
-        await requirePersonalOwner(dependencies.store.database, userId);
-        await (
-          await dependencies.teamLinks()
-        ).options.requests.decide(
-          userId,
-          command.teamId,
-          command.requestId,
-          command.decision,
-          command.expectedRevision,
-          session.id,
-        );
-        return { type: command.type };
-      case "teams.link.leave":
-        await (await dependencies.teamLinks()).leave(command.teamId);
-        return { type: command.type };
       case "thread.visit": {
         const visit = await dependencies.store.notificationState.visit({
           threadId: command.threadId,
@@ -2760,7 +2716,6 @@ export async function createHostServer(
       },
     },
     {
-      kind: "personal",
       guardResponse: (input, context) => {
         return dependencies.realtime.guardRead(personalResponseScopes(input, context.session?.id));
       },
@@ -2797,32 +2752,38 @@ export async function createHostServer(
         .send(RunnerLeaveResponseSchema.parse({ outcome: "removed" }));
     },
   );
-  app.get("/v1/runner/attachments", async (request, reply) => {
+  // A Runner's own file routes: its run token authenticates them and its admission by
+  // capabilities decides compatibility, so a Runner of another API epoch is served too.
+  app.get("/v1/runner/attachments", { config: unversionedRoute }, async (request, reply) => {
     const token = requireBearerToken(request);
     const query = z.strictObject({ after: AttachmentIdSchema.optional() }).parse(request.query);
     const page = await dependencies.attachments.listForRun(token, query.after ?? null);
     return reply.header("cache-control", "no-store").send(page);
   });
 
-  app.get("/v1/runner/attachments/:attachmentId/content", async (request, reply) => {
-    const token = requireBearerToken(request);
-    const { attachmentId } = z
-      .strictObject({ attachmentId: AttachmentIdSchema })
-      .parse(request.params);
-    const content = await dependencies.attachments.contentForRun(token, attachmentId);
-    return reply
-      .header("cache-control", "no-store")
-      .header("content-disposition", "attachment")
-      .header("content-security-policy", "default-src 'none'; sandbox")
-      .header("x-content-type-options", "nosniff")
-      .header("etag", content.metadata.etag)
-      .type(content.metadata.contentType)
-      .send(Buffer.from(content.bytes));
-  });
+  app.get(
+    "/v1/runner/attachments/:attachmentId/content",
+    { config: unversionedRoute },
+    async (request, reply) => {
+      const token = requireBearerToken(request);
+      const { attachmentId } = z
+        .strictObject({ attachmentId: AttachmentIdSchema })
+        .parse(request.params);
+      const content = await dependencies.attachments.contentForRun(token, attachmentId);
+      return reply
+        .header("cache-control", "no-store")
+        .header("content-disposition", "attachment")
+        .header("content-security-policy", "default-src 'none'; sandbox")
+        .header("x-content-type-options", "nosniff")
+        .header("etag", content.metadata.etag)
+        .type(content.metadata.contentType)
+        .send(Buffer.from(content.bytes));
+    },
+  );
 
   app.put(
     "/v1/runner/file-transfers/:id",
-    { bodyLimit: runFileMaxBytes },
+    { config: unversionedRoute, bodyLimit: runFileMaxBytes },
     async (request, reply) => {
       const token = requireBearerToken(request);
       const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
@@ -2851,7 +2812,7 @@ export async function createHostServer(
     },
   );
 
-  app.get("/v1/runner/file-transfers/:id", async (request, reply) => {
+  app.get("/v1/runner/file-transfers/:id", { config: unversionedRoute }, async (request, reply) => {
     const token = requireBearerToken(request);
     const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
     const peer = new AbortController();

@@ -30,7 +30,6 @@ export function transcriptCard(
         kind: "message",
         author,
         ...(item.edit ? { edit: item.edit } : {}),
-        ...(item.teamSource ? { teamSource: item.teamSource } : {}),
         ...(item.delivery ? { delivery: item.delivery } : {}),
         messageKind,
         body: item.text ?? preview,
@@ -107,7 +106,6 @@ export function transcriptCard(
         replyMessageId: item.replyMessageId ?? null,
         ...(item.endedAt ? { endedAt: item.endedAt } : {}),
         ...(item.usage ? { usage: item.usage } : {}),
-        ...(item.delivery ? { delivery: item.delivery } : {}),
         ...(view.status === "background" ? { background: true } : {}),
         status,
       };

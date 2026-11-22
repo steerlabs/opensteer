@@ -118,6 +118,7 @@ function runnerTarget(options: {
   readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
+  readonly connectionCommands?: boolean;
   readonly tabRestoreVersion?: boolean;
   readonly environmentIds?: readonly EnvironmentId[];
   readonly label?: string;
@@ -169,6 +170,7 @@ function runnerTarget(options: {
             },
             localProfileStorage: fixtureStorage,
             main: true,
+            ...(options.connectionCommands ? { connectionCommands: true } : {}),
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
@@ -5673,6 +5675,7 @@ function freshService(options: {
   readonly personFill?: PersonFillVersion | undefined;
   readonly personal?: boolean;
   readonly sharedControl?: boolean;
+  readonly connectionCommands?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
@@ -5723,6 +5726,7 @@ function freshService(options: {
       personFill: options.personFill,
       editing: options.editing,
       clipboard: options.clipboard,
+      connectionCommands: options.connectionCommands === true,
     }),
   });
   cleanups.push(async () => service.close());
@@ -9137,5 +9141,317 @@ describe("a connected agent's selected grant admits the exact profile before any
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("work under a connection's authority never uses the clipboard or changes a browser permission", () => {
+  const sentence =
+    "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const permissionSentence = "Browser permissions cannot be changed by a connected agent.";
+  const clipboardGrantSentence =
+    "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
+  const permissionChanges = [
+    ["Browser.grantPermissions", { permissions: ["audioCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["videoCapture"] }],
+    ["Browser.grantPermissions", { permissions: ["geolocation"] }],
+    ["Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }],
+    ["Browser.setPermission", { permission: { name: "camera" }, setting: "granted" }],
+    ["Browser.resetPermissions", {}],
+  ] as const;
+  const cmdV = {
+    type: "rawKeyDown",
+    modifiers: 4,
+    key: "v",
+    code: "KeyV",
+    windowsVirtualKeyCode: 86,
+  };
+  async function attached(
+    repository: MemoryBrowserRepository,
+    ownerId: UserId,
+    agentBindingId: string,
+    connectionCommands = false,
+  ) {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository, connectionCommands });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId, ownerId };
+    // A connected agent works only in a saved profile, never in Guest.
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    /** Sends one command and answers it as the browser, returning what reached the runtime. */
+    const forwarded = async (method: string, parameters: Record<string, unknown>) => {
+      const request = cdp.request({ method, parameters, sessionId: "cdp-page-1" });
+      const command = await runtime.nextCommand();
+      runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      await request;
+      return command.command;
+    };
+    return { cdp, runtime, forwarded };
+  }
+
+  it("refuses a lineage Run's paste, copy, cut and permission changes before anything leaves the Home", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const { cdp, runtime } = await attached(repository, ownerId, "run:lineage");
+    const refused = [
+      ["Input.dispatchKeyEvent", cmdV],
+      ["Input.dispatchKeyEvent", { ...cmdV, commands: ["paste"] }],
+      ["Input.dispatchKeyEvent", { ...cmdV, key: "c", code: "KeyC", windowsVirtualKeyCode: 67 }],
+      ["Input.dispatchKeyEvent", { ...cmdV, modifiers: 2, key: "x", code: "KeyX" }],
+      [
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({ id: 1, method: "Input.dispatchKeyEvent", params: cmdV }),
+        },
+      ],
+      ...permissionChanges,
+      [
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({
+            id: 2,
+            method: "Browser.grantPermissions",
+            params: { permissions: ["audioCapture"] },
+          }),
+        },
+      ],
+    ] as const;
+    const expected = (method: string, index: number) =>
+      method === "Input.dispatchKeyEvent" || index === 4 ? sentence : permissionSentence;
+    const settled = refused.map(([method, parameters]) =>
+      cdp.request({ method, parameters, sessionId: "cdp-page-1" }).then(
+        () => "answered",
+        (error: unknown) => error,
+      ),
+    );
+    // Nothing of them reached the runtime: the first command it sees is the one sent after them.
+    const next = cdp.request({
+      method: "Input.dispatchKeyEvent",
+      parameters: { type: "rawKeyDown", modifiers: 4, code: "KeyA" },
+      sessionId: "cdp-page-1",
+    });
+    const first = await runtime.nextCommand();
+    expect(first.command, "the first command to reach the runtime").toMatchObject({
+      method: "Input.dispatchKeyEvent",
+      parameters: { code: "KeyA" },
+    });
+    runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+    await next;
+    for (const [index, outcome] of (await Promise.all(settled)).entries())
+      expect(outcome, refused[index]![0]).toMatchObject({
+        code: "forbidden",
+        message: expected(refused[index]![0], index),
+      });
+  });
+
+  it("forwards the person's own Run's paste and permissions as before, but no clipboard grant", async () => {
+    const ownerId = createId("user");
+    const { cdp, runtime, forwarded } = await attached(
+      new MemoryBrowserRepository(ownerId),
+      ownerId,
+      "run:own",
+    );
+    await expect(forwarded("Input.dispatchKeyEvent", cmdV)).resolves.toEqual({
+      method: "Input.dispatchKeyEvent",
+      parameters: cmdV,
+      sessionId: "cdp-page-1",
+    });
+    for (const [method, parameters] of permissionChanges.filter(
+      ([, parameters]) => !JSON.stringify(parameters).includes("clipboard"),
+    ))
+      await expect(forwarded(method, parameters), method).resolves.toMatchObject({ method });
+    // A clipboard grant would outlast the Run and serve a connected agent's page script.
+    const grants = [
+      { permissions: ["clipboardReadWrite"] },
+      { permissions: ["geolocation", "clipboardSanitizedWrite"] },
+    ].map((parameters) =>
+      cdp.request({ method: "Browser.grantPermissions", parameters }).then(
+        () => "answered",
+        (error: unknown) => error,
+      ),
+    );
+    const next = cdp.request({
+      method: "Input.dispatchKeyEvent",
+      parameters: { type: "rawKeyDown", code: "KeyA" },
+    });
+    const first = await runtime.nextCommand();
+    expect(first.command, "the first command to reach the runtime").toMatchObject({
+      parameters: { code: "KeyA" },
+    });
+    runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+    await next;
+    for (const outcome of await Promise.all(grants))
+      expect(outcome).toMatchObject({ code: "forbidden", message: clipboardGrantSentence });
+  });
+
+  const outsideList = [
+    ["Tracing.start", {}, undefined],
+    ["SystemInfo.getProcessInfo", {}, undefined],
+    ["Storage.getCookies", {}, undefined],
+    ["Storage.clearDataForOrigin", { origin: "https://a.test", storageTypes: "all" }, "cdp-page-1"],
+    ["ServiceWorker.unregister", { scopeURL: "https://a.test/" }, "cdp-page-1"],
+    ["Page.crash", {}, "cdp-page-1"],
+    ["Page.close", {}, "cdp-page-1"],
+    ["Network.getAllCookies", {}, "cdp-page-1"],
+    [
+      "Target.sendMessageToTarget",
+      {
+        sessionId: "child",
+        message: JSON.stringify({ id: 1, method: "Storage.clearDataForOrigin", params: {} }),
+      },
+      "cdp-page-1",
+    ],
+    [
+      "Target.sendMessageToTarget",
+      {
+        sessionId: "child",
+        message: JSON.stringify({
+          id: 1,
+          method: "Target.setAutoAttach",
+          params: { autoAttach: true, waitForDebuggerOnStart: true },
+        }),
+      },
+      "cdp-page-1",
+    ],
+  ] as const;
+
+  for (const binding of ["run:lineage", "trigger:lineage", "watch:lineage"])
+    it(`refuses a connection's ${binding.split(":")[0]} every method outside the standard lists before anything leaves the Home`, async () => {
+      const ownerId = createId("user");
+      const repository = new SelectedGrantRepository(ownerId);
+      repository.scope = "everything";
+      const { cdp, runtime } = await attached(repository, ownerId, binding);
+      const settled = outsideList.map(([method, parameters, sessionId]) =>
+        cdp.request({ method, parameters, ...(sessionId ? { sessionId } : {}) }).then(
+          () => "answered",
+          (error: unknown) => error,
+        ),
+      );
+      // Listed methods go out, and a page auto-attach goes out limited.
+      const next = [
+        cdp.request({ method: "Browser.getVersion" }),
+        cdp.request({
+          method: "Target.setAutoAttach",
+          parameters: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+          sessionId: "cdp-page-1",
+        }),
+      ];
+      const seen = [];
+      for (let index = 0; index < 2; index++) {
+        const command = await runtime.nextCommand();
+        seen.push(command.command);
+        runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      }
+      expect(seen, "the first commands to reach the runtime").toEqual([
+        { method: "Browser.getVersion" },
+        {
+          method: "Target.setAutoAttach",
+          parameters: {
+            autoAttach: true,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+            filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+          },
+          sessionId: "cdp-page-1",
+        },
+      ]);
+      await Promise.all(next);
+      for (const [index, outcome] of (await Promise.all(settled)).entries()) {
+        const [method] = outsideList[index]!;
+        expect(outcome, `${method} ${index}`).toMatchObject({
+          code: "forbidden",
+          message:
+            index === outsideList.length - 1
+              ? "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget."
+              : // The exact sentence every door gives for a command outside the list.
+                `${index === outsideList.length - 2 ? "Storage.clearDataForOrigin" : method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`,
+        });
+      }
+    });
+
+  it("forwards the person's own Run every method as before", async () => {
+    const ownerId = createId("user");
+    const { forwarded } = await attached(new MemoryBrowserRepository(ownerId), ownerId, "run:own");
+    for (const [method, parameters] of outsideList)
+      await expect(forwarded(method, parameters), method).resolves.toMatchObject({
+        method,
+        parameters,
+      });
+    await expect(
+      forwarded("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true }),
+    ).resolves.toMatchObject({ parameters: { autoAttach: true, waitForDebuggerOnStart: true } });
+  });
+
+  const malformedNested = {
+    array: ['{"id":1,"method":"Page.crash","params":{}}'],
+    object: { id: 1, method: "Page.crash", params: {} },
+    unparsable: '{"id":1,"method":',
+    "non-string method": '{"id":1,"method":["Page.crash"]}',
+  } as const;
+
+  for (const [who, binding] of [
+    ["a connection's Run", "run:lineage"],
+    ["the person's own Run", "run:own"],
+  ] as const)
+    it(`refuses ${who} a nested message that is not a JSON string of one command, before anything leaves the Home`, async () => {
+      const ownerId = createId("user");
+      const repository =
+        binding === "run:own"
+          ? new MemoryBrowserRepository(ownerId)
+          : Object.assign(new SelectedGrantRepository(ownerId), { scope: "everything" as const });
+      const { cdp, runtime } = await attached(repository, ownerId, binding);
+      const settled = Object.values(malformedNested).map((message) =>
+        cdp
+          .request({
+            method: "Target.sendMessageToTarget",
+            parameters: { sessionId: "child", message },
+            sessionId: "cdp-page-1",
+          })
+          .then(
+            () => "answered",
+            (error: unknown) => error,
+          ),
+      );
+      const next = cdp.request({ method: "Browser.getVersion" });
+      const first = await runtime.nextCommand();
+      expect(first.command, "the first command to reach the runtime").toEqual({
+        method: "Browser.getVersion",
+      });
+      runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+      await next;
+      for (const [index, outcome] of (await Promise.all(settled)).entries())
+        expect(outcome, Object.keys(malformedNested)[index]).toMatchObject({
+          code: "forbidden",
+          message: "Invalid nested CDP message.",
+        });
+    });
+
+  it("tells a runtime that holds the rules itself which commands are a connection's", async () => {
+    const send = async (binding: string, connectionCommands: boolean) => {
+      const ownerId = createId("user");
+      const repository =
+        binding === "run:own"
+          ? new MemoryBrowserRepository(ownerId)
+          : Object.assign(new SelectedGrantRepository(ownerId), { scope: "everything" as const });
+      const { cdp, runtime } = await attached(repository, ownerId, binding, connectionCommands);
+      const request = cdp.request({ method: "Browser.getVersion" });
+      const command = await runtime.nextCommand();
+      runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      await request;
+      return command.connection;
+    };
+    expect(await send("run:lineage", true)).toBe(true);
+    expect(await send("session:direct", true)).toBe(true);
+    // The person's own work, and any runtime that does not say it holds them, are sent nothing new.
+    expect(await send("run:own", true)).toBeUndefined();
+    expect(await send("run:lineage", false)).toBeUndefined();
   });
 });

@@ -130,7 +130,7 @@ export function createSecureAuthStore(
 
   return {
     assertAvailable: () => records.assertAvailable(),
-    setTeamSignOutSuppression: (deploymentId, suppressed) =>
+    setHostSignOutSuppression: (deploymentId, suppressed) =>
       mutations.run(async () => {
         const current = await load();
         await records.write(

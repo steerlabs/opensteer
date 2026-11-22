@@ -53,7 +53,6 @@ const appWebView = vi.hoisted(() => ({
   injectJavaScript: vi.fn<(script: string) => void>(),
 }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
-vi.mock("../team/team-context.js", () => ({ useTeamsSnapshot: () => ({ teams: [] }) }));
 vi.mock("react-native-webview", () => ({
   WebView: (
     props: WebViewProps & { ref?: Ref<{ injectJavaScript: (script: string) => void }> },
@@ -198,10 +197,7 @@ vi.mock("../ui/primitives.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { name: string }) => <i data-symbol={name} />,
 }));
-vi.mock("../team/team-marks.js", async (load) => ({
-  ...(await load<typeof import("../team/team-marks.js")>()),
-  AgentOrb: () => <i data-chat-orb />,
-}));
+vi.mock("../ui/agent-orb.js", () => ({ AgentOrb: () => <i data-chat-orb /> }));
 vi.mock("./settings/engine-mark.js", () => ({
   EngineMark: ({ driverKind }: { driverKind: string }) => <i data-engine={driverKind} />,
 }));

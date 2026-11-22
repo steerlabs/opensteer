@@ -1,4 +1,3 @@
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { request as httpsRequest } from "node:https";
 import type { RequestOptions } from "node:https";
 import type { CloudComputerIdentity } from "@opensteer/control-plane-protocol";
@@ -35,7 +34,7 @@ export function discoverHome(http: HttpOptions): DiscoverHome {
           try {
             const { authority } = json(descriptor)(text);
             const doc = verifyHostDiscoveryEnvelope(authority);
-            if (doc.canonicalOrigin !== origin || !isPersonalHost(doc)) return "invalid" as const;
+            if (doc.canonicalOrigin !== origin) return "invalid" as const;
             return {
               deploymentId: doc.deploymentId,
               hostKeyFingerprint: hostKeyFingerprint(authority.publicKey.spki),

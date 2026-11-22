@@ -155,21 +155,6 @@ describe("safe client issues", () => {
       detail: "Opensteer on this computer is reconnecting on its own.",
       action: null,
     });
-    expect(
-      presentConnectionGate({
-        ...base,
-        phase: "recovering",
-        route: "private-network",
-        target: "team",
-        name: "Acme",
-        trying: false,
-        issue: { code: "connection", reason: "reconnecting", target: "team" },
-      }),
-    ).toEqual({
-      title: "Reconnecting to Acme…",
-      detail: "Opensteer is reconnecting on its own. Your own tasks still work.",
-      action: null,
-    });
 
     // Observed unreachable failure on same-computer never blames internet connectivity.
     const localUnreachable = presentConnectionGate({
@@ -186,7 +171,7 @@ describe("safe client issues", () => {
     });
     expect(JSON.stringify(localUnreachable).toLowerCase()).not.toContain("internet");
 
-    // Observed unreachable on remote computer and team keeps remote/team copy and offers retry.
+    // Observed unreachable on a remote computer keeps the remote copy and offers retry.
     expect(
       presentConnectionGate({
         ...base,
@@ -198,21 +183,6 @@ describe("safe client issues", () => {
     ).toEqual({
       title: "Can't reach Mac mini",
       detail: "Make sure it's on and connected to the internet.",
-      action: "retry",
-    });
-    expect(
-      presentConnectionGate({
-        ...base,
-        phase: "recovering",
-        route: "private-network",
-        target: "team",
-        name: "Acme",
-        trying: false,
-        issue: { code: "connection", reason: "unreachable", target: "team" },
-      }),
-    ).toEqual({
-      title: "Can't reach Acme",
-      detail: "Your own tasks still work.",
       action: "retry",
     });
 
@@ -294,7 +264,7 @@ describe("safe client issues", () => {
     ];
     const said: string[] = [];
     for (const name of [undefined, "Mac mini"])
-      for (const target of ["computer", "team"] as const)
+      for (const target of ["computer"] as const)
         for (const route of [undefined, "same-computer", "connect"] as const)
           for (const code of codes)
             for (const reason of [undefined, "offline", "reconnecting", "unreachable"]) {

@@ -312,7 +312,6 @@ it("serves Agent home files, published output images, folder plugins, static app
             origin: origin.origin,
           },
         }),
-      kind: "personal",
       onAuthenticationRequired: () => undefined,
     });
 

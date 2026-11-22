@@ -39,8 +39,6 @@ export interface ComposerEditorProps {
   readonly value: string;
   readonly onChangeText: (value: string) => void;
   readonly onSelectionChange?: (selection: ComposerSelection) => void;
-  /** Which links become chips: a team composer shows only its team's pages as references. */
-  readonly scope: "personal" | "team";
   readonly placeholder: string;
   readonly accessibilityLabel: string;
   readonly editable?: boolean;
@@ -110,11 +108,11 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
   // Tokens advance from the previous text, so removing the space after a chip keeps it a chip.
   const [confirmed, setConfirmed] = useState(() => ({
     text,
-    tokens: collectComposerTokens(text, { commitTrailing: true, scope: props.scope }),
+    tokens: collectComposerTokens(text, { commitTrailing: true }),
   }));
   let tokens = confirmed.tokens;
   if (confirmed.text !== text) {
-    tokens = collectComposerTokens(text, { previous: confirmed.tokens, scope: props.scope });
+    tokens = collectComposerTokens(text, { previous: confirmed.tokens });
     setConfirmed({ text, tokens });
   }
 
@@ -165,7 +163,7 @@ export function ComposerEditor(props: ComposerEditorProps): ReactNode {
 
   // Offsets for the text native holds now, which can run ahead of the last render.
   const tokensNow = (): readonly ComposerToken[] =>
-    collectComposerTokens(latest.current.text, { previous: tokens, scope: props.scope });
+    collectComposerTokens(latest.current.text, { previous: tokens });
 
   const show = (shown: string | null, at: ComposerSelection): void => {
     preview.current = shown;
@@ -273,11 +271,6 @@ const nouns: Readonly<Record<string, string>> = {
   automation: "Automation",
   computer: "Computer",
   attachment: "Attachment",
-  channel: "Channel",
-  thread: "Thread",
-  "knowledge-topic": "Topic",
-  "knowledge-note": "Note",
-  invite: "Invite",
 };
 
 /** How a reference reads as a chip, by what it points at. */
@@ -286,12 +279,7 @@ function referencePresentation(href: string): {
   readonly noun: string;
 } {
   const classified = classifyHref(href);
-  const kind =
-    classified.kind === "reference"
-      ? classified.reference.kind
-      : classified.kind === "team-page"
-        ? classified.page.target.kind
-        : null;
+  const kind = classified.kind === "reference" ? classified.reference.kind : null;
   const icon = hrefIcon(href);
   return {
     symbol: referenceSymbols[icon],

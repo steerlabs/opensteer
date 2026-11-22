@@ -24,6 +24,11 @@ export interface ToolCaller {
    * never a substitute: without this the call has no authority.
    */
   readonly agentBindingId: string;
+  /**
+   * The execution works under a connected agent's authority, as the read that authenticated it
+   * resolved (`AgentCaller.agentConnection`). Carried, never decided here.
+   */
+  readonly connectionWork?: true;
   /** For a call through the plugin tools: asks the person through the calling execution. */
   readonly elicit?: PluginElicit;
   readonly authorize?: () => Promise<void>;

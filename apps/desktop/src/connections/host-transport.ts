@@ -1,25 +1,16 @@
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
-import { unwrapRpcResult } from "@opensteer/client/host";
-import {
-  forEachBoundedResponseChunk,
-  readBoundedResponse,
-  readBoundedText,
-} from "@opensteer/shared/boundedJson";
+import { forEachBoundedResponseChunk, readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { streamBoundedResponse } from "@opensteer/shared/responseStream";
 import { createHmac, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { attachmentMaxBytes, type DeploymentId } from "@opensteer/core";
 import {
   hostApi,
-  HostApiErrorSchema,
   hostApiCurrentHeader,
   hostApiVersionHeader,
-  teamApiVersionHeader,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   fileTransferHeadersTimeoutMs,
-  teamPreviewMaxBytes,
-  teamUploadMaxBytes,
 } from "@opensteer/protocol";
 import type {
   HostAttachment,
@@ -88,8 +79,6 @@ export type DesktopBrowserControlObservation =
 const forwardedMethods = ["DELETE", "GET", "PATCH", "POST", "PUT"];
 // The Host's own body limits: Fastify's default for JSON, and its binary routes'.
 const maximumJsonRequestBytes = 1_024 * 1_024;
-const teamFilesPath = "/v1/team/files/";
-const teamUploadPath = "/v1/team/files/upload/";
 const requestBodyStallTimeoutMs = 20_000;
 const maximumEarlyCancellations = 64;
 const maximumCommandResponseBytes = 1_024 * 1_024;
@@ -98,7 +87,6 @@ const forwardedRequestHeaders = {
   "content-type": "contentType",
   "idempotency-key": "idempotencyKey",
   [hostApiVersionHeader]: "apiVersion",
-  [teamApiVersionHeader]: "apiVersion",
   [hostApiCurrentHeader]: "apiCurrent",
 } as const;
 // Only what the bundled UI reads; cookies and transfer framing stay in main.
@@ -165,9 +153,8 @@ export class DesktopHostTransport extends HostTransport {
   readonly #log:
     ((event: string, fields: Record<string, string | number | boolean>) => void) | undefined;
   readonly #catalog: Pick<DeploymentCatalogStore, "load" | "select" | "setPreferredEndpoint">;
-  readonly #teams = new Map<DeploymentId, HostTransport>();
   readonly #summaries = new Map<DeploymentId, HostTransport>();
-  readonly #teamOptions: ConstructorParameters<typeof HostTransport>[0];
+  readonly #summaryOptions: ConstructorParameters<typeof HostTransport>[0];
   readonly #unsubscribeCatalog: () => void;
   readonly #projection: Pick<DesktopAccessProjection, "read">;
   readonly #sockets = new Map<string, OwnedSocket>();
@@ -220,7 +207,7 @@ export class DesktopHostTransport extends HostTransport {
     });
     this.#observeCommand = options.observeCommand;
     this.#withPreparedEnrollment = options.withPreparedEnrollment;
-    this.#teamOptions = {
+    this.#summaryOptions = {
       catalog: options.catalog,
       ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
       localRuntime: {
@@ -228,10 +215,8 @@ export class DesktopHostTransport extends HostTransport {
       },
       network: options.network,
       ...(options.pinnedSessions === undefined ? {} : { sessions: options.pinnedSessions }),
-      expectedKind: "team",
     };
     this.#unsubscribeCatalog = options.catalog.subscribe(() => {
-      for (const team of this.#teams.values()) void team.current().catch(() => undefined);
       for (const summary of this.#summaries.values()) void summary.current().catch(() => undefined);
     });
     this.#log = options.log;
@@ -278,34 +263,6 @@ export class DesktopHostTransport extends HostTransport {
     const parsed = DesktopSetDeploymentRouteInputSchema.parse(input);
     await this.#catalog.setPreferredEndpoint(parsed);
     return this.selection();
-  }
-
-  async bootstrapTeam(deploymentId: DeploymentId) {
-    const transport = await this.#transport(deploymentId);
-    const body = await transport.exchange(
-      {
-        expectedDeploymentId: deploymentId,
-        path: "/v1/rpc/team.bootstrap.get",
-        method: "POST",
-        body: "{}",
-        headers: { contentType: "application/json" },
-      },
-      (response, progress) =>
-        readBoundedText(response, {
-          ...progress,
-          fatalUtf8: true,
-          maximumBytes: 16 * 1_024 * 1_024,
-          sizeError: () => new HostTransportError("response-too-large"),
-        }),
-    );
-    return unwrapRpcResult(
-      z
-        .discriminatedUnion("ok", [
-          z.object({ ok: z.literal(true), data: hostApi["team.bootstrap.get"].success }),
-          z.object({ ok: z.literal(false), error: HostApiErrorSchema }),
-        ])
-        .parse(JSON.parse(body)),
-    ).member;
   }
 
   /**
@@ -463,15 +420,11 @@ export class DesktopHostTransport extends HostTransport {
       const value = request.headers.get(name);
       if (value !== null) headers[field] = value;
     }
-    const teamUpload = request.headers.get("x-opensteer-team-upload");
     const expectedSession = request.headers.get(expectedMutationSessionHeader);
-    const summary =
-      anyHome ||
-      (request.method === "POST" &&
-        (pathname === "/v1/rpc/attention.get" || pathname === "/v1/rpc/teams.links.list"));
+    const summary = anyHome || (request.method === "POST" && pathname === "/v1/rpc/attention.get");
     // Every wait before the exchange ends with the caller's signal, too.
     const transport = await untilAborted(this.#transport(deploymentId, summary), signal);
-    // Only the personal selection's own requests answer to it; team and chooser reads don't.
+    // Only the selection's own requests answer to it; chooser reads don't.
     const arrived =
       transport === this
         ? () => {
@@ -500,26 +453,23 @@ export class DesktopHostTransport extends HostTransport {
       body = read;
       admitted();
     }
-    // An upload's bytes go out before its answer, and a team Host fetches a partner's file
-    // before it answers: these wait longer for headers, but never without bound.
-    const timeoutMs =
-      isDesktopHostUploadPath(pathname) || pathname.startsWith(teamFilesPath)
-        ? fileTransferHeadersTimeoutMs
-        : body
-          ? bufferedHostResponseTimeoutMs(body.byteLength)
-          : undefined;
+    // An upload's bytes go out before its answer: it waits longer for headers, but never
+    // without bound.
+    const timeoutMs = isDesktopHostUploadPath(pathname)
+      ? fileTransferHeadersTimeoutMs
+      : body
+        ? bufferedHostResponseTimeoutMs(body.byteLength)
+        : undefined;
     const forwarded = {
       expectedDeploymentId: deploymentId,
       ...(attachment ? { expectedAttachmentKey: attachment.resolved.key } : {}),
       admitted,
       headers: {
         ...headers,
-        additional: {
-          ...(teamUpload ? { "x-opensteer-team-upload": teamUpload } : {}),
-          ...(expectedSession && pathname === "/v1/rpc/commands.dispatch"
+        additional:
+          expectedSession && pathname === "/v1/rpc/commands.dispatch"
             ? { [expectedMutationSessionHeader]: expectedSession }
-            : {}),
-        },
+            : {},
       },
       method: request.method,
       path,
@@ -962,11 +912,6 @@ export class DesktopHostTransport extends HostTransport {
       this.#closeTransportSockets(summary);
       summary.invalidateSession();
     }
-    const team = this.#teams.get(deploymentId);
-    if (team) {
-      this.#closeTransportSockets(team);
-      team.invalidateSession();
-    }
   }
 
   #sessionEpoch(deploymentId: DeploymentId): number {
@@ -975,10 +920,6 @@ export class DesktopHostTransport extends HostTransport {
 
   closeAllConnections(): void {
     this.closeAllSockets();
-    for (const team of this.#teams.values()) {
-      this.#closeTransportSockets(team);
-      team.closeAllSockets();
-    }
     for (const summary of this.#summaries.values()) summary.closeAllSockets();
   }
 
@@ -988,8 +929,6 @@ export class DesktopHostTransport extends HostTransport {
     this.cancelForwardedRequests();
     this.#unsubscribeCatalog();
     this.closeAllConnections();
-    for (const team of this.#teams.values()) team.retire();
-    this.#teams.clear();
     this.#summaries.clear();
     this.#streamErrors.clear();
   }
@@ -997,38 +936,19 @@ export class DesktopHostTransport extends HostTransport {
   async #transport(deploymentId?: DeploymentId, summary = false): Promise<HostTransport> {
     if (this.#disposed) throw new HostTransportError("cancelled");
     if (deploymentId === undefined) return this;
-    const owner = this.#teamOptions.credentials?.teamRuntime?.();
     const catalog = await this.#catalog.load();
     if (this.#disposed) throw new HostTransportError("cancelled");
     const connection = catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === deploymentId,
     );
     if (!connection) throw new HostTransportError("deployment-changed");
-    if (connection.authority.document.deploymentShape.kind !== "team") {
-      if (!summary || catalog.selectedDeploymentId === deploymentId) return this;
-      let transport = this.#summaries.get(deploymentId);
-      if (!transport) {
-        transport = new HostTransport({
-          ...this.#teamOptions,
-          expectedKind: "personal",
-          deploymentId,
-        });
-        this.#summaries.set(deploymentId, transport);
-      }
-      return transport;
+    if (!summary || catalog.selectedDeploymentId === deploymentId) return this;
+    let transport = this.#summaries.get(deploymentId);
+    if (!transport) {
+      transport = new HostTransport({ ...this.#summaryOptions, deploymentId });
+      this.#summaries.set(deploymentId, transport);
     }
-    if (owner?.signal.aborted) throw new HostTransportError("deployment-changed");
-    const existing = this.#teams.get(deploymentId);
-    if (existing) return existing;
-    const team = new HostTransport({ ...this.#teamOptions, deploymentId });
-    team.onAttachmentInvalidated(() => this.#closeTransportSockets(team));
-    this.#teams.set(deploymentId, team);
-    owner?.own(() => {
-      this.#closeTransportSockets(team);
-      team.retire();
-      this.#teams.delete(deploymentId);
-    });
-    return team;
+    return transport;
   }
 
   observeBrowserSockets(listener: (event: DesktopBrowserSocketObservation) => void): () => void {
@@ -1201,7 +1121,6 @@ function hostRouteLabel(path: string): string {
   const rpc = /^\/v1\/rpc\/([^/]+)$/u.exec(pathname)?.[1];
   if (rpc !== undefined && Object.hasOwn(hostApi, rpc)) return rpc;
   if (isDesktopHostUploadPath(pathname)) return "upload";
-  if (pathname.startsWith(teamFilesPath)) return "team-files";
   return "other";
 }
 
@@ -1259,7 +1178,6 @@ async function readRequestBody(
 }
 
 function requestByteLimit(pathname: string): number {
-  if (pathname.startsWith(teamUploadPath)) return teamUploadMaxBytes + teamPreviewMaxBytes;
   return isDesktopHostUploadPath(pathname) ? attachmentMaxBytes : maximumJsonRequestBytes;
 }
 

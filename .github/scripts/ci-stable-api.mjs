@@ -14,8 +14,10 @@ function version(source, name, { optional = false } = {}) {
 }
 
 /**
- * Neither minimum may exclude the latest published Stable desktop: its Macs and
- * self-hosted teams must keep working as apps update.
+ * The personal minimum may not exclude the latest published Stable desktop: its
+ * Macs must keep working as apps update. Two cutovers were decided outright and
+ * are the only exceptions: scoped personal sync (65), and removing the team
+ * server (66), whose wire left every team declaration at once.
  */
 export function checkStableApi(root = process.cwd()) {
   const git = (...args) =>
@@ -36,14 +38,6 @@ export function checkStableApi(root = process.cwd()) {
     throw new Error("No published Stable desktop-v* tag; fetch tags before checking API floors");
   const published = git("show", `refs/tags/${tag}:${authority}`);
   const current = readFileSync(path.join(root, authority), "utf8");
-  const team = {
-    published: version(published, "teamApiVersion"),
-    minimum: version(current, "minimumTeamApiVersion"),
-  };
-  if (team.minimum > team.published)
-    throw new Error(
-      `minimumTeamApiVersion ${team.minimum} excludes ${tag} (teamApiVersion ${team.published}). Keep Stable team servers compatible.`,
-    );
   // A Stable from before the personal window serves one exact version; there is no floor to keep.
   const personal =
     version(published, "minimumHostApiVersion", { optional: true }) === null
@@ -56,16 +50,21 @@ export function checkStableApi(root = process.cwd()) {
     personal?.minimum === 65 &&
     version(current, "hostApiVersion") === 65 &&
     personal.published < 64;
-  if (personal && personal.minimum > personal.published && !scopedPersonalCutover)
+  const teamRemovalCutover = personal?.minimum === 66 && version(current, "hostApiVersion") === 66;
+  if (
+    personal &&
+    personal.minimum > personal.published &&
+    !scopedPersonalCutover &&
+    !teamRemovalCutover
+  )
     throw new Error(
       `minimumHostApiVersion ${personal.minimum} excludes ${tag} (hostApiVersion ${personal.published}). Keep Stable Macs reachable.`,
     );
-  return { tag, team, personal };
+  return { tag, personal };
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  const { tag, team, personal } = checkStableApi();
-  console.log(`Team API minimum ${team.minimum} admits ${tag} (team API ${team.published})`);
+  const { tag, personal } = checkStableApi();
   console.log(
     personal
       ? personal.minimum > personal.published

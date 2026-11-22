@@ -298,7 +298,7 @@ export class BrowserToolHandlers {
       effect: "write",
       calls:
         target.profileId === null
-          ? `Control of the Chrome tab you shared${where} for up to ${intervalWords}, through CDP. The agent can navigate anywhere in the tab and access sites and cookies this Chrome is signed in to. Stop sharing in Chrome or stop this task to end access.`
+          ? `Control of the Chrome tab you shared${where} for up to ${intervalWords}, through CDP. The agent can navigate anywhere in the tab, use sites this Chrome is signed in to, and read that tab’s own cookies, not the rest of Chrome’s. Stop sharing in Chrome or stop this task to end access.`
           : `Control of the agent's own pages in the browser profile "${target.operation.name}"${where} for up to ${intervalWords}, through a raw browser connection (CDP), with access to every cookie and signed-in site in that profile. It ends when the time runs out, when you stop this task, or when you disconnect the agent.`,
       execute: async (context) => {
         await context.recheck();

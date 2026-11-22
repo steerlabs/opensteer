@@ -179,7 +179,7 @@ its own rather than inferring it from the ACP version.
 
 Providers cache the prompt as an exact prefix (tools, then system text, then history), so tool
 lists and system or developer text must be byte-identical from Run to Run; anything that changes
-per Run (time, computers, team source, reports) travels with the turn. A person's app and time
+per Run (time, computers, reports) travels with the turn. A person's app and time
 zone belong to the message they sent (`origin`), never to the person, so devices in different zones
 never overwrite each other, and a stored input renders the same header bytes whenever it is
 replayed. Codex gets application context as keyed turn values, each under its silent 1,000-token

@@ -60,20 +60,22 @@ test("integration bulk seed and partner setup stay apart from contention-heavy s
 });
 
 test("contention separation handles focused selections and a single runner without losing files", () => {
-  const files = [...integrationContention.files, "browser", "migration", "new"];
+  // Two bulk suites that must not share a runner with long companions.
+  const contention = { files: ["bulk-a", "bulk-b"], maxCompanionDuration: 30_000 };
+  const files = [...contention.files, "browser", "migration", "new"];
   const durations = { browser: 60_000, migration: 40_000 };
-  const shards = assignShards(files, durations, 2, 1, integrationContention);
+  const shards = assignShards(files, durations, 2, 1, contention);
   assert.deepEqual(shards.flat().sort(), [...files].sort());
   assert.ok(shards[0].every((file) => !["browser", "migration"].includes(file)));
   assert.ok(!shards[0].includes("new"));
-  assert.ok(shards[1].every((file) => !integrationContention.files.includes(file)));
+  assert.ok(shards[1].every((file) => !contention.files.includes(file)));
   assert.deepEqual(
-    assignShards(files, durations, 1, 1, integrationContention),
+    assignShards(files, durations, 1, 1, contention),
     assignShards(files, durations, 1, 1),
   );
   const ordinary = ["browser", "migration", "new"];
   assert.deepEqual(
-    assignShards(ordinary, durations, 2, 1, integrationContention),
+    assignShards(ordinary, durations, 2, 1, contention),
     assignShards(ordinary, durations, 2, 1),
   );
 });

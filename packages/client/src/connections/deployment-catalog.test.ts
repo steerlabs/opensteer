@@ -6,7 +6,7 @@ import {
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/control-plane-protocol";
 import {
-  teamApiVersion,
+  hostApiVersion,
   hostKeyFingerprint,
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MemoryPrivateFilesystem,
   previousReleaseDeploymentCatalog,
+  previousReleaseTeamRow,
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testHostAuthorityKeys,
@@ -80,10 +81,10 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => times.shift() ?? new Date("2026-08-11T11:00:00.000Z"),
     });
-    const local = deploymentInput({ kind: "team", name: "Studio Mac" });
+    const local = deploymentInput({ kind: "personal", name: "Studio Mac" });
     const cloud = deploymentInput({
       canonicalOrigin: "https://cloud.opensteer.example",
-      kind: "team",
+      kind: "personal",
       name: "Team server",
     });
 
@@ -179,9 +180,9 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const manual = deploymentInput({ kind: "team", name: "Manual" });
-    const shared = deploymentInput({ kind: "team", name: "Shared" });
-    const unavailable = deploymentInput({ kind: "team", name: "Offline" });
+    const manual = deploymentInput({ kind: "personal", name: "Manual" });
+    const shared = deploymentInput({ kind: "personal", name: "Shared" });
+    const unavailable = deploymentInput({ kind: "personal", name: "Offline" });
     await store.upsert(manual);
     await reconcileAccountDeployments(store, {
       connections: [shared],
@@ -211,8 +212,8 @@ describe("DeploymentCatalogStore", () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
     const manual = deploymentInput({ name: "Manual" });
-    const first = deploymentInput({ kind: "team", name: "First Account" });
-    const second = deploymentInput({ kind: "team", name: "Second Account" });
+    const first = deploymentInput({ kind: "personal", name: "First Account" });
+    const second = deploymentInput({ kind: "personal", name: "Second Account" });
     const secondSource = {
       ...accountSource,
       subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
@@ -331,8 +332,8 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const first = deploymentInput({ kind: "team", name: "First" });
-    const second = deploymentInput({ kind: "team", name: "Second" });
+    const first = deploymentInput({ kind: "personal", name: "First" });
+    const second = deploymentInput({ kind: "personal", name: "Second" });
     await reconcileAccountDeployments(store, {
       connections: [first, second],
       directoryDeployments: [accountDeployment(first), accountDeployment(second)],
@@ -352,42 +353,6 @@ describe("DeploymentCatalogStore", () => {
     ]);
   });
 
-  it("keeps a just-joined team until Account's directory lists it or the window passes", async () => {
-    let now = new Date("2026-08-11T10:00:00.000Z");
-    const store = new DeploymentCatalogStore({
-      filePath: catalogPath,
-      privateFiles: new MemoryPrivateFilesystem(),
-      now: () => now,
-    });
-    const listed = deploymentInput({ kind: "team", name: "Listed" });
-    const joined = DeploymentConnectionInputSchema.parse({
-      ...deploymentInput({ accountAccess: "member", kind: "team", name: "Joined" }),
-      source: accountSource,
-    });
-    const ids = (catalog: { deployments: readonly DeploymentConnection[] }) =>
-      catalog.deployments.map(({ authority }) => authority.document.deploymentId);
-    await store.addPendingAccountDeployment(joined, 60_000);
-    const unlisted = { connections: [listed], directoryDeployments: [accountDeployment(listed)] };
-    expect(ids(await reconcileAccountDeployments(store, unlisted))).toEqual([
-      joined.authority.document.deploymentId,
-      listed.authority.document.deploymentId,
-    ]);
-    now = new Date("2026-08-11T10:01:01.000Z");
-    expect(ids(await reconcileAccountDeployments(store, unlisted))).toEqual([
-      listed.authority.document.deploymentId,
-    ]);
-
-    await store.addPendingAccountDeployment(joined, 60_000);
-    await reconcileAccountDeployments(store, {
-      connections: [listed, joined],
-      directoryDeployments: [accountDeployment(listed), accountDeployment(joined)],
-    });
-    // Listed once, the team is the directory's: leaving it removes it at once.
-    expect(ids(await reconcileAccountDeployments(store, unlisted))).toEqual([
-      listed.authority.document.deploymentId,
-    ]);
-  });
-
   it("still fences the selected Deployment when the directory reports it as gone", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({
@@ -395,7 +360,7 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const selected = deploymentInput({ kind: "team", name: "Selected" });
+    const selected = deploymentInput({ kind: "personal", name: "Selected" });
     await reconcileAccountDeployments(store, {
       connections: [selected],
       directoryDeployments: [accountDeployment(selected)],
@@ -416,8 +381,8 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const first = deploymentInput({ kind: "team", name: "First" });
-    const second = deploymentInput({ kind: "team", name: "Second" });
+    const first = deploymentInput({ kind: "personal", name: "First" });
+    const second = deploymentInput({ kind: "personal", name: "Second" });
     const before = await reconcileAccountDeployments(store, {
       connections: [first, second],
       directoryDeployments: [accountDeployment(first), accountDeployment(second)],
@@ -443,7 +408,7 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const accountConnection = deploymentInput({ kind: "team", name: "Home" });
+    const accountConnection = deploymentInput({ kind: "personal", name: "Home" });
     const canonicalOnly = DeploymentConnectionInputSchema.parse({
       ...accountConnection,
       endpoints: accountConnection.endpoints.filter(({ kind }) => kind === "canonical"),
@@ -486,7 +451,7 @@ describe("DeploymentCatalogStore", () => {
   it("immediately fences a stale Account route during transfer or authority change", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = deploymentInput({ kind: "team", name: "Home" });
+    const current = deploymentInput({ kind: "personal", name: "Home" });
     await reconcileAccountDeployments(store, {
       connections: [current],
       directoryDeployments: [accountDeployment(current)],
@@ -507,7 +472,7 @@ describe("DeploymentCatalogStore", () => {
       canonicalOrigin: "https://moved.connect.opensteer.example",
       hostInstanceId: createId("hostInstance"),
       id: current.authority.document.deploymentId,
-      kind: "team",
+      kind: "personal",
       name: "Home",
     });
     catalog = await reconcileAccountDeployments(store, {
@@ -526,7 +491,7 @@ describe("DeploymentCatalogStore", () => {
   it("follows a verified Account directory Host key change", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = deploymentInput({ kind: "team", name: "Home" });
+    const current = deploymentInput({ kind: "personal", name: "Home" });
     await reconcileAccountDeployments(store, {
       connections: [current],
       directoryDeployments: [accountDeployment(current)],
@@ -596,7 +561,7 @@ describe("DeploymentCatalogStore", () => {
   it("records the Account relation the directory reports and follows it when it changes", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const owned = deploymentInput({ kind: "team", name: "Home" });
+    const owned = deploymentInput({ kind: "personal", name: "Home" });
     const directory = accountDeployment(owned);
 
     await reconcileAccountDeployments(store, {
@@ -772,6 +737,27 @@ describe("DeploymentCatalogStore", () => {
       expect(files.text(catalogPath)).toBe(oldCatalog);
     },
   );
+  it.each([true, false])(
+    "leaves out a team server the previous release saved, keeping the Home (team selected: %s)",
+    async (teamSelected) => {
+      const files = new MemoryPrivateFilesystem();
+      const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
+      const home = persistedDeployment({ name: "Home" });
+      const teamId = createId("deployment");
+      const saved = JSON.stringify({
+        deployments: [home, previousReleaseTeamRow(home, teamId)],
+        revision: 3,
+        schemaVersion: 5,
+        selectedDeploymentId: teamSelected ? teamId : home.authority.document.deploymentId,
+        updatedAt: "2026-08-11T10:00:00.000Z",
+      });
+      files.put(catalogPath, saved);
+
+      const catalog = await store.load();
+      expect(catalog.deployments.map(({ name }) => name)).toEqual(["Home"]);
+      expect(catalog.selectedDeploymentId).toBe(home.authority.document.deploymentId);
+    },
+  );
 });
 
 describe("Deployment connection schemas", () => {
@@ -896,7 +882,7 @@ describe("Host endpoint verification", () => {
       deploymentConnectionFromVerifiedEndpoints({
         accountAccess: null,
         endpoints: [canonical, direct],
-        kind: "team",
+        kind: "personal",
         name: "Studio Mac",
         source: { kind: "manual" },
       }),
@@ -906,7 +892,7 @@ describe("Host endpoint verification", () => {
       bootstrapMethods: ["password"],
       capabilities: [],
       endpoints: [canonical.endpoint, direct.endpoint],
-      kind: "team",
+      kind: "personal",
       name: "Studio Mac",
       reachability: "canonical",
       source: { kind: "manual" },
@@ -961,7 +947,7 @@ describe("Host endpoint verification", () => {
             },
           },
         ],
-        kind: "team",
+        kind: "personal",
         name: "Mixed",
         source: { kind: "manual" },
       }),
@@ -974,7 +960,7 @@ describe("Host endpoint verification", () => {
     const descriptorWithout = (epoch: number | undefined) =>
       new Response(
         JSON.stringify({
-          kind: "team",
+          kind: "personal",
           ...(epoch === undefined ? {} : { apiVersion: epoch }),
           authority: signDiscovery(discovery),
           bootstrapMethods: ["password"],
@@ -992,14 +978,14 @@ describe("Host endpoint verification", () => {
     ).rejects.toMatchObject({ code: "host-too-old" });
     await expect(
       verifyAccessEndpoint({
-        fetch: async () => descriptorWithout(teamApiVersion + 1),
+        fetch: async () => descriptorWithout(hostApiVersion + 1),
         kind: "canonical",
         origin: discovery.canonicalOrigin,
       }),
     ).rejects.toMatchObject({ code: "client-too-old" });
 
     const verified = await verifyAccessEndpoint({
-      fetch: async () => descriptorWithout(teamApiVersion),
+      fetch: async () => descriptorWithout(hostApiVersion),
       kind: "canonical",
       origin: discovery.canonicalOrigin,
     });
@@ -1016,8 +1002,8 @@ describe("Host endpoint verification", () => {
         expectedHostKeyFingerprint: discoveryFingerprint,
         fetch: async () =>
           Response.json({
-            kind: "team",
-            apiVersion: teamApiVersion + 1,
+            kind: "personal",
+            apiVersion: hostApiVersion + 1,
             authority: forged,
             bootstrapMethods: [],
             capabilities: [],
@@ -1127,7 +1113,7 @@ function deploymentInput(input: {
       hostInstanceId: input.hostInstanceId ?? createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        kind: "team" as const,
+        kind: "personal" as const,
       },
     }),
     bootstrapMethods: ["password"],
@@ -1143,7 +1129,7 @@ function deploymentInput(input: {
         verifiedAt: "2026-08-11T09:00:00.000Z",
       },
     ],
-    kind: input.kind ?? "team",
+    kind: input.kind ?? "personal",
     name: input.name,
     reachability: "canonical",
     source: { kind: "manual" },
@@ -1298,8 +1284,8 @@ function envelopeResponse(
 ): Response {
   return new Response(
     JSON.stringify({
-      kind: "team",
-      apiVersion: teamApiVersion,
+      kind: "personal",
+      apiVersion: hostApiVersion,
       authority: envelope,
       bootstrapMethods: ["password"],
       capabilities: [],

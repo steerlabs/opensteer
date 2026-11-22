@@ -103,7 +103,7 @@ test.skipIf(process.platform === "win32")(
     const claimed = await host.runtime.app.inject({
       method: "POST",
       url: "/v1/rpc/auth.setup.claim",
-      headers: { origin: config.canonicalOrigin.origin, ...apiVersionHeaders("personal") },
+      headers: { origin: config.canonicalOrigin.origin, ...apiVersionHeaders() },
       payload: { kind: "local-machine-owner", token: config.identity.localOwnerClaimToken },
     });
     expect(claimed.statusCode, claimed.body).toBe(200);

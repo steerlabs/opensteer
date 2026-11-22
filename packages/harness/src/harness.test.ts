@@ -147,12 +147,6 @@ describe("session generation fencing", () => {
 });
 
 describe("harness runtime boundary", () => {
-  it("refuses engines on team servers", () => {
-    expect(() =>
-      harnessRuntimeBoundaryForRunner({ deploymentKind: "team", runnerKind: "main" }),
-    ).toThrow("Team servers cannot run agents");
-  });
-
   it("defaults Personal Runners to native-user", () => {
     for (const runnerKind of ["main", "local", "managed"] as const) {
       expect(harnessRuntimeBoundaryForRunner({ deploymentKind: "personal", runnerKind })).toEqual(

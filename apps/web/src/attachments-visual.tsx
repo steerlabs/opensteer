@@ -359,10 +359,7 @@ function Fixture() {
                   <WaitingInputs
                     client={client}
                     disabled={false}
-                    inputs={waitingInputs(
-                      mockInputQueue(queue, "0", () => false),
-                      {},
-                    )}
+                    inputs={waitingInputs(mockInputQueue(queue, "0", () => false))}
                     onError={noOp}
                     paused={queue.paused}
                     resumable

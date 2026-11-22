@@ -6,7 +6,6 @@ import {
   RunnerAppsSyncResultSchema,
 } from "./apps.js";
 import { RunMaintenanceSchema, isLoopbackHostname } from "@opensteer/core";
-export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
@@ -23,7 +22,6 @@ import {
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
-  TeamTurnContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
   ExecutionNodeIdSchema,
@@ -158,7 +156,8 @@ const capabilityTokenSchema = z.string().min(1).max(4_096);
 export const RunExecutionContextSchema = z.strictObject({
   maintenance: RunMaintenanceSchema.optional(),
   maintenanceExpiresAt: z.number().int().nonnegative().optional(),
-  teamTurnContext: TeamTurnContextSchema.nullable().default(null),
+  /** A Home before team removal still sends null here; nothing reads it. */
+  teamTurnContext: z.null().optional(),
   personalContext: z.boolean(),
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),
@@ -240,8 +239,6 @@ export const HarnessInputSchema = z
     /** Sent only to a Runner advertising `message-origin-v1`. */
     origin: MessageOriginSchema.optional(),
     quote: MessageQuoteSchema.optional(),
-    /** A teammate's ask whose words the owner edited before approving it. */
-    ownerEdited: z.literal(true).optional(),
   })
   .superRefine((input, context) => {
     if (!messageAuthorCanWriteKind(input.author, input.kind)) {
@@ -1184,6 +1181,8 @@ export const runnerRestartingCloseCode = 4012;
  * and when they resume. Sent only to a Home whose welcome accepts it.
  */
 export const runnerAgentStopCapability = "runner-agent-stop-v1" as const;
+/** A Runner that parses a connected agent session's `alwaysAsk` and `noLaunch` fields. */
+export const agentSessionGuardsCapability = "agent-session-guards-v1" as const;
 
 /** The person stopped agents on this computer; nothing new starts until they resume. */
 export const RunnerAgentsStoppedSchema = z.strictObject({
@@ -1256,6 +1255,8 @@ export const RunnerBrowserModuleSchema = z
   .object({
     standardCdp: z.literal(1).optional().catch(undefined),
     standardCdpLineage: z.literal(1).optional().catch(undefined),
+    /** The runtime enforces a connected agent's CDP itself when a command says it is one's. */
+    connectionCommands: z.literal(1).optional().catch(undefined),
     wholeContextCdp: z.literal(1).optional().catch(undefined),
     standardCdpLeaseRecovery: z.literal(1).optional().catch(undefined),
     standardCdpAttemptRecovery: z.literal(1).optional().catch(undefined),

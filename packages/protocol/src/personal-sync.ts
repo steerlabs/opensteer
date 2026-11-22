@@ -40,7 +40,7 @@ import {
   TranscriptOrderCursorViewSchema,
 } from "./transcript.js";
 
-export const scopedPersonalApiVersion = 65;
+export const scopedPersonalApiVersion = 66;
 export const personalClientFrameMaxBytes = 32 * 1024;
 export const personalChangesFrameMaxBytes = 512 * 1024;
 export const personalLiveFrameMaxBytes = 16 * 1024;
@@ -232,7 +232,7 @@ const visit = z.object({
 });
 const attention = z.object({
   id: z.string().min(1).max(600),
-  kind: z.enum(["request", "team-ask", "failed-ask"]),
+  kind: z.literal("request"),
   threadId: ThreadIdSchema.nullable(),
   revision: PersonalRevisionSchema,
   title: z.string().max(240),

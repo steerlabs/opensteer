@@ -2,7 +2,6 @@ import { requireSelfDeviceId } from "./device-inventory-store.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import type { DeviceId } from "@opensteer/core";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { deploymentPolicy } from "@opensteer/core";
 import { assertRequestRevision } from "./request-persistence.js";
 import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -974,7 +973,7 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  return deployment ? deploymentPolicy(deployment.deploymentShape).services.personal : false;
+  return deployment !== undefined;
 }
 
 /** A Personal Deployment has exactly one established owner. */
@@ -1009,7 +1008,7 @@ function activePersonalDeploymentOwner(
       })
     | undefined,
 ): UserId | null {
-  if (!row || !deploymentPolicy(row.deploymentShape).services.personal) return null;
+  if (!row) return null;
   return row.ownerId && row.ownerDisabledAt === null ? row.ownerId : null;
 }
 

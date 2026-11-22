@@ -2685,7 +2685,6 @@ function executeCommand(
       taskPurpose: "task",
       accessMode: "full-access",
       assignment: null,
-      teamTurnContext: null,
       agentTools: {
         tools: ["opensteer_task_read", "plugin_call", "computer_use"],
         toolsRevision: "test-tools-v1",

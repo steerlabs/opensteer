@@ -173,7 +173,6 @@ export class NotificationDeliveryWorker {
           expiresAt: delivery.expiresAt,
           message: notificationMessage({
             deploymentId: delivery.deploymentId,
-            teamTarget: delivery.teamTarget ?? null,
             ...(delivery.preview
               ? {
                   preview: {

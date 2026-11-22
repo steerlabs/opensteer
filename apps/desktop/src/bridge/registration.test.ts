@@ -338,7 +338,6 @@ describe("desktop bridge", () => {
     const notificationChannels = new Set<string>([
       desktopBridgeChannels.integrationAuthorizationReturn,
       desktopBridgeChannels.mcpAuthorization,
-      desktopBridgeChannels.teamLink,
       desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.updateChanged,

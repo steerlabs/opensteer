@@ -63,7 +63,6 @@ export function hostServerTestDependencies(
     resourceRevisions: new ResourceRevisions(() => undefined),
     egress: inert(),
     execution: inert(),
-    teamLinks: inert(),
     harnessAuthenticationCoordinator: new HarnessAuthenticationCoordinator({
       harnesses: { getHarnessInstance: async () => null },
       runners: {

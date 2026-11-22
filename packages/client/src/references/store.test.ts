@@ -15,8 +15,8 @@ import type {
 import type { TranscriptFixtureSnapshot } from "../host/client.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { ReferenceStore } from "./store.js";
-import { localReference, localTeamReference } from "./local.js";
-import { refTarget, teamPageTarget } from "./destination.js";
+import { localReference } from "./local.js";
+import { refTarget } from "./destination.js";
 
 const fixture = new MockHostClient({ latencyMs: 0 });
 const base = fixture.getSnapshot();
@@ -86,17 +86,11 @@ const task = (id: ReferenceId, title = "Resolved"): AvailableReference => ({
 async function called(calls: readonly unknown[], count: number) {
   await vi.waitFor(() => expect(calls).toHaveLength(count), { timeout: 1000 });
 }
-function threadEvent(
-  threadId: string,
-  type: "thread.state-changed" | "task.removed",
-): AgentEventView {
+function threadEvent(threadId: string, type: "thread.state-changed"): AgentEventView {
   return {
     type,
     threadId,
-    data:
-      type === "task.removed"
-        ? {}
-        : { title: "Renamed", status: "completed", inputQueuePaused: false, pendingRequests: 0 },
+    data: { title: "Renamed", status: "completed", inputQueuePaused: false, pendingRequests: 0 },
   } as unknown as AgentEventView;
 }
 it("uses genuinely held metadata without RPC, including hidden chips, and keeps snapshots stable", async () => {
@@ -187,8 +181,8 @@ it.each(["available", "unavailable"] as const)(
     calls[1]!.answer.resolve({ results: [task(id, "New")] });
   },
 );
-it("tracks held renames without unrelated redraws, and removal overrides an older held copy", async () => {
-  const { store, calls, update } = setup();
+it("tracks held renames without unrelated redraws", async () => {
+  const { store, update } = setup();
   const id = createId("thread");
   const thread = { ...base.threads[0]!, id, title: "Old" };
   update({ threads: [thread] });
@@ -199,18 +193,8 @@ it("tracks held renames without unrelated redraws, and removal overrides an olde
   update({ threads: [{ ...thread, title: "Renamed" }] });
   expect(store.read(id)).toMatchObject({ value: { title: "Renamed" } });
   expect(listener).toHaveBeenCalledTimes(1);
-  store.accept(threadEvent(id, "task.removed"));
-  expect(store.read(id)).toEqual({ state: "unavailable" });
-  vi.setSystemTime(Date.now() + 30_001);
-  const answer = store.resolve(id);
-  await called(calls, 1);
-  calls[0]!.answer.resolve({ results: [{ status: "unavailable", id }] });
-  await answer;
-  expect(store.read(id)).toEqual({ state: "unavailable" });
-  store.accept(threadEvent(id, "thread.state-changed"));
-  expect(store.read(id).state).toBe("available");
 });
-it("invalidates dependent titles, drops pre-event answers and merges the next batch", async () => {
+it("invalidates dependent titles and merges the next batch", async () => {
   const { store, calls } = setup();
   const threadId = createId("thread"),
     id = createId("message");
@@ -232,15 +216,6 @@ it("invalidates dependent titles, drops pre-event answers and merges the next ba
   store.subscribe(id, () => {});
   store.accept(threadEvent(threadId, "thread.state-changed"));
   await called(calls, 2);
-  store.accept(threadEvent(threadId, "task.removed"));
-  expect(store.read(id).state).toBe("unavailable");
-  calls[1]!.answer.resolve({
-    results: [
-      { status: "available", kind: "message", id, threadId, location: "transcript", title: "Late" },
-    ],
-  });
-  await Promise.resolve();
-  expect(store.read(id).state).toBe("unavailable");
 });
 it("refreshes visible remote entries on reconnect and out-of-band revisions", async () => {
   const { store, calls, update } = setup();
@@ -367,23 +342,6 @@ describe("destinations", () => {
       refTarget({ status: "available", kind: "computer", id: runnerId, title: "Mac" }),
     ).toEqual({ kind: "computer", runnerId });
   });
-  it("maps team pages without discovery and only reads names from their attached origin", () => {
-    const origin = "https://team.example",
-      topicId = createId("knowledgeTopic"),
-      noteId = createId("knowledgeNote");
-    const page = { origin, target: { kind: "knowledge-note" as const, topicId, noteId } };
-    expect(teamPageTarget(page)).toEqual(page.target);
-    expect(
-      localTeamReference(page, { origin, notes: [{ id: noteId, topicId, title: "Held note" }] }),
-    ).toEqual({ title: "Held note" });
-    expect(
-      localTeamReference(page, {
-        origin: "https://unverified.example",
-        notes: [{ id: noteId, topicId, title: "Wrong" }],
-      }),
-    ).toBeNull();
-    expect(localTeamReference(page, { origin })).toBeNull();
-  });
 });
 
 it("prefers a newer resolve to old held data, and authoritative absence stays until a later held update", async () => {
@@ -431,28 +389,6 @@ it("does not re-resolve a remote message when a parent state event repeats its h
   expect(calls).toHaveLength(1);
 });
 
-it("discards a child answer when its previously unknown parent was removed during the batch", async () => {
-  const { store, calls } = setup();
-  const id = createId("message"),
-    threadId = createId("thread");
-  const resolving = store.resolve(id);
-  await called(calls, 1);
-  store.accept(threadEvent(threadId, "task.removed"));
-  calls[0]!.answer.resolve({
-    results: [
-      {
-        status: "available",
-        kind: "message",
-        id,
-        threadId,
-        title: "Old answer",
-        location: "transcript",
-      },
-    ],
-  });
-  expect(await resolving).toEqual({ status: "unavailable", id });
-  expect(store.read(id)).toEqual({ state: "unavailable" });
-});
 it("holds automatic work while disconnected and sends one batch on connection recovery", async () => {
   const { store, calls, update } = setup();
   update({ connection: "offline" });

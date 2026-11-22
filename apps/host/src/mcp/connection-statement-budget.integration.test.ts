@@ -119,7 +119,8 @@ describeStore("a connected agent's reads stay within their statement budgets", (
       counts[name] = (await statements(call)).length;
     }
     // One live check per discover call; one read each for a child's delegation and for the
-    // Request items of a task read (27, about 60 and 47 before).
-    expect(counts).toEqual({ discover: 22, childWait: 36, taskRead: 33 });
+    // Request items of a task read (27, about 60 and 47 before). A task read no longer reads
+    // its messages' team sources (33 before teams went).
+    expect(counts).toEqual({ discover: 22, childWait: 36, taskRead: 32 });
   });
 });

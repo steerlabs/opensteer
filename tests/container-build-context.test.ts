@@ -317,8 +317,6 @@ describe("container build context", () => {
       "channel-runtime",
       "browser-runtime",
       "gateway",
-      "team-gateway",
-      "team-provisioner",
     ];
     for (const name of targetNames) {
       const start = containerfile.indexOf(` AS ${name}\n`);
@@ -384,8 +382,4 @@ it("builds and stages the plugin child and native runtime for the container's ow
   expect(build).toContain("pnpm --filter @opensteer/host build");
   expect(build).toContain("scripts/plugin-engine/stage-container-host.ts /output/host");
   expect(recipe).toContain("COPY --from=host-build --chown=10001:10001 /output/host ./");
-  const gateway = recipe
-    .split(/^FROM /mu)
-    .find((stage) => stage.split("\n", 1)[0]?.endsWith(" AS team-gateway"));
-  expect(gateway).not.toContain("host-build");
 });

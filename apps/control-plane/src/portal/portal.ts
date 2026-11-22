@@ -1,16 +1,9 @@
-import { registerTeamSetupPortal } from "../adoption/team-setup.js";
 import { registerCloudComputerPortal } from "../cloud-computers/portal-routes.js";
 import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
 import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { registerOrganizationPortal } from "../organizations/portal-routes.js";
 import type { OrganizationStore } from "../organizations/store.js";
 import type { CloudComputerStore } from "../cloud-computers/store.js";
-import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
-import {
-  hostedTeamRows,
-  portalCreateHostedTeamPath,
-  registerHostedTeamPortal,
-} from "../hosted-teams/portal-routes.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
@@ -57,7 +50,6 @@ import {
   accountDeletedBody,
   browserPagePolicyWithScript,
   deleteAccountBody,
-  hostedTeamAnchor,
   differentAccountBody,
   openPhoneBody,
   personalHandoffBody,
@@ -134,8 +126,6 @@ interface PortalDependencies {
   readonly androidAppUrl?: string;
   /** The app's typefaces, when this process serves them. */
   readonly fonts?: BrowserPageFonts;
-  /** Present when this Account offers teams Opensteer hosts. */
-  readonly hostedTeams?: HostedTeamStore;
   readonly portalOrigin: URL;
   readonly portalSessions: PortalSessionStore;
   readonly personalRemoteAccount?: PersonalRemoteAccountService;
@@ -205,9 +195,8 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     session: PortalSession,
   ): Promise<string | FastifyReply> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const [deployments, hostedTeams, computers] = await Promise.all([
+    const [deployments, computers] = await Promise.all([
       store.listDeployments(accountId),
-      dependencies.hostedTeams?.listCreatedBy(accountId),
       // Only to name each Home's kind: the list still draws when this read fails, and then
       // names no kind it cannot know. A service with no Cloud Computers has none to list.
       dependencies.cloudComputers?.listForAccount(accountId).catch(() => null) ?? [],
@@ -229,9 +218,6 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         account: { displayName: session.displayName || null, email: session.email },
         deleteAccountHref: portalDeleteAccountPath,
         desktopDownloadUrl: dependencies.desktopDownloadUrl ?? null,
-        hostedTeams: hostedTeams
-          ? { createHref: portalCreateHostedTeamPath, rows: hostedTeamRows(hostedTeams) }
-          : null,
         rows: deployments.map((deployment, index) =>
           deploymentCard(
             deployment,
@@ -280,10 +266,8 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     failed: boolean,
   ): Promise<string> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const [owned, held, created, computers] = await Promise.all([
+    const [owned, computers] = await Promise.all([
       dependencies.store.ownedDeployments(accountId),
-      dependencies.store.heldHostedTeams(accountId),
-      dependencies.hostedTeams?.listCreatedBy(accountId) ?? [],
       dependencies.cloudComputers?.listForAccount(accountId) ?? [],
     ]);
     const live = computers.filter((computer) => computer.status !== "deleted");
@@ -296,12 +280,6 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           .map((deployment) => deployment.name),
         email: session.email,
         failed,
-        heldTeams: held.map((team) => ({ ...team, href: `/#${hostedTeamAnchor(team.id)}` })),
-        settingUp: created
-          .filter(
-            (team) => team.stage !== "deleting" && !held.some((holding) => holding.id === team.id),
-          )
-          .map((team) => new URL(team.origin).host),
         // A Cloud Computer is said for itself, never as a server that stops signing people in.
         servers: owned.filter(
           (deployment) =>
@@ -404,24 +382,6 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           throw new ControlPlaneError("not_found", "Route was not found");
         }
       };
-
-      registerTeamSetupPortal(app, {
-        store,
-        publicOrigin,
-        portalOrigin: origin,
-        fonts,
-        guard,
-        readSession,
-      });
-
-      registerHostedTeamPortal(app, {
-        fonts,
-        guard,
-        hostedTeams: dependencies.hostedTeams,
-        portalOrigin: origin,
-        readSession,
-        signInPath: portalSignInPath,
-      });
 
       registerCloudComputerPortal(app, {
         cloudComputers: dependencies.cloudComputers,
@@ -648,12 +608,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           await dependencies.accountDeletion.delete(accountId);
         } catch (error) {
           if (!(error instanceof ControlPlaneError)) throw error;
-          return renderDeleteAccount(
-            reply.code(error.status),
-            session,
-            // Refused before anything was undone, the page lists the teams to settle instead.
-            error.reason !== "hosted-teams-remain",
-          );
+          return renderDeleteAccount(reply.code(error.status), session, true);
         }
         // Reading the session refreshed its cookie; only the expiry may reach the browser.
         void reply.removeHeader("set-cookie");
@@ -821,14 +776,15 @@ export function deploymentCard(
 /**
  * A Home's kind on its row. A Home reached through its Mac is the person's Mac; one at its own
  * address that its signed record calls personal is a Cloud Computer when the Account lists it
- * as one, and a server of theirs otherwise; anything else at its own address is a team's.
- * When the Account's read failed, such a personal Home shows no kind rather than a wrong one.
+ * as one, and a server of theirs otherwise. Anything else at its own address (a retired team
+ * server's row the person has not removed yet), and any Home when the Account's read of its
+ * Cloud Computers failed, shows no kind rather than a wrong one.
  */
 function placeKind(
   deployment: AccountDeploymentDirectoryEntry,
   cloud: { readonly organization: string | null } | "not-cloud" | "unknown",
 ): {
-  readonly kind: "personal" | "team" | "cloud" | "server" | "unknown";
+  readonly kind: "personal" | "cloud" | "server" | "unknown";
   readonly kindLabel: string;
   readonly badge: string | null;
 } {
@@ -842,9 +798,7 @@ function placeKind(
     };
   if (deployment.reachability === "routed")
     return { kind: "personal", kindLabel: deploymentKindLabel("personal"), badge: null };
-  if (!isCanonicalPersonalHome(deployment))
-    return { kind: "team", kindLabel: deploymentKindLabel("team"), badge: null };
-  return cloud === "unknown"
+  return cloud === "unknown" || !isCanonicalPersonalHome(deployment)
     ? { kind: "unknown", kindLabel: "", badge: null }
     : { kind: "server", kindLabel: "Server", badge: null };
 }

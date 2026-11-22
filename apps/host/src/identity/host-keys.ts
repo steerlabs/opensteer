@@ -105,23 +105,6 @@ export function signPersonalHostAccountLinkProof(
   });
 }
 
-export async function loadHostKeys(options: {
-  privateKeyPath: string;
-  publicKeyPath: string;
-}): Promise<HostKeyPair> {
-  const privateKeyPath = resolve(options.privateKeyPath);
-  const publicKeyPath = resolve(options.publicKeyPath);
-  const [privatePem, publicKeyPem] = await Promise.all([
-    readFile(privateKeyPath, "utf8"),
-    readFile(publicKeyPath, "utf8"),
-  ]);
-  const privateKey = createPrivateKey(privatePem);
-  const publicKey = createPublicKey(publicKeyPem);
-  assertMatchingKeys(privateKey, publicKey);
-  if (privateKey.asymmetricKeyType !== "ed25519") throw new Error("Host keys must use Ed25519");
-  return { privateKey, publicKey, privateKeyPath, publicKeyPath, publicKeyPem };
-}
-
 export async function loadOrCreateHostKeys(options: {
   readonly dataDirectory: string;
   readonly privateKeyPath?: string;

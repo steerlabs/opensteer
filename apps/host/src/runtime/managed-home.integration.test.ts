@@ -142,7 +142,7 @@ it("is claimed once by its Account's signed assertion, and by nothing else", asy
     const exchange = await host.app.inject({
       method: "POST",
       url: "/v1/rpc/auth.setup.exchange",
-      headers: { origin: home, ...apiVersionHeaders("personal") },
+      headers: { origin: home, ...apiVersionHeaders() },
       payload: { token: setupCode },
     });
     expect(exchange.json()).toMatchObject({
@@ -252,7 +252,7 @@ it("is claimed once by its Account's signed assertion, and by nothing else", asy
     const configured = await host.app.inject({
       method: "GET",
       url: "/v1/rpc/auth.config?input=%7B%7D",
-      headers: { origin: home, ...apiVersionHeaders("personal") },
+      headers: { origin: home, ...apiVersionHeaders() },
     });
     expect(configured.json()).toMatchObject({
       data: {

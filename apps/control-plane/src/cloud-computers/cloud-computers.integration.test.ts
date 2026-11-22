@@ -83,8 +83,8 @@ import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.
 import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import { ControlPlaneStore } from "../database/store.js";
-import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
-import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import { googleServiceAccountVerifier } from "./provisioner-verifier.js";
+import { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { createControlPlaneServer } from "../server/server.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";
 import { loadCloudComputerConfig } from "./config.js";
@@ -239,7 +239,7 @@ integration("Cloud Computer Account service", () => {
     googleClientId: "test-client",
     googleClientSecret: "test-secret",
   });
-  const cipher = new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url"));
+  const cipher = new CloudComputerSecretCipher(Buffer.alloc(32, 5).toString("base64url"));
   const organizations = new OrganizationStore(
     database.withPlugin(transitionBarrier("organization")),
     {

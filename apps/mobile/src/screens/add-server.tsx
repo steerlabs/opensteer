@@ -1,4 +1,3 @@
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { deploymentAddressFailure } from "@opensteer/client/connections";
 import { clientIssue } from "@opensteer/client/feedback";
 import { hostKeyFingerprint } from "@opensteer/deployment-authority";
@@ -19,7 +18,7 @@ import { Screen, useReadingColumn } from "../ui/screen.js";
 import { DeploymentDoorSymbol } from "./add-deployment.js";
 
 /**
- * The address door, for a Home on someone's own server or a team, in two
+ * The address door, for a Home on someone's own server, in two
  * steps on one screen.
  *
  * Step one asks the address and nothing else; step two shows what answered —
@@ -141,11 +140,7 @@ export function AddServerScreen(): ReactNode {
               Check that fingerprint against what the person who runs it told you. This phone will
               only ever talk to this exact deployment.
             </AppText>
-            <PrimaryButton
-              busy={busy}
-              label={isPersonalHost(verified.discovery) ? "Add Home" : "Add team"}
-              onPress={add}
-            />
+            <PrimaryButton busy={busy} label="Add Home" onPress={add} />
             <SecondaryButton label="Use a different address" onPress={() => setVerified(null)} />
           </>
         )}

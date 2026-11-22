@@ -28,6 +28,7 @@ import {
   triggerStopGenerationCapability,
   attemptStopStateCapability,
   runnerAgentStopCapability,
+  agentSessionGuardsCapability,
   runnerRestartingCloseCode,
   sameRunnerConnectionFence,
   computerAppMaxTimeoutMs,
@@ -2921,6 +2922,7 @@ export function runnerCapabilities(
     "task-done-v1",
     "person-show-v1",
     "full-disk-access-probe-v1",
+    agentSessionGuardsCapability,
   ];
 }
 

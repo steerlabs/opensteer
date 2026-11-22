@@ -203,10 +203,6 @@ test("an older automatic run never cancels, overtakes or publishes over a newer 
   newer.start();
   if (newer.job("build")) builds.push("newer");
   if (older.job("build")) builds.push("older");
-  for (const platform of ["linux/amd64", "linux/arm64"]) {
-    newer.job("team-image-build", { platform });
-    older.job("team-image-build", { platform });
-  }
   assert.deepEqual(github.cancelled, []);
   assert.equal(newer.running(), false);
   // The newer run builds only once the older one has published and left the queue.
@@ -238,12 +234,11 @@ test("an automatic run and a dispatched insider for the same commit never build 
     f.state.releases = [{ ...published(f.source), draft: true }];
     assert.deepEqual(discover(f.source, f.run, f.root), { skip: false, reuse: true });
     const needs = {
-      preflight: { outputs: { channel: "beta", team_images: "false" } },
+      preflight: { outputs: { channel: "beta" } },
       discover: { result: "success", outputs: { reuse: "true", skip: "false" } },
       build: { result: "skipped" },
       draft: { result: "skipped" },
       account: { result: "success" },
-      "team-images": { result: "skipped" },
     };
     const enabled = (job) =>
       Boolean(
@@ -271,7 +266,6 @@ test("read-only preflight, secret-free discovery and only stable publication app
       {
         build: "macos-26",
         promote: "macos-26",
-        "team-image-build": "${{ matrix.runner }}",
       }[name] ?? "ubuntu-latest",
     );
     assert.deepEqual(job.permissions ?? workflow.permissions, {
@@ -280,8 +274,6 @@ test("read-only preflight, secret-free discovery and only stable publication app
         : "read",
       ...(name === "preflight" ? { actions: "read" } : {}),
       ...(name === "account" ? { "id-token": "write" } : {}),
-      ...(name.startsWith("team-image") ? { packages: "write" } : {}),
-      ...(name === "team-provisioner" ? { packages: "write" } : {}),
     });
     assert.equal(
       job.environment,
@@ -303,9 +295,6 @@ test("read-only preflight, secret-free discovery and only stable publication app
   // A Beta must never reach people before the Account service it may depend on.
   assert.ok(workflow.jobs["publish-insider"].needs.includes("account"));
   assert.match(workflow.jobs.account.if, /channel == 'beta'/);
-  // Team images deploy only through promote-team-servers, so their build never waits on desktop.
-  assert.deepEqual(workflow.jobs["team-provisioner"].needs, ["preflight", "team-images"]);
-  assert.match(workflow.jobs["team-provisioner"].if, /channel == 'beta'/);
   assert.ok(workflow.jobs.build.needs.includes("discover"));
   assert.match(
     workflow.jobs.build.steps.find((step) => step.run?.includes("stampReleaseVersion")).run,
@@ -339,17 +328,6 @@ test("read-only preflight, secret-free discovery and only stable publication app
     /always/,
   );
 });
-test("hosted teams are promoted explicitly from published digests", () => {
-  const job = workflow.jobs["team-provisioner"];
-  assert.doesNotMatch(JSON.stringify(job), /google-github-actions|deploy-team-provisioner.sh/);
-  const promotion = parseDocument(
-    readFileSync(new URL("../workflows/promote-team-servers.yml", import.meta.url), "utf8"),
-  ).toJS();
-  assert.ok(promotion.on.workflow_dispatch.inputs.provisioner_image.required);
-  assert.equal(promotion.jobs.promote.environment, "teams");
-  assert.match(JSON.stringify(promotion), /deploy-team-provisioner.sh/);
-});
-
 test("observer preflight fails before signing and persists one interpreter for launch tooling", () => {
   const steps = workflow.jobs.build.steps;
   const probe = steps.findIndex((step) => step.name === "Probe launch observer");
@@ -402,35 +380,6 @@ test("directory packaging keeps notarization and the final public archive and ve
     workflow.jobs.build.steps.find((step) => step.name === "Prepare checked release bytes").run,
     /--app-zip "\$RUNNER_TEMP\/Opensteer.zip"/,
   );
-});
-test("team images build natively per architecture and expose digests to later jobs", () => {
-  const build = workflow.jobs["team-image-build"];
-  assert.deepEqual(build.strategy.matrix.include, [
-    { platform: "linux/amd64", runner: "ubuntu-latest" },
-    { platform: "linux/arm64", runner: "ubuntu-24.04-arm" },
-  ]);
-  // Stable promotes the insider's images, so both channels resolve them; an insider built
-  // before team images existed promotes without them rather than failing Stable.
-  assert.equal(
-    build.if,
-    "needs.preflight.outputs.superseded != 'true' && needs.preflight.outputs.team_images == 'true'",
-  );
-  const detect = workflow.jobs.preflight.steps.find((step) => step.id === "team");
-  assert.match(detect.run, /git cat-file -e "\$SHA:\.github\/scripts\/team-images\.sh"/);
-  assert.equal(workflow.jobs.preflight.outputs.team_images, "${{ steps.team.outputs.images }}");
-  const images = workflow.jobs["team-images"];
-  assert.deepEqual(images.needs, ["preflight", "team-image-build"]);
-  assert.equal(images.if, "needs.preflight.outputs.team_images == 'true'");
-  assert.deepEqual(Object.keys(images.outputs).sort(), ["gateway_image", "host_image"]);
-  for (const job of ["publish-insider", "publish-stable"]) {
-    assert.ok(workflow.jobs[job].needs.includes("team-images"), job);
-    assert.ok(
-      workflow.jobs[job].if.includes(
-        "(needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false')",
-      ),
-      job,
-    );
-  }
 });
 test("signing puts its ephemeral keychain on the user search list before building", () => {
   const run = workflow.jobs.build.steps.find(
@@ -1078,7 +1027,6 @@ test("insiders auto-publish from green main CI, dispatch stops at draft unless p
       reuse = false,
       skip = false,
       account = "success",
-      images = "success",
     } = {},
   ) =>
     Boolean(
@@ -1088,7 +1036,6 @@ test("insiders auto-publish from green main CI, dispatch stops at draft unless p
           discover: { result: "success", outputs: { reuse: String(reuse), skip: String(skip) } },
           draft: { result: reuse && channel !== "stable" ? "skipped" : "success" },
           account: { result: account },
-          "team-images": { result: images },
           promote: { result: channel === "stable" ? "success" : "skipped" },
         },
         github: { event_name: event },
@@ -1101,14 +1048,9 @@ test("insiders auto-publish from green main CI, dispatch stops at draft unless p
   assert.equal(enabled("publish-insider", { publish: true, reuse: true }), true);
   assert.equal(enabled("publish-insider", { event: "workflow_run", skip: true }), false);
   assert.equal(enabled("publish-insider", { event: "workflow_run", account: "failure" }), false);
-  assert.equal(enabled("publish-insider", { event: "workflow_run", images: "failure" }), false);
   assert.equal(enabled("publish-insider", { channel: "stable", publish: true }), false);
   assert.equal(enabled("publish-stable", { channel: "stable" }), false);
   assert.equal(enabled("publish-stable", { channel: "stable", publish: true, reuse: true }), true);
-  assert.equal(
-    enabled("publish-stable", { channel: "stable", publish: true, reuse: true, images: "failure" }),
-    false,
-  );
   assert.equal(enabled("publish-stable", { publish: true }), false);
   assert.equal(workflow.jobs["publish-insider"].environment, undefined);
   assert.equal(workflow.jobs["publish-stable"].environment, "publish");
@@ -1342,16 +1284,8 @@ test("a cancelled source skips cleanly only after main advances and a newer push
       draft: { result: "skipped", outputs: {} },
       promote: { result: "skipped", outputs: {} },
       account: { result: "skipped", outputs: {} },
-      "team-images": { result: "skipped", outputs: {} },
     };
-    for (const job of [
-      "discover",
-      "build",
-      "team-image-build",
-      "draft",
-      "publish-insider",
-      "publish-stable",
-    ])
+    for (const job of ["discover", "build", "draft", "publish-insider", "publish-stable"])
       assert.equal(Boolean(evaluate(job, needs)), false, job);
 
     const cancelled = { ...f.state.runs[0] };

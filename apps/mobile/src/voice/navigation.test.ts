@@ -106,14 +106,3 @@ it("pushes the first tab from a Thread or a different deployment", () => {
     );
   }
 });
-it("opens a task from a team's screen through the Tasks side", () => {
-  ref.getCurrentRoute.mockReturnValue({
-    key: "channel",
-    name: "TeamChannel",
-    params: { teamId: "team", channelId: "general" },
-  });
-  expect(show("d", { kind: "thread", threadId: "t" })).toBe(true);
-  expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({ type: "RESET" }),
-  );
-});

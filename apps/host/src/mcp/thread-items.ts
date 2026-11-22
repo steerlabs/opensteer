@@ -4,7 +4,6 @@ import {
   formatReferenceLink,
   type AssignmentSummary,
   type Message,
-  type TeamSource,
 } from "@opensteer/core";
 import { toolMessageAuthor, type ThreadItem } from "@opensteer/agent-tools/outputs";
 import type { AgentThreadActivityItem } from "@opensteer/database";
@@ -27,12 +26,7 @@ export function itemText(text: string | null, maxChars: number, offset = 0) {
   const textTruncated = next < points.length;
   return { text: value, textTruncated, nextTextOffset: textTruncated ? next : null };
 }
-export function messageItem(
-  message: Message,
-  maxChars: number,
-  offset = 0,
-  teamSource?: TeamSource,
-): ThreadItem {
+export function messageItem(message: Message, maxChars: number, offset = 0): ThreadItem {
   const text = message.content
     .map((part) =>
       part.type === "text"
@@ -53,7 +47,6 @@ export function messageItem(
     title: null,
     ...itemText(text, maxChars, offset),
     ...(places.length ? { places } : {}),
-    ...(teamSource ? { teamSource } : {}),
     createdAt: message.createdAt,
   };
 }

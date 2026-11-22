@@ -33,6 +33,7 @@ import {
   type RunnerConnectionFence,
   type RunnerDescriptor,
   type RunnerProof,
+  agentSessionGuardsCapability,
 } from "@opensteer/protocol";
 import { ScopedHostMessageSchema } from "@opensteer/protocol/personal-sync";
 import type { PersonalResourceKind } from "@opensteer/protocol/resources";
@@ -154,7 +155,7 @@ export async function startMachineAccessWireHost(
         pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal")
-        throw new Error("Personal wire fixture constructed a team Host");
+        throw new Error("Personal wire fixture constructed another kind of Host");
       runtime = created;
       await runtime.listen();
       const claimed = await runtime.app.inject({
@@ -766,6 +767,8 @@ export async function connectCallerMachine(
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [
+      // This release's Runner, which reads a connected agent session's guarded fields.
+      agentSessionGuardsCapability,
       "filesystem",
       "network-egress",
       "native-session-continuation-v1",

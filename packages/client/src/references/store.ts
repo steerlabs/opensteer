@@ -293,13 +293,7 @@ export class ReferenceStore {
     this.#sync();
     const ids = new Set<string>();
     let parent = false;
-    let removed = false;
     switch (event.type) {
-      case "task.removed":
-        ids.add(event.threadId);
-        parent = true;
-        removed = true;
-        break;
       case "thread.created":
       case "thread.listed":
       case "thread.execution-updated":
@@ -356,10 +350,10 @@ export class ReferenceStore {
         if (event.runId) ids.add(event.runId);
         break;
     }
-    if (parent) this.#flightParents?.set(event.threadId, removed);
+    if (parent) this.#flightParents?.set(event.threadId, false);
     for (const entry of this.#entries.values()) {
       if (ids.has(entry.ref.id) || (parent && entry.parentThreadId === event.threadId))
-        this.#invalidate(entry, removed, ids.has(entry.ref.id));
+        this.#invalidate(entry, false, ids.has(entry.ref.id));
     }
   }
   /** Personal stream reset or reconnect; one refresh for currently visible IDs. */

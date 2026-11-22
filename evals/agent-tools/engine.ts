@@ -132,8 +132,6 @@ export async function runEngine(input: {
     kind: c.caller,
     ...(c.caller === "run" ? { capabilities } : {}),
     accessMode: c.accessMode,
-    teamsAvailable: c.teamBound || c.knowledge,
-    knowledge: c.knowledge,
   }).map(({ name }) => name);
   // Assembled as the Host plans it and the hosting Runner completes it.
   const guide =
@@ -142,8 +140,6 @@ export async function runEngine(input: {
           platformGuideForRun({
             purpose: c.purpose,
             capabilities,
-            teamsAvailable: c.teamBound || c.knowledge,
-            knowledge: c.knowledge,
           }) + (c.voice ? `\n\n${voiceGuide}` : ""),
           appHostingGuide({ platform: c.hostingPlatform, tools }),
         ]
@@ -268,7 +264,6 @@ export async function runEngine(input: {
                   parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
               : null,
-          teamTurnContext: c.teamContext ?? null,
           threadState: { previousAssignment: null, previousRun: null },
           startedAt: new Date().toISOString(),
         },

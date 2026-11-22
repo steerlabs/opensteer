@@ -330,8 +330,6 @@ export class ProductToolsTestClient {
         options.triggers ?? (unavailable as AgentTriggerManager),
         options.store,
       ),
-      teamRequestForRun: async () => null,
-      personalContextForRun: async () => true,
     });
     this.service = new OpensteerMcpService({
       store: options.store,

@@ -22,8 +22,6 @@ ships, add `--configuration Release` to `run:ios` or `--variant release` to `run
 the in-memory Host in `@opensteer/client/mock`. Non-development builds refuse it ("This build cannot
 run") unless Metro's `__DEV__` is true or `EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE=development|preview`
 is set. Never set the profile on a build anyone but a developer installs.
-Use a disposable [team server](../../team-server/SKILL.md) for team sign-in, linking and offline
-chat checks; personal mock mode does not prove these two-Host boundaries.
 `EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS=<scene>` adds the
 conversation "Fix checkout on mobile" in one subagent state of `mockSubagentScenes` (`one`, `three`,
 `needs`, `nested`, `workflow`, `thirty`, …), as the web preview's `?mock-subagents=` does.

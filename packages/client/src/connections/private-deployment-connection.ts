@@ -16,9 +16,9 @@ import type { HostSessionExchange } from "../auth/host-session-exchange.js";
  * Establishes first trust in a private Host without sending a cookie, OAuth
  * token, or caller-provided identity metadata. The caller explicitly chooses
  * one of two non-interchangeable trust paths: a Mac Home's separately signed
- * HTTPS route and one-use pairing code, or an address — a team server or a
- * Home on its own server — whose signed canonical discovery is pinned and
- * then signed in to with that Host's own native sign-in.
+ * HTTPS route and one-use pairing code, or the address of a Home on its own
+ * server, whose signed canonical discovery is pinned and then signed in to
+ * with that Host's own native sign-in.
  */
 export class PrivateDeploymentConnectionService {
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
@@ -44,7 +44,7 @@ export class PrivateDeploymentConnectionService {
           accountAccess: null,
           endpoints: [verified],
           kind: verified.kind,
-          name: addressDeploymentName(parsed.origin, verified.kind),
+          name: addressDeploymentName(parsed.origin),
           source: { kind: "manual" },
         }),
       );
@@ -82,7 +82,7 @@ function computerName(origin: string): string {
   return hostname.length <= 120 ? hostname : "Computer";
 }
 
-function addressDeploymentName(origin: string, kind: "personal" | "team"): string {
+function addressDeploymentName(origin: string): string {
   const hostname = new URL(origin).hostname;
-  return hostname.length <= 120 ? hostname : ({ personal: "Home", team: "Server" } as const)[kind];
+  return hostname.length <= 120 ? hostname : "Home";
 }

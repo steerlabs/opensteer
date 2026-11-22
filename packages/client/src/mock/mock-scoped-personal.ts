@@ -106,23 +106,13 @@ export function mockScopedShell(
     );
   const listed = new Set<string>(tasks.map(({ id }) => id));
   const activeIds = active.map(({ thread }) => thread.id).filter((id) => listed.has(id));
-  const attention = (snapshot.needsYou?.entries ?? []).slice(0, 200).map((entry) =>
-    entry.kind === "request"
-      ? {
-          id: entry.request.id,
-          kind: "request",
-          threadId: entry.originThreadId,
-          revision,
-          title: entry.title,
-        }
-      : {
-          id: entry.requestId,
-          kind: "team-ask",
-          threadId: entry.task?.threadId ?? null,
-          revision,
-          title: "Teammate ask",
-        },
-  );
+  const attention = (snapshot.needsYou?.entries ?? []).slice(0, 200).map((entry) => ({
+    id: entry.request.id,
+    kind: "request",
+    threadId: entry.originThreadId,
+    revision,
+    title: entry.title,
+  }));
 
   return PersonalNetworkShellSnapshotSchema.parse({
     ...(snapshot.effectiveWorkPolicy ? { effectiveWorkPolicy: snapshot.effectiveWorkPolicy } : {}),
@@ -730,7 +720,6 @@ export function mockScopedResource(
     case "plugin-webhooks":
     case "plugin-webhook-sources":
     case "plugin-schedules":
-    case "team-replies":
       return { kind };
     case "plugin-engine":
       return { kind, engine: { status: "idle" } };
@@ -782,14 +771,6 @@ export function mockInputQueue(
         truncated: false,
       },
       input: { messageId: input.messageId, queueRank: String(index), state: input.state },
-      ask:
-        input.teamRequestId && input.teamSource
-          ? {
-              requestId: input.teamRequestId,
-              teamId: input.teamSource.teamId,
-              audience: input.teamSource.audience,
-            }
-          : null,
       lease: lease
         ? {
             deviceLabel: lease.deviceLabel,

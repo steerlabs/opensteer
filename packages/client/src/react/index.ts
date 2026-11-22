@@ -5,7 +5,6 @@ export * from "./use-thread-transcript.js";
 export * from "./use-running-now.js";
 export * from "./use-request-asker.js";
 export * from "./use-waiting-inputs.js";
-export * from "./use-waiting-body.js";
 export * from "./use-worker-transcripts.js";
 export * from "./use-conversation-surfaces.js";
 export * from "./use-browser-popup-follow.js";
@@ -30,7 +29,6 @@ export { useVoice, useVoiceOn, useVoiceValue, VoiceContext } from "./use-voice.j
 export * from "./use-browser-agent-follow.js";
 
 export * from "./use-thread-server-approvals.js";
-export * from "./use-team.js";
 export * from "./use-paged-list.js";
 export * from "./use-mounted.js";
 export * from "./use-tool-output.js";
@@ -43,10 +41,6 @@ export * from "./use-syncing-placeholder.js";
 export * from "./use-tab-filter.js";
 
 export * from "./use-thread-visits.js";
-export * from "./use-team-partner-settings.js";
-export * from "./use-team-channel-shares.js";
-export * from "./use-team-knowledge.js";
-export * from "./use-team-share-participants.js";
 export * from "./use-idle-compaction.js";
 
 export * from "./use-asset-image.js";

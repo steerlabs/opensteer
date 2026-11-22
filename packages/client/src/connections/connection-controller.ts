@@ -34,7 +34,7 @@ export function clientScopeKey(scope: ClientScope | null): string | null {
 export type ConnectionPhase = "idle" | "connecting" | "ready" | "recovering" | "blocked";
 export interface ConnectionPresentation {
   readonly name: string | null;
-  readonly target: "computer" | "team";
+  readonly target: "computer";
   readonly route: "same-computer" | "private-network" | "connect" | null;
 }
 export interface ClientConnectionState extends ConnectionPresentation {

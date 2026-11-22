@@ -31,8 +31,6 @@ interface ThreadMenuProps {
   /** Hears the task after this one once it is marked Done here. */
   readonly onMarkedDone?: (next: string | null) => void;
   readonly onOpenThread: (threadId: string) => void;
-  /** Where the task works or the channel that asked, under its name in the menu's heading. */
-  readonly placeName?: string | null;
   readonly task: TaskHeading | null;
   readonly threadId: string;
   readonly title: string;
@@ -147,7 +145,7 @@ function Menu(
       ]
     : [];
   const state = props.connectionLabel ?? task?.word ?? null;
-  const label = [title, props.placeName, state].filter(Boolean).join(", ");
+  const label = [title, state].filter(Boolean).join(", ");
   return (
     <>
       {props.stop?.sheet}
@@ -192,10 +190,10 @@ function Menu(
   );
 }
 
-/** Where the bar shortens things: the whole name or who asked, the place, and any blocker. */
+/** Where the bar shortens things: the whole name or who asked, and any blocker. */
 function menuHeading(props: ThreadMenuProps): string {
-  const { placeName, task, title } = props;
-  return [task === null ? title : `From ${task.requester} · ${task.word}`, placeName, task?.detail]
+  const { task, title } = props;
+  return [task === null ? title : `From ${task.requester} · ${task.word}`, task?.detail]
     .filter(Boolean)
     .join("\n");
 }

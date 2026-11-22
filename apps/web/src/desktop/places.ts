@@ -119,12 +119,11 @@ function placeRow(
   };
 }
 
-type RowHomeKind = "mac" | "cloud" | "server" | "team" | "unknown";
+type RowHomeKind = "mac" | "cloud" | "server" | "unknown";
 const homeIcons: Readonly<Record<RowHomeKind, IconName>> = {
   mac: "laptop",
   cloud: "cloud",
   server: "server",
-  team: "server",
   unknown: "globe",
 };
 
@@ -143,7 +142,6 @@ function homeKindOf(
 ): RowHomeKind {
   if (deployment.onThisComputer) return "mac";
   if (context.cloud?.has(deployment.id) === true) return "cloud";
-  if (deployment.kind !== "personal") return "team";
   const networked = isNetworkedHome({
     canonicalOrigin: deployment.canonicalOrigin,
     deploymentShape: { kind: deployment.kind },
@@ -155,18 +153,14 @@ function homeKindOf(
 function placeDetail(deployment: DeploymentAccessDeployment, context: PlaceRowContext): string {
   if (deployment.onThisComputer) return context.thisComputer;
   if (deployment.accountAccess === "member") return "Shared with you";
-  if (deployment.kind === "personal") {
-    const homeName = context.facts?.get(deployment.id)?.homeName;
-    if (homeName && homeName !== deployment.name) return `Home: ${homeName}`;
-    return deployment.source === "account" ? "Your computer" : "Computer · added here";
-  }
-  return originHost(deployment.canonicalOrigin);
+  const homeName = context.facts?.get(deployment.id)?.homeName;
+  if (homeName && homeName !== deployment.name) return `Home: ${homeName}`;
+  return deployment.source === "account" ? "Your computer" : "Computer · added here";
 }
 
 function placeRank(deployment: DeploymentAccessDeployment): number {
   if (deployment.onThisComputer) return 0;
-  if (deployment.kind === "personal") return deployment.source === "account" ? 1 : 5;
-  return deployment.source === "account" ? 3 : 6;
+  return deployment.source === "account" ? 1 : 5;
 }
 
 function unavailableRow(entry: DeploymentAccessUnavailable, context: PlaceRowContext): PlaceRow {

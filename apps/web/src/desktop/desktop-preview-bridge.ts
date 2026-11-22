@@ -1015,8 +1015,6 @@ export function desktopPreviewBridge(
           },
           { status: 200 },
         );
-      if (path === "/v1/rpc/teams.links.list")
-        return Response.json({ data: { links: [] }, ok: true }, { status: 200 });
     }
     const selected = selectedDeployment(selection);
     if (!selected || hostAuth.deploymentId !== selected.id || hostAuth.status !== "signed-in") {

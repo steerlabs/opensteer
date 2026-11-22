@@ -56,7 +56,6 @@ export function AgentSessionPane(props: {
     onHeader?.({
       connectionLabel: view.header,
       title,
-      placeName: null,
       icon: null,
       color: null,
       isVoice: false,

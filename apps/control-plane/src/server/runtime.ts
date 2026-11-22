@@ -24,7 +24,6 @@ import { HostedOAuthBrokerStore } from "../auth/hosted-oauth-broker-store.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import { PersonalAccountLinkOperationCipher } from "../account/personal-account-link-operation-crypto.js";
 import { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
-import { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import { portalCallbackUri, portalOAuthClientId, portalOAuthScopes } from "../portal/portal.js";
 import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { createControlPlaneServer } from "./server.js";
@@ -37,14 +36,8 @@ import {
 import { ControlPlaneNotificationStore } from "../notifications/notification-store.js";
 import { NotificationTokenCipher } from "../notifications/notification-token-cipher.js";
 import { ControlPlaneStore } from "../database/store.js";
-import { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
-import {
-  HostedTeamBootstrapper,
-  hostedTeamOwnerCheck,
-} from "../hosted-teams/hosted-team-bootstrap.js";
-import { HttpHostedTeamHost } from "../hosted-teams/hosted-team-host.js";
-import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
-import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
+import { CloudComputerSecretCipher } from "../cloud-computers/secret-cipher.js";
+import { googleServiceAccountVerifier } from "../cloud-computers/provisioner-verifier.js";
 
 const operationResultCleanupIntervalMilliseconds = 5 * 60 * 1_000;
 
@@ -53,7 +46,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
 }> {
   assertNativeOAuthConfig(config);
   const database = createControlPlaneDatabase({ connectionString: config.databaseUrl });
-  let hostedTeamBootstrap: HostedTeamBootstrapper | undefined;
   let cloudComputerClaimer: CloudComputerClaimer | undefined;
   // Does nothing until the billing pass is set up below; its minute timer covers that.
   let runBilling = (): void => undefined;
@@ -76,18 +68,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       new CloudflareConnectProvider(config.connectCloudflare),
       { managedConnectDomain: config.connectDomain },
     );
-    const hostedTeamHost = new HttpHostedTeamHost();
-    const ownerCheck = hostedTeamOwnerCheck({
-      host: hostedTeamHost,
-      issuer: config.publicOrigin,
-      sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
-    });
-    const hostedTeams = config.hostedTeams
-      ? new HostedTeamStore(database, {
-          cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
-          ownerCheck,
-        })
-      : undefined;
     const cloud = config.cloudComputers;
     const stripe = cloud
       ? new CloudComputerStripe({ key: cloud.stripeKey, returnUrl: config.publicOrigin })
@@ -104,7 +84,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         ? new CloudComputerStore(database, {
             config: cloud,
             accountOrigin: config.publicOrigin,
-            cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
+            cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
             stripe,
             ...(organizations ? { organizations } : {}),
             returnUrl: new URL(cloudComputerPortalPath, config.portalOrigin),
@@ -182,18 +162,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
               },
             }
           : {}),
-        ...(config.hostedTeams && hostedTeams
-          ? {
-              hostedTeams: {
-                store: hostedTeams,
-                kickBootstrap: () => hostedTeamBootstrap?.kick(),
-                verifyProvisioner: googleServiceAccountVerifier({
-                  audience: config.publicOrigin.origin,
-                  email: config.hostedTeams.provisionerEmail,
-                }),
-              },
-            }
-          : {}),
         ...(config.iosAppUrl ? { iosAppUrl: config.iosAppUrl } : {}),
         ...(config.androidAppUrl ? { androidAppUrl: config.androidAppUrl } : {}),
         ...(config.desktopDownloadUrl ? { desktopDownloadUrl: config.desktopDownloadUrl } : {}),
@@ -207,11 +175,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         personalRemoteAccount,
         portalSessions,
         store,
-        teamIdentityGrants: new TeamIdentityGrantService({
-          auth,
-          database,
-          issuer: config.publicOrigin,
-        }),
         accountProfiles: createAccountProfiles(auth, database, config.publicOrigin),
       },
       { logger: config.environment !== "test" },
@@ -256,17 +219,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         : undefined;
     notificationDelivery?.start();
 
-    hostedTeamBootstrap = hostedTeams
-      ? new HostedTeamBootstrapper({
-          teams: hostedTeams,
-          accounts: store,
-          host: hostedTeamHost,
-          ownerCheck,
-          issuer: config.publicOrigin,
-          onError: (error) => server.log.error({ err: error }, "Hosted team setup failed"),
-        })
-      : undefined;
-    hostedTeamBootstrap?.start();
     cloudComputerClaimer = cloudComputers
       ? new CloudComputerClaimer({
           store: cloudComputers,
@@ -346,7 +298,6 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
           await billingPass;
           await offboardingPass;
           await backupPass;
-          await hostedTeamBootstrap?.close();
           await cloudComputerClaimer?.close();
           await notificationDelivery?.close();
           apns?.close();

@@ -38,7 +38,6 @@ function fixture() {
   const thread = {
     id: createId("thread"),
     purpose: "task",
-    teamOrigin: null,
     lineageRootThreadId: createId("thread"),
     accessMode: "auto",
     environmentId: createId("environment"),
@@ -681,8 +680,7 @@ describe("Opensteer MCP spine", () => {
     const client = await connect(f.url, "run");
     try {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
-      // Every Run lists knowledge; its handlers decide per call whether the owner may use it.
-      expect(names).toEqual(toolsFor({ ...f.run, knowledge: true }).map((t) => t.name));
+      expect(names).toEqual(toolsFor(f.run).map((t) => t.name));
       expect(names).toContain("opensteer_task_wait");
       expect(names).toContain("computer_use");
       expect(names).toContain("opensteer_task_delegate");

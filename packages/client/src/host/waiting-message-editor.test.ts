@@ -1,32 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
-import { NeedsYouTeamAskEntrySchema } from "@opensteer/protocol";
+import { DEFAULT_THREAD_ACCESS_MODE } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 import { HttpHostClient } from "./host-session-client.js";
+import { defaultThreadPlacement } from "./thread-placement.js";
 import { waitingInputs } from "./waiting-inputs.js";
-
-const teamId = createId("deployment");
-const ask = NeedsYouTeamAskEntrySchema.parse({
-  kind: "team-ask",
-  teamId,
-  requestId: createId("teamAgentRequest"),
-  createdAt: "2026-11-14T12:00:00.000Z",
-  consentExpiresAt: "2026-11-21T12:00:00.000Z",
-  presentation: {
-    asker: { teamUserId: createId("user"), displayName: "Maya", actor: "human" },
-    bodyMarkdown: "Can you check the ferry times?",
-    attachments: [],
-    destination: { teamId, channelId: createId("teamChannel"), threadRootId: "1" },
-    audience: {
-      teamName: "Acme",
-      channelName: "family",
-      channelKind: "public",
-      memberCount: 4,
-      peopleOnly: false,
-    },
-  },
-});
 
 const opened: { dispose(): void }[] = [];
 afterEach(() => {
@@ -34,13 +12,38 @@ afterEach(() => {
   for (const held of opened.splice(0)) held.dispose();
 });
 
+/** Sends one message to a task on the mock Host. */
+function send(mock: MockHostClient, threadId: string, text: string) {
+  return mock.dispatch({
+    content: [{ text, type: "text" }],
+    idempotencyKey: `mock-message:${crypto.randomUUID()}`,
+    threadId,
+    type: "thread.sendMessage",
+  });
+}
+
 /**
- * The production client against the mock Host, with one teammate's ask
- * waiting in its own task. `lose` drops the answer to the next command of
- * that type after the Host has carried it out.
+ * The production client against the mock Host, with one of the person's
+ * messages waiting in a task whose queue Stop paused. `lose` drops the answer
+ * to the next command of that type after the Host has carried it out.
  */
 async function setup(holdBody?: (response: Response) => Promise<Response>) {
-  const mock = new MockHostClient({ latencyMs: 0, teamAsks: [ask] });
+  const mock = new MockHostClient({ latencyMs: 0 });
+  const { environments, harnesses } = mock.getSnapshot();
+  const placement = defaultThreadPlacement(environments, harnesses);
+  if (!placement) throw new Error("The mock offers no placement.");
+  const thread = await mock.createThread({
+    accessMode: DEFAULT_THREAD_ACCESS_MODE,
+    environmentId: placement.environmentId,
+    harnessInstanceId: placement.harnessInstanceId,
+    modelSelection: placement.modelSelection,
+  });
+  const first = send(mock, thread.id, "Plan the trip");
+  const queued = await send(mock, thread.id, "Can you check the ferry times?");
+  if (queued.type !== "thread.sendMessage" || queued.run !== null)
+    throw new Error("The message did not wait in the queue.");
+  await mock.stopRun(thread.id);
+  await first;
   const host = new MockPersonalHost(mock);
   const sent: string[] = [];
   const lost = new Set<string>();
@@ -64,20 +67,19 @@ async function setup(holdBody?: (response: Response) => Promise<Response>) {
   });
   opened.push(client, host);
   await client.load();
-  const entry = mock.getSnapshot().needsYou!.entries.find((row) => row.kind === "team-ask");
-  if (entry?.kind !== "team-ask" || !entry.task) throw new Error("The ask has no task.");
-  const { threadId, messageId } = entry.task;
+  const threadId = thread.id;
+  const messageId = queued.message.id;
   client.activateThread(threadId);
   await vi.waitFor(
     () =>
       expect(
         client.getThreadTranscript(threadId)?.getSnapshot().inputQueue?.items,
-        "the ask's task never read its queue",
+        "the task never read its queue",
       ).toHaveLength(1),
     { timeout: 1000 },
   );
   const waiting = () =>
-    waitingInputs(client.getThreadTranscript(threadId)?.getSnapshot().inputQueue!, {})[0];
+    waitingInputs(client.getThreadTranscript(threadId)?.getSnapshot().inputQueue!)[0];
   return { client, host, lost, messageId, mock, sent, threadId, waiting };
 }
 
@@ -103,7 +105,7 @@ it("edits a waiting message in place under this device's lease, renewing it only
     [{ text: "Can you check Saturday's ferry times?", type: "text" }],
     editor.revision,
   );
-  expect(edit).toMatchObject({ ownerEdited: true, revision: 1 });
+  expect(edit).toMatchObject({ revision: 1 });
   expect(waiting()).toMatchObject({
     edit: { revision: 1 },
     lease: { kind: "none" },
@@ -111,15 +113,6 @@ it("edits a waiting message in place under this device's lease, renewing it only
     text: "Can you check Saturday's ferry times?",
   });
   expect(client.ownsEditLease(editor.leaseId)).toBe(false);
-  // Needs you approves the version the task now holds.
-  await client.loadEarlierNeedsYou();
-  expect(
-    client
-      .getSnapshot()
-      .needsYou?.entries.find(
-        (row) => row.kind === "team-ask" && row.task?.messageId === messageId,
-      ),
-  ).toMatchObject({ task: { revision: 1 } });
 
   editor.touch();
   expect(renewals()).toBe(1);
@@ -210,38 +203,4 @@ it("refuses to open an editor when another device takes the lease during the bod
   }
   await expect(editing).rejects.toMatchObject({ code: "conflict" });
   expect(waiting()?.lease).toMatchObject({ kind: "other", deviceLabel: "Alex's iPad" });
-});
-
-it("reloads a revised lease only for the observed queue and purges the removed scope", async () => {
-  const { client, mock, messageId, threadId, waiting } = await setup();
-  mock.mockOtherDeviceEdit(threadId, messageId, "Alex's iPhone");
-  await vi.waitFor(
-    () => expect(waiting()?.lease).toMatchObject({ kind: "other", deviceLabel: "Alex's iPhone" }),
-    { timeout: 1000 },
-  );
-  await client.loadEarlierNeedsYou();
-  const review = client
-    .getSnapshot()
-    .needsYou?.entries.find((row) => row.kind === "team-ask" && row.task?.threadId === threadId);
-  if (!review || review.kind !== "team-ask") throw new Error("The task has no waiting ask.");
-  await client.decideTeamAsk({
-    decision: "decline",
-    requestId: review.requestId,
-    teamId: review.teamId,
-  });
-  await vi.waitFor(
-    () =>
-      expect(client.getSnapshot().threadLookups[threadId], "the task was never removed").toBe(
-        "missing",
-      ),
-    { timeout: 1000 },
-  );
-  const snapshot = client.getSnapshot();
-  expect(snapshot.threads.some(({ id }) => id === threadId)).toBe(false);
-  expect(client.getThreadTranscript(threadId)?.getSnapshot().inputQueue).toBeNull();
-  expect(
-    snapshot.needsYou?.entries.some(
-      (row) => row.kind === "team-ask" && row.task?.threadId === threadId,
-    ),
-  ).toBe(false);
 });

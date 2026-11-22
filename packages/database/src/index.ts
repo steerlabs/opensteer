@@ -43,7 +43,6 @@ export { readIntegrationAccountBinding } from "./integration-account-binding.js"
 
 export { requestSettlementActor } from "./request-settlement.js";
 export * from "./memory-pass-store.js";
-export * from "./message-team-sources.js";
 
 export * from "./agent-connection-store.js";
 export * from "./agent-session-store.js";
@@ -67,7 +66,6 @@ export * from "./agent-thread-history.js";
 export { encodeThreadHistoryCursor, readThreadHistory } from "./thread-history.js";
 export { assignmentSummaryInTransaction } from "./assignment-store.js";
 export { personalDeploymentOwner, personalShellSessionState } from "./machine-store.js";
-export * from "./team-knowledge-store.js";
 
 export {
   hasEligibleBrowserPlacement,
@@ -92,28 +90,13 @@ export {
   type AgentHomeSettingsState,
 } from "./agent-home-settings-store.js";
 
-export * from "./team-access-store.js";
-export * from "./team-bus.js";
-export * from "./team-members-store.js";
-export * from "./team-groups-store.js";
-export * from "./team-invites-store.js";
-export * from "./team-chat-store.js";
-export * from "./team-files-store.js";
-export * from "./team-audit-store.js";
-export * from "./team-notices-store.js";
-export * from "./team-outbox-store.js";
-export * from "./team-requests-store.js";
-export type * from "./team-requests-port.js";
 export * from "./personal-settings-store.js";
 export * from "./personal-transaction.js";
-export * from "./task-admission-store.js";
 export * from "./needs-you-store.js";
 export * from "./run-personal-context.js";
 export { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
 export { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 export { readTranscriptOverlays } from "./personal-overlay-store.js";
-
-export { personalTeamRunOutcome, type PersonalTeamRunOutcome } from "./personal-team-run-store.js";
 
 export * from "./deployment-store.js";
 

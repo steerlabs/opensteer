@@ -2,7 +2,7 @@ import type { PlaceAgent } from "@opensteer/client/host";
 import { memo, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, radius } from "../theme.js";
-import { AgentOrb } from "../team/team-marks.js";
+import { AgentOrb } from "../ui/agent-orb.js";
 import { TaskMark } from "../ui/task-mark.js";
 
 /** Marks drawn side by side before the rest are only counted in words. */

@@ -100,7 +100,9 @@ import {
   type HostIntegrationsOperation,
   type PendingAgentEvent,
   type RunnerAuxiliaryFrameFence,
+  agentSessionGuardsCapability,
 } from "@opensteer/protocol";
+import { releasedRunnerCapabilities } from "../computer-apps/released-runner.test-support.js";
 
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { sql } from "kysely";
@@ -4265,7 +4267,13 @@ class FakeMac {
     null;
   ownerCaptureReason: "window-unreadable" | "accessibility-error" | "capture-failed" | null = null;
   ownerRenewFailure: "unavailable" | "ended" | "stale-generation" | null = null;
-  constructor(hub: ComputerAppHub, runnerId: RunnerId, macWindowVideo = true, ownerViews = false) {
+  constructor(
+    hub: ComputerAppHub,
+    runnerId: RunnerId,
+    macWindowVideo = true,
+    ownerViews = false,
+    capabilities: readonly string[] = [agentSessionGuardsCapability],
+  ) {
     this.#hub = hub;
     const auxiliaryStreamId = RunnerAuxiliaryStreamIdSchema.parse(`rax_${randomUUID()}`);
     const fence: RunnerAuxiliaryFrameFence = {
@@ -4282,6 +4290,8 @@ class FakeMac {
       fence,
       // A desktop supervises this Runner, so it relays approvals.
       identity: {
+        capabilities,
+        connectionGeneration: 1,
         modules: {
           integrations: {
             ...(macWindowVideo || ownerViews ? { ownerViewVersion: 3 } : {}),
@@ -5078,6 +5088,8 @@ async function createWorld(
     readonly phone?: boolean;
     readonly withoutComputerUse?: boolean;
     readonly releasedMacRunner?: boolean;
+    /** The Mac's Runner advertises what the Runner of `v0.1.716-insider` does. */
+    readonly releasedMacCapabilities?: boolean;
     readonly ownerViews?: boolean;
     readonly passwords?: ConstructorParameters<typeof ComputerUseService>[0]["passwords"];
     readonly onTabUsed?: DeviceServicesTestOptions["onTabUsed"];
@@ -5167,8 +5179,12 @@ async function createWorld(
   let computerUse!: ComputerUseService;
   const drivers = options.connectedWork ? new DeviceDriverResolver({ store }) : undefined;
   await drivers?.refresh();
+  const outdatedRunners: { runnerId: RunnerId; connectionGeneration: number }[] = [];
   const hub = new ComputerAppHub({
     ...(drivers ? { drivers } : {}),
+    recordRunnerOutdated: async (runner) => {
+      outdatedRunners.push({ ...runner });
+    },
     requireDeviceAgentAccess: async (deviceId) => {
       if (options.stoppedDevices?.has(deviceId))
         await requireDeviceAccess(database, deviceId, "apps", false, { stopped: true });
@@ -5245,7 +5261,13 @@ async function createWorld(
       (await store.getThreadForOwner(threadId, ownerUserId))?.title ?? null,
   });
   store.onRunGrantsRevoked((grants) => computerUse.endGrantSessions(grants));
-  const fakeMac = new FakeMac(hub, macId, !options.releasedMacRunner, options.ownerViews);
+  const fakeMac = new FakeMac(
+    hub,
+    macId,
+    !options.releasedMacRunner,
+    options.ownerViews,
+    options.releasedMacCapabilities ? releasedRunnerCapabilities : undefined,
+  );
   const fakePhone = phoneId ? new FakePhone(hub, phoneId) : null;
   /** Whether the Thread's engine and model both show MCP images. */
   const imageGate = { on: false };
@@ -5398,6 +5420,7 @@ async function createWorld(
     computerUse,
     hub,
     fakeMac,
+    outdatedRunners,
     platform,
     tabs,
     tabStore,
@@ -5783,6 +5806,7 @@ integration.sequential("Computer use for a connected agent, through its session"
       appLabel?: string;
       reviewer?: ConstructorParameters<typeof AgentSessionService>[0]["reviewer"];
       computerReplTime?: DeviceServicesTestOptions["computerReplTime"];
+      releasedMac?: boolean;
     } = {},
   ) {
     const stoppedDevices = new Set<DeviceId>();
@@ -5793,6 +5817,7 @@ integration.sequential("Computer use for a connected agent, through its session"
       stoppedDevices,
       sleepingRunners,
       ...(options.computerReplTime ? { computerReplTime: options.computerReplTime } : {}),
+      ...(options.releasedMac ? { releasedMacCapabilities: true } : {}),
     });
     const onMac = options.target === "mac";
     const definitionId = onMac ? "macos-app" : "android-phone";
@@ -6004,6 +6029,34 @@ integration.sequential("Computer use for a connected agent, through its session"
       expect(JSON.stringify(listed.content)).toContain("[1,0]");
       const tab = await s.call({ code: 'await tab("anything")' });
       expect(JSON.stringify(tab.content)).toContain("app() or phone()");
+    } finally {
+      await s.world.close();
+    }
+  });
+
+  it("refuses a read-only look at Notes on a released Mac Runner before any frame, and runs an ordinary one", async () => {
+    const s = await connectedAgent("full-access", { target: "mac", releasedMac: true });
+    try {
+      const script =
+        'globalThis.w=await (await app("Notes")).window(); await w.observe({screenshot:true})';
+      const read = await s.call({ code: script, readOnly: true }, "observe-notes-released");
+      // The words an outdated computer always gets: it names the Mac and the update.
+      expect(JSON.stringify(read.content)).toContain(`${mac} needs an Opensteer update.`);
+      expect(
+        s.world.fakeMac.frames.filter(
+          ({ operation }) => operation === "bind" || operation === "windows",
+        ),
+      ).toEqual([]);
+      expect(s.world.outdatedRunners).toEqual([
+        { runnerId: s.world.macId, connectionGeneration: 1 },
+      ]);
+      // Its integrations stream stays open, and an ordinary call goes as it always has.
+      expect(s.world.hub.attached(s.world.macId)).toBe(true);
+      const ordinary = await s.call({ code: script }, "observe-notes-ordinary");
+      expect(ordinary, JSON.stringify(ordinary)).toMatchObject({ status: "completed" });
+      const bind = s.world.fakeMac.frames.find(({ operation }) => operation === "bind");
+      expect(bind?.params).toMatchObject({ windowId: null });
+      expect(bind?.params).not.toHaveProperty("noLaunch");
     } finally {
       await s.world.close();
     }
