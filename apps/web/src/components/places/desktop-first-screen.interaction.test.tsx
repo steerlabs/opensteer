@@ -113,6 +113,14 @@ describe("the first-run journey's reading of the Mac app's first screen", () => 
     expect(firstScreenOf(desktopFirstScreenWords)).toBe("sign-in");
   });
 
+  it("then reads the screen signing in leads to, and its choice of this Mac", async () => {
+    await mount({ available: true, email: "person@example.test", status: "signed-in" });
+    expect(document.body.textContent).toContain(desktopFirstScreenWords.whereTitle);
+    // The journey presses the button whose name starts with this, as a person would.
+    const buttons = [...document.querySelectorAll("button")].map((b) => b.textContent ?? "");
+    expect(buttons.some((name) => name.startsWith(desktopFirstScreenWords.onThisMac))).toBe(true);
+  });
+
   it("waits while no first screen is showing", () => {
     expect(firstScreenOf(desktopFirstScreenWords)).toBeNull();
   });

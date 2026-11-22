@@ -240,7 +240,11 @@ export function DesktopWelcome({
         run={run}
         startHere={
           onSetUpHere
-            ? startHere("on-this-mac", "Free. Works while this Mac is awake.", "On this Mac")
+            ? startHere(
+                "on-this-mac",
+                "Free. Works while this Mac is awake.",
+                desktopFirstScreenWords.onThisMac,
+              )
             : null
         }
       />
@@ -522,7 +526,7 @@ function DesktopWhere({
       description="Your browser profiles, apps, plugins, tasks and rules live in one Home. You can add devices to it later."
       {...(eyebrow ? { eyebrow } : {})}
       live
-      title="Where should your Opensteer live?"
+      title={desktopFirstScreenWords.whereTitle}
     >
       <ErrorNotice message={openFailure ?? error} />
       {waiting ? (

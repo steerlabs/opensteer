@@ -32,6 +32,15 @@ import {
   startJourneyPostgres,
 } from "./account-service.js";
 import { signInAtAccount } from "./browser.js";
+import {
+  accountLinkStatus,
+  emitOpenUrl,
+  homeIsReady,
+  nextKnownSetupStep,
+  phoneStepSettled,
+  quitApp,
+} from "./remote.js";
+import { phoneStepTitle, setupMoves } from "./setup-walk.js";
 import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
 import { desktopFirstScreenWords } from "../../apps/web/src/components/places/desktop-first-screen-words.js";
 import {
@@ -115,26 +124,16 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
     // The first screen decides whether there is an account to sign in to at all.
     await firstScreen(page, log, directory);
     await signIn(app, page, account.origin);
-    await screen(page, "Where should your Opensteer live?");
-    await page.getByRole("button", { name: /^On this Mac/u }).click();
+    await screen(page, desktopFirstScreenWords.whereTitle);
+    // The row's name is its title and its detail: it starts with the title.
+    await page
+      .getByRole("button", { name: new RegExp(`^${desktopFirstScreenWords.onThisMac}`, "u") })
+      .click();
     if (trial === "settled") await homeReady(page);
     await skipToPhoneStep(page);
     const shown = await phoneStepSettles(page);
     await page.screenshot({ path: path.join(directory, "phone-step.png") });
-    const accountLink = await page.evaluate(
-      async () =>
-        (
-          await (
-            window as unknown as {
-              opensteerDesktop: {
-                getDeploymentAccessSnapshot(): Promise<{
-                  personalAccountLink: { status: string };
-                }>;
-              };
-            }
-          ).opensteerDesktop.getDeploymentAccessSnapshot()
-        ).personalAccountLink.status,
-    );
+    const accountLink = await page.evaluate(accountLinkStatus);
     const verdict = judgeFirstRunTrial({
       accountLink,
       log: log.join(""),
@@ -219,48 +218,13 @@ async function signIn(app: ElectronApplication, page: Page, accountOrigin: strin
     password: journeyAccount.password,
   });
   // macOS hands an app the address of a scheme it registered as an `open-url` event.
-  await app.evaluate(({ app: electronApp }, url) => {
-    electronApp.emit("open-url", { preventDefault: () => undefined }, url);
-  }, callback);
+  await app.evaluate(emitOpenUrl, callback);
 }
 
 /** This Mac's Home is set up and attached: what `settled` waits for before moving on. */
 async function homeReady(page: Page): Promise<void> {
-  await page.waitForFunction(
-    async () => {
-      const snapshot = await (
-        window as unknown as {
-          opensteerDesktop: {
-            getDeploymentAccessSnapshot(): Promise<{
-              personalSetup: { state: string } | null;
-              deployments: readonly { onThisComputer: boolean; status: string }[];
-            }>;
-          };
-        }
-      ).opensteerDesktop.getDeploymentAccessSnapshot();
-      return (
-        snapshot.personalSetup?.state === "ready" &&
-        snapshot.deployments.some((row) => row.onThisComputer && row.status === "connected")
-      );
-    },
-    undefined,
-    { polling: 250, timeout: settleMs },
-  );
+  await page.waitForFunction(homeIsReady, undefined, { polling: 250, timeout: settleMs });
 }
-
-/**
- * The setup steps before the phone, each decided by its own title (the one heading a setup screen
- * shows, `setup-frame.tsx`) and passed with the move that step offers a person who leaves it as it
- * is: "Your AI" has Skip; "Your agent on this Mac" has only Continue
- * (`devices/home-setup-step.tsx`), which leads to "Let macOS allow it" and its "Do this later".
- * Never by a button another step also shows.
- */
-const setupMoves: Readonly<Record<string, string>> = {
-  "Your AI": "Skip",
-  "Your agent on this Mac": "Continue",
-  "Let macOS allow it": "Do this later",
-};
-const phoneStepTitle = "Connect your phone";
 
 /** Through the setup steps, as soon as each appears, to "Connect your phone". */
 async function skipToPhoneStep(page: Page): Promise<void> {
@@ -281,10 +245,7 @@ async function nextSetupStep(page: Page, previous: string | null): Promise<strin
   const known = [...Object.keys(setupMoves), phoneStepTitle];
   try {
     const handle = await page.waitForFunction(
-      ({ known, previous }) => {
-        const title = document.querySelector(".setup-frame__title")?.textContent?.trim() ?? "";
-        return known.includes(title) && title !== previous ? title : null;
-      },
+      nextKnownSetupStep,
       { known, previous },
       { polling: 250, timeout: settleMs },
     );
@@ -307,14 +268,7 @@ async function nextSetupStep(page: Page, previous: string | null): Promise<strin
 /** The phone step's text once the turn-on has come to its end: the helper sentence, or a failure. */
 async function phoneStepSettles(page: Page): Promise<string> {
   await page
-    .waitForFunction(
-      (sentence) => {
-        const text = document.body.innerText;
-        return text.includes(sentence) || /Couldn[’']t add/u.test(text);
-      },
-      helperMissingSentence,
-      { timeout: settleMs },
-    )
+    .waitForFunction(phoneStepSettled, helperMissingSentence, { timeout: settleMs })
     // Judged on what it shows: a turn-on that never ends fails on the missing sentence.
     .catch(() => undefined);
   return page.locator("body").innerText();
@@ -343,7 +297,7 @@ async function quit(app: ElectronApplication): Promise<void> {
     if (child.exitCode !== null) resolve();
     else child.once("exit", () => resolve());
   });
-  await app.evaluate(({ app: electronApp }) => electronApp.quit()).catch(() => undefined);
+  await app.evaluate(quitApp).catch(() => undefined);
   const quitInTime = await bounded(exited, "the app to quit", 30_000).then(
     () => true,
     () => false,

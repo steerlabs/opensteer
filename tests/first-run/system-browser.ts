@@ -7,6 +7,8 @@
  * context, and its rejection would hide the trial's real result).
  */
 
+import { installOpenedMarker } from "./remote.js";
+
 /** How the replaced openExternal names an address in the app's main-process console. */
 export const openedMarker = "first-run-journey opened ";
 
@@ -33,11 +35,7 @@ export async function openedByPress(
   press: () => Promise<void>,
   timeout: number,
 ): Promise<string> {
-  await app.evaluate(({ shell }, marker) => {
-    shell.openExternal = async (url: string) => {
-      console.log(`${marker}${url}`);
-    };
-  }, openedMarker);
+  await app.evaluate(installOpenedMarker, openedMarker);
   const opened = app.waitForEvent("console", {
     predicate: (message) => message.text().startsWith(`${openedMarker}${prefix}`),
     timeout,

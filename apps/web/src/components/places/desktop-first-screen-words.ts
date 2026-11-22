@@ -13,6 +13,10 @@ export const desktopFirstScreenWords = Object.freeze({
   keychainTitle: "Opensteer can’t use this Mac’s keychain",
   /** A row only the welcome of a build without an account shows. */
   connectExisting: "Connect to my Opensteer",
+  /** The screen signing in leads to: where this person's Opensteer should live. */
+  whereTitle: "Where should your Opensteer live?",
+  /** Its choice to set Opensteer up on this Mac. */
+  onThisMac: "On this Mac",
 });
 
 export type DesktopFirstScreenWords = typeof desktopFirstScreenWords;
