@@ -667,3 +667,31 @@ it("ends the sessions of a browser whose slot the host deleted, sends nothing mo
   await home.restart().catch(() => undefined);
   expect(p.answered.length).toBe(calls);
 });
+
+// ---- P11: a refused wake goes back to parked, and a refusal is not a failed start -------------
+
+it("returns a refused wake to parked, and counts a refused restart as no failed start", async () => {
+  const mounted = await mountedAgentController("slot-refused-parked");
+  const p = await pair("refused-parked", mounted);
+  const home = p.home(undefined, { extra: { refusedRetryMs: 60_000 } });
+  await home.recover();
+  expect(await home.tryPark()).toBe("parked");
+  const saved = (await p.status()).savedState!;
+  await mounted.agent.agent.saveToDisk("slot-refused-parked", saved.id);
+  mounted.driver.profilesMounted = false;
+  const wanting = new AbortController();
+  void home.gate.reserve(wanting.signal).catch(() => undefined);
+  await vi.waitFor(() => expect(p.times("resume").length).toBeGreaterThanOrEqual(1));
+  // Refused with its saved state kept: parked again, so nothing wakes it while nobody waits.
+  await vi.waitFor(async () => expect((await p.slot())?.phase).toBe("parked"));
+  wanting.abort();
+  mounted.driver.profilesMounted = true;
+  const again = await home.gate.reserve(AbortSignal.timeout(20_000));
+  again.release();
+  expect(p.controller.effects).toEqual(["start", "pause", "resume"]);
+  // A restart the controller refuses is reported with its reason, never counted as failed.
+  mounted.driver.profilesMounted = false;
+  void home.restart({ key: "refused" }).catch(() => undefined);
+  await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "profile-disk-missing" }));
+  expect((await p.slot())?.failedStarts).toBe(0);
+});

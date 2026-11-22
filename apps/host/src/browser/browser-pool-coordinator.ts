@@ -486,7 +486,10 @@ export class BrowserPoolCoordinator {
         if (error instanceof BrowserPoolNotStarted) {
           // Not started, and nothing of the guest lost: asked again later, never a reason to
           // give live state up, and spaced so the host is not asked in a loop.
+          const announce = this.#refused?.reason !== error.reason;
           this.#refused = { reason: error.reason, since: this.#refused?.since ?? new Date() };
+          // Subscribed clients learn of a refusal when it begins or its reason changes.
+          if (announce) await announceBrowserPool(this.#options.database).catch(() => undefined);
           const first = this.#options.refusedRetryMs ?? refusedRetryMs;
           await delay(
             Math.min(first * 2 ** Math.min(refusals++, 16), refusedRetryMaxMs),
@@ -1268,8 +1271,11 @@ export class BrowserPoolCoordinator {
           now.phase === "paused" &&
           sameFence(statusFence(now), fenceOf(slot)) &&
           now.savedState?.id === saved.id
-        )
+        ) {
+          // Back to parked: it is asked again only while someone wants the browser.
+          if (slot.phase === "waking") await this.#advance(slot, { phase: "parked" });
           throw new BrowserPoolNotStarted(result.reason);
+        }
         return this.#discard(slot, result.reason ?? "resume-refused");
       }
       resumed = result;
@@ -1387,11 +1393,13 @@ export class BrowserPoolCoordinator {
       await this.#startFresh(slot, reason, keys);
       this.#display = undefined;
     } catch (error) {
-      // A fresh start that did not come up: the person sees it failed, and how often.
+      // A fresh start that did not come up: the person sees it failed, and how often. One the
+      // controller refused is not a failed start: it is reported with its reason instead.
       this.#display = { phase: "failed", since: new Date() };
-      await recordBrowserPoolStartFailure(this.#options.database, slot.runnerId).catch(
-        () => undefined,
-      );
+      if (!(error instanceof BrowserPoolNotStarted))
+        await recordBrowserPoolStartFailure(this.#options.database, slot.runnerId).catch(
+          () => undefined,
+        );
       throw error;
     }
   }

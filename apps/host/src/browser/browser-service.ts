@@ -6581,9 +6581,11 @@ export class BrowserService {
   async #poolReport(runnerId: RunnerId): Promise<readonly BrowserPoolReportView[]> {
     const database = (this.#repository as OpensteerStore).database;
     const slot = await readBrowserPoolSlot(database, runnerId);
+    const shown = this.#pool(runnerId)?.report();
+    // A first start the controller refused has no slot row yet: it is reported all the same.
+    if (!slot && shown) return [{ runnerId, phase: shown.phase, since: shown.since.toISOString() }];
     // A removed device's slot waits only for its guest to stop: there is no browser to show.
     if (!slot || slot.phase === "releasing") return [];
-    const shown = this.#pool(runnerId)?.report();
     const start = slot.lastStart as { reason?: string; id?: string } | null;
     // The newest unseen notice of each tab, bounded well under the protocol's limit; older
     // unseen ones fall to retention.
