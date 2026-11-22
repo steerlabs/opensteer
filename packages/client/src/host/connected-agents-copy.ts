@@ -285,7 +285,7 @@ export const connectedAgentsCopy = {
   "agent.about.says": "Calls itself",
   "agent.about.origin": "Address it uses",
   "agent.about.originUnknown": "Not proven",
-  "agent.about.connected": "Connected",
+  "agent.about.connected": "Added",
   "agent.about.expires": "Expires",
   "agent.legacy":
     "Update Opensteer on your Home to choose what this agent can use. Until then it can do everything your own agents can.",

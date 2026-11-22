@@ -227,7 +227,8 @@ describe("one connected agent on the phone", () => {
     ).toEqual([
       ["Calls itself", "TravelBot Agent"],
       ["Address it uses", "trips.example"],
-      ["Connected", expect.any(String)],
+      // The day it was added, never read as where it stands now.
+      ["Added", expect.any(String)],
       ["Expires", expect.any(String)],
     ]);
     expect(row("end", "disconnect")).toMatchObject({
