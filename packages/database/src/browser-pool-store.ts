@@ -1,3 +1,4 @@
+import type { HostedBrowserSessionState } from "@opensteer/protocol";
 import {
   OpensteerError,
   type BrowserSessionId,
@@ -303,8 +304,10 @@ export async function advanceBrowserPoolSlot(
           .where("state", "=", "closing")
           .orderBy("id")
           .execute(databaseOperationOptions());
-        for (const { id } of stopped)
-          await transitionBrowserSession(tx, { from: ["closing"], sessionId: id, state: "closed" });
+        await endBrowserPoolSessions(
+          tx,
+          stopped.map(({ id }) => ({ id, from: ["closing"], state: "closed" })),
+        );
       }
       return advanced;
     },
@@ -399,15 +402,77 @@ async function recordBrowserPoolLosses(
     );
     // One a Stop left closing is answered by this end: it closed, as the person asked. Without
     // the guest's end it stays closing; the removal's finish closes it.
-    for (const { id, state } of sessions.filter(
-      ({ id, state }) => ended.has(id) && (guestEnded || state !== "closing"),
-    ))
-      await transitionBrowserSession(tx, {
-        from: ["starting", "ready", "closing"],
-        sessionId: id,
-        state: state === "closing" ? "closed" : "failed",
-      });
+    await endBrowserPoolSessions(
+      tx,
+      sessions
+        .filter(({ id, state }) => ended.has(id) && (guestEnded || state !== "closing"))
+        .map(({ id, state }) => ({
+          id,
+          from: ["starting", "ready", "closing"],
+          state: state === "closing" ? "closed" : "failed",
+        })),
+    );
   }
+}
+
+/**
+ * Ends several sessions in one transaction in the declared lock order (P19): every session row
+ * first, in id order, then all their attachments, in key order; as transitionBrowserSession does
+ * for one.
+ */
+async function endBrowserPoolSessions(
+  tx: Kysely<DatabaseSchema>,
+  ends: readonly {
+    readonly id: BrowserSessionId;
+    readonly from: readonly HostedBrowserSessionState[];
+    readonly state: "closed" | "failed";
+  }[],
+): Promise<void> {
+  if (!ends.length) return;
+  const ordered = [...ends].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  await commitPersonalMutation(tx, async (transaction, mutation) => {
+    await transaction
+      .selectFrom("browserSessions")
+      .select("id")
+      .where(
+        "id",
+        "in",
+        ordered.map(({ id }) => id),
+      )
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute(databaseOperationOptions());
+    const now = new Date();
+    const ended: BrowserSessionId[] = [];
+    for (const end of ordered) {
+      const row = await transaction
+        .updateTable("browserSessions")
+        .set({ closedAt: now, state: end.state, updatedAt: now })
+        .where("id", "=", end.id)
+        .where("state", "not in", ["closed", "failed"])
+        .where("state", "in", [...end.from])
+        .returning("id")
+        .executeTakeFirst(databaseOperationOptions());
+      if (row) ended.push(row.id);
+    }
+    if (!ended.length) return;
+    await transaction
+      .selectFrom("browserSessionAttachments")
+      .select(["agentBindingId", "sessionId"])
+      .where("sessionId", "in", ended)
+      .orderBy("agentBindingId", "asc")
+      .orderBy("sessionId", "asc")
+      // FOR UPDATE: these attachments are deleted below; their keys are locked in order.
+      .forUpdate()
+      .execute(databaseOperationOptions());
+    await transaction
+      .deleteFrom("browserSessionAttachments")
+      .where("sessionId", "in", ended)
+      .execute(databaseOperationOptions());
+    mutation.bumpResource("browser-placement");
+    mutation.bumpResource("browser-availability");
+    mutation.bumpResource("tab");
+  });
 }
 
 /** Tells clients a pooled browser's shown phase changed, with nothing else written. */
@@ -518,8 +583,10 @@ export async function finishBrowserPoolRelease(
         .where("state", "=", "closing")
         .orderBy("id")
         .execute(databaseOperationOptions());
-      for (const { id } of closing)
-        await transitionBrowserSession(tx, { from: ["closing"], sessionId: id, state: "closed" });
+      await endBrowserPoolSessions(
+        tx,
+        closing.map(({ id }) => ({ id, from: ["closing"], state: "closed" })),
+      );
     },
     undefined,
     "once-bounded",

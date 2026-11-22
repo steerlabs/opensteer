@@ -39,6 +39,8 @@ import {
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import {
   advanceBrowserPoolSlot,
+  beginBrowserPoolRelease,
+  finishBrowserPoolRelease,
   readBrowserPoolSlot,
 } from "../packages/database/src/browser-pool-store.js";
 import {
@@ -52,6 +54,7 @@ import {
   transitionBrowserSession,
 } from "../packages/database/src/browser-session-store.js";
 import { BrowserSessionIdSchema } from "../packages/protocol/src/browser.js";
+import type { BrowserSessionId } from "../packages/core/src/index.js";
 import { createStoreFixture } from "../packages/database/src/store.integration.test-support.js";
 import { createPoolController } from "./browser-pool-controller-under-test.test-support.js";
 import { FakeHypervisorDriver } from "../apps/pool-agent/src/fake-driver.test-support.js";
@@ -983,3 +986,92 @@ it.each(["unsigned", "unreachable"] as const)(
     expect(next.report()).toBeUndefined();
   },
 );
+
+// ---- P19: several sessions ended in one transaction take their rows in the declared order -----
+
+/** Two pooled sessions a Stop left closing, each with an agent's attachment. */
+async function closingWithAttachments(p: Awaited<ReturnType<typeof pair>>) {
+  const ids: BrowserSessionId[] = [];
+  for (let index = 0; index < 2; index++) {
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await createBrowserSession(p.fixture.database, {
+      id: sessionId,
+      ownerId: p.task.userId,
+      opener: { kind: "person", userId: p.task.userId },
+      origin: "person",
+      placementKey: "pool-test",
+      profileId: null,
+      runnerId: p.task.runnerId,
+      runtimeId: "pool-runtime",
+    });
+    await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
+    await p.fixture.database
+      .insertInto("browserSessionAttachments")
+      .values([
+        { agentBindingId: `agent:${index}`, ownerId: p.task.userId, sessionId },
+        { agentBindingId: "agent:both", ownerId: p.task.userId, sessionId },
+      ])
+      .execute();
+    await p.fixture.database
+      .updateTable("browserSessions")
+      .set({ state: "closing" })
+      .where("id", "=", sessionId)
+      .execute();
+    ids.push(sessionId);
+  }
+  const ended = async () => ({
+    states: await Promise.all(
+      ids.map(
+        async (id) =>
+          (await getBrowserSessionForOwner(p.fixture.database, id, p.task.userId))?.state,
+      ),
+    ),
+    attachments: (
+      await p.fixture.database
+        .selectFrom("browserSessionAttachments")
+        .select("sessionId")
+        .where("sessionId", "in", ids)
+        .execute()
+    ).length,
+  });
+  return { ids, ended };
+}
+
+it("closes several stopped sessions with attachments at a park's commit, in lock order", async () => {
+  const p = await pair("park-several");
+  const home = p.home();
+  await home.recover();
+  home.close();
+  const { ended } = await closingWithAttachments(p);
+  const slot = (await p.slot())!;
+  await advanceBrowserPoolSlot(p.fixture.database, slot, { phase: "parked" });
+  expect(await ended()).toEqual({ states: ["closed", "closed"], attachments: 0 });
+});
+
+it("closes several stopped sessions with attachments at a release's finish, in lock order", async () => {
+  const p = await pair("release-several");
+  const home = p.home();
+  await home.recover();
+  home.close();
+  const { ended } = await closingWithAttachments(p);
+  const slot = (await p.slot())!;
+  await beginBrowserPoolRelease(p.fixture.database, slot, []);
+  await finishBrowserPoolRelease(p.fixture.database, p.task.runnerId);
+  expect(await ended()).toEqual({ states: ["closed", "closed"], attachments: 0 });
+});
+
+it("ends several lost sessions with attachments in one write, in lock order", async () => {
+  const p = await pair("losses-several");
+  const home = p.home();
+  await home.recover();
+  home.close();
+  const { ids, ended } = await closingWithAttachments(p);
+  const slot = (await p.slot())!;
+  await advanceBrowserPoolSlot(
+    p.fixture.database,
+    slot,
+    { phase: slot.phase },
+    ids.map((sessionId) => ({ sessionId, reason: "not-reattached", surfaces: [] })),
+  );
+  expect(await ended()).toEqual({ states: ["closed", "closed"], attachments: 0 });
+});
