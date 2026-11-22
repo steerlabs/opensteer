@@ -307,6 +307,24 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       });
     },
   );
+  // CT8: a paste over a selection is one operation: on a target that takes no paste nothing is
+  // deleted first; the paste is refused whole.
+  it("refuses a paste over a selection whole on a target without a clipboard", () => {
+    const bytes = new TextEncoder().encode("x");
+    let state = createEditingState("ios", { ...abilities, clipboard: "none" });
+    const run = (event: EditingProxyEvent) => {
+      const step = reduceEditing(state, event);
+      state = step.state;
+      return step;
+    };
+    run({ type: "context", context });
+    run({ type: "beforeinput", inputType: "insertText", data: "hello world" });
+    run(input("hello world"));
+    run({ type: "selection", proxy: proxy("hello world", 6, 11) });
+    const pasted = run({ type: "paste", items: [{ type: "text/plain", bytes }] });
+    expect(pasted.operations).toEqual([]);
+    expect(pasted.refusal).toBe("clipboard");
+  });
   // CS2: a paste does not reset the mirror. The phone knows the text it pastes: the mirror takes it
   // where it went, and what is typed next is verified around it like typed text.
   it("keeps the mirror through a paste, with the pasted text in it", () => {

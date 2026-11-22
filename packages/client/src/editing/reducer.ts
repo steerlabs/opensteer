@@ -851,7 +851,15 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       const text = event.items.find(
         (item) => item.type === "text/plain" && item.name === undefined,
       );
-      const items = state.abilities.clipboard === "full" ? event.items : text ? [text] : [];
+      // Whether it may be pasted is decided before anything is deleted: whole, or refused whole.
+      const items =
+        state.abilities.clipboard === "none"
+          ? []
+          : state.abilities.clipboard === "full"
+            ? event.items
+            : text
+              ? [text]
+              : [];
       // A paste over a selection replaces it, as typing over it does. The far field has no
       // selection: the selection is deleted first, and the paste goes in where it was.
       const { value, selectionStart: start, selectionEnd: end } = state.proxy;
