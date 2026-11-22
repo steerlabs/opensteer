@@ -34,6 +34,12 @@ export interface DesktopConfiguration {
   readonly accountUrl: URL | null;
   readonly browser: DesktopBrowserRuntimeConfig | null;
   readonly dataDirectory: string;
+  /**
+   * Certificate authorities the person added for Node (`NODE_EXTRA_CA_CERTS`), handed to this
+   * Mac's Home and to nothing else, so a Home behind a company's TLS inspection can reach the
+   * account service. Null unless someone set it on purpose.
+   */
+  readonly extraCertificateAuthorities: string | null;
   /** Optional source-build bootstrap Host. Signed installs begin with an empty catalog. */
   readonly hostUrl: URL | null;
   readonly localExecution: DesktopLocalExecutionConfiguration;
@@ -88,6 +94,7 @@ const EnvironmentSchema = z.object({
   OPENSTEER_DESKTOP_PORTAL_URL: z.string().optional(),
   OPENSTEER_DESKTOP_RUNNER_WORKER: z.string().optional(),
   OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: z.string().optional(),
+  NODE_EXTRA_CA_CERTS: z.string().optional(),
 });
 
 export function readDesktopConfiguration(
@@ -197,11 +204,15 @@ export function readDesktopConfiguration(
     ),
   };
 
+  const extraAuthorities = optional(parsed.NODE_EXTRA_CA_CERTS);
   return {
     config: {
       accountUrl,
       browser,
       dataDirectory,
+      extraCertificateAuthorities: extraAuthorities
+        ? absolutePath(extraAuthorities, "NODE_EXTRA_CA_CERTS")
+        : null,
       hostUrl,
       localExecution,
       mode,

@@ -656,6 +656,7 @@ async function runDesktop(
     onUncontainedBoot: (mode: string) => localStop.noteUncontainedBoot(mode),
     userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
+    extraCertificateAuthorities: loaded.config.extraCertificateAuthorities,
     catalog: deploymentCatalog,
     computerUse: computerUseForSlots,
     credentials: new NativePersonalDeploymentCredentials(protectedStorage, { privateFiles }),

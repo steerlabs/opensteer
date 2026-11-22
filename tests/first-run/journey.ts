@@ -40,6 +40,7 @@ import {
   phoneStepSettled,
   quitApp,
 } from "./remote.js";
+import { journeyAccountTls, type JourneyAccountTls } from "./account-tls.js";
 import { journeyAppEnvironment } from "./app-environment.js";
 import { phoneStepTitle, setupMoves } from "./setup-walk.js";
 import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
@@ -68,6 +69,19 @@ function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is required: run this journey with pnpm test:vm.`);
   return value;
+}
+
+// The Host takes only a bare public HTTPS origin as its issuer: the account service is served
+// under the guest's fixture name with the fixture authority's certificate (`account-tls.ts`).
+const accountTls = requiredAccountTls();
+
+function requiredAccountTls(): JourneyAccountTls {
+  const tls = journeyAccountTls();
+  if (tls === null)
+    throw new Error(
+      "No fixture authority in this guest: scripts/test-vm/fixture-keychain.sh makes it at the job's start.",
+    );
+  return tls;
 }
 
 const postgres = await startJourneyPostgres({
@@ -101,6 +115,7 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
   const data = await mkdtemp(path.join(tmpdir(), `${trial}-`));
   const account = await startJourneyAccountService({
     databaseUrl: await postgres.database(`first_run_${trial}`),
+    tls: accountTls,
   });
   const log: string[] = [];
   let app: ElectronApplication | undefined;
@@ -117,6 +132,7 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
         ...journeyAppEnvironment({
           accountOrigin: account.origin,
           dataDirectory: data,
+          extraCertificateAuthorities: accountTls.authorityFile,
           portalOrigin: account.portalOrigin,
           runtime,
         }),
@@ -223,6 +239,7 @@ async function signIn(app: ElectronApplication, page: Page, accountOrigin: strin
     authorizeUrl,
     email: journeyAccount.email,
     password: journeyAccount.password,
+    tls: { ca: accountTls.ca },
   });
   // macOS hands an app the address of a scheme it registered as an `open-url` event.
   await app.evaluate(emitOpenUrl, callback);

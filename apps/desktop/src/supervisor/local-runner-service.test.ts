@@ -3319,6 +3319,7 @@ async function configuration(directory: string): Promise<DesktopConfiguration> {
     accountUrl: null,
     browser: null,
     dataDirectory: directory,
+    extraCertificateAuthorities: null,
     hostUrl: null,
     localExecution: {
       dataDirectory: path.join(directory, "runner"),

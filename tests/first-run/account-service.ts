@@ -1,4 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { request as httpRequest } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { randomBytes } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -30,6 +32,8 @@ export const journeyAccount = {
 export function accountServiceEnvironment(input: {
   readonly databaseUrl: string;
   readonly port: number;
+  /** Where it is reached: by default its own loopback address; in the guest, its TLS front. */
+  readonly publicOrigin?: string;
 }): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "development",
@@ -38,7 +42,7 @@ export function accountServiceEnvironment(input: {
     OPENSTEER_CONTROL_PLANE_PORT: String(input.port),
     // Loopback is allowed for HTTP outside production; the portal answers on the same server
     // under a host name of its own.
-    OPENSTEER_CONTROL_PLANE_PUBLIC_URL: `http://127.0.0.1:${input.port}`,
+    OPENSTEER_CONTROL_PLANE_PUBLIC_URL: input.publicOrigin ?? `http://127.0.0.1:${input.port}`,
     OPENSTEER_PORTAL_ORIGIN: `http://localhost:${input.port}`,
     OPENSTEER_CONTROL_PLANE_AUTH_SECRET: randomBytes(32).toString("base64url"),
     OPENSTEER_ADOPTION_OPERATION_KEY: randomBytes(32).toString("base64url"),
@@ -65,18 +69,65 @@ export interface JourneyAccountService {
 export async function startJourneyAccountService(input: {
   readonly databaseUrl: string;
   readonly port?: number;
+  /**
+   * Served as a bare public HTTPS origin, as the Host requires of its issuer: a TLS front on
+   * `https://<name>:<port>` with the fixture authority's certificate, before the service itself.
+   */
+  readonly tls?: { readonly name: string; readonly cert: string; readonly key: string };
 }): Promise<JourneyAccountService> {
   const port = input.port ?? (await freePort());
+  const frontPort = input.tls ? await freePort() : null;
   const config = loadControlPlaneConfig(
-    accountServiceEnvironment({ databaseUrl: input.databaseUrl, port }),
+    accountServiceEnvironment({
+      databaseUrl: input.databaseUrl,
+      port,
+      ...(input.tls ? { publicOrigin: `https://${input.tls.name}:${frontPort}` } : {}),
+    }),
   );
   const provider = new MemoryConnectProvider();
   const runtime = await startControlPlane(config, { connectProvider: provider });
+  const front = input.tls ? await tlsFront(input.tls, frontPort!, port) : null;
   return {
-    close: runtime.close,
+    close: async () => {
+      await front?.close();
+      await runtime.close();
+    },
     origin: config.publicOrigin.origin,
     portalOrigin: config.portalOrigin.origin,
     provider,
+  };
+}
+
+/** HTTPS on `frontPort`, passed through as it came to the service on loopback `port`. */
+async function tlsFront(
+  tls: { readonly cert: string; readonly key: string },
+  frontPort: number,
+  port: number,
+): Promise<{ close(): Promise<void> }> {
+  const server = createHttpsServer({ cert: tls.cert, key: tls.key }, (incoming, outgoing) => {
+    const forward = httpRequest(
+      {
+        headers: incoming.headers,
+        host: "127.0.0.1",
+        method: incoming.method,
+        path: incoming.url,
+        port,
+      },
+      (answer) => {
+        outgoing.writeHead(answer.statusCode ?? 502, answer.headers);
+        answer.pipe(outgoing);
+      },
+    );
+    forward.on("error", () => outgoing.destroy());
+    incoming.pipe(forward);
+  });
+  await new Promise<void>((resolve) => server.listen(frontPort, "127.0.0.1", resolve));
+  return {
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
   };
 }
 

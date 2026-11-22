@@ -219,6 +219,20 @@ describe("desktop configuration", () => {
     }
   });
 
+  it("hands on the authorities someone added for Node, as an absolute path, and none otherwise", () => {
+    const read = (environment: NodeJS.ProcessEnv) =>
+      readDesktopConfiguration({
+        appDataDirectory,
+        defaultMode: "development",
+        environment,
+        packaged: false,
+        resourcesDirectory,
+      }).config.extraCertificateAuthorities;
+    expect(read({})).toBeNull();
+    expect(read({ NODE_EXTRA_CA_CERTS: "/etc/company/roots.pem" })).toBe("/etc/company/roots.pem");
+    expect(() => read({ NODE_EXTRA_CA_CERTS: "roots.pem" })).toThrow(/NODE_EXTRA_CA_CERTS/u);
+  });
+
   it("rejects non-production mode in a packaged app", () => {
     expect(() =>
       readDesktopConfiguration({

@@ -8,6 +8,7 @@ import { loadControlPlaneConfig } from "../../apps/control-plane/src/config.js";
 import { readDesktopConfiguration } from "../../apps/desktop/src/config.js";
 import { hostSpec } from "../../apps/desktop/src/supervisor/personal-deployment-supervisor.js";
 import { accountServiceEnvironment } from "./account-service.js";
+import { journeyAccountName } from "./account-tls.js";
 import { journeyAppEnvironment } from "./app-environment.js";
 
 /*
@@ -19,6 +20,8 @@ import { journeyAppEnvironment } from "./app-environment.js";
  */
 
 const root = mkdtempSync(path.join(tmpdir(), "first-run-configuration-"));
+/** Where the guest step writes the fixture authority's certificate. */
+const authorityFile = path.join(root, "opensteer-job", "fixture-authority", "ca.pem");
 
 /** The account service exactly as `startJourneyAccountService` configures it. */
 function accountService() {
@@ -26,6 +29,8 @@ function accountService() {
     accountServiceEnvironment({
       databaseUrl: "postgresql://opensteer@127.0.0.1:5432/first_run_settled",
       port: 45_210,
+      // As the journey serves it in the guest: its TLS front under the fixture name.
+      publicOrigin: `https://${journeyAccountName}:45213`,
     }),
   );
 }
@@ -39,6 +44,7 @@ function desktop() {
     environment: journeyAppEnvironment({
       accountOrigin: account.publicOrigin.origin,
       dataDirectory: path.join(root, "data"),
+      extraCertificateAuthorities: authorityFile,
       portalOrigin: account.portalOrigin.origin,
       runtime: path.join(root, "runtime"),
     }),
@@ -48,7 +54,11 @@ function desktop() {
 }
 
 /** The Host's environment as the supervisor starts it, for the issuer and portal it is given. */
-function hostEnvironment(accountIssuer: string | null, portalOrigin: string | null) {
+function hostEnvironment(
+  accountIssuer: string | null,
+  portalOrigin: string | null,
+  extraCertificateAuthorities: string | null = null,
+) {
   const spec = hostSpec(
     {
       assets: {
@@ -86,6 +96,7 @@ function hostEnvironment(accountIssuer: string | null, portalOrigin: string | nu
     false,
     null,
     null,
+    extraCertificateAuthorities,
   );
   return { ...spec.environment, ...spec.secretEnvironment };
 }
@@ -110,15 +121,17 @@ describe("what the first-run journey hands the product", () => {
     ).not.toThrow();
   });
 
-  // J5: the journey's account service is a loopback HTTP origin, which the Host refuses as its
-  // Personal Account issuer ("must be a bare public HTTPS origin", packages/config/src/config.ts).
-  // This fails today, as the VM run did; it turns red here the day the journey meets the rule,
-  // and is then made an ordinary `it`.
-  it.fails("gives the Host an issuer the Host accepts", () => {
+  // Run 20261122T191206Z-10329791: the Host refused a loopback HTTP issuer. Served under the
+  // fixture name over HTTPS, the journey's account service is an issuer the Host accepts.
+  it("gives the Host an issuer the Host accepts, and the authority that signed it", () => {
     const loaded = desktop();
     // As the supervisor takes it (`personal-deployment-supervisor.ts`: `new URL(...).origin`).
     const issuer = new URL(String(loaded.config.accountUrl)).origin;
     const portal = new URL(String(loaded.config.portalUrl)).origin;
-    expect(() => parseHostConfig(hostEnvironment(issuer, portal))).not.toThrow();
+    expect(issuer).toBe(`https://${journeyAccountName}:45213`);
+    expect(loaded.config.extraCertificateAuthorities).toBe(authorityFile);
+    const host = hostEnvironment(issuer, portal, loaded.config.extraCertificateAuthorities);
+    expect(host["NODE_EXTRA_CA_CERTS"]).toBe(authorityFile);
+    expect(parseHostConfig(host).personalAccountIssuer?.origin).toBe(issuer);
   });
 });

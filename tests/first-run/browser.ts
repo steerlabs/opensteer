@@ -9,6 +9,7 @@
 
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import type { LookupFunction } from "node:net";
 
 export interface AccountSignInSteps {
   /** Each page the browser was on, in order, by path: the journey's evidence of the route taken. */
@@ -34,6 +35,11 @@ export async function signInAtAccount(input: {
   readonly authorizeUrl: string;
   readonly email: string;
   readonly password: string;
+  /**
+   * The authority to trust for an HTTPS account service, as a browser in the guest does by its
+   * system trust; `address` reaches the name where no hosts file maps it (on this Mac, in a test).
+   */
+  readonly tls?: { readonly ca: string; readonly address?: string };
 }): Promise<AccountSignInSteps> {
   const account = new URL(input.authorizeUrl).origin;
   const jar = new Map<string, string>();
@@ -54,7 +60,7 @@ export async function signInAtAccount(input: {
     first = false;
     if (jar.size > 0)
       headers["cookie"] = [...jar].map(([name, value]) => `${name}=${value}`).join("; ");
-    const answer = await navigation(url, init.method ?? "GET", headers, init.body);
+    const answer = await navigation(url, init.method ?? "GET", headers, init.body, input.tls);
     for (const cookie of answer.cookies) {
       const [pair] = cookie.split(";");
       const at = pair!.indexOf("=");
@@ -106,6 +112,7 @@ function navigation(
   method: "GET" | "POST",
   headers: Readonly<Record<string, string>>,
   body: string | undefined,
+  tls?: { readonly ca: string; readonly address?: string },
 ): Promise<Answer> {
   const send = url.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise((resolve, reject) => {
@@ -117,6 +124,8 @@ function navigation(
           ...(body === undefined ? {} : { "content-length": String(Buffer.byteLength(body)) }),
         },
         method,
+        ...(tls === undefined ? {} : { ca: tls.ca }),
+        ...(tls?.address === undefined ? {} : { lookup: fixedLookup(tls.address) }),
       },
       (incoming) => {
         const chunks: Buffer[] = [];
@@ -170,4 +179,16 @@ function decodeEntities(value: string): string {
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
     .replaceAll("&amp;", "&");
+}
+
+/** A lookup that answers every name with one address, as a hosts file line would. */
+function fixedLookup(address: string): LookupFunction {
+  return (_hostname, options, callback) => {
+    const family = address.includes(":") ? 6 : 4;
+    if ((options as { all?: boolean }).all)
+      (callback as (error: null, addresses: { address: string; family: number }[]) => void)(null, [
+        { address, family },
+      ]);
+    else callback(null, address, family);
+  };
 }

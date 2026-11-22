@@ -40,6 +40,11 @@ Electron there gets errSecInteractionNotAllowed (-25308). Cleanup restores the p
 and search list and deletes it. The login keychain is never unlocked, read or changed, and the step
 cannot run outside the guest: it refuses unless macOS reports a hypervisor and the clone's
 `~/opensteer-job/guest-job` marker (written at staging) names the job's VM.
+The same step makes a fixture authority for the job (`scripts/test-vm/fixture-authority-files.sh`):
+`account.first-run.opensteer.example` on loopback in the guest's hosts file, a certificate for it,
+and the authority trusted by the guest's system (for the app's Chromium); the first-run journey
+serves its account service there over HTTPS and hands the authority to the app as
+`NODE_EXTRA_CA_CERTS`, which the app passes to its Host and nothing else. `end` removes all of it.
 `pnpm exec tsx scripts/test-vm/guest-contract-journey.ts` holds it to that. To see what a suite's
 session can do with it, run `pnpm test:vm -- bash ../../scripts/test-vm/keychain-diagnostic.sh`.
 

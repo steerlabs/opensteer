@@ -53,6 +53,64 @@ password="opensteer-journey-fixture"
 keychain="$HOME/Library/Keychains/opensteer-journey-fixture.keychain-db"
 state="$HOME/opensteer-job/fixture-keychain.state"
 
+# The fixture authority: a certificate authority made for this job, the account service's
+# certificate under a public-looking name, that name on loopback in the hosts file, and the
+# authority in the guest's system trust (which the app's Chromium reads). The first-run journey
+# hands the authority's file to the Mac app as NODE_EXTRA_CA_CERTS, which the app passes to its
+# Host. The account service's name and this folder are `tests/first-run/account-tls.ts`.
+authority="$HOME/opensteer-job/fixture-authority"
+authority_name="Opensteer journey fixture authority"
+account_name="account.first-run.opensteer.example"
+hosts_mark="# opensteer-job-fixture-authority"
+authority_state="$HOME/opensteer-job/fixture-authority.state"
+trust_right="com.apple.trust-settings.admin"
+
+# Runs a change to the guest's system trust: over SSH macOS asks for no one's consent, so the right
+# is opened for the one change and put back as it was at once, whatever the change did.
+with_trust_right() {
+  local saved="$authority/trust-right.plist" status=0
+  # shellcheck disable=SC2024 # the saved right is the job's own file, written and read as the user
+  sudo -n security authorizationdb read "$trust_right" >"$saved" || return 1
+  sudo -n security authorizationdb write "$trust_right" allow || return 1
+  sudo -n security "$@" || status=$?
+  # shellcheck disable=SC2024 # the saved right is the job's own file, written and read as the user
+  sudo -n security authorizationdb write "$trust_right" <"$saved" || status=1
+  return "$status"
+}
+
+authority_begin() {
+  [ ! -e "$authority_state" ] || refuse "a fixture authority is already in place"
+  : >"$authority_state"
+  mkdir -p "$authority"
+  # The runner puts this script in the job's folder (this step itself arrives over stdin).
+  /bin/bash "$HOME/opensteer-job/fixture-authority-files.sh" "$authority" "$authority_name" "$account_name"
+  printf '%s\n' "127.0.0.1 $account_name $hosts_mark" | sudo -n tee -a /etc/hosts >/dev/null
+  echo hosts >>"$authority_state"
+  if with_trust_right add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$authority/ca.pem"; then
+    echo trust >>"$authority_state"
+    echo "fixture authority: in place, $account_name on loopback and trusted by the guest"
+  else
+    # Loud, not fatal for the job: only the first-run journey needs it, and it says so.
+    echo "fixture authority: the guest's system trust refused the authority" >&2
+  fi
+}
+
+authority_end() {
+  [ -f "$authority_state" ] || return 0
+  local status=0
+  if grep -qx trust "$authority_state"; then
+    with_trust_right remove-trusted-cert -d "$authority/ca.pem" || status=1
+    sudo -n security delete-certificate -c "$authority_name" /Library/Keychains/System.keychain || status=1
+  fi
+  if grep -qx hosts "$authority_state"; then
+    sudo -n sed -i "" "/ $hosts_mark\$/d" /etc/hosts || status=1
+  fi
+  rm -rf "$authority"
+  rm -f "$authority_state"
+  echo "fixture authority: removed"
+  return "$status"
+}
+
 # `security list-keychains` prints one quoted path a line.
 list() { security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'; }
 current_default() { security default-keychain -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//'; }
@@ -92,6 +150,7 @@ if [ "$action" = begin ]; then
   security list-keychains -d user -s "$keychain" $(printf '%s\n' "$previous_list" | grep -vxF "$keychain" || true)
   security default-keychain -d user -s "$keychain"
   echo "fixture keychain: in place, default and first in the search list"
+  authority_begin
   exit 0
 fi
 
@@ -114,10 +173,13 @@ if [ "$action" = unlock ] || [ "$action" = probe ] || [ "$action" = lock ]; then
   exit 0
 fi
 
-# end: restore the previous default and search list, whatever `begin` got to, then delete it.
+# end: undo the fixture authority, then restore the previous default and search list, whatever
+# `begin` got to, then delete the keychain.
+authority_status=0
+authority_end || authority_status=1
 [ -f "$state" ] || {
   echo "fixture keychain: nothing to restore"
-  exit 0
+  exit "$authority_status"
 }
 previous_default="$(sed -n 1p "$state")"
 previous_list="$(sed -n '2,$p' "$state")"
@@ -130,5 +192,6 @@ security list-keychains -d user -s $(printf '%s\n' "$previous_list" | grep -vxF 
 # Deleted whether or not `begin` got as far as creating it; a failure counts only if it is still there.
 security delete-keychain "$keychain" 2>/dev/null || [ ! -e "$keychain" ] || status=1
 rm -f "$state"
+[ "$authority_status" -eq 0 ] || status=1
 echo "fixture keychain: restored the previous default and search list"
 exit "$status"

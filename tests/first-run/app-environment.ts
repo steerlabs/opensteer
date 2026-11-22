@@ -12,8 +12,13 @@ export function journeyAppEnvironment(input: {
   readonly dataDirectory: string;
   readonly portalOrigin: string;
   readonly runtime: string;
+  /** The fixture authority's certificate file, for an account service served over HTTPS. */
+  readonly extraCertificateAuthorities?: string;
 }): Record<string, string> {
   return {
+    ...(input.extraCertificateAuthorities === undefined
+      ? {}
+      : { NODE_EXTRA_CA_CERTS: input.extraCertificateAuthorities }),
     OPENSTEER_DESKTOP_ACCOUNT_URL: input.accountOrigin,
     OPENSTEER_DESKTOP_DATA_DIR: input.dataDirectory,
     OPENSTEER_DESKTOP_MODE: "development",
