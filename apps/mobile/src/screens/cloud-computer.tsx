@@ -272,13 +272,15 @@ function personalSections(
           {
             key: "price",
             kind: "text",
-            label: screen.plan.line,
-            detail: cloudWords("cloud.priceDetail"),
+            label: screen.plan?.line ?? cloudWords("cloud.notForSale"),
+            detail: screen.plan
+              ? cloudWords("cloud.priceDetail")
+              : cloudWords("cloud.notForSaleDetail"),
           },
         ],
       },
       changes(),
-      website("checkout", cloudWords("cloud.checkoutWebDetail")),
+      ...(screen.plan ? [website("checkout", cloudWords("cloud.checkoutWebDetail"))] : []),
     ];
   if (screen.kind === "preparing")
     return [

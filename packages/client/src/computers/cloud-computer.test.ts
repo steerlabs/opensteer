@@ -87,6 +87,26 @@ describe("Cloud Computer screen", () => {
     stop();
   });
 
+  it("offers no price while checkout sells none, and none from an Account that doesn't say", async () => {
+    const { store, stop } = await started(new MockCloudComputerAccount("not-for-sale"));
+    expect(store.getSnapshot().screen).toMatchObject({ kind: "offer", plan: null });
+    stop();
+    expect(
+      cloudComputerScreen({
+        read: {
+          kind: "ready",
+          data: {
+            computers: [],
+            plan: { name: "Cloud", currency: "usd", amountMinor: 2000, interval: "month" },
+          },
+          work: [],
+        },
+        checkoutOpened: false,
+        deleted: false,
+      }),
+    ).toMatchObject({ kind: "offer", plan: null });
+  });
+
   it("watches after checkout until the computer it created is ready, then stops", async () => {
     const { store, stop, schedule } = await started(new MockCloudComputerAccount("checkout"));
     expect(schedule.pending).toHaveLength(0);

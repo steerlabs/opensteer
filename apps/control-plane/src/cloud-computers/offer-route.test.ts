@@ -1,4 +1,8 @@
-import { cloudComputerOfferPath } from "@opensteer/control-plane-protocol";
+import {
+  accountCloudComputersPath,
+  CloudComputerListResponseSchema,
+  cloudComputerOfferPath,
+} from "@opensteer/control-plane-protocol";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerCloudComputerRoutes } from "./routes.js";
@@ -62,5 +66,41 @@ describe("the public Cloud Computer offer", () => {
     const app = await serve(null);
     const response = await app.inject({ method: "GET", url: cloudComputerOfferPath });
     expect(response.json()).toEqual({ plan: null });
+  });
+});
+
+describe("the signed-in Cloud Computer list", () => {
+  async function serveList(offer: typeof plan | null) {
+    const app = Fastify();
+    registerCloudComputerRoutes(app, {
+      store: {
+        offer,
+        plan,
+        listForAccount: async () => [],
+      } as unknown as CloudComputerStore,
+      authenticator: { authenticate: async () => ({ accountId: "acct_1" }) as never },
+      verifyProvisioner: async () => undefined,
+      stripeWebhookSecret: "whsec_test",
+      websiteOrigin: website,
+    });
+    await app.ready();
+    close = () => app.close();
+    return app;
+  }
+
+  it("answers what checkout sells now beside the plan, and null until it is confirmed", async () => {
+    const selling = await serveList(plan);
+    const sold = await selling.inject({ method: "GET", url: accountCloudComputersPath });
+    expect(sold.json()).toEqual({ computers: [], plan, offer: plan });
+    await close?.();
+    close = undefined;
+
+    const closed = await serveList(null);
+    const notSold = await closed.inject({ method: "GET", url: accountCloudComputersPath });
+    expect(notSold.json()).toEqual({ computers: [], plan, offer: null });
+  });
+
+  it("still reads an older answer with no offer in it", () => {
+    expect(CloudComputerListResponseSchema.parse({ computers: [], plan }).offer).toBeUndefined();
   });
 });

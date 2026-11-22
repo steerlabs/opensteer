@@ -86,10 +86,13 @@ export interface CloudComputerDetail {
 export type CloudComputerScreen =
   | { readonly kind: "loading" }
   | { readonly kind: "failed"; readonly failure: DesktopCloudComputerFailure }
-  /** None yet: what it is and its price. `waiting` once checkout was opened from here. */
+  /**
+   * None yet: what it is and, while checkout sells one, its price (`plan`, from the
+   * Account's offer; null when nothing is for sale). `waiting` once checkout was opened here.
+   */
   | {
       readonly kind: "offer";
-      readonly plan: CloudComputerPlanView;
+      readonly plan: CloudComputerPlanView | null;
       readonly waiting: boolean;
       readonly deleted: boolean;
     }
@@ -269,7 +272,13 @@ export function cloudComputerScreen(input: {
   const plan = cloudComputerPlanView(read.data.plan, input.locale);
   const current = currentCloudComputer(read.data.computers, read.work);
   if (current === null)
-    return { kind: "offer", plan, waiting: input.checkoutOpened, deleted: input.deleted };
+    return {
+      kind: "offer",
+      // A price for buying comes only from what checkout sells now.
+      plan: read.data.offer ? cloudComputerPlanView(read.data.offer, input.locale) : null,
+      waiting: input.checkoutOpened,
+      deleted: input.deleted,
+    };
   const computer = cloudComputerDetail(current, input.locale);
   if (current.status === "preparing") return { kind: "preparing", computer, plan };
   return { kind: "computer", computer, plan };

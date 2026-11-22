@@ -160,6 +160,12 @@ describe("Opensteer Cloud Computer on the phone", () => {
     );
   });
 
+  it("says Not available yet, with no website to buy one on, while the Account sells none", async () => {
+    await open("not-for-sale");
+    expect(row("price", "price")).toMatchObject({ label: "Not available yet" });
+    expect(section("website-checkout")).toBeUndefined();
+  });
+
   it("reads again whenever the person comes back to the app", async () => {
     const { read } = await open("none");
     await act(async () => state.appState!("active"));

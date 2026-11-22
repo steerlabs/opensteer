@@ -168,8 +168,10 @@ export function CloudComputerPage() {
           <SettingsGroup heading={null} headingId="cloud-computer-price">
             <SettingsRow
               className="cloud-computer__price"
-              title={screen.plan.line}
-              detail={cloudWords("cloud.priceDetail")}
+              title={screen.plan?.line ?? cloudWords("cloud.notForSale")}
+              detail={
+                screen.plan ? cloudWords("cloud.priceDetail") : cloudWords("cloud.notForSaleDetail")
+              }
             />
           </SettingsGroup>
           <SettingsGroup
@@ -182,14 +184,16 @@ export function CloudComputerPage() {
             <Link className="btn" to="/settings/account">
               {cloudWords("cloud.notNow")}
             </Link>
-            <button
-              className="btn btn--primary"
-              disabled={!portalOrigin}
-              onClick={checkout}
-              type="button"
-            >
-              {screen.waiting ? cloudWords("cloud.checkoutAgain") : cloudWords("cloud.checkout")}
-            </button>
+            {screen.plan ? (
+              <button
+                className="btn btn--primary"
+                disabled={!portalOrigin}
+                onClick={checkout}
+                type="button"
+              >
+                {screen.waiting ? cloudWords("cloud.checkoutAgain") : cloudWords("cloud.checkout")}
+              </button>
+            ) : null}
           </div>
         </>
       ) : null}

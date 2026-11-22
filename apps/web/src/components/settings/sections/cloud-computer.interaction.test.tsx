@@ -113,6 +113,19 @@ describe("Opensteer Cloud Computer on desktop", () => {
     );
   });
 
+  it("says Not available yet, and offers no checkout, while the Account sells none", async () => {
+    const page = await mount(bridgeFor(scene("not-for-sale")));
+    expect(page.querySelector(".cloud-computer__price .card__row-title")?.textContent).toBe(
+      "Not available yet",
+    );
+    expect(page.textContent).not.toContain("$20.00");
+    expect(
+      [...document.querySelectorAll("button")].some(
+        (candidate) => candidate.textContent === "Continue to checkout",
+      ),
+    ).toBe(false);
+  });
+
   it("opens checkout on the Opensteer website and watches for the computer it creates", async () => {
     const account = scene("checkout");
     const bridge = bridgeFor(account);
