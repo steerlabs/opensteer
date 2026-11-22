@@ -23,6 +23,7 @@ import {
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import type { RunnerCommand } from "@opensteer/protocol";
 import { sql } from "kysely";
+import { createChannelId, type ChannelConversationId } from "@opensteer/channel-core";
 import { expect, vi } from "vitest";
 import {
   packageStillGranted,
@@ -630,11 +631,208 @@ describeStore("a connected agent's authority at the send", (it) => {
     );
   });
 
-  it("holds an automation of a paused chat: it neither fails nor piles up, and is listed again when the chat is back", async ({
+  /** A chat anyone in #team may speak to, and a task one of them started, as the chat. */
+  async function anyoneChat(storeFixture: Fixture, suffix: string) {
+    const f = await storeFixture.createChannelDeliveryFixture(suffix, { bridge: false });
+    const { database, store } = storeFixture;
+    const anyone = await new AgentConnectionStore(database).createBridge({
+      userId: f.fixture.userId,
+      accountId: f.configured.account.id,
+      conversation: { id: `C-${suffix}`, name: "#team" },
+      senders: "anyone",
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const { thread } = await store.createThread({
+      authority: {
+        kind: "connection",
+        connectionId: anyone.id,
+        userId: f.fixture.userId,
+        accessMode: "full-access",
+      },
+      createdBy: f.fixture.userId,
+      environmentId: f.fixture.environmentId,
+      harnessInstanceId: f.fixture.harnessInstance.id,
+      idempotencyKey: `${suffix}-task`,
+      modelSelection: f.fixture.thread.modelSelection,
+      title: "From #team",
+    });
+    // The Runner runs automation programs.
+    await database
+      .updateTable("runners")
+      .set({ capabilities: sql`capabilities || '["trigger-program-v5"]'::jsonb` })
+      .where("id", "=", f.fixture.runnerId as never)
+      .execute();
+    return { ...f, anyone, thread };
+  }
+  const originOf = async (storeFixture: Fixture, triggerId: string) =>
+    (
+      await storeFixture.database
+        .selectFrom("triggers")
+        .select("originConnectionId")
+        .where("id", "=", triggerId as never)
+        .executeTakeFirstOrThrow()
+    ).originConnectionId;
+  const everyMinute = {
+    program: { toolContractVersion: 5, language: "javascript", source: "export default () => {}" },
+    source: {
+      kind: "schedule",
+      schedule: { expression: "* * * * *", kind: "cron", timezone: "UTC" },
+    },
+  } as const;
+
+  for (const who of [
+    "made by the chat's own agent",
+    "made by the person on the chat's task",
+  ] as const)
+    it(`fires no automation of a paused chat (${who}): no occurrence, no error, still active, and once when it is back`, async ({
+      storeFixture,
+    }) => {
+      const { anyone, channels, configured, fixture, thread } = await anyoneChat(
+        storeFixture,
+        `auto-${who === "made by the chat's own agent" ? "agent" : "person"}`,
+      );
+      const { database, store } = storeFixture;
+      const triggers = new TriggerStore(database);
+      const { trigger } = await triggers.create({
+        actorThreadId: null,
+        ...(who === "made by the chat's own agent"
+          ? { actorConnectionId: anyone.id, actorAccessMode: "full-access" as const }
+          : {}),
+        anchorThreadId: thread.id,
+        createdBy: fixture.userId,
+        idempotencyKey: `auto-${who}`,
+        name: "Every minute",
+        ...everyMinute,
+      });
+      expect(await originOf(storeFixture, trigger.id)).toBe(anyone.id);
+      const due = (at: number) =>
+        database
+          .updateTable("triggers")
+          .set({ nextFireAt: new Date(at) })
+          .where("id", "=", trigger.id)
+          .execute();
+      const service = new ChannelService({
+        channels,
+        credentials: {} as never,
+        relay: { connectedRunnerIds: () => [] } as never,
+        store,
+        bridgeTools: () => ({ callTool: async () => ({}) }),
+      });
+      try {
+        await service.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+        // Due three times while it waits: nothing is created, nothing fails, nothing moves.
+        for (const minutes of [3, 2, 1]) {
+          const at = Date.now() - minutes * 60_000;
+          await due(at);
+          const claimed = await triggers.claimDueSchedules(new Date());
+          expect(claimed).toMatchObject({ occurrences: [], failures: [] });
+          // The loop does not count it as due, so it neither spins nor backs off.
+          expect((await triggers.nextScheduleAt())?.getTime() ?? null).not.toBe(at);
+        }
+        expect(
+          await database
+            .selectFrom("triggers")
+            .select(["status", "pauseReason"])
+            .where("id", "=", trigger.id)
+            .executeTakeFirstOrThrow(),
+        ).toEqual({ status: "active", pauseReason: null });
+        expect(
+          await database
+            .selectFrom("triggerOccurrences")
+            .select("id")
+            .where("triggerId", "=", trigger.id)
+            .execute(),
+        ).toEqual([]);
+        // Back, through the service: the schedule loop is woken, and the overdue tick fires once.
+        const reactions: string[] = [];
+        const unhook = storeFixture.observePersonalReactions({
+          notice: () => undefined,
+          reaction: (reaction) => reactions.push(reaction.type),
+        });
+        await service.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+        unhook();
+        expect(reactions).toContain("triggerSchedulesChanged");
+        const back = await triggers.claimDueSchedules(new Date());
+        expect(back.failures).toEqual([]);
+        expect(back.occurrences).toHaveLength(1);
+        expect(await triggers.claimDueSchedules(new Date())).toMatchObject({ occurrences: [] });
+        const claimed = await store.claimCommand(back.occurrences[0]!.commandId, "auto");
+        if (!claimed || claimed.terminalFailure)
+          throw new Error("Expected the automation's command");
+        const sent: RunnerCommand[] = [];
+        await dispatcher(
+          storeFixture,
+          fixture.runnerId,
+          { planning: async () => {} },
+          sent,
+          [],
+        ).dispatch(claimed.command, new AbortController().signal);
+        expect(sent.map(({ type }) => type)).toEqual(["trigger.execute"]);
+      } finally {
+        await service.close();
+      }
+    });
+
+  it("never turns a dispatch that may have reached the Runner into held, even if the chat is paused meanwhile", async ({
+    storeFixture,
+  }) => {
+    const { anyone, channels, configured, fixture, thread } = await anyoneChat(
+      storeFixture,
+      "auto-uncertain",
+    );
+    const { database, store } = storeFixture;
+    const triggers = new TriggerStore(database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: thread.id,
+      createdBy: fixture.userId,
+      idempotencyKey: "auto-uncertain",
+      name: "Every minute",
+      ...everyMinute,
+    });
+    expect(await originOf(storeFixture, trigger.id)).toBe(anyone.id);
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: trigger.id,
+    });
+    const claimed = await store.claimCommand(occurrence.commandId, "auto-uncertain");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    // The send fence passes and the frame leaves; then the chat is paused and the answer is lost.
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      {
+        planning: async () => {},
+        afterFence: async () => {
+          await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+          throw new CommandDispatchError("Runner command acknowledgement timed out", "uncertain");
+        },
+      },
+      [],
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect((failure as CommandDispatchError).disposition).toBe("uncertain");
+    // Only "held" goes back to pending; an unknown end stays where it is, and is never run again.
+    if ((failure as CommandDispatchError).disposition === "held")
+      await store.retryCommand(occurrence.commandId, failure);
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+    expect((await store.listPendingCommands()).map(({ id }) => id)).not.toContain(
+      occurrence.commandId,
+    );
+  });
+
+  it("holds nothing of the person's own automation on a chat's task, and its Disconnect leaves it alone", async ({
     storeFixture,
   }) => {
     const { bridgeId, channels, configured, fixture } =
-      await storeFixture.createChannelDeliveryFixture("dispatch-automation");
+      await storeFixture.createChannelDeliveryFixture("auto-own");
     const { database, store } = storeFixture;
     await database
       .updateTable("threads")
@@ -646,50 +844,21 @@ describeStore("a connected agent's authority at the send", (it) => {
       actorThreadId: null,
       anchorThreadId: fixture.thread.id,
       createdBy: fixture.userId,
-      idempotencyKey: "dispatch-automation",
-      name: "Every minute",
-      program: {
-        toolContractVersion: 5,
-        language: "javascript",
-        source: "export default () => {}",
-      },
-      source: {
-        kind: "schedule",
-        schedule: { expression: "* * * * *", kind: "cron", timezone: "UTC" },
-      },
+      idempotencyKey: "auto-own",
+      name: "Mine",
+      ...everyMinute,
     });
-    const due = () =>
-      database
-        .updateTable("triggers")
-        .set({ nextFireAt: new Date(Date.now() - 60_000) })
-        .where("id", "=", trigger.id)
-        .execute();
+    // It is the person's: the chat owns nothing of it.
+    expect(await originOf(storeFixture, trigger.id)).toBeNull();
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: trigger.id,
+    });
     await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
-    await due();
-    await triggers.claimDueSchedules(new Date());
-    // Still active: a pause is not an end.
-    expect(
-      await database
-        .selectFrom("triggers")
-        .select("status")
-        .where("id", "=", trigger.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "active" });
-    // Due again and again while it waits: one occurrence is kept, however long the pause.
-    await due();
-    await triggers.claimDueSchedules(new Date());
-    const occurrences = await database
-      .selectFrom("triggerOccurrences")
-      .select(["id", "status", "commandId"])
-      .where("triggerId", "=", trigger.id)
-      .execute();
-    expect(occurrences).toHaveLength(1);
-    const [occurrence] = occurrences;
-    // Held: not listed while the chat waits, and if taken anyway it is held, not failed.
-    expect((await store.listPendingCommands()).map(({ id }) => id)).not.toContain(
-      occurrence!.commandId,
-    );
-    const claimed = await store.claimCommand(occurrence!.commandId, "dispatch-automation");
+    expect((await store.listPendingCommands()).map(({ id }) => id)).toContain(occurrence.commandId);
+    // A pre-send refusal fails as itself, never as held (this Runner runs no automation programs).
+    const claimed = await store.claimCommand(occurrence.commandId, "auto-own");
     if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
     const failure = await dispatcher(
       storeFixture,
@@ -703,20 +872,104 @@ describeStore("a connected agent's authority at the send", (it) => {
         () => null,
         (error: unknown) => error,
       );
-    expect((failure as CommandDispatchError).disposition).toBe("held");
-    await store.retryCommand(occurrence!.commandId, failure);
+    expect(failure).toMatchObject({
+      disposition: "failed",
+      message: "Update this computer to run automation programs with tool contract version 5.",
+    });
+    // Disconnecting the chat changes nothing of it.
+    await new AgentConnectionStore(database).revoke(fixture.userId, bridgeId!);
+    await store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });
     expect(
       await database
-        .selectFrom("triggerOccurrences")
+        .selectFrom("triggers")
         .select("status")
-        .where("id", "=", occurrence!.id)
+        .where("id", "=", trigger.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "pending" });
-    // Back: it is listed again, to run once.
-    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
-    expect((await store.listPendingCommands()).map(({ id }) => id)).toContain(
-      occurrence!.commandId,
-    );
+    ).toEqual({ status: "active" });
+  });
+
+  it('sends nothing of a Run whose sender stopped being "me" between its claim and its send, and the chat hears nothing', async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("dispatch-relink");
+    const { database, store } = storeFixture;
+    const { fixture } = bridge;
+    const conversationId = createChannelId("conversation") as ChannelConversationId;
+    await database
+      .insertInto("bridgeConversations")
+      .values({
+        id: conversationId,
+        bridgeId: bridge.bridge.id,
+        accountId: bridge.configured.account.id,
+        externalScopeId: null,
+        externalConversationId: "D-dispatch-relink",
+        externalThreadId: null,
+        conversationType: "dm",
+        displayName: null,
+        threadId: null,
+      })
+      .execute();
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the old phone" }],
+      source: {
+        kind: "connection",
+        connectionId: bridge.bridge.id,
+        chat: {
+          conversationId,
+          revision: bridge.bridge.grantRevision!,
+          sender: { displayName: "Tim", externalUserId: bridge.owner },
+        },
+      },
+      policy: "queue",
+      idempotencyKey: "dispatch-relink",
+    });
+    if (!queued.command) throw new Error("Expected a queued Run");
+    const claimed = await store.claimCommand(queued.command.id, "dispatch-relink");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the Run's command");
+    const sent: RunnerCommand[] = [];
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      {
+        // The person links "me" to their new phone while the Run is being prepared.
+        planning: async () => {
+          await database
+            .updateTable("channelIdentities")
+            .set({ status: "unlinked", linkedUserId: null })
+            .where("accountId", "=", bridge.configured.account.id)
+            .where("externalUserId", "=", bridge.owner)
+            .execute();
+        },
+      },
+      sent,
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(sent).toEqual([]);
+    expect(failure).toMatchObject({
+      disposition: "failed",
+      message: "Its message came from an account that is no longer linked as you.",
+    });
+    await store.failCommand(queued.command.id, (failure as Error).message);
+    expect(
+      await database
+        .selectFrom("bridgeDeliveries")
+        .select("id")
+        .where("bridgeId", "=", bridge.bridge.id)
+        .where("kind", "=", "status")
+        .execute(),
+    ).toEqual([]);
   });
 
   it("ends a connected Run locally when revoke wins before its handoff stamp", async ({

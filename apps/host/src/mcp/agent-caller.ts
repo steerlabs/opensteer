@@ -235,8 +235,8 @@ export function callerLineage(caller: AgentCaller): {
     : null;
 }
 /**
- * Who reads a task when this caller does: work reads as the task it runs in, so a managed
- * memory pass's lineage sees only tasks with personal context. Every agent tool that returns
+ * Who reads a task when this caller does: work reads as the task it runs in, so a memory
+ * worker's own task tree sees only tasks with personal context. Every agent tool that returns
  * anything derived from a task reads it as this.
  */
 export function callerReader(caller: AgentCaller): TaskReader {

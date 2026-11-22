@@ -1,6 +1,11 @@
 import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
-import { dispatchNodeStop, grantedContent, NodeStopAuthoritySchema } from "@opensteer/database";
+import {
+  dispatchNodeStop,
+  grantedContent,
+  NodeStopAuthoritySchema,
+  senderUnlinkedFailure,
+} from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import {
   ModelSelectionSchema,
@@ -242,18 +247,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       throw new CommandDispatchError("Unsupported durable Runner command", "failed");
     }
     if (command.type === "trigger.execute") {
-      try {
-        await this.#dispatchTrigger(command, signal);
-      } catch (error) {
-        // An automation of a paused chat is held with the chat's work: it neither fails nor
-        // counts as a failure, and runs once when the chat is back.
-        if (
-          !(error instanceof CommandDispatchError && error.disposition === "held") &&
-          (await this.#triggers.commandChatWaiting(command.id))
-        )
-          throw chatRunHeld();
-        throw error;
-      }
+      await this.#dispatchTrigger(command, signal);
       return;
     }
     if (command.type !== "run.execute") {
@@ -793,6 +787,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             // Paused while the Run was being prepared: held for the chat, as at the first check.
             if (await this.#store.connectionWaiting(command.requestedBy, connectionId))
               throw chatRunHeld();
+            // Its message's sender stopped being "me" since the claim: it ends, and the chat
+            // hears nothing (run-finalization reads this failure).
+            if (error instanceof OpensteerError && error.message === senderUnlinkedFailure)
+              throw new CommandDispatchError(senderUnlinkedFailure, "failed");
             throw error;
           }
         }
@@ -845,7 +843,18 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
-    const initial = await this.#triggers.loadDispatchContext(command.id);
+    // An automation of a paused chat is held, never failed: but only from an explicit look at the
+    // chat's state where an authority check refused it, before anything is handed to the Runner.
+    // Once the send has passed, what happens is the Runner's, and an unknown end stays unknown.
+    const heldIfChatWaits = async <T>(step: () => Promise<T>): Promise<T> => {
+      try {
+        return await step();
+      } catch (error) {
+        if (await this.#triggers.commandChatWaiting(command.id)) throw chatRunHeld();
+        throw error;
+      }
+    };
+    const initial = await heldIfChatWaits(() => this.#triggers.loadDispatchContext(command.id));
     const incompatibility = await triggerProgramCompatibilityReason(
       this.#store,
       initial.anchorThread.environmentId,
@@ -860,11 +869,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    const { context, executionGeneration, connectionId } = await this.#triggers.startExecution({
-      commandId: command.id,
-      runnerBootId: identity.bootId,
-      runnerId: identity.runnerId,
-    });
+    const { context, executionGeneration, connectionId } = await heldIfChatWaits(() =>
+      this.#triggers.startExecution({
+        commandId: command.id,
+        runnerBootId: identity.bootId,
+        runnerId: identity.runnerId,
+      }),
+    );
     const notAdmitted = connectionId
       ? () => this.#triggers.recordOccurrenceNotAdmitted(context.occurrence.id, executionGeneration)
       : undefined;
@@ -938,16 +949,20 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
         }),
+      // Held here, the Runner never had it: the registry records it not admitted, which undoes
+      // the running stamp, and the coordinator returns it to pending.
       beforeSend: () =>
-        this.#triggers.assertActiveExecutionBinding({
-          environmentId: context.anchorThread.environmentId,
-          executionGeneration,
-          occurrenceId: context.occurrence.id,
-          requestedBy: context.trigger.createdBy,
-          runnerBootId: identity.bootId,
-          runnerId: identity.runnerId,
-          threadId: context.anchorThread.id,
-        }),
+        heldIfChatWaits(() =>
+          this.#triggers.assertActiveExecutionBinding({
+            environmentId: context.anchorThread.environmentId,
+            executionGeneration,
+            occurrenceId: context.occurrence.id,
+            requestedBy: context.trigger.createdBy,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
+            threadId: context.anchorThread.id,
+          }),
+        ),
       ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
     });
   }

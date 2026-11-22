@@ -163,6 +163,10 @@ async function claimObservedCommand(
   const lineage =
     observed.type === "run.execute" || observed.type === "run.steer" ? observed.connectionId : null;
   await lockLineageConnection(transaction, lineage);
+  // A tick enqueued before its chat was paused, listed before the pause: held at its claim, as a
+  // queued Run is, and listed again when the chat is back.
+  if (observed.type === "trigger.execute" && (await triggerCommandHeld(transaction, observed.id)))
+    return null;
   // Follow ./lock-order.ts: an ambiguous prior dispatch may requeue a command
   // just as the old Runner commits its terminal event.
   const run = observed.runId
@@ -1488,9 +1492,10 @@ export async function listPendingCommands(
 }
 /**
  * The command is a paused chat's work, held until the chat is back (asked of the one state
- * function): a Run in the chat's lineage, or an automation's run whose lineage is the chat. A
- * schedule's ticks collapse while one waits (`pendingScheduleOccurrenceExists`), so a pause of
- * any length keeps at most one. Reads `commands` and the left-joined `runs`.
+ * function): a Run in the chat's lineage, or an automation's run whose lineage is the chat
+ * (`triggers.origin_connection_id`, as authority and Disconnect read it). A paused chat's
+ * schedule fires nothing, so only a tick enqueued before the pause is held here. Reads `commands`
+ * and the left-joined `runs`.
  */
 function chatWorkHeld(database: object) {
   return sql<boolean>`((commands.type = 'run.execute' and runs.connection_id is not null
@@ -1502,13 +1507,29 @@ function chatWorkHeld(database: object) {
     or (commands.type = 'trigger.execute' and exists (
         select 1 from trigger_occurrences held_occurrence
         join triggers held_trigger on held_trigger.id = held_occurrence.trigger_id
-        join threads held_anchor on held_anchor.id = held_trigger.anchor_thread_id
         join agent_connections
           on agent_connections.id = coalesce(held_occurrence.connection_id,
-            held_trigger.origin_connection_id, held_anchor.origin_connection_id)
+            held_trigger.origin_connection_id)
         where held_occurrence.command_id = commands.id
           and agent_connections.bridge_account_id is not null
           and ${connectionState(database)} = 'waiting')))`;
+}
+/** The automation tick belongs to a chat (its own lineage) that is paused. */
+async function triggerCommandHeld(
+  transaction: Transaction<DatabaseSchema>,
+  commandId: CommandRow["id"],
+): Promise<boolean> {
+  const { rows } = await sql<{ held: boolean }>`
+    select exists (
+      select 1 from trigger_occurrences held_occurrence
+      join triggers held_trigger on held_trigger.id = held_occurrence.trigger_id
+      join agent_connections
+        on agent_connections.id = coalesce(held_occurrence.connection_id,
+          held_trigger.origin_connection_id)
+      where held_occurrence.command_id = ${commandId}
+        and agent_connections.bridge_account_id is not null
+        and ${connectionState(transaction)} = 'waiting') as held`.execute(transaction);
+  return rows[0]?.held === true;
 }
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,

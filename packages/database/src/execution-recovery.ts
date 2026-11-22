@@ -483,6 +483,18 @@ export async function recoverCommandsAfterHostRestart(
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
         .executeTakeFirst();
+      // Claimed with a terminal failure the stopped Host never recorded (an ended connection, a
+      // sender no longer "me"): the claim left the Run queued, so nothing reached a Runner. It
+      // goes back to pending, and the next claim decides and records its end.
+      if (run?.status === "queued" && !run.finishIntent) {
+        await transaction
+          .updateTable("commands")
+          .set({ dispatcherId: null, status: "pending", updatedAt: new Date() })
+          .where("id", "=", id)
+          .where("status", "=", "dispatched")
+          .execute();
+        return null;
+      }
       if (run?.status !== "starting" || run.finishIntent) return null;
       await lockThreadRow(transaction, run.threadId);
       const session = await lockThreadProviderSession(

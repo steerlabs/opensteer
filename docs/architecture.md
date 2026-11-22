@@ -421,21 +421,23 @@ its account or channel is gone or belongs to someone else, its Mac lost Messages
 or the work Home is closing; it is waiting while its account is paused or needs attention, or its
 channel is paused (`chatAccountState`). The person reads them as active, paused and ended.
 
-| Layer                                                         | live                                 | waiting (paused)                                             | ended                                        |
-| ------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------ | -------------------------------------------- |
-| A message arriving (`claimIngress`, `ingressWaiting`)         | decided                              | left pending, not claimed                                    | decided and ignored                          |
-| Deciding it, resolving its caller, the task tools             | runs                                 | given back to pending, attempt refunded (`chatWaitingError`) | ignored, nothing said                        |
-| A code to link "me"                                           | linked                               | given back, redeemed when back                               | ignored                                      |
-| Queued messages (`ensureQueuedRun`, `claimFollowUps`)         | run, if their sender may still speak | kept in order                                                | cancelled                                    |
-| A Run (listing, claim, first check, hand-off)                 | sent                                 | held: pending and queued, not listed, no error, no timer     | failed                                       |
-| An automation of the chat (schedule, dispatch)                | runs                                 | held; ticks collapse to one                                  | paused for the person                        |
-| Replies and notices (`claimDelivery`, `startDeliveryAttempt`) | sent                                 | kept, sent in order when back                                | cancelled; one that may have left is unknown |
-| A standard CDP attempt                                        | opens                                | refused                                                      | refused                                      |
-| The list and the page                                         | active                               | paused, with why and what becomes of messages                | stopping, then stopped, with why             |
+| Layer                                                                        | live                                 | waiting (paused)                                                                                        | ended                                        |
+| ---------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| A message arriving (`claimIngress`, `ingressWaiting`)                        | decided                              | left pending, not claimed                                                                               | decided and ignored                          |
+| Deciding it, resolving its caller, the task tools                            | runs                                 | given back to pending, attempt refunded (`chatWaitingError`)                                            | ignored, nothing said                        |
+| A code to link "me"                                                          | linked                               | given back, redeemed when back                                                                          | ignored                                      |
+| Queued messages (`ensureQueuedRun`, `claimFollowUps`)                        | run, if their sender may still speak | kept in order                                                                                           | cancelled                                    |
+| A Run (listing, claim, first check, hand-off)                                | sent                                 | held: pending and queued, not listed, no error, no timer                                                | failed                                       |
+| An automation of the chat (its own lineage, `triggers.origin_connection_id`) | runs                                 | does not fire (nothing created, nothing moved); fires once, late, when back; a tick from before is held | ended with the chat                          |
+| Replies and notices (`claimDelivery`, `startDeliveryAttempt`)                | sent                                 | kept, sent in order when back                                                                           | cancelled; one that may have left is unknown |
+| A standard CDP attempt                                                       | opens                                | refused                                                                                                 | refused                                      |
+| The list and the page                                                        | active                               | paused, with why and what becomes of messages                                                           | stopping, then stopped, with why             |
 
 One wake brings everything back (`ChannelService #wakeHeld`: `wakeChatQueues`, then the ingress
 drain): the person's resume, a successful check of the account, and the runtime reporting the
-account healthy again each call it, and its commit wakes the dispatcher.
+account healthy again each call it, and its commit wakes the dispatcher and the schedule loop.
+"Held" is only ever read from the chat's state before anything reaches a Runner; once the send has
+passed, an end the Home cannot confirm stays unknown.
 
 ### What a pause does to a message sent meanwhile
 
