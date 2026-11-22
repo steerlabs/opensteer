@@ -1,0 +1,10 @@
+/*
+ * An address, host or URL (`Address` in ui/address-text.tsx): it wraps at the break chances
+ * between its parts, is never hyphenated, and breaks inside a part only when that part alone
+ * is wider than the line.
+ */
+.address {
+  hyphens: manual;
+  overflow-wrap: break-word;
+  word-break: normal;
+}

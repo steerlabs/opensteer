@@ -1036,7 +1036,8 @@ button.card__row > .card__row-body {
 /* Its sentences are read whole: a paused note or what the account reports is never cut. */
 .settings-messaging-row .card__row-detail {
   overflow: visible;
-  overflow-wrap: anywhere;
+  /* break-word, not anywhere: a row never shrinks to its narrowest part and splits an address. */
+  overflow-wrap: break-word;
   text-overflow: clip;
   white-space: normal;
 }

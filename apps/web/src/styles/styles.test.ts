@@ -49,4 +49,6 @@ test("a Messaging account row never cuts its sentences", () => {
   expect(rule).not.toMatch(/text-overflow:\s*ellipsis/);
   expect(rule).not.toMatch(/white-space:\s*nowrap/);
   expect(rule).toMatch(/white-space:\s*normal/);
+  // `anywhere` lets a row shrink to its narrowest part and split an address inside a word.
+  expect(rule).not.toMatch(/overflow-wrap:\s*anywhere/);
 });
