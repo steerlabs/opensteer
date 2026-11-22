@@ -44,7 +44,6 @@ import {
   type SlotEgress,
 } from "./driver.js";
 import { fits, guestCharge } from "./capacity.js";
-import { ProfilesFull } from "./profiles.js";
 import { acceptSlotEgress, type SlotEgressAnswer } from "./slot-egress-fetch.js";
 import {
   isTombstone,
@@ -654,13 +653,9 @@ export class PoolAgent {
     if (named === undefined && profileMib === undefined)
       throw new SlotConflict("A create names the size of the slot's profile (profileMib).");
     if (profileMib !== undefined) {
-      const profile = await this.#driver
-        .ensureProfile(input.slotId, profileMib)
-        .catch((error: unknown) => {
-          // Round H: no room for it is a definite refusal; nothing was made.
-          if (error instanceof ProfilesFull) throw new SlotConflict(error.message);
-          throw error;
-        });
+      // Round H / J4: ProfilesFull propagates as a definite signed `profile-disk-full` refusal;
+      // nothing was made.
+      const profile = await this.#driver.ensureProfile(input.slotId, profileMib);
       this.#log({ event: "profile.ready", slotId: input.slotId, made: profile.made });
     }
     const guest: BrowserPoolAgentGuestSpec = { ...spec, profilePath };

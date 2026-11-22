@@ -65,8 +65,10 @@ export function renderPoolHostUserData(
     `curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 120 --output "$bundle" -- ${quote(spec.installerUrl)}`,
     `printf '%s  %s\\n' '${spec.installerSha256}' "$bundle" | sha256sum -c - >/dev/null`,
     `tar --no-same-owner --no-same-permissions -xzf "$bundle" -C "$bundle_dir"`,
-    // Z11: Refuse any symbolic link anywhere inside the extracted bundle before running anything.
-    `test -z "$(find "$bundle_dir" -type l)"`,
+    // Z11 + J10: Refuse any symbolic link anywhere inside the extracted bundle before running anything,
+    // and check `find`'s own exit status rather than discarding it inside a command substitution argument.
+    `links=$(find "$bundle_dir" -type l)`,
+    `test -z "$links"`,
     `test -f "$bundle_dir/enroll-host.sh" -a ! -L "$bundle_dir/enroll-host.sh"`,
     `test -f "$bundle_dir/setup-host.sh" -a ! -L "$bundle_dir/setup-host.sh"`,
     `bash "$bundle_dir/enroll-host.sh" --boot-spec ${specPath} --bootstrap-token-file ${tokenPath} --setup-script "$bundle_dir/setup-host.sh"`,

@@ -28,11 +28,11 @@ import {
   type BrowserPoolSlotReport,
 } from "@opensteer/control-plane-protocol";
 import { describe, expect, it, vi } from "vitest";
-import type { PoolAccountApi } from "./account.js";
+import { accountClient, type PoolAccountApi } from "./account.js";
 import { ComputeFake, zonePath } from "./google-compute.test-support.js";
 import { ProviderRateLimited, provisionerFailure, RemoteRequestError } from "./http.js";
 import { isMainModule, runMainWithFatalHandling, runProvisionerTick } from "./main.js";
-import { httpPoolAgentClient } from "./pool-agent-client.js";
+import { httpPoolAgentClient, type PoolAgentClient } from "./pool-agent-client.js";
 import { PoolReconciler } from "./pool-reconcile.js";
 
 const sha = "a".repeat(64);
@@ -82,18 +82,20 @@ type FakeAgentFaultMode =
   | "lose-mount-before-profile-erase";
 
 /**
- * Signed fake pool agent modeled directly on `apps/pool-agent/src/agent.ts` at head `61af7a845`
+ * Signed fake pool agent modeled directly on `apps/pool-agent/src/agent.ts`
  * (a pulling host with `driver.requireEgressUpstream: true` and `driver.profilesMount`):
  * - `create`: checks tombstone and identical existing slot BEFORE `profilesMounted` (matching
  *   `agent.ts:625-645`), refuses unmounted with signed `profile-disk-missing`, refuses
  *   `guest.profilePath` or `guest.egress`, enforces `guest.profileMib`, enforces profile
- *   filesystem capacity (`ProfilesFull` -> signed `conflict`), and reuses an existing profile.
+ *   filesystem capacity (`ProfilesFull` -> signed `profile-disk-full`), and reuses an existing
+ *   profile.
  * - `replace-key`: requires strictly higher term (otherwise signed `conflict`), returns `unknown-slot`
  *   if absent.
  * - `delete`: checks `profilesMounted` before acting (signed `profile-disk-missing`, nothing done)
  *   and AGAIN immediately before erasing the profile (`lose-mount-before-profile-erase`: slot and
  *   credentials erased + tombstone recorded, profile kept, signed `profile-disk-missing`; repeating
- *   the same delete once the mount returns erases the profile and answers all three flags).
+ *   the same delete once the mount returns erases the profile and answers `erased`, `profileErased`,
+ *   and — on a host that pulls its egress — `credentialsErased`).
  */
 class FakePoolAgent {
   readonly slots = new Map<
@@ -300,7 +302,7 @@ class FakePoolAgent {
             reqBytes,
             {
               op: "refused",
-              code: "conflict",
+              code: "profile-disk-full",
               message: `A ${sizeMib} MiB profile would leave this host's profiles without room to fill in.`,
             },
             409,
@@ -543,6 +545,7 @@ function createHarness(options: { concurrency?: number } = {}) {
       autoReplaceCount: 0,
       bootstrapToken: "b".repeat(43),
       readinessStartedAt: new Date(nowMs).toISOString(),
+      liveSlotCount: 0,
     });
 
   const defaultSlot = (host: BrowserPoolHostDesired): BrowserPoolSlotDesired =>
@@ -578,9 +581,10 @@ function createHarness(options: { concurrency?: number } = {}) {
     desiredHosts: vi.fn(async () =>
       [...hosts.values()].map((host) => ({
         ...host,
-        liveSlotCount:
-          host.liveSlotCount ??
+        liveSlotCount: Math.max(
+          host.liveSlotCount,
           [...slots.values()].filter((slot) => slot.hostId === host.id).length,
+        ),
       })),
     ),
     checkHost: vi.fn(async (id: BrowserPoolHostId, check: BrowserPoolHostCheck) => {
@@ -2258,5 +2262,170 @@ describe("PoolReconciler — slots", () => {
 
     expect(isMainModule(undefined, import.meta.url)).toBe(false);
     expect(isMainModule("/tmp/definitely-not-this-file.ts", import.meta.url)).toBe(false);
+  });
+
+  it("J1: refuses an Account desiredHosts answer missing liveSlotCount and deletes nothing of any host", async () => {
+    const h = createHarness();
+    const { host: hostA } = await h.bringHostReady(hostId);
+    const { host: hostB } = await h.bringHostReady(secondHostId);
+    for (const vm of h.compute.instances.values()) {
+      vm.status = "TERMINATED";
+    }
+    expect(h.compute.instances.size).toBe(2);
+    expect(h.compute.disks.size).toBe(2);
+
+    // Real accountClient HTTP response omits `liveSlotCount` on deleted ever-enrolled hostA.
+    const {
+      bootstrapToken: _dropA,
+      liveSlotCount: _dropCountA,
+      ...rawHostA
+    } = {
+      ...hostA,
+      state: "deleted" as const,
+      enrolled: true,
+      everEnrolled: true,
+    };
+    const { bootstrapToken: _dropB, ...rawHostB } = {
+      ...hostB,
+      state: "deleted" as const,
+      enrolled: true,
+      everEnrolled: true,
+      liveSlotCount: 0,
+    };
+
+    const httpAccount = accountClient(
+      new URL("https://account.example.test"),
+      async () => "test-token",
+      {
+        fetch: async (input) => {
+          const url = new URL(
+            typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+          );
+          if (url.pathname.includes("/hosts") && url.pathname.endsWith("/desired")) {
+            return Response.json({ hosts: [rawHostA, rawHostB] });
+          }
+          if (url.pathname.includes("/slots") && url.pathname.endsWith("/desired")) {
+            return Response.json({ slots: [] });
+          }
+          if (url.pathname.endsWith("/check")) {
+            return Response.json({ allowed: true });
+          }
+          if (url.pathname.endsWith("/status")) {
+            return Response.json({ recorded: true });
+          }
+          return Response.json({ error: `unexpected ${url.pathname}` }, { status: 500 });
+        },
+        timeoutMs: 2_000,
+      },
+      "lease-holder-j1",
+    );
+
+    const reconciler = h.makeReconciler(httpAccount.pool);
+    await expect(reconciler.pass(h.signal)).rejects.toThrow(/liveSlotCount|invalid response/iu);
+    expect(h.compute.instances.size).toBe(2);
+    expect(h.compute.disks.size).toBe(2);
+  });
+
+  it("J4: distinguishes profile-disk-full by signed code only, with no fallback on the conflict sentence", async () => {
+    const h = createHarness();
+    const { host } = await h.bringHostReady();
+    let nowMs = 1_000_000;
+
+    // Case A: signed `profile-disk-full` with a completely reworded message -> "This host's profile disk is full."
+    const slotFull = h.defaultSlot(host);
+    h.slots.set(slotFull.slotId, slotFull);
+    const customAgentFull: PoolAgentClient = {
+      list: async () => [],
+      create: async () => {
+        throw new BrowserPoolAgentUnavailable(
+          "reworded full-disk refusal without any legacy phrase",
+          "profile-disk-full",
+        );
+      },
+      replaceKey: async () => {
+        throw new Error("unexpected");
+      },
+      delete: async () => {
+        throw new Error("unexpected");
+      },
+    };
+    const reconcilerFull = new PoolReconciler({
+      account: h.account,
+      provider: h.provider,
+      agent: customAgentFull,
+      accountOrigin: new URL("https://account.example.test"),
+      image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64",
+      pool: {
+        provisionerPrivateKey: h.provisionerKeys.privateKey,
+        provisionerPublicKeySpki: h.provisionerKeys.spki,
+        homeCidr: "10.40.0.0/20",
+        provisionerCidr: "10.50.0.0/24",
+        localSsdCount: 1,
+        bootDiskSizeGb: 40,
+        profileDiskType: "pd-ssd",
+        adminPort: 7311,
+      },
+      readinessTimeoutMs: 600_000,
+      orphanGraceMs: 300_000,
+      concurrency: 1,
+      now: () => nowMs,
+    });
+    await reconcilerFull.pass(h.signal);
+    const fullReport = h.slotReports.find((r) => r.slotId === slotFull.slotId);
+    expect(fullReport?.phase).toBe("failed");
+    expect(fullReport?.lastError).toBe("This host's profile disk is full.");
+    expect(h.slots.get(slotFull.slotId)?.pendingAgentWrites ?? []).toEqual([]);
+
+    // Case B: signed `conflict` carrying the old disk-full sentence -> NO fallback on sentence!
+    h.slots.clear();
+    h.slotReports.length = 0;
+    nowMs += 1_000;
+    const slotConflict = {
+      ...h.defaultSlot(host),
+      slotId: BrowserPoolSlotIdSchema.parse("bps_44444444-4444-4444-8444-444444444444"),
+    };
+    h.slots.set(slotConflict.slotId, slotConflict);
+    const customAgentConflict: PoolAgentClient = {
+      list: async () => [],
+      create: async () => {
+        throw new BrowserPoolAgentUnavailable(
+          "A 2048 MiB profile would leave this host's profiles without room to fill in.",
+          "conflict",
+        );
+      },
+      replaceKey: async () => {
+        throw new Error("unexpected");
+      },
+      delete: async () => {
+        throw new Error("unexpected");
+      },
+    };
+    const reconcilerConflict = new PoolReconciler({
+      account: h.account,
+      provider: h.provider,
+      agent: customAgentConflict,
+      accountOrigin: new URL("https://account.example.test"),
+      image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64",
+      pool: {
+        provisionerPrivateKey: h.provisionerKeys.privateKey,
+        provisionerPublicKeySpki: h.provisionerKeys.spki,
+        homeCidr: "10.40.0.0/20",
+        provisionerCidr: "10.50.0.0/24",
+        localSsdCount: 1,
+        bootDiskSizeGb: 40,
+        profileDiskType: "pd-ssd",
+        adminPort: 7311,
+      },
+      readinessTimeoutMs: 600_000,
+      orphanGraceMs: 300_000,
+      concurrency: 1,
+      now: () => nowMs,
+    });
+    await reconcilerConflict.pass(h.signal);
+    const conflictReport = h.slotReports.find((r) => r.slotId === slotConflict.slotId);
+    expect(conflictReport?.phase).toBe("failed");
+    expect(conflictReport?.lastError).toBe(
+      "The pool host rejected the slot administration request.",
+    );
   });
 });

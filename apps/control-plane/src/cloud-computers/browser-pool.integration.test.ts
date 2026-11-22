@@ -2923,7 +2923,7 @@ integration("Browser pool Account service", () => {
             createAttempts += 1;
             throw new BrowserPoolAgentUnavailable(
               "A 2048 MiB profile would leave this host's profiles without room to fill in.",
-              "conflict",
+              "profile-disk-full",
             );
           },
         },

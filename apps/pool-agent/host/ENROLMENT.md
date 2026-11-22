@@ -34,9 +34,10 @@ argv.
    newlines and tabs) and values pass from Python to Bash NUL-delimited.
 2. **Prepare and mount the durable profile disk** at `/var/lib/opensteer-pool/profiles`
    (`driver.profilesRoot`) using the decision rule below. The device path is fixed to
-   `/dev/disk/by-id/google-opensteer-profiles`, waited for up to 30 seconds via the shared helper in
-   `setup-host.sh`, resolved once, and checked fail-closed against the boot/root disk (and its
-   parent whole disk). Because `mkfs.ext4` does not prompt before overwriting an existing filesystem
+   `/dev/disk/by-id/google-opensteer-profiles`, waited for up to 30 seconds of elapsed wall time
+   via the shared helper in `setup-host.sh`, resolved once, and checked fail-closed against the
+   boot/root disk (and its parent whole disk). Because `mkfs.ext4` does not prompt before
+   overwriting an existing filesystem
    when not on a terminal, the format guard is repeating both `blkid -o export -p` and
    `wipefs -n --noheadings` immediately before `mkfs.ext4` on a host with `everEnrolled=false`
    (together with `mke2fs`'s exclusive open on a busy device); `mkfs.ext4 -q -m 1 -L osp-<12hex>`
@@ -136,9 +137,10 @@ disk that could hold a person's profile is never formatted.
     `profile-disk-missing` as "not done, host is not ready");
   - before every `start` and wake from disk, the Home receives a stored signed `applied: false`
     with reason `profile-disk-missing`.
-- **Late-attaching or disappearing disk (Z7):** `opensteer-pool-host.service` waits up to 30
-  seconds at boot for `/dev/disk/by-id/google-opensteer-profiles` (using the same bounded wait as
-  enrolment). If the disk attaches later than that, or disappears while the agent is running, the
+- **Late-attaching or disappearing disk (Z7 / J6):** `opensteer-pool-host.service` waits up to 30
+  seconds of elapsed wall time at boot for `/dev/disk/by-id/google-opensteer-profiles` (using the
+  same elapsed-time-bounded wait as enrolment). If the disk attaches later than that, or disappears
+  while the agent is running, the
   host fails closed and requires an operator to verify/mount the disk and restart both units
   (`systemctl restart opensteer-pool-host opensteer-pool-agent`).
 

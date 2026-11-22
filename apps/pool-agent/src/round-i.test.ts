@@ -204,7 +204,7 @@ describe("U5: the free-space guard", () => {
       });
     await create("one");
     // The first is sparse: its 64 MiB may still fill in. 64 + 64 > 100.
-    await expect(create("two")).rejects.toMatchObject({ name: "SlotConflict" });
+    await expect(create("two")).rejects.toMatchObject({ name: "ProfilesFull" });
   });
 });
 

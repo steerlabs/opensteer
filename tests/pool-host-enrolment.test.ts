@@ -110,24 +110,52 @@ interface FakeHostHarnessOptions {
   readonly bootEndpointFailsAfterComplete?: boolean;
 }
 
+// J9: Every device-writing command family is placed in binDir as a recording, failing stand-in
+// (`mkfs.ext4` and `wipefs` have dedicated recording stand-ins below).
 const DEVICE_WRITING_COMMANDS = [
   "dd",
   "sgdisk",
   "sfdisk",
   "parted",
   "e2fsck",
+  "xfs_repair",
   "fsck",
+  "fsck.ext2",
+  "fsck.ext3",
   "fsck.ext4",
   "fsck.xfs",
+  "fsck.btrfs",
+  "fsck.vfat",
+  "fsck.fat",
+  "fsck.msdos",
+  "fsck.minix",
+  "fsck.cramfs",
   "tune2fs",
   "e2label",
   "blkdiscard",
   "fstrim",
   "mkfs",
+  "mkfs.ext2",
+  "mkfs.ext3",
   "mkfs.xfs",
+  "mkfs.btrfs",
   "mkfs.vfat",
+  "mkfs.fat",
+  "mkfs.msdos",
+  "mkfs.ntfs",
+  "mkfs.f2fs",
+  "mkfs.exfat",
+  "mkfs.minix",
+  "mkfs.cramfs",
+  "mkfs.bfs",
   "mke2fs",
   "mkswap",
+  "shred",
+  "nvme",
+  "blockdev",
+  "wipe",
+  "dmsetup",
+  "pvcreate",
   "truncate",
   "losetup",
   "mdadm",
@@ -327,9 +355,12 @@ while (( $# > 0 )); do
   if [[ $1 == -C ]]; then dest="$2"; shift 2; else shift; fi
 done
 if [[ -n $dest ]]; then
-  mkdir -p "$dest/release-v1.15.0-x86_64"
-  printf 'fc' > "$dest/release-v1.15.0-x86_64/firecracker-v1.15.0-x86_64"
-  printf 'jl' > "$dest/release-v1.15.0-x86_64/jailer-v1.15.0-x86_64"
+  mkdir -p "$dest/release-v1.18.0-x86_64"
+  printf 'fake-fc' > "$dest/release-v1.18.0-x86_64/firecracker-v1.18.0-x86_64"
+  printf 'fake-jailer' > "$dest/release-v1.18.0-x86_64/jailer-v1.18.0-x86_64"
+  mkdir -p "$dest/bin"
+  printf '#!/usr/bin/env bash\necho v24.15.0\n' > "$dest/bin/node"
+  chmod +x "$dest/bin/node"
 fi
 exit 0
 `,
@@ -1265,7 +1296,42 @@ esac
         realInstallHostEnv: true,
         setupInstallStub: false,
       });
-      const res = runScript(setupScript, ["install"], {
+      // J3(c): setup-host.sh keeps /dev/kvm, cgroup, SMT, and CPU-vuln paths as plain constants;
+      // rewrite those 4 constant lines in a scratch copy to run `install` on macOS.
+      const macSetupCopy = join(h.root, "setup-host-z4b.sh");
+      writeFileSync(
+        macSetupCopy,
+        readFileSync(setupScript, "utf8")
+          .replace(
+            /^readonly KVM_DEV=.*$/mu,
+            `readonly KVM_DEV=${JSON.stringify(h.env.OSP_KVM_DEV!)}`,
+          )
+          .replace(
+            /^readonly CGROUP_CONTROLLERS=.*$/mu,
+            `readonly CGROUP_CONTROLLERS=${JSON.stringify(h.env.OSP_CGROUP_CONTROLLERS!)}`,
+          )
+          .replace(
+            /^readonly SMT_ACTIVE=.*$/mu,
+            `readonly SMT_ACTIVE=${JSON.stringify(h.env.OSP_SMT_ACTIVE!)}`,
+          )
+          .replace(
+            /^readonly CPU_VULNS_DIR=.*$/mu,
+            `readonly CPU_VULNS_DIR=${JSON.stringify(h.env.OSP_CPU_VULNS_DIR!)}`,
+          )
+          .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]"),
+        { mode: 0o755 },
+      );
+      writeExecutable(
+        h.binDir,
+        "rm",
+        `#!/usr/bin/env bash
+clean=()
+for a in "$@"; do [[ $a == --one-file-system ]] || clean+=("$a"); done
+exec /bin/rm "\${clean[@]}"
+`,
+      );
+      writeExecutable(h.binDir, "nproc", "#!/usr/bin/env bash\necho 8\n");
+      const res = runScript(macSetupCopy, ["install"], {
         ...h.env,
         OSP_HOME_CIDR: "10.40.0.0/20",
         OSP_PROVISIONER_CIDR: "10.50.0.0/24",
@@ -1467,20 +1533,189 @@ esac
       );
     });
 
-    it("Z7: setup-host.sh boot waits a bounded time for the durable profile disk via the shared wait function", () => {
+    it("J2 + J6: setup-host.sh boot waits bounded by elapsed time for the profile disk, mounts when it appears, and refuses with no mount when it never appears", () => {
       const hostA = "ph_11111111-1111-4111-8111-111111111111";
       const labelA = hostProfileDiskLabel(hostA);
-      const h = createFakeHostEnv({
+
+      const prepareBootTest = (
+        h: ReturnType<typeof createFakeHostEnv>,
+        mutateMountToImmediate = false,
+      ): string => {
+        const fakeSys = join(h.root, "fake-sys");
+        const fakeEtc = join(h.root, "fake-etc");
+        mkdirSync(join(fakeSys, "thp"), { recursive: true });
+        mkdirSync(join(fakeSys, "ksm"), { recursive: true });
+        mkdirSync(join(fakeEtc, "sysctl.d"), { recursive: true });
+        mkdirSync(join(fakeEtc, "systemd/coredump.conf.d"), { recursive: true });
+        mkdirSync(join(fakeEtc, "systemd/system.conf.d"), { recursive: true });
+        writeFileSync(join(fakeSys, "thp/enabled"), "[madvise]\n");
+        writeFileSync(join(fakeSys, "thp/defrag"), "[madvise]\n");
+        writeFileSync(join(fakeEtc, "fstab"), "# test fstab\n");
+        writeFileSync(join(fakeEtc, "nftables.conf"), "#!/usr/sbin/nft -f\n");
+
+        // Write root-owned 0600 host.env just like save_host_env does.
+        writeFileSync(
+          join(h.etcDir, "host.env"),
+          [
+            `OSP_LOCAL_SSDS=/dev/null/none`,
+            `OSP_HOME_CIDR=10.40.0.0/20`,
+            `OSP_PROVISIONER_CIDR=10.50.0.0/24`,
+            `OSP_AGENT_PORT=7310`,
+            `OSP_ADMIN_PORT=7311`,
+            `OSP_RELAY_PORT=7312`,
+            `OSP_PROFILES_ROOT=${join(h.stateDir, "profiles")}`,
+            `OSP_EGRESS_SLICE_MIB=1536`,
+            `OSP_SKIP_DEFAULT_KERNEL=1`,
+            `OSP_REQUIRE_PROFILE_DISK=1`,
+            `OSP_PROFILE_DISK=${poolProfileDiskDevicePath}`,
+            `OSP_PROFILE_DISK_LABEL=${labelA}`,
+            "",
+          ].join("\n"),
+          { mode: 0o600 },
+        );
+
+        // Make saved_state_array see $ARRAY already mounted (we test mount_profile_disk + boot path here).
+        const mpPath = join(h.binDir, "mountpoint");
+        const existingMp = readFileSync(mpPath, "utf8");
+        writeFileSync(
+          mpPath,
+          existingMp.replace(
+            'if [[ -f "$MOUNT_STATE" ]]; then',
+            `if [[ "$target" == ${JSON.stringify(h.arrayDir)} ]]; then exit 0; fi\nif [[ -f "$MOUNT_STATE" ]]; then`,
+          ),
+          { mode: 0o755 },
+        );
+        // Handle `sed -i` cleanly across macOS BSD sed vs GNU sed in kernel_settings.
+        writeExecutable(
+          h.binDir,
+          "sed",
+          `#!/usr/bin/env bash
+if [[ $1 == -i ]]; then shift; exec /usr/bin/sed -i '' "$@"; fi
+exec /usr/bin/sed "$@"
+`,
+        );
+
+        let text = readFileSync(setupScript, "utf8")
+          .replace(
+            /^readonly KVM_DEV=.*$/mu,
+            `readonly KVM_DEV=${JSON.stringify(join(fakeSys, "kvm"))}`,
+          )
+          .replace(
+            /^readonly CGROUP_CONTROLLERS=.*$/mu,
+            `readonly CGROUP_CONTROLLERS=${JSON.stringify(join(fakeSys, "cgroup.controllers"))}`,
+          )
+          .replace(
+            /^readonly SMT_ACTIVE=.*$/mu,
+            `readonly SMT_ACTIVE=${JSON.stringify(join(fakeSys, "smt-active"))}`,
+          )
+          .replace(
+            /^readonly CPU_VULNS_DIR=.*$/mu,
+            `readonly CPU_VULNS_DIR=${JSON.stringify(join(fakeSys, "vulns"))}`,
+          )
+          .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]")
+          .replaceAll("/sys/kernel/mm/transparent_hugepage", join(fakeSys, "thp"))
+          .replaceAll("/sys/kernel/mm/ksm", join(fakeSys, "ksm"))
+          .replaceAll("/etc/fstab", join(fakeEtc, "fstab"))
+          .replaceAll("/etc/sysctl.d", join(fakeEtc, "sysctl.d"))
+          .replaceAll("/etc/systemd/coredump.conf.d", join(fakeEtc, "systemd/coredump.conf.d"))
+          .replaceAll("/etc/systemd/system.conf.d", join(fakeEtc, "systemd/system.conf.d"))
+          .replaceAll("/etc/nftables.conf", join(fakeEtc, "nftables.conf"))
+          .replace(
+            "    boot)\n        require_host\n        mount_profile_disk 0\n        kernel_settings\n        host_firewall\n        saved_state_array\n        stage_images",
+            "    boot)\n        require_host\n        mount_profile_disk 0\n        kernel_settings\n        host_firewall\n        stage_images",
+          );
+
+        if (mutateMountToImmediate) {
+          text = text.replace(
+            '    wait_for_profile_disk "$OSP_PROFILE_DISK"',
+            '    is_block_device "$OSP_PROFILE_DISK" || die "durable profile disk $OSP_PROFILE_DISK is not present"',
+          );
+        }
+
+        const copyPath = join(
+          h.root,
+          mutateMountToImmediate ? "setup-host-boot-mutated.sh" : "setup-host-boot.sh",
+        );
+        writeFileSync(copyPath, text, { mode: 0o755 });
+        return copyPath;
+      };
+
+      // Case 1: device appears on the 2nd check -> `setup-host.sh boot` succeeds and mounts the disk.
+      const hAppears = createFakeHostEnv({
         blockDeviceAppearsOnCheck: 2,
         blkidRc: 0,
         blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+        realInstallHostEnv: true,
       });
-      const res = runScript(setupScript, ["wait-profile-disk", poolProfileDiskDevicePath], {
-        ...h.env,
+      const bootCopy = prepareBootTest(hAppears);
+      const resAppears = runScript(bootCopy, ["boot"], {
+        ...hAppears.env,
         OSP_PROFILE_DISK_WAIT_SECONDS: "5",
       });
-      expect(res.status, res.stderr).toBe(0);
-      expect(h.readCalls().some((c) => c.cmd === "udevadm")).toBe(true);
+      expect(resAppears.status, resAppears.stderr).toBe(0);
+      const appearsCalls = hAppears.readCalls();
+      expect(appearsCalls.some((c) => c.cmd === "udevadm")).toBe(true);
+      expect(
+        appearsCalls.some(
+          (c) =>
+            c.cmd === "mount" &&
+            c.args.includes("/dev/sdb") &&
+            c.args.includes(join(hAppears.stateDir, "profiles")),
+        ),
+        `expected mount call for durable profile disk in boot path, got: ${JSON.stringify(appearsCalls)}`,
+      ).toBe(true);
+
+      // J2 mutation check (on scratch copy): replacing wait_for_profile_disk with immediate is_block_device fails Case 1!
+      const hMutated = createFakeHostEnv({
+        blockDeviceAppearsOnCheck: 2,
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+        realInstallHostEnv: true,
+      });
+      const mutatedCopy = prepareBootTest(hMutated, true);
+      const resMutated = runScript(mutatedCopy, ["boot"], {
+        ...hMutated.env,
+        OSP_PROFILE_DISK_WAIT_SECONDS: "5",
+      });
+      expect(resMutated.status).not.toBe(0);
+      expect(hMutated.readCalls().some((c) => c.cmd === "mount")).toBe(false);
+
+      // Case 2 (J2 + J6): device NEVER appears, OSP_PROFILE_DISK_WAIT_SECONDS=2 with a slow 1s udevadm settle ->
+      // bounded by elapsed time (does not overshoot into 2 * (1s + 1s) = 4s!), non-zero exit, NO mount call.
+      const hNever = createFakeHostEnv({
+        blockDeviceAppearsOnCheck: 9999,
+        blkidRc: 2,
+        blkidOut: "",
+        realInstallHostEnv: true,
+      });
+      // Replace udevadm with a 1s-slow stand-in to prove the wait is bounded by elapsed wall time (J6).
+      writeExecutable(
+        hNever.binDir,
+        "udevadm",
+        `#!/usr/bin/env bash
+python3 -c 'import json,os,sys; open(os.environ["OSP_TEST_CALLS"],"a").write(json.dumps({"cmd":"udevadm","args":sys.argv[1:]})+"\\n")' "$@"
+sleep 1
+exit 0
+`,
+      );
+      const bootNeverCopy = prepareBootTest(hNever);
+      const t0 = Date.now();
+      const resNever = runScript(bootNeverCopy, ["boot"], {
+        ...hNever.env,
+        OSP_TEST_CALLS: join(hNever.root, "calls.jsonl"),
+        OSP_PROFILE_DISK_WAIT_SECONDS: "2",
+      });
+      const elapsedMs = Date.now() - t0;
+      expect(resNever.status).not.toBe(0);
+      expect(resNever.stderr).toMatch(/did not appear as a block device after \d+s \(limit 2s\)/u);
+      expect(
+        elapsedMs,
+        `wait must be bounded by elapsed time (~2s), took ${elapsedMs}ms`,
+      ).toBeLessThan(3500);
+      expect(
+        hNever.readCalls().some((c) => c.cmd === "mount"),
+        "must not attempt mount when durable profile disk never appears",
+      ).toBe(false);
     });
 
     it("Z4(c) + Z11: rendered download script rejects wrong SHA-256 before tar AND refuses any symlink inside the extracted bundle before running enroll-host.sh", () => {
@@ -1594,6 +1829,188 @@ esac
         existsSync(markerPath),
         "enroll-host.sh must NOT run when bundle contains a symlink",
       ).toBe(false);
+
+      // J10: If `find` fails with empty stdout, the download script must refuse the bundle!
+      const goodBundleSha = createHash("sha256").update(readFileSync(goodBundle)).digest("hex");
+      const findFailUserData = renderPoolHostUserData(
+        {
+          hostId: BrowserPoolHostIdSchema.parse("ph_11111111-1111-4111-8111-111111111111"),
+          generation: 1,
+          accountOrigin: "https://account.example.test",
+          installerUrl: "https://releases.example.test/pool-host-bundle.tar.gz",
+          installerSha256: goodBundleSha,
+          bootstrapToken: "t".repeat(43),
+          provisionerKey: ed25519SpkiBase64(),
+          homeCidr: "10.40.0.0/20",
+          provisionerCidr: "10.50.0.0/24",
+          profileDiskDevice: poolProfileDiskDevicePath,
+          everEnrolled: false,
+          agentPort: 7310,
+          adminPort: 7311,
+          relayPort: 7312,
+        },
+        false,
+      );
+      const hFindFail = createFakeHostEnv({ curlBundleFile: goodBundle });
+      writeExecutable(hFindFail.binDir, "find", "#!/usr/bin/env bash\nexit 1\n");
+      const findFailScriptPath = join(workDir, "download-find-fail.sh");
+      const rawFindFailScript = extractDownloadScript(findFailUserData)
+        .replaceAll("/root/opensteer-pool-bundle.", `${workDir}/find-bundle.`)
+        .replaceAll("/root/opensteer-pool-bundle-dir.", `${workDir}/find-bundle-dir.`)
+        .replaceAll("--one-file-system ", "");
+      writeFileSync(findFailScriptPath, rawFindFailScript, { mode: 0o700 });
+      const findFailRes = runScript(findFailScriptPath, [], hFindFail.env);
+      expect(findFailRes.status).not.toBe(0);
+      expect(existsSync(markerPath), "enroll-host.sh must NOT run when find exits non-zero").toBe(
+        false,
+      );
+    });
+
+    it("J3(c): real setup-host.sh ignores OSP_KVM_DEV/OSP_SMT_ACTIVE/OSP_CPU_VULNS_DIR env vars and reads real host paths", () => {
+      const hostA = "ph_11111111-1111-4111-8111-111111111111";
+      const labelA = hostProfileDiskLabel(hostA);
+      const hEnvBypass = createFakeHostEnv({
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+        realInstallHostEnv: true,
+        setupInstallStub: false,
+      });
+      const envBypassRes = runScript(setupScript, ["install"], {
+        ...hEnvBypass.env,
+        OSP_PROFILE_DISK: poolProfileDiskDevicePath,
+        OSP_PROFILE_DISK_LABEL: labelA,
+        OSP_REQUIRE_PROFILE_DISK: "1",
+        OSP_PROFILES_ROOT: join(hEnvBypass.stateDir, "profiles"),
+        OSP_SKIP_DEFAULT_KERNEL: "1",
+      });
+      expect(envBypassRes.status).not.toBe(0);
+      expect(envBypassRes.stderr).toMatch(/\/dev\/kvm is missing/u);
+      expect(
+        hEnvBypass.readCalls().some((c) => c.cmd === "apt-get"),
+        "real setup-host.sh must fail in require_host before install_packages when env vars try to spoof host paths",
+      ).toBe(false);
+    });
+
+    it("J3(a): setup-host.sh install passes --one-file-system to all 3 rm calls in install_binaries", () => {
+      const hostA = "ph_11111111-1111-4111-8111-111111111111";
+      const labelA = hostProfileDiskLabel(hostA);
+      const hRm = createFakeHostEnv({
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+        realInstallHostEnv: true,
+        setupInstallStub: false,
+      });
+      const copyPath = join(hRm.root, "setup-host-rm.sh");
+      writeFileSync(
+        copyPath,
+        readFileSync(setupScript, "utf8")
+          .replace(
+            /^readonly KVM_DEV=.*$/mu,
+            `readonly KVM_DEV=${JSON.stringify(hRm.env.OSP_KVM_DEV!)}`,
+          )
+          .replace(
+            /^readonly CGROUP_CONTROLLERS=.*$/mu,
+            `readonly CGROUP_CONTROLLERS=${JSON.stringify(hRm.env.OSP_CGROUP_CONTROLLERS!)}`,
+          )
+          .replace(
+            /^readonly SMT_ACTIVE=.*$/mu,
+            `readonly SMT_ACTIVE=${JSON.stringify(hRm.env.OSP_SMT_ACTIVE!)}`,
+          )
+          .replace(
+            /^readonly CPU_VULNS_DIR=.*$/mu,
+            `readonly CPU_VULNS_DIR=${JSON.stringify(hRm.env.OSP_CPU_VULNS_DIR!)}`,
+          )
+          .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]"),
+        { mode: 0o755 },
+      );
+      // Remove pre-staged node binary so install_binaries runs the node unpack branch (hitting all 3 rm calls).
+      execFileSync("/bin/rm", ["-rf", join(hRm.optDir, "node")]);
+      // Install a recording rm stand-in that strips --one-file-system before invoking /bin/rm.
+      writeExecutable(
+        hRm.binDir,
+        "rm",
+        `#!/usr/bin/env bash
+python3 -c 'import json,os,sys; open(os.environ["OSP_TEST_CALLS"],"a").write(json.dumps({"cmd":"rm","args":sys.argv[1:]})+"\\n")' "$@"
+clean=()
+for a in "$@"; do [[ $a == --one-file-system ]] || clean+=("$a"); done
+exec /bin/rm "\${clean[@]}"
+`,
+      );
+      writeExecutable(hRm.binDir, "nproc", "#!/usr/bin/env bash\necho 8\n");
+      runScript(copyPath, ["install"], {
+        ...hRm.env,
+        OSP_TEST_CALLS: join(hRm.root, "calls.jsonl"),
+        OSP_PROFILE_DISK: poolProfileDiskDevicePath,
+        OSP_PROFILE_DISK_LABEL: labelA,
+        OSP_REQUIRE_PROFILE_DISK: "1",
+        OSP_PROFILES_ROOT: join(hRm.stateDir, "profiles"),
+        OSP_SKIP_DEFAULT_KERNEL: "1",
+      });
+      const rmCalls = hRm.readCalls().filter((c) => c.cmd === "rm");
+      const oneFsCalls = rmCalls.filter((c) => c.args.includes("--one-file-system"));
+      expect(
+        oneFsCalls.length,
+        `expected all 3 install_binaries rm calls to pass --one-file-system, got: ${JSON.stringify(rmCalls)}`,
+      ).toBeGreaterThanOrEqual(3);
+      expect(oneFsCalls.some((c) => c.args.some((a) => a.endsWith("/node.new")))).toBe(true);
+      expect(oneFsCalls.some((c) => c.args.some((a) => a.endsWith("/node")))).toBe(true);
+    });
+
+    it("J3(b): setup-host.sh install refuses with a plain message when nproc is missing or fails", () => {
+      const hostA = "ph_11111111-1111-4111-8111-111111111111";
+      const labelA = hostProfileDiskLabel(hostA);
+      const hNoNproc = createFakeHostEnv({
+        blkidRc: 0,
+        blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+        realInstallHostEnv: true,
+        setupInstallStub: false,
+      });
+      const copyPath = join(hNoNproc.root, "setup-host-j3b.sh");
+      writeFileSync(
+        copyPath,
+        readFileSync(setupScript, "utf8")
+          .replace(
+            /^readonly KVM_DEV=.*$/mu,
+            `readonly KVM_DEV=${JSON.stringify(hNoNproc.env.OSP_KVM_DEV!)}`,
+          )
+          .replace(
+            /^readonly CGROUP_CONTROLLERS=.*$/mu,
+            `readonly CGROUP_CONTROLLERS=${JSON.stringify(hNoNproc.env.OSP_CGROUP_CONTROLLERS!)}`,
+          )
+          .replace(
+            /^readonly SMT_ACTIVE=.*$/mu,
+            `readonly SMT_ACTIVE=${JSON.stringify(hNoNproc.env.OSP_SMT_ACTIVE!)}`,
+          )
+          .replace(
+            /^readonly CPU_VULNS_DIR=.*$/mu,
+            `readonly CPU_VULNS_DIR=${JSON.stringify(hNoNproc.env.OSP_CPU_VULNS_DIR!)}`,
+          )
+          .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]"),
+        { mode: 0o755 },
+      );
+      writeExecutable(
+        hNoNproc.binDir,
+        "rm",
+        `#!/usr/bin/env bash
+clean=()
+for a in "$@"; do [[ $a == --one-file-system ]] || clean+=("$a"); done
+exec /bin/rm "\${clean[@]}"
+`,
+      );
+      writeExecutable(hNoNproc.binDir, "nproc", "#!/usr/bin/env bash\nexit 127\n");
+      const noNprocRes = runScript(copyPath, ["install"], {
+        ...hNoNproc.env,
+        OSP_PROFILE_DISK: poolProfileDiskDevicePath,
+        OSP_PROFILE_DISK_LABEL: labelA,
+        OSP_REQUIRE_PROFILE_DISK: "1",
+        OSP_PROFILES_ROOT: join(hNoNproc.stateDir, "profiles"),
+        OSP_SKIP_DEFAULT_KERNEL: "1",
+      });
+      expect(noNprocRes.status).not.toBe(0);
+      expect(existsSync(join(hNoNproc.env.OSP_SYSTEMD_DIR!, "opensteer-pool-egress.slice"))).toBe(
+        false,
+      );
+      expect(noNprocRes.stderr).toMatch(/nproc failed or is missing/u);
     });
 
     it("Z1 (step 1): failure between boot-complete and systemctl enable keeps bootstrap token and caches release-artifacts.json", async () => {
