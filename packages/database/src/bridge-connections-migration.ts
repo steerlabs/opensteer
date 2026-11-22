@@ -116,5 +116,8 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
     );
     create index bridge_link_codes_account on bridge_link_codes(account_id, expires_at)
       where consumed_at is null;
+    -- One code waits on an account at a time: asking again replaces it.
+    create unique index bridge_link_codes_one_live on bridge_link_codes(account_id)
+      where consumed_at is null;
   `.execute(database);
 }

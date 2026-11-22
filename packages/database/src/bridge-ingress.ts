@@ -87,6 +87,8 @@ export async function startBridgeOwnerLink(
         code: "not_found",
         message: "That messaging account is no longer connected.",
       });
+    // The account row is held while a code is made, as while one is redeemed.
+    await lockChatAccount(tx, accountId);
     await tx
       .deleteFrom("bridgeLinkCodes")
       .where("accountId", "=", accountId)
@@ -167,11 +169,13 @@ export async function decideBridgeIngress(
     // A code the person sent from their own account, in a direct message, while it is fresh.
     const code = event.conversation.type === "dm" && !input.stale ? normalizedCode(text) : null;
     if (code) {
-      const linked = await redeemLinkCode(tx, ingress.accountId, code, event);
-      if (linked) {
+      const redeemed = await redeemLinkCode(tx, ingress.accountId, code, event);
+      if (redeemed === "linked") {
         await finishIngress(tx, ingress.id, "ignored", "Linked the person's own account");
         return { kind: "linked" };
       }
+      // A live code that could not link is a code, not a message: nothing runs, nothing is said.
+      if (redeemed === "refused") return ignore("The code could not link this account");
     }
 
     const admitted = await admitChatMessage(tx, ingress.accountId, event);
@@ -464,9 +468,22 @@ async function redeemLinkCode(
   accountId: ReturnType<typeof ChannelAccountIdSchema.parse>,
   code: string,
   event: NormalizedChannelEvent,
-): Promise<boolean> {
-  // Only a connected account links "me": a code that waited while it was paused or removed
-  // links nothing.
+): Promise<"not-a-code" | "linked" | "refused"> {
+  const live = () =>
+    tx
+      .selectFrom("bridgeLinkCodes")
+      .select(["id", "userId"])
+      .where("accountId", "=", accountId)
+      .where("codeHash", "=", digest(code))
+      .where("consumedAt", "is", null)
+      .where("expiresAt", ">", new Date())
+      .executeTakeFirst();
+  // A message that is not a live code is an ordinary message: nothing is locked for it.
+  if (!(await live())) return "not-a-code";
+  // The account row is held while the code is redeemed, and read again under it: only a
+  // connected account links "me", and a code that waited while it was paused or removed, or
+  // that another redemption took meanwhile, links nothing.
+  await lockChatAccount(tx, accountId);
   const connected = await tx
     .selectFrom("channelAccounts")
     .innerJoin(
@@ -479,16 +496,8 @@ async function redeemLinkCode(
     .where("channelAccounts.status", "=", "connected")
     .where("integrationConnections.status", "in", ["pending", "connected", "needs-attention"])
     .executeTakeFirst();
-  if (!connected) return false;
-  const pending = await tx
-    .selectFrom("bridgeLinkCodes")
-    .select(["id", "userId"])
-    .where("accountId", "=", accountId)
-    .where("codeHash", "=", digest(code))
-    .where("consumedAt", "is", null)
-    .where("expiresAt", ">", new Date())
-    .executeTakeFirst();
-  if (!pending) return false;
+  const pending = connected ? await live() : undefined;
+  if (!pending) return "refused";
   // Every identity this touches, in one ordered lock: the sender's and any linked to the person.
   await tx
     .selectFrom("channelIdentities")
@@ -508,7 +517,7 @@ async function redeemLinkCode(
     displayName: event.actor.displayName,
     externalUserId: event.actor.externalUserId,
   });
-  if (identity.linkedUserId && identity.linkedUserId !== pending.userId) return false;
+  if (identity.linkedUserId && identity.linkedUserId !== pending.userId) return "refused";
   // "Me" is one identity on an account at a time: linking this one unlinks any other.
   await tx
     .updateTable("channelIdentities")
@@ -530,5 +539,30 @@ async function redeemLinkCode(
     .executeTakeFirst();
   if (consumed.numUpdatedRows !== 1n)
     throw new OpensteerError({ code: "conflict", message: "Channel ingress claim is stale" });
-  return true;
+  return "linked";
+}
+
+/** The chat account's row, held after its channel's, in the stable order. */
+async function lockChatAccount(
+  tx: Transaction<DatabaseSchema>,
+  accountId: ReturnType<typeof ChannelAccountIdSchema.parse>,
+): Promise<void> {
+  const account = await tx
+    .selectFrom("channelAccounts")
+    .select("connectionId")
+    .where("id", "=", accountId)
+    .executeTakeFirst();
+  if (!account) return;
+  await tx
+    .selectFrom("integrationConnections")
+    .select("id")
+    .where("id", "=", account.connectionId)
+    .forShare()
+    .execute();
+  await tx
+    .selectFrom("channelAccounts")
+    .select("id")
+    .where("id", "=", accountId)
+    .forNoKeyUpdate()
+    .execute();
 }

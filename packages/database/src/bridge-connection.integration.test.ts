@@ -514,3 +514,132 @@ describeStore('"me" is one identity on an account at a time', (it) => {
     });
   });
 });
+
+describeStore('"me" is one identity, enforced by the database', (it) => {
+  it("makes one live code however many are asked for at once, and links one identity per person", async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("one-me", { linkOwner: false });
+    const { database } = storeFixture;
+    const { startBridgeOwnerLink } = await import("./bridge-ingress.js");
+    const accountId = bridge.configured.account.id;
+    // Two tabs ask for a code at the same moment: one code is live, the other never links.
+    const codes = await Promise.all(
+      [1, 2].map(() =>
+        startBridgeOwnerLink(database, { userId: bridge.fixture.userId, accountId }),
+      ),
+    );
+    expect(
+      await database
+        .selectFrom("bridgeLinkCodes")
+        .select("id")
+        .where("accountId", "=", accountId)
+        .where("consumedAt", "is", null)
+        .execute(),
+    ).toHaveLength(1);
+    // Two people send the codes at once: at most one of them is "me".
+    // Each from their own direct message with the bot: two lanes, decided at the same time.
+    for (const [index, { code }] of codes.entries()) {
+      const event = bridge.event({
+        eventId: `code-${index}`,
+        text: code,
+        externalUserId: `U-${index}`,
+      });
+      await bridge.channels.commitIngress(bridge.configured.connection.id, {
+        ...event,
+        conversation: { ...event.conversation, externalConversationId: `D-one-me-${index}` },
+      });
+    }
+    const sent = [
+      (await bridge.channels.claimIngress("one-me-a"))!,
+      (await bridge.channels.claimIngress("one-me-b"))!,
+    ];
+    expect(sent.every(Boolean)).toBe(true);
+    const { decideBridgeIngress } = await import("./bridge-ingress.js");
+    await Promise.all(
+      sent.map((claimed) =>
+        decideBridgeIngress(database, { ingressId: claimed.id, claimToken: claimed.claimToken }),
+      ),
+    );
+    expect(
+      await database
+        .selectFrom("channelIdentities")
+        .select("externalUserId")
+        .where("accountId", "=", accountId)
+        .where("status", "=", "linked")
+        .execute(),
+    ).toHaveLength(1);
+    // And the database itself refuses a second "me" for the person on the account.
+    const linked = await database
+      .selectFrom("channelIdentities")
+      .select("linkedUserId")
+      .where("accountId", "=", accountId)
+      .where("status", "=", "linked")
+      .executeTakeFirstOrThrow();
+    const second = await identity(database, accountId, "U-second");
+    await expect(
+      database
+        .updateTable("channelIdentities")
+        .set({ status: "linked", linkedUserId: linked.linkedUserId })
+        .where("id", "=", second as never)
+        .execute(),
+    ).rejects.toMatchObject({ constraint: "channel_identities_one_me" });
+  });
+
+  it("keeps only the most recently used of several identities linked before the update", async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("one-me-legacy");
+    const { database } = storeFixture;
+    const accountId = bridge.configured.account.id;
+    const owner = await database
+      .selectFrom("channelIdentities")
+      .select("linkedUserId")
+      .where("accountId", "=", accountId)
+      .where("status", "=", "linked")
+      .executeTakeFirstOrThrow();
+    // What the image before this one allowed: the phone and the email address both "me".
+    await sql`drop index channel_identities_one_me`.execute(database);
+    const email = await identity(database, accountId, "owner@example.com");
+    await database
+      .updateTable("channelIdentities")
+      .set({
+        status: "linked",
+        linkedUserId: owner.linkedUserId,
+        updatedAt: new Date(Date.now() + 60_000),
+      })
+      .where("id", "=", email as never)
+      .execute();
+    const { applyBridgeConversion } = await import("./bridge-conversion-migration.js");
+    await applyBridgeConversion(database as never);
+    expect(
+      await database
+        .selectFrom("channelIdentities")
+        .select("externalUserId")
+        .where("accountId", "=", accountId)
+        .where("status", "=", "linked")
+        .execute(),
+    ).toEqual([{ externalUserId: "owner@example.com" }]);
+    const { rows } = await sql<{ indexname: string }>`select indexname from pg_indexes
+      where indexname = 'channel_identities_one_me'`.execute(database);
+    expect(rows).toHaveLength(1);
+  });
+});
+
+/** An identity on the account, as the first message from it makes one. */
+async function identity(
+  database: Kysely<DatabaseSchema>,
+  accountId: string,
+  externalUserId: string,
+): Promise<string> {
+  const { upsertChannelIdentity } = await import("./channel-store.js");
+  const { commitPersonalMutation } = await import("./personal-mutation.js");
+  const made = await commitPersonalMutation(database, (tx) =>
+    upsertChannelIdentity(tx, {
+      accountId: accountId as never,
+      displayName: externalUserId,
+      externalUserId,
+    }),
+  );
+  return made.id;
+}

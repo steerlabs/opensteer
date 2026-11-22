@@ -21,6 +21,20 @@ export async function applyBridgeConversion(database: Kysely<unknown>): Promise<
         from work_home_policy p where p.singleton
       ), false) as refused;
 
+    -- "Me" is one identity on an account. The image before this one let a person link several
+    -- (a phone number and an email address): the most recently used stays linked, the others
+    -- are unlinked, and the database keeps it to one from here on.
+    update channel_identities older set status = 'unlinked', linked_user_id = null,
+      updated_at = now()
+    where older.status = 'linked' and older.linked_user_id is not null and exists (
+      select 1 from channel_identities newer
+      where newer.account_id = older.account_id and newer.linked_user_id = older.linked_user_id
+        and newer.status = 'linked'
+        and (newer.updated_at, newer.id) > (older.updated_at, older.id));
+    create unique index if not exists channel_identities_one_me
+      on channel_identities(account_id, linked_user_id)
+      where status = 'linked' and linked_user_id is not null;
+
     -- What each live route matched, and nothing more: its selector (a route for one kind of
     -- conversation, one conversation, one workspace; one for a single thread matched less than
     -- any bridge covers, so it makes none), its direct messages unless off, and its channels
