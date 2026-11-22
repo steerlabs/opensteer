@@ -289,8 +289,11 @@ No upstream, no start, and the host's credentials are a copy of what the account
   - **Proxy not serving:** before `start` or wake (`resume`, from memory or disk) answers applied,
     the agent confirms the slot's egress proxy serves `/health` inside its network namespace and
     its systemd service is `active` within 5 s (`deadlines.proxy`; `firecracker/egress.ts`,
-    `confirmEgress`). If not, no guest is left running and a stored, signed `applied: false` with
-    reason `egress-proxy-down` answers (`agent.ts`, `#prepareToRun`).
+    `confirmEgress`). On `resume` this check (with `#ensureHost`, `#prepareToRun` and closing the
+    guest gate) runs before the right to resume is consumed (`consumed`), so a refusal leaves the
+    slot `paused` with its saved state intact and a later resume succeeds once the proxy is back.
+    In both cases no guest is left running and a stored, signed `applied: false` with reason
+    `egress-proxy-down` answers (`agent.ts`, `#prepareToRun`).
   - **The fetch could not be completed** (no answer, a refusal, a malformed answer, its
     deadline): what is there is used, if anything is. Otherwise it is refused as `unavailable`
     ("try again later"), with nothing written.
