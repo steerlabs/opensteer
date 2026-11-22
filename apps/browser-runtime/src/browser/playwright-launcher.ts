@@ -1285,8 +1285,9 @@ class PlaywrightContextHandle implements BrowserContext {
   private arrive(page: Page): void {
     if (this.isHiddenPage(page) || this.published.has(page) || this.ending.has(page)) return;
     const handle = this.wrap(page);
+    // Its opener as Playwright recorded it, also when that page has closed since (M1).
     const known = (page as unknown as { _opener?: Page | null })._opener;
-    if (known && !known.isClosed() && this.published.has(known))
+    if (known && known !== this.privatePage && this.published.has(known))
       handle.openerHandle ??= this.wrap(known);
     if (!this.nativeProfile || !this.lifecycle || this.sleeping.size === 0) {
       this.handOutOrdinary(page);
@@ -1296,18 +1297,16 @@ class PlaywrightContextHandle implements BrowserContext {
     void this.classify(page).catch(() => this.settleUnknown(page));
   }
 
-  /** As the base hands off a page: listeners at once, handoff one microtask later. */
+  /**
+   * Hands an ordinary page off as the base does, with its opener read from Playwright's own
+   * record, at once: a page that has already closed itself is still handed off, so its end is seen.
+   */
   private handOutOrdinary(page: Page): void {
     if (this.closed || this.ending.has(page) || this.published.has(page)) return;
     this.identifyingPages.delete(page);
     this.published.add(page);
     const handle = this.wrap(page);
-    // Playwright reports a popup to its opener right after the context's page event, in the
-    // same turn; one microtask later both are known.
-    queueMicrotask(() => {
-      if (!page.isClosed())
-        for (const listener of this.handOffs) listener(handle, handle.openerHandle);
-    });
+    for (const listener of this.handOffs) listener(handle, handle.openerHandle);
     for (const listener of this.pageListeners) listener(handle);
   }
 
@@ -1316,7 +1315,7 @@ class PlaywrightContextHandle implements BrowserContext {
    * the waking tab's own page and is closed rather than handed out (lost, never wrong).
    */
   private settleUnknown(page: Page): void {
-    if (this.closed || page.isClosed() || !this.identifyingPages.has(page)) return;
+    if (this.closed || !this.identifyingPages.has(page)) return;
     if (this.wakes.size > 0) void this.closePageWithEvidence(page);
     else this.handOutOrdinary(page);
   }

@@ -237,7 +237,7 @@ it("names a tab after Chromium discarded it: no page arrives while it sleeps, it
   );
 }, 60_000);
 
-it("PROBE M1: what Chromium reports as the opener of a woken tab that another page opened", async () => {
+it("reports no opener for a woken tab that another page opened (M1)", async () => {
   const url = await fixtureServer();
   const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-m1-probe-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));

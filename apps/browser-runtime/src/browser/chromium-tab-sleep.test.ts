@@ -1126,3 +1126,122 @@ it("does not steal foreground visibility or pause screencasting when a backgroun
     { timeout: 3_000, interval: 50 },
   );
 });
+
+it.each(["no tab asleep", "a tab asleep"] as const)(
+  "keeps a tab whose opener opened it and closed itself at once, as a payment or sign-in page does (M1, %s)",
+  async (state) => {
+    const server = await startFixtureServer();
+    const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-m1-self-closing-"));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const launcher = new PlaywrightChromiumLauncher({
+      executablePath,
+      chromiumSandbox: false,
+      headless: true,
+    });
+    const launched = await launcher.launch(nativeProfileRequest(directory));
+    cleanup.push(() => launched.close());
+    const handedOff: string[] = [];
+    launched.context.handOff((page) => handedOff.push(page.url()));
+    if (state === "a tab asleep") {
+      const asleep = await launched.context.createPage();
+      const asleepCdp = await asleep.cdp();
+      await asleepCdp.send("Page.navigate", { url: `${server.originForSite(3)}/article` });
+      await waitLoaded(asleepCdp, "/article");
+      await asleep.captureRestore!();
+      await asleep.close({ reason: "slept" });
+    }
+    const first = await launched.context.createPage();
+    const firstCdp = await first.cdp();
+    await firstCdp.send("Page.navigate", { url: `${server.originForSite(1)}/article` });
+    await waitLoaded(firstCdp, "/article");
+    // The first page opens the second by script; the second opens the third and closes itself in
+    // the same task, before Chromium announces the third.
+    const second = `${server.originForSite(1)}/article?step=second`;
+    const third = `${server.originForSite(1)}/form?step=third`;
+    await firstCdp.send("Runtime.evaluate", {
+      expression: `void window.open(${JSON.stringify(second)}, "_blank")`,
+      userGesture: true,
+    });
+    const secondPage = await vi.waitFor(
+      () => {
+        const page = launched.context.pages().find((p) => p.url().includes("step=second"));
+        expect(page).toBeDefined();
+        return page!;
+      },
+      { timeout: 10_000, interval: 25 },
+    );
+    const secondCdp = await secondPage.cdp();
+    await waitLoaded(secondCdp, "/article");
+    await secondCdp.send("Runtime.evaluate", {
+      expression: `window.open(${JSON.stringify(third)}, "_blank"); window.close();`,
+      userGesture: true,
+    });
+    const thirdPage = await vi.waitFor(
+      () => {
+        const page = launched.context.pages().find((p) => p.url().includes("step=third"));
+        expect(page).toBeDefined();
+        return page!;
+      },
+      { timeout: 10_000, interval: 25 },
+    );
+    await vi.waitFor(() => expect(secondPage.isClosed()).toBe(true), {
+      timeout: 10_000,
+      interval: 25,
+    });
+    await waitLoaded(await thirdPage.cdp(), "/form");
+    expect(thirdPage.isClosed()).toBe(false);
+    expect(handedOff.filter((url) => url.includes("step=third"))).toHaveLength(1);
+  },
+  60_000,
+);
+
+it("sleeps a tab another page opened and wakes it as itself, not as a new popup (M1)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-m1-popup-wakes-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const opener = await ledger.openSurface();
+  const openerLive = ledger.binding(opener.id)!;
+  await openerLive.cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article` });
+  await waitLoaded(openerLive.cdp, "/article");
+  const popupUrl = `${server.originForSite(2)}/session-storage?popup=1`;
+  // Opened with noopener: Chromium still records its opener, while its script cannot reach it,
+  // so it may sleep (a tab that can reach its opener is kept awake).
+  await openerLive.cdp.send("Runtime.evaluate", {
+    expression: `void window.open(${JSON.stringify(popupUrl)}, "_blank", "noopener")`,
+    userGesture: true,
+  });
+  const popupId = await vi.waitFor(
+    () => {
+      const surface = ledger.snapshot().find((s) => s.id !== opener.id);
+      expect(surface).toBeDefined();
+      return surface!.id;
+    },
+    { timeout: 10_000, interval: 25 },
+  );
+  const popupLive = ledger.binding(popupId)!;
+  await waitLoaded(popupLive.cdp, "/session-storage");
+  await evalValue(popupLive.cdp, `sessionStorage.setItem("wizard_step", "opened-by-another")`);
+  expect(await ledger.sleep(popupId, () => null)).toBe(true);
+  const woken = await ledger.wake(popupId);
+  await waitLoaded(woken.cdp, "/session-storage");
+  expect(await evalValue(woken.cdp, `sessionStorage.getItem("wizard_step")`)).toBe(
+    "opened-by-another",
+  );
+  // Woken as itself: the same two tabs, no third surface for a "new popup".
+  expect(
+    ledger
+      .snapshot()
+      .map((s) => s.id)
+      .sort(),
+  ).toEqual([opener.id, popupId].sort());
+}, 60_000);
