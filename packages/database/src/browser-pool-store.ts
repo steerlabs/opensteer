@@ -307,7 +307,7 @@ async function recordBrowserPoolLosses(
     const ownerId = await readBrowserPoolOwner(tx);
     const sessions = await tx
       .selectFrom("browserSessions")
-      .select("id")
+      .select(["id", "state"])
       .where("id", "in", [...new Set(losses.map(({ sessionId }) => sessionId))])
       .where("runnerId", "=", slot.runnerId)
       .where("runtimeId", "=", slot.runtimeId)
@@ -340,11 +340,12 @@ async function recordBrowserPoolLosses(
     const ended = new Set(
       losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
     );
-    for (const { id } of sessions.filter(({ id }) => ended.has(id)))
+    // One a Stop left closing is answered by this end: it closed, as the person asked.
+    for (const { id, state } of sessions.filter(({ id }) => ended.has(id)))
       await transitionBrowserSession(tx, {
         from: ["starting", "ready", "closing"],
         sessionId: id,
-        state: "failed",
+        state: state === "closing" ? "closed" : "failed",
       });
   }
 }
@@ -648,6 +649,27 @@ export async function listBrowserPoolReadySessions(
     .where("runnerId", "=", runnerId)
     .where("runtimeId", "=", runtimeId)
     .where("state", "=", "ready")
+    .orderBy("id")
+    .execute();
+  return rows.map(({ id }) => id);
+}
+
+/**
+ * The sessions of this runtime a Stop is ending: closing until the runtime answers that each is
+ * gone, whatever the Home's clock says.
+ */
+export async function listBrowserPoolClosingSessions(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+  runtimeId: string,
+): Promise<readonly BrowserSessionId[]> {
+  const rows = await database
+    .selectFrom("browserSessions")
+    .select("id")
+    .where("runnerId", "=", runnerId)
+    .where("runtimeId", "=", runtimeId)
+    .where("state", "=", "closing")
+    .where("origin", "in", ["person", "agent"])
     .orderBy("id")
     .execute();
   return rows.map(({ id }) => id);

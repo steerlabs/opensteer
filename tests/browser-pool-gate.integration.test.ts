@@ -951,11 +951,12 @@ it("restarts through the service while a park is retiring, with no reconnect aft
   }
 });
 
-it("lets a Stop during a reconnect end that session's wait at once", async () => {
+it("lets a Stop during a reconnect end that session's wait at once, and say closed only with the runtime's answer", async () => {
   const j = await journey("stop-reconnect");
   try {
     const home = await j.startHome();
     const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-reconnect"));
+    const page = await j.draft();
     j.runnerDown();
     await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
     const stopped = Date.now();
@@ -963,7 +964,48 @@ it("lets a Stop during a reconnect end that session's wait at once", async () =>
     // The stopped session no longer needs a channel: the gate does not hold for its window.
     await until(() => expect(home.coordinator.gate.phase).toBe("open"));
     expect(Date.now() - stopped).toBeLessThan(5_000);
-    expect((await j.row(sessionId))?.state).toBe("closed");
+    // The awake guest still holds the page: the row is closing, never closed, and nothing new
+    // is admitted for it.
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    expect(page.page.isClosed()).toBe(false);
+    await expect(
+      home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        sessionId: BrowserSessionIdSchema.parse(sessionId),
+        idempotencyKey: "after-stop",
+      }),
+    ).rejects.toThrow("The browser has ended.");
+    const ticketsBefore = j.issued.length;
+    j.runnerUp();
+    // The Home reattaches under a fresh attempt and stops it; the runtime's close is the receipt.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    await until(() => expect(page.page.isClosed()).toBe(true));
+    expect(j.issued.length).toBeGreaterThan(ticketsBefore);
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("keeps a stopped session closing while its guest cannot be reached, across a Home restart", async () => {
+  const j = await journey("stop-unreachable", { channelDeadlineMs: 1_500 });
+  try {
+    let home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-away"));
+    const page = await j.draft();
+    j.runnerDown();
+    await until(() => expect(home.coordinator.gate.phase).toBe("reconnecting"));
+    await home.service.stop(j.task.userId, sessionId);
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    home = await j.restartHome(home);
+    // The guest's own window ends the page; the Home has heard nothing, so it says nothing.
+    await until(() => expect(page.page.isClosed()).toBe(true));
+    await until(() => expect(home.coordinator.gate.phase).toBe("open"));
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    // Reached again, the runtime answers that the session has ended: that is the receipt.
+    j.runnerUp();
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    expect(j.controller.effects).toEqual(["start"]);
   } finally {
     j.runnerUp();
     await j.close();

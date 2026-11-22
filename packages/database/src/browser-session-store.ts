@@ -1739,13 +1739,14 @@ export async function failActiveBrowserSessions(
           query.where(sql<boolean>`
           not exists (
             -- A pooled guest outlives the Home: its ready sessions are the pool's to reattach
-            -- or end with their note, whatever the slot's phase.
+            -- or end with their note, whatever the slot's phase, and a closing one ends only
+            -- with the runtime's answer.
             select 1 from browser_pool_slots slot
             where slot.runner_id = ${pooledRunner!}
               and slot.runner_id = browser_sessions.runner_id
               and slot.runtime_id = browser_sessions.runtime_id
               and browser_sessions.origin in ('person', 'agent')
-              and browser_sessions.state = 'ready'
+              and browser_sessions.state in ('ready', 'closing')
           )
         `),
         )

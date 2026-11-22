@@ -87,6 +87,24 @@ export interface BrowserPoolAdopter {
    * and broker of the runtime without ending its row, so each send has its outcome.
    */
   quiesce(): Promise<void>;
+  /**
+   * Sessions of this runtime a Stop is ending and that have no broker here: each one stays
+   * closing until the runtime answers for it.
+   */
+  ending?(runtimeId: string): Promise<readonly BrowserSessionId[]>;
+  /**
+   * Reattaches a stopped session under a fresh attempt and closes it the way Stop does.
+   * `closed`: the runtime took the close, and the row says so; `gone`: the runtime answered that
+   * it has no such session; `unanswered`: nothing was heard, and the row stays closing.
+   */
+  end?(input: {
+    readonly sessionId: BrowserSessionId;
+    readonly fence: BrowserPoolRuntimeFence;
+    readonly attempt: number;
+    readonly signal?: AbortSignal;
+  }): Promise<"closed" | "gone" | "unanswered">;
+  /** The runtime that serves this fence answered that the stopped session is gone. */
+  ended?(sessionId: BrowserSessionId): Promise<void>;
 }
 
 export type BrowserPoolRuntimeFault = "request" | "reply";
@@ -275,6 +293,19 @@ export class BrowserPoolCoordinator {
     return this.#parkWanted.promise;
   }
 
+  /**
+   * Whether a Stop of a session with no channel waits for the runtime's answer: an awake guest
+   * may still hold it. A parked guest is not woken for a Stop; its next adoption omits the row.
+   */
+  stopWaitsForRuntime(): boolean {
+    return this.#slot?.phase !== "parked";
+  }
+
+  /** A Stop left a session closing with no channel: the loop ends it with the runtime's answer. */
+  stopped(): void {
+    this.#kick();
+  }
+
   /** The session has no channel and is inside its window: the loop is reattaching it. */
   reattaching(sessionId: BrowserSessionId): boolean {
     return this.#lost.has(sessionId);
@@ -433,6 +464,16 @@ export class BrowserPoolCoordinator {
         deadlineMs: Math.min(this.#channelDeadlineMs, defaultStepMs),
         run: (signal) => this.#reconnectStep(slot, withoutChannel, signal),
       };
+    const ending =
+      slot.phase === "running"
+        ? ((await this.#adopter?.ending?.(this.#options.runtimeId)) ?? [])
+        : [];
+    if (this.#released || this.#restartWanted) return this.#next();
+    if (ending.length) {
+      // A closing row blocks a park anyway: one asked now is vetoed rather than kept waiting.
+      if (this.#parkWanted) this.#settlePark("vetoed");
+      return { name: "end", run: (signal) => this.#endStep(slot, ending, signal) };
+    }
     if (slot.phase === "parked" && this.gate.demand)
       return { name: "wake", run: () => this.#wakeStep(), discards: true };
     if (this.#parkWanted && slot.phase === "running")
@@ -529,6 +570,46 @@ export class BrowserPoolCoordinator {
     for (const sessionId of back)
       if (this.#lost.get(sessionId) === answering.get(sessionId)) this.#lost.delete(sessionId);
     if (back.length < within.length) throw new Error("A session is not back yet.");
+  }
+
+  /**
+   * Sessions the person stopped while the awake guest held them with no channel here. Each is
+   * reattached under a fresh attempt and closed the way Stop does; its row says closed only on
+   * the runtime's answer: its close of the channel, or its word, under the fence it serves, that
+   * the session is gone (its own window ended it). Nothing heard keeps the row closing; no clock
+   * of the Home ends it, and the next turn asks again.
+   */
+  async #endStep(
+    slot: BrowserPoolSlot,
+    sessions: readonly BrowserSessionId[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    const adopter = this.#adopter;
+    if (!adopter?.end || !adopter.ended) return;
+    const advanced = await this.#advance(slot, {
+      phase: slot.phase,
+      attachmentGeneration: slot.attachmentGeneration + 1,
+    });
+    const fence = fenceOf(advanced);
+    let unanswered = 0;
+    for (const sessionId of sessions) {
+      signal.throwIfAborted();
+      const answer = await adopter.end({
+        sessionId,
+        fence,
+        attempt: advanced.attachmentGeneration,
+        signal,
+      });
+      if (answer === "gone") {
+        // "Ended" means gone only from a runtime that serves traffic under this fence: a retired
+        // or sealed one says the same of a session it holds.
+        const state = await this.#runtimeState();
+        if (state?.phase === "running" && sameFence(state.fence, fence))
+          await adopter.ended(sessionId);
+        else unanswered++;
+      } else if (answer === "unanswered") unanswered++;
+    }
+    if (unanswered) throw new Error("A stopped session's end is not answered yet.");
   }
 
   /** The removal, to its end; a turn that fails is tried again before anything else. */
