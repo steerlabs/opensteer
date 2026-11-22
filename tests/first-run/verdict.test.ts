@@ -3,7 +3,7 @@ import { pageForm } from "./browser.js";
 import {
   helperMissingSentence,
   judgeFirstRunTrial,
-  noAccountReason,
+  firstScreenStopReason,
   stoppedTrial,
 } from "./verdict.js";
 
@@ -96,20 +96,26 @@ describe("a trial that stops before the phone step", () => {
   const refused =
     '{"event":"desktop.protected-storage.verification-failed","message":"encrypt: Error while encrypting the text provided to safeStorage.encryptStringAsync."}';
 
-  it("says the first screen had no account, and why when the log says protected storage refused", () => {
-    expect(noAccountReason(refused)).toBe(
-      "the Mac app's first screen has no account to sign in to: macOS protected storage refused it " +
-        "(desktop.protected-storage.verification-failed in its log), so its sign-in and this Mac's Home cannot keep their secrets in this guest",
+  it("says which first screen stopped it, what its log shows, and which keychain was the default", () => {
+    expect(firstScreenStopReason("keychain-refused", refused)).toBe(
+      "the Mac app's first screen says it can't use this Mac's keychain, so it has no sign-in to keep " +
+        "(desktop.protected-storage.verification-failed in its log)",
     );
-    expect(noAccountReason("")).toBe("the Mac app's first screen has no account to sign in to");
+    expect(firstScreenStopReason("no-account", "")).toBe(
+      "the Mac app's first screen is the welcome of a build without an Opensteer account: no Sign in",
+    );
     expect(
-      noAccountReason(
+      firstScreenStopReason(
+        "keychain-refused",
         refused,
         "/Users/admin/Library/Keychains/opensteer-journey-fixture.keychain-db",
       ),
     ).toMatch(/; the job's fixture keychain was the default$/u);
-    expect(noAccountReason("", "/Users/admin/Library/Keychains/login.keychain-db")).toBe(
-      "the Mac app's first screen has no account to sign in to; the default keychain was /Users/admin/Library/Keychains/login.keychain-db, not the job's fixture keychain",
+    expect(
+      firstScreenStopReason("no-account", "", "/Users/admin/Library/Keychains/login.keychain-db"),
+    ).toBe(
+      "the Mac app's first screen is the welcome of a build without an Opensteer account: no Sign in; " +
+        "the default keychain was /Users/admin/Library/Keychains/login.keychain-db, not the job's fixture keychain",
     );
   });
 

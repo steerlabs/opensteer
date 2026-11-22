@@ -73,20 +73,27 @@ function occurrences(text: string, needle: string): number {
 export const protectedStorageRefused = "desktop.protected-storage.verification-failed";
 
 /**
- * Why a trial found no account to sign in to: the Mac app keeps its sign-in in protected storage,
- * and when that refuses it the first screen is the welcome of a build without an account.
+ * Why a trial stopped at the Mac app's first screen: the keychain screen (macOS refused the app
+ * this Mac's keychain, where it keeps its sign-in), or the welcome of a build without an Opensteer
+ * account, which has no Sign in. Each says what its log and the guest's default keychain show.
  */
-export function noAccountReason(log: string, defaultKeychain: string | null = null): string {
+export function firstScreenStopReason(
+  screen: "keychain-refused" | "no-account",
+  log: string,
+  defaultKeychain: string | null = null,
+): string {
   const keychain =
     defaultKeychain === null
       ? ""
       : defaultKeychain.includes(fixtureKeychainName)
         ? "; the job's fixture keychain was the default"
         : `; the default keychain was ${defaultKeychain}, not the job's fixture keychain`;
-  return log.includes(protectedStorageRefused)
-    ? "the Mac app's first screen has no account to sign in to: macOS protected storage refused it " +
-        `(${protectedStorageRefused} in its log), so its sign-in and this Mac's Home cannot keep their secrets in this guest${keychain}`
-    : `the Mac app's first screen has no account to sign in to${keychain}`;
+  const logged = log.includes(protectedStorageRefused)
+    ? ` (${protectedStorageRefused} in its log)`
+    : "";
+  return screen === "keychain-refused"
+    ? `the Mac app's first screen says it can't use this Mac's keychain, so it has no sign-in to keep${logged}${keychain}`
+    : `the Mac app's first screen is the welcome of a build without an Opensteer account: no Sign in${logged}${keychain}`;
 }
 
 /** The keychain the VM runner's fixture step puts in place as the default (fixture-keychain.sh). */

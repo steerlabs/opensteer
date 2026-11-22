@@ -33,10 +33,15 @@ import {
 } from "./account-service.js";
 import { signInAtAccount } from "./browser.js";
 import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
+import { desktopFirstScreenWords } from "../../apps/web/src/components/places/desktop-first-screen-words.js";
+import {
+  firstScreenOf,
+  type DesktopFirstScreen,
+} from "../../apps/web/src/components/places/desktop-first-screen.test-support.js";
 import {
   helperMissingSentence,
   judgeFirstRunTrial,
-  noAccountReason,
+  firstScreenStopReason,
   stoppedTrial,
   type FirstRunTrialVerdict,
 } from "./verdict.js";
@@ -168,21 +173,22 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
 }
 
 /**
- * The Mac app's first screen: Sign in, or a screen with no account to sign in to (this Mac's
- * keychain refusing Opensteer, or the welcome of a build without an account).
+ * The Mac app's first screen, decided by what only that screen shows (`firstScreenOf`, in the
+ * product's own words): Sign in goes on; the keychain screen and the welcome of a build without an
+ * account stop the trial, each with its own reason.
  */
 async function firstScreen(page: Page, log: readonly string[], directory: string): Promise<void> {
-  const signIn = page.getByRole("button", { name: "Sign in", exact: true });
-  const noAccount = page
-    .getByText("Opensteer can’t use this Mac’s keychain", { exact: true })
-    .or(page.getByText("Welcome to Opensteer", { exact: true }));
-  await signIn.or(noAccount).first().waitFor({ timeout: settleMs });
-  if (await noAccount.first().isVisible()) {
-    // Which keychain the guest's session used: the evidence for why, read only.
-    const keychain = defaultKeychain();
-    await writeFile(path.join(directory, "default-keychain.txt"), `${keychain ?? "unknown"}\n`);
-    throw new Error(noAccountReason(log.join(""), keychain));
-  }
+  const shown = (await (
+    await page.waitForFunction(firstScreenOf, desktopFirstScreenWords, {
+      polling: 250,
+      timeout: settleMs,
+    })
+  ).jsonValue()) as DesktopFirstScreen;
+  if (shown === "sign-in") return;
+  // Which keychain the guest's session used: the evidence for why, read only.
+  const keychain = defaultKeychain();
+  await writeFile(path.join(directory, "default-keychain.txt"), `${keychain ?? "unknown"}\n`);
+  throw new Error(firstScreenStopReason(shown, log.join(""), keychain));
 }
 
 /** The user's default keychain, as `security` names it; null where it can't say. */
@@ -242,17 +248,60 @@ async function homeReady(page: Page): Promise<void> {
   );
 }
 
-/** Through the AI and permission steps, as soon as each appears, to "Connect your phone". */
+/**
+ * The setup steps before the phone, each decided by its own title (the one heading a setup screen
+ * shows, `setup-frame.tsx`) and passed with the move that step offers a person who leaves it as it
+ * is: "Your AI" has Skip; "Your agent on this Mac" has only Continue
+ * (`devices/home-setup-step.tsx`), which leads to "Let macOS allow it" and its "Do this later".
+ * Never by a button another step also shows.
+ */
+const setupMoves: Readonly<Record<string, string>> = {
+  "Your AI": "Skip",
+  "Your agent on this Mac": "Continue",
+  "Let macOS allow it": "Do this later",
+};
+const phoneStepTitle = "Connect your phone";
+
+/** Through the setup steps, as soon as each appears, to "Connect your phone". */
 async function skipToPhoneStep(page: Page): Promise<void> {
-  const phone = page.getByText("Connect your phone", { exact: true });
-  // The phone step's own skip is "Skip for now", so an exact "Skip" is never the phone's.
-  const skip = page.getByRole("button", { name: "Skip", exact: true });
-  for (let step = 0; step < 4; step += 1) {
-    await phone.or(skip).first().waitFor({ timeout: settleMs });
-    if (await phone.isVisible()) return;
-    await skip.click();
+  let previous: string | null = null;
+  for (let step = 0; step < 6; step += 1) {
+    const title = await nextSetupStep(page, previous);
+    if (title === phoneStepTitle) return;
+    const move = setupMoves[title];
+    if (move === undefined) throw new Error(`the setup walk has no move for "${title}"`);
+    await page.getByRole("button", { name: move, exact: true }).click();
+    previous = title;
   }
-  await phone.waitFor({ timeout: settleMs });
+  throw new Error(`the setup steps never reached "${phoneStepTitle}"`);
+}
+
+/** The title of the next setup step the walk knows, once it differs from the one just passed. */
+async function nextSetupStep(page: Page, previous: string | null): Promise<string> {
+  const known = [...Object.keys(setupMoves), phoneStepTitle];
+  try {
+    const handle = await page.waitForFunction(
+      ({ known, previous }) => {
+        const title = document.querySelector(".setup-frame__title")?.textContent?.trim() ?? "";
+        return known.includes(title) && title !== previous ? title : null;
+      },
+      { known, previous },
+      { polling: 250, timeout: settleMs },
+    );
+    return (await handle.jsonValue()) as string;
+  } catch {
+    // Say where it stood: a step whose title or move changed reads as that, not as a timeout.
+    const showing = await page
+      .locator(".setup-frame__title")
+      .first()
+      .innerText()
+      .catch(() => "no setup step");
+    throw new Error(
+      previous === null
+        ? `the setup walk found no step it knows; the screen shows "${showing}"`
+        : `the setup walk stayed after "${previous}"; the screen shows "${showing}"`,
+    );
+  }
 }
 
 /** The phone step's text once the turn-on has come to its end: the helper sentence, or a failure. */
