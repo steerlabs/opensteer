@@ -595,6 +595,68 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("holds an open only for an admitted pass that can free something, and counts a reclaim with no sample before it as unmeasured (K9)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    const internals = f.sleeper as unknown as {
+      running: boolean;
+      passWaiters: unknown[];
+      ineffectiveReclaims: number;
+      pressureBackoffUntil: number;
+      reclaimFrom: unknown;
+      applyMemoryPressureSample(reading: typeof pressure, now: number): void;
+    };
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 2; i++) ids.push((await f.ledger.openSurface()).id);
+      // Every page pinned: no pass can free anything for an open, even one already running
+      // (a pass in its retirement arm, or one whose pages are all blocked).
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
+      internals.running = true;
+      let opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+      expect(internals.passWaiters).toHaveLength(0);
+      internals.running = false;
+
+      // A reclaim that started with no pressure sample before it is unmeasured when its after
+      // sample comes: neither effective nor ineffective, so no count and no backoff.
+      internals.ineffectiveReclaims = 2;
+      internals.pressureBackoffUntil = 0;
+      internals.reclaimFrom = {
+        usage: null,
+        pressureUsedBytes: null,
+        settledAt: Date.now() - 1,
+        waiting: true,
+      };
+      internals.applyMemoryPressureSample(pressure, Date.now());
+      expect(internals.ineffectiveReclaims).toBe(2);
+      expect(internals.pressureBackoffUntil).toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds no open when scheduling is off, since no pass will run for it (K9)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ scheduling: false, memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 2; i++) ids.push((await f.ledger.openSurface()).id);
+      // Pages that could sleep, but no pass will run to sleep them.
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      let opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("under pressure sleeps the least recently used tab not in use, whatever its age, and never one in use", async () => {
     const limit = 2 * 1024 ** 3;
     const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };

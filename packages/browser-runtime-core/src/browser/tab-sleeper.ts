@@ -453,9 +453,10 @@ export class TabSleeper {
     this.applyMemoryPressureSample(reading, now);
     if (!this.releasing) return;
     this.pendingAsyncPressurePass = true;
-    // The open waits only for work that can make progress: a pass already running, or a page
-    // that may sleep right now. Every page blocked, or a backoff, holds nothing.
-    if (!this.running && !this.canShedNow(now)) {
+    // The open waits only for a pass that is admitted and can free something for it (K9): a
+    // page that may sleep right now. A running pass that can free nothing (every page blocked,
+    // a backoff, its retirement arm) holds nothing, and neither does scheduling that is off.
+    if (!this.canShedNow(now)) {
       this.poke();
       return;
     }
@@ -476,6 +477,7 @@ export class TabSleeper {
 
   /** Whether a pass started now could sleep some page under pressure. */
   private canShedNow(now: number): boolean {
+    if (this.options.scheduling === false) return false;
     if (now < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)) return false;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
@@ -549,10 +551,9 @@ export class TabSleeper {
       return;
     }
     this.reclaimFrom = null;
-    if (
-      reclaim.pressureUsedBytes !== null &&
-      reclaim.pressureUsedBytes - reading.usedBytes >= minimumReclaimBytes
-    ) {
+    // A reclaim with no sample before it is unmeasured, never ineffective (K9).
+    if (reclaim.pressureUsedBytes === null) return;
+    if (reclaim.pressureUsedBytes - reading.usedBytes >= minimumReclaimBytes) {
       this.ineffectiveReclaims = 0;
     } else if (++this.ineffectiveReclaims >= ineffectiveReclaimsBeforeBackoff) {
       // The count stays until a reclaim works (Rule C): each further ineffective one backs off.
@@ -782,6 +783,8 @@ export class TabSleeper {
           this.trimRestore();
         }
       }
+      // Opens waiting on this pass go once its sleeps are done; none waits on a host retiring.
+      this.releasePassWaiters();
       if (!this.closed && attempted < sleepsPerPass) {
         for (const host of this.retirementCandidates()) {
           if (this.closed || this.estimate() <= this.budget()) break;
