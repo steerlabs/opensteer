@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, useImperativeHandle } from "react";
 import { createRoot } from "react-dom/client";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   characters,
   FarField,
@@ -10,8 +10,7 @@ import {
   type Packet,
   type Proxy,
 } from "./remote-input-port.js";
-import { Oracle, type Action, type Dropped } from "./typing-oracle.js";
-import unexplained from "./typing-unexplained.json" with { type: "json" };
+import { Oracle, type Action } from "./typing-oracle.js";
 import { browserEditingAbilities } from "../../../../../packages/client/src/host/browser-editing.js";
 import { displayEditingAbilities } from "../../../../../packages/client/src/integrations/display-editing.js";
 import { editingRefusalMessages, type EditingTargetAbilities } from "@opensteer/client/editing";
@@ -44,8 +43,6 @@ const harness = vi.hoisted(() => ({
   texts: [] as string[],
   /** The far field of the open test, for a generator to look at. */
   remote: null as null | { composition: unknown },
-  /** The open sequence's oracle, told what only the far side knows. */
-  oracle: null as null | { markOnly(): void; fenced(): void },
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
@@ -138,17 +135,7 @@ async function open(abilities?: EditingTargetAbilities) {
     root.render(
       <NativeEditingProxy
         context={current}
-        sendOperation={(operation) => {
-          const marks = remote.markOnly;
-          const refused = remote.refused.length;
-          const mismatched = remote.mismatched.length;
-          const sent = remote.take(operation);
-          // What only the far side knows, told to the open sequence's oracle.
-          if (remote.markOnly > marks) harness.oracle?.markOnly();
-          if (remote.refused.length > refused && remote.mismatched.length === mismatched)
-            harness.oracle?.fenced();
-          return sent;
-        }}
+        sendOperation={(operation) => remote.take(operation)}
         onDone={() => undefined}
         {...(abilities ? { abilities } : {})}
       />,
@@ -530,17 +517,6 @@ describe("a person's caret moves and selections in the native field", () => {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  /**
-   * Named exceptions, counted, each raised only by the one thing it names, and each replayed with
-   * exactly that thing's effect taken out of (or given to) the person; the replay must then match
-   * in everything: text, caret, no mismatched edit, no refusal.
-   * - Fenced: an action the native field dropped because a new context began before its turn, or
-   *   whose edit the far field refused for the context it had left.
-   * - Dropped: a replacement, or a range selected, in a mirror cleared before its turn.
-   * - Mark only: a deletion the page made as its own Backspace command, which removes a decomposed
-   *   letter's last mark alone (Blink's rule), where the person's keyboard removes the letter.
-   */
-  const droppedSequences: number[] = [];
 
   /*
    * The family's structural test. The person's actions go to the native field (the port, through
@@ -553,31 +529,38 @@ describe("a person's caret moves and selections in the native field", () => {
    * for its old context or the reducer drops it at the reset, and that keystroke is lost by
    * design (the page's fence). Those sequences are counted and their text not compared.
    */
-  async function person(abilities?: EditingTargetAbilities, without: Dropped | null = null) {
+  async function person(abilities?: EditingTargetAbilities) {
     const opened = await open(abilities);
     const target = abilities ?? targets.full;
     const { remote, native, keyboard } = opened;
-    const oracle = new Oracle(without);
-    harness.oracle = oracle;
+    const oracle = new Oracle();
+    // Regime A has no context change and no exception: anything the native field drops, or a
+    // composition the app ends by itself, fails the sequence.
+    const unexpected: string[] = [];
     native.onTurn = (turn) => {
       if (turn === "action") oracle.turn();
       else if (turn === "report") oracle.report();
       else if (turn === "reset") oracle.reset();
-      else if (turn === "finish") oracle.finish();
-      else if (turn === "dropped") oracle.drop();
-      else if (turn === "dropped-report") oracle.dropReport();
-      else oracle.context();
+      else unexpected.push(turn);
     };
     harness.texts = [];
     const steps: string[] = [];
-    const does = async (
-      step: string,
-      act: Action,
-      call: (field: NativeField) => void,
-      kind = step,
-    ) => {
+    const trace = (label: string) => {
+      if (!process.env.OPENSTEER_TYPING_TRACE) return;
+      const p = oracle.person;
+      console.log(
+        `${label.padEnd(26)} P ${JSON.stringify(p.text)} ${p.selection.start}-${p.selection.end} | N ${JSON.stringify(native.text)} ${native.selection.start}-${native.selection.end} | far ${JSON.stringify(remote.value)} ${remote.caret}`,
+      );
+    };
+    const traced = native.onTurn;
+    native.onTurn = (turn) => {
+      traced?.(turn);
+      trace(`  <${turn}>`);
+    };
+    const does = async (step: string, act: Action, call: (field: NativeField) => void) => {
       steps.push(step);
-      oracle.act(kind, act);
+      oracle.act(act);
+      trace(step);
       await keyboard(call);
     };
     const said = JSON.stringify;
@@ -613,9 +596,18 @@ describe("a person's caret moves and selections in the native field", () => {
           (p) => (p.marked ? p.replace(p.marked, "") : p.backspace()),
           (f) => f.deleteBackward(),
         ),
-      moveSelection: (start: number, end = start) => {
+      moveSelection: async (start: number, end = start) => {
+        // A move to where the caret already is makes no callback: it is no event.
+        if (native.selection.start === start && native.selection.end === end) return;
         steps.push(start === end ? `moveSelection(${start})` : `moveSelection(${start}, ${end})`);
-        oracle.select({ start, end });
+        // A caret moved from a caret is the distance UIKit moved it, in the text it had.
+        const previous = native.selection;
+        const caret = previous.start === previous.end && start === end;
+        const count = characters(
+          native.text.slice(Math.min(previous.end, end), Math.max(previous.end, end)),
+        ).length;
+        oracle.select({ start, end }, caret ? (end < previous.end ? -count : count) : undefined);
+        trace(steps.at(-1)!);
         return keyboard((f) => f.moveSelection(start, end));
       },
       replaceRange: (start: number, end: number, word: string) => {
@@ -658,57 +650,38 @@ describe("a person's caret moves and selections in the native field", () => {
           },
           (f) => f.unmarkText(),
         ),
-      rotate: (id: string) => {
-        steps.push("rotate()");
-        oracle.act("rotate", (p) => {
-          p.marked = null;
-          return [];
-        });
-        return opened.rotate(id);
-      },
       answer: (count: number) => {
         steps.push(`answer(${count})`);
         return opened.answer(count);
       },
       /**
-       * Everything settles; the far field must hold what the person typed. When the native field
-       * dropped places named in an older mirror, it returns them, unchecked: the caller replays
-       * the sequence with them left out of the person, and that replay must match exactly.
+       * Everything settles. The promise of regime A, exactly: the far text and caret are the
+       * person's, nothing was dropped, no edit was mismatched and nothing refused.
        */
-      async check(seed: number | string): Promise<Dropped | null> {
+      async check(seed: number | string) {
         await opened.answerAll();
-        const failure = `${without ? "[without what was dropped] " : ""}seed ${seed}: ${steps.join("; ")}`;
+        const failure = `seed ${seed}: ${steps.join("; ")}`;
         expect(remote.mismatched, failure).toEqual([]);
+        expect(remote.refused, `${failure}: refused`).toEqual([]);
+        expect(unexpected, `${failure}: dropped`).toEqual([]);
         const refusals = new Set(Object.values(editingRefusalMessages));
         expect(
           [...new Set(harness.texts.filter((text) => refusals.has(text)))],
           `${failure}: the reducer refused`,
         ).toEqual([]);
-        const { dropped } = oracle;
-        const any = dropped.actions.size + dropped.moves.size + dropped.markOnly.size > 0;
-        let result: Dropped | null = null;
-        if (any && !without) result = dropped;
-        else {
-          if (without) {
-            expect(dropped.actions, `${failure}: dropped`).toEqual(without.actions);
-            expect(dropped.moves, `${failure}: dropped`).toEqual(without.moves);
-            expect(dropped.markOnly, `${failure}: marks`).toEqual(without.markOnly);
-          }
-          const { text, selection, marked } = oracle.person;
-          // A target that cannot show a composition live gets it at its commit; one still open
-          // is the viewer's preedit, not the page's.
-          const shown =
-            marked && !target.composition
-              ? text.slice(0, marked.start) + text.slice(marked.end)
-              : text;
-          expect(remote.value, failure).toBe(shown);
-          if (selection.start === selection.end && marked === null)
-            expect(remote.caret, `${failure}: caret`).toBe(selection.start);
-        }
+        const { text, selection, marked } = oracle.person;
+        // A target that cannot show a composition live gets it at its commit; one still open is
+        // the viewer's preedit, not the page's.
+        const shown =
+          marked && !target.composition
+            ? text.slice(0, marked.start) + text.slice(marked.end)
+            : text;
+        expect(remote.value, failure).toBe(shown);
+        if (selection.start === selection.end && marked === null)
+          expect(remote.caret, `${failure}: caret`).toBe(selection.start);
         await act(async () => root.render(null));
         harness.answers = [];
         harness.mounted = false;
-        return result;
       },
     };
   }
@@ -718,10 +691,10 @@ describe("a person's caret moves and selections in the native field", () => {
    * The first generator, its draws kept as they were so the seeds it found still replay what
    * they found.
    */
-  async function sequence(seed: number, without: Dropped | null = null): Promise<void> {
+  async function sequence(seed: number): Promise<void> {
     const next = random(seed);
     const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
-    const run = await person(undefined, without);
+    const run = await person();
     const length = 1 + Math.floor(next() * 24);
     for (let step = 0; step < length; step++) {
       const boundaries = [0, ...characters(run.native.text).map(({ end }) => end)];
@@ -736,11 +709,7 @@ describe("a person's caret moves and selections in the native field", () => {
         await run.moveSelection(start!, end!);
       } else await run.answer(1 + Math.floor(next() * 3));
     }
-    const dropped = await run.check(seed);
-    if (dropped) {
-      droppedSequences.push(seed);
-      await sequence(seed, dropped);
-    }
+    await run.check(seed);
   }
 
   /*
@@ -752,11 +721,7 @@ describe("a person's caret moves and selections in the native field", () => {
    * deleted), drawing nothing more.
    */
   const letters = ["a", "b", "é", "é", " ", "👩‍💻", "א", "ب"];
-  async function sequence2(
-    seed: number,
-    third = false,
-    without: Dropped | null = null,
-  ): Promise<void> {
+  async function sequence2(seed: number, third = false): Promise<void> {
     const next = random(seed * (third ? 40503 : 2654435761));
     const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
     // The second generator's own draw, kept: its "display" is now a real target without range
@@ -768,9 +733,8 @@ describe("a person's caret moves and selections in the native field", () => {
         : "full";
     const target = targets[name];
     const display = !target.rangeEdits;
-    const run = await person(target, without);
+    const run = await person(target);
     if (name !== "full") run.steps.push(`target ${name}`);
-    let rotations = 0;
     /** The input method is composing from its own setMarkedText on, whatever the field holds yet. */
     let composing = false;
     const length = 1 + Math.floor(next() * 28);
@@ -826,25 +790,17 @@ describe("a person's caret moves and selections in the native field", () => {
         composing = false;
         await run.unmarkText();
       } else if (choice < 0.75) {
-        // Also while the far field's composition is open: the composing context ends, and its
-        // composition is closed as its own before the new context's first operation (CS1).
-        rotations += 1;
-        // Part of the rotations come with nothing in flight, compared in full.
-        if (third && next() < 0.3) await run.answer(Infinity);
-        await run.rotate(
-          `00000000-0000-4000-9000-${String(seed * 100 + rotations).padStart(12, "0")}`,
-        );
+        // Regime A: the page does nothing by itself, so no context change; an answer instead.
+        await run.answer(1);
       } else if (choice < 0.78) {
-        const mark = [...run.native.text].findIndex((point) => /\p{M}/u.test(point));
-        if (mark >= 0 && !display)
-          await run.deleteMark([...run.native.text].slice(0, mark).join("").length);
+        // UIKit names a combining mark alone only for a Backspace right after it.
+        const { end } = run.native.selection;
+        const before = run.native.text.slice(0, end);
+        const last = Array.from(before).at(-1);
+        if (last && /\p{M}/u.test(last) && !display) await run.deleteMark(end - last.length);
       } else await run.answer(1 + Math.floor(next() * 3));
     }
-    const dropped = await run.check(third ? `${seed} (third)` : seed);
-    if (dropped) {
-      droppedSequences.push(seed);
-      await sequence2(seed, third, dropped);
-    }
+    await run.check(third ? `${seed} (third)` : seed);
   }
 
   // What the random sequences found, kept: seed 32, a prevented Backspace on an empty field whose
@@ -877,7 +833,7 @@ describe("a person's caret moves and selections in the native field", () => {
     await run.insertText("👩‍💻");
     await run.moveSelection(5);
     await run.insertText("א");
-    expect(await run.check(2195)).toBeNull();
+    await run.check(2195);
   });
 
   // What the person oracle found, kept (third generator): seed 750, an autocorrect elsewhere
@@ -896,7 +852,7 @@ describe("a person's caret moves and selections in the native field", () => {
     await run.answer(1);
     await run.moveSelection(0);
     await run.insertText("b");
-    expect(await run.check("F2")).toBeNull();
+    await run.check("F2");
     expect(harness.remote).toMatchObject({ value: "ba" });
   });
   it("F4: a caret moved while a paste waits", async () => {
@@ -906,7 +862,7 @@ describe("a person's caret moves and selections in the native field", () => {
     await run.paste("P");
     await run.moveSelection(1);
     await run.insertText("x");
-    expect(await run.check("F4")).toBeNull();
+    await run.check("F4");
     expect(harness.remote).toMatchObject({ value: "axbcP" });
   });
   it("F5: an autocorrect made before the previous answer, on a Mac app or phone screen", async () => {
@@ -914,7 +870,7 @@ describe("a person's caret moves and selections in the native field", () => {
     await run.insertText("a");
     await run.answer(1);
     await run.replaceRange(0, 0, "the");
-    expect(await run.check("F5")).toBeNull();
+    await run.check("F5");
     expect(harness.remote).toMatchObject({ value: "thea" });
   });
 
@@ -924,25 +880,19 @@ describe("a person's caret moves and selections in the native field", () => {
   const firstSeed = Number(process.env.OPENSTEER_TYPING_FUZZ_SEED ?? 1);
   for (let chunk = firstSeed; chunk < firstSeed + runs; chunk += 300) {
     const last = Math.min(chunk + 300, firstSeed + runs) - 1;
-    it(`keeps the far field equal to the person's over random sequences ${chunk} to ${last}`, async () => {
-      // Every failing seed in the chunk, not just the first. A seed held in the unexplained
-      // fixture must fail exactly as recorded there (a fix or a new failure both show).
+    it(`regime A: the far field is the person's over random sequences ${chunk} to ${last}`, async () => {
+      // Every failing seed in the chunk, not just the first.
       const failures: string[] = [];
-      const passedUnexpectedly: number[] = [];
       for (let seed = chunk; seed <= last; seed++) {
-        const held = (unexplained.failures as Record<string, string>)[String(seed)];
         try {
           await sequence2(seed, true);
-          if (held) passedUnexpectedly.push(seed);
         } catch (error) {
-          const message = String(error instanceof Error ? error.message : error);
+          failures.push(String(error instanceof Error ? error.message : error));
           await act(async () => root.render(null));
           harness.answers = [];
           harness.mounted = false;
-          if (message !== held) failures.push(message);
         }
       }
-      expect(passedUnexpectedly, "held as unexplained, now passing: take them out").toEqual([]);
       if (process.env.OPENSTEER_TYPING_FUZZ_REPORT)
         for (const failure of failures)
           require("node:fs").appendFileSync(
@@ -952,10 +902,4 @@ describe("a person's caret moves and selections in the native field", () => {
       expect(failures).toEqual([]);
     });
   }
-  afterAll(() => {
-    if (droppedSequences.length)
-      process.stdout.write(
-        `typing oracle: ${droppedSequences.length} sequences raised a named exception (fenced, dropped or mark only), each replayed exactly\n`,
-      );
-  });
 });

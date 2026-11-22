@@ -85,8 +85,15 @@ struct RemoteInputEdits {
     let caret = start == end
     if place.revision >= base {
       for edit in edits.dropFirst(place.revision - base) {
+        // A caret stays on the side where the person put it: at the start of a range then
+        // replaced, before the replacement.
+        if caret {
+          if !(edit.removed > 0 && start == edit.start) { start = Self.move(start, over: edit, before: false) }
+          end = start
+          continue
+        }
         start = Self.move(start, over: edit, before: false)
-        end = Self.move(end, over: edit, before: !caret)
+        end = Self.move(end, over: edit, before: true)
       }
     }
     start = min(max(0, start), length)

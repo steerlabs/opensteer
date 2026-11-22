@@ -785,6 +785,38 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         reset();
         break;
       }
+      // Backspace is the page's: a letter written with combining marks loses only its last mark
+      // there, where the native field removed the whole letter. The page's own Backspace goes, and
+      // the mirror takes what the page then holds.
+      const at = event.proxy.selectionEnd;
+      const removed = base.value.length - event.proxy.value.length;
+      if (
+        edit &&
+        !echo &&
+        event.inputType === "deleteContentBackward" &&
+        state.abilities.rangeEdits &&
+        state.abilities.commands &&
+        event.proxy.selectionStart === at &&
+        removed > 0 &&
+        caret === at + removed &&
+        base.value.slice(0, at) === event.proxy.value.slice(0, at) &&
+        base.value.slice(at + removed) === event.proxy.value.slice(at)
+      ) {
+        const letter = base.value.slice(at, at + removed);
+        const mark = Array.from(letter).at(-1)!;
+        if (countGraphemes(letter) === 1 && letter.length > mark.length && /\p{M}/u.test(mark)) {
+          emit({ kind: "command", command: "deleteBackward" });
+          const kept = letter.slice(0, letter.length - mark.length);
+          state.proxy = {
+            value: base.value.slice(0, at) + kept + base.value.slice(at + removed),
+            selectionStart: at + kept.length,
+            selectionEnd: at + kept.length,
+          };
+          state.caret = at + kept.length;
+          instruction = { ...instruction, set: state.proxy };
+          break;
+        }
+      }
       let remoteCaret = event.proxy.selectionEnd;
       if (edit) {
         if (state.abilities.rangeEdits || (!edit.before && !edit.after)) {

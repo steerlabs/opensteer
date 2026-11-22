@@ -1,19 +1,35 @@
 import { characters, type Span } from "./remote-input-port.js";
 
 /*
- * The random typing test's oracle: the person. It does not come from the code under test (the
- * reducer, the port's RemoteInputEdits, the far field): it is a plain text, selection and
- * composition to which each generated action is applied as a person means it, at once.
+ * The random typing test's oracle for regime A (one field; the page does nothing by itself): the
+ * person. It does not come from the code under test. It is a plain text, selection and
+ * composition to which each generated action is applied as a person means it, at once, by these
+ * rules, written from what a person is promised, not from RemoteInputEdits:
+ *
+ * - A caret stays on the side of the text where the person put it: before the start of a range
+ *   that is then replaced it stays before the replacement; after its end, after; inside, at the
+ *   replacement's end. Text inserted where the caret stands goes before it: what the person typed
+ *   first stays first.
+ * - A selected range that is replaced (typed over) becomes a caret at the replacement's end.
+ * - Backspace is the page's: it removes the character before the caret, and from a letter written
+ *   with combining marks only the last mark, as the page's own Backspace does (the Chromium
+ *   recording in tests/editing-far-model.test.ts).
  *
  * UIKit names some places in the native field's text as it stands when it calls: a caret moved,
- * a word autocorrect replaces, a mark deleted. The native field is the mirror of a window of the
- * person's text, lagging by the actions still waiting their turn. To read such a place as the
- * person meant it, the oracle keeps the same person delayed (`applied`: the same actions,
- * applied as the native field takes each one's turn) and where the mirror's window starts in
- * it (the delayed person's own caret when the mirror was last cleared, never the far field's).
- * The place is then carried over the actions the person has taken and the native field has
- * not, as typing order puts them.
+ * a word autocorrect replaces, a mark deleted. The native field mirrors a window of the person's
+ * text, lagging by the actions still waiting their turn. To read such a place as the person meant
+ * it, the oracle keeps the same person delayed to the native field's turns (`applied`) and where
+ * the mirror's window starts in it (the delayed person's own caret when the mirror was last
+ * cleared), and carries the place over what the person has done since, by the rules above.
  */
+
+/** The offset `distance` composed characters from `from` in `text`, held inside it. */
+function advance(text: string, from: number, distance: number): number {
+  const boundaries = [0, ...characters(text).map(({ end }) => end)];
+  let index = boundaries.findIndex((boundary) => boundary >= from);
+  if (index < 0) index = boundaries.length - 1;
+  return boundaries[Math.min(Math.max(0, index + distance), boundaries.length - 1)]!;
+}
 
 /** A change of `removed` code units at `start` into `inserted` ones. */
 export interface Change {
@@ -22,14 +38,34 @@ export interface Change {
   readonly inserted: number;
 }
 
+/** Where an offset goes when `change` is applied, by the person's rules. `end`: a range's end. */
+function carry(offset: number, change: Change, kind: "caret" | "start" | "end"): number {
+  const { start, removed, inserted } = change;
+  const end = start + removed;
+  if (removed === 0) {
+    // An insertion: before it stays; where it stands, a caret or a range's start goes after it
+    // (typing order), a range's end stays before it (the range does not grow).
+    if (offset < start || (kind === "end" && offset === start)) return offset;
+    return offset + inserted;
+  }
+  if (offset >= end) return offset - removed + inserted;
+  if (offset < start) return offset;
+  // At the start of the replaced range: a caret stays before it; a range's start or end there is
+  // part of what was replaced.
+  if (offset === start && kind === "caret") return offset;
+  if (offset === start && kind === "end") return offset;
+  return start + inserted;
+}
+
 /** The person's field: text, selection and composition, each action applied at once. */
 export class Person {
   text = "";
   selection: Span = { start: 0, end: 0 };
   marked: Span | null = null;
-  /** The caret as the person last left it: where the far caret belongs, a range or not. */
+  /** The caret as the person last left it. */
   caret = 0;
 
+  /** The person's own edit at their selection: the caret ends after what they typed. */
   replace(target: Span, text: string): Change[] {
     this.text = this.text.slice(0, target.start) + text + this.text.slice(target.end);
     const at = target.start + text.length;
@@ -38,10 +74,7 @@ export class Person {
     this.caret = at;
     return [{ start: target.start, removed: target.end - target.start, inserted: text.length }];
   }
-  /**
-   * Replaces `target` without moving the person's caret or composition: an autocorrect, or a
-   * deletion UIKit names elsewhere. They are carried over it as typing order puts them.
-   */
+  /** A replacement made elsewhere (autocorrect): the person's caret is carried over it. */
   edit(target: Span, text: string): Change[] {
     const change = {
       start: target.start,
@@ -50,40 +83,42 @@ export class Person {
     };
     this.text = this.text.slice(0, target.start) + text + this.text.slice(target.end);
     const caret = this.selection.start === this.selection.end;
-    this.selection = {
-      start: carry(this.selection.start, change, false),
-      end: carry(this.selection.end, change, !caret),
-    };
+    this.selection = caret
+      ? {
+          start: carry(this.selection.start, change, "caret"),
+          end: carry(this.selection.start, change, "caret"),
+        }
+      : {
+          start: carry(this.selection.start, change, "start"),
+          end: Math.max(
+            carry(this.selection.start, change, "start"),
+            carry(this.selection.end, change, "end"),
+          ),
+        };
     if (this.marked)
       this.marked = {
-        start: carry(this.marked.start, change, false),
-        end: carry(this.marked.end, change, true),
+        start: carry(this.marked.start, change, "start"),
+        end: carry(this.marked.end, change, "end"),
       };
-    this.caret = carry(this.caret, change, false);
+    this.caret = carry(this.caret, change, "caret");
     return [change];
   }
   select(selection: Span) {
     this.selection = { ...selection };
     if (selection.start === selection.end) this.caret = selection.start;
   }
-  /** The page's own Backspace (Blink's): a decomposed letter loses its last mark alone. */
-  backspaceMark(): Change[] {
-    const { start, end } = this.selection;
-    if (end > start || start === 0) return this.backspace();
-    const character = characters(this.text).find((span) => span.end === start);
-    const points = Array.from(this.text.slice(character?.start ?? start - 1, start));
-    const last = points.at(-1)!;
-    if (points.length > 1 && /\p{M}/u.test(last))
-      return this.replace({ start: start - last.length, end: start }, "");
-    return this.backspace();
-  }
-  /** Backspace: the selection, or the character before the caret. */
+  /** Backspace, the page's: the selection, or the character before the caret (its last mark). */
   backspace(): Change[] {
     const { start, end } = this.selection;
     if (end > start) return this.replace(this.selection, "");
     if (start === 0) return [];
     const character = characters(this.text).find((span) => span.end === start);
-    return this.replace({ start: character?.start ?? start - 1, end: start }, "");
+    const from = character?.start ?? start - 1;
+    const points = Array.from(this.text.slice(from, start));
+    const last = points.at(-1)!;
+    if (points.length > 1 && /\p{M}/u.test(last))
+      return this.replace({ start: start - last.length, end: start }, "");
+    return this.replace({ start: from, end: start }, "");
   }
   /** Composes `text` over the composition, or over the selection when none is open. */
   compose(text: string): Change[] {
@@ -97,72 +132,36 @@ export class Person {
 /** One of the person's actions: what it does to a person's field. */
 export type Action = (person: Person) => Change[];
 
-/** Carries an offset over a change; `before`: a change beginning at it lies after it. */
-function carry(offset: number, change: Change, before: boolean): number {
-  if (offset < change.start || (before && offset === change.start)) return offset;
-  if (offset >= change.start + change.removed) return offset - change.removed + change.inserted;
-  return change.start + change.inserted;
-}
-
-/**
- * What the native field dropped in a sequence: places named in an older mirror, never applied
- * to a newer one (RemoteInputEdits' generations). The actions by their index among the
- * person's actions, the caret moves by theirs among the moves.
- */
-export interface Dropped {
-  readonly actions: ReadonlySet<number>;
-  readonly moves: ReadonlySet<number>;
-  /**
-   * Deletions the page made as its own Backspace command, which removed a decomposed letter's
-   * last mark alone (Blink's rule) where the person's keyboard removes the letter.
-   */
-  readonly markOnly?: ReadonlySet<number>;
-}
-
 export class Oracle {
   /** The person, every action applied at once. */
   readonly person = new Person();
   /** The same person, each action applied when the native field takes its turn. */
   readonly applied = new Person();
-  private readonly actions: { kind: string; act: Action; changes: Change[] }[] = [];
+  private readonly actions: { act: Action; changes: Change[] }[] = [];
   /** How many actions the native field has taken. */
   private turns = 0;
   /** Where the native mirror's text begins in the delayed person's text. */
   private window = 0;
-  /** The newest caret move, as the person meant it, and its index among the moves. */
+  /** The newest caret move, as the person meant it. */
   private move: Span | null = null;
-  private moves = 0;
-  /** The first move whose report has not run: a report stands for every move coalesced into it. */
-  private unreported = 0;
-  /** What the native field dropped in this sequence. */
-  readonly dropped = {
-    actions: new Set<number>(),
-    moves: new Set<number>(),
-    markOnly: new Set<number>(),
-  };
-
-  /**
-   * `without`: a replay of a sequence in which the native field dropped these; the person's
-   * field is then the person's without exactly their effect.
-   */
-  constructor(private readonly without: Dropped | null = null) {}
 
   /** The person does `act` now; its turn in the native field comes later. */
-  act(kind: string, act: Action) {
-    const index = this.actions.length;
-    const skip = this.without?.actions.has(index) === true;
-    const effective = skip
-      ? () => []
-      : this.without?.markOnly?.has(index)
-        ? (person: Person) => person.backspaceMark()
-        : act;
-    this.actions.push({ kind, act: effective, changes: effective(this.person) });
+  act(act: Action) {
+    this.actions.push({ act, changes: act(this.person) });
   }
-  /** The person moves the selection to a place UIKit named in the native text as it stands. */
-  select(native: Span) {
-    const index = this.moves++;
-    if (this.without?.moves.has(index)) return;
-    const selection = this.toPerson(native);
+  /**
+   * The person moves the selection. A caret move is the distance they moved it (`distance`,
+   * composed characters, as UIKit measured it in the text it had), from their own caret; a range
+   * is the place UIKit named in the native text as it stands.
+   */
+  select(native: Span, distance?: number) {
+    const selection =
+      distance === undefined
+        ? this.toPerson(native)
+        : (() => {
+            const at = advance(this.person.text, this.person.selection.end, distance);
+            return { start: at, end: at };
+          })();
     this.person.select(selection);
     this.move = selection;
   }
@@ -173,61 +172,23 @@ export class Oracle {
     const caret = start === end;
     for (const { changes } of this.actions.slice(this.turns))
       for (const change of changes) {
-        start = carry(start, change, false);
-        end = carry(end, change, !caret);
+        start = carry(start, change, caret ? "caret" : "start");
+        end = caret ? start : carry(end, change, "end");
       }
     return { start, end: Math.max(start, end) };
-  }
-  /** Whether every action has taken its turn in the native field. */
-  get caughtUp(): boolean {
-    return this.turns === this.actions.length;
   }
 
   // The native field's turns, as the port reports them.
   turn() {
-    const index = this.turns++;
-    const next = this.actions[index];
-    if (next && !this.dropped.actions.has(index)) next.act(this.applied);
-  }
-  /** The action about to take its turn was dropped: the native field applied nothing of it. */
-  drop() {
-    this.dropped.actions.add(this.turns);
-  }
-  /** The far field refused, for its old context, the edit of the action that last took its turn. */
-  fenced() {
-    if (this.turns > 0) this.dropped.actions.add(this.turns - 1);
-  }
-  /** The page's Backspace for the action now taking its turn removed a mark alone. */
-  markOnly() {
-    this.dropped.markOnly.add(this.turns);
+    const next = this.actions[this.turns++];
+    if (next) next.act(this.applied);
   }
   /** A selection report ran: the newest move reached the reducer, after everything typed before it. */
   report() {
     if (this.move) this.applied.select(this.move);
-    this.unreported = this.moves;
-  }
-  /** A report was dropped, named in an older mirror: every move coalesced into it with it. */
-  dropReport() {
-    for (let index = this.unreported; index < this.moves; index++) this.dropped.moves.add(index);
-    this.unreported = this.moves;
   }
   /** The mirror was cleared: it begins again at the delayed person's caret. */
   reset() {
     this.window = this.applied.caret;
-  }
-  /** The app ended the composition in the native field (not one of the person's actions). */
-  finish() {
-    this.applied.marked = null;
-    if (this.caughtUp) this.person.marked = null;
-  }
-  /** A new context cleared the mirror: the generator's rotation, or the page's own. */
-  context() {
-    if (this.actions[this.turns]?.kind === "rotate") this.turn();
-    else {
-      // The page's own: the composition ends in the native field.
-      this.applied.marked = null;
-      if (this.caughtUp) this.person.marked = null;
-    }
-    this.reset();
   }
 }

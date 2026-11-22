@@ -555,6 +555,35 @@
           "is": [3, 3]
         }
       ]
+    },
+    {
+      "name": "a caret at the start of a word that is then replaced stays before it",
+      "steps": [
+        {
+          "place": "caret",
+          "at": [0, 0]
+        },
+        {
+          "record": [0, 3, 3]
+        },
+        {
+          "current": "caret",
+          "length": 7,
+          "is": [0, 0]
+        },
+        {
+          "place": "typed",
+          "at": [4, 4]
+        },
+        {
+          "record": [4, 0, 1]
+        },
+        {
+          "current": "typed",
+          "length": 8,
+          "is": [5, 5]
+        }
+      ]
     }
   ]
 }

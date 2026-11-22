@@ -16,6 +16,8 @@ export interface Place {
   order: number;
   /** The mirror it was named in (Edits.generation). */
   generation: number;
+  /** A caret move: where it resolves (RemoteInputTextView's moves), not this place's offsets. */
+  move?: CaretMove;
   start: number;
   end: number;
 }
@@ -28,6 +30,16 @@ export interface Span {
   start: number;
   end: number;
 }
+/**
+ * A caret move: the distance the person moved the caret, from the caret it started at. It is
+ * resolved once, at its turn (when everything typed before it has been applied), into a place in
+ * the text as it then stands; until then it resolves provisionally the same way.
+ */
+export interface CaretMove {
+  from: Place;
+  distance: number;
+  resolved: Place | null;
+}
 
 /** The composed characters (grapheme clusters) of `text`, as UTF-16 spans. */
 export function characters(text: string): Span[] {
@@ -39,6 +51,13 @@ export function characters(text: string): Span[] {
 function graphemesBetween(text: string, from: number, to: number): number {
   const count = characters(text.slice(Math.min(from, to), Math.max(from, to))).length;
   return to < from ? -count : count;
+}
+/** The offset `distance` composed characters from `from` in `text`, held inside it. */
+function advance(text: string, from: number, distance: number): number {
+  const boundaries = [0, ...characters(text).map(({ end }) => end)];
+  let index = boundaries.findIndex((boundary) => boundary >= from);
+  if (index < 0) index = boundaries.length - 1;
+  return boundaries[Math.min(Math.max(0, index + distance), boundaries.length - 1)]!;
 }
 /** NSString.rangeOfComposedCharacterSequence(at:). */
 function characterAt(text: string, offset: number): Span {
@@ -107,8 +126,15 @@ export class Edits {
     const caret = start === end;
     if (place.revision >= this.base) {
       for (const edit of this.edits.slice(place.revision - this.base)) {
+        // A caret stays on the side where the person put it: at the start of a range then
+        // replaced, before the replacement.
+        if (caret) {
+          start = edit.removed > 0 && start === edit.start ? start : Edits.move(start, edit, false);
+          end = start;
+          continue;
+        }
         start = Edits.move(start, edit, false);
-        end = Edits.move(end, edit, !caret);
+        end = Edits.move(end, edit, true);
       }
     }
     start = Math.min(Math.max(0, start), length);
@@ -218,6 +244,10 @@ export class NativeField {
   private held: Place | null = null;
   /** The caret's moves since the last report ran, in graphemes; none once a range is chosen. */
   private distance: number | undefined = 0;
+  /** Where the caret moves since the last report started. */
+  private from: Place | null = null;
+  /** The caret move whose turn has not come yet. */
+  private pendingMove: CaretMove | null = null;
   /**
    * For the typing test's oracle: told when a call's job takes its turn ("action", answered or
    * prevented), when a selection report runs ("report"), when an answer clears the field
@@ -302,6 +332,12 @@ export class NativeField {
     return this.edits.place(span.start, span.end);
   }
   private range(place: Place): Span {
+    const move = place.move;
+    if (move) {
+      if (move.resolved) return this.range(move.resolved);
+      const at = advance(this.text, this.range(move.from).end, move.distance);
+      return { start: at, end: at };
+    }
     return this.edits.current(place, this.text.length);
   }
   private select(place: Place): Span {
@@ -397,6 +433,12 @@ export class NativeField {
   private personSelection(): Span {
     return this.held && !this.edits.stale(this.held) ? this.range(this.held) : this.selection;
   }
+  /** Where what the person types now is named: at a caret move still waiting its turn, or at the person's selection. */
+  private namedHere(): Place {
+    if (this.pendingMove && !this.held)
+      return { ...this.place(this.selection), move: this.pendingMove };
+    return this.place(this.personSelection());
+  }
   private change(
     named: string | (() => string),
     data: string | null,
@@ -432,7 +474,7 @@ export class NativeField {
   // What UIKit calls, naming places in the text as it stands at that moment.
 
   insertText(text: string) {
-    const typed = this.place(this.personSelection());
+    const typed = this.namedHere();
     // Named when its turn comes, as the field then stands (RemoteInputTextView.change).
     const inputType = () =>
       this.marked ? "insertFromComposition" : text === "\n" ? "insertLineBreak" : "insertText";
@@ -449,7 +491,7 @@ export class NativeField {
     const uikit = this.selection;
     const selection = this.personSelection();
     if (replacement === "" && Edits.isBackspace(named, uikit, this.text)) {
-      const caret = this.place(selection);
+      const caret = this.pendingMove && !this.held ? this.namedHere() : this.place(selection);
       this.change("deleteContentBackward", replacement, caret, () => {
         if (this.dropped(caret, false)) return;
         const at = this.edits.stale(caret) ? this.place(this.selection) : caret;
@@ -462,7 +504,10 @@ export class NativeField {
     // place in the text.
     const relative = named.start === selection.start && named.end === selection.end;
     const again = replacement === "" && Edits.deletesSelection(named, selection);
-    const typed = this.place(named);
+    const typed =
+      relative && named.start === named.end && this.pendingMove && !this.held
+        ? this.namedHere()
+        : this.place(named);
     this.change(
       replacement ? "insertReplacementText" : "deleteContentBackward",
       replacement,
@@ -507,7 +552,7 @@ export class NativeField {
     });
   }
   deleteBackward() {
-    const typed = this.place(this.personSelection());
+    const typed = this.namedHere();
     this.change("deleteContentBackward", null, typed, () => {
       if (this.dropped(typed, false)) return;
       this.select(typed);
@@ -531,7 +576,7 @@ export class NativeField {
     });
   }
   setMarkedText(text: string) {
-    const typed = this.place(this.personSelection());
+    const typed = this.namedHere();
     this.change("insertCompositionText", text, typed, () => {
       if (this.dropped(typed, false)) return;
       const target = this.select(typed);
@@ -603,31 +648,49 @@ export class NativeField {
     if (this.mutating || (own !== null && own.start === start && own.end === end)) return;
     this.ownSelection = null;
     this.held = null;
-    // A move is where UIKit put the caret in the text it had: the distance the person moved it
-    // there. While that mirror lives the place is carried; after a reset it is sent as the
-    // distance (summed over the moves one report stands for), never dropped. A range selected in
-    // text that is gone selects nothing.
+    // A caret move is the distance the person moved the caret, from the caret it started at
+    // (summed over the moves one report stands for). It is resolved at its turn, when everything
+    // typed before it has been applied; what is typed after it is named there. After a reset it is
+    // sent as the distance, never dropped. A range is the place UIKit named; one selected in text
+    // that is gone selects nothing.
     const caret = previous.start === previous.end && start === end;
+    if (caret && this.distance !== undefined) this.from ??= this.place(previous);
     this.distance =
       this.distance === undefined || !caret
         ? undefined
         : this.distance + graphemesBetween(this.text, previous.end, end);
     const distance = this.distance;
-    const moved = this.place(this.selection);
+    const fresh = this.place(this.selection);
+    const move: CaretMove | null =
+      distance === undefined || !this.from ? null : { from: this.from, distance, resolved: null };
+    this.pendingMove = move;
+    const moved: Place = move ? { ...fresh, move } : fresh;
     this.edits.choose(moved);
     this.report(() => {
       this.distance = 0;
-      if (this.edits.stale(moved)) {
-        if (distance === undefined) {
+      this.from = null;
+      if (this.pendingMove === move) this.pendingMove = null;
+      if (move ? this.edits.stale(move.from) : this.edits.stale(moved)) {
+        if (!move) {
           this.onTurn?.("dropped-report");
           return;
         }
+        move.resolved = this.place(this.selection);
         this.onTurn?.("report");
-        this.event({ type: "selection", proxy: this.snapshot(), move: distance });
+        this.event({ type: "selection", proxy: this.snapshot(), move: move.distance });
         return;
       }
+      const at = this.range(moved);
+      if (move) {
+        move.resolved = this.place(at);
+        // The native caret is the person's from here on, unless they have moved it since.
+        if (!this.edits.chosenAfter(moved)) {
+          this.selection = { ...at };
+          this.ownSelection = { ...at };
+        }
+      }
       this.onTurn?.("report");
-      this.event({ type: "selection", proxy: this.snapshot(this.range(moved)) });
+      this.event({ type: "selection", proxy: this.snapshot(at) });
     });
   }
 }
