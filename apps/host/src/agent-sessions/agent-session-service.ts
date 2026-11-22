@@ -806,14 +806,18 @@ export class AgentSessionService {
         for (let attempt = 0; attempt < 3; attempt++) {
           const current = await readAgentOperation(this.#store.database, row.id);
           if (!current || !unsettled(current.state)) return;
-          if (current.state === "handed-off")
-            await refuseUnsentHandedOffAgentOperation(
-              this.#store.database,
-              row.id,
-              "This browser restarted before anything was sent.",
-              "changed",
-            );
-          else
+          if (current.state === "handed-off") {
+            // Written: the row has its outcome, with nothing more to read.
+            if (
+              await refuseUnsentHandedOffAgentOperation(
+                this.#store.database,
+                row.id,
+                "This browser restarted before anything was sent.",
+                "changed",
+              )
+            )
+              return;
+          } else
             await refuseUnsentAgentOperation(this.#store.database, row.id, current.grantRevision);
         }
         const last = await readAgentOperation(this.#store.database, row.id);
@@ -851,9 +855,18 @@ export class AgentSessionService {
         reservation,
       });
     } catch (error) {
-      // Nothing was handed off, so nothing reached the browser: a definite refusal.
-      if (!handed)
-        await refuseUnsentAgentOperation(this.#store.database, row.id, row.grantRevision);
+      // Nothing was handed off, so nothing reached the browser: a definite refusal, under the
+      // revision the row holds now (it may have been reviewed again while this waited).
+      if (!handed) {
+        const current = await readAgentOperation(this.#store.database, row.id).catch(
+          () => undefined,
+        );
+        await refuseUnsentAgentOperation(
+          this.#store.database,
+          row.id,
+          current?.grantRevision ?? row.grantRevision,
+        );
+      }
       throw error;
     } finally {
       reservation?.release();

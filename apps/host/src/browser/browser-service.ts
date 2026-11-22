@@ -6713,7 +6713,13 @@ export class BrowserService {
     this.#endPersonUse(broker.groupId);
     this.#brokers.delete(sessionId);
     this.#taskPageOpens.delete(sessionId);
-    void broker.stop().catch(() => undefined);
+    void broker.stop().then(
+      () => {
+        // A pooled close the runtime did not answer left the row closing: the loop ends it.
+        if (broker.pooled) for (const pool of this.#pools.values()) pool.stopped();
+      },
+      () => undefined,
+    );
   }
 
   close(): Promise<void> {

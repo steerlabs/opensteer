@@ -1214,6 +1214,8 @@ export class BrowserPoolCoordinator {
       undefined,
       this.#signal,
     );
+    // Stored and signed: the call's term is not the slot's. This target is over for this Home.
+    if (!signed.applied && signed.reason === "fenced") throw new BrowserPoolTargetFenced();
     if (!signed.applied || !signed.signature || signed.control?.kind !== "retire")
       throw new Error(`The controller did not sign retire: ${signed.reason ?? "refused"}.`);
     return this.#deliver(signed.control, signed.signature);

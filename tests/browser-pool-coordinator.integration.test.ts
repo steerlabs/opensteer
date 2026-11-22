@@ -633,6 +633,37 @@ it("takes a stored, signed fenced answer as final: nothing more is sent, and cal
   }
 });
 
+it("takes a stored, signed fenced answer to the park's retire as final too", async () => {
+  const f = await poolFixture("over-fenced-retire");
+  try {
+    let fenced = false;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      // Another term owns the slot now: the controller answers the retire's signature as fenced.
+      apply: async (call) =>
+        fenced && call.kind === "sign" && call.control?.kind === "retire"
+          ? {
+              id: call.id,
+              applied: false,
+              reason: "fenced",
+              status: await f.controller.status(call.slotId, call.term),
+            }
+          : f.controller.apply(call),
+    };
+    const home = f.home(undefined, physical);
+    await home.recover();
+    fenced = true;
+    expect(await home.tryPark()).toBe("vetoed");
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "fenced" }));
+    const asked = Date.now();
+    await expect(home.gate.reserve(AbortSignal.timeout(15_000))).rejects.toThrow("not ready");
+    expect(Date.now() - asked).toBeLessThan(2_000);
+  } finally {
+    await f.close();
+  }
+});
+
 it("stops a guest the controller reports for a removed device that never had a slot row", async () => {
   const f = await poolFixture("removed-no-slot");
   try {
