@@ -895,15 +895,29 @@ export async function markConnectionAttemptsContactLost(
         .where("executionGeneration", "=", executionGeneration)
         .execute();
     }
-    await tx
-      .updateTable("runAttempts")
-      .set({ contactLostAt: now })
+    // The attempts in id order first, as the tables above: two Runs a connection started on one
+    // boot are two rows, and an unordered update of both can deadlock against another writer.
+    const attempts = await tx
+      .selectFrom("runAttempts")
+      .select("id")
       .where("connectionId", "is not", null)
       .where("runnerId", "=", input.runnerId)
       .where("runnerBootId", "=", input.runnerBootId)
       .where("terminalEvidenceAt", "is", null)
       .where("contactLostAt", "is", null)
+      .orderBy("id")
+      .forNoKeyUpdate()
       .execute();
+    if (attempts.length > 0)
+      await tx
+        .updateTable("runAttempts")
+        .set({ contactLostAt: now })
+        .where(
+          "id",
+          "in",
+          attempts.map(({ id }) => id),
+        )
+        .execute();
   });
 }
 
