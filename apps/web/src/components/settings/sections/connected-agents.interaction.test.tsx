@@ -430,11 +430,11 @@ describe("a chat, as a connected agent", () => {
   it.each([
     [
       2,
-      "You paused this chat. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
+      "You paused its messaging account. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
     ],
     [
       3,
-      "You paused this chat. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. Resume its account in Messaging to go on.",
+      "You paused its messaging account. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. Resume its account in Messaging to go on.",
     ],
     [
       4,

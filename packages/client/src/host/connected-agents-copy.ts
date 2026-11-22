@@ -160,7 +160,8 @@ export const connectedAgentsCopy = {
   "agent.status.unknown": "Not known to this app",
   "agent.status.unknownDetail":
     "Your Home says something this version of Opensteer doesn’t know. Update Opensteer to see whether it can still act.",
-  "chat.paused.you": "You paused this chat.",
+  "chat.paused.you": "You paused its messaging account.",
+  "chat.paused.unknown": "This chat is paused.",
   "chat.paused.attention": "Paused because {account} needs attention.",
   "chat.paused.replies": "Its replies are held, and are sent in order when it’s back.",
   "chat.paused.kept":
@@ -186,6 +187,7 @@ export const connectedAgentsCopy = {
   "chat.speakers.fixed":
     "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
   "chat.ended.you": "You disconnected it.",
+  "chat.ended.unknown": "This chat has ended.",
   "chat.ended.organization": "Your organization turned off tasks for chats.",
   "chat.ended.account": "Its messaging account was disconnected.",
   "chat.ended.computer": "The Mac it used was removed, or can no longer use Messages.",

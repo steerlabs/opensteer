@@ -344,25 +344,33 @@ function usedLine(lastUsedAt: string | null, now: Date): string {
  */
 export function pausedDetail(connection: Pick<AgentConnection, "bridge">): string {
   const bridge = connection.bridge;
-  const attention = bridge?.pausedBy === "needs-attention";
-  const sent =
-    bridge?.pausedMessages === "kept"
-      ? agentWords("chat.paused.kept")
-      : agentWords("chat.paused.lost");
-  return [
-    attention
+  // Each sentence only from a value the Home sent: a missing or new one says nothing it can't.
+  const by = bridge?.pausedBy;
+  const cause =
+    by === "needs-attention"
       ? agentWords("chat.paused.attention", {
           account: bridge?.accountName ?? bridge?.provider ?? "",
         })
-      : agentWords("chat.paused.you"),
-    agentWords("chat.paused.replies"),
-    sent,
-    attention
+      : by === "you"
+        ? agentWords("chat.paused.you")
+        : agentWords("chat.paused.unknown");
+  const sent =
+    bridge?.pausedMessages === "kept"
+      ? agentWords("chat.paused.kept")
+      : bridge?.pausedMessages === "lost"
+        ? agentWords("chat.paused.lost")
+        : null;
+  const next =
+    by === "needs-attention"
       ? bridge?.pauseDetail
         ? agentWords("chat.paused.attentionDetail", { detail: bridge.pauseDetail })
         : agentWords("chat.paused.attentionFix")
-      : agentWords("chat.paused.resume"),
-  ].join(" ");
+      : by === "you"
+        ? agentWords("chat.paused.resume")
+        : null;
+  return [cause, agentWords("chat.paused.replies"), sent, next]
+    .filter((part): part is string => part !== null)
+    .join(" ");
 }
 
 /** The status at the top of an agent's page. */

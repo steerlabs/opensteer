@@ -14,6 +14,7 @@ import {
   chatsOfAccount,
   connectedAgentRow,
   connectionsRead,
+  messagingAccountView,
   type ConnectionsRead,
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -518,10 +519,8 @@ export function ChannelOverview({
         const accounts = dashboard.accounts.filter(
           ({ connectionId }) => connectionId === connection.id,
         );
-        // A channel on one of your computers is fixed on that computer and resumes by
-        // itself; there are no credentials here to replace.
-        const repairable =
-          connection.status === "needs-attention" && connection.transportKind !== "computer";
+        // The account as the Home states it, and the controls it accepts (shared with the phone).
+        const view = messagingAccountView(connection, manifest);
         return (
           <section className="section messaging-account" key={connection.id}>
             <div className="card">
@@ -532,28 +531,16 @@ export function ChannelOverview({
                     <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
                       {connection.displayName}
                     </Link>
-                    <span className={`chip ${statusChip(connection.status)}`}>
-                      {statusLabel(connection.status)}
-                    </span>
+                    <span className={`chip ${statusChip(connection.status)}`}>{view.label}</span>
                   </span>
                   <span className="card__row-detail">{providerLabel}</span>
-                  {connection.status === "paused" ? (
-                    <span className="card__row-detail">
-                      {agentWords("messaging.pausedNote", {
-                        sent: agentWords(
-                          manifest?.pausedMessages === "kept"
-                            ? "chat.paused.kept"
-                            : "chat.paused.lost",
-                        ),
-                      })}
-                    </span>
+                  {view.pausedNote ? (
+                    <span className="card__row-detail">{view.pausedNote}</span>
                   ) : null}
-                  {connection.statusDetail ? (
-                    <span className="card__row-detail">{connection.statusDetail}</span>
-                  ) : null}
+                  {view.detail ? <span className="card__row-detail">{view.detail}</span> : null}
                 </div>
                 <div className="card__row-actions">
-                  {repairable ? (
+                  {view.canFix ? (
                     <button
                       className="btn btn--small"
                       disabled={pending}
@@ -562,10 +549,10 @@ export function ChannelOverview({
                     >
                       {agentWords("messaging.fix")}
                     </button>
-                  ) : connection.status === "revoked" ? null : (
+                  ) : !view.canPause && !view.canResume ? null : (
                     <SettingsSwitch
-                      label={`${connection.status === "paused" ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
-                      checked={connection.status !== "paused"}
+                      label={`${view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
+                      checked={view.canPause}
                       disabled={pending}
                       onChange={(enabled) =>
                         onStatus(connection.id, enabled ? "connected" : "paused")
@@ -1155,12 +1142,6 @@ function statusChip(status: string): string {
       : status === "revoked"
         ? "chip--bad"
         : "";
-}
-
-function statusLabel(status: string): string {
-  const known = ["connected", "pending", "paused", "needs-attention", "revoked"] as const;
-  const id = known.find((candidate) => candidate === status);
-  return id ? agentWords(`messaging.status.${id}`) : status;
 }
 
 function message(reason: unknown): string {

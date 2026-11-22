@@ -55,8 +55,13 @@ export function chatFacts(
     where,
     speakers,
     fixed: agentWords("chat.speakers.fixed"),
+    // Why it ended only from a reason the Home sent and this app knows; otherwise only that it did.
     ended: ending
-      ? `${agentWords(endedWords[bridge.endedBy ?? "you"])} ${agentWords("chat.ended.again")}`
+      ? `${agentWords(
+          bridge.endedBy !== undefined && Object.hasOwn(endedWords, bridge.endedBy)
+            ? endedWords[bridge.endedBy]
+            : "chat.ended.unknown",
+        )} ${agentWords("chat.ended.again")}`
       : null,
     unknownReplies:
       unknown === 0

@@ -1,6 +1,7 @@
 import { createId, UserIdSchema, type AgentGrant } from "@opensteer/core";
 import type { AgentConnection, PluginsInstalledView } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
+import { chatFacts, messagingAccountView } from "./chat-view.js";
 import {
   agentAppOptions,
   agentBrowserOptions,
@@ -85,7 +86,7 @@ describe("connected agents list", () => {
     expect(slack.status).toMatchObject({
       label: "Paused",
       detail:
-        "You paused this chat. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
+        "You paused its messaging account. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused are not delivered. Resume its account in Messaging to go on.",
     });
     const imessage = connectedAgentDetail(
       chat({
@@ -101,6 +102,56 @@ describe("connected agents list", () => {
     expect(imessage.status.detail).toBe(
       "Paused because tim@example.com needs attention. Its replies are held, and are sent in order when it’s back. Messages sent while this is paused arrive when it’s back; one sent more than an hour before is answered that it came too late. It says: Messages isn’t signed in. Fix that on its messaging account, then check it again.",
     );
+  });
+
+  it("says nothing a paused or ended chat's Home did not say", () => {
+    const chat = (bridge: Partial<NonNullable<AgentConnection["bridge"]>>, state = "paused") =>
+      connection({
+        label: "iMessage",
+        clientName: "iMessage",
+        state: state as never,
+        expiresAt: null,
+        revokedAt: state === "stopped" ? "2026-11-19T11:00:00Z" : null,
+        bridge: {
+          accountId: "cha_1",
+          provider: "iMessage",
+          conversationId: null,
+          senders: "owner",
+          accountName: "tim@example.com",
+          ...bridge,
+        },
+      });
+    // No cause and no transport fact: only that it is paused and its replies are held.
+    const paused = connectedAgentDetail(chat({}), names, { grantsAvailable: true, now });
+    expect(paused.status.detail).toBe(
+      "This chat is paused. Its replies are held, and are sent in order when it’s back.",
+    );
+    expect(paused.status.detail).not.toMatch(/not delivered|You paused/u);
+    // No reason, or one this app doesn't know: only that it ended, and no crash.
+    for (const endedBy of [undefined, "a-reason-from-a-newer-home"]) {
+      const ended = connectedAgentDetail(
+        chat(endedBy === undefined ? {} : { endedBy: endedBy as never }, "stopped"),
+        names,
+        { grantsAvailable: true, now },
+      );
+      expect(chatFacts(ended.row.connection, ended.row.phase)?.ended).toBe(
+        "This chat has ended. To use it again, add the chat again on Messaging.",
+      );
+    }
+  });
+
+  it("says what an account's pause does to a message only where its provider says", () => {
+    const paused = { status: "paused", statusDetail: null, transportKind: "computer" };
+    expect(messagingAccountView(paused, {}).pausedNote).toBe(
+      "Paused: its chats hold their replies until you resume it.",
+    );
+    expect(messagingAccountView(paused, { pausedMessages: "kept" }).pausedNote).toContain(
+      "arrive when it’s back",
+    );
+    // A status this app doesn't know is said so, and offers no switch that looks on.
+    expect(
+      messagingAccountView({ status: "resting", statusDetail: null, transportKind: "socket" }, {}),
+    ).toMatchObject({ label: "Not known to this app", canPause: false, canResume: false });
   });
 
   it("shows a state it does not know as unknown, never as active", () => {
