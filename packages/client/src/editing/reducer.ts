@@ -123,6 +123,10 @@ function textEdit(
   let diff = difference(old.value, next.value);
   if (replacement !== null) {
     let range: { start: number; end: number; text: string } | null = null;
+    // A candidate the text around it matches exactly explains the whole change. One that also
+    // holds the plain diff is preferred; with a repeated neighbour the plain diff can sit one
+    // character past the replacement, and the exact one is then the replacement.
+    let exact: { start: number; end: number; text: string } | null = null;
     for (const start of new Set([
       next.selectionEnd - replacement.length,
       next.value.lastIndexOf(replacement, next.selectionEnd),
@@ -134,14 +138,17 @@ function textEdit(
         start,
         start + replacement.length,
       );
+      if (candidate?.text !== replacement) continue;
+      exact ??= candidate;
       if (
-        candidate?.text === replacement &&
-        (old.value === next.value || (candidate.start <= diff.start && candidate.end >= diff.end))
+        old.value === next.value ||
+        (candidate.start <= diff.start && candidate.end >= diff.end)
       ) {
         range = candidate;
         break;
       }
     }
+    range ??= old.value === next.value ? null : exact;
     if (!range) return "unverified";
     diff = range;
   } else if (old.value === next.value) return null;
@@ -633,6 +640,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       break;
     }
     case "beforeinput": {
+      // A suppression waits for the input of the beforeinput that set it. Another beforeinput
+      // means that input never came (the adapter honoured preventDefault): a later deletion's
+      // input is its own, never swallowed for the earlier one.
+      state.suppressedInput = null;
       if (state.composition) break;
       if (state.abilities.basicInput && event.inputType === "insertReplacementText") {
         prevent();

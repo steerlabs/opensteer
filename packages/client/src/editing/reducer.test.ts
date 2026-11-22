@@ -62,6 +62,64 @@ const input = (value: string, inputType = "insertText", composing = false): Edit
   proxy: proxy(value),
 });
 describe("editing reducer: scripted ordering regressions (native fixtures are separate)", () => {
+  // Found by the mobile typing test's random sequences (seed 32): a Backspace on an empty field
+  // is prevented and sent as a command, and a native adapter that honours preventDefault sends
+  // no input for it. The suppression waiting for that input must not swallow a later deletion's.
+  it("does not swallow a later deletion after a prevented Backspace on an empty field", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        { type: "beforeinput", inputType: "insertText", data: "a" },
+        input("a"),
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        input("", "deleteContentBackward"),
+      ],
+      "ios",
+    );
+    expect(result.operations).toEqual([
+      { kind: "command", command: "deleteBackward" },
+      { kind: "edit", edit: { contextId: context.contextId, text: "a", before: "", after: "" } },
+      { kind: "edit", edit: { contextId: context.contextId, text: "", before: "a", after: "" } },
+    ]);
+  });
+  // Found by the same random sequences (seed 4363): a selection typed over through the delegate
+  // ends next to the same character, so the plain diff places the change one character later
+  // than the replacement. The replacement that matches the text around it exactly is verified.
+  it("verifies a replacement whose neighbour repeats its last character", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "insertText", data: "x" },
+        input("xabb"),
+        { type: "selection", proxy: proxy("xabb", 1, 3) },
+        { type: "beforeinput", inputType: "insertReplacementText", data: "a" },
+        {
+          type: "input",
+          inputType: "insertReplacementText",
+          composing: false,
+          proxy: proxy("xab", 2),
+        },
+      ],
+      "ios",
+    );
+    // The replacement, restated back to the far caret after "xabb", then the caret to the "a".
+    expect(result.operations.slice(-2)).toEqual([
+      {
+        kind: "edit",
+        edit: { contextId: context.contextId, text: "ab", before: "abb", after: "" },
+      },
+      { kind: "command", command: "moveBackward" },
+    ]);
+  });
+  it("still swallows the input of a deletion it could not prevent", () => {
+    const result = replay(
+      [
+        { type: "beforeinput", inputType: "deleteContentBackward", data: null },
+        input("", "deleteContentBackward"),
+      ],
+      "android",
+    );
+    expect(result.operations).toEqual([{ kind: "command", command: "deleteBackward" }]);
+  });
   it.each(["insertLineBreak", "insertParagraph"])(
     "sends soft %s as one Enter and keeps pasted newlines literal",
     (inputType) => {
