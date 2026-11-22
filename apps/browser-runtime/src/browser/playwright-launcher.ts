@@ -891,30 +891,11 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         );
         for (const outcome of removed) if (outcome === "unknown") reportUnconfirmedRemoval(1);
       } else if (candidateLifecycle) {
-        // Fail closed when no read is known even without a last session: no tab survives launch.
+        // No read even without a last session: nothing was restored, and K3 closes every page
+        // that has no provenance, since none can be classified.
         process.stderr.write(
           '{"event":"browser-runtime.tab-lifecycle-unavailable","stage":"launch-inventory"}\n',
         );
-        let confirmedClean = false;
-        for (let attempt = 0; attempt < 3 && !confirmedClean; attempt++) {
-          const targets = (await withTimeout(browserCdp.send("Target.getTargets"), nameTargetMs, {
-            timeoutError: () => new Error("Launch Target.getTargets timed out."),
-          }).catch(() => null)) as {
-            targetInfos?: readonly { targetId?: unknown; type?: unknown }[];
-          } | null;
-          if (!targets) break;
-          const survivors = (targets.targetInfos ?? []).filter(
-            (info): info is { targetId: string; type: string } =>
-              info.type === "page" &&
-              typeof info.targetId === "string" &&
-              info.targetId !== helperTargetId,
-          );
-          confirmedClean = survivors.length === 0;
-          for (const info of survivors) await closeTarget(info.targetId).catch(() => undefined);
-          if (!confirmedClean) await delay(40);
-        }
-        if (!confirmedClean)
-          throw new Error("Chromium restored unauthorized tabs that could not be removed.");
       }
       // Snapshot every non-helper page present after inventory (including any restored
       // tabs Chromium finished initializing during launch) so none leak before claiming.
@@ -1152,11 +1133,6 @@ function syncTargetIdOfPage(page: Page): string | null {
   }
 }
 
-function syncOpenerOfPage(page: Page): Page | null {
-  const opener = (page as unknown as { _opener?: Page | null })._opener;
-  return opener && !opener.isClosed() ? opener : null;
-}
-
 /** A page's target, in memory or through one debugger round trip, inside `deadline`. */
 async function lookupTargetId(
   context: PlaywrightBrowserContext,
@@ -1268,24 +1244,18 @@ async function removeTabById(
  * or with a title two tabs carry.
  */
 function reportRestoreLaunch(rows: readonly ChromiumTabEntry[], named: number): void {
-  let untitled = 0;
-  let unknownTitle = 0;
-  let duplicateTitle = 0;
-  for (const row of rows) {
-    if (!row.identity) untitled++;
-    else if (findNamed(rows, row.identity).kind === "many") duplicateTitle++;
-    else if (!isHomeTabName(row.identity)) unknownTitle++;
-  }
-  process.stderr.write(
-    `${JSON.stringify({
-      event: "browser-runtime.tab-restore-launch",
-      restored: rows.length,
-      named,
-      untitled,
-      unknownTitle,
-      duplicateTitle,
-    })}\n`,
-  );
+  const count = (test: (row: ChromiumTabEntry) => boolean) => rows.filter(test).length;
+  const many = (row: ChromiumTabEntry) =>
+    !!row.identity && findNamed(rows, row.identity).kind === "many";
+  const event = {
+    event: "browser-runtime.tab-restore-launch",
+    restored: rows.length,
+    named,
+    untitled: count((row) => !row.identity),
+    unknownTitle: count((row) => !!row.identity && !many(row) && !isHomeTabName(row.identity)),
+    duplicateTitle: count(many),
+  };
+  process.stderr.write(`${JSON.stringify(event)}\n`);
 }
 
 function reportUnconfirmedRemoval(attempts: number): void {
@@ -1452,7 +1422,8 @@ class PlaywrightContextHandle implements BrowserContext {
   /** K3: published with provenance (b) at once; with none, hidden and classified by its name. */
   private arrive(page: Page): void {
     if (this.isHiddenPage(page) || this.published.has(page) || this.ending.has(page)) return;
-    const opener = syncOpenerOfPage(page);
+    const known = (page as unknown as { _opener?: Page | null })._opener;
+    const opener = known && !known.isClosed() ? known : null;
     if (opener && (this.published.has(opener) || !this.nativeProfile)) {
       const handle = this.wrap(page);
       handle.openerHandle ??= this.wrap(opener);
@@ -1512,7 +1483,7 @@ class PlaywrightContextHandle implements BrowserContext {
     const taken = () => this.closed || page.isClosed() || !this.identifyingPages.has(page);
     if (this.openingPages.size > 0) await Promise.allSettled(this.openingPages);
     const deadline = performance.now() + arrivalIdentifyMs;
-    for (let attempt = 0; ; attempt++) {
+    for (let attempt = 0; this.lifecycle; attempt++) {
       if (taken()) return;
       const targetId = await lookupTargetId(this.context, page, deadline);
       const rows = targetId && !taken() ? await this.read(deadline) : null;
@@ -1733,7 +1704,7 @@ class PlaywrightContextHandle implements BrowserContext {
 
   private armFallbackReconcile(keepIds: ReadonlySet<BrowserSurfaceId>, delayMs: number): void {
     if (this.closed || this.restored.size === 0) return;
-    if (this.reconcileFallbackTimer) clearTimeout(this.reconcileFallbackTimer);
+    clearTimeout(this.reconcileFallbackTimer);
     this.reconcileFallbackTimer = setTimeout(() => {
       this.reconcileFallbackTimer = undefined;
       if (this.closed) return;
@@ -1743,10 +1714,8 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   private reconcileSavedTabs(savedTabIds: ReadonlySet<BrowserSurfaceId>): Promise<void> {
-    if (this.reconcileFallbackTimer) {
-      clearTimeout(this.reconcileFallbackTimer);
-      this.reconcileFallbackTimer = undefined;
-    }
+    if (this.reconcileFallbackTimer) clearTimeout(this.reconcileFallbackTimer);
+    this.reconcileFallbackTimer = undefined;
     this.reconcileAbort?.abort();
     const abort = new AbortController();
     this.reconcileAbort = abort;
@@ -1757,38 +1726,16 @@ class PlaywrightContextHandle implements BrowserContext {
       () => undefined,
       () => undefined,
     );
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        // Deadline passed (Rule B): the body is fenced and every restored tab nobody is claiming
-        // is given up, so the session goes on opening tabs by address.
-        abort.abort();
-        for (const surfaceId of Array.from(this.restored.keys())) {
-          if (!this.claimingTitles.has(surfaceId))
-            void this.evictRestored(surfaceId).catch(() => undefined);
-        }
-        this.parkingArmed = true;
-        resolve();
-      }, 6_000);
-      timer.unref?.();
-      work.then(
-        () => {
-          clearTimeout(timer);
-          if (!settled) {
-            settled = true;
-            resolve();
-          }
-        },
-        (error: unknown) => {
-          clearTimeout(timer);
-          if (!settled) {
-            settled = true;
-            reject(error);
-          }
-        },
-      );
+    const deadline = new Error("Reconcile deadline passed.");
+    return withTimeout(work, 6_000, { timeoutError: () => deadline }).catch((error: unknown) => {
+      if (error !== deadline) throw error;
+      // Deadline passed (Rule B): the body is fenced and every restored tab nobody is claiming
+      // is given up, so the session goes on opening tabs by address.
+      abort.abort();
+      for (const surfaceId of Array.from(this.restored.keys()))
+        if (!this.claimingTitles.has(surfaceId))
+          void this.evictRestored(surfaceId).catch(() => undefined);
+      this.parkingArmed = true;
     });
   }
 
@@ -1926,10 +1873,11 @@ class PlaywrightContextHandle implements BrowserContext {
     }
     if (!current()) return;
     if (row.active) await this.activatePrivateAnchor();
-    const frozen = page && !page.isClosed() ? await this.freezeBeforeDiscard(page) : undefined;
+    const frozen = page && !page.isClosed() ? page : undefined;
+    if (frozen) await this.setLifecycleState(frozen, "frozen");
     if (!current()) {
       // Claimed, given up or removed meanwhile: what this run froze it unfreezes.
-      if (frozen && !this.closed) await this.unfreezeRestoredPage(frozen);
+      if (frozen && !this.closed) await this.setLifecycleState(frozen, "active");
       return;
     }
     await this.lifecycle!.discardByTabId(row.tabId).catch(() => null);
@@ -1951,50 +1899,31 @@ class PlaywrightContextHandle implements BrowserContext {
 
   /**
    * Flushes Blink's page state (scroll, form controls) into Chromium's navigation entry before a
-   * discard. The page is marked before the request, so even a freeze that timed out is undone.
+   * discard, or undoes that. A page is marked frozen before the request, so even a freeze that
+   * timed out is undone; a failed freeze still lets the discard go on (no unowned page stays live).
    */
-  private async freezeBeforeDiscard(page: Page): Promise<Page | undefined> {
-    this.frozenPages.add(page);
-    let session: PlaywrightCdpSession | undefined;
-    try {
-      session = await withTimeout(this.context.newCDPSession(page), 1_000, {
-        timeoutError: () => new Error("Freeze CDP attach timed out."),
-      });
-      await withTimeout(session.send("Page.setWebLifecycleState", { state: "frozen" }), 1_000, {
-        timeoutError: () => new Error("Freeze timed out."),
-      });
-    } catch {
-      // Best-effort flush; the discard still proceeds so no unowned page stays live.
-    } finally {
-      if (session)
-        await withTimeout(session.detach(), 500, {
-          timeoutError: () => new Error("Freeze detach timed out."),
-        }).catch(() => undefined);
-    }
-    return page;
-  }
-
-  private async unfreezeRestoredPage(page: Page): Promise<boolean> {
-    if (page.isClosed()) {
+  private async setLifecycleState(page: Page, state: "frozen" | "active"): Promise<boolean> {
+    if (state === "frozen") this.frozenPages.add(page);
+    else if (page.isClosed()) {
       this.frozenPages.delete(page);
       return false;
     }
     let session: PlaywrightCdpSession | undefined;
     try {
       session = await withTimeout(this.context.newCDPSession(page), 1_000, {
-        timeoutError: () => new Error("Unfreeze CDP attach timed out."),
+        timeoutError: () => new Error("Lifecycle CDP attach timed out."),
       });
-      await withTimeout(session.send("Page.setWebLifecycleState", { state: "active" }), 1_000, {
-        timeoutError: () => new Error("Unfreeze timed out."),
+      await withTimeout(session.send("Page.setWebLifecycleState", { state }), 1_000, {
+        timeoutError: () => new Error("Lifecycle state change timed out."),
       });
-      this.frozenPages.delete(page);
+      if (state === "active") this.frozenPages.delete(page);
       return true;
     } catch {
       return false;
     } finally {
       if (session)
         await withTimeout(session.detach(), 500, {
-          timeoutError: () => new Error("Unfreeze detach timed out."),
+          timeoutError: () => new Error("Lifecycle CDP detach timed out."),
         }).catch(() => undefined);
     }
   }
@@ -2035,7 +1964,7 @@ class PlaywrightContextHandle implements BrowserContext {
         // Always through the named tab: a cached page may be a discarded tab's placeholder, which
         // only activation loads with its own history and state.
         const page = await this.wakeNamed(surfaceId, deadline, signal);
-        if (this.frozenPages.has(page) && !(await this.unfreezeRestoredPage(page))) {
+        if (this.frozenPages.has(page) && !(await this.setLifecycleState(page, "active"))) {
           throw new Error("Restored tab remained frozen and could not be unfrozen.");
         }
         await this.ensurePagePolicyOnRestoredPage(page);
@@ -2168,14 +2097,9 @@ class PlaywrightContextHandle implements BrowserContext {
     this.reconcileAbort = undefined;
     this.activeWake?.giveUp();
     for (const wake of this.parkedWaiters.splice(0)) wake();
-    if (this.reconcileFallbackTimer) {
-      clearTimeout(this.reconcileFallbackTimer);
-      this.reconcileFallbackTimer = undefined;
-    }
-    if (this.removalTimer) {
-      clearTimeout(this.removalTimer);
-      this.removalTimer = undefined;
-    }
+    clearTimeout(this.reconcileFallbackTimer);
+    clearTimeout(this.removalTimer);
+    this.reconcileFallbackTimer = this.removalTimer = undefined;
     this.restored.clear();
     this.claimingTitles.clear();
     this.sleepingByToken.clear();
@@ -2246,6 +2170,10 @@ class PlaywrightContextHandle implements BrowserContext {
       this.sleepingByToken.delete(token.tokenId);
       if (this.sleepingTitles.get(title) === token.tokenId) this.sleepingTitles.delete(title);
     };
+    const detachBounded = () =>
+      withTimeout(detach(), nameTargetMs, {
+        timeoutError: () => new Error("Sleep detach timed out."),
+      }).catch(() => undefined);
     try {
       await this.onLane(title, async () => {
         const deadline = performance.now() + 2 * nameTargetMs;
@@ -2270,17 +2198,13 @@ class PlaywrightContextHandle implements BrowserContext {
         ) {
           // The tab cannot be named, so it could not be found again: it closes and wakes by address.
           forget();
-          await withTimeout(detach(), nameTargetMs, {
-            timeoutError: () => new Error("Sleep detach timed out."),
-          }).catch(() => undefined);
+          await detachBounded();
           await this.closePageWithEvidence(page);
           return;
         }
         if (row.active) await this.activatePrivateAnchor();
-        await this.freezeBeforeDiscard(page);
-        await withTimeout(detach(), nameTargetMs, {
-          timeoutError: () => new Error("Sleep detach timed out."),
-        }).catch(() => undefined);
+        await this.setLifecycleState(page, "frozen");
+        await detachBounded();
         await this.lifecycle!.discardByTabId(row.tabId).catch(() => null);
         const after = await this.read(performance.now() + 2 * nameTargetMs);
         const asleep = after ? findNamed(after, title) : null;
