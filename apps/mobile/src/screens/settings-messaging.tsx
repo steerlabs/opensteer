@@ -6,6 +6,7 @@ import {
   connectedAgentRow,
   connectionsRead,
   messagingAccountView,
+  messagingComputers,
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
@@ -166,7 +167,7 @@ function Messaging({
     label: string,
     onPress: () => void,
     destructive = false,
-  ): NativeSettingsRow => ({
+  ): Extract<NativeSettingsRow, { kind: "button" }> => ({
     key,
     kind: "button",
     label,
@@ -239,6 +240,8 @@ function Messaging({
         ),
       );
       const computer = provider.transportKinds.includes("computer");
+      // The Mac a computer provider is set up on; empty when none can do it.
+      let chosen = "";
       if (computer) {
         rows.push(
           text(
@@ -246,52 +249,54 @@ function Messaging({
             "Choose the Mac signed into Messages with the bot's Apple account. Once it is connected, link your own iMessage account with a code, then add a chat.",
           ),
         );
+        // Which Mac can do it: the web's rule, shared. None says what to do.
+        const eligible = messagingComputers(host.getSnapshot().machines, provider);
+        chosen = eligible.some((m) => m.id === runnerId) ? runnerId : (eligible[0]?.id ?? "");
         rows.push(
-          ...host
-            .getSnapshot()
-            .machines.filter((m) => m.allowedModules.includes("messaging"))
-            .map((m) =>
-              button(m.id, `${m.id === runnerId ? "✓ " : ""}${m.name}`, () => setRunner(m.id)),
-            ),
+          ...(eligible.length === 0
+            ? [text("no-mac", agentWords("messaging.computer.none"))]
+            : eligible.map((m) =>
+                button(m.id, `${m.id === chosen ? "✓ " : ""}${m.name}`, () => setRunner(m.id)),
+              )),
         );
       }
-      rows.push(
-        button("save", repair ? "Replace credentials" : "Connect", () => {
-          const idempotencyKey = mutationIdempotencyKey("channel-connect");
-          const section = `setup:${provider.provider}:${repair ?? "new"}`;
-          if (repair)
-            dispatch(
-              {
-                type: "channel.connection.credentials.replace",
-                connectionId: repair,
-                credentials,
-                idempotencyKey,
-              },
-              section,
-            );
-          else if (computer)
-            dispatch(
-              {
-                type: "channel.connection.computer.create",
-                provider: provider.provider,
-                runnerId,
-                idempotencyKey,
-              },
-              section,
-            );
-          else
-            dispatch(
-              {
-                type: "channel.connection.create",
-                provider: provider.provider,
-                credentials,
-                routingMode: "dedicated",
-                idempotencyKey,
-              },
-              section,
-            );
-        }),
-      );
+      const connect = button("save", repair ? "Replace credentials" : "Connect", () => {
+        const idempotencyKey = mutationIdempotencyKey("channel-connect");
+        const section = `setup:${provider.provider}:${repair ?? "new"}`;
+        if (repair)
+          dispatch(
+            {
+              type: "channel.connection.credentials.replace",
+              connectionId: repair,
+              credentials,
+              idempotencyKey,
+            },
+            section,
+          );
+        else if (computer)
+          dispatch(
+            {
+              type: "channel.connection.computer.create",
+              provider: provider.provider,
+              runnerId: chosen,
+              idempotencyKey,
+            },
+            section,
+          );
+        else
+          dispatch(
+            {
+              type: "channel.connection.create",
+              provider: provider.provider,
+              credentials,
+              routingMode: "dedicated",
+              idempotencyKey,
+            },
+            section,
+          );
+      });
+      // Nothing is sent without a Mac that can do it.
+      rows.push(computer && !repair && chosen === "" ? { ...connect, disabled: true } : connect);
       rows.push(
         button("cancel", "Cancel", () => {
           setCredentials({});
@@ -303,6 +308,8 @@ function Messaging({
       const footer = footerFor(section);
       sections.push({ key: section, title: provider.label, rows, ...(footer ? { footer } : {}) });
     }
+    // The last read failed: what is shown is the answer before it.
+    const stale = loaded !== null;
     for (const account of data.accounts) {
       const manifest = data.providers.find((p) => p.provider === account.provider);
       const providerLabel = manifest?.label ?? account.provider;
@@ -423,7 +430,24 @@ function Messaging({
       sections.push({
         key: account.id,
         title: account.displayName,
-        rows,
+        // A read that failed leaves the last answer on screen, never as current, and offers
+        // nothing to press on it, as the web does.
+        rows: stale
+          ? rows.flatMap((row): NativeSettingsRow[] =>
+              row.key === "status"
+                ? [
+                    {
+                      key: "status",
+                      kind: "status",
+                      tone: "neutral",
+                      label: agentWords("messaging.status.stale"),
+                    },
+                  ]
+                : row.kind === "button"
+                  ? []
+                  : [row],
+            )
+          : rows,
         ...(footer ? { footer } : {}),
       });
       // Only a read answer says an account has no chat.

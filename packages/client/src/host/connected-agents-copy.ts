@@ -239,6 +239,8 @@ export const connectedAgentsCopy = {
   "messaging.me.code":
     "Send {code} to {account} in a direct message from your own {provider} account. It works once, until {time}. Nothing is said in the chat; this page shows your account once it’s linked.",
   "messaging.me.replaces": "Linking another account replaces {identity} as you.",
+  "messaging.computer.none":
+    "No online Mac of yours has Messages turned on yet. Turn it on from that Mac’s Devices page first.",
   "messaging.me.whenResumed": "Once this account is resumed, sending the code links your account.",
   "messaging.chats.title": "Chats",
   "messaging.chats.empty": "No chat on this account yet.",

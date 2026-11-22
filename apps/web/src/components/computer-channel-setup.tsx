@@ -1,6 +1,11 @@
 import { useState, type FormEvent } from "react";
 import type { ChannelProviderManifest } from "@opensteer/channel-core";
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+import {
+  agentWords,
+  messagingComputers,
+  mutationIdempotencyKey,
+  type HostClient,
+} from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
 import { act, failureWords } from "./use-action.js";
 
@@ -28,12 +33,8 @@ export function ComputerChannelSetup({
   readonly onCreated: (created: Created) => void;
   readonly provider: ChannelProviderManifest;
 }) {
-  const eligible = machines.filter(
-    (machine) =>
-      machine.status === "online" &&
-      machine.modules.messaging !== undefined &&
-      (machine.apps ?? []).some(({ definitionId }) => definitionId === provider.computerApp),
-  );
+  // Which Mac can do it: the one rule the phone uses too.
+  const eligible = messagingComputers(machines, provider);
   const [runnerId, setRunnerId] = useState(eligible[0]?.id ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,8 +77,7 @@ export function ComputerChannelSetup({
       </p>
       {eligible.length === 0 ? (
         <p className="notice" role="status">
-          No online Mac of yours has Messages turned on yet. Turn it on from that Mac&apos;s Devices
-          page first.
+          {agentWords("messaging.computer.none")}
         </p>
       ) : (
         <>

@@ -255,6 +255,19 @@ describe("Messaging", () => {
       );
       expect(page.textContent).not.toContain("No messaging account yet");
       expect(page.textContent).not.toContain("Workshop");
+      // Its first read failed too: Try again reads again.
+      const read = vi.fn();
+      const rpc = client.rpc;
+      Object.defineProperty(client, "rpc", {
+        value: new Proxy(rpc, {
+          get: (target, key) => {
+            if (key === "channels.get") read();
+            return Reflect.get(target, key);
+          },
+        }),
+      });
+      await act(async () => button(page, "Try again").click());
+      await vi.waitFor(() => expect(read).toHaveBeenCalled());
     } finally {
       client.dispose();
     }

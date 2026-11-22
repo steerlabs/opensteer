@@ -1,4 +1,5 @@
-import type { AgentConnection } from "@opensteer/protocol";
+import type { ChannelProviderManifest } from "@opensteer/channel-core";
+import type { AgentConnection, MachineSummary } from "@opensteer/protocol";
 import type { ConnectedAgentPhase } from "./connected-agent-view.js";
 import { agentWords } from "./connected-agents-copy.js";
 
@@ -148,4 +149,20 @@ export function pausedNote(pausedMessages: string | undefined): string {
     : pausedMessages === "lost"
       ? agentWords("messaging.pausedNote", { sent: agentWords("chat.paused.lost") })
       : agentWords("messaging.pausedNoteUnknown");
+}
+
+/**
+ * The Macs a computer provider (iMessage) can be set up on, the same on the web and the phone:
+ * online, with Messages turned on for it, and with the provider's app.
+ */
+export function messagingComputers<M extends MachineSummary>(
+  machines: readonly M[],
+  provider: Pick<ChannelProviderManifest, "computerApp">,
+): readonly M[] {
+  return machines.filter(
+    (machine) =>
+      machine.status === "online" &&
+      machine.modules.messaging !== undefined &&
+      (machine.apps ?? []).some(({ definitionId }) => definitionId === provider.computerApp),
+  );
 }

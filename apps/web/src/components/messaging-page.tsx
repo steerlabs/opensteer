@@ -472,7 +472,10 @@ export function ChannelOverview({
     return (
       <p className="notice notice--error" role="alert">
         <Icon name="alert-circle" />
-        <span>{agentWords("messaging.readFailed")}</span>
+        <span>{agentWords("messaging.readFailed")}</span>{" "}
+        <button className="btn btn--small" onClick={onRetry} type="button">
+          {agentWords("common.tryAgain")}
+        </button>
       </p>
     );
   if (!dashboard)

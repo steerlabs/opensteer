@@ -222,8 +222,13 @@ it.each(["ios", "android"])("sends every Messaging change from the phone on %s",
       "Choose the Mac signed into Messages with the bot's Apple account. Once it is connected, link your own iMessage account with a code, then add a chat.",
     ).kind,
   ).toBe("text");
-  await press("Connect");
-  expect(commands.at(-1)).toMatchObject({ type: "channel.connection.computer.create" });
+  // No Mac here can run it: the page says what to do, and Connect sends nothing.
+  expect(
+    row(
+      "No online Mac of yours has Messages turned on yet. Turn it on from that Mac’s Devices page first.",
+    ).kind,
+  ).toBe("text");
+  expect(row("Connect")).toMatchObject({ disabled: true });
   await press("Cancel");
   await press("Fix setup");
   await input("Bot user OAuth token", "replacement");
@@ -471,6 +476,88 @@ it.each(["ios", "android"])(
     await vi.waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(before));
     await press("Slack");
     expect(rows().some((r) => r.label === "Shared bot")).toBe(false);
+  },
+);
+
+it.each(["ios", "android"])(
+  "after a read that failed, each account reads Not read just now and offers no control, on %s",
+  async (os) => {
+    state.os = os;
+    let fail = false;
+    await openChats("chats", (rpc) => {
+      const read = rpc["channels.get"];
+      Object.defineProperty(rpc, "channels.get", {
+        value: async (input: Parameters<typeof read>[0]) => {
+          if (fail) throw new Error("down");
+          return read(input);
+        },
+        configurable: true,
+      });
+    });
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "Connected")).toBe(true));
+    fail = true;
+    await press("Refresh");
+    await vi.waitFor(() =>
+      expect(footers().map((f) => f.text)).toContain("Couldn’t read your messaging accounts."),
+    );
+    const statuses = rows().filter((r) => r.kind === "status");
+    expect(statuses.map((r) => r.label)).toEqual([
+      "Not read just now",
+      "Not read just now",
+      "Not read just now",
+    ]);
+    const controls = [
+      "Pause",
+      "Resume",
+      "Check again",
+      "Fix setup",
+      "Remove account",
+      "Link my account",
+      "Link another account",
+    ];
+    expect(rows().filter((r) => controls.includes(r.label))).toEqual([]);
+  },
+);
+
+it.each(["ios", "android"])(
+  "offers iMessage only on a Mac that can run it, and sends no empty Mac, on %s",
+  async (os) => {
+    state.os = os;
+    await openChats("chats");
+    const app = mockConnectedAgents("chats").channels!.providers.find(
+      ({ provider }) => provider === "imessage",
+    )!.computerApp!;
+    const mac = (id: string, name: string, extra: object) => ({
+      ...host.getSnapshot().machines[0],
+      id,
+      name,
+      status: "online",
+      allowedModules: ["messaging"],
+      modules: { messaging: {} },
+      apps: [{ definitionId: app }],
+      ...extra,
+    });
+    const snapshot = host.getSnapshot();
+    vi.spyOn(host, "getSnapshot").mockReturnValue({
+      ...snapshot,
+      machines: [
+        mac("rnr_00000000-0000-4000-8000-0000000000a1", "Studio Mac", {}),
+        mac("rnr_00000000-0000-4000-8000-0000000000a2", "Asleep Mac", { status: "offline" }),
+        mac("rnr_00000000-0000-4000-8000-0000000000a3", "Mac without Messages", { apps: [] }),
+      ],
+    } as never);
+    await vi.waitFor(() => expect(rows().some((r) => r.label === "iMessage")).toBe(true));
+    await press("iMessage");
+    const macs = rows().filter((r) => r.kind === "button" && r.label.includes("Mac"));
+    expect(macs.map((r) => r.label.replace("✓ ", ""))).toEqual(["Studio Mac"]);
+    const dispatch = vi.spyOn(host, "dispatch").mockRejectedValue(new Error("Keep the state"));
+    await press("Connect");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "channel.connection.computer.create",
+        runnerId: "rnr_00000000-0000-4000-8000-0000000000a1",
+      }),
+    );
   },
 );
 
