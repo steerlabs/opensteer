@@ -17,12 +17,21 @@ import {
   CloudComputerBootReleaseSchema,
   CloudComputerBootResponseSchema,
   CloudComputerDesiredSchema,
-  CloudComputerEgressSchema,
   CloudComputerManagedHomeSchema,
   CloudComputerEgressAddressSchema,
   type CloudComputerPreparationStep,
   CloudComputerIdSchema,
   CloudComputerSnapshotSchema,
+  type BrowserPoolHostBootCompleteRequest,
+  type BrowserPoolHostBootRequest,
+  type BrowserPoolHostCheck,
+  type BrowserPoolHostId,
+  type BrowserPoolHostReplaceUnreadyRequest,
+  type BrowserPoolHostReport,
+  type BrowserPoolSlotBumpTermRequest,
+  type BrowserPoolSlotCheck,
+  type BrowserPoolSlotId,
+  type BrowserPoolSlotReport,
   type CloudComputerBackupReport,
   type CloudComputerBootCompleteRequest,
   type CloudComputerCheck,
@@ -32,13 +41,21 @@ import {
   type CloudComputerId,
   type CloudComputerReport,
   type CloudComputerView,
+  type ManagedBrowserPoolRegistrationRequest,
   type WorkAssignmentId,
   type WorkHomeMarker,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
+import { BrowserPoolStore } from "./pool-store.js";
+import {
+  egressEndpointInvalidReason,
+  normalizeEgressEndpoint,
+  validateEgressCredential,
+  validateEgressUpstreamUrl,
+} from "./egress-validation.js";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import { z } from "zod";
-import { DeploymentIdSchema, HostKeyFingerprintSchema } from "@opensteer/core";
+import { DeploymentIdSchema, HostKeyFingerprintSchema, type DeploymentId } from "@opensteer/core";
 import type { HostDiscoveryEnvelope } from "@opensteer/deployment-authority";
 import {
   sql,
@@ -133,12 +150,21 @@ export class CloudComputerStore {
   readonly #db: Database;
   readonly #options: StoreOptions;
   readonly #now: () => Date;
+  readonly #pool: BrowserPoolStore;
   #offerValid = false;
 
   constructor(database: Database, options: StoreOptions) {
     this.#db = database;
     this.#options = options;
     this.#now = options.now ?? (() => new Date());
+    this.#pool = new BrowserPoolStore({
+      db: database,
+      config: options.config,
+      cipher: options.cipher,
+      now: this.#now,
+      assignEgress: (tx, computerId) => this.#assignEgress(tx, computerId),
+      egressCredentials: (endpoint) => this.#egressCredentials(endpoint),
+    });
   }
 
   get plan() {
@@ -829,6 +855,7 @@ export class CloudComputerStore {
         restoreSnapshot: null,
         deletionRequestedAt: null,
         ipv6Enabled: config.ipv6Enabled,
+        browserMode: config.browserPool ? "pool" : "local",
         readinessStartedAt: now,
         phase: "provisioning",
         providerServerId: null,
@@ -847,6 +874,9 @@ export class CloudComputerStore {
         tombstonedAt: null,
       })
       .executeTakeFirst();
+    if (config.browserPool) {
+      await this.#pool.createSlotForComputer(tx, paid.id, now);
+    }
   }
 
   /**
@@ -884,6 +914,9 @@ export class CloudComputerStore {
           updatedAt: now,
         })
         .executeTakeFirst();
+      if (row.browserMode === "pool") {
+        await this.#pool.markComputerDeleted(tx, row.id, now);
+      }
       return;
     }
     const status =
@@ -1118,14 +1151,22 @@ export class CloudComputerStore {
       throw new ControlPlaneError("conflict", "The holder does not have an expired lease");
   }
 
-  async lease(holder: string, acquire: boolean): Promise<boolean> {
+  async lease(holder: string, acquire: boolean, poolConfigured?: boolean): Promise<boolean> {
     const now = this.#now();
     const expires = new Date(now.getTime() + 10 * 60_000);
+    const poolFlag = poolConfigured ?? null;
     const result = acquire
       ? await sql`
-          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at)
-          values (true, ${holder}::uuid, ${expires})
-          on conflict (singleton) do update set holder = excluded.holder, expires_at = excluded.expires_at
+          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_configured)
+          values (true, ${holder}::uuid, ${expires}, ${poolFlag})
+          on conflict (singleton) do update set
+            holder = excluded.holder,
+            expires_at = excluded.expires_at,
+            pool_configured = case
+              when ${poolFlag}::boolean is not null then ${poolFlag}::boolean
+              when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_configured
+              else null
+            end
           where cloud_computer_provisioner_lease.expires_at <= ${now}
              or cloud_computer_provisioner_lease.holder = excluded.holder
           returning holder
@@ -1481,22 +1522,28 @@ export class CloudComputerStore {
     await this.#db.transaction().execute(async (tx) => {
       const row = await tx
         .selectFrom("cloudComputers")
-        .select(["vmDestroyedAt", "backupsUnreadableAt", "backupKeyProject"])
+        .select([
+          "vmDestroyedAt",
+          "backupsUnreadableAt",
+          "backupKeyProject",
+          "browserMode",
+          "browserSlotErasedAt",
+        ])
         .where("id", "=", id)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row?.vmDestroyedAt || row.backupsUnreadableAt) return;
       await this.#vault(row.backupKeyProject ?? undefined).destroy(id);
       const now = this.#now();
+      const settled = row.browserMode !== "pool" || row.browserSlotErasedAt !== null;
       await tx
         .updateTable("cloudComputers")
         .where("id", "=", id)
         .set({
-          phase: "deleted",
           backupKeyVersion: null,
           backupsUnreadableAt: now,
-          tombstonedAt: now,
           updatedAt: now,
+          ...(settled ? { phase: "deleted", tombstonedAt: now } : {}),
         })
         .executeTakeFirstOrThrow();
     });
@@ -1649,7 +1696,9 @@ export class CloudComputerStore {
           .set(credentials)
           .executeTakeFirstOrThrow();
       }
-      const endpoint = await this.#assignEgress(tx, id);
+      const pooled = row.browserMode === "pool";
+      const endpoint = pooled ? undefined : await this.#assignEgress(tx, id);
+      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
       const marker = await workMarker(tx, row.workAssignmentId);
       const { cipher } = this.#options;
       const backup = await tx
@@ -1697,7 +1746,8 @@ export class CloudComputerStore {
         ...(this.#options.config.releaseManifestUrl
           ? { releaseManifestUrl: this.#options.config.releaseManifestUrl }
           : {}),
-        ...(endpoint ? { egress: this.#egressCredentials(endpoint) } : {}),
+        ...(pooled ? { browserPool: true } : {}),
+        ...(egress ? { egress } : {}),
         backup: {
           endpoint: backupEndpoint,
           bucket,
@@ -1712,37 +1762,52 @@ export class CloudComputerStore {
   }
 
   #egressCredentials(endpoint: Selectable<CloudComputerEgressEndpointTable>) {
-    return {
+    const password = this.#options.cipher.open(`egress:${endpoint.id}`, 1, endpoint.sealedPassword);
+    const normalized = normalizeEgressEndpoint({
       url: endpoint.url,
       username: endpoint.username,
-      password: this.#options.cipher.open(`egress:${endpoint.id}`, 1, endpoint.sealedPassword),
-    };
+      password,
+    });
+    return normalized.ok ? normalized.value : undefined;
   }
 
   async #assignEgress(tx: TransactionDb, id: CloudComputerId) {
     const endpoints = tx.selectFrom("cloudComputerEgressEndpoints").selectAll();
-    let endpoint = await endpoints.where("computerId", "=", id).executeTakeFirst();
-    if (!endpoint) {
-      endpoint = await endpoints
-        .where("computerId", "is", null)
-        .where("needsRotation", "=", false)
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .skipLocked()
-        .limit(1)
-        .executeTakeFirst();
-      if (endpoint) {
-        await tx
-          .updateTable("cloudComputerEgressEndpoints")
-          .set({ computerId: id })
-          .where("id", "=", endpoint.id)
-          .executeTakeFirst();
+    const assigned = await endpoints.where("computerId", "=", id).executeTakeFirst();
+    let endpoint: Selectable<CloudComputerEgressEndpointTable> | undefined;
+    if (assigned) {
+      // Y6: never serve an already-assigned row that fails the strict egress rule.
+      endpoint = this.#egressCredentials(assigned) ? assigned : undefined;
+    } else {
+      // Y6: scan free rows in id order with skipLocked and skip any legacy invalid row without assigning it.
+      let afterId: string | undefined;
+      while (!endpoint) {
+        let query = endpoints
+          .where("computerId", "is", null)
+          .where("needsRotation", "=", false)
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .skipLocked()
+          .limit(1);
+        if (afterId !== undefined) query = query.where("id", ">", afterId);
+        const candidate = await query.executeTakeFirst();
+        if (!candidate) break;
+        afterId = candidate.id;
+        if (this.#egressCredentials(candidate)) {
+          await tx
+            .updateTable("cloudComputerEgressEndpoints")
+            .set({ computerId: id })
+            .where("id", "=", candidate.id)
+            .executeTakeFirst();
+          endpoint = candidate;
+        }
       }
     }
     await tx
       .updateTable("cloudComputers")
       .set({ egressUnavailable: !endpoint })
       .where("id", "=", id)
+      .where("egressUnavailable", "!=", !endpoint)
       .executeTakeFirst();
     return endpoint;
   }
@@ -1810,13 +1875,16 @@ export class CloudComputerStore {
 
   async egressForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
-      await this.#requireBootedHome(tx, id, authorization, "share");
+      const row = await this.#requireBootedHome(tx, id, authorization, "share");
+      // T9: A pooled Cloud Computer's egress password is held only by its pool host.
+      if (row.browserMode === "pool") return {};
       const endpoint = await tx
         .selectFrom("cloudComputerEgressEndpoints")
         .selectAll()
         .where("computerId", "=", id)
         .executeTakeFirst();
-      return endpoint ? { egress: this.#egressCredentials(endpoint) } : {};
+      const egress = endpoint ? this.#egressCredentials(endpoint) : undefined;
+      return egress ? { egress } : {};
     });
   }
 
@@ -2649,13 +2717,21 @@ export class CloudComputerStore {
     password: string;
     publicAddress?: string;
   }): Promise<string> {
-    const parsed = CloudComputerEgressSchema.extend({
-      publicAddress: CloudComputerEgressAddressSchema.optional(),
-    }).safeParse(endpoint);
-    if (!parsed.success)
-      throw new ControlPlaneError("bad_request", "Invalid browser egress endpoint");
-    const { username, password, publicAddress } = parsed.data;
-    const url = new URL(parsed.data.url).origin;
+    const validatedUrl = validateEgressUpstreamUrl(endpoint.url);
+    if (!validatedUrl.ok) throw new ControlPlaneError("bad_request", validatedUrl.reason);
+    const validatedUsername = validateEgressCredential(endpoint.username, "username");
+    if (!validatedUsername.ok) throw new ControlPlaneError("bad_request", validatedUsername.reason);
+    const validatedPassword = validateEgressCredential(endpoint.password, "password");
+    if (!validatedPassword.ok) throw new ControlPlaneError("bad_request", validatedPassword.reason);
+    const parsedAddress = CloudComputerEgressAddressSchema.optional().safeParse(
+      endpoint.publicAddress,
+    );
+    if (!parsedAddress.success)
+      throw new ControlPlaneError("bad_request", "Invalid browser egress address");
+    const url = validatedUrl.value;
+    const username = validatedUsername.value;
+    const password = validatedPassword.value;
+    const publicAddress = parsedAddress.data;
     const cipher = this.#options.cipher;
     return this.#db.transaction().execute(async (tx) => {
       const id = randomUUID();
@@ -2737,11 +2813,10 @@ export class CloudComputerStore {
   }
 
   async rotateEgressEndpoint(id: string, credentials: { username: string; password: string }) {
-    const parsed = CloudComputerEgressSchema.pick({ username: true, password: true }).safeParse(
-      credentials,
-    );
-    if (!parsed.success)
-      throw new ControlPlaneError("bad_request", "Invalid browser egress credentials");
+    const validatedUsername = validateEgressCredential(credentials.username, "username");
+    if (!validatedUsername.ok) throw new ControlPlaneError("bad_request", validatedUsername.reason);
+    const validatedPassword = validateEgressCredential(credentials.password, "password");
+    if (!validatedPassword.ok) throw new ControlPlaneError("bad_request", validatedPassword.reason);
     const row = await this.#db
       .selectFrom("cloudComputerEgressEndpoints")
       .selectAll()
@@ -2752,7 +2827,7 @@ export class CloudComputerStore {
       row.computerId ||
       !row.needsRotation ||
       row.retired ||
-      this.#options.cipher.open(`egress:${id}`, 1, row.sealedPassword) === parsed.data.password
+      this.#options.cipher.open(`egress:${id}`, 1, row.sealedPassword) === validatedPassword.value
     ) {
       throw new ControlPlaneError(
         "conflict",
@@ -2766,8 +2841,8 @@ export class CloudComputerStore {
       .where("retired", "=", false)
       .where("sealedPassword", "=", row.sealedPassword)
       .set({
-        username: parsed.data.username,
-        sealedPassword: this.#options.cipher.seal(`egress:${id}`, 1, parsed.data.password),
+        username: validatedUsername.value,
+        sealedPassword: this.#options.cipher.seal(`egress:${id}`, 1, validatedPassword.value),
         needsRotation: false,
       })
       .executeTakeFirst();
@@ -2918,12 +2993,123 @@ export class CloudComputerStore {
   }
 
   async listEgressEndpoints() {
-    return this.#db
+    const rows = await this.#db
       .selectFrom("cloudComputerEgressEndpoints")
-      .select(["id", "url", "username", "computerId", "needsRotation", "publicAddress"])
+      .select([
+        "id",
+        "url",
+        "username",
+        "sealedPassword",
+        "computerId",
+        "needsRotation",
+        "publicAddress",
+      ])
       .where("retired", "=", false)
       .orderBy("id")
       .execute();
+    return rows.map(({ sealedPassword, ...row }) => {
+      const password = this.#options.cipher.open(`egress:${row.id}`, 1, sealedPassword);
+      const invalidReason = egressEndpointInvalidReason({
+        url: row.url,
+        username: row.username,
+        password,
+      });
+      return {
+        ...row,
+        ...(invalidReason ? { invalidReason } : {}),
+      };
+    });
+  }
+
+  desiredPoolHosts(after?: BrowserPoolHostId, limit?: number, probe?: boolean) {
+    return this.#pool.desiredHosts(after, limit, probe);
+  }
+
+  checkPoolHost(id: BrowserPoolHostId, check: BrowserPoolHostCheck) {
+    return this.#pool.checkPoolHost(id, check);
+  }
+
+  reportPoolHost(report: BrowserPoolHostReport) {
+    return this.#pool.reportPoolHost(report);
+  }
+
+  replaceUnenrolledPoolHost(id: BrowserPoolHostId, input: BrowserPoolHostReplaceUnreadyRequest) {
+    return this.#pool.replaceUnenrolledHost(id, input);
+  }
+
+  bootPoolHost(id: BrowserPoolHostId, input: BrowserPoolHostBootRequest) {
+    return this.#pool.bootPoolHost(id, input);
+  }
+
+  bootCompletePoolHost(id: BrowserPoolHostId, input: BrowserPoolHostBootCompleteRequest) {
+    return this.#pool.bootCompletePoolHost(id, input);
+  }
+
+  egressForPoolHost(
+    hostId: string,
+    body: unknown,
+    checkVerifiedSlotRateLimit?: (hostId: BrowserPoolHostId, slotId: BrowserPoolSlotId) => boolean,
+  ) {
+    return this.#pool.egressForPoolHost(hostId, body, checkVerifiedSlotRateLimit);
+  }
+
+  desiredPoolSlots(after?: BrowserPoolSlotId, limit?: number) {
+    return this.#pool.desiredSlots(after, limit);
+  }
+
+  checkPoolSlot(slotId: BrowserPoolSlotId, check: BrowserPoolSlotCheck) {
+    return this.#pool.checkPoolSlot(slotId, check);
+  }
+
+  bumpPoolSlotTerm(slotId: BrowserPoolSlotId, input: BrowserPoolSlotBumpTermRequest) {
+    return this.#pool.bumpPoolSlotTerm(slotId, input);
+  }
+
+  reportPoolSlot(report: BrowserPoolSlotReport) {
+    return this.#pool.reportPoolSlot(report);
+  }
+
+  registerHomeBrowserPoolKeys(
+    deploymentId: DeploymentId,
+    input: ManagedBrowserPoolRegistrationRequest,
+  ) {
+    return this.#pool.registerHomeBrowserPoolKeys(deploymentId, input);
+  }
+
+  browserPoolTargetForHome(deploymentId: DeploymentId) {
+    return this.#pool.browserPoolTargetForHome(deploymentId);
+  }
+
+  operatorListPoolHosts() {
+    return this.#pool.operatorListHosts();
+  }
+
+  operatorShowPoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorShowHost(id);
+  }
+
+  operatorDrainPoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorDrainHost(id);
+  }
+
+  operatorReplacePoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorReplaceHost(id);
+  }
+
+  operatorDeletePoolHost(id: BrowserPoolHostId) {
+    return this.#pool.operatorDeleteHost(id);
+  }
+
+  operatorListPoolSlots() {
+    return this.#pool.operatorListSlots();
+  }
+
+  operatorShowPoolSlot(slotId: BrowserPoolSlotId) {
+    return this.#pool.operatorShowSlot(slotId);
+  }
+
+  operatorRetryPoolSlot(slotId: BrowserPoolSlotId) {
+    return this.#pool.operatorRetrySlot(slotId);
   }
 }
 
