@@ -71,6 +71,8 @@ export interface DesktopPersonalDeploymentConfiguration {
 
 export interface LoadedDesktopConfiguration {
   readonly config: DesktopConfiguration;
+  /** Values in the environment that the app does not use, each said once in its log. */
+  readonly ignored: readonly { readonly name: string; readonly reason: string }[];
 }
 
 interface ReadDesktopConfigurationOptions {
@@ -204,15 +206,26 @@ export function readDesktopConfiguration(
     ),
   };
 
-  const extraAuthorities = optional(parsed.NODE_EXTRA_CA_CERTS);
+  // Node's own variable: one the app will not pass on is ignored, never a reason not to open.
+  const extraAuthoritiesValue = optional(parsed.NODE_EXTRA_CA_CERTS);
+  const extraAuthorities =
+    extraAuthoritiesValue && path.isAbsolute(extraAuthoritiesValue) ? extraAuthoritiesValue : null;
+  const ignored =
+    extraAuthoritiesValue && extraAuthorities === null
+      ? [
+          {
+            name: "NODE_EXTRA_CA_CERTS",
+            reason: "not an absolute path, so not passed to this Mac's Home",
+          },
+        ]
+      : [];
   return {
+    ignored,
     config: {
       accountUrl,
       browser,
       dataDirectory,
-      extraCertificateAuthorities: extraAuthorities
-        ? absolutePath(extraAuthorities, "NODE_EXTRA_CA_CERTS")
-        : null,
+      extraCertificateAuthorities: extraAuthorities,
       hostUrl,
       localExecution,
       mode,

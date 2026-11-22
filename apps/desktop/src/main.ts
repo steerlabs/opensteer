@@ -320,6 +320,8 @@ async function startDesktop(): Promise<void> {
     packaged: app.isPackaged,
     resourcesDirectory: process.resourcesPath,
   });
+  for (const value of loaded.ignored)
+    process.stdout.write(`${JSON.stringify({ event: "desktop.environment.ignored", ...value })}\n`);
   const privateFiles = openDesktopPrivateFilesystemSync({
     binary: loaded.config.localExecution.nativeFsHelperBinary,
     root: loaded.config.dataDirectory,

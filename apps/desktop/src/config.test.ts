@@ -227,10 +227,21 @@ describe("desktop configuration", () => {
         environment,
         packaged: false,
         resourcesDirectory,
-      }).config.extraCertificateAuthorities;
-    expect(read({})).toBeNull();
-    expect(read({ NODE_EXTRA_CA_CERTS: "/etc/company/roots.pem" })).toBe("/etc/company/roots.pem");
-    expect(() => read({ NODE_EXTRA_CA_CERTS: "roots.pem" })).toThrow(/NODE_EXTRA_CA_CERTS/u);
+      });
+    expect(read({}).config.extraCertificateAuthorities).toBeNull();
+    expect(
+      read({ NODE_EXTRA_CA_CERTS: "/etc/company/roots.pem" }).config.extraCertificateAuthorities,
+    ).toBe("/etc/company/roots.pem");
+    // A value the app will not pass on is Node's, not a reason to refuse to open: ignored, said once.
+    const relative = read({ NODE_EXTRA_CA_CERTS: "roots.pem" });
+    expect(relative.config.extraCertificateAuthorities).toBeNull();
+    expect(relative.ignored).toEqual([
+      {
+        name: "NODE_EXTRA_CA_CERTS",
+        reason: "not an absolute path, so not passed to this Mac's Home",
+      },
+    ]);
+    expect(read({}).ignored).toEqual([]);
   });
 
   it("rejects non-production mode in a packaged app", () => {
