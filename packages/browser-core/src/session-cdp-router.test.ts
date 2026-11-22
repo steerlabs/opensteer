@@ -2252,3 +2252,94 @@ describe("SessionCdpRouter under a connection: the standard lists, one tab's coo
     await own.router.close();
   });
 });
+
+describe("SessionCdpRouter nested messages: one decoder, and the rules where they are unpacked", () => {
+  const malformed = {
+    array: ['{"id":1,"method":"Page.crash","params":{}}'],
+    object: { id: 1, method: "Page.crash", params: {} },
+    unparsable: '{"id":1,"method":',
+    "non-string method": '{"id":1,"method":["Page.crash"]}',
+    "array params": '{"id":1,"method":"Page.crash","params":[]}',
+  } as const;
+
+  /** A script attachment (browser_use) or the session root (a Run's relay), attached to a page. */
+  async function relay(kind: "script" | "root") {
+    const backend = new FakeBackend();
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    if (kind === "script")
+      router.openScriptAttachment(
+        "a",
+        "script",
+        "seed",
+        { maxBytes: 64 * 1024, maxDepth: 16, maxEntries: 1024 },
+        () => undefined,
+      );
+    const send = (command: CdpCommand) =>
+      router
+        .send("a", { ...command, ...(kind === "script" ? { scriptAttachmentId: "script" } : {}) })
+        .catch((error: unknown) => error);
+    const { sessionId } = (await send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    // A child of the page, so that a page-level nested message has somewhere to go.
+    backend.channels.get("seed")!.results.set("Target.attachToTarget", { sessionId: "child-1" });
+    return { router, backend, send, sessionId, channel: backend.channels.get("seed")! };
+  }
+
+  for (const kind of ["script", "root"] as const)
+    it(`refuses a nested message that is not a JSON string of one command, for everyone (${kind})`, async () => {
+      const f = await relay(kind);
+      for (const connection of [true, false])
+        for (const [shape, message] of Object.entries(malformed)) {
+          const refused = await f.send({
+            method: "Target.sendMessageToTarget",
+            parameters: { sessionId: f.sessionId, message },
+            ...(connection ? { connection: true } : {}),
+          });
+          expect(refused, `${shape} ${connection}`).toMatchObject({
+            message: "Invalid nested CDP message.",
+          });
+        }
+      expect(f.channel.commands.map(({ method }) => method)).not.toContain("Page.crash");
+      await f.router.close();
+    });
+
+  for (const kind of ["script", "root"] as const)
+    it(`holds the standard lists itself for a command marked as a connection's (${kind})`, async () => {
+      const f = await relay(kind);
+      const outside = expect.stringMatching(
+        /^(Tracing\.start|Storage\.clearDataForOrigin|Page\.crash) is not available to a connected agent\./u,
+      );
+      for (const command of [
+        { method: "Tracing.start", parameters: {} },
+        { method: "Storage.clearDataForOrigin", parameters: {}, sessionId: f.sessionId },
+        { method: "Page.crash", parameters: {}, sessionId: f.sessionId },
+      ])
+        expect(await f.send({ ...command, connection: true }), command.method).toMatchObject({
+          code: "forbidden",
+          message: outside,
+        });
+      // The page auto-attach the runtime receives is limited, and unpaused.
+      await f.send({
+        method: "Target.setAutoAttach",
+        parameters: { autoAttach: true, waitForDebuggerOnStart: true },
+        sessionId: f.sessionId,
+        connection: true,
+      });
+      expect(
+        f.channel.commands.find(({ method }) => method === "Target.setAutoAttach")?.parameters,
+      ).toEqual({
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+      });
+      // The person's own agent: the same commands go out as before.
+      await f.send({ method: "Page.crash", parameters: {}, sessionId: f.sessionId });
+      expect(f.channel.commands.map(({ method }) => method)).toContain("Page.crash");
+      await f.router.close();
+    });
+});

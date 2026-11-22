@@ -504,3 +504,40 @@ it("limits a connection's page auto-attach for a runtime of any version, and ref
     }),
   );
 });
+
+it("refuses a nested message that is not a JSON string of one command, for a connection and the person's own agent", async () => {
+  const shapes = [
+    ['{"id":1,"method":"Page.crash","params":{}}'],
+    { id: 1, method: "Page.crash", params: {} },
+    '{"id":1,"method":',
+    '{"id":1,"method":["Page.crash"]}',
+  ];
+  for (const agentConnectionId of ["external", null]) {
+    const f = await fixture();
+    const socket = await f.connect(
+      f.tickets.issue({ ...claims, facts: { ...claims.facts, agentConnectionId } }),
+    );
+    const replies: Record<string, unknown>[] = [];
+    socket.on("message", (data) =>
+      replies.push(JSON.parse(String(data)) as Record<string, unknown>),
+    );
+    for (const [index, message] of shapes.entries())
+      socket.send(
+        JSON.stringify({
+          id: index + 1,
+          method: "Target.sendMessageToTarget",
+          params: { sessionId: "child", message },
+          sessionId: "page",
+        }),
+      );
+    await vi.waitFor(() => expect(replies).toHaveLength(shapes.length));
+    expect(replies).toEqual(
+      shapes.map((_, index) => ({
+        id: index + 1,
+        sessionId: "page",
+        error: { code: -32000, message: "Invalid nested CDP message." },
+      })),
+    );
+    expect(f.send, String(agentConnectionId)).not.toHaveBeenCalled();
+  }
+});

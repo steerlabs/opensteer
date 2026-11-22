@@ -118,6 +118,7 @@ function runnerTarget(options: {
   readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
+  readonly connectionCommands?: boolean;
   readonly tabRestoreVersion?: boolean;
   readonly environmentIds?: readonly EnvironmentId[];
   readonly label?: string;
@@ -169,6 +170,7 @@ function runnerTarget(options: {
             },
             localProfileStorage: fixtureStorage,
             main: true,
+            ...(options.connectionCommands ? { connectionCommands: true } : {}),
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
@@ -5673,6 +5675,7 @@ function freshService(options: {
   readonly personFill?: PersonFillVersion | undefined;
   readonly personal?: boolean;
   readonly sharedControl?: boolean;
+  readonly connectionCommands?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
@@ -5723,6 +5726,7 @@ function freshService(options: {
       personFill: options.personFill,
       editing: options.editing,
       clipboard: options.clipboard,
+      connectionCommands: options.connectionCommands === true,
     }),
   });
   cleanups.push(async () => service.close());
@@ -8984,10 +8988,11 @@ describe("work under a connection's authority never uses the clipboard or change
     repository: MemoryBrowserRepository,
     ownerId: UserId,
     agentBindingId: string,
+    connectionCommands = false,
   ) {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const service = freshService({ keys, runtime, repository });
+    const service = freshService({ keys, runtime, repository, connectionCommands });
     cleanups.push(async () => service.close());
     const authority = { agentBindingId, ownerId };
     // A connected agent works only in a saved profile, never in Guest.
@@ -9137,7 +9142,7 @@ describe("work under a connection's authority never uses the clipboard or change
     ],
   ] as const;
 
-  for (const binding of ["run:lineage", "trigger:lineage"])
+  for (const binding of ["run:lineage", "trigger:lineage", "watch:lineage"])
     it(`refuses a connection's ${binding.split(":")[0]} every method outside the standard lists before anything leaves the Home`, async () => {
       const ownerId = createId("user");
       const repository = new SelectedGrantRepository(ownerId);
@@ -9206,5 +9211,70 @@ describe("work under a connection's authority never uses the clipboard or change
     await expect(
       forwarded("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true }),
     ).resolves.toMatchObject({ parameters: { autoAttach: true, waitForDebuggerOnStart: true } });
+  });
+
+  const malformedNested = {
+    array: ['{"id":1,"method":"Page.crash","params":{}}'],
+    object: { id: 1, method: "Page.crash", params: {} },
+    unparsable: '{"id":1,"method":',
+    "non-string method": '{"id":1,"method":["Page.crash"]}',
+  } as const;
+
+  for (const [who, binding] of [
+    ["a connection's Run", "run:lineage"],
+    ["the person's own Run", "run:own"],
+  ] as const)
+    it(`refuses ${who} a nested message that is not a JSON string of one command, before anything leaves the Home`, async () => {
+      const ownerId = createId("user");
+      const repository =
+        binding === "run:own"
+          ? new MemoryBrowserRepository(ownerId)
+          : Object.assign(new SelectedGrantRepository(ownerId), { scope: "everything" as const });
+      const { cdp, runtime } = await attached(repository, ownerId, binding);
+      const settled = Object.values(malformedNested).map((message) =>
+        cdp
+          .request({
+            method: "Target.sendMessageToTarget",
+            parameters: { sessionId: "child", message },
+            sessionId: "cdp-page-1",
+          })
+          .then(
+            () => "answered",
+            (error: unknown) => error,
+          ),
+      );
+      const next = cdp.request({ method: "Browser.getVersion" });
+      const first = await runtime.nextCommand();
+      expect(first.command, "the first command to reach the runtime").toEqual({
+        method: "Browser.getVersion",
+      });
+      runtime.sendServer({ type: "cdp.result", requestId: first.requestId, result: {} });
+      await next;
+      for (const [index, outcome] of (await Promise.all(settled)).entries())
+        expect(outcome, Object.keys(malformedNested)[index]).toMatchObject({
+          code: "forbidden",
+          message: "Invalid nested CDP message.",
+        });
+    });
+
+  it("tells a runtime that holds the rules itself which commands are a connection's", async () => {
+    const send = async (binding: string, connectionCommands: boolean) => {
+      const ownerId = createId("user");
+      const repository =
+        binding === "run:own"
+          ? new MemoryBrowserRepository(ownerId)
+          : Object.assign(new SelectedGrantRepository(ownerId), { scope: "everything" as const });
+      const { cdp, runtime } = await attached(repository, ownerId, binding, connectionCommands);
+      const request = cdp.request({ method: "Browser.getVersion" });
+      const command = await runtime.nextCommand();
+      runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      await request;
+      return command.connection;
+    };
+    expect(await send("run:lineage", true)).toBe(true);
+    expect(await send("session:direct", true)).toBe(true);
+    // The person's own work, and any runtime that does not say it holds them, are sent nothing new.
+    expect(await send("run:own", true)).toBeUndefined();
+    expect(await send("run:lineage", false)).toBeUndefined();
   });
 });
