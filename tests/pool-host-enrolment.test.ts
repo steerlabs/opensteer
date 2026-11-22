@@ -58,14 +58,14 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
   describe("X1 profile-disk format-or-not decision table (decide-profile-disk)", () => {
     const validBlkid = [
       "DEVNAME=/dev/sdb",
-      "LABEL=opensteer-profiles",
+      "LABEL=osp-profiles",
       "UUID=11111111-2222-3333-4444-555555555555",
       "BLOCK_SIZE=4096",
       "TYPE=ext4",
       "USAGE=filesystem",
     ].join("\n");
     const validWipefs =
-      "0x438      ext4     11111111-2222-3333-4444-555555555555 opensteer-profiles";
+      "0x438      ext4     11111111-2222-3333-4444-555555555555 osp-profiles";
 
     it("formats and mounts a blank disk only when everEnrolled=false", () => {
       const res = runEnroll([
@@ -103,7 +103,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
       expect(res.stdout).toBe("refuse:enrolled-host-blank-disk");
     });
 
-    it("mounts an existing ext4 disk labeled opensteer-profiles on an enrolled host without formatting", () => {
+    it("mounts an existing ext4 disk labeled osp-profiles on an enrolled host without formatting", () => {
       const res = runEnroll([
         "decide-profile-disk",
         "--ever-enrolled",
@@ -121,7 +121,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
       expect(res.stdout).toBe("mount-only");
     });
 
-    it("mounts an existing ext4 disk labeled opensteer-profiles even when everEnrolled=false (X1 recovery after gen-1 formatted then failed)", () => {
+    it("mounts an existing ext4 disk labeled osp-profiles even when everEnrolled=false (X1 recovery after gen-1 formatted then failed)", () => {
       const res = runEnroll([
         "decide-profile-disk",
         "--ever-enrolled",
@@ -139,7 +139,7 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
       expect(res.stdout).toBe("mount-only");
     });
 
-    it("refuses an opensteer-profiles disk when the mount check reports failure", () => {
+    it("refuses an osp-profiles disk when the mount check reports failure", () => {
       const res = runEnroll([
         "decide-profile-disk",
         "--ever-enrolled",
@@ -186,11 +186,11 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
           "--blkid-rc",
           "0",
           "--blkid-out",
-          validBlkid.replace("LABEL=opensteer-profiles", "LABEL=foreign-data"),
+          validBlkid.replace("LABEL=osp-profiles", "LABEL=foreign-data"),
           "--wipefs-rc",
           "0",
           "--wipefs-out",
-          validWipefs.replace("opensteer-profiles", "foreign-data"),
+          validWipefs.replace("osp-profiles", "foreign-data"),
         ]);
         expect(wrongLabel.status).toBe(1);
         expect(wrongLabel.stdout).toBe("refuse:foreign-disk-signature");
@@ -205,11 +205,11 @@ describe("pool host enrolment script (apps/pool-agent/host/enroll-host.sh)", () 
         "--blkid-rc",
         "0",
         "--blkid-out",
-        "DEVNAME=/dev/sdb\nLABEL=opensteer-profiles\nTYPE=xfs",
+        "DEVNAME=/dev/sdb\nLABEL=osp-profiles\nTYPE=xfs",
         "--wipefs-rc",
         "0",
         "--wipefs-out",
-        "0x0        xfs      11111111-2222-3333-4444-555555555555 opensteer-profiles",
+        "0x0        xfs      11111111-2222-3333-4444-555555555555 osp-profiles",
       ]);
       expect(xfs.status).toBe(1);
       expect(xfs.stdout).toBe("refuse:foreign-disk-signature");

@@ -273,7 +273,7 @@ class FakePoolAgent {
             {
               op: "refused",
               code: "conflict",
-              message: `A ${sizeMib} MiB profile would make this host's profiles exceed their filesystem.`,
+              message: `A ${sizeMib} MiB profile would leave this host's profiles without room to fill in.`,
             },
             409,
           );

@@ -214,7 +214,8 @@ verify_profile_mount() {
     [[ ,$opts, == *,rw,* ]] || die "durable profile directory $OSP_PROFILES_ROOT is not mounted read-write ($opts)"
 }
 
-readonly PROFILE_DISK_LABEL=opensteer-profiles
+# Ext4 volume labels are limited to 16 bytes (`s_volume_name[16]`).
+readonly PROFILE_DISK_LABEL=osp-profiles
 
 mount_profile_disk() {
     # Boot-time mount ONLY (X1/T6): NEVER formats. Verifies the durable disk carries the

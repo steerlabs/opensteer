@@ -61,20 +61,21 @@ true`, `driver.egress.accountOrigin`, `driver.guestMode: "runtime"`, `relayUid` 
 
 ## Durable profile disk decision rule (X1 / T6)
 
-The durable profile disk self-identifies with ext4 label `opensteer-profiles`. Account supplies
-only `everEnrolled` (from `browser_pool_hosts.ever_enrolled`) so an automatically replaced
-never-enrolled host can recover whether its first boot failed before or after formatting, while a
-disk that could hold a person's profile is never formatted.
+The durable profile disk self-identifies with ext4 label `osp-profiles` (12 bytes, within ext4's
+16-byte volume label limit). Account supplies only `everEnrolled` (from
+`browser_pool_hosts.ever_enrolled`) so an automatically replaced never-enrolled host can recover
+whether its first boot failed before or after formatting, while a disk that could hold a person's
+profile is never formatted.
 
-| `everEnrolled`    | `blkid -o export -p` & `wipefs -n --noheadings`                               | Mountable? | Decision                                                                             |
-| ----------------- | ----------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------ |
-| `false`           | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)                 | n/a        | **`format-and-mount`** (`mkfs.ext4 -q -m 1 -L opensteer-profiles`, no `-f`/`-F`)     |
-| `false`           | `TYPE=ext4`, `LABEL=opensteer-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
-| `true`            | `TYPE=ext4`, `LABEL=opensteer-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
-| `false` or `true` | `TYPE=ext4`, `LABEL=opensteer-profiles`                                       | `false`    | **`refuse:unmountable-profile-disk`** (fail loudly; no `mkfs`; agent does not start) |
-| `true`            | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)                 | n/a        | **`refuse:enrolled-host-blank-disk`** (fail loudly; no `mkfs`; agent does not start) |
-| `false` or `true` | Any other filesystem, label, partition table, or multi-signature disk         | n/a        | **`refuse:foreign-disk-signature`** (fail loudly; nothing modified)                  |
-| `false` or `true` | `blkid` exit not in `{0, 2}` or `wipefs` exit non-zero                        | n/a        | **`refuse:probe-error`** (fail loudly; nothing modified)                             |
+| `everEnrolled`    | `blkid -o export -p` & `wipefs -n --noheadings`                         | Mountable? | Decision                                                                             |
+| ----------------- | ----------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------ |
+| `false`           | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)           | n/a        | **`format-and-mount`** (`mkfs.ext4 -q -m 1 -L osp-profiles`, no `-f`/`-F`)           |
+| `false`           | `TYPE=ext4`, `LABEL=osp-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
+| `true`            | `TYPE=ext4`, `LABEL=osp-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
+| `false` or `true` | `TYPE=ext4`, `LABEL=osp-profiles`                                       | `false`    | **`refuse:unmountable-profile-disk`** (fail loudly; no `mkfs`; agent does not start) |
+| `true`            | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)           | n/a        | **`refuse:enrolled-host-blank-disk`** (fail loudly; no `mkfs`; agent does not start) |
+| `false` or `true` | Any other filesystem, label, partition table, or multi-signature disk   | n/a        | **`refuse:foreign-disk-signature`** (fail loudly; nothing modified)                  |
+| `false` or `true` | `blkid` exit not in `{0, 2}` or `wipefs` exit non-zero                  | n/a        | **`refuse:probe-error`** (fail loudly; nothing modified)                             |
 
 ## Reboot and anti-fallback protection
 
@@ -82,7 +83,7 @@ disk that could hold a person's profile is never formatted.
   `OSP_AGENT_PORT`, `OSP_ADMIN_PORT`, `OSP_RELAY_PORT`, `OSP_PROFILE_DISK`, and
   `OSP_PROFILES_ROOT`. `opensteer-pool-host.service` runs `setup-host.sh boot` on every boot, which
   loads `host.env`, re-applies `nftables` with the persisted CIDRs and ports, verifies the disk
-  label is `ext4`/`opensteer-profiles`, and mounts it without ever formatting.
+  label is `ext4`/`osp-profiles`, and mounts it without ever formatting.
 - `opensteer-pool-agent.service` requires `opensteer-pool-host.service` and runs
   `ExecStartPre=/opt/opensteer-pool/setup-host.sh verify-profiles-mount` before every start,
   confirming with `findmnt` that `/var/lib/opensteer-pool/profiles` is mounted read-write from the
@@ -95,6 +96,6 @@ disk that could hold a person's profile is never formatted.
   disk. Inspect the VM's attached disk in Google Compute Engine before taking action; do not format.
 - **`refuse:foreign-disk-signature`:** The attached device holds a different filesystem, label, or
   partition table. Inspect with `blkid -p` and `wipefs -n`; verify the right disk is attached.
-- **`refuse:unmountable-profile-disk` or boot mount failure:** The `opensteer-profiles` filesystem
+- **`refuse:unmountable-profile-disk` or boot mount failure:** The `osp-profiles` filesystem
   failed to mount. Inspect with `lsblk`, `blkid`, and `fsck.ext4` (read-only `-n` first) before
   deciding whether to repair or replace the host.

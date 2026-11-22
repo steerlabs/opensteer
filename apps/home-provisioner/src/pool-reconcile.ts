@@ -863,7 +863,8 @@ export class PoolReconciler {
       this.#options.onError?.(error);
       if (isDefiniteAgentRefusal(error)) {
         const diskFull =
-          error.refusal === "conflict" && /exceed their filesystem/u.test(error.message);
+          error.refusal === "conflict" &&
+          /exceed their filesystem|without room to fill in/u.test(error.message);
         return {
           slotId,
           hostGeneration,

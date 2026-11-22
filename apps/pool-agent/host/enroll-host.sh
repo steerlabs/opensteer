@@ -24,17 +24,18 @@ readonly PROFILES_ROOT_DEFAULT="$STATE/profiles"
 readonly CREDENTIALS_ROOT_DEFAULT=/etc/opensteer-pool/credentials
 readonly AGENT_CONFIG_PATH=/etc/opensteer-pool/agent.json
 readonly ARTIFACTS_CACHE_PATH=/etc/opensteer-pool/release-artifacts.json
-readonly PROFILE_DISK_LABEL=opensteer-profiles
+# Ext4 volume labels are limited to 16 bytes (`s_volume_name[16]`).
+readonly PROFILE_DISK_LABEL=osp-profiles
 
 log() { printf 'enroll-host: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 # Pure X1/T6 format-or-not decision.
-# The disk self-identifies by its ext4 label (`opensteer-profiles`); Account says only whether
-# this host has ever enrolled (`everEnrolled`).
+# The disk self-identifies by its ext4 label (`osp-profiles`, <= 16 bytes); Account says only
+# whether this host has ever enrolled (`everEnrolled`).
 #
 # Prints one decision line to stdout:
-#   mount-only        (exit 0)  disk carries our ext4 label `opensteer-profiles` (any generation)
+#   mount-only        (exit 0)  disk carries our ext4 label `osp-profiles` (any generation)
 #   format-and-mount  (exit 0)  disk is completely blank (blkid + wipefs) AND everEnrolled=false
 #   refuse:<reason>   (exit 1)  in every other case (never format, change nothing)
 decide_profile_disk() {
