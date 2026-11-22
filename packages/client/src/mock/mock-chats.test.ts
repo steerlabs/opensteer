@@ -147,4 +147,53 @@ describe("the chats preview", () => {
       client.dispose();
     }
   });
+
+  it("keeps a refusal's code, reason and words at its dispatch boundary: connection.update", async () => {
+    const client = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
+    try {
+      const listed = await client.rpc["connections.list"]({ includeRevoked: true });
+      if (!listed.ok) throw new Error("No connections");
+      const team = listed.data.connections.find(({ label }) => label === "Slack · #team")!;
+      const stale = await client.rpc["commands.dispatch"]({
+        type: "connection.update",
+        connectionId: team.id,
+        expectedRevision: (team.grantRevision ?? 1) + 5,
+        accessMode: "auto",
+        idempotencyKey: mutationIdempotencyKey("parity"),
+      } as never);
+      expect(stale).toMatchObject({ ok: false, error: { code: "conflict" } });
+      const refused = await client.rpc["commands.dispatch"]({
+        type: "connection.update",
+        connectionId: team.id,
+        expectedRevision: team.grantRevision ?? 1,
+        grant: { scope: "everything" },
+        idempotencyKey: mutationIdempotencyKey("parity"),
+      } as never);
+      expect(refused).toMatchObject({
+        ok: false,
+        error: { code: "bad_request", reason: "bridge-anyone-grant" },
+      });
+      // The same through the client's own dispatch, as a screen sends it.
+      await expect(
+        client.dispatch({
+          type: "connection.update",
+          connectionId: team.id,
+          expectedRevision: team.grantRevision ?? 1,
+          grant: { scope: "everything" },
+          idempotencyKey: mutationIdempotencyKey("parity"),
+        } as never),
+      ).rejects.toMatchObject({ code: "bad_request", reason: "bridge-anyone-grant" });
+      await expect(
+        client.dispatch({
+          type: "connection.update",
+          connectionId: team.id,
+          expectedRevision: (team.grantRevision ?? 1) + 5,
+          accessMode: "auto",
+          idempotencyKey: mutationIdempotencyKey("parity"),
+        } as never),
+      ).rejects.toMatchObject({ code: "conflict" });
+    } finally {
+      client.dispose();
+    }
+  });
 });
