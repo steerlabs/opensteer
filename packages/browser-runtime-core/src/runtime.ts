@@ -1311,9 +1311,10 @@ export class BrowserRuntime implements NativePresentationSource {
               ),
             // Every page the session holds, a tab the person opened included, is
             // one its agents can list and attach to.
-            claimTarget: (targetId, openerId) =>
-              sessionRouter.claimTarget(claims.sessionId, targetId, openerId),
-            releaseTarget: (targetId) => sessionRouter.releaseTarget(claims.sessionId, targetId),
+            claimTarget: (targetId, openerId, woke) =>
+              sessionRouter.claimTarget(claims.sessionId, targetId, openerId, woke),
+            releaseTarget: (targetId, asleep) =>
+              sessionRouter.releaseTarget(claims.sessionId, targetId, asleep),
             // A person who started the browser from a view gets its first page
             // at that view's size, before anything loads there.
             initialViewport: claims.viewport

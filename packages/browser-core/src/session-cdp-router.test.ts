@@ -102,6 +102,67 @@ class FakeBackend implements BrowserCdpBackend {
 }
 
 describe("SessionCdpRouter", () => {
+  it("puts a tab the runtime woke in the place its slept target held in each lineage, only when the tab itself woke, and never after a close (run 12)", async () => {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    backend.targetInfos = ["person", "seed", "sibling"].map((targetId) => ({
+      targetId,
+      type: "page",
+    }));
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "person", async () => true, "/files/a");
+    router.claimTarget("a", "seed");
+    router.claimTarget("a", "sibling");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "first", seedTargetId: "seed" },
+    });
+    const other = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "second", seedTargetId: "sibling" },
+    });
+    const reach = (attachment: typeof client, targetId: string) =>
+      attachment
+        .send({ method: "Target.attachToTarget", parameters: { targetId, flatten: true } })
+        .then(
+          () => true,
+          (error: unknown) => (error as { code?: string }).code ?? error,
+        );
+    const page = (targetId: string) => backend.targetInfos.push({ targetId, type: "page" });
+    expect(await reach(client, "seed")).toBe(true);
+
+    // The runtime puts the seed to sleep and wakes the tab itself: the woken target is in its place.
+    router.releaseTarget("a", "seed", true);
+    page("seed-woken");
+    router.claimTarget("a", "seed-woken", undefined, { from: "seed", itself: true });
+    expect(await reach(client, "seed-woken")).toBe(true);
+    expect(await reach(other, "seed-woken")).toBe("forbidden");
+    expect(await reach(other, "sibling")).toBe(true);
+
+    // A page claimed with no wake, or naming a target that never slept in this lineage, gains nothing.
+    page("stranger");
+    router.claimTarget("a", "stranger", undefined, { from: "person", itself: true });
+    expect(await reach(client, "stranger")).toBe("forbidden");
+
+    // A wake that ends at the address is a new page: the slept place goes, nothing takes it.
+    router.releaseTarget("a", "seed-woken", true);
+    page("seed-fresh");
+    router.claimTarget("a", "seed-fresh", undefined, { from: "seed-woken", itself: false });
+    expect(await reach(client, "seed-fresh")).toBe("forbidden");
+    page("seed-late");
+    router.claimTarget("a", "seed-late", undefined, { from: "seed-woken", itself: true });
+    expect(await reach(client, "seed-late")).toBe("forbidden");
+
+    // A sleeping tab closed: its place ends, and no later page takes it.
+    router.releaseTarget("a", "sibling", true);
+    router.releaseTarget("a", "sibling");
+    page("sibling-after");
+    router.claimTarget("a", "sibling-after", undefined, { from: "sibling", itself: true });
+    expect(await reach(other, "sibling-after")).toBe("forbidden");
+  });
+
   it("scopes a connected client and its alias to the seed, creations, and their popups", async () => {
     const backend = new FakeBackend();
     backend.dedicatedContext = true;

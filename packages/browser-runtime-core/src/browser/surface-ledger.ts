@@ -80,8 +80,17 @@ interface SurfaceLedgerOptions {
    * Makes a page this ledger registers reachable by the session's agents. It
    * runs before the page is announced; throwing refuses the page.
    */
-  claimTarget?: (targetId: string, openerId?: string) => string | undefined | void;
-  releaseTarget?: (targetId: string) => void;
+  claimTarget?: (
+    targetId: string,
+    openerId?: string,
+    /**
+     * Only for this ledger's own wake of a tab it put to sleep, from its own record: the slept
+     * target, and whether the tab itself woke (not a fresh page opened at its address).
+     */
+    woke?: { readonly from: string; readonly itself: boolean },
+  ) => string | undefined | void;
+  /** `asleep`: the ledger put the tab to sleep; its target ends, the tab does not. */
+  releaseTarget?: (targetId: string, asleep?: boolean) => void;
   /** The size the session starts at, until the person's view gives it one. */
   initialViewport?: Viewport;
   rootPages?: readonly BrowserPage[];
@@ -564,7 +573,7 @@ export class SurfaceLedger {
         engine,
         bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
       };
-      this.detachLive(record);
+      this.detachLive(record, true);
       record.lease.endSleep(true);
       this.pages.destroy(live.page, "slept");
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
@@ -687,10 +696,11 @@ export class SurfaceLedger {
    * The tab lets go of its live page now: no lookup, operation or event
    * reaches it again. Native cleanup of the page is its owner's.
    */
-  private detachLive(record: SurfaceRecord): void {
+  private detachLive(record: SurfaceRecord, asleep = false): void {
     const live = record.live;
     this.pageIds.delete(live.page);
-    this.releaseTarget?.(live.targetId);
+    if (asleep) this.releaseTarget?.(live.targetId, true);
+    else this.releaseTarget?.(live.targetId);
     (record as TabRecord).live = null;
     void this.disposeLive(live).catch(() => undefined);
   }
@@ -1631,7 +1641,21 @@ export class SurfaceLedger {
         const size = requestedViewport ?? this.startingSize(opener);
         const openerId = opener ? this.pageIds.get(opener) : undefined;
         const openerRecord = openerId ? this.liveRecord(openerId) : undefined;
-        const creatorAttachmentId = this.claimTarget?.(targetId, openerRecord?.lastTargetId);
+        // A wake of a tab this ledger put to sleep: the woken target follows the slept one, by
+        // this record alone, only when the tab itself woke with its state; a page opened at its
+        // address instead is a new page (run 12).
+        const woke =
+          waking && waking.restore
+            ? {
+                from: waking.lastTargetId,
+                itself: waking.restore.engine != null && page.openedFresh !== true,
+              }
+            : undefined;
+        const creatorAttachmentId = this.claimTarget?.(
+          targetId,
+          openerRecord?.lastTargetId,
+          ...(woke ? [woke] : []),
+        );
         const answersPerson =
           openerRecord?.userActivity?.kind === "click" &&
           openerRecord.userActivitySequence > openerRecord.agentSequence;

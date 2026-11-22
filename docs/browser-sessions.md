@@ -66,7 +66,10 @@ to its right; a tab that wakes moves to the right end first. Chromium activates 
 closed one and puts a tab a page opens beside the active tab, in its group, so neither reaches a
 sleeping tab. No tab is discarded while it is the active tab, and a tab that something else made
 active loads by itself and is put back to sleep. A tab that still joins a sleeping tab's group
-carries its name without being that tab: its name is removed and it is an ordinary page. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab
+carries its name without being that tab: its name is removed and it is an ordinary page. A connected
+agent granted one tab and what descends from it keeps that tab across its sleep: the runtime's own
+record of the sleep, never anything a page can set, puts the woken tab in the slept one's place. A
+wake that ends at the tab's address instead opens a new page, which is outside that grant. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab
 sleeper reacts to container working set (`memory.current - inactive_file` against `memory.max`, or
 bare-Linux `MemTotal - MemAvailable` against `MemTotal`) — sleeping eligible tabs above 70% and
 stopping below 60%, evaluated on its timer and again before each new page is created: over the

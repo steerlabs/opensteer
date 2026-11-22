@@ -56,7 +56,8 @@ describe("SurfaceLedger", () => {
         // The destroy request is irreversible: the tab sleeps now, whatever the engine answers.
         expect(record.live).toBeNull();
         expect(ledger.stateOf(record.id)).toBe("suspended");
-        expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId);
+        // Released as asleep: the tab keeps its place in any lineage, for its own wake (run 12).
+        expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId, true);
         if (failure === "rejects") closing.reject(new Error("Close refused"));
         await vi.advanceTimersByTimeAsync(2_000);
         // Past its bound the sleep answers, its page still closing.
@@ -122,6 +123,46 @@ describe("SurfaceLedger", () => {
       await ledger.close();
     }
   });
+  it.each([
+    ["the tab itself wakes with its state", "restored", true],
+    ["a fresh page opens at its address", "fresh", false],
+    ["it slept with nothing to restore", "address", false],
+  ] as const)(
+    "tells the router of a sleep and of its own wake, from its own record: %s (run 12)",
+    async (_case, how, itself) => {
+      const page = new FakePage({ url: "https://lineage.test/" });
+      if (how !== "address") page.captureRestore = async () => ({ saved: true });
+      const context = new FakeContext([page]);
+      const claimTarget = vi.fn();
+      const releaseTarget = vi.fn();
+      const ledger = new SurfaceLedger(context, { claimTarget, releaseTarget });
+      await ledger.start();
+      await flushMicrotasks();
+      const id = ledger.snapshot()[0]!.id;
+      const slept = await page.targetId();
+      try {
+        expect(await ledger.sleep(id, () => null)).toBe(true);
+        expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept, true);
+        if (how === "fresh") {
+          const create = context.createPage.bind(context);
+          vi.spyOn(context, "createPage").mockImplementation(async (options) => {
+            const created = await create(options);
+            Object.assign(created, { openedFresh: true });
+            return created;
+          });
+        }
+        claimTarget.mockClear();
+        const woken = await ledger.wake(id);
+        expect(claimTarget).toHaveBeenCalledExactlyOnceWith(woken.targetId, undefined, {
+          from: slept,
+          itself,
+        });
+      } finally {
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
   it("sleeps a lease without closing its record and wakes once with the same identity", async () => {
     const page = new FakePage({ url: "https://sleep.test/", title: "Keep me" });
     const context = new FakeContext([page]);

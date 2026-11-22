@@ -1722,3 +1722,171 @@ it("sleeps and wakes a tab a connected agent works in as the runtime's own work,
   // After the wake the same client reaches the woken tab and is held to the same list.
   expect(await heldTo(woken.targetId)).toBe("kept");
 }, 90_000);
+
+/** A session wired as the runtime wires it: its router learns of sleeps and wakes (run 12). */
+async function lineageSetup(name: string) {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), `os-tab-sleep-${name}-`));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const sessionId = `session-${name}`;
+  const router = new SessionCdpRouter(launched.cdp);
+  cleanup.push(() => router.close());
+  const root = await launched.context.createPage();
+  const ledger = new SurfaceLedger(launched.context, {
+    claimTarget: (targetId, openerId, woke) =>
+      router.claimTarget(sessionId, targetId, openerId, woke),
+    releaseTarget: (targetId, asleep) => router.releaseTarget(sessionId, targetId, asleep),
+    rootPages: [root],
+  });
+  router.registerSession(
+    sessionId,
+    await root.targetId(),
+    (targetId) => ledger.resolveTarget(targetId),
+    directory,
+  );
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const lifecycle = (
+    launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+  ).contextHandle.lifecycle;
+  const open = async (id: string, site: number) => {
+    const surface = await ledger.openSurface();
+    const cdp = ledger.binding(surface.id)!.cdp;
+    await cdp.send("Page.navigate", { url: `${server.originForSite(site)}/article?id=${id}` });
+    await waitLoaded(cdp, "/article");
+    await evalValue(cdp, `sessionStorage.setItem("mark", ${JSON.stringify(id)})`);
+    return surface.id;
+  };
+  const target = (id: string) => ledger.binding(id as never)!.targetId;
+  /** A connected agent's client granted one tab and what descends from it. */
+  const agent = (attachmentId: string, seedTargetId: string) => {
+    const client = router.openStandardClient(sessionId, {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId, seedTargetId },
+    });
+    cleanup.push(async () => client.close());
+    return {
+      /** The page's mark, read through this client; throws when the tab is out of its reach. */
+      reach: async (targetId: string) => {
+        const { sessionId: cdpSessionId } = (await client.send({
+          method: "Target.attachToTarget",
+          parameters: { targetId, flatten: true },
+        })) as { sessionId: string };
+        return (
+          (await client.send({
+            method: "Runtime.evaluate",
+            parameters: { expression: `sessionStorage.getItem("mark")`, returnByValue: true },
+            sessionId: cdpSessionId,
+          })) as { result: { value: unknown } }
+        ).result.value;
+      },
+    };
+  };
+  const popup = async (fromId: string, id: string, site: number) => {
+    await ledger.binding(fromId as never)!.cdp.send("Runtime.evaluate", {
+      expression: `void window.open(${JSON.stringify(`${server.originForSite(site)}/article?id=${id}`)}, "_blank")`,
+      userGesture: true,
+    });
+    const surfaceId = await vi.waitFor(
+      () => {
+        const found = ledger
+          .snapshot()
+          .find((s) => ledger.binding(s.id)?.page.url().includes(`id=${id}`));
+        expect(found).toBeDefined();
+        return found!.id;
+      },
+      { timeout: 10_000, interval: 25 },
+    );
+    await waitLoaded(ledger.binding(surfaceId)!.cdp, "/article");
+    return surfaceId as string;
+  };
+  return { server, launched, router, ledger, lifecycle, open, target, agent, popup };
+}
+
+const outsideLineage = {
+  code: "forbidden",
+  message: "CDP target is outside this Browser Session.",
+};
+
+it("keeps a connected agent's lineage on its tab when the runtime puts the tab to sleep and wakes it, by the runtime's own record and nothing else (run 12)", async () => {
+  const f = await lineageSetup("lineage");
+  const a = await f.open("a", 1);
+  const b = await f.open("b", 2);
+  const c = await f.open("c", 3);
+  const agentA = f.agent("agent-a", f.target(a));
+  const agentB = f.agent("agent-b", f.target(b));
+  expect(await agentA.reach(f.target(a))).toBe("a");
+  await expect(agentA.reach(f.target(c))).rejects.toMatchObject(outsideLineage);
+  await expect(agentA.reach(f.target(b))).rejects.toMatchObject(outsideLineage);
+  expect(await agentB.reach(f.target(b))).toBe("b");
+  const slept = f.target(a);
+
+  expect(await f.ledger.sleep(a as never, () => null)).toBe(true);
+  // While it sleeps: a tab another page opened carries its sleep name, as a tab that joined its
+  // group does; and a tab opens at its address.
+  const title = (await f.lifecycle.inventory()).find((tab) => tab.url.includes("id=a"))!.identity!;
+  expect(title).toMatch(/^opensteer-sleep:/);
+  const newcomer = await f.popup(c, "newcomer", 4);
+  const newcomerTab = (await f.lifecycle.inventory()).find((tab) => tab.url.includes("newcomer"))!;
+  expect(await f.lifecycle.nameTab(newcomerTab.tabId, title)).toBe(true);
+  const sameAddress = await f.ledger.openSurface();
+  await f.ledger.binding(sameAddress.id)!.cdp.send("Page.navigate", {
+    url: `${f.server.originForSite(1)}/article?id=a`,
+  });
+  await waitLoaded(f.ledger.binding(sameAddress.id)!.cdp, "/article");
+
+  const woken = await f.ledger.wake(a as never);
+  await waitLoaded(woken.cdp, "/article");
+  expect(woken.targetId).not.toBe(slept);
+  // The same client reaches its tab again, with its state.
+  expect(await agentA.reach(woken.targetId)).toBe("a");
+  // Nothing else came into its lineage: not the newcomer, not the tab at its address, not a tab
+  // another page opened; what the woken tab opens descends from it.
+  await expect(agentA.reach(f.target(newcomer))).rejects.toMatchObject(outsideLineage);
+  await expect(agentA.reach(f.target(sameAddress.id))).rejects.toMatchObject(outsideLineage);
+  const fromC = await f.popup(c, "from-c", 5);
+  await expect(agentA.reach(f.target(fromC))).rejects.toMatchObject(outsideLineage);
+  const fromA = await f.popup(a, "from-a", 6);
+  expect(await agentA.reach(f.target(fromA))).toBeNull();
+  // The other agent's lineage is as it was.
+  expect(await agentB.reach(f.target(b))).toBe("b");
+  await expect(agentB.reach(woken.targetId)).rejects.toMatchObject(outsideLineage);
+}, 120_000);
+
+it("gives a connected agent no page in its lineage when its tab's wake ends at its address (run 12)", async () => {
+  const f = await lineageSetup("lineage-fresh");
+  const a = await f.open("a", 1);
+  const agentA = f.agent("agent-a", f.target(a));
+  expect(await agentA.reach(f.target(a))).toBe("a");
+  expect(await f.ledger.sleep(a as never, () => null)).toBe(true);
+  // The wake cannot activate its tab: the tab is removed with evidence and a fresh page opens at
+  // its address.
+  const activate = f.lifecycle.activateByTabId.bind(f.lifecycle);
+  f.lifecycle.activateByTabId = async () => ({ ok: false, tabId: null, discarded: false });
+  const woken = await f.ledger.wake(a as never);
+  f.lifecycle.activateByTabId = activate;
+  await waitLoaded(woken.cdp, "/article");
+  expect(woken.page.url()).toContain("id=a");
+  expect(await evalValue(woken.cdp, `sessionStorage.getItem("mark")`)).toBeNull();
+  // A new page, not the granted tab: outside the lineage, as any page it never had.
+  await expect(agentA.reach(woken.targetId)).rejects.toMatchObject(outsideLineage);
+  expect(
+    (
+      (await f.router
+        .openStandardClient("session-lineage-fresh", {
+          wholeContext: false,
+          connection: true,
+          lineage: { attachmentId: "agent-check", seedTargetId: woken.targetId },
+        })
+        .send({ method: "Target.getTargets" })) as { targetInfos: { targetId: string }[] }
+    ).targetInfos.map((t) => t.targetId),
+  ).toEqual([woken.targetId]);
+}, 90_000);

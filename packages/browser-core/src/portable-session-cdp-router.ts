@@ -207,6 +207,11 @@ interface ConnectionState extends TargetRoot {
   readonly connection: boolean;
   readonly standard?: StandardCdpAttachmentOptions;
   readonly lineagePages?: Set<string>;
+  /**
+   * Pages of this lineage the runtime put to sleep: their target ended, the tab did not. Each
+   * leaves when the runtime wakes that tab (and the woken target takes its place) or closes it.
+   */
+  readonly asleepLineage?: Set<string>;
   readonly script?: {
     id: string;
     root: string;
@@ -456,7 +461,9 @@ export class SessionCdpRouter {
       session,
       connection,
       ...(standard ? { standard } : {}),
-      ...(standard?.lineage ? { lineagePages: new Set([standard.lineage.seedTargetId]) } : {}),
+      ...(standard?.lineage
+        ? { lineagePages: new Set([standard.lineage.seedTargetId]), asleepLineage: new Set() }
+        : {}),
       ...(script ? { script } : {}),
       physicalWork: new Set(),
       settlement: { promise, resolve },
@@ -523,15 +530,32 @@ export class SessionCdpRouter {
    * Makes a page the session opened outside agent CDP, such as a tab the
    * person opened, reachable by that session's agents, and its popups with it.
    */
-  releaseTarget(sessionId: string, targetId: string): void {
+  releaseTarget(sessionId: string, targetId: string, asleep = false): void {
+    // A page the runtime puts to sleep keeps its place in each lineage that holds it, for its own
+    // wake to take over; any other release (a close, a failed wake) ends that place.
+    for (const connection of this.#sessions.get(sessionId)?.session.connections ?? []) {
+      if (asleep && connection.lineagePages?.has(targetId)) connection.asleepLineage?.add(targetId);
+      else if (!asleep) connection.asleepLineage?.delete(targetId);
+    }
     if (this.#ownerByTargetId.get(targetId)?.sessionId === sessionId) this.#releaseTarget(targetId);
   }
 
-  claimTarget(sessionId: string, targetId: string, openerId?: string): string | undefined {
+  /**
+   * `woke` is given only by the runtime's own wake of a tab it put to sleep, from its own record of
+   * that tab: `from` is the slept target, `itself` whether the tab itself woke (not a fresh page
+   * opened at its address). Then the woken target takes the slept one's place in each lineage that
+   * held it. Nothing a page can set decides this.
+   */
+  claimTarget(
+    sessionId: string,
+    targetId: string,
+    openerId?: string,
+    woke?: { readonly from: string; readonly itself: boolean },
+  ): string | undefined {
     this.#assertOpen();
     assertIdentifier(targetId, "CDP target ID");
     const state = this.#requireSession(sessionId);
-    return this.#claimTarget(state, targetId, undefined, true, openerId).creatorAttachmentId;
+    return this.#claimTarget(state, targetId, undefined, true, openerId, woke).creatorAttachmentId;
   }
 
   /**
@@ -1931,6 +1955,7 @@ export class SessionCdpRouter {
     parentId?: string,
     attachPage = true,
     openerId?: string,
+    woke?: { readonly from: string; readonly itself: boolean },
   ): TargetClaim {
     const existing = this.#ownerByTargetId.get(targetId);
     if (!existing) this.#assertTargetAvailable(targetId);
@@ -1950,6 +1975,12 @@ export class SessionCdpRouter {
         if (!lineage || !connection.lineagePages || !this.#canReach(connection, openerId)) continue;
         connection.lineagePages.add(targetId);
         claim.creatorAttachmentId ??= lineage.attachmentId;
+      }
+    }
+    if (woke) {
+      for (const connection of state.session.connections) {
+        if (!connection.asleepLineage?.delete(woke.from) || !woke.itself) continue;
+        connection.lineagePages?.add(targetId);
       }
     }
     if (parentId) claim.scriptParentId ??= parentId;
