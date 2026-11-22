@@ -3052,6 +3052,19 @@ integration("Browser pool Account service", () => {
         return computer;
       };
 
+      const waitForLockWaiters = async (expectedCount: number) => {
+        await vi.waitFor(async () => {
+          const result = await sql<{ count: string }>`
+            select count(*)::text as count
+            from pg_stat_activity
+            where datname = current_database()
+              and pid <> pg_backend_pid()
+              and wait_event_type = 'Lock'
+          `.execute(database);
+          expect(Number(result.rows[0]?.count ?? 0)).toBeGreaterThanOrEqual(expectedCount);
+        });
+      };
+
       // Order 1 (placement acquires browser_pool_hosts lock first):
       const ccB = await registerUnplacedSlot(2);
       const slotBeforeOrder1 = await database
@@ -3079,12 +3092,12 @@ integration("Browser pool Account service", () => {
       });
       await barrier1Held;
       const placementPromise1 = h.cloudStore.desiredPoolSlots();
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      await waitForLockWaiters(1);
       const deletePromise1 = h.cloudStore
         .operatorDeletePoolHost(hostId)
         .then(() => ({ ok: true as const }))
         .catch((error: unknown) => ({ ok: false as const, error }));
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      await waitForLockWaiters(2);
       releaseBarrier1();
 
       const [, , deleteOutcome1] = await Promise.all([
@@ -3142,9 +3155,9 @@ integration("Browser pool Account service", () => {
         .operatorDeletePoolHost(hostId)
         .then(() => ({ ok: true as const }))
         .catch((error: unknown) => ({ ok: false as const, error }));
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      await waitForLockWaiters(1);
       const placementPromise2 = h.cloudStore.desiredPoolSlots();
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      await waitForLockWaiters(2);
       releaseBarrier2();
 
       const [, deleteOutcome2] = await Promise.all([barrier2Tx, deletePromise2, placementPromise2]);
