@@ -316,14 +316,19 @@ async function run(command) {
       if (command.action === "write") {
         const marker = `/run/opensteer-run-marker-${process.pid}`;
         writeFileSync(marker, `${command.text}\n`);
+        // The guest was ended by a kill: its journal is replayed first, or the next mount's
+        // replay would roll the directory back past the marker.
+        spawnSync("e2fsck", ["-fy", file], { encoding: "utf8" });
         const out = spawnSync("debugfs", ["-w", "-R", `write ${marker} run-marker`, file], {
           encoding: "utf8",
         });
         rmSync(marker, { force: true });
         return { status: out.status };
       }
+      // A guest is ended by a kill: its journal is replayed first, as its next mount would.
+      const fsck = spawnSync("e2fsck", ["-fy", file], { encoding: "utf8" });
       const out = spawnSync("debugfs", ["-R", "cat run-marker", file], { encoding: "utf8" });
-      return { text: out.stdout.trim() };
+      return { text: out.stdout.trim(), fsck: fsck.status };
     }
     case "profiles-mount": {
       const out = spawnSync(
@@ -490,9 +495,15 @@ async function run(command) {
       // Round H, item (d): the agent requires an upstream and pulls each slot's from the
       // stand-in account service, into a root-only credentials root of its own.
       const value = JSON.parse(readFileSync(config, "utf8"));
-      value.driver.requireEgressUpstream = true;
-      value.driver.egress.accountOrigin = command.origin;
-      value.driver.credentialsRoot = "/etc/opensteer-pool/credentials";
+      if (command.off) {
+        delete value.driver.requireEgressUpstream;
+        delete value.driver.egress.accountOrigin;
+        value.driver.credentialsRoot = "/etc/opensteer-pool-bench";
+      } else {
+        value.driver.requireEgressUpstream = true;
+        value.driver.egress.accountOrigin = command.origin;
+        value.driver.credentialsRoot = "/etc/opensteer-pool/credentials";
+      }
       writeFileSync(config, JSON.stringify(value, null, 2), { mode: 0o600 });
       execFileSync("systemctl", ["restart", "opensteer-pool-agent.service"]);
       return { ok: true };

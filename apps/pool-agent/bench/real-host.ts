@@ -18,6 +18,7 @@ import {
   randomUUID,
   type KeyObject,
 } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { appendFileSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import {
@@ -1180,6 +1181,12 @@ async function pulledEgress(others: Slot[]) {
       await admin({ op: "delete", slotId: slot.id, term: slot.term, eraseProfile: true } as never),
     );
   const files = credentials.files as Record<string, { mode: string; uid: number } | null>;
+  // The slot proxy resolves a name itself and asks its upstream for the address it checked.
+  const exampleAddresses = new Set(
+    (await lookup("example.com", { all: true, family: 4 })).map((entry) => entry.address),
+  );
+  await helper({ cmd: "pull-mode", off: true });
+  await waitForAgent(others[0]!);
   emit({
     kind: "egress-pull",
     none: { start: noneStart, vmms: noneVmms.length, unit: noneUnit, request: noneRequest },
@@ -1191,6 +1198,7 @@ async function pulledEgress(others: Slot[]) {
       unit_after: unitAfter,
     },
     upstream: upstreamBefore,
+    example_addresses: [...exampleAddresses],
     upstream_after_removal: upstreamAfter.length - upstreamBefore.length,
     account,
     deleted,
@@ -1210,7 +1218,9 @@ async function pulledEgress(others: Slot[]) {
         (kind) => files[kind]?.mode === "600" && files[kind]?.uid === 0,
       ) &&
       upstreamBefore.some(
-        (row) => /^CONNECT example\.com:443 /u.test(row.line ?? "") && row.authOk,
+        (row) =>
+          row.authOk === true &&
+          exampleAddresses.has(/^CONNECT ([0-9.]+):443 /u.exec(row.line ?? "")?.[1] ?? ""),
       ) &&
       upstreamBefore.every((row) => row.line === undefined || row.authOk) &&
       httpsAfter !== "opaque" &&
