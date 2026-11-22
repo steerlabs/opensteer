@@ -2240,7 +2240,8 @@ function postgresSpec(
   };
 }
 
-function hostSpec(
+/** The Host's process as this supervisor starts it: its environment is all it is given. */
+export function hostSpec(
   release: VerifiedPersonalRuntimeRelease,
   manifest: PersonalDeploymentManifest,
   paths: PersonalDeploymentPreparedPaths,

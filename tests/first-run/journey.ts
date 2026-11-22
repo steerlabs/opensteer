@@ -40,6 +40,7 @@ import {
   phoneStepSettled,
   quitApp,
 } from "./remote.js";
+import { journeyAppEnvironment } from "./app-environment.js";
 import { phoneStepTitle, setupMoves } from "./setup-walk.js";
 import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
 import { desktopFirstScreenWords } from "../../apps/web/src/components/places/desktop-first-screen-words.js";
@@ -108,13 +109,17 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
       args: [desktop],
       cwd: desktop,
       env: {
-        ...process.env,
-        OPENSTEER_DESKTOP_ACCOUNT_URL: account.origin,
-        OPENSTEER_DESKTOP_DATA_DIR: data,
-        OPENSTEER_DESKTOP_MODE: "development",
-        OPENSTEER_DESKTOP_NATIVE_FS_HELPER: path.join(runtime, "bin", "opensteer-native-fs"),
-        OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: runtime,
-        OPENSTEER_DESKTOP_PORTAL_URL: account.portalOrigin,
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        ),
+        ...journeyAppEnvironment({
+          accountOrigin: account.origin,
+          dataDirectory: data,
+          portalOrigin: account.portalOrigin,
+          runtime,
+        }),
       },
       executablePath: createRequire(path.join(desktop, "package.json"))("electron") as string,
     });
