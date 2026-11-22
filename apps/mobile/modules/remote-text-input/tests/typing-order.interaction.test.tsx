@@ -571,6 +571,8 @@ describe("a person's caret moves and selections in the native field", () => {
       traced?.(turn);
       trace(`  <${turn}${turn === "action" ? ` ${labels.shift() ?? ""}` : ""}>`);
     };
+    /** The native field has taken every action and every answer: its text is the person's. */
+    const settledHere = () => oracle.caughtUp && harness.answers.length === 0;
     const does = async (step: string, act: Action, call: (field: NativeField) => void) => {
       steps.push(step);
       labels.push(step);
@@ -617,7 +619,7 @@ describe("a person's caret moves and selections in the native field", () => {
         if (native.selection.start === start && native.selection.end === end) return;
         const previous = native.selection;
         const caret = previous.start === previous.end && start === end;
-        if (!caret && !oracle.caughtUp) return;
+        if (!caret && !settledHere()) return;
         steps.push(start === end ? `moveSelection(${start})` : `moveSelection(${start}, ${end})`);
         const count = characters(
           native.text.slice(Math.min(previous.end, end), Math.max(previous.end, end)),
@@ -629,8 +631,9 @@ describe("a person's caret moves and selections in the native field", () => {
         return keyboard((f) => f.moveSelection(start, end));
       },
       /** UIKit's own replacement (an autocorrect), made when the native field has caught up. */
-      replaceRange: async (start: number, end: number, word: string) => {
-        if (!oracle.caughtUp) return;
+      replaceRange: async (start: number, end: number, word: string, ahead = false) => {
+        // `ahead`: made before an answer, on purpose (F5), where nothing waiting changes the text.
+        if (!(ahead ? oracle.caughtUp : settledHere())) return;
         const range = oracle.fromNative({ start, end });
         return does(
           `replaceRange(${start}, ${end}, ${said(word)})`,
@@ -640,7 +643,7 @@ describe("a person's caret moves and selections in the native field", () => {
       },
       /** UIKit's Backspace naming a combining mark alone (caught up): the page's Backspace. */
       deleteMark: async (at: number) =>
-        oracle.caughtUp &&
+        settledHere() &&
         does(
           `deleteMark(${at})`,
           (p) => p.backspace(),
@@ -743,11 +746,14 @@ describe("a person's caret moves and selections in the native field", () => {
     const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
     // The second generator's own draw, kept: its "display" is now a real target without range
     // edits (baseline). The third draws any of the product's targets.
-    const name: keyof typeof targets = third
+    // OPENSTEER_TYPING_TARGET runs one target alone (the draw is still made, so the sequences match).
+    const drawn: keyof typeof targets = third
       ? pick(["full", "textClipboard", "basic", "baseline", "display"] as const)
       : next() < 0.2
         ? "baseline"
         : "full";
+    const only = process.env.OPENSTEER_TYPING_TARGET as keyof typeof targets | undefined;
+    const name = third && only && only in targets ? only : drawn;
     const target = targets[name];
     const display = !target.rangeEdits;
     const run = await person(target);
@@ -888,7 +894,7 @@ describe("a person's caret moves and selections in the native field", () => {
     const run = await person(targets.display);
     await run.insertText("a");
     await run.answer(1);
-    await run.replaceRange(0, 0, "the");
+    await run.replaceRange(0, 0, "the", true);
     await run.check("F5");
     expect(harness.remote).toMatchObject({ value: "thea" });
   });

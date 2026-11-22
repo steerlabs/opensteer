@@ -794,6 +794,8 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         edit &&
         !echo &&
         event.inputType === "deleteContentBackward" &&
+        // A Backspace at a caret; a selection deleted is the selection.
+        base.selectionStart === base.selectionEnd &&
         state.abilities.rangeEdits &&
         state.abilities.commands &&
         event.proxy.selectionStart === at &&
@@ -850,13 +852,14 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       break;
     }
     case "selection":
-      if (event.move !== undefined) {
-        // The distance the person moved the caret in a mirror that has since been cleared: the
-        // far caret moves by it. A mirror holding text since then no longer sits at the far
-        // caret, so it is cleared.
+      if (event.moves !== undefined) {
+        // The distances the person moved the caret in a mirror that has since been cleared: the
+        // far caret moves by each in turn (stopping at either end, as the page's does). A mirror
+        // holding text since then no longer sits at the far caret, so it is cleared.
         if (state.composition || state.pendingEcho) break;
-        for (let count = 0; count < Math.abs(event.move); count++)
-          emit({ kind: "command", command: event.move < 0 ? "moveBackward" : "moveForward" });
+        for (const distance of event.moves)
+          for (let count = 0; count < Math.abs(distance); count++)
+            emit({ kind: "command", command: distance < 0 ? "moveBackward" : "moveForward" });
         if (state.proxy.value) reset();
         else state.caret = 0;
         break;
@@ -939,7 +942,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         state.pendingEcho = null;
         state.replacement = null;
         state.nativeKey = null;
-        instruction = { ...instruction, set: state.proxy };
+        instruction = { ...instruction, set: state.proxy, edit: { start, end, text: plain } };
         break;
       }
       interrupt();

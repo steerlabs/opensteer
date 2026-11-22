@@ -37,7 +37,8 @@ export interface Span {
  */
 export interface CaretMove {
   from: Place;
-  distance: number;
+  /** Each move one report stands for, in order; each stops at either end of the text. */
+  distances: number[];
   resolved: Place | null;
 }
 
@@ -245,7 +246,7 @@ export class NativeField {
    */
   private held: Place | null = null;
   /** The caret's moves since the last report ran, in graphemes; none once a range is chosen. */
-  private distance: number | undefined = 0;
+  private distance: number[] | undefined = [];
   /** Where the caret moves since the last report started. */
   private from: Place | null = null;
   /** The caret move whose turn has not come yet. */
@@ -342,7 +343,10 @@ export class NativeField {
     const move = place.move;
     if (move) {
       if (move.resolved) return this.range(move.resolved);
-      const at = advance(this.text, this.range(move.from).end, move.distance);
+      const at = move.distances.reduce(
+        (offset, distance) => advance(this.text, offset, distance),
+        this.range(move.from).end,
+      );
       return { start: at, end: at };
     }
     return this.edits.current(place, this.text.length);
@@ -403,8 +407,26 @@ export class NativeField {
     const set = instruction.set;
     if (this.marked || !set) return;
     this.mutating = true;
+    // An answer that says which edit it is is applied as exactly that edit.
+    const edit = instruction.edit;
+    if (
+      edit &&
+      this.text.slice(0, edit.start) + edit.text + this.text.slice(edit.end) === set.value
+    ) {
+      this.replace({ start: edit.start, end: edit.end }, edit.text);
+      this.selection = { start: set.selectionStart, end: set.selectionEnd };
+      this.ownSelection = { ...this.selection };
+      this.turnCaret = { ...this.selection };
+      this.held = null;
+      this.mutating = false;
+      return;
+    }
+    // The answer's text went in ending at its caret (a paste, before its selection): the common
+    // prefix stops there, so a repeated character is not taken for the inserted one.
+    const cap = Math.max(0, set.selectionStart - Math.max(0, set.value.length - this.text.length));
     let start = 0;
     while (
+      start < cap &&
       start < this.text.length &&
       start < set.value.length &&
       this.text[start] === set.value[start]
@@ -557,8 +579,9 @@ export class NativeField {
           return;
         }
         const target = again ? this.edits.deletion(typed, this.text) : this.range(typed);
-        // Typing over the selection: its events report its own caret, after what it typed.
-        if (relative && !this.marked) this.selection = { ...target };
+        // Typing over the selection: its events report its own caret, after what it typed; a
+        // range named elsewhere, the caret as it stands at its turn.
+        if (!this.marked) this.selection = relative ? { ...target } : this.caretAtTurn(typed);
         this.replace(target, replacement);
       },
     );
@@ -581,6 +604,8 @@ export class NativeField {
     const typed = this.place({ start, end });
     this.change("insertReplacementText", replacement, typed, () => {
       if (this.dropped(typed, true)) return;
+      // A replacement elsewhere: its events report the caret as it stands at its turn.
+      if (!this.marked) this.selection = this.caretAtTurn(typed);
       this.replace(this.range(typed), replacement);
     });
   }
@@ -691,7 +716,7 @@ export class NativeField {
     const caret = previous.start === previous.end && start === end;
     // A move that gets a report of its own starts its own distance.
     if (!this.coalesces()) {
-      this.distance = 0;
+      this.distance = [];
       this.from = null;
     }
     // From the person's caret: an earlier move still waiting its turn is where they were.
@@ -703,21 +728,18 @@ export class NativeField {
     this.distance =
       this.distance === undefined || !caret
         ? undefined
-        : this.distance + graphemesBetween(this.text, previous.end, end);
+        : [...this.distance, graphemesBetween(this.text, previous.end, end)];
     const distance = this.distance;
-    if (process.env.OPENSTEER_TYPING_TRACE)
-      console.log(
-        "    MOVE",
-        JSON.stringify({ text: this.text, previous, start, end, distance, from: this.from }),
-      );
     const fresh = this.place(this.selection);
     const move: CaretMove | null =
-      distance === undefined || !this.from ? null : { from: this.from, distance, resolved: null };
+      distance === undefined || !this.from
+        ? null
+        : { from: this.from, distances: distance, resolved: null };
     this.pendingMove = move;
     const moved: Place = move ? { ...fresh, move } : fresh;
     this.edits.choose(moved);
     this.report(() => {
-      this.distance = 0;
+      this.distance = [];
       this.from = null;
       if (this.pendingMove === move) this.pendingMove = null;
       if (move ? this.edits.stale(move.from) : this.edits.stale(moved)) {
@@ -727,21 +749,10 @@ export class NativeField {
         }
         move.resolved = this.place(this.selection);
         this.onTurn?.("report");
-        this.event({ type: "selection", proxy: this.snapshot(), move: move.distance });
+        this.event({ type: "selection", proxy: this.snapshot(), moves: move.distances });
         return;
       }
       const at = this.range(moved);
-      if (process.env.OPENSTEER_TYPING_TRACE && move)
-        console.log(
-          "    RESOLVE",
-          JSON.stringify({
-            text: this.text,
-            from: move.from,
-            fromNow: this.range(move.from),
-            distance: move.distance,
-            at,
-          }),
-        );
       if (move) {
         move.resolved = this.place(at);
         // The native caret is the person's from here on, unless they have moved it since.

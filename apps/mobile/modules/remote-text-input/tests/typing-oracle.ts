@@ -96,8 +96,12 @@ export class Person {
   replace(range: Span, text: string) {
     this.text = this.text.slice(0, range.start) + text + this.text.slice(range.end);
     const { start, end } = this.selection;
-    const caret = start === end;
-    const from = keep(start, range.start, range.end, text.length);
+    // A selection the replacement covers is gone: a caret at the replacement's end.
+    const covered = start < end && start >= range.start && end <= range.end;
+    const caret = start === end || covered;
+    const from = covered
+      ? range.start + text.length
+      : keep(start, range.start, range.end, text.length);
     this.selection = caret
       ? { start: from, end: from }
       : { start: from, end: Math.max(from, keep(end, range.start, range.end, text.length)) };

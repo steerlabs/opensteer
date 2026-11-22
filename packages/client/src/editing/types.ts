@@ -67,10 +67,10 @@ export type EditingProxyEvent =
       readonly type: "selection";
       readonly proxy: EditingProxyState;
       /**
-       * A caret move named in a mirror cleared before its turn: the distance the person moved
-       * it, in graphemes, negative backward. The far caret moves by it.
+       * Caret moves named in a mirror cleared before their turn: the distance the person moved it
+       * each time, in graphemes, negative backward. The far caret moves by each in turn.
        */
-      readonly move?: number | undefined;
+      readonly moves?: readonly number[] | undefined;
     }
   | { readonly type: "paste"; readonly items: readonly EditingClipboardPayloadItem[] }
   | { readonly type: "copy" | "cut" }
@@ -93,6 +93,12 @@ export interface EditingProxyInstruction {
   readonly preventDefault?: boolean;
   /** Replace the proxy's text and selection (never while the platform IME composes). */
   readonly set?: EditingProxyState;
+  /**
+   * The edit `set` is, when it is one: `[start, end)` of the text the proxy holds became `text`
+   * (a paste where it went). A proxy that carries places over its edits applies exactly this
+   * edit rather than guessing it from the two texts.
+   */
+  readonly edit?: { readonly start: number; readonly end: number; readonly text: string };
 }
 
 export interface EditingStep {

@@ -340,7 +340,11 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     run(input("ab"));
     const pasted = run({ type: "paste", items: [{ type: "text/plain", bytes }] });
     expect(pasted.operations).toEqual([{ kind: "paste", items: [{ type: "text/plain", bytes }] }]);
-    expect(pasted.instruction).toEqual({ preventDefault: true, set: proxy("abcd") });
+    expect(pasted.instruction).toEqual({
+      preventDefault: true,
+      set: proxy("abcd"),
+      edit: { start: 2, end: 2, text: "cd" },
+    });
     run({ type: "beforeinput", inputType: "insertText", data: "x" });
     expect(run(input("abcdx")).operations).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "x", before: "", after: "" } },
