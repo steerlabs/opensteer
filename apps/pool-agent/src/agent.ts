@@ -74,6 +74,8 @@ export interface PoolAgentDeadlines {
   readonly snapshotDrain: number;
   /** Round H: how long a slot's credentials are fetched from the account service. */
   readonly egress: number;
+  /** E2: how long a pulling host waits for a slot's egress proxy to serve `/health`. */
+  readonly proxy: number;
 }
 
 export const defaultDeadlines: PoolAgentDeadlines = {
@@ -92,6 +94,7 @@ export const defaultDeadlines: PoolAgentDeadlines = {
   sweep: 60_000,
   snapshotDrain: 30_000,
   egress: 10_000,
+  proxy: 5_000,
 };
 
 /** The binding limit on how long a parked guest's live state may be kept. */
@@ -387,6 +390,25 @@ export class PoolAgent {
       this.#driver.prepareSlot(slotId, egress, signal),
     );
     await this.#reviveProxy(slotId, egress);
+    if (this.#driver.pullsEgress) {
+      if (!(await this.#verifyProxy(slotId))) {
+        if (!this.#proxiesDown.has(slotId)) this.#log({ event: "proxy.down", slotId });
+        this.#proxiesDown.add(slotId);
+        throw new EgressProxyDown("The slot's egress proxy is not serving.");
+      }
+      this.#proxiesDown.delete(slotId);
+    }
+  }
+
+  async #verifyProxy(slotId: string): Promise<boolean> {
+    try {
+      return await this.#drained(slotId, "proxy", (signal) =>
+        this.#driver.verifyProxy(slotId, signal),
+      );
+    } catch (error) {
+      if (error instanceof AgentCrashed || error instanceof DriverStateUncertain) throw error;
+      return false;
+    }
   }
 
   async #drained<T>(
@@ -1125,6 +1147,8 @@ export class PoolAgent {
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
       if (error instanceof DriverStateUncertain) this.#die(error);
+      if (error instanceof EgressProxyDown)
+        return this.#fail(slot, call, "egress-proxy-down", error);
       return this.#fail(slot, call, "start-failed", error);
     }
     const fence = { slot: before.slotId, term: before.term, instance, epoch: 1 };
@@ -1279,6 +1303,8 @@ export class PoolAgent {
     } catch (error) {
       if (error instanceof AgentCrashed) throw error;
       if (error instanceof DriverStateUncertain) this.#die(error);
+      if (error instanceof EgressProxyDown)
+        return this.#fail(slot, call, "egress-proxy-down", error);
       return this.#fail(slot, call, "resume-failed", error);
     }
     const fence = {
@@ -1961,6 +1987,11 @@ export class SlotConflict extends Error {
  */
 export class ProfilesNotMounted extends Error {
   override readonly name = "ProfilesNotMounted";
+}
+
+/** E2: The slot's egress proxy failed to serve within `deadlines.proxy` on a pulling host. */
+class EgressProxyDown extends Error {
+  override readonly name = "EgressProxyDown";
 }
 
 export function statusOf(record: SlotRecord): BrowserPoolAgentStatus {
