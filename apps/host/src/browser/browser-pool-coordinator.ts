@@ -149,6 +149,8 @@ export interface BrowserPoolCoordinatorOptions {
   /** How often finished bookkeeping past its retention is removed, idle or not. */
   readonly pruneEveryMs?: number;
   readonly onError?: (error: unknown) => void;
+  /** Each fresh start that gives the guest's live state up, with its cause (for the log and tests). */
+  readonly onDiscard?: (reason: string) => void;
   /**
    * The target may be over: it answered so, signed, or this target's calls have gone unanswered
    * (or been refused unsigned) for `unansweredMs`. The Home asks its account for its target.
@@ -1688,6 +1690,7 @@ export class BrowserPoolCoordinator {
     reason: string,
     keys: ReadonlySet<string> = new Set(),
   ): Promise<void> {
+    this.#options.onDiscard?.(reason);
     const since = new Date();
     this.#display = { phase: reason === "person" ? "restarting" : "starting", since };
     await announceBrowserPool(this.#options.database).catch(() => undefined);

@@ -1,11 +1,12 @@
 // V9: a test that searches. Seeded random schedules over the real guest runtime (pages from the
 // fake launcher), the real store on PostgreSQL, the real coordinator and BrowserService, and the
-// real pool agent (fake hypervisor) behind its signed client. After every step, and at rest, it
-// checks what must always hold. Each schedule prints its seed; a failing seed is kept below as a
-// named case.
+// real pool agent (fake hypervisor, pulling each slot's egress) behind its signed client. A step
+// may overlap the next one, started a seeded number of turns before it. After every step, and at
+// rest, it checks what must always hold. Each schedule prints its seed and its steps; a failing
+// seed is kept below as a named case.
 (globalThis as { opensteerPoolController?: string }).opensteerPoolController = "agent";
 
-import { createPublicKey, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,12 @@ import {
 import { BrowserService } from "../apps/host/src/browser/browser-service.js";
 import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
 import { FakeHypervisorDriver } from "../apps/pool-agent/src/fake-driver.test-support.js";
-import { homeKeyPair, startTestPoolAgent, testGuest } from "../apps/pool-agent/src/test-support.js";
+import {
+  homeKeyPair,
+  startTestPoolAgent,
+  testGuest,
+  type TestPoolAgent,
+} from "../apps/pool-agent/src/test-support.js";
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
@@ -32,7 +38,11 @@ import {
   FakeLauncher,
   FakePage,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
-import { TabStore } from "../packages/database/src/index.js";
+import {
+  readBrowserPoolSlot,
+  retireBrowserPoolTarget,
+  TabStore,
+} from "../packages/database/src/index.js";
 import {
   createStoreFixture,
   personalBrowserRepository,
@@ -66,6 +76,38 @@ const stepBoundMs = 30_000;
 const settleBoundMs = 30_000;
 /** A session without a channel ends after this, on both sides (short, so schedules reach it). */
 const channelDeadlineMs = 1_500;
+/** The causes a fresh start may have in this world; any other is a finding. */
+const discardsExpected = new Set(["guest-restarted", "guest-changed", "end-unconfirmed"]);
+
+const egressAnswer = {
+  upstreamUrl: "https://upstream.example:8443",
+  username: "u-1",
+  password: "the password",
+};
+
+interface Guest {
+  readonly runtime: BrowserRuntime;
+  readonly server: BrowserRuntimeServer;
+  readonly bridge: LocalBrowserRuntimeBridge;
+  /** What its host last did to it: a paused or stopped guest answers nothing. */
+  state: "running" | "paused" | "stopped";
+}
+
+/** One target: a slot on its own pool host, with every guest it has started. */
+interface Target {
+  readonly n: number;
+  readonly slotId: string;
+  readonly term: number;
+  readonly agent: TestPoolAgent;
+  readonly driver: FakeHypervisorDriver;
+  readonly controlKey: KeyObject;
+  readonly client: BrowserPoolAgentClient;
+  answers: "signed" | "unsigned" | "unreachable";
+  guest: Guest;
+  readonly guests: Guest[];
+  /** Its host fenced the Home's term, or deleted the slot: a new target is needed. */
+  over: boolean;
+}
 
 async function world(key: string) {
   const fixture = await createStoreFixture();
@@ -79,50 +121,14 @@ async function world(key: string) {
     .execute();
   const root = await mkdtemp(join(tmpdir(), "opensteer-pool-search-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
-
-  // ---- The pool agent, as the pair runs it, behind the Home's signed client ------------------
-  const slotId = `slot-${key}`;
-  const driver = new FakeHypervisorDriver({ startsEmpty: true, profilesMount: {} });
-  driver.profilesMounted = true;
-  // The host's own check reads each slot's egress proxy (as the pair harness runs it).
-  const agent = await startTestPoolAgent({ driver, hostCheckMs: 200 });
-  cleanup.push(() => agent.close());
   const homeKey = homeKeyPair();
-  const summary = await agent.agent.createSlot({
-    slotId,
-    term: 1,
-    homeKey: homeKey.spki,
-    guest: testGuest,
-  });
-  const controlKey = createPublicKey({
-    key: Buffer.from(summary.controlKey, "base64"),
-    format: "der",
-    type: "spki",
-  });
-  let hostAnswers: "signed" | "unsigned" | "unreachable" = "signed";
-  const client = new BrowserPoolAgentClient({
-    url: agent.url,
-    homeKey: homeKey.privateKey,
-    agentKey: controlKey,
-    hostKey: agent.hostPublicKey,
-    fetch: async (input, init) => {
-      if (hostAnswers === "signed") return fetch(input, init);
-      if (hostAnswers === "unreachable") throw new TypeError("fetch failed");
-      return new Response(
-        JSON.stringify({
-          reply: { op: "refused", code: "unauthenticated", message: "Not authenticated." },
-        }),
-        { status: 401, headers: { "content-type": "application/json" } },
-      );
-    },
-  });
-  const effects = () => agent.agent.effects(slotId);
-
-  // ---- The guest: one runtime per started guest, reached through its own server ---------------
   const tickets = generateKeyPairSync("ed25519");
   const signer = new BrowserAttachTicketSigner({ keyId: "test", privateKey: tickets.privateKey });
+  const discards: string[] = [];
+
+  // ---- The guest: one runtime per started guest, reached through its own server ---------------
   let generation = 0;
-  const newGuest = async () => {
+  const newGuest = async (controlKey: KeyObject): Promise<Guest> => {
     const index = ++generation;
     const runtime = new BrowserRuntime({
       runtimeId: "pool-runtime",
@@ -158,78 +164,154 @@ async function world(key: string) {
         publicKeyPem: tickets.publicKey.export({ type: "spki", format: "pem" }).toString(),
       },
     ]);
-    return { runtime, server, bridge };
+    const guest: Guest = { runtime, server, bridge, state: "stopped" };
+    cleanup.push(() => endGuest(guest));
+    return guest;
   };
-  let guest = await newGuest();
-  /** What the agent last did to the guest: a paused or stopped guest answers nothing. */
-  let guestState: "running" | "paused" | "stopped" = "stopped";
-  const connections: TestRuntimeConnection[] = [];
-  const dropChannels = (code = 1011) => {
-    guest.bridge.closeAll(code, "pool tunnel broke");
-    for (const connection of connections.splice(0)) connection.lose(code, "pool tunnel broke");
-  };
-  /** The guest's VM is replaced (a start), or only its runtime process restarts (VM running). */
-  const replaceGuest = async () => {
-    const old = guest;
-    guest = await newGuest();
-    dropChannels();
-    await old.server.close().catch(() => undefined);
-    await old.runtime.shutdown().catch(() => undefined);
-  };
-  cleanup.push(async () => {
+  /** The guest's VM is gone: its runtime goes with it. */
+  const endGuest = async (guest: Guest) => {
+    guest.state = "stopped";
     await guest.server.close().catch(() => undefined);
     await guest.runtime.shutdown().catch(() => undefined);
-  });
-  const physical: BrowserPoolPhysicalController = {
-    status: (slot, term) => client.status(slot, term),
-    result: (slot, term, id) => client.result(slot, term, id),
+  };
+
+  // ---- A target: its own pool host (the pair's agent on a fake hypervisor that pulls egress) ---
+  let targets = 0;
+  const newTarget = async (): Promise<Target> => {
+    const n = ++targets;
+    const slotId = `slot-${key}-${n}`;
+    const driver = new FakeHypervisorDriver({
+      startsEmpty: true,
+      profilesMount: {},
+      pullsEgress: true,
+    });
+    driver.profilesMounted = true;
+    // The host's own check reads each slot's egress proxy (as the pair harness runs it).
+    const agent = await startTestPoolAgent({
+      driver,
+      hostCheckMs: 200,
+      egressFetch: async () => egressAnswer,
+    });
+    cleanup.push(() => agent.close());
+    const summary = await agent.agent.createSlot({
+      slotId,
+      term: 1,
+      homeKey: homeKey.spki,
+      guest: testGuest,
+    });
+    const controlKey = createPublicKey({
+      key: Buffer.from(summary.controlKey, "base64"),
+      format: "der",
+      type: "spki",
+    });
+    const target: Target = {
+      n,
+      slotId,
+      term: 1,
+      agent,
+      driver,
+      controlKey,
+      answers: "signed",
+      over: false,
+      guests: [],
+      guest: undefined as unknown as Guest,
+      client: new BrowserPoolAgentClient({
+        url: agent.url,
+        homeKey: homeKey.privateKey,
+        agentKey: controlKey,
+        hostKey: agent.hostPublicKey,
+        fetch: async (input, init) => {
+          if (target.answers === "signed") return fetch(input, init);
+          if (target.answers === "unreachable") throw new TypeError("fetch failed");
+          return new Response(
+            JSON.stringify({
+              reply: { op: "refused", code: "unauthenticated", message: "Not authenticated." },
+            }),
+            { status: 401, headers: { "content-type": "application/json" } },
+          );
+        },
+      }),
+    };
+    target.guest = await newGuest(controlKey);
+    target.guests.push(target.guest);
+    return target;
+  };
+  let current = await newTarget();
+  const all: Target[] = [current];
+  const effects = (target = current) => target.agent.agent.effects(target.slotId);
+
+  const connections: TestRuntimeConnection[] = [];
+  const dropChannels = (code = 1011) => {
+    current.guest.bridge.closeAll(code, "pool tunnel broke");
+    for (const connection of connections.splice(0)) connection.lose(code, "pool tunnel broke");
+  };
+  /** A start on the host replaced the guest's VM, or only its runtime process restarts. */
+  const replaceGuest = async (target: Target) => {
+    const old = target.guest;
+    target.guest = await newGuest(target.controlKey);
+    target.guests.push(target.guest);
+    if (target === current) dropChannels();
+    await endGuest(old);
+  };
+  const physical = (target: Target): BrowserPoolPhysicalController => ({
+    status: (slot, term) => target.client.status(slot, term),
+    result: (slot, term, id) => target.client.result(slot, term, id),
     apply: async (call) => {
-      const starts = effects().filter((effect) => effect === "start").length;
-      const result = await client.apply(call);
-      if (effects().filter((effect) => effect === "start").length > starts) {
-        await replaceGuest();
-        guestState = "running";
-      } else if (result.applied && call.kind === "pause") guestState = "paused";
-      else if (result.applied && call.kind === "resume") guestState = "running";
-      else if (result.applied && call.kind === "stop") guestState = "stopped";
+      const starts = effects(target).filter((effect) => effect === "start").length;
+      const result = await target.client.apply(call);
+      if (effects(target).filter((effect) => effect === "start").length > starts) {
+        await replaceGuest(target);
+        target.guest.state = "running";
+      } else if (result.applied && call.kind === "pause") target.guest.state = "paused";
+      else if (result.applied && call.kind === "resume") target.guest.state = "running";
+      else if (result.applied && call.kind === "stop") await endGuest(target.guest);
+      else if (
+        !result.applied &&
+        result.status.phase === "stopped" &&
+        target.guest.state !== "stopped"
+      )
+        // A refused start or resume that left no guest (the host says so, signed).
+        await endGuest(target.guest);
       return result;
     },
-  };
+  });
   // The runtime's controls go through the host's relay: a paused or stopped guest, or a host
   // that does not answer, answers nothing (a relay refusal, unknown to the Home).
-  const relayed = <T>(call: () => Promise<T>) =>
-    guestState === "running" && hostAnswers === "signed"
-      ? call()
-      : Promise.reject(Object.assign(new Error("parked"), { name: "PoolRelayRefused" }));
-  const channel: BrowserPoolRuntimeChannel = {
-    poolState: async () =>
-      hostAnswers !== "signed"
-        ? Promise.reject(Object.assign(new Error("parked"), { name: "PoolRelayRefused" }))
-        : guestState === "running"
-          ? (guest.runtime.poolState() ?? null)
-          : null,
-    controlPool: (control, signature) =>
-      relayed(() => guest.runtime.controlPool(control, signature)),
-    endSession: (ticket) => relayed(() => guest.runtime.endPoolSession(ticket)),
+  const channel = (target: Target): BrowserPoolRuntimeChannel => {
+    const relayed = <T>(call: () => Promise<T>) =>
+      target.guest.state === "running" && target.answers === "signed"
+        ? call()
+        : Promise.reject(Object.assign(new Error("parked"), { name: "PoolRelayRefused" }));
+    return {
+      poolState: async () =>
+        target.answers !== "signed"
+          ? Promise.reject(Object.assign(new Error("parked"), { name: "PoolRelayRefused" }))
+          : target.guest.state === "running"
+            ? (target.guest.runtime.poolState() ?? null)
+            : null,
+      controlPool: (control, signature) =>
+        relayed(() => target.guest.runtime.controlPool(control, signature)),
+      endSession: (ticket) => relayed(() => target.guest.runtime.endPoolSession(ticket)),
+    };
   };
 
   // ---- The Home -------------------------------------------------------------------------------
   const connect = (ticket: string) => {
-    const connection = new TestRuntimeConnection(guest.bridge, ticket);
+    const connection = new TestRuntimeConnection(current.guest.bridge, ticket);
     connections.push(connection);
     return connection;
   };
   const tabs = new TabStore(database);
   const errors: number[] = [];
-  const startHome = async () => {
-    const coordinator = new BrowserPoolCoordinator({
+  const newCoordinator = (target: Target) =>
+    new BrowserPoolCoordinator({
       database,
       runnerId: task.runnerId,
       runtimeId: "pool-runtime",
-      slotId,
-      term: 1,
-      runtime: channel,
-      controller: physical,
+      slotId: target.slotId,
+      term: target.term,
+      runtime: channel(target),
+      controller: physical(target),
       retryMs: 20,
       channelDeadlineMs,
       unreachableAfterMs: 1_000,
@@ -239,12 +321,17 @@ async function world(key: string) {
       // A running guest's status is read this often (its egress proxy can go down under it).
       statusEveryMs: 200,
       onError: () => errors.push(Date.now()),
+      onDiscard: (reason) => discards.push(reason),
     });
+  type Home = { service: BrowserService; coordinator: BrowserPoolCoordinator };
+  let home: Home;
+  /** As a pooled Home starts: the service first, its coordinator adopted once it has a target. */
+  const startHome = async () => {
     const service = new BrowserService({
       deploymentId: task.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
       personal: true,
-      pools: new Map([[task.runnerId, coordinator]]),
+      pooledRunner: task.runnerId,
       tabs,
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
@@ -276,10 +363,12 @@ async function world(key: string) {
         }),
       },
     });
+    // What a person reaches from here on is this Home, even before its pool is adopted.
+    home = { service, coordinator: newCoordinator(current) };
     await service.initialize();
-    return { service, coordinator };
+    await service.adoptPool(task.runnerId, home.coordinator);
   };
-  let home = await startHome();
+  await startHome();
   cleanup.push(async () => {
     home.coordinator.close();
     await home.service.close().catch(() => undefined);
@@ -295,18 +384,27 @@ async function world(key: string) {
   return {
     task,
     database,
-    effects,
+    discards,
     errors,
     row,
     rows,
-    guest: () => guest,
-    guestState: () => guestState,
-    replaceGuest,
+    signer,
+    targets: () => all,
+    current: () => current,
+    slot: () => readBrowserPoolSlot(database, task.runnerId),
+    unsettledCalls: async () =>
+      (
+        await database
+          .selectFrom("browserPoolControllerCalls")
+          .select("id")
+          .where("runnerId", "=", task.runnerId)
+          .where("settledAt", "is", null)
+          .execute()
+      ).length,
+    replaceGuest: () => replaceGuest(current),
     dropChannels,
-    /** The slot's egress proxy goes down past its restarts; only a pause and a resume revive it. */
-    proxyDown: () => driver.proxyDown.add(slotId),
-    answer: (mode: typeof hostAnswers) => {
-      hostAnswers = mode;
+    answer: (mode: Target["answers"]) => {
+      current.answers = mode;
     },
     home: () => home,
     restartHome: async () => {
@@ -314,51 +412,105 @@ async function world(key: string) {
       await home.service.close();
       // The Home's link to the Runner ends with it (1001 to each channel, as the relay does).
       dropChannels(1001);
-      home = await startHome();
+      await startHome();
+    },
+    /**
+     * The account places a different target, on another host: the old coordinator retires,
+     * the old target is forgotten, and the new one is adopted. The old host answers as it did.
+     */
+    swap: async () => {
+      const next = await newTarget();
+      all.push(next);
+      await home.service.retirePool(task.runnerId, "browser-replaced");
+      await retireBrowserPoolTarget(database, task.runnerId);
+      current = next;
+      home = { service: home.service, coordinator: newCoordinator(next) };
+      await home.service.adoptPool(task.runnerId, home.coordinator);
+    },
+    /** A newer term for the slot: the host fences this Home, and ends the guest. */
+    fence: async () => {
+      const target = current;
+      await target.agent.agent.replaceKey({
+        slotId: target.slotId,
+        term: target.term + 1,
+        homeKey: homeKeyPair().spki,
+      });
+      target.over = true;
+      await endGuest(target.guest);
+    },
+    /** The provisioner deletes the slot: the host ends the guest and says so, signed. */
+    deleteSlot: async () => {
+      const target = current;
+      await target.agent.agent.deleteSlot(target.slotId);
+      target.over = true;
+      await endGuest(target.guest);
+    },
+    /** The slot's egress proxy goes down past its restarts; only a pause and a resume revive it. */
+    proxyDown: () => current.driver.proxyDown.add(current.slotId),
+    /** The slot's proxy fails its check on the next start or wake (the host refuses, signed). */
+    proxyRefuses: () => current.driver.proxyUnhealthy.add(current.slotId),
+    proxyHeals: () => {
+      for (const target of all) target.driver.proxyUnhealthy.delete(target.slotId);
     },
   };
 }
 
-type Action =
-  | "open"
-  | "stop"
-  | "drop-channel"
-  | "park"
-  | "wake"
-  | "restart-runtime"
-  | "fail-page-close"
-  | "restart-home"
-  | "host-unreachable"
-  | "host-unsigned"
-  | "host-back"
-  | "open-two"
-  | "park-stop"
-  | "proxy-down";
-
-/** Weighted: what a person does most (open, stop, park and wake) comes up most. */
-const actions: readonly Action[] = [
+const actions = [
   "open",
-  "open",
-  "open",
-  "stop",
-  "stop",
+  "open-two",
   "stop",
   "drop-channel",
   "park",
-  "park",
-  "wake",
+  "park-stop",
   "wake",
   "restart-runtime",
   "fail-page-close",
-  "fail-page-close",
+  "fail-page-close-always",
+  "heal-page-close",
   "restart-home",
   "host-unreachable",
   "host-unsigned",
   "host-back",
-  "open-two",
-  "park-stop",
   "proxy-down",
-];
+  "proxy-refuses",
+  "proxy-heals",
+  "browser-ends",
+  "swap",
+  "fence",
+  "slot-deleted",
+  "release",
+] as const;
+type Action = (typeof actions)[number];
+/**
+ * A step as a named case writes it: the action, and `&n` when it overlaps the next one, which
+ * starts `n` turns of the event loop after it.
+ */
+type Step = Action | `${Action}&${number}`;
+
+/** Weighted: what a person does most (open, stop, park and wake) comes up most. */
+const weights: Partial<Record<Action, number>> = {
+  open: 3,
+  stop: 3,
+  park: 2,
+  wake: 2,
+  "fail-page-close": 2,
+  swap: 1,
+  fence: 0.3,
+  "slot-deleted": 0.3,
+  release: 0.15,
+};
+const weighted: readonly Action[] = actions.flatMap((action) =>
+  Array.from({ length: Math.round((weights[action] ?? 1) * 20) }, () => action),
+);
+/** How often a step overlaps the next one. */
+const overlapChance = 0.3;
+
+function parse(step: Step): { action: Action; overlap: number | undefined } {
+  const [action, turns] = step.split("&") as [Action, string | undefined];
+  return { action, overlap: turns === undefined ? undefined : Number(turns) };
+}
+
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /**
  * One schedule. Returns the violations it found (empty when everything held), with the steps that
@@ -367,22 +519,29 @@ const actions: readonly Action[] = [
 async function schedule(
   seed: number,
   /** A number of random steps, or the exact steps of a named case. */
-  steps: number | readonly Action[],
+  steps: number | readonly Step[],
 ): Promise<string[]> {
   const rng = random(seed);
   const count = typeof steps === "number" ? steps : steps.length;
   const w = await world(`search-${seed}-${randomUUID().slice(0, 8)}`);
   const violations: string[] = [];
   const log: string[] = [];
-  const opened = new Map<string, { tabId: string; stopped: boolean }>();
-  let faultyHost = false;
-  const say = (message: string) => violations.push(`${message} (after: ${log.join(", ")})`);
+  /**
+   * Every session seen: whether the person asked to stop it, whether that Stop returned, and
+   * whether its runtime ended it on its own.
+   */
+  const opened = new Map<string, { stopAsked: boolean; stopped: boolean; served: boolean }>();
+  const say = (message: string) => {
+    const line = `${message} (after: ${log.join(", ")})`;
+    if (!violations.includes(line)) violations.push(line);
+  };
   /**
    * A request a person or the Home makes. A park, a wake or an open may wait for the guest as
    * long as it takes (nothing answers): only this schedule stops waiting for it. A Stop and a
    * Home restart must finish within the bound: past it they are findings, and the schedule ends.
    */
   let stuck = false;
+  let released = false;
   const bounded = async (name: string, work: () => Promise<unknown>, finding = false) => {
     await withTimeout(work(), stepBoundMs, {
       timeoutError: () => new Error(`${name} ran past its bound`),
@@ -393,20 +552,43 @@ async function schedule(
       }
     });
   };
-  // Invariant 1: a closed row's session holds nothing in the ledger of a guest that serves.
+  // A session closed holds nothing in the ledger of any guest that serves, of any target: only
+  // evidence about its own guest closes it.
   const checkClosed = async () => {
-    const runtime = w.guest().runtime;
-    if (w.guestState() !== "running" || runtime.poolState()?.phase !== "running") return;
-    for (const { id, state } of await w.rows()) {
-      if (state !== "closed") continue;
-      const holds = runtime.pages.holdingsOf(id);
-      if (holds.pages || holds.creations)
-        say(`closed row ${id} while the running guest holds ${holds.pages} page(s)`);
-    }
+    const closed = (await w.rows()).filter(({ state }) => state === "closed");
+    for (const target of w.targets())
+      for (const guest of target.guests) {
+        if (guest.state !== "running" || guest.runtime.poolState()?.phase !== "running") continue;
+        for (const { id } of closed) {
+          const holds = guest.runtime.pages.holdingsOf(id);
+          if (holds.pages || holds.creations)
+            say(
+              `closed row ${id} while a running guest of target ${target.n} holds ${holds.pages} page(s)`,
+            );
+        }
+      }
   };
-  const open = async (home: ReturnType<typeof w.home>, idempotencyKey: string) => {
-    const opening = await home.service
-      .openTab(w.task.userId, {
+  // What must hold after every step.
+  const checkStep = async () => {
+    await checkClosed();
+    const slot = await w.slot();
+    if (slot && slot.failedStarts > 0) say(`${slot.failedStarts} failed start(s) counted`);
+    const report = w.home().coordinator.report();
+    if (report?.proxyDown && slot?.phase !== "running")
+      say(`proxy down shown while the slot is ${slot?.phase ?? "gone"}`);
+    for (const reason of w.discards.splice(0))
+      if (!discardsExpected.has(reason)) say(`a fresh start for ${reason}`);
+  };
+  /** `served`: its open answered, so it had a page (one whose open never answered may not). */
+  const track = (sessionId: string, served: boolean) => {
+    const entry = opened.get(sessionId);
+    if (entry) entry.served ||= served;
+    else opened.set(sessionId, { stopAsked: false, stopped: false, served });
+  };
+  const open = async (idempotencyKey: string) => {
+    const opening = await w
+      .home()
+      .service.openTab(w.task.userId, {
         type: "browser.tab.open",
         identity: { kind: "guest" },
         placement: { kind: "runner", runnerId: w.task.runnerId },
@@ -415,119 +597,199 @@ async function schedule(
       .catch(() => undefined);
     // A person's next tab opens in their browser session when one is open: it is the same
     // session, still theirs.
-    if (opening && !opened.has(opening.sessionId))
-      opened.set(opening.sessionId, { tabId: opening.tabId, stopped: false });
+    if (opening) track(opening.sessionId, true);
   };
-  for (let index = 0; index < count; index++) {
-    const action = typeof steps === "number" ? rng.pick(actions) : steps[index]!;
-    log.push(action);
+  const live = () => [...opened].filter(([, entry]) => !entry.stopAsked);
+  const stop = async () => {
+    const candidates = live();
+    if (!candidates.length) return;
+    const [sessionId, entry] = rng.pick(candidates);
+    entry.stopAsked = true;
+    const service = w.home().service;
+    await bounded(
+      "stop",
+      async () => {
+        const stopped = await service
+          .stop(w.task.userId, BrowserSessionIdSchema.parse(sessionId))
+          .then(
+            () => true,
+            () => false,
+          );
+        if (!stopped) return;
+        entry.stopped = true;
+        // "The person asked to stop" is durable before the Stop returns.
+        const state = (await w.row(sessionId))?.state;
+        if (state === "ready" || state === "starting")
+          say(`stopped session ${sessionId} still ${state} after its Stop returned`);
+      },
+      true,
+    );
+  };
+  let failingCloses: ReturnType<typeof vi.spyOn> | undefined;
+  const run = async (action: Action, index: number) => {
     const home = w.home();
     switch (action) {
       case "open":
-        await bounded("open", () => open(home, `open-${seed}-${index}`));
-        break;
+        return bounded("open", () => open(`open-${seed}-${index}`));
       case "open-two":
         // Two tabs asked for at once.
-        await bounded("open-two", () =>
-          Promise.all([
-            open(home, `open-${seed}-${index}-a`),
-            open(home, `open-${seed}-${index}-b`),
-          ]),
+        return bounded("open-two", () =>
+          Promise.all([open(`open-${seed}-${index}-a`), open(`open-${seed}-${index}-b`)]),
         );
-        break;
+      case "stop":
+        return stop();
       case "park-stop": {
         // A park and a person's Stop at once.
-        const live = [...opened].filter(([, entry]) => !entry.stopped);
         const park = home.coordinator.tryPark().catch(() => undefined);
-        if (live.length) {
-          const [sessionId, entry] = rng.pick(live);
-          entry.stopped = true;
-          await bounded(
-            "stop",
-            () =>
-              home.service
-                .stop(w.task.userId, BrowserSessionIdSchema.parse(sessionId))
-                .catch(() => undefined),
-            true,
-          );
-        }
-        await bounded("park", () => park);
-        break;
-      }
-      case "proxy-down":
-        w.proxyDown();
-        break;
-      case "stop": {
-        const live = [...opened].filter(([, entry]) => !entry.stopped);
-        if (!live.length) break;
-        const [sessionId, entry] = rng.pick(live);
-        entry.stopped = true;
-        await bounded(
-          "stop",
-          () =>
-            home.service
-              .stop(w.task.userId, BrowserSessionIdSchema.parse(sessionId))
-              .catch(() => undefined),
-          true,
-        );
-        break;
+        await stop();
+        return bounded("park", () => park);
       }
       case "drop-channel":
-        w.dropChannels();
-        break;
+        return w.dropChannels();
       case "park":
-        await bounded("park", () => home.coordinator.tryPark().catch(() => undefined));
-        break;
+        return bounded("park", () => home.coordinator.tryPark().catch(() => undefined));
       case "wake":
-        await bounded("wake", () =>
+        return bounded("wake", () =>
           home.coordinator.gate
             .reserve(AbortSignal.timeout(5_000))
             .then((reservation) => reservation.release())
             .catch(() => undefined),
         );
-        break;
       case "restart-runtime":
         // Only the runtime process restarts; the guest's VM goes on running.
-        if (w.guestState() === "running") await w.replaceGuest();
-        break;
-      case "fail-page-close": {
+        if (w.current().guest.state === "running") await w.replaceGuest();
+        return;
+      case "fail-page-close":
         // The next page close does not take: the page stays.
-        vi.spyOn(FakePage.prototype, "close").mockImplementationOnce(async function (
+        if (!failingCloses)
+          vi.spyOn(FakePage.prototype, "close").mockImplementationOnce(async function (
+            this: FakePage,
+          ) {
+            this.closeCount += 1;
+          });
+        return;
+      case "fail-page-close-always":
+        // Every page close fails until it heals (a page that will not close, call after call).
+        failingCloses ??= vi.spyOn(FakePage.prototype, "close").mockImplementation(async function (
           this: FakePage,
         ) {
           this.closeCount += 1;
         });
-        break;
-      }
+        return;
+      case "heal-page-close":
+        failingCloses?.mockRestore();
+        failingCloses = undefined;
+        return;
       case "restart-home":
-        await bounded("restart-home", () => w.restartHome(), true);
-        break;
+        return bounded("restart-home", () => w.restartHome(), true);
       case "host-unreachable":
-        faultyHost = true;
-        w.answer("unreachable");
-        break;
+        return w.answer("unreachable");
       case "host-unsigned":
-        faultyHost = true;
-        w.answer("unsigned");
-        break;
+        return w.answer("unsigned");
       case "host-back":
-        faultyHost = false;
-        w.answer("signed");
-        break;
+        return w.answer("signed");
+      case "proxy-down":
+        return w.proxyDown();
+      case "proxy-refuses":
+        return w.proxyRefuses();
+      case "proxy-heals":
+        return w.proxyHeals();
+      case "browser-ends": {
+        // The runtime ends a live session on its own (its browser went): it says closing, then
+        // closed, to whichever Home holds its channel.
+        const guest = w.current().guest;
+        const fence = guest.state === "running" ? guest.runtime.poolState()?.fence : undefined;
+        const candidates = live();
+        if (!fence || !candidates.length) return;
+        const [sessionId] = rng.pick(candidates);
+        return bounded("browser-ends", () =>
+          guest.runtime
+            .endPoolSession(
+              w.signer.issue({
+                access: "read-write",
+                creationOrigin: "person",
+                actor: "person",
+                identity: { kind: "fresh" },
+                pool: { ...fence, end: true },
+                runtimeId: "pool-runtime",
+                sessionId: BrowserSessionIdSchema.parse(sessionId),
+                subject: w.task.userId,
+              }),
+            )
+            .catch(() => undefined),
+        );
+      }
+      case "swap":
+        return bounded("swap", () => w.swap(), true);
+      case "fence":
+        if (!w.current().over) await w.fence().catch(() => undefined);
+        return;
+      case "slot-deleted":
+        if (!w.current().over) await w.deleteSlot().catch(() => undefined);
+        return;
+      case "release":
+        released = true;
+        return bounded(
+          "release",
+          async () => {
+            await home.service.poolDeviceRemoved(w.task.runnerId);
+            await home.coordinator.released();
+          },
+          true,
+        );
     }
-    await checkClosed();
+  };
+  let inflight: Promise<void> | undefined;
+  for (let index = 0; index < count && !released; index++) {
+    const step =
+      typeof steps === "number"
+        ? (() => {
+            const action = rng.pick(weighted);
+            return rng.next() < overlapChance
+              ? (`${action}&${Math.floor(rng.next() * 4)}` as Step)
+              : action;
+          })()
+        : steps[index]!;
+    const { action, overlap } = parse(step);
+    log.push(step);
+    const work = run(action, index).then(() => undefined);
+    if (overlap !== undefined && !inflight) {
+      // Overlaps the next step, which starts this many turns later.
+      for (let turns = 0; turns < overlap; turns++) await turn();
+      inflight = work;
+      continue;
+    }
+    await work;
+    if (inflight) await inflight;
+    inflight = undefined;
+    await checkStep();
     if (stuck) return violations;
   }
-  // At rest: faults stop, and what was asked is finished.
-  if (faultyHost) w.answer("signed");
+  if (inflight) await inflight;
+  await checkStep();
+  if (stuck) return violations;
+
+  // At rest: faults stop, and what was asked is finished. A target that is over is replaced by
+  // the account, as it would be.
+  w.answer("signed");
+  w.proxyHeals();
+  failingCloses?.mockRestore();
   vi.restoreAllMocks();
   log.push("rest");
+  if (!released && w.current().over) await bounded("swap", () => w.swap(), true);
+  if (stuck) return violations;
+  // An open that never answered within its bound may still have made a session: it is tracked.
+  for (const { id } of await w.rows()) track(id, false);
   const settled = await vi
     .waitFor(
       async () => {
         await checkClosed();
         const closing = (await w.rows()).filter(({ state }) => state === "closing");
         expect(closing).toEqual([]);
+        const slot = await w.slot();
+        if (released) expect(slot).toBeUndefined();
+        else expect(["running", "parked"]).toContain(slot?.phase);
+        expect(await w.unsettledCalls()).toBe(0);
       },
       { timeout: settleBoundMs, interval: 100 },
     )
@@ -537,15 +799,25 @@ async function schedule(
     );
   if (!settled) {
     const closing = (await w.rows()).filter(({ state }) => state === "closing");
-    say(`${closing.length} closing row(s) not closed within ${settleBoundMs} ms of rest`);
+    const slot = await w.slot();
+    say(
+      `not at rest within ${settleBoundMs} ms: ${closing.length} closing row(s), slot ${
+        slot?.phase ?? "gone"
+      }, ${await w.unsettledCalls()} unsettled controller call(s)`,
+    );
   }
-  await checkClosed();
-  // Invariant 3: a session the person did not stop ends only with a note for its tab.
+  await checkStep();
   for (const [sessionId, entry] of opened) {
-    if (entry.stopped) continue;
     const state = (await w.row(sessionId))?.state;
-    if (state === "closed") say(`session ${sessionId} closed though the person never stopped it`);
-    if (state === "failed") {
+    // A session the person stopped never serves again.
+    if (entry.stopped && (state === "ready" || state === "starting"))
+      say(`stopped session ${sessionId} is ${state} at rest`);
+    if (entry.stopAsked) continue;
+    // A session the person did not stop never ends closing or closed: it ends with a note.
+    if (state === "closed" || state === "closing")
+      say(`session ${sessionId} ${state} though the person never stopped it`);
+    // A session that served a page and lost it has a note for it.
+    if (state === "failed" && entry.served) {
       const notes = await w.database
         .selectFrom("browserPoolDocumentLosses")
         .select("surfaceId")
@@ -554,7 +826,7 @@ async function schedule(
       if (!notes.length) say(`session ${sessionId} lost its page with no note`);
     }
   }
-  // Invariant 4: nothing retries without a delay (no more than 100 failures in any second).
+  // Nothing retries without a delay (no more than 100 failures in any second).
   const errors = w.errors;
   for (let start = 0, end = 0; end < errors.length; end++) {
     while (errors[end]! - errors[start]! > 1_000) start++;
@@ -573,7 +845,7 @@ async function schedule(
 const named: readonly {
   readonly name: string;
   readonly seed: number;
-  readonly steps: readonly Action[];
+  readonly steps: readonly Step[];
 }[] = [
   {
     // A Home restart waited for the pool's recovery while the host answered unsigned.
