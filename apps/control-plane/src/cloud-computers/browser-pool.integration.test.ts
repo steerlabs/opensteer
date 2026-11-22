@@ -3002,7 +3002,7 @@ integration("Browser pool Account service", () => {
       expect(hosts.find((row) => row.id === hostId)?.liveSlotCount).toBe(1);
 
       // Mark ccA deleted -> slot moves to deleting (still non-tombstoned!) -> liveSlotCount stays 1.
-      await database.db
+      await database
         .updateTable("cloudComputers")
         .set({ state: "deleted", deletionRequestedAt: now })
         .where("id", "=", ccA.id)
@@ -3034,9 +3034,27 @@ integration("Browser pool Account service", () => {
       hosts = await h.getDesiredHosts();
       expect(hosts.find((row) => row.id === hostId)?.liveSlotCount).toBe(0);
 
+      const registerUnplacedSlot = async (n: number) => {
+        const { accountId, computer } = await h.provisionComputer(n);
+        const claimed = await h.bootAndClaimComputer(computer, accountId);
+        const regRes = await h.app.inject({
+          method: "PUT",
+          url: managedBrowserPoolRegistrationPath,
+          headers: { authorization: `Bearer ${claimed.hostCredential}` },
+          payload: signRegistration(
+            computer.id,
+            now.toISOString(),
+            makeHomeKeys(`tk-${n}`),
+            claimed.hostKey.privateKey,
+          ),
+        });
+        expect(regRes.statusCode).toBe(200);
+        return computer;
+      };
+
       // Order 1 (placement acquires browser_pool_hosts lock first):
-      const { computer: ccB } = await h.provisionComputer("z8-b@example.test");
-      const slotBeforeOrder1 = await database.db
+      const ccB = await registerUnplacedSlot(2);
+      const slotBeforeOrder1 = await database
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("computerId", "=", ccB.id)
@@ -3044,8 +3062,9 @@ integration("Browser pool Account service", () => {
       expect(slotBeforeOrder1.hostId).toBeNull();
 
       let releaseBarrier1!: () => void;
+      let barrier1Tx!: Promise<void>;
       const barrier1Held = new Promise<void>((resolve) => {
-        void database.db.transaction().execute(async (tx) => {
+        barrier1Tx = database.transaction().execute(async (tx) => {
           await tx
             .selectFrom("browserPoolHosts")
             .select("id")
@@ -3068,13 +3087,17 @@ integration("Browser pool Account service", () => {
       await new Promise((resolve) => setTimeout(resolve, 60));
       releaseBarrier1();
 
-      const [, deleteOutcome1] = await Promise.all([placementPromise1, deletePromise1]);
-      const hostAfter1 = await database.db
+      const [, , deleteOutcome1] = await Promise.all([
+        barrier1Tx,
+        placementPromise1,
+        deletePromise1,
+      ]);
+      const hostAfter1 = await database
         .selectFrom("browserPoolHosts")
         .selectAll()
         .where("id", "=", hostId)
         .executeTakeFirstOrThrow();
-      const slotAfter1 = await database.db
+      const slotAfter1 = await database
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("computerId", "=", ccB.id)
@@ -3090,17 +3113,18 @@ integration("Browser pool Account service", () => {
       }
 
       // Clean up ccB's slot so host is empty again for Order 2.
-      await database.db
+      await database
         .updateTable("browserPoolSlots")
         .set({ state: "deleted", phase: "deleted", tombstonedAt: now })
         .where("slotId", "=", slotAfter1.slotId)
         .execute();
 
       // Order 2 (operatorDeletePoolHost acquires browser_pool_hosts lock first):
-      const { computer: ccC } = await h.provisionComputer("z8-c@example.test");
+      const ccC = await registerUnplacedSlot(3);
       let releaseBarrier2!: () => void;
+      let barrier2Tx!: Promise<void>;
       const barrier2Held = new Promise<void>((resolve) => {
-        void database.db.transaction().execute(async (tx) => {
+        barrier2Tx = database.transaction().execute(async (tx) => {
           await tx
             .selectFrom("browserPoolHosts")
             .select("id")
@@ -3123,13 +3147,13 @@ integration("Browser pool Account service", () => {
       await new Promise((resolve) => setTimeout(resolve, 60));
       releaseBarrier2();
 
-      const [deleteOutcome2] = await Promise.all([deletePromise2, placementPromise2]);
-      const hostAfter2 = await database.db
+      const [, deleteOutcome2] = await Promise.all([barrier2Tx, deletePromise2, placementPromise2]);
+      const hostAfter2 = await database
         .selectFrom("browserPoolHosts")
         .selectAll()
         .where("id", "=", hostId)
         .executeTakeFirstOrThrow();
-      const slotAfter2 = await database.db
+      const slotAfter2 = await database
         .selectFrom("browserPoolSlots")
         .selectAll()
         .where("computerId", "=", ccC.id)
@@ -3138,7 +3162,7 @@ integration("Browser pool Account service", () => {
       expect(deleteOutcome2.ok).toBe(true);
       expect(hostAfter2.state).toBe("deleted");
       expect(slotAfter2.hostId).not.toBe(hostId);
-      const liveOnDeleted = await database.db
+      const liveOnDeleted = await database
         .selectFrom("browserPoolSlots")
         .select("slotId")
         .where("hostId", "=", hostId)
