@@ -263,6 +263,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
                 <button
                   className="btn"
                   disabled={
+                    readFailed ||
                     !dashboard?.providers.some(({ availability }) => availability === "available")
                   }
                   type="button"
@@ -508,120 +509,123 @@ export function ChannelOverview({
           <span>{error}</span>
         </p>
       ) : null}
-      {dashboard.connections.length === 0 ? (
-        <div className="card">
-          <div className="card__empty">
-            <p>{agentWords("messaging.empty")}</p>
-            <button
-              className="btn btn--primary"
-              disabled={!providerReady}
-              onClick={onAdd}
-              type="button"
-            >
-              {agentWords("messaging.add")}
-            </button>
-          </div>
-        </div>
-      ) : null}
-      {dashboard.connections.map((connection) => {
-        const manifest = dashboard.providers.find(
-          ({ provider }) => provider === connection.provider,
-        );
-        const providerLabel = manifest?.label ?? connection.provider;
-        const accounts = dashboard.accounts.filter(
-          ({ connectionId }) => connectionId === connection.id,
-        );
-        // The account as the Home states it, and the controls it accepts (shared with the phone).
-        const view = messagingAccountView(connection, manifest);
-        return (
-          <section className="section messaging-account" key={connection.id}>
-            <div className="card">
-              <div className="card__row settings-messaging-row">
-                <IntegrationIcon id={connection.provider} name={providerLabel} />
-                <div className="card__row-body">
-                  <span className="card__row-title">
-                    <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
-                      <AddressText text={connection.displayName} />
-                    </Link>
-                    {/* A read that failed leaves the last answer on screen, never as current. */}
-                    <span className={`chip ${readFailed ? "" : statusChip(connection.status)}`}>
-                      {readFailed ? agentWords("messaging.status.stale") : view.label}
-                    </span>
-                  </span>
-                  <span className="card__row-detail">{providerLabel}</span>
-                  {view.pausedNote ? (
-                    <span className="card__row-detail">{view.pausedNote}</span>
-                  ) : null}
-                  {view.detail ? (
-                    <span className="card__row-detail">
-                      <AddressText text={view.detail} />
-                    </span>
-                  ) : null}
-                </div>
-                <div className="card__row-actions">
-                  {view.canFix ? (
-                    <button
-                      className="btn btn--small"
-                      disabled={pending}
-                      type="button"
-                      onClick={() => onRepair(connection.id, connection.provider)}
-                    >
-                      {agentWords("messaging.fix")}
-                    </button>
-                  ) : !view.canPause && !view.canResume ? null : (
-                    <SettingsSwitch
-                      label={`${view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
-                      checked={view.canPause}
-                      disabled={pending || readFailed}
-                      onChange={(enabled) =>
-                        onStatus(connection.id, enabled ? "connected" : "paused")
-                      }
-                    />
-                  )}
-                  <SurfaceMenu
-                    label={`Actions for ${connection.displayName}`}
-                    items={[
-                      {
-                        icon: "reload",
-                        label: agentWords("messaging.check"),
-                        disabled: pending,
-                        onSelect: () => onCheck(connection.id, connection.displayName),
-                      },
-                      {
-                        icon: "trash",
-                        label: agentWords("messaging.remove"),
-                        danger: true,
-                        disabled: pending,
-                        onSelect: () =>
-                          setRemoving({ id: connection.id, name: connection.displayName }),
-                      },
-                    ]}
-                  />
-                </div>
-              </div>
-              {accounts.map((account) => (
-                <AccountChats
-                  account={account}
-                  chats={chatsRead === "read" ? chatsOfAccount(chats, account.id) : chatsRead}
-                  onRetryChats={onRetryChats}
-                  client={client}
-                  code={code?.accountId === account.id ? code : null}
-                  key={account.id}
-                  manifest={manifest}
-                  me={dashboard.me?.find(({ accountId }) => accountId === account.id) ?? null}
-                  names={names}
-                  onChatAdded={onChatAdded}
-                  onLinkMe={() => onLinkMe(account.id)}
-                  paused={view.canResume}
-                  needsAttention={connection.status === "needs-attention"}
-                  pending={pending}
-                  providerLabel={providerLabel}
-                />
-              ))}
+      {/* While the last read failed, nothing here changes anything: one rule for every control. */}
+      <fieldset className="messaging-overview" disabled={readFailed}>
+        {dashboard.connections.length === 0 ? (
+          <div className="card">
+            <div className="card__empty">
+              <p>{agentWords("messaging.empty")}</p>
+              <button
+                className="btn btn--primary"
+                disabled={!providerReady}
+                onClick={onAdd}
+                type="button"
+              >
+                {agentWords("messaging.add")}
+              </button>
             </div>
-          </section>
-        );
-      })}
+          </div>
+        ) : null}
+        {dashboard.connections.map((connection) => {
+          const manifest = dashboard.providers.find(
+            ({ provider }) => provider === connection.provider,
+          );
+          const providerLabel = manifest?.label ?? connection.provider;
+          const accounts = dashboard.accounts.filter(
+            ({ connectionId }) => connectionId === connection.id,
+          );
+          // The account as the Home states it, and the controls it accepts (shared with the phone).
+          const view = messagingAccountView(connection, manifest);
+          return (
+            <section className="section messaging-account" key={connection.id}>
+              <div className="card">
+                <div className="card__row settings-messaging-row">
+                  <IntegrationIcon id={connection.provider} name={providerLabel} />
+                  <div className="card__row-body">
+                    <span className="card__row-title">
+                      <Link to={`/settings/messaging/${encodeURIComponent(connection.id)}`}>
+                        <AddressText text={connection.displayName} />
+                      </Link>
+                      {/* A read that failed leaves the last answer on screen, never as current. */}
+                      <span className={`chip ${readFailed ? "" : statusChip(connection.status)}`}>
+                        {readFailed ? agentWords("messaging.status.stale") : view.label}
+                      </span>
+                    </span>
+                    <span className="card__row-detail">{providerLabel}</span>
+                    {view.pausedNote ? (
+                      <span className="card__row-detail">{view.pausedNote}</span>
+                    ) : null}
+                    {view.detail ? (
+                      <span className="card__row-detail">
+                        <AddressText text={view.detail} />
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="card__row-actions">
+                    {view.canFix ? (
+                      <button
+                        className="btn btn--small"
+                        disabled={pending}
+                        type="button"
+                        onClick={() => onRepair(connection.id, connection.provider)}
+                      >
+                        {agentWords("messaging.fix")}
+                      </button>
+                    ) : !view.canPause && !view.canResume ? null : (
+                      <SettingsSwitch
+                        label={`${view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause")} ${connection.displayName}`}
+                        checked={view.canPause}
+                        disabled={pending || readFailed}
+                        onChange={(enabled) =>
+                          onStatus(connection.id, enabled ? "connected" : "paused")
+                        }
+                      />
+                    )}
+                    <SurfaceMenu
+                      label={`Actions for ${connection.displayName}`}
+                      items={[
+                        {
+                          icon: "reload",
+                          label: agentWords("messaging.check"),
+                          disabled: pending,
+                          onSelect: () => onCheck(connection.id, connection.displayName),
+                        },
+                        {
+                          icon: "trash",
+                          label: agentWords("messaging.remove"),
+                          danger: true,
+                          disabled: pending,
+                          onSelect: () =>
+                            setRemoving({ id: connection.id, name: connection.displayName }),
+                        },
+                      ]}
+                    />
+                  </div>
+                </div>
+                {accounts.map((account) => (
+                  <AccountChats
+                    account={account}
+                    chats={chatsRead === "read" ? chatsOfAccount(chats, account.id) : chatsRead}
+                    onRetryChats={onRetryChats}
+                    client={client}
+                    code={code?.accountId === account.id ? code : null}
+                    key={account.id}
+                    manifest={manifest}
+                    me={dashboard.me?.find(({ accountId }) => accountId === account.id) ?? null}
+                    names={names}
+                    onChatAdded={onChatAdded}
+                    onLinkMe={() => onLinkMe(account.id)}
+                    paused={view.canResume}
+                    needsAttention={connection.status === "needs-attention"}
+                    pending={pending}
+                    providerLabel={providerLabel}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </fieldset>
       {removing ? (
         <Dialog
           title={agentWords("messaging.remove.title", { account: removing.name })}

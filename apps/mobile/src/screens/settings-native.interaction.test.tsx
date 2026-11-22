@@ -506,16 +506,15 @@ it.each(["ios", "android"])(
       "Not read just now",
       "Not read just now",
     ]);
-    const controls = [
-      "Pause",
-      "Resume",
-      "Check again",
-      "Fix setup",
-      "Remove account",
-      "Link my account",
-      "Link another account",
-    ];
-    expect(rows().filter((r) => controls.includes(r.label))).toEqual([]);
+    // Every row that sends a command, by enumeration: only Refresh and moving around stay.
+    const commands = rows().filter(
+      (r) =>
+        (r.kind === "button" && !r.opens && r.label !== "Refresh") ||
+        r.kind === "toggle" ||
+        r.kind === "input" ||
+        r.kind === "chips",
+    );
+    expect(commands.map((r) => r.label)).toEqual([]);
   },
 );
 

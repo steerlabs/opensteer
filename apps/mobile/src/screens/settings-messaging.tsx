@@ -308,8 +308,6 @@ function Messaging({
       const footer = footerFor(section);
       sections.push({ key: section, title: provider.label, rows, ...(footer ? { footer } : {}) });
     }
-    // The last read failed: what is shown is the answer before it.
-    const stale = loaded !== null;
     for (const account of data.accounts) {
       const manifest = data.providers.find((p) => p.provider === account.provider);
       const providerLabel = manifest?.label ?? account.provider;
@@ -433,24 +431,7 @@ function Messaging({
       sections.push({
         key: account.id,
         title: account.displayName,
-        // A read that failed leaves the last answer on screen, never as current, and offers
-        // nothing to press on it, as the web does.
-        rows: stale
-          ? rows.flatMap((row): NativeSettingsRow[] =>
-              row.key === "status"
-                ? [
-                    {
-                      key: "status",
-                      kind: "status",
-                      tone: "neutral",
-                      label: agentWords("messaging.status.stale"),
-                    },
-                  ]
-                : row.kind === "button"
-                  ? []
-                  : [row],
-            )
-          : rows,
+        rows,
         ...(footer ? { footer } : {}),
       });
       // Only a read answer says an account has no chat.
@@ -493,12 +474,35 @@ function Messaging({
       });
     }
   }
-  const setup = sections.filter((section) => section.key.startsWith("setup:"));
+  // The last read failed: what is shown is the answer before it, never as current, and nothing
+  // on it changes anything; only Refresh, Try again and moving around stay. One rule for every
+  // section, as the web holds it for every control.
+  if (loaded !== null && dashboard.data !== null)
+    for (const [index, section] of sections.entries())
+      if (section.key !== "refresh")
+        sections[index] = {
+          ...section,
+          rows: section.rows.flatMap((row): NativeSettingsRow[] =>
+            row.kind === "status"
+              ? [{ ...row, tone: "neutral", label: agentWords("messaging.status.stale") }]
+              : (row.kind === "button" &&
+                    !row.opens &&
+                    row.label !== agentWords("common.tryAgain")) ||
+                  row.kind === "toggle" ||
+                  row.kind === "input" ||
+                  row.kind === "chips"
+                ? []
+                : [row],
+          ),
+        };
+  // A section the rule emptied says nothing, so it is not drawn.
+  const drawn = sections.filter(
+    (section) => section.key === "refresh" || section.rows.length > 0 || section.footer,
+  );
+  const setup = drawn.filter((section) => section.key.startsWith("setup:"));
   return (
     <>
-      <NativeSettingsPage
-        sections={sections.filter((section) => !section.key.startsWith("setup:"))}
-      />
+      <NativeSettingsPage sections={drawn.filter((section) => !section.key.startsWith("setup:"))} />
       <Sheet
         open={providerId !== null}
         title={

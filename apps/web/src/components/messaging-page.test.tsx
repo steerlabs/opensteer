@@ -415,6 +415,37 @@ describe("Messaging", () => {
     }
   });
 
+  it("after a read that failed, offers nothing that changes anything: only Try again and moving around", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const client = chats();
+    try {
+      await withDashboard(client, (dashboard) => dashboard, 1);
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await vi.waitFor(() => expect(page.textContent).toContain("Not read just now"));
+      // Every control that sends a command, found by enumeration, not by name.
+      const live = [
+        ...document.querySelectorAll<HTMLButtonElement | HTMLInputElement>(
+          "button, input, [role=switch], [role=menuitem]",
+        ),
+      ].filter(
+        (control) =>
+          !(control as HTMLButtonElement).disabled &&
+          !control.closest("fieldset[disabled]") &&
+          control.textContent !== "Try again",
+      );
+      expect(
+        live.map((control) => control.textContent || control.getAttribute("aria-label")),
+      ).toEqual([]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("selects only the Messaging account named by the child route", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));

@@ -1571,3 +1571,10 @@ a.connected-agents__row:focus-visible {
 .card__row.is-unavailable .card__row-title {
   color: var(--muted);
 }
+/* The Messaging overview's one switch for its controls: no frame of its own. */
+.messaging-overview {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
