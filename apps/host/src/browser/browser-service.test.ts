@@ -8958,3 +8958,93 @@ describe("a connected agent's selected grant admits the exact profile before any
     expect(create).not.toHaveBeenCalled();
   });
 });
+
+describe("work under a connection's authority never uses the clipboard in the browser", () => {
+  const sentence =
+    "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const cmdV = {
+    type: "rawKeyDown",
+    modifiers: 4,
+    key: "v",
+    code: "KeyV",
+    windowsVirtualKeyCode: 86,
+  };
+  async function attached(
+    repository: MemoryBrowserRepository,
+    ownerId: UserId,
+    agentBindingId: string,
+  ) {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId, ownerId };
+    // A connected agent works only in a saved profile, never in Guest.
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    /** Sends one command and answers it as the browser, returning what reached the runtime. */
+    const forwarded = async (method: string, parameters: Record<string, unknown>) => {
+      const request = cdp.request({ method, parameters, sessionId: "cdp-page-1" });
+      const command = await runtime.nextCommand();
+      runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      await request;
+      return command.command;
+    };
+    return { cdp, runtime, forwarded };
+  }
+
+  it("refuses a lineage Run's paste, copy, cut and clipboard grant before anything leaves the Home", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const { cdp, forwarded } = await attached(repository, ownerId, "run:lineage");
+    for (const [method, parameters] of [
+      ["Input.dispatchKeyEvent", cmdV],
+      ["Input.dispatchKeyEvent", { ...cmdV, commands: ["paste"] }],
+      ["Input.dispatchKeyEvent", { ...cmdV, key: "c", code: "KeyC", windowsVirtualKeyCode: 67 }],
+      ["Input.dispatchKeyEvent", { ...cmdV, modifiers: 2, key: "x", code: "KeyX" }],
+      ["Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }],
+      [
+        "Target.sendMessageToTarget",
+        {
+          sessionId: "child",
+          message: JSON.stringify({ id: 1, method: "Input.dispatchKeyEvent", params: cmdV }),
+        },
+      ],
+    ] as const) {
+      // The refusal settles before any timer can run; a command handed to the browser waits for
+      // the browser's answer instead.
+      const handedOff = new Promise((resolve) =>
+        setTimeout(resolve, 0, "handed to the browser, waiting for its answer"),
+      );
+      const settled = await Promise.race([
+        cdp
+          .request({ method, parameters, sessionId: "cdp-page-1" })
+          .catch((error: unknown) => error),
+        handedOff,
+      ]);
+      expect(settled, method).toMatchObject({ code: "forbidden", message: sentence });
+    }
+    // Nothing of them reached the runtime: the next command it sees is the next one sent.
+    await expect(
+      forwarded("Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers: 4, code: "KeyA" }),
+    ).resolves.toMatchObject({ method: "Input.dispatchKeyEvent", parameters: { code: "KeyA" } });
+  });
+
+  it("forwards the person's own Run's paste exactly as before", async () => {
+    const ownerId = createId("user");
+    const { forwarded } = await attached(new MemoryBrowserRepository(ownerId), ownerId, "run:own");
+    await expect(forwarded("Input.dispatchKeyEvent", cmdV)).resolves.toEqual({
+      method: "Input.dispatchKeyEvent",
+      parameters: cmdV,
+      sessionId: "cdp-page-1",
+    });
+    await expect(
+      forwarded("Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }),
+    ).resolves.toMatchObject({ method: "Browser.grantPermissions" });
+  });
+});

@@ -463,6 +463,8 @@ export async function journey(
     restartHome,
     crashHome,
     command,
+    /** The real browser the guest launched, for a page no session's agent holds. */
+    launched: () => launched,
     draft,
     viewer,
     slot: () => readBrowserPoolSlot(database, task.runnerId),
