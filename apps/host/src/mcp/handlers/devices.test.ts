@@ -29,7 +29,7 @@ function runCall(agentConnection: boolean) {
 }
 
 it("carries a lineage Run's connection to computer use, and nothing for the person's own Run", async () => {
-  const runComputerCode = vi.fn(async () => ({ content: [] }));
+  const runComputerCode = vi.fn(async (_caller: unknown) => ({ content: [] }));
   const handlers = new DeviceToolHandlers({
     devices: { computerToolEnabled: async () => true, runComputerCode } as never,
     access: {} as never,
