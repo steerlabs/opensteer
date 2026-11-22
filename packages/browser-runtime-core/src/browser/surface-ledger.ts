@@ -501,6 +501,8 @@ export class SurfaceLedger {
     const engine = record.restore.engine;
     record.restore.engine = null;
     record.restore.bytes = 0;
+    // It can no longer wake as itself: its place in any lineage ends (run 12).
+    if (!record.live) this.releaseTarget?.(record.lastTargetId);
     void Promise.resolve(this.context.releaseRestore?.(engine)).catch(() => undefined);
   }
   /** The sleeper's reason for skipping a due page, or null when nothing blocks it. */
@@ -573,7 +575,8 @@ export class SurfaceLedger {
         engine,
         bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
       };
-      this.detachLive(record, true);
+      // Only a tab that can wake as itself keeps its place in a lineage (run 12).
+      this.detachLive(record, engine != null);
       record.lease.endSleep(true);
       this.pages.destroy(live.page, "slept");
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
@@ -1384,6 +1387,8 @@ export class SurfaceLedger {
     const record = this.records.get(surfaceId);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
     record.lease.close();
+    // As a durable close: its place in any lineage ends now, not once the close is confirmed.
+    this.releaseTarget?.(record.lastTargetId);
     const live = record.live;
     // The row stays listed until confirmation; no binding, lookup or attach reaches the page.
     for (const page of this.pages.tabPages(this.session, surfaceId))
@@ -1643,7 +1648,8 @@ export class SurfaceLedger {
         const openerRecord = openerId ? this.liveRecord(openerId) : undefined;
         // A wake of a tab this ledger put to sleep: the woken target follows the slept one, by
         // this record alone, only when the tab itself woke with its state; a page opened at its
-        // address instead is a new page (run 12).
+        // address instead is a new page (run 12). A Mac restore from the state the runtime
+        // captured (history and session storage into a view it made) is the tab itself, on purpose.
         const woke =
           waking && waking.restore
             ? {

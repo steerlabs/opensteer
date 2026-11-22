@@ -142,7 +142,9 @@ describe("SurfaceLedger", () => {
       const slept = await page.targetId();
       try {
         expect(await ledger.sleep(id, () => null)).toBe(true);
-        expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept, true);
+        // Only a tab that can wake as itself keeps a place: with nothing to restore, it holds none.
+        if (how === "address") expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept);
+        else expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept, true);
         if (how === "fresh") {
           const create = context.createPage.bind(context);
           vi.spyOn(context, "createPage").mockImplementation(async (options) => {
@@ -163,6 +165,74 @@ describe("SurfaceLedger", () => {
       }
     },
   );
+  it.each([
+    ["its captured state is kept", false, true],
+    ["its captured state was evicted under the restore budget", true, false],
+  ] as const)(
+    "wakes a tab slept as the Mac's launcher sleeps it (history and session storage captured) as itself only while %s (run 12)",
+    async (_case, evict, itself) => {
+      const page = new FakePage({ url: "https://mac.test/form" });
+      // Shaped as `ElectronPageRestore`: the history entries with Blink page state, the index,
+      // and the origin's session storage.
+      page.captureRestore = async () => ({
+        entries: [{ url: "https://mac.test/form", title: "Form", pageState: "AAAA" }],
+        index: 0,
+        sessionStorage: { origin: "https://mac.test", items: [["draft", "kept"]] },
+      });
+      const context = new FakeContext([page]);
+      const claimTarget = vi.fn();
+      const releaseTarget = vi.fn();
+      const ledger = new SurfaceLedger(context, { claimTarget, releaseTarget });
+      await ledger.start();
+      await flushMicrotasks();
+      const id = ledger.snapshot()[0]!.id;
+      const slept = await page.targetId();
+      try {
+        expect(await ledger.sleep(id, () => null)).toBe(true);
+        expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept, true);
+        if (evict) {
+          const record = [...ledger.policyRecords()].find((entry) => entry.id === id)!;
+          ledger.releaseRestore(record);
+          // The eviction ends its place at once.
+          expect(releaseTarget).toHaveBeenLastCalledWith(slept);
+        }
+        claimTarget.mockClear();
+        const woken = await ledger.wake(id);
+        expect(claimTarget).toHaveBeenCalledExactlyOnceWith(woken.targetId, undefined, {
+          from: slept,
+          itself,
+        });
+      } finally {
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
+
+  it("ends a sleeping tab's place as soon as its close begins, before the close is confirmed (run 12)", async () => {
+    const page = new FakePage({ url: "https://close.test/" });
+    page.captureRestore = async () => ({ saved: true });
+    const releaseTarget = vi.fn();
+    const context = new FakeContext([page]);
+    const ledger = new SurfaceLedger(context, { releaseTarget });
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    const slept = await page.targetId();
+    const released = vi.fn(() => new Promise<never>(() => undefined));
+    Object.assign(context, { releaseRestore: released });
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      releaseTarget.mockClear();
+      const closing = ledger.closeSurface(id).catch(() => undefined);
+      await flushMicrotasks();
+      expect(releaseTarget).toHaveBeenCalledWith(slept);
+      void closing;
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
   it("sleeps a lease without closing its record and wakes once with the same identity", async () => {
     const page = new FakePage({ url: "https://sleep.test/", title: "Keep me" });
     const context = new FakeContext([page]);

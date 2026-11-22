@@ -1782,6 +1782,13 @@ async function lineageSetup(name: string) {
     });
     cleanup.push(async () => client.close());
     return {
+      /** What this client is told exists. */
+      targets: async () =>
+        (
+          (await client.send({ method: "Target.getTargets" })) as {
+            targetInfos: { targetId: string }[];
+          }
+        ).targetInfos.map((info) => info.targetId),
       /** The page's mark, read through this client; throws when the tab is out of its reach. */
       reach: async (targetId: string) => {
         const { sessionId: cdpSessionId } = (await client.send({
@@ -1864,9 +1871,15 @@ it("keeps a connected agent's lineage on its tab when the runtime puts the tab t
   await expect(agentA.reach(f.target(fromC))).rejects.toMatchObject(outsideLineage);
   const fromA = await f.popup(a, "from-a", 6);
   expect(await agentA.reach(f.target(fromA))).toBeNull();
-  // The other agent's lineage is as it was.
+  // The other agent's lineage is as it was, and stays apart through its own tab's sleep.
+  await expect(agentA.reach(f.target(b))).rejects.toMatchObject(outsideLineage);
   expect(await agentB.reach(f.target(b))).toBe("b");
   await expect(agentB.reach(woken.targetId)).rejects.toMatchObject(outsideLineage);
+  expect(await f.ledger.sleep(b as never, () => null)).toBe(true);
+  const wokenB = await f.ledger.wake(b as never);
+  await waitLoaded(wokenB.cdp, "/article");
+  expect(await agentB.reach(wokenB.targetId)).toBe("b");
+  await expect(agentA.reach(wokenB.targetId)).rejects.toMatchObject(outsideLineage);
 }, 120_000);
 
 it("gives a connected agent no page in its lineage when its tab's wake ends at its address (run 12)", async () => {
@@ -1884,19 +1897,10 @@ it("gives a connected agent no page in its lineage when its tab's wake ends at i
   await waitLoaded(woken.cdp, "/article");
   expect(woken.page.url()).toContain("id=a");
   expect(await evalValue(woken.cdp, `sessionStorage.getItem("mark")`)).toBeNull();
-  // A new page, not the granted tab: outside the lineage, as any page it never had.
+  // A new page, not the granted tab: outside the lineage, as any page it never had, and the
+  // client is told of no page at all.
   await expect(agentA.reach(woken.targetId)).rejects.toMatchObject(outsideLineage);
-  expect(
-    (
-      (await f.router
-        .openStandardClient("session-lineage-fresh", {
-          wholeContext: false,
-          connection: true,
-          lineage: { attachmentId: "agent-check", seedTargetId: woken.targetId },
-        })
-        .send({ method: "Target.getTargets" })) as { targetInfos: { targetId: string }[] }
-    ).targetInfos.map((t) => t.targetId),
-  ).toEqual([woken.targetId]);
+  expect(await agentA.targets()).toEqual([]);
 }, 90_000);
 
 /**
@@ -2028,3 +2032,92 @@ it("tells a connected agent the same bytes for a tab that never existed, one out
     expect(frame).toBe(outside((JSON.parse(frame) as { id: number }).id));
   }
 }, 120_000);
+
+it("leaves no place a later claim can fill when a tab closes while it sleeps (run 12)", async () => {
+  const f = await lineageSetup("lineage-closed");
+  const a = await f.open("a", 1);
+  const other = await f.open("other", 2);
+  const agentA = f.agent("agent-a", f.target(a));
+  const slept = f.target(a);
+  expect(await f.ledger.sleep(a as never, () => null)).toBe(true);
+  await f.ledger.closeSurface(a as never);
+  // A claim that names the closed tab's slept target, as only the ledger's own wake would: the
+  // place is gone, so the page gains nothing.
+  f.router.claimTarget("session-lineage-closed", f.target(other), undefined, {
+    from: slept,
+    itself: true,
+  });
+  await expect(agentA.reach(f.target(other))).rejects.toMatchObject(outsideLineage);
+  expect(await agentA.targets()).toEqual([]);
+}, 90_000);
+
+it("tells the client of a noopener tab's opener nothing of that tab's wake, and the tab's own client everything (run 12)", async () => {
+  const f = await lineageSetup("lineage-noopener");
+  const c = await f.open("c", 3);
+  // `a` opened from `c` without an opener.
+  await f.ledger.binding(c as never)!.cdp.send("Runtime.evaluate", {
+    expression: `void window.open(${JSON.stringify(`${f.server.originForSite(1)}/article?id=a`)}, "_blank", "noopener")`,
+    userGesture: true,
+  });
+  const a = await vi.waitFor(
+    () => {
+      const found = f.ledger
+        .snapshot()
+        .find((s) => f.ledger.binding(s.id)?.page.url().includes("id=a"));
+      expect(found).toBeDefined();
+      return found!.id as string;
+    },
+    { timeout: 10_000, interval: 25 },
+  );
+  await waitLoaded(f.ledger.binding(a as never)!.cdp, "/article");
+  await evalValue(f.ledger.binding(a as never)!.cdp, `sessionStorage.setItem("mark", "a")`);
+  // Each client is told of new targets and attaches to them as Chromium announces them.
+  const events = (client: StandardCdpAttachment) => {
+    const seen: string[] = [];
+    client.onEvent(({ method, parameters }) => {
+      const info = (parameters as { targetInfo?: { targetId?: string } }).targetInfo;
+      if (info?.targetId) seen.push(`${method} ${info.targetId}`);
+    });
+    return seen;
+  };
+  const clientOf = async (attachmentId: string, seedTargetId: string) => {
+    const client = f.router.openStandardClient("session-lineage-noopener", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId, seedTargetId },
+    });
+    cleanup.push(async () => client.close());
+    const seen = events(client);
+    await client.send({ method: "Target.setDiscoverTargets", parameters: { discover: true } });
+    await client.send({
+      method: "Target.setAutoAttach",
+      parameters: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true },
+    });
+    return { client, seen };
+  };
+  const ofA = await clientOf("agent-a", f.target(a));
+  const ofC = await clientOf("agent-c", f.target(c));
+  const agentA = f.agent("agent-a-reach", f.target(a));
+  const agentC = f.agent("agent-c-reach", f.target(c));
+  // Before the sleep: `c`'s client reaches `a` only if Chromium named `c` as its opener.
+  const cReachedA = await agentC.reach(f.target(a)).then(
+    () => true,
+    () => false,
+  );
+  process.stdout.write(`${JSON.stringify({ event: "noopener.before", cReachedA })}\n`);
+  expect(cReachedA).toBe(false);
+
+  expect(await f.ledger.sleep(a as never, () => null)).toBe(true);
+  const woken = await f.ledger.wake(a as never);
+  await waitLoaded(woken.cdp, "/article");
+  process.stdout.write(
+    `${JSON.stringify({ event: "noopener.after", woken: woken.targetId, ofA: ofA.seen, ofC: ofC.seen })}\n`,
+  );
+  // `a`'s client is told of the woken tab and reaches it with its state; `c`'s is told nothing
+  // of it and cannot reach it.
+  await vi.waitFor(() => expect(ofA.seen).toContain(`Target.targetCreated ${woken.targetId}`));
+  expect(await agentA.reach(woken.targetId)).toBe("a");
+  expect(ofC.seen.filter((entry) => entry.endsWith(woken.targetId))).toEqual([]);
+  await expect(agentC.reach(woken.targetId)).rejects.toMatchObject(outsideLineage);
+  expect(await agentC.targets()).toEqual([f.target(c)]);
+}, 90_000);

@@ -140,6 +140,10 @@ describe("SessionCdpRouter", () => {
     expect(await reach(client, "seed-woken")).toBe(true);
     expect(await reach(other, "seed-woken")).toBe("forbidden");
     expect(await reach(other, "sibling")).toBe(true);
+    // The place is taken once: a second claim naming the same slept target gains nothing.
+    page("seed-dup");
+    router.claimTarget("a", "seed-dup", undefined, { from: "seed", itself: true });
+    expect(await reach(client, "seed-dup")).toBe("forbidden");
 
     // A page claimed with no wake, or naming a target that never slept in this lineage, gains nothing.
     page("stranger");
@@ -154,6 +158,22 @@ describe("SessionCdpRouter", () => {
     page("seed-late");
     router.claimTarget("a", "seed-late", undefined, { from: "seed-woken", itself: true });
     expect(await reach(client, "seed-late")).toBe("forbidden");
+
+    // An id reused by another page clears a place kept under it: that page sleeping and waking
+    // gives the lineage nothing.
+    page("kept");
+    router.claimTarget("a", "kept");
+    const third = router.openStandardClient("a", {
+      wholeContext: false,
+      connection: true,
+      lineage: { attachmentId: "third", seedTargetId: "kept" },
+    });
+    router.releaseTarget("a", "kept", true);
+    router.claimTarget("a", "kept");
+    router.releaseTarget("a", "kept", true);
+    page("kept-woken");
+    router.claimTarget("a", "kept-woken", undefined, { from: "kept", itself: true });
+    expect(await reach(third, "kept-woken")).toBe("forbidden");
 
     // A sleeping tab closed: its place ends, and no later page takes it.
     router.releaseTarget("a", "sibling", true);

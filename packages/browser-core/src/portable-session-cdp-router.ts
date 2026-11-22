@@ -1977,6 +1977,11 @@ export class SessionCdpRouter {
         claim.creatorAttachmentId ??= lineage.attachmentId;
       }
     }
+    // A place kept under this id is stale unless this claim wakes from it: ids are not trusted
+    // to be unique for ever.
+    if (woke?.from !== targetId)
+      for (const connection of state.session.connections)
+        connection.asleepLineage?.delete(targetId);
     if (woke) {
       for (const connection of state.session.connections) {
         if (!connection.asleepLineage?.delete(woke.from) || !woke.itself) continue;
