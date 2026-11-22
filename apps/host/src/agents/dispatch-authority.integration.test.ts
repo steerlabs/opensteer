@@ -111,6 +111,7 @@ function dispatcher(
         options?: {
           readonly beforeAck?: () => Promise<void>;
           readonly beforeSend?: () => Promise<void>;
+          readonly beforeWireSend?: () => Promise<void>;
           readonly onNotAdmitted?: () => Promise<void>;
         },
       ) => {
@@ -123,6 +124,7 @@ function dispatcher(
           throw error;
         }
         await hooks.afterFence?.();
+        await options?.beforeWireSend?.();
         sent.push(command);
         if (options?.beforeAck) hooks.holdAck?.(options.beforeAck);
         return { type: "runner.command-accepted" };
@@ -310,6 +312,82 @@ describeStore("a connected agent's authority at the send", (it) => {
         .where("id", "=", occurrence.id)
         .executeTakeFirstOrThrow(),
     ).toEqual({ status: "running" });
+  });
+
+  it("leaves an unsent firing sendable and resets it to pending when refused after beforeSend (Z4)", async ({
+    storeFixture,
+  }) => {
+    const { database, store, triggers } = storeFixture;
+    const f = await storeFixture.startRunFixture("trigger-z4-unsent-refusal");
+    await database
+      .updateTable("runners")
+      .set({ capabilities: sql`'["trigger-program-v5"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: "trigger-z4-unsent",
+      name: "Z4 unsent firing",
+      program: {
+        language: "javascript",
+        source: "export default async () => ({ ok: true })",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: trigger.id,
+    });
+    const sent: RunnerCommand[] = [];
+    const queue = dispatcher(
+      storeFixture,
+      f.runnerId,
+      {
+        planning: async () => {},
+        afterFence: async () => {
+          throw new CommandDispatchError("Agents are stopped on this computer.", "retry", {
+            provenNotStarted: true,
+          });
+        },
+      },
+      sent,
+      [],
+    );
+    const claimed = await store.claimCommand(occurrence.commandId, "trigger-z4-dispatcher");
+    if (!claimed) throw new Error("Expected the Trigger command");
+    await expect(
+      queue.dispatch(claimed.command, new AbortController().signal),
+    ).rejects.toMatchObject({
+      disposition: "retry",
+      provenNotStarted: true,
+    });
+    expect(sent).toHaveLength(0);
+    // frame_sent_at was never stamped because refusal happened before beforeWireSend!
+    const cmdBeforeRetry = await database
+      .selectFrom("commands")
+      .select(["frameSentAt", "status"])
+      .where("id", "=", occurrence.commandId)
+      .executeTakeFirstOrThrow();
+    expect(cmdBeforeRetry.frameSentAt).toBeNull();
+    // Coordinator's retryCommand succeeds cleanly without conflict or owed-settlement polling.
+    await expect(
+      store.retryCommand(occurrence.commandId, new Error("Agents stopped"), {
+        provenNotStarted: true,
+      }),
+    ).resolves.toBeUndefined();
+    const afterRetry = await database
+      .selectFrom("triggerOccurrences")
+      .select(["outcome", "status"])
+      .where("id", "=", occurrence.id)
+      .executeTakeFirstOrThrow();
+    expect(afterRetry).toEqual({ outcome: "pending", status: "pending" });
   });
 
   it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({

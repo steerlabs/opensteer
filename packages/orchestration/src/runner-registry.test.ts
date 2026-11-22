@@ -1232,7 +1232,7 @@ describe("Runner connection registry", () => {
       message: "Provider acknowledgement was lost",
     });
   });
-  it("preserves uncertain disposition for trigger.execute without failing or dropping the connection", async () => {
+  it("preserves uncertain disposition for trigger.execute and ejects the connection so attach settles it (Finding 14)", async () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
@@ -1258,6 +1258,106 @@ describe("Runner connection registry", () => {
       disposition: "uncertain",
       message: "Cannot confirm",
     });
+    await waitFor(() => peer.closed !== undefined);
+    expect(peer.closed).toBeDefined();
+  });
+
+  it("still rejects runner.command-uncertain for run.execute as a protocol error and retries offline trigger.interrupt (Findings 13 & 14)", async () => {
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(commitThrough),
+      },
+    });
+    const environmentId = createId("environment");
+    const peer = new MemoryRunnerPeer("runner");
+    await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
+    const runCmd = executeCommand(environmentId);
+    const runDispatched = registry.dispatch(runCmd, new AbortController().signal);
+    await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
+    await expect(
+      registry.handle(peer, {
+        ...fenceOf(peer),
+        commandId: runCmd.commandId,
+        correlationId: runCmd.correlationId,
+        message: "Uncertain run",
+        type: "runner.command-uncertain",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(runDispatched).rejects.toMatchObject({ disposition: "failed" });
+
+    // Disconnect peer; offline trigger.interrupt must retry (firings survive disconnect).
+    registry.disconnect(peer);
+    const interruptId = createId("command");
+    await expect(
+      registry.dispatch(
+        RunnerCommandSchema.parse({
+          commandId: interruptId,
+          correlationId: CorrelationIdSchema.parse(interruptId),
+          environmentId,
+          occurrenceId: createId("triggerOccurrence"),
+          type: "trigger.interrupt",
+        }),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ disposition: "retry", provenNotStarted: true });
+    await registry.close();
+  });
+
+  it("never calls beforeWireSend and marks provenNotStarted when refused by agents-stopped, replaced connection, or abort (Z4)", async () => {
+    const scenarios = ["agents-stopped", "connection-replaced", "aborted"] as const;
+    for (const scenario of scenarios) {
+      const registry = new RunnerRegistry({
+        hooks: {
+          authorize: vi.fn(async () => undefined),
+          onEvent: vi.fn(commitThrough),
+        },
+      });
+      const runnerId = createId("runner");
+      const environmentId = createId("environment");
+      const peer = new MemoryRunnerPeer(`peer-${scenario}`);
+      const baseIdentity = hello(runnerId, environmentId, "boot-1");
+      await registerAttached(
+        registry,
+        {
+          ...baseIdentity,
+          capabilities: [...baseIdentity.capabilities, "runner-agent-stop-v1"],
+        },
+        peer,
+      );
+
+      const command = triggerCommand(environmentId);
+      const controller = new AbortController();
+      const beforeWireSend = vi.fn(async () => undefined);
+      const beforeSend = vi.fn(async () => {
+        if (scenario === "agents-stopped") {
+          await registry.handle(peer, {
+            ...fenceOf(peer),
+            stoppedAt: new Date().toISOString(),
+            type: "runner.agents.stopped",
+          });
+        } else if (scenario === "connection-replaced") {
+          const replacement = new MemoryRunnerPeer(`replacement-${scenario}`);
+          await registerAttached(registry, hello(runnerId, environmentId, "boot-2"), replacement);
+        } else {
+          controller.abort(new Error("aborted before wire send"));
+        }
+      });
+
+      await expect(
+        registry.dispatch(command, controller.signal, {
+          beforeSend,
+          beforeWireSend,
+        }),
+      ).rejects.toMatchObject({
+        disposition: "retry",
+        provenNotStarted: true,
+      });
+      expect(beforeSend).toHaveBeenCalledTimes(1);
+      expect(beforeWireSend).not.toHaveBeenCalled();
+      expect(peer.messages.filter((m) => m.type === "host.command")).toHaveLength(0);
+      await registry.close();
+    }
   });
 
   it("forwards firing inventory on attach and acknowledges committed trigger results", async () => {

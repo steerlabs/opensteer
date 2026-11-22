@@ -997,10 +997,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               threadId: context.anchorThread.id,
             }),
           );
-          // Stamp frame_sent_at right before the wire send so retryCommand can never reset a
-          // firing that may have left the Home without explicit pre-execution Runner refusal (T12).
-          await this.#store.markCommandFrameSent(command.id);
         },
+        // Z4: Stamp frame_sent_at at the point of no return inside RunnerRegistry.dispatch,
+        // after every refusing check (offline, connection replaced, agents stopped, aborted).
+        beforeWireSend: () => this.#store.markCommandFrameSent(command.id),
         ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
       });
     } finally {

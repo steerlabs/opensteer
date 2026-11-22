@@ -2195,13 +2195,25 @@ export class RunnerRegistry {
        * command is written straight after it with nothing in between.
        */
       readonly beforeSend?: () => Promise<void>;
+      /**
+       * Runs at the point of no return inside `dispatch`, after every refusing
+       * check (offline, connection replaced, agents stopped, aborted) and
+       * immediately before `peer.send(frame)` (Z4).
+       */
+      readonly beforeWireSend?: () => Promise<void>;
       readonly onNotAdmitted?: () => Promise<void>;
       readonly fenceRequestSend?: RequestResponseSendFence;
       readonly connectionGeneration?: number;
     } = {},
   ): Promise<RunnerCommandReceipt> {
-    const { beforeAck, beforeSend, connectionGeneration, fenceRequestSend, onNotAdmitted } =
-      options;
+    const {
+      beforeAck,
+      beforeSend,
+      beforeWireSend,
+      connectionGeneration,
+      fenceRequestSend,
+      onNotAdmitted,
+    } = options;
     RunnerCommandSchema.parse(command);
     const startsWork =
       command.type === "run.execute" ||
@@ -2215,6 +2227,7 @@ export class RunnerRegistry {
           retryable: true,
           message: "Agents are stopped on this computer.",
         },
+        provenNotStarted: true,
       });
     if (
       command.type === "request.resolve" &&
@@ -2292,25 +2305,16 @@ export class RunnerRegistry {
       throw new CommandDispatchError("Trigger execution authority was revoked", "failed");
     }
     if (!connection) {
-      // A Trigger program ends with its connection, so there is nothing left to
-      // interrupt. A Run outlives it on its lease: its interrupt waits for the
-      // Runner to return, and the Run's end settles it if the Runner never does.
-      if (command.type === "trigger.interrupt") {
-        this.#releaseCancellation(command, runCancellation, triggerCancellation);
-        return {
-          commandId: command.commandId,
-          correlationId: command.correlationId,
-          type: "runner.command-accepted",
-        };
-      }
       // An offline Runner has no running turn to steer. Failing here rather
       // than retrying lets the Host requeue the message as an ordered turn.
       if (command.type === "run.steer") {
-        throw new CommandDispatchError("Runner is offline", "failed");
+        throw new CommandDispatchError("Runner is offline", "failed", { provenNotStarted: true });
       }
+      // Both Runs and automation firings survive a lost connection (T12), so
+      // `trigger.interrupt` retries while offline just like `run.interrupt`.
       this.#releaseCancellation(command, runCancellation, triggerCancellation);
       await onNotAdmitted?.();
-      throw new CommandDispatchError("Runner is offline", "retry");
+      throw new CommandDispatchError("Runner is offline", "retry", { provenNotStarted: true });
     }
     if (
       command.type === "run.execute" &&
@@ -2392,15 +2396,18 @@ export class RunnerRegistry {
       }
       const frame = { ...connection.identity.fence, command, type: "host.command" as const };
       const prepared = fenceRequestSend && connection.peer.prepareSend?.(frame);
-      const enqueue = () => {
+      const checkStillSendable = () => {
         if (
           this.#byPeer.get(connection.peer.id) !== connection ||
           this.#byEnvironment.get(command.environmentId) !== connection
         ) {
-          throw new CommandDispatchError("Runner is offline", "retry");
+          throw new CommandDispatchError("Runner is offline", "retry", { provenNotStarted: true });
         }
         if (startsWork && connection.agentsStoppedAtMs !== undefined) throw refuseStopped();
         throwIfAborted(signal, "Aborted");
+      };
+      const enqueue = () => {
+        checkStillSendable();
         sent = true;
         const sending = prepared ? prepared() : connection.peer.send(frame);
         void sending.catch(() => undefined);
@@ -2420,11 +2427,17 @@ export class RunnerRegistry {
             owned.environmentId !== binding.environmentId ||
             connection.revokedRunIds.has(command.runId)
           ) {
-            throw new CommandDispatchError("Run execution authority was revoked", "retry");
+            throw new CommandDispatchError("Run execution authority was revoked", "retry", {
+              provenNotStarted: true,
+            });
           }
           sending = enqueue();
         });
       } else {
+        checkStillSendable();
+        if (beforeWireSend) {
+          await beforeWireSend();
+        }
         sending = enqueue();
       }
       await sending;
@@ -2448,6 +2461,25 @@ export class RunnerRegistry {
       if (runBinding && !sent) this.#forgetUnadmittedRun(connection, runBinding);
       if (!sent || connection.pendingAcks.get(command.commandId)?.rejectedBeforeAdmission)
         await onNotAdmitted?.();
+      if (!sent) {
+        if (error instanceof CommandDispatchError) {
+          if (error.disposition === "retry" && !error.provenNotStarted) {
+            throw new CommandDispatchError(error.message, "retry", {
+              cause: error.cause ?? error,
+              provenNotStarted: true,
+            });
+          }
+          throw error;
+        }
+        throw new CommandDispatchError(
+          error instanceof Error ? error.message : "Runner dispatch was refused",
+          "retry",
+          {
+            cause: error,
+            provenNotStarted: true,
+          },
+        );
+      }
       if (error instanceof CommandDispatchError) throw error;
       // The caller's own refusal: nothing was sent, so the command is retried,
       // and settles as unsent work under whatever authority stands by then.
@@ -2457,6 +2489,7 @@ export class RunnerRegistry {
           "retry",
           {
             cause: error,
+            provenNotStarted: true,
           },
         );
       }
@@ -2803,6 +2836,9 @@ export class RunnerRegistry {
             });
           }
           pending?.reject(new CommandDispatchError(message.message, "uncertain"));
+          if (pending?.commandType === "trigger.execute") {
+            void this.#disconnect(connection, new Error(message.message), 1011);
+          }
         }
         break;
       case "runner.event": {
