@@ -5,34 +5,47 @@ and single-use bootstrap token written by `apps/home-provisioner/src/pool-boot.t
 idempotent: re-running after a crash or reboot repeats only unfinished work and never reformats an
 existing profile disk.
 
-## Inputs
+## Verified release bundle (Y7)
+
+`pool-boot.ts` downloads one SHA-256-verified `.tar.gz` release bundle (`installerUrl` +
+`installerSha256`) containing both `enroll-host.sh` and `setup-host.sh`, verifies neither is a
+symlink, and invokes:
 
 ```sh
-bash enroll-host.sh \
+bash "$bundle_dir/enroll-host.sh" \
   --boot-spec /root/opensteer-pool-boot.json \
-  --bootstrap-token-file /root/opensteer-pool-bootstrap-token
+  --bootstrap-token-file /root/opensteer-pool-bootstrap-token \
+  --setup-script "$bundle_dir/setup-host.sh"
 ```
 
-Both files must be regular files (never symlinks) owned by `root:root` with mode `0600`. Any
-malformed boot spec field or exposed file fails enrolment immediately before modifying the host.
-The bootstrap token and the host's private keys are never written to stdout, stderr, or argv.
+`enroll-host.sh` refuses to run any `setup-host.sh` outside its own verified bundle directory (it
+never falls back to an unverified script in `/opt/opensteer-pool`). Both `--boot-spec` and
+`--bootstrap-token-file` must be regular files (never symlinks) owned by `root:root` with mode
+`0600`. The bootstrap token and the host's private keys are never written to stdout, stderr, or
+argv.
 
 ## Steps
 
 1. **Validate the boot specification** (`hostId`, `generation`, bare `https://` `accountOrigin`,
-   Ed25519 SPKI `provisionerKey`, IPv4 `homeCidr`/`provisionerCidr`, `/dev/...`
-   `profileDiskDevice`, boolean `everEnrolled`, and distinct `agentPort`/`adminPort`/`relayPort`).
+   Ed25519 SPKI `provisionerKey`, IPv4 `homeCidr`/`provisionerCidr`, the fixed durable device path
+   `/dev/disk/by-id/google-opensteer-profiles`, boolean `everEnrolled`, and distinct
+   `agentPort`/`adminPort`/`relayPort`). Every string field rejects control characters (including
+   newlines and tabs) and values pass from Python to Bash NUL-delimited.
 2. **Prepare and mount the durable profile disk** at `/var/lib/opensteer-pool/profiles`
-   (`driver.profilesRoot`) using the decision rule below.
+   (`driver.profilesRoot`) using the decision rule below. The device path is fixed to
+   `/dev/disk/by-id/google-opensteer-profiles`, resolved once, verified not to be the boot disk,
+   and formatted with this host's 16-byte ext4 label `osp-<first 12 hex of SHA-256(hostId)>` only
+   after an immediate pre-`mkfs` re-probe of `blkid -p` and `wipefs -n` with `</dev/null` (never
+   `-f`/`-F`, never piping `y`).
 3. **Resolve release artifacts** (`agent`, `relay`, `rootfs`, `kernel`, `egress` URLs and SHA-256
    digests) from `POST {accountOrigin}/v1/browser-pool/hosts/{hostId}/boot` (cached root-only at
    `/etc/opensteer-pool/release-artifacts.json` for idempotent retry after a partial run, or read
    from inline `artifacts` in the boot spec for offline tests).
-4. **Run `setup-host.sh install`** with the persisted CIDRs, ports, and `OSP_PROFILE_DISK`. This
-   installs packages (`e2fsprogs`, `nftables`, `mdadm`, `cryptsetup-bin`, `xfsprogs`, …), pinned
-   Firecracker/jailer and Node.js binaries, the `opensteer-pool-relay` user, root-only Ed25519
-   `host-key.pem` and `relay-key.pem` (generated once; never overwritten), systemd units, and
-   `/etc/opensteer-pool/host.env` (`0600`) so every setting survives reboots.
+4. **Run bundled `setup-host.sh install`** with the persisted CIDRs, ports, fixed
+   `OSP_PROFILE_DISK`, per-host `OSP_PROFILE_DISK_LABEL`, and `OSP_REQUIRE_PROFILE_DISK=1`. Before
+   wiping or building the encrypted Local SSD scratch array (`wipefs -a`, `mdadm`, `cryptsetup`,
+   `mkfs.xfs`), `setup-host.sh` resolves both the durable profile disk and the boot/root disk (plus
+   parent whole disks) and refuses if any scratch SSD candidate matches either.
 5. **Fetch and SHA-256-verify each release artifact**, skipping any file already present with the
    expected hash:
    - `/opt/opensteer-pool/agent/main.js` (`0644`)
@@ -45,57 +58,79 @@ The bootstrap token and the host's private keys are never written to stdout, std
      encrypted Local SSD array (`/srv/opensteer-pool/images`), apply persisted `nftables` rules, and
      re-verify the profile disk mount.
 6. **Prepare `driver.credentialsRoot` (`/etc/opensteer-pool/credentials`, `0700` on the instance's
-   own disk)** and render `/etc/opensteer-pool/agent.json` (`0600`, `driver.requireEgressUpstream:
-true`, `driver.egress.accountOrigin`, `driver.guestMode: "runtime"`, `relayUid` of
-   `opensteer-pool-relay`). Setting `driver.requireEgressUpstream: true` (making this a pulling
-   host) is also what allows a slot deletion to settle: on a pulling host the agent answers
-   `credentialsErased: true` whenever the slot's derived credential paths are seen gone (including
-   for an unknown slot or repeated delete), whereas a non-pulling host leaves `credentialsErased`
-   out for an unknown slot and would hang deletion.
+   own disk)** and render `/etc/opensteer-pool/agent.json` (`0600`, `driver.profilesMount: {
+"label": "osp-<12hex>" }`, `driver.requireEgressUpstream: true`, `driver.egress.accountOrigin`,
+   `driver.guestMode: "runtime"`, `relayUid` of `opensteer-pool-relay`). Setting
+   `driver.requireEgressUpstream: true` (making this a pulling host) is also what allows a slot
+   deletion to settle: on a pulling host the agent answers `credentialsErased: true` whenever the
+   slot's derived credential paths are seen gone (including for an unknown slot or repeated
+   delete), whereas a non-pulling host leaves `credentialsErased` out for an unknown slot and would
+   hang deletion.
 7. **Enrol public keys with Account** via `POST {accountOrigin}/v1/browser-pool/hosts/{hostId}/boot-complete`
    carrying `{ generation, bootstrapToken, hostKey, relayKey }`. Only after HTTP `200` with
    `{"completed":true}`:
-   - removes `--bootstrap-token-file`;
-   - runs `setup-host.sh verify-profiles-mount`;
-   - enables and starts `opensteer-pool-agent.service` and `opensteer-pool-relay.service`.
+   - runs `setup-host.sh verify-profiles-mount` (checking mount point, fixed device, `rw`, and the
+     same per-host `osp-<12hex>` label);
+   - enables and starts `opensteer-pool-agent.service` and `opensteer-pool-relay.service`;
+   - **after services are up**, removes `--bootstrap-token-file` and cloud-init's user-data copies
+     (`/var/lib/cloud/instance/user-data.txt`, `user-data.txt.i`, `cloud-config.txt`). If a crash
+     or `systemctl` failure happens before removal, the token stays on disk and the next run
+     replays `/boot-complete` idempotently with the same keys and finishes starting services (Y5).
 
-## Durable profile disk decision rule (X1 / T6)
+The enrolment sequence is strictly ordered: per-host label decided and written (or verified) →
+mounted by that label → `agent.json` written with `driver.profilesMount: { "label": "osp-<12hex>" }`
+→ `verify-profiles-mount` and services started → bootstrap token and cloud-init user-data removed.
 
-The durable profile disk self-identifies with ext4 label `osp-profiles` (12 bytes, within ext4's
-16-byte volume label limit). Account supplies only `everEnrolled` (from
-`browser_pool_hosts.ever_enrolled`) so an automatically replaced never-enrolled host can recover
-whether its first boot failed before or after formatting, while a disk that could hold a person's
-profile is never formatted.
+## Durable profile disk decision rule (X1 / Y2 / Y3 / Y7)
 
-| `everEnrolled`    | `blkid -o export -p` & `wipefs -n --noheadings`                         | Mountable? | Decision                                                                             |
-| ----------------- | ----------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------ |
-| `false`           | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)           | n/a        | **`format-and-mount`** (`mkfs.ext4 -q -m 1 -L osp-profiles`, no `-f`/`-F`)           |
-| `false`           | `TYPE=ext4`, `LABEL=osp-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
-| `true`            | `TYPE=ext4`, `LABEL=osp-profiles`, no `PTTYPE`, single `ext4` signature | `true`     | **`mount-only`** (never format)                                                      |
-| `false` or `true` | `TYPE=ext4`, `LABEL=osp-profiles`                                       | `false`    | **`refuse:unmountable-profile-disk`** (fail loudly; no `mkfs`; agent does not start) |
-| `true`            | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)           | n/a        | **`refuse:enrolled-host-blank-disk`** (fail loudly; no `mkfs`; agent does not start) |
-| `false` or `true` | Any other filesystem, label, partition table, or multi-signature disk   | n/a        | **`refuse:foreign-disk-signature`** (fail loudly; nothing modified)                  |
-| `false` or `true` | `blkid` exit not in `{0, 2}` or `wipefs` exit non-zero                  | n/a        | **`refuse:probe-error`** (fail loudly; nothing modified)                             |
+Each host's durable profile disk carries a per-host 16-byte ext4 volume label `osp-<12hex>`, where
+`<12hex>` is the first 12 lowercase hex characters of `SHA-256(hostId)`. Another host's profile
+disk carries a different label and is refused as a foreign disk. Account supplies only
+`everEnrolled` (from `browser_pool_hosts.ever_enrolled`) so an automatically replaced
+never-enrolled host can recover whether its first boot failed before or after formatting, while a
+disk that could hold a person's profile is never formatted.
 
-## Reboot and anti-fallback protection
+| `everEnrolled`    | `blkid -o export -p` & `wipefs -n --noheadings`                           | Mountable? | Decision                                                                                                 |
+| ----------------- | ------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------- |
+| `false`           | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)             | n/a        | **`format-and-mount`** (re-probe `blkid` + `wipefs`, then `mkfs.ext4 -q -m 1 -L osp-<12hex> </dev/null`) |
+| `false`           | `TYPE=ext4`, `LABEL=osp-<12hex>`, no `PTTYPE`, single `ext4` signature    | `true`     | **`mount-only`** (never format)                                                                          |
+| `true`            | `TYPE=ext4`, `LABEL=osp-<12hex>`, no `PTTYPE`, single `ext4` signature    | `true`     | **`mount-only`** (never format)                                                                          |
+| `false` or `true` | `TYPE=ext4`, `LABEL=osp-<12hex>`                                          | `false`    | **`refuse:unmountable-profile-disk`** (fail loudly; no `mkfs`; agent does not start)                     |
+| `true`            | Blank (`blkid` exit `2` empty AND `wipefs -n` exit `0` empty)             | n/a        | **`refuse:enrolled-host-blank-disk`** (fail loudly; no `mkfs`; agent does not start)                     |
+| `false` or `true` | Any other filesystem, another host's label, partition table, or multi-sig | n/a        | **`refuse:foreign-disk-signature`** (fail loudly; nothing modified)                                      |
+| `false` or `true` | `blkid` exit not in `{0, 2}` or `wipefs` exit non-zero                    | n/a        | **`refuse:probe-error`** (fail loudly; nothing modified)                                                 |
+
+## Reboot and anti-fallback protection (Y1)
 
 - `/etc/opensteer-pool/host.env` (`0600`) persists `OSP_HOME_CIDR`, `OSP_PROVISIONER_CIDR`,
-  `OSP_AGENT_PORT`, `OSP_ADMIN_PORT`, `OSP_RELAY_PORT`, `OSP_PROFILE_DISK`, and
-  `OSP_PROFILES_ROOT`. `opensteer-pool-host.service` runs `setup-host.sh boot` on every boot, which
-  loads `host.env`, re-applies `nftables` with the persisted CIDRs and ports, verifies the disk
-  label is `ext4`/`osp-profiles`, and mounts it without ever formatting.
+  `OSP_AGENT_PORT`, `OSP_ADMIN_PORT`, `OSP_RELAY_PORT`, `OSP_PROFILE_DISK`,
+  `OSP_PROFILE_DISK_LABEL`, `OSP_REQUIRE_PROFILE_DISK=1`, and `OSP_PROFILES_ROOT`.
+- On `boot` and `verify-profiles-mount`, a **missing `/etc/opensteer-pool/host.env` or an empty
+  `OSP_PROFILE_DISK` / invalid `OSP_PROFILE_DISK_LABEL` is a hard error** (fail closed; never
+  "nothing to mount").
 - `opensteer-pool-agent.service` requires `opensteer-pool-host.service` and runs
   `ExecStartPre=/opt/opensteer-pool/setup-host.sh verify-profiles-mount` before every start,
-  confirming with `findmnt` that `/var/lib/opensteer-pool/profiles` is mounted read-write from the
-  configured durable block device. The agent never starts against an unmounted directory on the
-  boot disk.
+  confirming with `findmnt` and `blkid -p` that `/var/lib/opensteer-pool/profiles` is mounted
+  read-write from the fixed durable block device carrying this host's `osp-<12hex>` label.
+- **Agent-side enforcement (`driver.profilesMount`):** `enroll-host.sh` always writes
+  `driver.profilesMount: { "label": "osp-<12hex>" }` into `agent.json` with the same per-host
+  label. The agent independently verifies that `driver.profilesRoot` is a mount point on a
+  different device than its parent, matches `/dev/disk/by-label/<label>`, and is writable:
+  - at startup, a failed check makes the agent exit with `"The profile disk is not mounted (...)"`
+    so systemd retries until the disk is mounted;
+  - before every `create` and `delete`, a failed check returns a definite signed `conflict`
+    `"The profile disk is not mounted: ..."` and makes or erases nothing (a `delete` never answers
+    `profileErased`, and `home-provisioner` treats it as "not done, host is not ready");
+  - before every `start` and wake from disk, the Home receives a stored signed `applied: false`
+    with reason `profile-disk-missing`.
 
 ## Operator recovery
 
 - **`refuse:enrolled-host-blank-disk`:** A host that previously enrolled booted with a blank profile
   disk. Inspect the VM's attached disk in Google Compute Engine before taking action; do not format.
-- **`refuse:foreign-disk-signature`:** The attached device holds a different filesystem, label, or
-  partition table. Inspect with `blkid -p` and `wipefs -n`; verify the right disk is attached.
-- **`refuse:unmountable-profile-disk` or boot mount failure:** The `osp-profiles` filesystem
+- **`refuse:foreign-disk-signature`:** The attached device holds a different filesystem, another
+  host's `osp-<12hex>` label, or a partition table. Inspect with `blkid -p` and `wipefs -n`; verify
+  the right disk is attached.
+- **`refuse:unmountable-profile-disk` or boot mount failure:** The host's `osp-<12hex>` filesystem
   failed to mount. Inspect with `lsblk`, `blkid`, and `fsck.ext4` (read-only `-n` first) before
   deciding whether to repair or replace the host.

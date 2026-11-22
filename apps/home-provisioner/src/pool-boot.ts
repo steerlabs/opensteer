@@ -28,7 +28,7 @@ const PoolHostBootSpecSchema = z.object({
   provisionerKey: BrowserPoolSpkiBase64Schema,
   homeCidr: ipv4Cidr,
   provisionerCidr: ipv4Cidr,
-  profileDiskDevice: z.string().regex(/^\/dev\/[A-Za-z0-9._/-]{1,128}$/u),
+  profileDiskDevice: z.literal(poolProfileDiskDevicePath),
   everEnrolled: z.boolean().default(true),
   agentPort: z.number().int().min(1).max(65_535).default(defaultBrowserPoolAgentPort),
   adminPort: z.number().int().min(1).max(65_535).default(defaultBrowserPoolAdminPort),
@@ -59,11 +59,15 @@ export function renderPoolHostUserData(
           `curl -q --fail --silent --noproxy '*' --max-time 5 -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/${googleBootstrapReadyKey} | grep -qx 1`,
         ]
       : []),
-    "installer=$(mktemp /root/opensteer-pool-installer.XXXXXX)",
-    `trap 'rm -f "$installer"' EXIT`,
-    `curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 120 --output "$installer" -- ${quote(spec.installerUrl)}`,
-    `printf '%s  %s\\n' '${spec.installerSha256}' "$installer" | sha256sum -c - >/dev/null`,
-    `bash "$installer" --boot-spec ${specPath} --bootstrap-token-file ${tokenPath}`,
+    "bundle=$(mktemp /root/opensteer-pool-bundle.XXXXXX)",
+    "bundle_dir=$(mktemp -d /root/opensteer-pool-bundle-dir.XXXXXX)",
+    `trap 'rm -rf --one-file-system "$bundle" "$bundle_dir"' EXIT`,
+    `curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 120 --output "$bundle" -- ${quote(spec.installerUrl)}`,
+    `printf '%s  %s\\n' '${spec.installerSha256}' "$bundle" | sha256sum -c - >/dev/null`,
+    `tar --no-same-owner --no-same-permissions -xzf "$bundle" -C "$bundle_dir"`,
+    `test -f "$bundle_dir/enroll-host.sh" -a ! -L "$bundle_dir/enroll-host.sh"`,
+    `test -f "$bundle_dir/setup-host.sh" -a ! -L "$bundle_dir/setup-host.sh"`,
+    `bash "$bundle_dir/enroll-host.sh" --boot-spec ${specPath} --bootstrap-token-file ${tokenPath} --setup-script "$bundle_dir/setup-host.sh"`,
   ].join("\n");
 
   const unit = `[Unit]

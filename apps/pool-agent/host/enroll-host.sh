@@ -5,10 +5,10 @@
 # Usage:
 #   enroll-host.sh --boot-spec /root/opensteer-pool-boot.json \
 #                  --bootstrap-token-file /root/opensteer-pool-bootstrap-token \
-#                  [--setup-script /path/to/setup-host.sh]
+#                  [--setup-script /path/inside/same/bundle/setup-host.sh]
 #
 # Pure subcommands (also used by local unit tests):
-#   enroll-host.sh decide-profile-disk --ever-enrolled <true|false> \
+#   enroll-host.sh decide-profile-disk --host-id <ph_...> --ever-enrolled <true|false> \
 #                  --blkid-rc <int> --blkid-out <str> \
 #                  --wipefs-rc <int> --wipefs-out <str> [--mount-ok <true|false>]
 #   enroll-host.sh render-agent-config --boot-spec <path> --relay-uid <uid> \
@@ -18,40 +18,73 @@
 set -euo pipefail
 umask 077
 
-readonly OPT=/opt/opensteer-pool
-readonly STATE=/var/lib/opensteer-pool
+readonly OPT=${OSP_OPT_DIR:-/opt/opensteer-pool}
+readonly STATE=${OSP_STATE_DIR:-/var/lib/opensteer-pool}
+readonly ETC=${OSP_ETC_DIR:-/etc/opensteer-pool}
+readonly RELAY_ETC=${OSP_RELAY_ETC_DIR:-/etc/opensteer-pool-relay}
+readonly CLOUD_INIT_DIR=${OSP_CLOUD_INIT_DIR:-/var/lib/cloud/instance}
+readonly TMP_BASE=${OSP_TMP_BASE:-/root}
 readonly PROFILES_ROOT_DEFAULT="$STATE/profiles"
-readonly CREDENTIALS_ROOT_DEFAULT=/etc/opensteer-pool/credentials
-readonly AGENT_CONFIG_PATH=/etc/opensteer-pool/agent.json
-readonly ARTIFACTS_CACHE_PATH=/etc/opensteer-pool/release-artifacts.json
-# Ext4 volume labels are limited to 16 bytes (`s_volume_name[16]`).
-readonly PROFILE_DISK_LABEL=osp-profiles
+readonly CREDENTIALS_ROOT_DEFAULT="$ETC/credentials"
+readonly AGENT_CONFIG_PATH="$ETC/agent.json"
+readonly ARTIFACTS_CACHE_PATH="$ETC/release-artifacts.json"
+# Y3: Only the provisioner's fixed durable profile disk by-id path is ever accepted.
+readonly FIXED_PROFILE_DISK_DEVICE=/dev/disk/by-id/google-opensteer-profiles
 
 log() { printf 'enroll-host: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-# Pure X1/T6 format-or-not decision.
-# The disk self-identifies by its ext4 label (`osp-profiles`, <= 16 bytes); Account says only
+is_block_device() {
+    local target=$1
+    [[ -b $target ]] && return 0
+    [[ $(stat -L -c '%F' "$target" 2>/dev/null || true) == "block special file" ]]
+}
+
+# Y7: Per-host 16-byte ext4 volume label: `osp-` + first 12 lowercase hex chars of SHA-256(hostId).
+profile_disk_label_for_host() {
+    local host_id=$1
+    [[ $host_id =~ ^ph_[0-9a-f-]{36}$ ]] || die "invalid hostId for profile disk label"
+    python3 - "$host_id" <<'PY'
+import hashlib, sys
+print("osp-" + hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest()[:12])
+PY
+}
+
+# Pure X1/Y7 format-or-not decision.
+# The disk self-identifies by this host's 16-byte ext4 label (`osp-<12hex>`); Account says only
 # whether this host has ever enrolled (`everEnrolled`).
 #
 # Prints one decision line to stdout:
-#   mount-only        (exit 0)  disk carries our ext4 label `osp-profiles` (any generation)
+#   mount-only        (exit 0)  disk carries this host's ext4 label `osp-<12hex>` (any generation)
 #   format-and-mount  (exit 0)  disk is completely blank (blkid + wipefs) AND everEnrolled=false
 #   refuse:<reason>   (exit 1)  in every other case (never format, change nothing)
 decide_profile_disk() {
-    local ever_enrolled="" blkid_rc="" blkid_out="" wipefs_rc="" wipefs_out="" mount_ok="true"
+    local host_id="" expected_label="" ever_enrolled="" blkid_rc="" blkid_out="" wipefs_rc="" wipefs_out="" mount_ok="true"
     while (( $# > 0 )); do
         case "$1" in
-            --ever-enrolled) ever_enrolled=${2:-}; shift 2 ;;
-            --blkid-rc)      blkid_rc=${2:-}; shift 2 ;;
-            --blkid-out)     blkid_out=${2:-}; shift 2 ;;
-            --wipefs-rc)     wipefs_rc=${2:-}; shift 2 ;;
-            --wipefs-out)    wipefs_out=${2:-}; shift 2 ;;
-            --mount-ok)      mount_ok=${2:-}; shift 2 ;;
+            --host-id)        host_id=${2:-}; shift 2 ;;
+            --expected-label) expected_label=${2:-}; shift 2 ;;
+            --ever-enrolled)  ever_enrolled=${2:-}; shift 2 ;;
+            --blkid-rc)       blkid_rc=${2:-}; shift 2 ;;
+            --blkid-out)      blkid_out=${2:-}; shift 2 ;;
+            --wipefs-rc)      wipefs_rc=${2:-}; shift 2 ;;
+            --wipefs-out)     wipefs_out=${2:-}; shift 2 ;;
+            --mount-ok)       mount_ok=${2:-}; shift 2 ;;
             *) die "decide-profile-disk: unknown argument: $1" ;;
         esac
     done
 
+    if [[ -n $host_id ]]; then
+        if [[ ! $host_id =~ ^ph_[0-9a-f-]{36}$ ]]; then
+            printf 'refuse:invalid-host-id\n'
+            return 1
+        fi
+        expected_label=$(profile_disk_label_for_host "$host_id")
+    fi
+    if [[ ! $expected_label =~ ^osp-[0-9a-f]{12}$ ]]; then
+        printf 'refuse:invalid-expected-label\n'
+        return 1
+    fi
     if [[ $ever_enrolled != true && $ever_enrolled != false ]]; then
         printf 'refuse:invalid-ever-enrolled\n'
         return 1
@@ -85,7 +118,7 @@ decide_profile_disk() {
         return 1
     fi
 
-    # Non-blank disk: check whether it carries our dedicated ext4 filesystem label and nothing else.
+    # Non-blank disk: check whether it carries this host's dedicated ext4 filesystem label and nothing else.
     if [[ $blkid_rc == 0 && -n $trimmed_blkid && -n $trimmed_wipefs ]]; then
         local fs_type="" fs_label="" pt_type="" line
         while IFS= read -r line || [[ -n $line ]]; do
@@ -108,7 +141,7 @@ decide_profile_disk() {
             fi
         done <<< "$wipefs_out"
 
-        if [[ $fs_type == ext4 && $fs_label == "$PROFILE_DISK_LABEL" && -z $pt_type && $wipefs_only_ext4 == true && $wipefs_count -eq 1 ]]; then
+        if [[ $fs_type == ext4 && $fs_label == "$expected_label" && -z $pt_type && $wipefs_only_ext4 == true && $wipefs_count -eq 1 ]]; then
             if [[ $mount_ok != true ]]; then
                 printf 'refuse:unmountable-profile-disk\n'
                 return 1
@@ -125,6 +158,7 @@ decide_profile_disk() {
 python_boot_spec_helper() {
     python3 - "$@" <<'PY'
 import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -135,9 +169,9 @@ from urllib.parse import urlparse
 HOST_ID_RE = re.compile(r"^ph_[0-9a-f-]{36}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SPKI_RE = re.compile(r"^[A-Za-z0-9+/]{40,200}={0,2}$")
-DEV_RE = re.compile(r"^/dev/[A-Za-z0-9._/-]{1,128}$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,255}$")
 IPV4_CIDR_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}/(?:[0-9]|[12][0-9]|3[0-2])$")
+FIXED_PROFILE_DISK = "/dev/disk/by-id/google-opensteer-profiles"
 
 
 def fail(msg: str) -> None:
@@ -145,10 +179,19 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def reject_control_chars(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        fail(f"{field} must be a string")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        fail(f"{field} must not contain control characters")
+    return value
+
+
 def check_https_origin(value: object, field: str) -> str:
-    if not isinstance(value, str) or len(value) > 255:
-        fail(f"{field} must be an https origin string")
-    parsed = urlparse(value)
+    raw = reject_control_chars(value, field)
+    if len(raw) > 255 or any(ch.isspace() for ch in raw):
+        fail(f"{field} must be an https origin without whitespace")
+    parsed = urlparse(raw)
     if (
         parsed.scheme != "https"
         or not parsed.hostname
@@ -160,23 +203,29 @@ def check_https_origin(value: object, field: str) -> str:
         or parsed.fragment
     ):
         fail(f"{field} must be a bare https origin without credentials, path, query, or fragment")
-    return value.rstrip("/")
+    try:
+        port = parsed.port
+    except ValueError:
+        fail(f"{field} has an invalid port")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"https://{host}:{port}" if port is not None else f"https://{host}"
 
 
 def check_https_url(value: object, field: str) -> str:
-    if not isinstance(value, str) or len(value) > 2048:
-        fail(f"{field} must be an https URL")
-    parsed = urlparse(value)
+    raw = reject_control_chars(value, field)
+    if len(raw) > 2048 or any(ch.isspace() for ch in raw):
+        fail(f"{field} must be an https URL without whitespace")
+    parsed = urlparse(raw)
     if (
         parsed.scheme != "https"
         or not parsed.hostname
         or parsed.username
         or parsed.password
-        or "?" in value
-        or "#" in value
+        or "?" in raw
+        or "#" in raw
     ):
         fail(f"{field} must be an https URL without credentials, query, or fragment")
-    return value
+    return raw
 
 
 def check_port(value: object, field: str) -> int:
@@ -186,26 +235,28 @@ def check_port(value: object, field: str) -> int:
 
 
 def check_cidr(value: object, field: str) -> str:
-    if not isinstance(value, str) or not IPV4_CIDR_RE.match(value):
+    raw = reject_control_chars(value, field)
+    if not IPV4_CIDR_RE.match(raw):
         fail(f"{field} must be an IPv4 CIDR")
     try:
-        ipaddress.IPv4Network(value, strict=False)
+        ipaddress.IPv4Network(raw, strict=False)
     except ValueError:
         fail(f"{field} is not a valid IPv4 CIDR")
-    return value
+    return raw
 
 
 def check_spki(value: object, field: str) -> str:
-    if not isinstance(value, str) or not SPKI_RE.match(value):
+    raw_str = reject_control_chars(value, field)
+    if not SPKI_RE.match(raw_str):
         fail(f"{field} must be base64-encoded Ed25519 SPKI DER")
     try:
-        raw = base64.b64decode(value, validate=True)
+        raw = base64.b64decode(raw_str, validate=True)
     except Exception:
         fail(f"{field} is not valid base64")
     # Ed25519 SubjectPublicKeyInfo DER is 44 bytes with fixed 12-byte header.
     if len(raw) != 44 or raw[:12] != bytes.fromhex("302a300506032b6570032100"):
         fail(f"{field} is not an Ed25519 SPKI DER public key")
-    return value
+    return raw_str
 
 
 def validate_artifacts(artifacts: object) -> dict:
@@ -216,8 +267,8 @@ def validate_artifacts(artifacts: object) -> dict:
         url_key = f"{name}Url"
         sha_key = f"{name}Sha256"
         out[url_key] = check_https_url(artifacts.get(url_key), url_key)
-        sha = artifacts.get(sha_key)
-        if not isinstance(sha, str) or not SHA256_RE.match(sha):
+        sha = reject_control_chars(artifacts.get(sha_key), sha_key)
+        if not SHA256_RE.match(sha):
             fail(f"{sha_key} must be 64 lowercase hex characters")
         out[sha_key] = sha
     return out
@@ -238,8 +289,8 @@ def load_boot_spec(path: str) -> dict:
     if not isinstance(data, dict):
         fail("boot spec must be a JSON object")
 
-    host_id = data.get("hostId")
-    if not isinstance(host_id, str) or not HOST_ID_RE.match(host_id):
+    host_id = reject_control_chars(data.get("hostId"), "hostId")
+    if not HOST_ID_RE.match(host_id):
         fail("boot spec hostId is missing or malformed")
 
     generation = data.get("generation")
@@ -248,17 +299,18 @@ def load_boot_spec(path: str) -> dict:
 
     account_origin = check_https_origin(data.get("accountOrigin"), "accountOrigin")
     installer_url = check_https_url(data.get("installerUrl"), "installerUrl")
-    installer_sha = data.get("installerSha256")
-    if not isinstance(installer_sha, str) or not SHA256_RE.match(installer_sha):
+    installer_sha = reject_control_chars(data.get("installerSha256"), "installerSha256")
+    if not SHA256_RE.match(installer_sha):
         fail("boot spec installerSha256 must be 64 lowercase hex characters")
 
     provisioner_key = check_spki(data.get("provisionerKey"), "provisionerKey")
     home_cidr = check_cidr(data.get("homeCidr"), "homeCidr")
     provisioner_cidr = check_cidr(data.get("provisionerCidr"), "provisionerCidr")
 
-    profile_disk = data.get("profileDiskDevice")
-    if not isinstance(profile_disk, str) or not DEV_RE.match(profile_disk) or ".." in profile_disk:
-        fail("boot spec profileDiskDevice must be a /dev/... device path without '..'")
+    # Y3: Accept only the provisioner's fixed durable profile disk by-id path.
+    profile_disk = reject_control_chars(data.get("profileDiskDevice"), "profileDiskDevice")
+    if profile_disk != FIXED_PROFILE_DISK:
+        fail(f"boot spec profileDiskDevice must be {FIXED_PROFILE_DISK}")
 
     ever_enrolled = data.get("everEnrolled")
     if not isinstance(ever_enrolled, bool):
@@ -288,18 +340,21 @@ def load_boot_spec(path: str) -> dict:
 
     if "artifacts" in data and data["artifacts"] is not None:
         spec["artifacts"] = validate_artifacts(data["artifacts"])
-        ver = data.get("releaseVersion", "0.0.0-spec")
-        if not isinstance(ver, str) or not ver or len(ver) > 128:
+        ver = reject_control_chars(data.get("releaseVersion", "0.0.0-spec"), "releaseVersion")
+        if not ver or len(ver) > 128:
             fail("boot spec releaseVersion is invalid")
         spec["releaseVersion"] = ver
     return spec
 
 
 def render_agent_config(spec: dict, relay_uid: int, profiles_root: str, credentials_root: str) -> dict:
+    reject_control_chars(profiles_root, "profilesRoot")
+    reject_control_chars(credentials_root, "credentialsRoot")
     if not PATH_RE.match(profiles_root) or ".." in profiles_root:
         fail("profilesRoot must be an absolute path without '..'")
     if not PATH_RE.match(credentials_root) or ".." in credentials_root:
         fail("credentialsRoot must be an absolute path without '..'")
+    expected_label = "osp-" + hashlib.sha256(spec["hostId"].encode("utf-8")).hexdigest()[:12]
     return {
         "journal": "/var/lib/opensteer-pool/journal",
         "listen": {"host": "0.0.0.0", "port": spec["agentPort"]},
@@ -321,6 +376,7 @@ def render_agent_config(spec: dict, relay_uid: int, profiles_root: str, credenti
             "stateDirectory": "/var/lib/opensteer-pool/driver",
             "arrayIdFile": "/srv/opensteer-pool/array-id",
             "profilesRoot": profiles_root,
+            "profilesMount": {"label": expected_label},
             "credentialsRoot": credentials_root,
             "slotUidBase": 200000,
             "egressUidBase": 300000,
@@ -344,6 +400,31 @@ def render_agent_config(spec: dict, relay_uid: int, profiles_root: str, credenti
 mode = sys.argv[1]
 if mode == "parse-spec":
     print(json.dumps(load_boot_spec(sys.argv[2])))
+elif mode == "emit-spec-nul":
+    s = json.loads(sys.argv[2])
+    fields = [
+        s["hostId"],
+        str(s["generation"]),
+        s["accountOrigin"],
+        s["homeCidr"],
+        s["provisionerCidr"],
+        s["profileDiskDevice"],
+        "true" if s["everEnrolled"] else "false",
+        str(s["agentPort"]),
+        str(s["adminPort"]),
+        str(s["relayPort"]),
+        "true" if "artifacts" in s else "false",
+        "osp-" + hashlib.sha256(s["hostId"].encode("utf-8")).hexdigest()[:12],
+    ]
+    sys.stdout.write("\0".join(fields) + "\0")
+elif mode == "emit-artifacts-nul":
+    d = json.loads(sys.argv[2])
+    a = d["artifacts"]
+    fields = [d["releaseVersion"]]
+    for name in ("agent", "relay", "rootfs", "kernel", "egress"):
+        fields.append(a[f"{name}Url"])
+        fields.append(a[f"{name}Sha256"])
+    sys.stdout.write("\0".join(fields) + "\0")
 elif mode == "render-agent-config":
     spec = load_boot_spec(sys.argv[2])
     try:
@@ -382,8 +463,8 @@ elif mode == "parse-boot-response":
     release = data.get("release")
     if not isinstance(release, dict):
         fail("Account /boot response is missing release metadata")
-    version = release.get("version")
-    if not isinstance(version, str) or not version or len(version) > 128:
+    version = reject_control_chars(release.get("version"), "release.version")
+    if not version or len(version) > 128:
         fail("Account /boot response release.version is invalid")
     artifacts = validate_artifacts(release.get("artifacts"))
     print(json.dumps({"hostId": expected_host, "generation": expected_gen, "releaseVersion": version, "artifacts": artifacts}))
@@ -396,8 +477,8 @@ elif mode == "read-cached-artifacts":
             data = json.load(fh)
         if data.get("hostId") != expected_host or data.get("generation") != expected_gen:
             sys.exit(1)
-        version = data.get("releaseVersion")
-        if not isinstance(version, str) or not version or len(version) > 128:
+        version = reject_control_chars(data.get("releaseVersion"), "releaseVersion")
+        if not version or len(version) > 128:
             sys.exit(1)
         artifacts = validate_artifacts(data.get("artifacts"))
         print(json.dumps({"hostId": expected_host, "generation": expected_gen, "releaseVersion": version, "artifacts": artifacts}))
@@ -516,18 +597,36 @@ fetch_artifact() {
 }
 
 prepare_profile_disk() {
-    local dev=$1 ever_enrolled=$2 profiles_root=$3 generation=$4
+    local dev=$1 ever_enrolled=$2 profiles_root=$3 generation=$4 expected_label=$5
+    [[ $dev == "$FIXED_PROFILE_DISK_DEVICE" ]] ||
+        die "REFUSED: profile disk device must be $FIXED_PROFILE_DISK_DEVICE (got $dev)"
+    [[ $expected_label =~ ^osp-[0-9a-f]{12}$ ]] ||
+        die "REFUSED: invalid expected profile disk label '$expected_label'"
+
     local waited=0
-    while [[ ! -b $dev && $waited -lt 30 ]]; do
+    while ! is_block_device "$dev" && (( waited < 30 )); do
         udevadm settle --timeout=2 2>/dev/null || true
-        [[ -b $dev ]] && break
+        is_block_device "$dev" && break
         sleep 1
         waited=$(( waited + 1 ))
     done
-    [[ -b $dev ]] || die "durable profile disk $dev did not appear as a block device after ${waited}s; check Compute disk attachment before retrying"
+    is_block_device "$dev" || die "durable profile disk $dev did not appear as a block device after ${waited}s; check Compute disk attachment before retrying"
 
-    local resolved_dev
+    # Y3: Resolve the fixed by-id device path ONCE and verify it is not the boot/root disk.
+    local resolved_dev boot_src boot_real boot_pkname boot_parent=""
     resolved_dev=$(readlink -f "$dev")
+    boot_src=$(findmnt -n -o SOURCE --target / 2>/dev/null || true)
+    if [[ -n $boot_src ]]; then
+        boot_real=$(readlink -f "$boot_src" 2>/dev/null || printf '%s' "$boot_src")
+        boot_pkname=$(lsblk -ndo PKNAME "$boot_real" 2>/dev/null | head -n1 || true)
+        if [[ -n $boot_pkname ]]; then
+            boot_parent=$(readlink -f "/dev/$boot_pkname" 2>/dev/null || printf '/dev/%s' "$boot_pkname")
+        fi
+        if [[ $resolved_dev == "$boot_real" ]] || [[ -n $boot_parent && $resolved_dev == "$boot_parent" ]]; then
+            die "REFUSED: durable profile disk $dev ($resolved_dev) resolves to the boot disk ($boot_real); refusing to format or mount"
+        fi
+    fi
+
     install -d -m 0711 "$profiles_root"
 
     if mountpoint -q "$profiles_root"; then
@@ -550,6 +649,7 @@ prepare_profile_disk() {
 
     local decision="" decision_rc=0
     decision=$(decide_profile_disk \
+        --expected-label "$expected_label" \
         --ever-enrolled "$ever_enrolled" \
         --blkid-rc "$blkid_rc" \
         --blkid-out "$blkid_out" \
@@ -558,25 +658,40 @@ prepare_profile_disk() {
 
     case "$decision" in
         format-and-mount)
-            log "durable profile disk $dev ($resolved_dev) is blank and host has never enrolled; formatting ext4 with label $PROFILE_DISK_LABEL once"
-            # Never pass -f or -F: only answer the whole-device confirmation once blkid and wipefs
-            # have both proven zero filesystem/partition signatures on the device.
-            printf 'y\n' | mkfs.ext4 -q -m 1 -L "$PROFILE_DISK_LABEL" "$resolved_dev" ||
-                die "mkfs.ext4 failed on blank durable profile disk $dev ($resolved_dev); refusing to start agent"
+            # Y2: Re-probe both blkid and wipefs immediately before mkfs.ext4 and pass </dev/null
+            # (never -f/-F, never piping 'y'), so any unexpected signature or mkfs prompt aborts.
+            local reprobe_blkid_out="" reprobe_blkid_rc=0 reprobe_wipefs_out="" reprobe_wipefs_rc=0
+            reprobe_blkid_out=$(blkid -o export -p "$resolved_dev" 2>/dev/null) || reprobe_blkid_rc=$?
+            reprobe_wipefs_out=$(wipefs -n --noheadings "$resolved_dev" 2>/dev/null) || reprobe_wipefs_rc=$?
+            local reprobe_decision=""
+            reprobe_decision=$(decide_profile_disk \
+                --expected-label "$expected_label" \
+                --ever-enrolled "$ever_enrolled" \
+                --blkid-rc "$reprobe_blkid_rc" \
+                --blkid-out "$reprobe_blkid_out" \
+                --wipefs-rc "$reprobe_wipefs_rc" \
+                --wipefs-out "$reprobe_wipefs_out") ||
+                die "REFUSED: pre-format re-probe changed decision to '${reprobe_decision:-error}' for $dev ($resolved_dev); aborting before mkfs"
+            [[ $reprobe_decision == format-and-mount ]] ||
+                die "REFUSED: pre-format re-probe returned '$reprobe_decision' instead of format-and-mount for $dev ($resolved_dev); aborting before mkfs"
+
+            log "durable profile disk $dev ($resolved_dev) is blank and host has never enrolled; formatting ext4 with label $expected_label once"
+            mkfs.ext4 -q -m 1 -L "$expected_label" "$resolved_dev" </dev/null ||
+                die "mkfs.ext4 failed or refused on durable profile disk $dev ($resolved_dev); refusing to start agent"
             mount -o noatime,nosuid,nodev "$resolved_dev" "$profiles_root" ||
                 die "newly formatted profile disk $dev ($resolved_dev) failed to mount at $profiles_root"
             ;;
         mount-only)
-            log "durable profile disk $dev ($resolved_dev) carries label $PROFILE_DISK_LABEL; mounting at $profiles_root (generation $generation, no format)"
+            log "durable profile disk $dev ($resolved_dev) carries label $expected_label; mounting at $profiles_root (generation $generation, no format)"
             if ! mount -o noatime,nosuid,nodev "$resolved_dev" "$profiles_root"; then
-                die "durable profile disk $dev ($resolved_dev) carries label $PROFILE_DISK_LABEL but could not be mounted on generation $generation; refusing to format or start agent. Inspect with lsblk, blkid, and fsck.ext4."
+                die "durable profile disk $dev ($resolved_dev) carries label $expected_label but could not be mounted on generation $generation; refusing to format or start agent. Inspect with lsblk, blkid, and fsck.ext4."
             fi
             ;;
         refuse:enrolled-host-blank-disk)
             die "REFUSED: host has enrolled before (everEnrolled=true), but durable profile disk $dev ($resolved_dev) is blank (no filesystem signature). Refusing to format; verify the right durable disk is attached before retrying."
             ;;
         refuse:foreign-disk-signature)
-            die "REFUSED: durable profile disk $dev ($resolved_dev) carries an unrecognized filesystem, label, or partition table (expected blank on a never-enrolled host, or ext4 labeled '$PROFILE_DISK_LABEL'). Nothing was modified; inspect with blkid and wipefs -n."
+            die "REFUSED: durable profile disk $dev ($resolved_dev) carries an unrecognized filesystem, label, or partition table (expected blank on a never-enrolled host, or ext4 labeled '$expected_label'). Nothing was modified; inspect with blkid and wipefs -n."
             ;;
         refuse:probe-error)
             die "REFUSED: failed to probe durable profile disk $dev ($resolved_dev) cleanly (blkid rc=$blkid_rc, wipefs rc=$wipefs_rc). Nothing was modified; inspect disk health before retrying."
@@ -619,57 +734,50 @@ run_enrolment() {
     require_private_root_file "$boot_spec" "boot spec"
     require_private_root_file "$token_file" "bootstrap token file"
 
+    # Y7: Only run setup-host.sh from the same verified release bundle directory as enroll-host.sh.
+    local self_dir
+    self_dir=$(readlink -f "$(dirname -- "$0")")
     if [[ -z $setup_script ]]; then
-        local self_dir
-        self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
-        if [[ -x $self_dir/setup-host.sh ]]; then
-            setup_script="$self_dir/setup-host.sh"
-        elif [[ -x $OPT/setup-host.sh ]]; then
-            setup_script="$OPT/setup-host.sh"
-        else
-            die "setup-host.sh not found beside enroll-host.sh or at $OPT/setup-host.sh (pass --setup-script)"
-        fi
+        setup_script="$self_dir/setup-host.sh"
     fi
-    [[ -f $setup_script ]] || die "setup script not found at $setup_script"
+    [[ -f $setup_script && ! -L $setup_script ]] ||
+        die "setup-host.sh must be a regular file inside the verified release bundle ($self_dir)"
+    local setup_real_dir
+    setup_real_dir=$(dirname -- "$(readlink -f "$setup_script")")
+    [[ $setup_real_dir == "$self_dir" ]] ||
+        die "REFUSED: setup-host.sh ($setup_script) is outside the verified release bundle directory ($self_dir)"
 
-    # 1. Validate boot spec strictly.
+    # 1. Validate boot spec strictly (no control characters, fixed profileDiskDevice).
     local spec_json
     spec_json=$(python_boot_spec_helper parse-spec "$boot_spec")
 
     local host_id generation account_origin home_cidr provisioner_cidr profile_disk ever_enrolled
-    local agent_port admin_port relay_port has_inline_artifacts
-    IFS=$'\n' read -r -d '' host_id generation account_origin home_cidr provisioner_cidr profile_disk ever_enrolled agent_port admin_port relay_port has_inline_artifacts < <(
-        python3 - "$spec_json" <<'PY'
-import json, sys
-s = json.loads(sys.argv[1])
-for key in (
-    "hostId",
-    "generation",
-    "accountOrigin",
-    "homeCidr",
-    "provisionerCidr",
-    "profileDiskDevice",
-):
-    print(s[key])
-print("true" if s["everEnrolled"] else "false")
-print(s["agentPort"])
-print(s["adminPort"])
-print(s["relayPort"])
-print("true" if "artifacts" in s else "false")
-PY
-        printf '\0'
-    )
+    local agent_port admin_port relay_port has_inline_artifacts expected_label
+    {
+        IFS= read -r -d '' host_id
+        IFS= read -r -d '' generation
+        IFS= read -r -d '' account_origin
+        IFS= read -r -d '' home_cidr
+        IFS= read -r -d '' provisioner_cidr
+        IFS= read -r -d '' profile_disk
+        IFS= read -r -d '' ever_enrolled
+        IFS= read -r -d '' agent_port
+        IFS= read -r -d '' admin_port
+        IFS= read -r -d '' relay_port
+        IFS= read -r -d '' has_inline_artifacts
+        IFS= read -r -d '' expected_label
+    } < <(python_boot_spec_helper emit-spec-nul "$spec_json")
 
-    log "enrolling pool host $host_id (generation $generation, everEnrolled=$ever_enrolled)"
+    log "enrolling pool host $host_id (generation $generation, everEnrolled=$ever_enrolled, label=$expected_label)"
 
     # Workspace for root-only temporary HTTP request/response files (never logged, always removed).
     local tmpdir
-    tmpdir=$(mktemp -d /root/.opensteer-pool-enrol.XXXXXX)
+    tmpdir=$(mktemp -d "$TMP_BASE/.opensteer-pool-enrol.XXXXXX")
     chmod 0700 "$tmpdir"
-    trap 'rm -rf --one-file-system "${tmpdir:-}"' EXIT
+    trap 'rm -rf "${tmpdir:-}"' EXIT
 
-    # 2. Durable profile disk (X1/T6) — checked BEFORE modifying host services or formatting anything.
-    prepare_profile_disk "$profile_disk" "$ever_enrolled" "$profiles_root" "$generation"
+    # 2. Durable profile disk (X1/Y2/Y3/Y7) — checked BEFORE modifying host services or formatting anything.
+    prepare_profile_disk "$profile_disk" "$ever_enrolled" "$profiles_root" "$generation" "$expected_label"
 
     # 3. Resolve release artifact URLs and SHA-256s (inline in spec, cached from earlier retry, or Account /boot).
     local artifacts_json=""
@@ -698,35 +806,38 @@ PY
         [[ $http_code == 200 ]] || die "Account boot route refused enrolment (HTTP $http_code); verify bootstrap token is unexpired and matches host $host_id generation $generation"
         artifacts_json=$(python_boot_spec_helper parse-boot-response "$host_id" "$generation" "$boot_resp")
         rm -f "$boot_resp"
-        install -d -m 0700 /etc/opensteer-pool
+        install -d -m 0700 "$ETC"
         local cache_tmp
-        cache_tmp=$(mktemp /etc/opensteer-pool/.release-artifacts.XXXXXX)
+        cache_tmp=$(mktemp "$ETC/.release-artifacts.XXXXXX")
         chmod 0600 "$cache_tmp"
         printf '%s\n' "$artifacts_json" > "$cache_tmp"
         mv "$cache_tmp" "$ARTIFACTS_CACHE_PATH"
     fi
 
     local release_version agent_url agent_sha relay_url relay_sha rootfs_url rootfs_sha kernel_url kernel_sha egress_url egress_sha
-    IFS=$'\n' read -r -d '' release_version agent_url agent_sha relay_url relay_sha rootfs_url rootfs_sha kernel_url kernel_sha egress_url egress_sha < <(
-        python3 - "$artifacts_json" <<'PY'
-import json, sys
-d = json.loads(sys.argv[1])
-a = d["artifacts"]
-print(d["releaseVersion"])
-for name in ("agent", "relay", "rootfs", "kernel", "egress"):
-    print(a[f"{name}Url"])
-    print(a[f"{name}Sha256"])
-PY
-        printf '\0'
-    )
+    {
+        IFS= read -r -d '' release_version
+        IFS= read -r -d '' agent_url
+        IFS= read -r -d '' agent_sha
+        IFS= read -r -d '' relay_url
+        IFS= read -r -d '' relay_sha
+        IFS= read -r -d '' rootfs_url
+        IFS= read -r -d '' rootfs_sha
+        IFS= read -r -d '' kernel_url
+        IFS= read -r -d '' kernel_sha
+        IFS= read -r -d '' egress_url
+        IFS= read -r -d '' egress_sha
+    } < <(python_boot_spec_helper emit-artifacts-nul "$artifacts_json")
 
-    # 4. Install/verify host baseline, persist settings in /etc/opensteer-pool/host.env, and generate keys.
+    # 4. Install/verify host baseline, persist settings in host.env, and generate keys.
     OSP_HOME_CIDR="$home_cidr" \
     OSP_PROVISIONER_CIDR="$provisioner_cidr" \
     OSP_AGENT_PORT="$agent_port" \
     OSP_ADMIN_PORT="$admin_port" \
     OSP_RELAY_PORT="$relay_port" \
     OSP_PROFILE_DISK="$profile_disk" \
+    OSP_PROFILE_DISK_LABEL="$expected_label" \
+    OSP_REQUIRE_PROFILE_DISK=1 \
     OSP_PROFILES_ROOT="$profiles_root" \
     OSP_SKIP_DEFAULT_KERNEL=1 \
         bash "$setup_script" install
@@ -760,10 +871,10 @@ PY
     chown root:root "$AGENT_CONFIG_PATH"
     chmod 0600 "$AGENT_CONFIG_PATH"
 
-    # 7. Enrol public halves of host and relay keys with Account; remove token and start services only on success.
+    # 7. Enrol public halves of host and relay keys with Account; start services BEFORE removing token (Y5).
     local host_key_b64 relay_key_b64
-    host_key_b64=$(openssl pkey -pubin -in /etc/opensteer-pool/host-key.pub -outform DER | base64 -w0)
-    relay_key_b64=$(openssl pkey -pubin -in /etc/opensteer-pool-relay/relay-key.pub -outform DER | base64 -w0)
+    host_key_b64=$(openssl pkey -pubin -in "$ETC/host-key.pub" -outform DER | base64 | tr -d '\n')
+    relay_key_b64=$(openssl pkey -pubin -in "$RELAY_ETC/relay-key.pub" -outform DER | base64 | tr -d '\n')
 
     local complete_req="$tmpdir/boot-complete-req.json" complete_resp="$tmpdir/boot-complete-resp.json"
     python_boot_spec_helper build-boot-complete-request "$generation" "$token_file" "$host_key_b64" "$relay_key_b64" "$complete_req"
@@ -780,10 +891,13 @@ PY
     python_boot_spec_helper check-boot-complete-response "$complete_resp"
     rm -f "$complete_resp"
 
-    # Enrolment succeeded: remove single-use bootstrap token, re-verify durable profile mount, start services.
-    rm -f "$token_file"
+    # Y5: Verify mount and enable+start services BEFORE removing the single-use bootstrap token, so
+    # a crash or systemctl failure leaves the token for an idempotent retry (same keys -> HTTP 200).
     bash "$OPT/setup-host.sh" verify-profiles-mount
     systemctl enable --now opensteer-pool-agent.service opensteer-pool-relay.service >/dev/null
+    rm -f "$token_file"
+    # Y7: Scrub cloud-init's own copy of user-data once the token has been consumed and services are up.
+    rm -f "$CLOUD_INIT_DIR/user-data.txt" "$CLOUD_INIT_DIR/user-data.txt.i" "$CLOUD_INIT_DIR/cloud-config.txt" 2>/dev/null || true
     log "enrolment complete for $host_id (generation $generation); agent and relay enabled and started"
 }
 
