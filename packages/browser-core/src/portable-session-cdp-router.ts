@@ -323,7 +323,6 @@ export class SessionCdpRouter {
     backend: BrowserCdpBackend,
     ports: SessionCdpRouterPorts,
     limits: Partial<SessionCdpRouterLimits> = {},
-    _machineClipboardShared = true,
   ) {
     this.#ports = ports;
     this.#backend = backend;

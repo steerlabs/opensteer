@@ -1686,11 +1686,7 @@ export class BrowserRuntime implements NativePresentationSource {
         assertCurrent();
         const generation = ++this.generation;
         const stateImports = new AsyncMutex();
-        const router = new SessionCdpRouter(
-          browser.cdp,
-          {},
-          browser.clipboard?.machineClipboardShared !== false,
-        );
+        const router = new SessionCdpRouter(browser.cdp);
         const onBrowserClose = () => {
           // Signal controllers before waiting for this profile's lifecycle
           // lane: detach may already be waiting on dead Chromium CDP.

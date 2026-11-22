@@ -77,7 +77,7 @@ export async function runEditingEngineJourney(
   const messages: BrowserRuntimeServerMessage[] = [];
   const events: CdpEvent[] = [];
   const machineClipboardShared = browser.clipboard?.machineClipboardShared ?? true;
-  const router = new SessionCdpRouter(browser.cdp, {}, machineClipboardShared);
+  const router = new SessionCdpRouter(browser.cdp);
   const read = async <T>(expression: string): Promise<T> =>
     (
       await cdp.send<{ result: { value: T } }>("Runtime.evaluate", {
