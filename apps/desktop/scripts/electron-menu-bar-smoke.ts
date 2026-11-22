@@ -650,12 +650,14 @@ async function homeStop(): Promise<void> {
     },
   });
   let releaseLiveView: (() => void) | null = null;
+  let unsubscribeLiveViewFrames: (() => void) | null = null;
   shutdown.add({
     component: "live-watch",
     step: "close",
     order: 20,
     timeoutMs: 2_000,
     stop: () => {
+      unsubscribeLiveViewFrames?.();
       releaseLiveView?.();
       liveClient.dispose();
     },
@@ -701,7 +703,21 @@ async function homeStop(): Promise<void> {
     assert.equal(state.pageId, initialPageId, `The person's tab reloaded (${stage})`);
     assert.equal(state.value, typedNote, `The person's form text changed (${stage})`);
   };
+  let lastAckedWatchToken: string | null = null;
+  const acknowledgeLiveViewFrame = () => {
+    const token = liveClient.browserWatchFrames.get(session.id, personSurfaceId)?.header.watchToken;
+    if (token && token !== lastAckedWatchToken) {
+      lastAckedWatchToken = token;
+      liveClient.acceptBrowserWatchFrame(session.id, token, personSurfaceId);
+    }
+  };
+  unsubscribeLiveViewFrames = liveClient.browserWatchFrames.subscribe(
+    session.id,
+    acknowledgeLiveViewFrame,
+    personSurfaceId,
+  );
   releaseLiveView = liveClient.retainBrowserWatch(session.id, personSurfaceId);
+  acknowledgeLiveViewFrame();
   await waitFor(
     "live view admitted before Stop",
     () =>
@@ -1033,6 +1049,14 @@ async function homeStop(): Promise<void> {
     30_000,
   );
   await assertPersonTabIntact("after-double-stop");
+  await waitFor(
+    "live view admitted after double Stop",
+    () => {
+      const state = liveClient.browserWatchState(session.id, personSurfaceId);
+      return state.admitted === true && state.error === null;
+    },
+    30_000,
+  );
   held("double-stop-idempotent");
 
   // Resume cleanly, then trigger Stop and Resume quickly without awaiting Stop.
