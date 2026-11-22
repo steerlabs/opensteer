@@ -51,7 +51,15 @@ export type AgentCommandOutcome =
       readonly existing: boolean;
     }
   /** The person declined this ask within the last day: answered at once, nothing opened. */
-  | { readonly status: "declined"; readonly requestId: string };
+  | { readonly status: "declined"; readonly requestId: string }
+  /** The same call again, after its Request ended unapproved: what became of it. */
+  | { readonly status: "expired" | "withdrawn" | "closed"; readonly requestId: string }
+  /** The same call again, after the person approved it: what it came to. */
+  | {
+      readonly status: "answered";
+      readonly requestId: string;
+      readonly outcome: import("@opensteer/core").CommandRequestOutcome;
+    };
 /** The earlier name of the waiting outcome. */
 export type CommandAsk = Extract<AgentCommandOutcome, { readonly status: "ask" }>;
 
@@ -180,7 +188,7 @@ export async function dispatchCommand(
     return { status: "pending", requestId: answers.id, reason: ask.reason, existing: true };
   if (answers || !door.propose) return ask;
   const proposed = await door.propose(actor, command, ask, admission.face);
-  return proposed.status === "declined" ? proposed : { ...proposed, reason: ask.reason };
+  return proposed.status === "pending" ? { ...proposed, reason: ask.reason } : proposed;
 }
 
 /** What a handler written for agents is given: the identity its store admits at commit. */

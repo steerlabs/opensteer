@@ -1115,7 +1115,7 @@ async function commandReach(
     case "request": {
       const request = await database
         .selectFrom("requests")
-        .select(["originatingThreadId", "requestedBy", "kind", "presentation"])
+        .select(["originatingThreadId", "requestedBy", "kind", "presentation", "command"])
         .where("id", "=", resource.id as RequestId)
         .executeTakeFirst();
       if (!request || request.requestedBy !== owner) return outOfReach;
@@ -1266,10 +1266,12 @@ async function commandReach(
  * asked, which is the person's to give.
  */
 function answerFace(
-  request: { readonly kind: string; readonly presentation: unknown },
+  request: { readonly kind: string; readonly presentation: unknown; readonly command: unknown },
   command: Command,
 ): number {
   if (request.kind === "harness.input") return 0;
+  // A proposed command is the person's to answer, either way: an agent's answer points at it.
+  if (request.command !== null) return 1;
   const response = (
     command as {
       readonly response?: { kind?: string; optionId?: string; value?: { decision?: unknown } };

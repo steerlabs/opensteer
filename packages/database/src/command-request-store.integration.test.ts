@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { CommandRequestPart, RequestPresentation } from "@opensteer/core";
+import type { CommandRequestPart, RequestId, RequestPresentation } from "@opensteer/core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { beginAgentSession } from "./agent-session-store.js";
@@ -7,6 +7,7 @@ import {
   commandRequestLifetimeMs,
   commandRequestsPerProposer,
   CommandRequestStore,
+  type CommandRequestOpened,
 } from "./command-request-store.js";
 import { connectionAttempts } from "./connection-disconnect.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
@@ -16,6 +17,7 @@ function part(input: {
   readonly askKey: string;
   readonly args?: string;
   readonly proposerKey?: string;
+  readonly connection?: { readonly id: string; readonly grantRevision: number };
 }): CommandRequestPart {
   return {
     type: "harness.rename",
@@ -33,6 +35,9 @@ function part(input: {
       name: "Claude Code",
       taskTitle: "Tidy up",
       key: input.proposerKey ?? "task:one",
+      ...(input.connection
+        ? { connectionId: input.connection.id, grantRevision: input.connection.grantRevision }
+        : {}),
     },
     agentReason: null,
     editor: { screen: "ai-engines" },
@@ -70,6 +75,9 @@ describeStore("command Requests in the store", (it) => {
       });
     return { f, store, open, database: storeFixture.database };
   }
+  /** The Request an open answered with, whatever became of it. */
+  const idOf = (opened: CommandRequestOpened): RequestId =>
+    "request" in opened ? opened.request.id : opened.requestId;
 
   it("keeps one open ask per proposer and thing", async ({ storeFixture }) => {
     const { open } = await setup(storeFixture);
@@ -79,10 +87,10 @@ describeStore("command Requests in the store", (it) => {
     expect(await open({ askKey: "a1" }, "call-1")).toMatchObject({
       status: "pending",
       replayed: true,
-      request: { id: first.request.id },
+      request: { id: idOf(first) },
     });
     expect(await open({ askKey: "a1" }, "call-2")).toMatchObject({
-      request: { id: first.request.id },
+      request: { id: idOf(first) },
     });
     // The same ask with other arguments waits for the answer to the first.
     await expect(open({ askKey: "a1", args: "b" }, "call-3")).rejects.toMatchObject({
@@ -109,13 +117,13 @@ describeStore("command Requests in the store", (it) => {
     const { f, store, open, database } = await setup(storeFixture);
     const first = await open({ askKey: "d1" });
     await store.decline({
-      requestId: first.request.id,
-      expectedRevision: (await storeFixture.store.requests.revision(first.request.id))!,
+      requestId: idOf(first),
+      expectedRevision: (await storeFixture.store.requests.revision(idOf(first)))!,
       resolvedBy: f.userId,
       response: { kind: "external", value: { decision: "declined" } },
     });
     const again = await open({ askKey: "d1", args: "other" });
-    expect(again).toMatchObject({ status: "declined", request: { id: first.request.id } });
+    expect(again).toEqual({ status: "declined", requestId: idOf(first) });
     const open_ = await database
       .selectFrom("requests")
       .select("id")
@@ -127,7 +135,7 @@ describeStore("command Requests in the store", (it) => {
     await database
       .updateTable("requests")
       .set({ resolvedAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
-      .where("id", "=", first.request.id)
+      .where("id", "=", idOf(first))
       .execute();
     expect(await open({ askKey: "d1" })).toMatchObject({ status: "pending", replayed: false });
   });
@@ -138,19 +146,21 @@ describeStore("command Requests in the store", (it) => {
     await database
       .updateTable("requests")
       .set({ createdAt: new Date(Date.now() - commandRequestLifetimeMs - 60_000) })
-      .where("id", "=", opened.request.id)
+      .where("id", "=", idOf(opened))
       .execute();
-    const revision = (await storeFixture.store.requests.revision(opened.request.id))!;
+    const revision = (await storeFixture.store.requests.revision(idOf(opened)))!;
     await expect(
       store.beginApproval({
-        requestId: opened.request.id,
+        requestId: idOf(opened),
         expectedRevision: revision,
         resolvedBy: f.userId,
         accept: () => undefined,
+        approvalKey: randomUUID(),
+        approved: { command: {}, changed: false },
       }),
     ).rejects.toMatchObject({ code: "conflict", reason: "request-expired" });
-    expect(await store.expire()).toEqual([opened.request.id]);
-    expect(await storeFixture.store.requests.get(opened.request.id)).toMatchObject({
+    expect(await store.expire()).toEqual([idOf(opened)]);
+    expect(await storeFixture.store.requests.get(idOf(opened))).toMatchObject({
       status: "cancelled",
       command: { expired: true },
     });
@@ -162,21 +172,69 @@ describeStore("command Requests in the store", (it) => {
     const { f, store, open } = await setup(storeFixture);
     const opened = await open({ askKey: "u1" });
     await store.beginApproval({
-      requestId: opened.request.id,
-      expectedRevision: (await storeFixture.store.requests.revision(opened.request.id))!,
+      requestId: idOf(opened),
+      expectedRevision: (await storeFixture.store.requests.revision(idOf(opened)))!,
       resolvedBy: f.userId,
       accept: () => undefined,
+      approvalKey: randomUUID(),
+      approved: { command: {}, changed: false },
     });
-    expect(await storeFixture.store.requests.get(opened.request.id)).toMatchObject({
+    expect(await storeFixture.store.requests.get(idOf(opened))).toMatchObject({
       status: "fulfilled",
       command: { outcome: { status: "running" } },
     });
     // The Home stopped here: on restart it is unknown, and settling it again changes nothing.
-    expect(await store.recoverRunning()).toEqual([opened.request.id]);
-    await store.settle(opened.request.id, { status: "done" });
-    expect(await storeFixture.store.requests.get(opened.request.id)).toMatchObject({
+    expect(await store.recoverRunning()).toEqual({ recovered: [idOf(opened)], nextExpiry: null });
+    await store.settle(idOf(opened), { status: "done" });
+    expect(await storeFixture.store.requests.get(idOf(opened))).toMatchObject({
       command: { outcome: { status: "unknown" } },
     });
+  });
+
+  it("closes a connection's ask once its grant is narrowed below the one it asked with (X9)", async ({
+    storeFixture,
+  }) => {
+    const { f, store, database } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const current = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", connection.id)
+      .executeTakeFirstOrThrow();
+    const opened = await store.open({
+      ownerUserId: f.userId,
+      callId: randomUUID(),
+      origin: { agentSessionId: session.id },
+      originatingThreadId: session.threadId,
+      part: part({
+        askKey: "n1",
+        proposerKey: `connection:${connection.id}`,
+        connection: { id: connection.id, grantRevision: current.grantRevision },
+      }),
+      presentation,
+    });
+    await connections.update(f.userId, {
+      connectionId: connection.id,
+      expectedRevision: current.grantRevision,
+      grant: { scope: "selected", tasks: false, resources: [] },
+    });
+    expect(await connectionAttempts(database, connection.id)).toContainEqual(
+      expect.objectContaining({ kind: "request", id: idOf(opened) }),
+    );
   });
 
   it("puts a connection's ask in its Disconnect set", async ({ storeFixture }) => {
@@ -206,7 +264,7 @@ describeStore("command Requests in the store", (it) => {
     });
     await connections.revoke(f.userId, connection.id);
     expect(await connectionAttempts(database, connection.id)).toContainEqual(
-      expect.objectContaining({ kind: "request", id: opened.request.id }),
+      expect.objectContaining({ kind: "request", id: idOf(opened) }),
     );
   });
 });

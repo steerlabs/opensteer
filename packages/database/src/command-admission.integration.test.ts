@@ -27,6 +27,7 @@ import {
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 
 /** The types an agent sends today through the administration service, which admits at commit. */
+const otherConnection = (type: CommandType) => commandTable[type].scope === "other-connection";
 const administrationTypes = [
   "viewer.timeZone.update",
   "viewer.quietTasks.update",
@@ -217,16 +218,20 @@ describeStore("one admission for Home commands", (it) => {
     const allowedBefore = (type: CommandType) => !refusedToEveryAgent.has(type);
     for (const type of administrationTypes) {
       expect([type, await answer(run, type)]).toEqual([type, allowedBefore(type) ? "now" : "ask"]);
+      // A chat account is another connection: not there for any connected agent (X13).
       expect([type, await answer(`connection:${everything.id}`, type)]).toEqual([
         type,
-        allowedBefore(type) ? "now" : "ask",
+        otherConnection(type) ? "not_found" : allowedBefore(type) ? "now" : "ask",
       ]);
       expect([type, await answer(`connection:${supervised.id}`, type)]).not.toContainEqual("now");
       expect([type, await answer(`connection:${selected.id}`, type)]).not.toContainEqual("now");
     }
     await workFor(everything.id);
     for (const type of administrationTypes)
-      expect([type, await answer(run, type)]).toEqual([type, allowedBefore(type) ? "now" : "ask"]);
+      expect([type, await answer(run, type)]).toEqual([
+        type,
+        otherConnection(type) ? "not_found" : allowedBefore(type) ? "now" : "ask",
+      ]);
     await workFor(selected.id);
     for (const type of administrationTypes) expect(await answer(run, type)).not.toBe("now");
     await workFor(null);
@@ -1110,6 +1115,8 @@ describeStore("one admission for Home commands", (it) => {
         .executeTakeFirstOrThrow();
       for (const type of administrationTypes) {
         if (refusedToEveryAgent.has(type)) continue;
+        // Another connection's thing is never admitted for a connection in the first place.
+        if ((change === "disconnected" || change === "narrowed") && otherConnection(type)) continue;
         // A fresh caller each time: a live Run at Full access, or a live `everything` connection.
         await setMode("full-access");
         await database

@@ -622,8 +622,10 @@ export const CommandRequestPartSchema = z.object({
   family: z.string().min(1).max(40),
   /** The class of the face the person is asked about (`widen-other`, `approve`, …). */
   face: z.string().min(1).max(40),
-  /** The change, in the Home's words: who proposes what. */
+  /** The card's title: the Home's sentence first, whole; then who asked, cut to fit. */
   summary: z.string().min(1).max(requestTitleMaxLength),
+  /** The change in the Home's own words alone, as every rewrite of the card begins. */
+  sentence: z.string().min(1).max(requestTitleMaxLength).optional(),
   /** What it gives to whom, when it widens something; null when it does not. */
   gives: z.string().max(1_000).nullable(),
   /** The command as proposed, without its key and without anything only the person types. */
@@ -646,13 +648,30 @@ export const CommandRequestPartSchema = z.object({
     /** The agent as the person knows it: an engine, an automation, a connected agent's label. */
     name: z.string().min(1).max(200),
     taskTitle: z.string().max(240).nullable(),
+    /** The root of its lineage: the top task of a task tree, an automation, a connection. */
     key: z.string().min(1).max(300),
+    /** The connection whose lineage it works in, re-admitted when the person approves. */
+    connectionId: z.string().min(1).max(300).optional(),
+    /** That connection's grant revision when it asked: a narrowing below it closes the ask. */
+    grantRevision: z.number().int().nonnegative().optional(),
   }),
   /** The agent's own words, not checked. */
   agentReason: z.string().max(500).nullable(),
   /** The screen that performs it, filled in; null where only this card can. */
   editor: z.object({ screen: z.string().min(1).max(60) }).nullable(),
   outcome: commandRequestOutcomeSchema.optional(),
+  /** What the person approved and the Home ran, kept apart from what was proposed. */
+  approved: z
+    .object({
+      command: RequestJsonObjectSchema,
+      /** The person changed it before approving. */
+      changed: z.boolean(),
+    })
+    .optional(),
+  /** The approving call's own key: the same approval again answers with its outcome. */
+  approvalKey: z.string().min(1).max(200).optional(),
+  /** Asks the Home held back while this one waited, because too many were waiting. */
+  heldBack: z.number().int().nonnegative().optional(),
   /** It reached the end of its lifetime unanswered. */
   expired: z.boolean().optional(),
 });

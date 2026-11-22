@@ -131,6 +131,7 @@ export function createHostApiHandlers(
                   requestId: command.requestId,
                   expectedRevision: command.expectedRevision,
                   command: command.command,
+                  idempotencyKey: command.idempotencyKey,
                 },
                 (person, approved) => dispatchCommand(person, approved, door, context),
                 (proposal) => personActor(context, proposal),

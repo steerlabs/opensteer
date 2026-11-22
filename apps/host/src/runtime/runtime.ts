@@ -251,7 +251,7 @@ import {
   type NotificationPublicationTarget,
 } from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
-import { CommandRequestService } from "../commands/requests.js";
+import { CommandRequestExpiry, CommandRequestService } from "../commands/requests.js";
 import { CommandRequestStore } from "@opensteer/database";
 import { EgressService } from "../server/egress-service.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
@@ -3494,13 +3494,21 @@ export async function createHostRuntime(
       });
     }
     const commandRequestStore = new CommandRequestStore(store.database, store.requests);
+    // A proposed command waits a day: one timer for the earliest open ask's end, none while none
+    // is open, so an idle Home does no periodic work for asks. Approving a stale one is refused.
+    const commandRequestExpiry = new CommandRequestExpiry(commandRequestStore, (error) =>
+      reportMutationFailure(error),
+    );
+    stopCommandRequestExpiry = () => commandRequestExpiry.stop();
     const commandRequests = new CommandRequestService({
       store: commandRequestStore,
       database: store.database,
       requests: store.requests,
+      expiry: commandRequestExpiry,
     });
     // An approval cut off by a restart may have taken effect: it is unknown, never run again.
-    await commandRequestStore.recoverRunning();
+    // The same read says when the earliest open ask ends.
+    commandRequestExpiry.arm((await commandRequestStore.recoverRunning()).nextExpiry);
     const app = await createHostServer(
       {
         commandRequests,
@@ -3803,14 +3811,6 @@ export async function createHostRuntime(
       onError: reportMutationFailure,
     });
     deadlines.start();
-    // A proposed command waits a day; expiring it is never urgent, so it keeps to its own slow
-    // timer rather than the deadline sweep every write wakes, and not at startup: its first sweep
-    // is the timer's first tick. Approving a stale one is refused.
-    const expireCommandRequests = () =>
-      void commandRequestStore.expire().catch((error: unknown) => reportMutationFailure(error));
-    const commandRequestExpiry = setInterval(expireCommandRequests, 10 * 60_000);
-    commandRequestExpiry.unref();
-    stopCommandRequestExpiry = () => clearInterval(commandRequestExpiry);
     await commitPersonalMutation(database, async () => undefined);
 
     return {

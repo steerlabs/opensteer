@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
+  raisedBeforeEffect,
   type AgentGrant,
   type AuthenticatedSession,
   type RequestResponse,
@@ -28,7 +29,8 @@ import {
   type AgentCommandDoor,
 } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
-import { CommandRequestService } from "./requests.js";
+import { CommandRequestService, proposerLineageKey, type ProposerLineageKey } from "./requests.js";
+import { commandSentence } from "@opensteer/protocol/command-words";
 
 const types = Object.keys(commandTable) as CommandType[];
 
@@ -107,7 +109,7 @@ describeStore("command Requests at the Home", (it) => {
             kind: "run",
             name: "Claude Code",
             taskTitle: "Tidy up",
-            key: `task:${f.threadId}`,
+            key: `task:${f.threadId}` as ProposerLineageKey,
           },
           origin: { runId: f.run.id },
           originatingThreadId: f.threadId,
@@ -123,11 +125,20 @@ describeStore("command Requests at the Home", (it) => {
         harnessInstanceId,
         name,
       }) as unknown as HostApiCommand;
-    const approve = (requestId: string, command: Record<string, unknown>) =>
+    const approve = (
+      requestId: string,
+      command: Record<string, unknown>,
+      idempotencyKey: string = randomUUID(),
+    ) =>
       storeFixture.store.requests.revision(requestId as never).then((expectedRevision) =>
         service.approve(
           personActor(context),
-          { requestId: requestId as never, expectedRevision: expectedRevision!, command },
+          {
+            requestId: requestId as never,
+            expectedRevision: expectedRevision!,
+            command,
+            idempotencyKey,
+          },
           (person, approved) => dispatchCommand(person, approved, { registry }, context),
           (proposal) => personActor(context, proposal),
         ),
@@ -161,8 +172,9 @@ describeStore("command Requests at the Home", (it) => {
     const request = (await store.requests.get(requestId as never))!;
     // What the person sees: the Home's sentence; the agent's words only as its words.
     expect(request.kind).toBe("person.question");
+    // The Home's sentence first; who asked after it, marked as the agent's.
     expect(request.presentation.title).toBe(
-      "Claude Code, from the task “Tidy up”, wants to: Rename an AI engine account",
+      "Rename an AI engine account · Asked by the agent “Claude Code”, in its task “Tidy up”",
     );
     expect(request.presentation.detail).toContain(
       "Approving this needs an up-to-date Opensteer app.",
@@ -194,7 +206,10 @@ describeStore("command Requests at the Home", (it) => {
     expect(ran[0]!.actor).toMatchObject({
       kind: "person",
       userId: f.userId,
-      proposal: { requestId, proposedBy: { name: "Claude Code", key: `task:${f.threadId}` } },
+      proposal: {
+        requestId,
+        proposedBy: { name: "Claude Code", key: `task:${f.threadId}` as ProposerLineageKey },
+      },
     });
     const settled = (await store.requests.get(requestId as never))!;
     expect(settled).toMatchObject({
@@ -258,7 +273,12 @@ describeStore("command Requests at the Home", (it) => {
       } as unknown as HostApiCommand,
       ask: { status: "ask", reason: "secret" },
       face: 0,
-      proposer: { kind: "run", name: "Claude Code", taskTitle: null, key: `task:${f.threadId}` },
+      proposer: {
+        kind: "run",
+        name: "Claude Code",
+        taskTitle: null,
+        key: `task:${f.threadId}` as ProposerLineageKey,
+      },
       origin: { runId: f.run.id },
       originatingThreadId: f.threadId,
       callKey: randomUUID(),
@@ -272,7 +292,7 @@ describeStore("command Requests at the Home", (it) => {
     expect(row.command).toMatchObject({ secretPaths: ["value"] });
   });
 
-  it("settles an approval whose outcome was lost as unknown, and refusals as failed", async ({
+  it("settles a database-only command's throw as failed, and runs nothing again", async ({
     storeFixture,
   }) => {
     const { store, ran, run, door, rename, approve, failWith } = await setup(storeFixture);
@@ -281,14 +301,17 @@ describeStore("command Requests at the Home", (it) => {
       rename("One", "hin_00000000-0000-4000-8000-000000000201"),
       door(run),
     )) as { requestId: string };
-    failWith(new Error("The Runner went away mid-call"));
+    // Renaming changes only the Home's database: a throw rolled its one transaction back.
+    failWith(new Error("The database went away mid-commit"));
     expect(
       await approve(
         first.requestId,
         (await store.requests.get(first.requestId as never))!.command!.command,
       ),
     ).toEqual({
-      status: "unknown",
+      status: "failed",
+      code: "internal",
+      message: "The Home refused it, so nothing changed.",
     });
     const second = (await dispatchCommand(
       run,
@@ -304,7 +327,7 @@ describeStore("command Requests at the Home", (it) => {
     ).toEqual({
       status: "failed",
       code: "conflict",
-      message: "AI engine not found",
+      message: "The Home refused it, so nothing changed.",
     });
     // Each ran once; neither is run again by approving again.
     expect(ran).toHaveLength(2);
@@ -316,8 +339,466 @@ describeStore("command Requests at the Home", (it) => {
     ).rejects.toMatchObject({ code: "conflict" });
     expect(ran).toHaveLength(2);
     expect(commandContinuation((await store.requests.get(first.requestId as never))!)).toContain(
-      "never repeat it blindly",
+      "it did not happen",
     );
+  });
+
+  it("settles unknown unless the Home knows nothing left it (X1)", async ({ storeFixture }) => {
+    const { service, store, f, approve, failWith } = await setup(storeFixture);
+    const ask = (command: Record<string, unknown>) =>
+      service
+        .propose({
+          ownerUserId: f.userId,
+          command: { idempotencyKey: randomUUID(), ...command } as unknown as HostApiCommand,
+          ask: { status: "ask", reason: "step" },
+          face: 0,
+          proposer: {
+            kind: "run",
+            name: "Claude Code",
+            taskTitle: null,
+            key: `task:${f.threadId}` as ProposerLineageKey,
+          },
+          origin: { runId: f.run.id },
+          originatingThreadId: f.threadId,
+          callKey: randomUUID(),
+        })
+        .then(async (proposed) => {
+          const id = (proposed as { requestId: string }).requestId;
+          return { id, command: (await store.requests.get(id as never))!.command!.command };
+        });
+    const page = (url: string) => ({
+      type: "tab.open",
+      target: { kind: "page", url, guest: true },
+    });
+    // An open sent to the browser whose outcome was not recorded: it may have opened.
+    const sent = await ask(page("https://one.example/"));
+    failWith(
+      new OpensteerError({
+        code: "conflict",
+        reason: "browser-tab-open-outcome-unknown",
+        message: "The page outcome is unknown.",
+      }),
+    );
+    expect(await approve(sent.id, sent.command)).toEqual({ status: "unknown" });
+    // Refused while choosing where to open, marked where it was raised: nothing left the Home.
+    const refused = await ask(page("https://two.example/"));
+    failWith(
+      raisedBeforeEffect(
+        new OpensteerError({
+          code: "conflict",
+          reason: "browser-placement-unavailable",
+          message: "The selected browser computer is unavailable.",
+        }),
+      ),
+    );
+    expect(await approve(refused.id, refused.command)).toMatchObject({
+      status: "failed",
+      code: "conflict",
+    });
+    // A command that changes only the Home's database: a throw rolled its one transaction back.
+    const renamed = await ask({
+      type: "harness.rename",
+      environmentId: f.environmentId,
+      harnessInstanceId: "hin_00000000-0000-4000-8000-000000000401",
+      name: "Renamed",
+    });
+    failWith(new Error("The database went away mid-commit"));
+    expect(await approve(renamed.id, renamed.command)).toMatchObject({ status: "failed" });
+  });
+
+  it("tells the proposer a failure in the Home's words, never the handler's (X14)", async ({
+    storeFixture,
+  }) => {
+    const { store, run, door, rename, approve, failWith } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(
+      run,
+      rename("Private", "hin_00000000-0000-4000-8000-000000000501"),
+      door(run),
+    )) as { requestId: string };
+    // Written for the person: it may name what the proposer's grant does not cover.
+    failWith(
+      new OpensteerError({
+        code: "conflict",
+        message: "The account “Finance — Dana’s card” on “Dana’s Mac” is busy",
+      }),
+    );
+    const outcome = await approve(
+      proposed.requestId,
+      (await store.requests.get(proposed.requestId as never))!.command!.command,
+    );
+    expect(outcome).toEqual({
+      status: "failed",
+      code: "conflict",
+      message: "The Home refused it, so nothing changed.",
+    });
+    expect(JSON.stringify(await store.requests.get(proposed.requestId as never))).not.toContain(
+      "Dana",
+    );
+  });
+
+  it("records what ran apart from what was proposed, and who proposed it (X2)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, store, run, door, rename, approve } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(
+      run,
+      rename("Work", "hin_00000000-0000-4000-8000-000000000601"),
+      door(run),
+    )) as { requestId: string };
+    const asked = (await store.requests.get(proposed.requestId as never))!.command!;
+    await approve(proposed.requestId, { ...asked.command, name: "Work, renamed" });
+    const settled = (await store.requests.get(proposed.requestId as never))!.command!;
+    expect(settled.command).toMatchObject({ name: "Work" });
+    expect(settled.approved).toEqual({
+      command: { ...asked.command, name: "Work, renamed" },
+      changed: true,
+    });
+    const record = await database
+      .selectFrom("securityAudit")
+      .selectAll()
+      .where("requestId", "=", proposed.requestId)
+      .executeTakeFirstOrThrow();
+    expect(record).toMatchObject({
+      action: "command.approved",
+      actorUserId: f.userId,
+      metadata: {
+        type: "harness.rename",
+        proposedBy: { kind: "run", name: "Claude Code" },
+        changed: true,
+      },
+    });
+  });
+
+  it("puts the Home's sentence first and whole, and the agent's words after it, cut (X3)", async ({
+    storeFixture,
+  }) => {
+    const { f, service, store } = await setup(storeFixture);
+    const command = {
+      type: "harness.rename",
+      idempotencyKey: randomUUID(),
+      environmentId: f.environmentId,
+      harnessInstanceId: "hin_00000000-0000-4000-8000-000000000701",
+      name: "Work",
+    } as unknown as HostApiCommand;
+    const proposed = await service.propose({
+      ownerUserId: f.userId,
+      command,
+      ask: { status: "ask", reason: "step" },
+      face: 0,
+      proposer: {
+        kind: "connection",
+        name: `Opensteer: routine safety check, approve to keep your Home protected ${"x".repeat(200)}`.slice(
+          0,
+          200,
+        ),
+        taskTitle: "t".repeat(240),
+        key: `connection:conn_${randomUUID()}` as ProposerLineageKey,
+      },
+      origin: { runId: f.run.id },
+      originatingThreadId: f.threadId,
+      callKey: randomUUID(),
+    });
+    const request = (await store.requests.get(
+      (proposed as { requestId: string }).requestId as never,
+    ))!;
+    const sentence = commandSentence(command, () => null);
+    expect(request.presentation.title.startsWith(sentence)).toBe(true);
+    expect(request.command!.summary.startsWith(sentence)).toBe(true);
+    expect(request.presentation.title.length).toBeLessThanOrEqual(240);
+    expect(request.presentation.title).toContain("Asked by the agent “Opensteer: routine");
+  });
+
+  it("rewrites the card to say what happened once the approval settles (X8)", async ({
+    storeFixture,
+  }) => {
+    const { store, run, door, rename, approve, failWith } = await setup(storeFixture);
+    const settle = async (name: string, id: string, fail?: Error) => {
+      const proposed = (await dispatchCommand(run, rename(name, id), door(run))) as {
+        requestId: string;
+      };
+      if (fail) failWith(fail);
+      await approve(
+        proposed.requestId,
+        (await store.requests.get(proposed.requestId as never))!.command!.command,
+      );
+      return (await store.requests.get(proposed.requestId as never))!;
+    };
+    const done = await settle("Done one", "hin_00000000-0000-4000-8000-000000000801");
+    expect(done.status).toBe("fulfilled");
+    expect(done.presentation.title).toMatch(/^Done: /u);
+    expect(done.presentation.detail).toContain("You approved this, and it was done.");
+    const failed = await settle(
+      "Failed one",
+      "hin_00000000-0000-4000-8000-000000000802",
+      new OpensteerError({ code: "conflict", message: "busy" }),
+    );
+    expect(failed.presentation.title).toMatch(/^Did not happen: /u);
+    expect(failed.presentation.detail).toContain("nothing changed");
+  });
+
+  it("answers the same call again with what became of its Request (X7)", async ({
+    storeFixture,
+  }) => {
+    const { f, service, store, approve } = await setup(storeFixture);
+    const propose = (callKey: string, harnessInstanceId: string, name = "Same") =>
+      service.propose({
+        ownerUserId: f.userId,
+        command: {
+          type: "harness.rename",
+          idempotencyKey: randomUUID(),
+          environmentId: f.environmentId,
+          harnessInstanceId,
+          name,
+        } as unknown as HostApiCommand,
+        ask: { status: "ask", reason: "step" },
+        face: 0,
+        proposer: {
+          kind: "run",
+          name: "Claude Code",
+          taskTitle: null,
+          key: `task:${f.threadId}` as ProposerLineageKey,
+        },
+        origin: { runId: f.run.id },
+        originatingThreadId: f.threadId,
+        callKey,
+      });
+    const revision = async (id: string) => (await store.requests.revision(id as never))!;
+    // Declined: the same call reads declined, not pending.
+    const first = (await propose("call-a", "hin_00000000-0000-4000-8000-000000000901")) as {
+      requestId: string;
+    };
+    await service.decline({
+      requestId: first.requestId as never,
+      expectedRevision: await revision(first.requestId),
+      resolvedBy: f.userId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(await propose("call-a", "hin_00000000-0000-4000-8000-000000000901")).toEqual({
+      status: "declined",
+      requestId: first.requestId,
+    });
+    // Approved: the same call reads what it came to.
+    const second = (await propose("call-b", "hin_00000000-0000-4000-8000-000000000902")) as {
+      requestId: string;
+    };
+    await approve(
+      second.requestId,
+      (await store.requests.get(second.requestId as never))!.command!.command,
+    );
+    expect(await propose("call-b", "hin_00000000-0000-4000-8000-000000000902")).toMatchObject({
+      status: "answered",
+      outcome: { status: "done" },
+    });
+    // The same key with other arguments is another call.
+    await expect(
+      propose("call-b", "hin_00000000-0000-4000-8000-000000000902", "Other"),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("answers the same approval again with its first outcome, running nothing twice (X10)", async ({
+    storeFixture,
+  }) => {
+    const { store, ran, run, door, rename, approve } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(
+      run,
+      rename("Once", "hin_00000000-0000-4000-8000-000000001001"),
+      door(run),
+    )) as { requestId: string };
+    const command = (await store.requests.get(proposed.requestId as never))!.command!.command;
+    const key = randomUUID();
+    const first = await approve(proposed.requestId, command, key);
+    expect(await approve(proposed.requestId, command, key)).toEqual(first);
+    expect(ran).toHaveLength(1);
+    await expect(approve(proposed.requestId, command, randomUUID())).rejects.toMatchObject({
+      code: "conflict",
+    });
+  });
+
+  it("counts a child task's ask as its tree's: a decline holds for the child too (X5)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, service, store, door, rename, run } = await setup(storeFixture);
+    const child = await storeFixture.store.createThread({
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstance.id,
+      idempotencyKey: randomUUID(),
+      modelSelection: { modelId: "fixture", providerId: "openai", options: {} } as never,
+      title: "Child",
+      parentThreadId: f.threadId,
+    } as never);
+    const parentKey = await proposerLineageKey(database, {
+      ...run,
+      thread: { id: f.threadId },
+    } as never);
+    const childKey = await proposerLineageKey(database, {
+      ...run,
+      thread: { id: child.thread.id },
+    } as never);
+    expect(childKey).toBe(parentKey);
+    const proposed = (await dispatchCommand(
+      run,
+      rename("Tree", "hin_00000000-0000-4000-8000-000000001101"),
+      door(run),
+    )) as { requestId: string };
+    await service.decline({
+      requestId: proposed.requestId as never,
+      expectedRevision: (await store.requests.revision(proposed.requestId as never))!,
+      resolvedBy: f.userId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(
+      await service.propose({
+        ownerUserId: f.userId,
+        command: rename("Tree, again", "hin_00000000-0000-4000-8000-000000001101"),
+        ask: { status: "ask", reason: "step" },
+        face: 0,
+        proposer: { kind: "run", name: "Claude Code", taskTitle: "Child", key: childKey },
+        origin: { runId: f.run.id },
+        originatingThreadId: child.thread.id,
+        callKey: randomUUID(),
+      }),
+    ).toMatchObject({ status: "declined", requestId: proposed.requestId });
+  });
+
+  it("tells the person, on one row, that asks were held back, and the agent only to wait (X6)", async ({
+    storeFixture,
+  }) => {
+    const { store, run, door, rename } = await setup(storeFixture);
+    const opened: string[] = [];
+    for (let index = 0; index < 5; index++)
+      opened.push(
+        (
+          (await dispatchCommand(
+            run,
+            rename(`Cap ${index}`, `hin_00000000-0000-4000-8000-00000000120${index}`),
+            door(run),
+          )) as { requestId: string }
+        ).requestId,
+      );
+    await expect(
+      dispatchCommand(
+        run,
+        rename("Cap over", "hin_00000000-0000-4000-8000-000000001299"),
+        door(run),
+      ),
+    ).rejects.toMatchObject({
+      code: "resource_exhausted",
+      message:
+        "Too many changes are waiting for the person. Wait for an answer before asking for more.",
+    });
+    const oldest = (await store.requests.get(opened[0] as never))!;
+    expect(oldest.presentation.detail).toContain(
+      "Agents asked for 1 more change while this waited",
+    );
+    expect(oldest.command!.heldBack).toBe(1);
+  });
+
+  it("lets an agent withdraw its own ask, and points its answer to one at the person (withdraw)", async ({
+    storeFixture,
+  }) => {
+    const { f, service, store, run, door, rename, ran } = await setup(storeFixture);
+    const proposed = (await dispatchCommand(
+      run,
+      rename("Mine", "hin_00000000-0000-4000-8000-000000001301"),
+      door(run),
+    )) as { requestId: string };
+    // An agent's answer to a command Request is never a new proposal: it is pointed at it.
+    const answer = (decision: string) =>
+      dispatchCommand(
+        run,
+        {
+          type: "request.respond",
+          idempotencyKey: randomUUID(),
+          requestId: proposed.requestId,
+          expectedRevision: "1",
+          response: { kind: "external", value: { decision } },
+        } as unknown as HostApiCommand,
+        door(run),
+      );
+    for (const decision of ["declined", "fulfilled"])
+      expect(await answer(decision)).toMatchObject({
+        status: "pending",
+        requestId: proposed.requestId,
+        existing: true,
+      });
+    // Another lineage's withdrawal reads as nothing there.
+    await expect(
+      service.withdraw({
+        ownerUserId: f.userId,
+        requestId: proposed.requestId as never,
+        proposerKey: "task:thr_other" as ProposerLineageKey,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(
+      await service.withdraw({
+        ownerUserId: f.userId,
+        requestId: proposed.requestId as never,
+        proposerKey: `task:${f.threadId}` as ProposerLineageKey,
+      }),
+    ).toEqual({ status: "withdrawn", requestId: proposed.requestId });
+    expect((await store.requests.get(proposed.requestId as never))!.status).toBe("withdrawn");
+    expect(ran).toEqual([]);
+  });
+
+  it("refuses an approval once the proposing connection is Disconnected, and closes it (X9)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, service, store, ran, approve } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const proposed = (await service.propose({
+      ownerUserId: f.userId,
+      command: {
+        type: "harness.rename",
+        idempotencyKey: randomUUID(),
+        environmentId: f.environmentId,
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000001401",
+        name: "From a connection",
+      } as unknown as HostApiCommand,
+      ask: { status: "ask", reason: "step" },
+      face: 0,
+      proposer: {
+        kind: "connection",
+        name: "Agent",
+        taskTitle: null,
+        key: `connection:${connection.id}` as ProposerLineageKey,
+        connectionId: connection.id,
+        grantRevision: 1,
+      },
+      origin: { agentSessionId: session.id },
+      originatingThreadId: session.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    const command = (await store.requests.get(proposed.requestId as never))!.command!.command;
+    // Disconnected; the worker has not closed its asks yet.
+    await database
+      .updateTable("agentConnections")
+      .set({ revokedAt: new Date() })
+      .where("id", "=", connection.id)
+      .execute();
+    await expect(approve(proposed.requestId, command)).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "proposer-gone",
+    });
+    expect(ran).toEqual([]);
+    expect(await store.requests.get(proposed.requestId as never)).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "authority-revoked",
+    });
   });
 
   it("shows the ask in Needs you, counted, and to no other connected agent", async ({

@@ -187,6 +187,13 @@ export interface CommandRow<K extends CommandType = CommandType> {
   };
   /** Where the person reviews and changes it before approving; null where no screen exists. */
   readonly editor?: CommandEditor | null;
+  /**
+   * Its handler changes the Home's database alone, in one transaction, with nothing after the
+   * commit that can fail: a throw means nothing happened. Absent, it may act outside the Home's
+   * database (a Runner, a browser, a device, a provider, files) or after its commit, so a throw
+   * leaves its outcome unknown. Each row's reason, with its handler's line, is in the rows file.
+   */
+  readonly effect?: "database";
 }
 
 /** The screen that performs a command, filled in for the person to review. */
@@ -233,6 +240,7 @@ export const commandTable: CommandTable = {
       ...resource("task", c.parentThreadId ?? null),
       ...(c.accessMode ? { mode: c.accessMode } : {}),
     }),
+    effect: "database",
   },
   "thread.rename": {
     family: "tasks",
@@ -240,6 +248,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: task,
+    effect: "database",
   },
   "thread.icon.set": {
     family: "tasks",
@@ -247,6 +256,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: one("preference"),
     governs: task,
+    effect: "database",
   },
   "thread.sendMessage": {
     family: "tasks",
@@ -261,6 +271,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("widen-self"),
     governs: task,
+    effect: "database",
   },
   "thread.input.steer": {
     family: "tasks",
@@ -268,6 +279,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("widen-self"),
     governs: task,
+    effect: "database",
   },
   "thread.input.cancel": {
     family: "tasks",
@@ -275,6 +287,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("narrow"),
     governs: task,
+    effect: "database",
   },
   "thread.input.move": {
     family: "tasks",
@@ -282,6 +295,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: task,
+    effect: "database",
   },
   "thread.input.lease.take": {
     family: "tasks",
@@ -289,6 +303,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: [personView],
     governs: task,
+    effect: "database",
   },
   "thread.input.lease.renew": {
     family: "tasks",
@@ -296,6 +311,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: [personView],
     governs: task,
+    effect: "database",
   },
   "thread.input.lease.release": {
     family: "tasks",
@@ -303,6 +319,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: [personView],
     governs: task,
+    effect: "database",
   },
   "thread.input.edit": {
     family: "tasks",
@@ -310,6 +327,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: one("widen-self"),
     governs: task,
+    effect: "database",
   },
   "thread.visit": {
     family: "tasks",
@@ -317,6 +335,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: [personView],
     governs: task,
+    effect: "database",
   },
   "thread.done.set": {
     family: "tasks",
@@ -325,6 +344,7 @@ export const commandTable: CommandTable = {
     faces: two({ class: "narrow" }, { class: "widen-self" }),
     face: (c) => (c.done ? 0 : 1),
     governs: task,
+    effect: "database",
   },
   "thread.execution.update": {
     family: "tasks",
@@ -332,6 +352,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: task,
+    effect: "database",
   },
   "thread.access.update": {
     family: "tasks",
@@ -348,14 +369,23 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("narrow"),
     governs: task,
+    effect: "database",
   },
-  "node.stop": { family: "tasks", scope: "task", step: "A", faces: one("narrow"), governs: task },
+  "node.stop": {
+    family: "tasks",
+    scope: "task",
+    step: "A",
+    faces: one("narrow"),
+    governs: task,
+    effect: "database",
+  },
   "assignment.cancel": {
     family: "tasks",
     scope: "task",
     step: "A",
     faces: one("narrow"),
     governs: (c) => resource("assignment", c.assignmentId),
+    effect: "database",
   },
   "request.respond": {
     family: "tasks",
@@ -394,6 +424,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: [personView],
     governs: home("attachments"),
+    effect: "database",
   },
   "attachment.upload.discard": {
     family: "tasks",
@@ -414,6 +445,7 @@ export const commandTable: CommandTable = {
     face: (c) =>
       c.accessMode === undefined || c.accessMode === "approval-required" ? 0 : undefined,
     governs: home("defaults"),
+    effect: "database",
   },
   "viewer.timeZone.update": {
     family: "settings",
@@ -421,6 +453,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: home("time-zone"),
+    effect: "database",
   },
   "viewer.quietTasks.update": {
     family: "settings",
@@ -428,6 +461,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: home("quiet-tasks"),
+    effect: "database",
   },
   "viewer.name.update": {
     family: "settings",
@@ -461,6 +495,7 @@ export const commandTable: CommandTable = {
     faces: two({ class: "widen-self" }, { class: "widen-other", step: "none" }),
     face: (c) => (sendsTasksElsewhere(c.config) ? 1 : 0),
     governs: () => resource("engine"),
+    effect: "database",
   },
   "harness.update": {
     family: "engines",
@@ -482,6 +517,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: (c) => resource("engine", c.harnessInstanceId),
+    effect: "database",
   },
   "harness.rename": {
     family: "engines",
@@ -489,6 +525,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: (c) => resource("engine", c.harnessInstanceId),
+    effect: "database",
   },
   "harness.enabled.set": {
     family: "engines",
@@ -497,6 +534,7 @@ export const commandTable: CommandTable = {
     faces: two({ class: "narrow" }, { class: "widen-self" }),
     face: (c) => (c.enabled ? 1 : 0),
     governs: (c) => resource("engine", c.harnessInstanceId),
+    effect: "database",
   },
   "harness.default.set": {
     family: "engines",
@@ -504,6 +542,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: (c) => resource("engine", c.harnessInstanceId),
+    effect: "database",
   },
   "harness.authentication.begin": {
     family: "engines",
@@ -558,6 +597,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("preference"),
     governs: (c) => resource("device", c.machineId),
+    effect: "database",
   },
   "machine.revoke": {
     family: "devices",
@@ -579,6 +619,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: [personView],
     governs: (c) => resource("device", c.machineId),
+    effect: "database",
   },
   "iphone.screen.attach": {
     family: "devices",
@@ -628,6 +669,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: one("narrow"),
     governs: (c) => resource("enrollment", c.enrollmentId),
+    effect: "database",
   },
 
   // Device apps, approvals, local servers
@@ -820,6 +862,7 @@ export const commandTable: CommandTable = {
     step: "B",
     faces: one("preference"),
     governs: (c) => resource("connection", c.connectionId),
+    effect: "database",
   },
   "connection.uncertain.acknowledge": {
     family: "connections",
@@ -827,6 +870,7 @@ export const commandTable: CommandTable = {
     step: "none",
     faces: [personView],
     governs: (c) => resource("connection", c.connectionId),
+    effect: "database",
   },
 
   // Plugins
@@ -1267,6 +1311,7 @@ export const commandTable: CommandTable = {
     // Today's tool requires Full access to create an automation (agent-tools triggers.ts:47).
     faces: one("widen-self", { fullAccess: true }),
     governs: (c) => resource("task", c.input.anchorThreadId),
+    effect: "database",
   },
   "trigger.update": {
     family: "automations",
@@ -1280,6 +1325,7 @@ export const commandTable: CommandTable = {
     ],
     face: (c) => (c.input.program !== undefined || c.input.source !== undefined ? 1 : 0),
     governs: (c) => resource("automation", c.triggerId),
+    effect: "database",
   },
   "trigger.status.set": {
     family: "automations",
@@ -1289,6 +1335,7 @@ export const commandTable: CommandTable = {
     faces: [{ class: "narrow" }, { class: "narrow", fullAccess: true }, { class: "widen-self" }],
     face: (c) => (c.status === "paused" ? 0 : c.status === "archived" ? 1 : 2),
     governs: (c) => resource("automation", c.triggerId),
+    effect: "database",
   },
   "trigger.run": {
     family: "automations",
@@ -1297,6 +1344,7 @@ export const commandTable: CommandTable = {
     // The occurrence is recorded as the automation's lineage's (`trigger-store.ts:1879`).
     faces: one("widen-self", { fullAccess: true, lineage: true }),
     governs: (c) => resource("automation", c.triggerId),
+    effect: "database",
   },
   "trigger.cancel": {
     family: "automations",
@@ -1304,6 +1352,7 @@ export const commandTable: CommandTable = {
     step: "A",
     faces: one("narrow"),
     governs: (c) => resource("automation", c.triggerId),
+    effect: "database",
   },
 };
 
@@ -1328,6 +1377,14 @@ export function commandFaceStep(
   if (caller.connection && row.stepFor?.connections) return row.stepFor.connections;
   if (caller.selected && row.stepFor?.selected) return row.stepFor.selected;
   return step;
+}
+
+/**
+ * Where a command's effect can be: only the Home's database, or possibly beyond it. Unknown is
+ * the default: a row says `database` only where its handler was read to do one transaction.
+ */
+export function commandEffect(row: Pick<CommandRow, "effect">): "database" | "outside" {
+  return row.effect ?? "outside";
 }
 
 /**

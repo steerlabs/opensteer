@@ -684,11 +684,15 @@ function passwordSignInContinuation(
 /** What became of a command the agent proposed, from the Request's own record of it. */
 export function commandContinuation(request: Request): string {
   const command = request.command!;
-  const asked = `your proposed change “${command.summary}” (Request ${request.id})`;
+  const asked = `your proposed change “${command.sentence ?? command.summary}” (Request ${request.id})`;
+  const Asked = `${asked[0]!.toUpperCase()}${asked.slice(1)}`;
+  if (request.status === "withdrawn") return `${Asked} was withdrawn; nothing changed.`;
   if (request.status === "cancelled")
     return command.expired
       ? `No one answered ${asked} within a day, so nothing changed. You may propose it again if it is still needed.`
-      : `${asked[0]!.toUpperCase()}${asked.slice(1)} was cancelled (${request.cancellationReason}); nothing changed.`;
+      : request.cancellationReason === "authority-revoked"
+        ? `${Asked} closed: you can no longer ask for it, so nothing changed.`
+        : `${Asked} was cancelled (${request.cancellationReason}); nothing changed.`;
   if (request.status === "declined") {
     const words =
       request.response?.kind === "form"
@@ -706,9 +710,9 @@ export function commandContinuation(request: Request): string {
   }
   switch (command.outcome?.status) {
     case "done":
-      return `The person approved ${asked}, and it was made.${command.outcome.result === undefined ? "" : ` Result: ${JSON.stringify(command.outcome.result).slice(0, 4_000)}`}`;
+      return `The person approved ${asked}${command.approved?.changed ? " after changing it" : ""}, and it was made.${command.outcome.result === undefined ? "" : ` Result: ${JSON.stringify(command.outcome.result).slice(0, 4_000)}`}`;
     case "failed":
-      return `The person approved ${asked}, but the Home refused it before anything changed: ${command.outcome.message}`;
+      return `The person approved ${asked}${command.approved?.changed ? " after changing it" : ""}, but it did not happen (${command.outcome.code}): ${command.outcome.message}`;
     case "unknown":
       return `The person approved ${asked}, but the Home does not know whether it took effect. Check the current state with a safe read before doing anything else; never repeat it blindly.`;
     default:

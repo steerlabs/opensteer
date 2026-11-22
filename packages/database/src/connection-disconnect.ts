@@ -229,7 +229,8 @@ export async function connectionAttempts(
           and q.originating_watch_activation_id is null and q.originating_agent_session_id is null
           and t.origin_connection_id = f.id)
       ) and (f.disconnected or
-        coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision, op.grant_revision)
+        coalesce(r.admitted_grant_revision, o.admitted_grant_revision, w.admitted_grant_revision,
+          op.grant_revision, (q.command->'proposer'->>'grantRevision')::integer)
           < f.cleanup_minimum_grant_revision)
       union all
       select 'trigger', t.id, null, t.anchor_thread_id, null, null, null, false, null, null, null

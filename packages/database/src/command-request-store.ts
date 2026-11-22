@@ -1,5 +1,6 @@
 import {
   CommandRequestPartSchema,
+  createId,
   OpensteerError,
   type CommandRequestOutcome,
   type CommandRequestPart,
@@ -55,7 +56,78 @@ export type CommandRequestOrigin =
 
 export type CommandRequestOpened =
   | { readonly status: "pending"; readonly request: Request; readonly replayed: boolean }
-  | { readonly status: "declined"; readonly request: Request };
+  | {
+      readonly status: "declined" | "expired" | "withdrawn" | "closed";
+      readonly requestId: RequestId;
+    }
+  | {
+      readonly status: "answered";
+      readonly requestId: RequestId;
+      readonly outcome: CommandRequestOutcome;
+    };
+
+/** What a proposer is told when too many asks wait: nothing of whose they are. */
+const tooManyWaiting =
+  "Too many changes are waiting for the person. Wait for an answer before asking for more.";
+const heldBackPrefix = "Agents asked for ";
+
+/** What became of a command Request, as its proposer may read it. */
+function presentState(row: {
+  readonly id: RequestId;
+  readonly status: string;
+  readonly command: unknown;
+}): Exclude<CommandRequestOpened, { readonly status: "pending" }> | undefined {
+  const part = CommandRequestPartSchema.parse(row.command);
+  switch (row.status) {
+    case "pending":
+      return undefined;
+    case "declined":
+      return { status: "declined", requestId: row.id };
+    case "withdrawn":
+      return { status: "withdrawn", requestId: row.id };
+    case "fulfilled":
+      return {
+        status: "answered",
+        requestId: row.id,
+        outcome: part.outcome ?? { status: "running" },
+      };
+    default:
+      return { status: part.expired ? "expired" : "closed", requestId: row.id };
+  }
+}
+
+/** The card's words once the person has answered, so every app reads what happened. */
+export function settledPresentation(
+  presentation: RequestPresentation,
+  part: CommandRequestPart,
+  outcome: CommandRequestOutcome,
+): RequestPresentation {
+  const sentence = part.sentence ?? part.summary;
+  const changed = part.approved?.changed ? " You changed it before approving." : "";
+  const [title, said] =
+    outcome.status === "done"
+      ? ["Done", `You approved this, and it was done.${changed}`]
+      : outcome.status === "failed"
+        ? [
+            "Did not happen",
+            `You approved this, but the Home refused it, so nothing changed.${changed}`,
+          ]
+        : outcome.status === "unknown"
+          ? [
+              "May have happened",
+              `You approved this, but the Home could not tell whether it finished. It may have happened: check before doing it again. The Home will not run it again.${changed}`,
+            ]
+          : ["Approved", `You approved this, and it is being done.${changed}`];
+  const rest = presentation.detail
+    ?.split("\n\n")
+    .filter((line) => !line.startsWith(heldBackPrefix) && line !== approvingNeedsAnUpdatedApp);
+  return {
+    ...presentation,
+    title: `${title}: ${sentence}`.slice(0, 240),
+    detail: [said, ...(rest ?? [])].join("\n\n").slice(0, 16_000),
+  };
+}
+const approvingNeedsAnUpdatedApp = "Approving this needs an up-to-date Opensteer app.";
 
 /** The column as written: the part, validated, so a stored row always reads back. */
 function partValue(part: CommandRequestPart) {
@@ -93,6 +165,27 @@ export class CommandRequestStore {
     readonly part: CommandRequestPart;
     readonly presentation: RequestPresentation;
   }): Promise<CommandRequestOpened> {
+    const opened = await this.#open(input);
+    // Held back: the person's oldest ask says so, committed, and the agent is told only to wait.
+    if (opened.status === "full") {
+      await this.#holdBack(input.ownerUserId);
+      throw new OpensteerError({
+        code: "resource_exhausted",
+        reason: "command-requests-full",
+        message: tooManyWaiting,
+      });
+    }
+    return opened;
+  }
+
+  #open(input: {
+    readonly ownerUserId: UserId;
+    readonly callId: string;
+    readonly origin: CommandRequestOrigin;
+    readonly originatingThreadId: ThreadId;
+    readonly part: CommandRequestPart;
+    readonly presentation: RequestPresentation;
+  }): Promise<CommandRequestOpened | { readonly status: "full" }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const now = this.#now();
       const owner = input.ownerUserId;
@@ -104,7 +197,23 @@ export class CommandRequestStore {
         .where("requestedBy", "=", owner)
         .where("command", "is not", null)
         .executeTakeFirst();
-      if (replay) return { status: "pending", request: requestFromRow(replay), replayed: true };
+      if (replay) {
+        const stored = CommandRequestPartSchema.parse(replay.command);
+        // The same key with other arguments is another call, not this one again.
+        if (stored.argumentsDigest !== input.part.argumentsDigest)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "idempotency-conflict",
+            message: "That key was used for a different proposal. Use a new key.",
+          });
+        return (
+          presentState(replay) ?? {
+            status: "pending" as const,
+            request: requestFromRow(replay),
+            replayed: true,
+          }
+        );
+      }
       const declined = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -114,7 +223,7 @@ export class CommandRequestStore {
         .where("resolvedAt", ">", new Date(now.getTime() - commandDeclineMemoryMs))
         .orderBy("resolvedAt", "desc")
         .executeTakeFirst();
-      if (declined) return { status: "declined", request: requestFromRow(declined) };
+      if (declined) return { status: "declined" as const, requestId: declined.id };
       const open = await pendingCommand(transaction, owner)
         .selectAll()
         .where(sql<boolean>`command->>'askKey' = ${input.part.askKey}`)
@@ -127,7 +236,7 @@ export class CommandRequestStore {
             reason: "command-already-asked",
             message: "You already asked about this. Wait for the answer, or withdraw that Request.",
           });
-        return { status: "pending", request: requestFromRow(open), replayed: true };
+        return { status: "pending" as const, request: requestFromRow(open), replayed: true };
       }
       const counts = await pendingCommand(transaction, owner)
         .select([
@@ -138,14 +247,7 @@ export class CommandRequestStore {
         ])
         .executeTakeFirstOrThrow();
       if (counts.proposer >= commandRequestsPerProposer || counts.home >= commandRequestsPerHome)
-        throw new OpensteerError({
-          code: "resource_exhausted",
-          reason: "command-requests-full",
-          message:
-            counts.proposer >= commandRequestsPerProposer
-              ? `You have ${commandRequestsPerProposer} changes waiting for the person. Wait for an answer, or withdraw one.`
-              : "The person has many changes waiting. Wait for an answer before asking for more.",
-        });
+        return { status: "full" as const };
       const origin = input.origin;
       const created = await this.#requests.create(
         {
@@ -193,10 +295,134 @@ export class CommandRequestStore {
           throw error;
         });
       return {
-        status: "pending",
+        status: "pending" as const,
         request: await refreshRequestState(transaction, created.request.id),
         replayed: false,
       };
+    });
+  }
+
+  /**
+   * One row tells the person asks were held back: the Home's oldest open ask counts them, and
+   * its words say so. Whose they were is not said to anyone.
+   */
+  async #holdBack(owner: UserId): Promise<number> {
+    return commitPersonalMutation(this.#database, async (transaction) => {
+      const first = await pendingCommand(transaction, owner)
+        .select(["id", "originatingThreadId"])
+        .orderBy("createdAt")
+        .orderBy("id")
+        .limit(1)
+        .executeTakeFirst();
+      if (!first) return 0;
+      // Its task first, then the Request, as every Request mutation takes them.
+      await lockRequestThreads(transaction, [first.originatingThreadId]);
+      const oldest = await transaction
+        .selectFrom("requests")
+        .select(["id", "command", "presentation", "status"])
+        .where("id", "=", first.id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!oldest || oldest.status !== "pending") return 0;
+      const part = CommandRequestPartSchema.parse(oldest.command);
+      const heldBack = (part.heldBack ?? 0) + 1;
+      const presentation = oldest.presentation;
+      const lines = (presentation.detail ?? "")
+        .split("\n\n")
+        .filter((line) => !line.startsWith(heldBackPrefix));
+      lines.push(
+        `${heldBackPrefix}${heldBack} more change${heldBack === 1 ? "" : "s"} while this waited. The Home held them back until you answer what is waiting.`,
+      );
+      await transaction
+        .updateTable("requests")
+        .set({
+          command: partValue({ ...part, heldBack }),
+          presentation: jsonValue({
+            ...presentation,
+            detail: lines.join("\n\n").slice(0, 16_000),
+          }),
+        })
+        .where("id", "=", oldest.id)
+        .execute();
+      await refreshRequestState(transaction, oldest.id);
+      return heldBack;
+    });
+  }
+
+  /** An agent withdraws its own ask, by its lineage; another's reads as not there. */
+  async withdraw(input: {
+    readonly ownerUserId: UserId;
+    readonly requestId: RequestId;
+    readonly proposerKey: string;
+  }): Promise<
+    | { readonly status: "withdrawn"; readonly requestId: RequestId }
+    | Exclude<CommandRequestOpened, { readonly status: "pending" }>
+  > {
+    return commitPersonalMutation(this.#database, async (transaction) => {
+      const origin = await transaction
+        .selectFrom("requests")
+        .select("originatingThreadId")
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (origin) await lockRequestThreads(transaction, [origin.originatingThreadId]);
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .where("requestedBy", "=", input.ownerUserId)
+        .where("command", "is not", null)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || CommandRequestPartSchema.parse(row.command).proposer.key !== input.proposerKey)
+        throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
+      const settled = presentState(row);
+      if (settled) return settled;
+      const now = this.#now();
+      const withdrawn = await transaction
+        .updateTable("requests")
+        .set({ status: "withdrawn", resolvedAt: now, resolvedBy: input.ownerUserId })
+        .where("id", "=", row.id)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(withdrawn);
+      if (!request.originatingAgentSessionId) await enqueueContinuation(transaction, request, now);
+      await refreshRequestState(transaction, request.id);
+      return { status: "withdrawn" as const, requestId: request.id };
+    });
+  }
+
+  /**
+   * Closes an ask its proposer can no longer make (its connection ended, or its grant no longer
+   * covers it): nothing runs, and the agent that asked is told.
+   */
+  async close(requestId: RequestId): Promise<void> {
+    await commitPersonalMutation(this.#database, async (transaction) => {
+      const origin = await transaction
+        .selectFrom("requests")
+        .select("originatingThreadId")
+        .where("id", "=", requestId)
+        .executeTakeFirst();
+      if (!origin) return;
+      await lockRequestThreads(transaction, [origin.originatingThreadId]);
+      const row = await transaction
+        .updateTable("requests")
+        .set({
+          status: "cancelled",
+          cancellationReason: "authority-revoked",
+          resolvedAt: this.#now(),
+          resolvedBy: null,
+        })
+        .where("id", "=", requestId)
+        .where("status", "=", "pending")
+        .where("command", "is not", null)
+        .returningAll()
+        .executeTakeFirst();
+      if (!row) return;
+      const request = requestFromRow(row);
+      if (!request.originatingAgentSessionId)
+        await enqueueContinuation(transaction, request, this.#now());
+      await refreshRequestState(transaction, request.id);
     });
   }
 
@@ -251,6 +477,9 @@ export class CommandRequestStore {
     readonly settlementSessionId?: string;
     /** The command the person approves must change what was asked: the same type and thing. */
     readonly accept: (part: CommandRequestPart) => void;
+    /** The approving call's key, and the command that will run, kept apart from the proposal. */
+    readonly approvalKey: string;
+    readonly approved: NonNullable<CommandRequestPart["approved"]>;
   }): Promise<{ readonly request: Request; readonly part: CommandRequestPart }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const row = await this.#lockPending(transaction, input);
@@ -269,12 +498,39 @@ export class CommandRequestStore {
             input.resolvedBy,
             input.settlementSessionId,
           ),
-          command: partValue({ ...part, outcome: { status: "running" } }),
+          command: partValue({
+            ...part,
+            outcome: { status: "running" },
+            approvalKey: input.approvalKey,
+            approved: input.approved,
+          }),
         })
         .where("id", "=", row.id)
         .where("status", "=", "pending")
         .returningAll()
         .executeTakeFirstOrThrow();
+      // The command's own record: the person ran it, on this session, at this agent's proposal.
+      await transaction
+        .insertInto("securityAudit")
+        .values({
+          id: createId("securityAudit"),
+          action: "command.approved",
+          actorUserId: input.resolvedBy,
+          actorSessionId: (input.settlementSessionId ?? null) as never,
+          requestId: row.id,
+          targetType: part.governs.kind,
+          targetId: part.governs.id,
+          metadata: jsonValue({
+            type: part.type,
+            proposedBy: {
+              kind: part.proposer.kind,
+              name: part.proposer.name,
+              key: part.proposer.key,
+            },
+            changed: input.approved.changed,
+          }),
+        })
+        .execute();
       await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
       await refreshRequestState(transaction, row.id);
       return { request: requestFromRow(resolved), part };
@@ -293,9 +549,13 @@ export class CommandRequestStore {
       const part = CommandRequestPartSchema.parse(row.command);
       // Only a running approval settles, once: unknown stays unknown.
       if (part.outcome?.status !== "running") return requestFromRow(row);
+      // `fulfilled` means the person said yes; the card's own words now say what happened.
       await transaction
         .updateTable("requests")
-        .set({ command: partValue({ ...part, outcome }) })
+        .set({
+          command: partValue({ ...part, outcome }),
+          presentation: jsonValue(settledPresentation(row.presentation, part, outcome)),
+        })
         .where("id", "=", requestId)
         .execute();
       const request = await refreshRequestState(transaction, requestId);
@@ -307,17 +567,43 @@ export class CommandRequestStore {
 
   /**
    * After a restart: an approval that was running when the Home stopped may have taken effect.
-   * It is settled `unknown`, and the agent is told so; the Home never runs it again.
+   * It is settled `unknown`, and the agent is told so; the Home never runs it again. The same
+   * read finds when the earliest open ask ends, so startup arms one timer, or none. Each half is
+   * served by its own partial index, however many Requests the Home has.
    */
-  async recoverRunning(): Promise<readonly RequestId[]> {
+  async recoverRunning(): Promise<{
+    readonly recovered: readonly RequestId[];
+    readonly nextExpiry: Date | null;
+  }> {
     const rows = await this.#database
       .selectFrom("requests")
-      .select("id")
-      .where("status", "=", "fulfilled")
-      .where(sql<boolean>`command->'outcome'->>'status' = 'running'`)
+      .select(["id", "status", "createdAt"])
+      // Literal, as the partial indexes are written, so they serve every plan.
+      .where(
+        sql<boolean>`(status = 'fulfilled' and (command->'outcome'->>'status') = 'running') or (command is not null and status = 'pending')`,
+      )
       .execute();
-    for (const { id } of rows) await this.settle(id, { status: "unknown" });
-    return rows.map(({ id }) => id);
+    const running = rows.filter((row) => row.status === "fulfilled").map((row) => row.id);
+    for (const id of running) await this.settle(id, { status: "unknown" });
+    const open = rows
+      .filter((row) => row.status === "pending")
+      .map((row) => row.createdAt.getTime());
+    return {
+      recovered: running,
+      nextExpiry: open.length ? new Date(Math.min(...open) + commandRequestLifetimeMs) : null,
+    };
+  }
+
+  /** When the earliest open ask ends; null when none is open. */
+  async nextExpiry(): Promise<Date | null> {
+    const row = await this.#database
+      .selectFrom("requests")
+      .select(sql<Date | null>`min(created_at)`.as("earliest"))
+      .where(sql<boolean>`command is not null and status = 'pending'`)
+      .executeTakeFirst();
+    return row?.earliest
+      ? new Date(new Date(row.earliest).getTime() + commandRequestLifetimeMs)
+      : null;
   }
 
   /** Asks no one answered within their lifetime end; the agent is told, and may ask again. */

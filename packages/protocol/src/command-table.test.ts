@@ -3,6 +3,7 @@ import { z } from "zod";
 import { hostApi } from "./host-api.js";
 import {
   commandAgentOutput,
+  commandEffect,
   commandFamilies,
   commandResourceKey,
   commandTable,
@@ -26,6 +27,8 @@ interface ExpectedRow {
   readonly step: string;
   readonly stepFor?: Readonly<Record<string, string>>;
   readonly faces: readonly ExpectedFace[];
+  /** Where its handler's effect can be, read from the handler, with that line. */
+  readonly effect?: { readonly where: string; readonly why: string };
 }
 const rows = expected.rows as readonly ExpectedRow[];
 const step = (value: string): CommandStep => (value === "—" ? "none" : (value as CommandStep));
@@ -220,6 +223,22 @@ describe("the command table", () => {
     expect(commandSentence({ type: "harness.default.set" } as never, () => null)).toBe(
       "Make an AI engine account the default",
     );
+  });
+
+  it("says for every command whether a throw can mean it happened, from its handler (X1)", () => {
+    const missing: string[] = [];
+    for (const row of rows) {
+      const table = commandTable[row.type as CommandType];
+      if (!row.effect || !["database", "outside"].includes(row.effect.where)) {
+        missing.push(`${row.type}: no verdict`);
+        continue;
+      }
+      // Each verdict names the handler's file and line it was read from.
+      if (!/[a-z-]+\.ts:\d+/u.test(row.effect.why)) missing.push(`${row.type}: no handler line`);
+      if (commandEffect(table) !== row.effect.where)
+        missing.push(`${row.type}: table ${commandEffect(table)}, rows file ${row.effect.where}`);
+    }
+    expect(missing).toEqual([]);
   });
 
   it("has a verdict for every input that could decide a command, and none for a gone one (D0b)", () => {
