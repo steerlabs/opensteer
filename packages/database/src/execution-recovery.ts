@@ -1291,7 +1291,8 @@ function lostExecutionRecovery(facts: {
 
 /**
  * Messages a chat queued before the update were admitted by routes that no longer exist; they
- * never run. Each start cancels any still waiting, a batch per transaction, refreshing their
+ * never run. Each start cancels any still waiting (`pending` only: one whose outcome is unknown
+ * may already have been acted on, and stays unknown), a batch per transaction, refreshing their
  * task's queue like any other cancellation. Nothing writes such an input any more.
  */
 export async function cancelLegacyChatInputs(database: Kysely<DatabaseSchema>): Promise<void> {
@@ -1300,7 +1301,7 @@ export async function cancelLegacyChatInputs(database: Kysely<DatabaseSchema>): 
       const rows = await tx
         .selectFrom("threadInputs")
         .select(["messageId", "threadId"])
-        .where(sql<boolean>`thread_inputs.state in ('pending','unknown')`)
+        .where("state", "=", "pending")
         .where(sql<boolean>`thread_inputs.authority_source->>'kind' = 'channel-ingress'`)
         .orderBy("messageId")
         .limit(32)
@@ -1317,13 +1318,26 @@ export async function cancelLegacyChatInputs(database: Kysely<DatabaseSchema>): 
         .orderBy("id")
         .forNoKeyUpdate()
         .execute();
+      const waiting = await tx
+        .selectFrom("threadInputs")
+        .select("messageId")
+        .where(
+          "messageId",
+          "in",
+          rows.map(({ messageId }) => messageId),
+        )
+        .where("state", "=", "pending")
+        .orderBy("messageId")
+        .forNoKeyUpdate()
+        .execute();
+      if (!waiting.length) return 0;
       const cancelled = await tx
         .updateTable("threadInputs")
         .set({ state: "cancelled", cancelReason: "channel-access-changed", updatedAt: new Date() })
         .where(
           "messageId",
           "in",
-          rows.map(({ messageId }) => messageId),
+          waiting.map(({ messageId }) => messageId),
         )
         .returning(["threadId", "messageId"])
         .execute();

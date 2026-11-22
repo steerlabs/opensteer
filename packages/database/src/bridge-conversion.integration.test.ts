@@ -155,6 +155,77 @@ describeStore("an existing Messaging route becomes bridges that can only do less
     ).toEqual({ originConnectionId: null });
   });
 
+  it("ends the old route with its bridge, and cancels only chat messages known not to have run", async ({
+    storeFixture,
+  }) => {
+    const { configured, fixture } = await storeFixture.createChannelDeliveryFixture("convert-end", {
+      bridge: false,
+    });
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("channelBindings")
+      .set({ accessPolicy: sql`${JSON.stringify(policy("owner", { scope: "off" }))}::jsonb` })
+      .where("id", "=", configured.binding.id as never)
+      .execute();
+    // Two messages a chat queued before the update: one waiting, one whose outcome is unknown.
+    const queued = [];
+    for (const key of ["legacy-waiting", "legacy-unknown", "legacy-waiting-too"])
+      queued.push(
+        await store.enqueueThreadInput({
+          requestedBy: fixture.userId,
+          threadId: fixture.thread.id,
+          content: [{ type: "text", text: key }],
+          source: { kind: "human" },
+          policy: "queue",
+          idempotencyKey: key,
+        }),
+      );
+    await database
+      .updateTable("threadInputs")
+      .set({
+        authoritySource: sql`${JSON.stringify({ kind: "channel-ingress", conversationId: "legacy" })}::jsonb`,
+      })
+      .where("threadId", "=", fixture.thread.id)
+      .where("state", "=", "pending")
+      .execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "unknown" })
+      .where("messageId", "=", queued[1]!.message.id)
+      .execute();
+
+    await applyBridgeConversion(database as never);
+    const { cancelLegacyChatInputs } = await import("./execution-recovery.js");
+    await cancelLegacyChatInputs(database);
+    const states = await database
+      .selectFrom("threadInputs")
+      .select(["messageId", "state"])
+      .where(
+        "messageId",
+        "in",
+        queued.map(({ message }) => message.id),
+      )
+      .orderBy("createdAt")
+      .execute();
+    expect(states.map(({ state }) => state)).toEqual(["cancelled", "unknown", "cancelled"]);
+
+    // The person disconnects the converted bridge: the route it came from ends with it.
+    const { AgentConnectionStore } = await import("./agent-connection-store.js");
+    const bridge = await database
+      .selectFrom("agentConnections")
+      .select("id")
+      .where("bridgeFromBindingId", "=", configured.binding.id)
+      .executeTakeFirstOrThrow();
+    expect(await new AgentConnectionStore(database).revoke(fixture.userId, bridge.id)).toBe(true);
+    expect(
+      await database
+        .selectFrom("channelBindings")
+        .select("status")
+        .where("id", "=", configured.binding.id as never)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "revoked" });
+  });
+
   it("creates on a work Home that does not allow tasks only bridges that are already ended", async ({
     storeFixture,
   }) => {

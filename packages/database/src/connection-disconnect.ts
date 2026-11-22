@@ -21,8 +21,9 @@ import {
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
+import type { ChannelBindingId } from "@opensteer/channel-core";
 import type { StandardCdpAttemptReconciliation } from "@opensteer/protocol/standard-cdp";
-import { sql, type Kysely } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -359,6 +360,7 @@ export async function requestExpiredCleanups(
           })
           .where("id", "=", row.id)
           .execute();
+        await endConvertedRoute(tx, row.id, now);
         return;
       }
       if (connectionActive(row, now)) return;
@@ -372,6 +374,29 @@ export async function requestExpiredCleanups(
         .where("id", "=", row.id)
         .execute();
     });
+}
+
+/**
+ * A bridge made from a Messaging route ends that route with it, in the same transaction: the
+ * image before this one, which still answers through routes, never answers through it again.
+ */
+export async function endConvertedRoute(
+  tx: Transaction<DatabaseSchema>,
+  bridgeId: string,
+  now: Date,
+): Promise<void> {
+  const bridge = await tx
+    .selectFrom("agentConnections")
+    .select("bridgeFromBindingId")
+    .where("id", "=", bridgeId)
+    .executeTakeFirst();
+  if (!bridge?.bridgeFromBindingId) return;
+  await tx
+    .updateTable("channelBindings")
+    .set({ status: "revoked", updatedAt: now })
+    .where("id", "=", bridge.bridgeFromBindingId as ChannelBindingId)
+    .where("status", "<>", "revoked")
+    .execute();
 }
 
 export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<string[]> {

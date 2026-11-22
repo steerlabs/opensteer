@@ -31,6 +31,7 @@ import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
 import {
   connectionAttempts,
+  endConvertedRoute,
   latestConnectionUncertainty,
   outstandingAttempts,
 } from "./connection-disconnect.js";
@@ -548,6 +549,7 @@ export class AgentConnectionStore {
         })
         .where("id", "=", row.id)
         .execute();
+      await endConvertedRoute(tx, row.id, this.now());
       return true;
     });
   }
