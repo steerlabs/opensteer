@@ -4,8 +4,6 @@ import { isBareOrigin, refused } from "@opensteer/core";
 import {
   CloudComputerLocationSchema,
   defaultBrowserPoolAdminPort,
-  defaultBrowserPoolAgentPort,
-  defaultBrowserPoolRelayPort,
 } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
 
@@ -60,9 +58,7 @@ const poolSchema = z.object({
   OPENSTEER_POOL_PROFILE_DISK_TYPE: z
     .enum(["pd-ssd", "pd-balanced", "pd-standard"])
     .default("pd-ssd"),
-  OPENSTEER_POOL_AGENT_PORT: integer(1, 65_535).default(defaultBrowserPoolAgentPort),
   OPENSTEER_POOL_ADMIN_PORT: integer(1, 65_535).default(defaultBrowserPoolAdminPort),
-  OPENSTEER_POOL_RELAY_PORT: integer(1, 65_535).default(defaultBrowserPoolRelayPort),
 });
 
 export interface PoolProvisionerConfig {
@@ -73,9 +69,7 @@ export interface PoolProvisionerConfig {
   readonly localSsdCount: number;
   readonly bootDiskSizeGb: number;
   readonly profileDiskType: "pd-ssd" | "pd-balanced" | "pd-standard";
-  readonly agentPort: number;
   readonly adminPort: number;
-  readonly relayPort: number;
 }
 
 function integer(min: number, max: number) {
@@ -181,9 +175,7 @@ function loadPoolConfig(env: NodeJS.ProcessEnv): PoolProvisionerConfig | undefin
     localSsdCount: parsed.OPENSTEER_POOL_LOCAL_SSD_COUNT,
     bootDiskSizeGb: parsed.OPENSTEER_POOL_BOOT_DISK_SIZE_GB,
     profileDiskType: parsed.OPENSTEER_POOL_PROFILE_DISK_TYPE,
-    agentPort: parsed.OPENSTEER_POOL_AGENT_PORT,
     adminPort: parsed.OPENSTEER_POOL_ADMIN_PORT,
-    relayPort: parsed.OPENSTEER_POOL_RELAY_PORT,
   };
 }
 

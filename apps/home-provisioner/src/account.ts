@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
   BrowserPoolHostDesiredResponseSchema,
+  BrowserPoolHostReplaceUnreadyResponseSchema,
   BrowserPoolSlotBumpTermResponseSchema,
   BrowserPoolSlotDesiredResponseSchema,
   browserPoolHostCheckPath,
+  browserPoolHostReplaceUnreadyPath,
   browserPoolHostStatusPath,
   browserPoolHostsDesiredPath,
   browserPoolSlotBumpTermPath,
@@ -18,6 +20,8 @@ import {
   type BrowserPoolHostCheck,
   type BrowserPoolHostDesired,
   type BrowserPoolHostId,
+  type BrowserPoolHostReplaceUnreadyRequest,
+  type BrowserPoolHostReplaceUnreadyResponse,
   type BrowserPoolHostReport,
   type BrowserPoolSlotBumpTermRequest,
   type BrowserPoolSlotBumpTermResponse,
@@ -44,6 +48,12 @@ export interface PoolAccountApi {
     signal: AbortSignal,
   ): Promise<boolean>;
   reportHost(report: BrowserPoolHostReport, signal: AbortSignal): Promise<boolean>;
+  replaceUnenrolledHost(
+    id: BrowserPoolHostId,
+    input: BrowserPoolHostReplaceUnreadyRequest,
+    signal: AbortSignal,
+  ): Promise<BrowserPoolHostReplaceUnreadyResponse>;
+  isPoolEnabled?(signal: AbortSignal): Promise<boolean>;
   desiredSlots(signal: AbortSignal): Promise<readonly BrowserPoolSlotDesired[]>;
   checkSlot(
     slotId: BrowserPoolSlotId,
@@ -111,6 +121,7 @@ export function accountClient(
   http: HttpOptions,
   holder: string = randomUUID(),
   provider?: "google",
+  poolConfigured?: boolean,
 ): AccountApi {
   const headers = async (signal: AbortSignal) => ({
     authorization: `Bearer ${await token(signal)}`,
@@ -124,7 +135,11 @@ export function accountClient(
         http,
         signal,
         json(z.object({ acquired: z.literal(true) })),
-        { method: "POST", body: { holder }, headers: await headers(signal) },
+        {
+          method: "POST",
+          body: poolConfigured !== undefined ? { holder, poolConfigured } : { holder },
+          headers: await headers(signal),
+        },
       );
     },
     async check(id, check, signal) {
@@ -222,6 +237,29 @@ export function accountClient(
             { method: "POST", body: report, headers: await headers(signal) },
           )
         ).recorded;
+      },
+      async replaceUnenrolledHost(id, input, signal) {
+        return request(
+          "Account",
+          new URL(browserPoolHostReplaceUnreadyPath(id), origin),
+          http,
+          signal,
+          json(BrowserPoolHostReplaceUnreadyResponseSchema),
+          { method: "POST", body: input, headers: await headers(signal) },
+        );
+      },
+      async isPoolEnabled(signal) {
+        const url = new URL(browserPoolHostsDesiredPath, origin);
+        url.searchParams.set("limit", "1");
+        const page = await request(
+          "Account",
+          url,
+          http,
+          signal,
+          json(BrowserPoolHostDesiredResponseSchema),
+          { headers: await headers(signal) },
+        );
+        return page.poolEnabled === true || page.hosts.length > 0;
       },
       async desiredSlots(signal) {
         const slots: BrowserPoolSlotDesired[] = [];

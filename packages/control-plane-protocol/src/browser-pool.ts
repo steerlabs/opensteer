@@ -86,20 +86,21 @@ export const BrowserPoolHostDesiredSchema = z
     generation: CloudComputerGenerationSchema,
     revision: CloudComputerDesiredRevisionSchema,
     state: BrowserPoolHostStateSchema,
-    region: CloudComputerLocationSchema,
     machineType: CloudComputerLocationSchema,
-    slotsCapacity: z.number().int().min(1).max(16_384),
     profileDiskName: BrowserPoolResourceNameSchema,
     profileDiskSizeGb: z.number().int().min(10).max(65_536),
     profileDiskRef: BrowserPoolDiskRefSchema.optional(),
+    agentPort: z.number().int().min(1).max(65_535),
+    relayPort: z.number().int().min(1).max(65_535),
     release: BrowserPoolHostReleaseSchema,
     providerServerRef: GoogleComputeServerRefSchema.optional(),
     previousProviderServerRef: GoogleComputeServerRefSchema.optional(),
     internalIp: z.ipv4().optional(),
     enrolled: z.boolean(),
+    everEnrolled: z.boolean(),
+    autoReplaceCount: z.number().int().min(0).max(10),
     bootstrapToken: CloudComputerBootstrapTokenSchema.optional(),
     hostKey: BrowserPoolSpkiBase64Schema.optional(),
-    relayKey: BrowserPoolSpkiBase64Schema.optional(),
     pendingProviderWrites: z.array(BrowserPoolHostProviderWriteSchema).max(4).optional(),
     readinessStartedAt: z.iso.datetime({ offset: true }).optional(),
   })
@@ -116,6 +117,7 @@ export const BrowserPoolHostDesiredPageSchema = z.object({
 
 export const BrowserPoolHostDesiredResponseSchema = z.strictObject({
   next: BrowserPoolHostIdSchema.optional(),
+  poolEnabled: z.boolean().optional(),
   hosts: z
     .array(BrowserPoolHostDesiredSchema)
     .max(10_000)
@@ -130,10 +132,28 @@ export const BrowserPoolHostErrorSchema = z.enum([
   "The provider has a newer pool host generation.",
   "The pool host has more than one server for this generation.",
   "The pool host did not become ready before its deadline.",
+  "The pool host did not enrol before its deadline after automatic replacement retries.",
   "The pool host provider operation failed.",
   "The pool host still holds active browser slots.",
 ]);
 export type BrowserPoolHostError = z.infer<typeof BrowserPoolHostErrorSchema>;
+
+export const BrowserPoolHostReplaceUnreadyRequestSchema = z.strictObject({
+  revision: CloudComputerDesiredRevisionSchema,
+  generation: CloudComputerGenerationSchema,
+});
+export type BrowserPoolHostReplaceUnreadyRequest = z.infer<
+  typeof BrowserPoolHostReplaceUnreadyRequestSchema
+>;
+
+export const BrowserPoolHostReplaceUnreadyResponseSchema = z.strictObject({
+  replaced: z.boolean(),
+  generation: CloudComputerGenerationSchema.optional(),
+  revision: CloudComputerDesiredRevisionSchema.optional(),
+});
+export type BrowserPoolHostReplaceUnreadyResponse = z.infer<
+  typeof BrowserPoolHostReplaceUnreadyResponseSchema
+>;
 
 export const BrowserPoolHostReportSchema = z
   .strictObject({
@@ -288,11 +308,8 @@ export const BrowserPoolSlotStateSchema = z.enum(["active", "deleting", "deleted
 export type BrowserPoolSlotState = z.infer<typeof BrowserPoolSlotStateSchema>;
 
 export const BrowserPoolSlotPhaseSchema = z.enum([
-  "waiting_keys",
-  "waiting_host",
-  "provisioning",
+  "preparing",
   "ready",
-  "updating_keys",
   "deleting",
   "deleted",
   "failed",
@@ -301,7 +318,6 @@ export type BrowserPoolSlotPhase = z.infer<typeof BrowserPoolSlotPhaseSchema>;
 
 export const BrowserPoolSlotDesiredSchema = z.strictObject({
   slotId: BrowserPoolSlotIdSchema,
-  computerId: CloudComputerIdSchema,
   hostId: BrowserPoolHostIdSchema,
   hostGeneration: CloudComputerGenerationSchema,
   hostInternalIp: z.ipv4(),
@@ -341,15 +357,17 @@ export type BrowserPoolSlotDesiredResponse = z.infer<typeof BrowserPoolSlotDesir
 export const BrowserPoolSlotErrorSchema = z.enum([
   "The pool host rejected the slot administration request.",
   "The pool host reported a newer term for this browser slot.",
+  "This host's profile disk is full.",
 ]);
 export type BrowserPoolSlotError = z.infer<typeof BrowserPoolSlotErrorSchema>;
 
 export const BrowserPoolSlotReportSchema = z
   .strictObject({
     slotId: BrowserPoolSlotIdSchema,
+    hostGeneration: CloudComputerGenerationSchema,
     revision: CloudComputerDesiredRevisionSchema,
     term: BrowserPoolTermSchema,
-    phase: z.enum(["provisioning", "ready", "updating_keys", "deleting", "deleted", "failed"]),
+    phase: BrowserPoolSlotPhaseSchema,
     controlKey: BrowserPoolSpkiBase64Schema.nullable(),
     slotErased: z.boolean(),
     profileErased: z.boolean(),
@@ -364,16 +382,11 @@ export const BrowserPoolSlotReportSchema = z
         message: "A ready browser slot requires its control key",
       });
     }
-    if (
-      report.phase === "deleted" &&
-      (!report.slotErased ||
-        !report.profileErased ||
-        !report.credentialsErased ||
-        report.controlKey !== null)
-    ) {
+    if (report.phase === "deleted" && report.controlKey !== null) {
       context.addIssue({
         code: "custom",
-        message: "A deleted browser slot requires slot, profile, and credential erasure evidence",
+        path: ["controlKey"],
+        message: "A deleted browser slot cannot retain a control key",
       });
     }
     if ((report.phase === "failed") !== (report.lastError !== null)) {
@@ -397,10 +410,6 @@ export const BrowserPoolSlotCheckSchema = z.discriminatedUnion("operation", [
     operation: z.enum(["recover-agent-write", "send-agent-write"]),
     revision: CloudComputerDesiredRevisionSchema,
     token: z.uuid(),
-  }),
-  z.strictObject({
-    operation: z.literal("mutate"),
-    revision: CloudComputerDesiredRevisionSchema,
   }),
 ]);
 export type BrowserPoolSlotCheck = z.infer<typeof BrowserPoolSlotCheckSchema>;
@@ -503,6 +512,8 @@ export const browserPoolHostCheckPath = (id: BrowserPoolHostId) =>
   `/v1/browser-pool/hosts/${encodeURIComponent(id)}/check`;
 export const browserPoolHostStatusPath = (id: BrowserPoolHostId) =>
   `/v1/browser-pool/hosts/${encodeURIComponent(id)}/status`;
+export const browserPoolHostReplaceUnreadyPath = (id: BrowserPoolHostId) =>
+  `/v1/browser-pool/hosts/${encodeURIComponent(id)}/replace-unready`;
 export const browserPoolHostBootPath = (id: BrowserPoolHostId) =>
   `/v1/browser-pool/hosts/${encodeURIComponent(id)}/boot`;
 export const browserPoolHostBootCompletePath = (id: BrowserPoolHostId) =>

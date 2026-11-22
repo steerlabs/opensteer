@@ -1,83 +1,82 @@
-import type { ColumnType, Generated } from "kysely";
 import type {
+  BrowserPoolHostError,
   BrowserPoolHostId,
   BrowserPoolHostPhase,
   BrowserPoolHostProviderWrite,
   BrowserPoolHostRelease,
-  BrowserPoolHostReport,
   BrowserPoolHostState,
   BrowserPoolSlotAgentWrite,
+  BrowserPoolSlotError,
   BrowserPoolSlotId,
   BrowserPoolSlotPhase,
-  BrowserPoolSlotReport,
   BrowserPoolSlotState,
   CloudComputerId,
-  GoogleComputeServerRef,
 } from "@opensteer/control-plane-protocol";
-import type { NullableTimestamp, Timestamp } from "../database/schema.js";
+import type { ColumnType, Generated } from "kysely";
 
-/** S1: browser pool host record. Ports 7310/7311/7312 are configuration, not database columns. */
 export interface BrowserPoolHostTable {
-  id: BrowserPoolHostId;
-  generation: number;
-  revision: Generated<number>;
-  state: BrowserPoolHostState;
-  phase: BrowserPoolHostPhase;
-  region: string;
-  machineType: string;
-  slotsCapacity: number;
-  profileDiskName: string;
-  profileDiskSizeGb: number;
-  profileDiskRef: string | null;
-  release: ColumnType<BrowserPoolHostRelease, string, string>;
-  providerServerRef: GoogleComputeServerRef | null;
-  previousProviderServerRef: GoogleComputeServerRef | null;
-  internalIp: string | null;
-  bootstrapDigest: string | null;
-  sealedBootstrapToken: string | null;
-  bootstrapExpiresAt: NullableTimestamp;
-  completedBootDigest: string | null;
-  enrolledAt: NullableTimestamp;
-  hostPublicKey: string | null;
-  relayPublicKey: string | null;
-  pendingProviderWrites: ColumnType<BrowserPoolHostProviderWrite[], string | undefined, string>;
-  readinessStartedAt: Timestamp;
-  lastError: BrowserPoolHostReport["lastError"];
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  reportedAt: NullableTimestamp;
-  deletedAt: NullableTimestamp;
-  tombstonedAt: NullableTimestamp;
+  readonly id: BrowserPoolHostId;
+  readonly generation: number;
+  readonly revision: Generated<number>;
+  readonly state: BrowserPoolHostState;
+  readonly phase: BrowserPoolHostPhase;
+  readonly machineType: string;
+  readonly slotsCapacity: number;
+  readonly profileDiskName: string;
+  readonly profileDiskSizeGb: number;
+  readonly profileDiskRef: string | null;
+  readonly release: ColumnType<BrowserPoolHostRelease, string, string>;
+  readonly providerServerRef: string | null;
+  readonly previousProviderServerRef: string | null;
+  readonly internalIp: string | null;
+  readonly bootstrapDigest: string | null;
+  readonly sealedBootstrapToken: string | null;
+  readonly bootstrapExpiresAt: Date | null;
+  readonly completedBootDigest: string | null;
+  readonly enrolledAt: Date | null;
+  readonly everEnrolled: boolean;
+  readonly autoReplaceCount: number;
+  readonly hostPublicKey: string | null;
+  readonly relayPublicKey: string | null;
+  readonly pendingProviderWrites: ColumnType<
+    readonly BrowserPoolHostProviderWrite[],
+    string,
+    string
+  >;
+  readonly readinessStartedAt: Date | null;
+  readonly lastError: BrowserPoolHostError | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly deletedAt: Date | null;
+  readonly tombstonedAt: Date | null;
 }
 
-/** S1: one browser slot row per pooled Cloud Computer for its entire life (`computer_id` unique). */
 export interface BrowserPoolSlotTable {
-  slotId: BrowserPoolSlotId;
-  computerId: CloudComputerId;
-  hostId: BrowserPoolHostId | null;
-  term: number;
-  appliedTerm: number | null;
-  appliedHostGeneration: number | null;
-  revision: Generated<number>;
-  state: BrowserPoolSlotState;
-  phase: BrowserPoolSlotPhase;
-  homeKey: string | null;
-  relayKey: string | null;
-  ticketKeyId: string | null;
-  ticketKeySpki: string | null;
-  keysRegisteredAt: NullableTimestamp;
-  controlKey: string | null;
-  guestVcpus: number;
-  guestMemoryMib: number;
-  profileMib: number;
-  pendingAgentWrites: ColumnType<BrowserPoolSlotAgentWrite[], string | undefined, string>;
-  deletionRequestedAt: NullableTimestamp;
-  slotErasedAt: NullableTimestamp;
-  profileErasedAt: NullableTimestamp;
-  credentialsErasedAt: NullableTimestamp;
-  lastError: BrowserPoolSlotReport["lastError"];
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-  deletedAt: NullableTimestamp;
-  tombstonedAt: NullableTimestamp;
+  readonly slotId: BrowserPoolSlotId;
+  readonly computerId: CloudComputerId;
+  readonly hostId: BrowserPoolHostId | null;
+  readonly term: number;
+  readonly appliedTerm: number | null;
+  readonly appliedHostGeneration: number | null;
+  readonly revision: Generated<number>;
+  readonly state: BrowserPoolSlotState;
+  readonly phase: BrowserPoolSlotPhase;
+  readonly homeKey: string | null;
+  readonly relayKey: string | null;
+  readonly ticketKeyId: string | null;
+  readonly ticketKeySpki: string | null;
+  readonly keysRegisteredAt: Date | null;
+  readonly keysIssuedAt: Date | null;
+  readonly controlKey: string | null;
+  readonly guestVcpus: number;
+  readonly guestMemoryMib: number;
+  readonly profileMib: number;
+  readonly pendingAgentWrites: ColumnType<readonly BrowserPoolSlotAgentWrite[], string, string>;
+  readonly slotErasedAt: Date | null;
+  readonly profileErasedAt: Date | null;
+  readonly credentialsErasedAt: Date | null;
+  readonly lastError: BrowserPoolSlotError | null;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+  readonly tombstonedAt: Date | null;
 }

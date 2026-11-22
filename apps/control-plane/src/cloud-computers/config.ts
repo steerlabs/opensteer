@@ -9,7 +9,6 @@ import {
   CloudComputerRegionSchema,
   CloudComputerReleaseSchema,
   CloudComputerReleaseManifestUrlSchema,
-  defaultBrowserPoolAdminPort,
   defaultBrowserPoolAgentPort,
   defaultBrowserPoolRelayPort,
 } from "@opensteer/control-plane-protocol";
@@ -113,7 +112,6 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
           machineType: has("POOL_MACHINE_TYPE")
             ? read("POOL_MACHINE_TYPE", CloudComputerLocationSchema)
             : "n2-standard-8",
-          region: has("POOL_REGION") ? read("POOL_REGION", CloudComputerLocationSchema) : region,
           guestVcpus: has("POOL_GUEST_VCPUS") ? read("POOL_GUEST_VCPUS", integer(1, 32)) : 2,
           guestMemoryMib: has("POOL_GUEST_MEMORY_MIB")
             ? read("POOL_GUEST_MEMORY_MIB", integer(256, 65_536))
@@ -123,9 +121,6 @@ export function loadCloudComputerConfig(env: NodeJS.ProcessEnv) {
           agentPort: has("POOL_AGENT_PORT")
             ? read("POOL_AGENT_PORT", integer(1, 65_535))
             : defaultBrowserPoolAgentPort,
-          adminPort: has("POOL_ADMIN_PORT")
-            ? read("POOL_ADMIN_PORT", integer(1, 65_535))
-            : defaultBrowserPoolAdminPort,
           relayPort: has("POOL_RELAY_PORT")
             ? read("POOL_RELAY_PORT", integer(1, 65_535))
             : defaultBrowserPoolRelayPort,

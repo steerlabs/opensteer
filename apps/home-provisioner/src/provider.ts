@@ -131,7 +131,6 @@ export interface PoolProfileDisk {
   readonly name: string;
   readonly ref: string;
   readonly hostId: BrowserPoolHostId;
-  readonly inUse: boolean;
 }
 
 export interface EnsurePoolProfileDisk {
@@ -147,14 +146,12 @@ export interface PoolHostVm {
   readonly generation: number;
   readonly status: "running" | "off" | "transitioning" | "deleting";
   readonly internalIpv4: string | null;
-  readonly firewallApplied: boolean;
   readonly bootstrapMetadata?: "pending" | "enabled" | "absent";
 }
 
 export interface CreatePoolHostVm {
   readonly id: BrowserPoolHostId;
   readonly generation: number;
-  readonly region: string;
   readonly machineType: string;
   readonly image: string;
   readonly bootDiskSizeGb: number;

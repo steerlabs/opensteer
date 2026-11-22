@@ -1132,9 +1132,6 @@ export class GoogleCompute implements VmProvider, PoolHostProvider {
   async createPoolHost(input: CreatePoolHostVm, signal: AbortSignal, check?: Check) {
     const { id, generation } = input;
     const name = poolHostInstanceName(id, generation);
-    if (input.region !== this.#region && input.region !== this.#options.zone) {
-      throw refused("conflict", "This Google provisioner serves a different pool host region");
-    }
     const found = await this.#instance(name, signal);
     if (found)
       return googlePoolHostVm(verifyNamedPoolHostInstance(found, id, generation), generation);
@@ -1606,7 +1603,6 @@ function poolDisk(entry: Disk, hostId: BrowserPoolHostId): PoolProfileDisk {
     name: entry.name,
     ref: BrowserPoolDiskRefSchema.parse(`${entry.name}/${entry.id}`),
     hostId,
-    inUse: entry.users.length > 0,
   };
 }
 
@@ -1632,7 +1628,6 @@ function googlePoolHostVm(vm: Instance, generation?: number): PoolHostVm {
     status:
       vm.status === "RUNNING" ? "running" : vm.status === "TERMINATED" ? "off" : "transitioning",
     internalIpv4: nic?.networkIP ?? null,
-    firewallApplied: vm.tags?.items.includes(poolFirewallTag) ?? false,
     bootstrapMetadata: bootstrapMetadata(vm),
   };
 }

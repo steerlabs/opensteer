@@ -10,6 +10,8 @@ import {
   BrowserPoolHostDesiredPageSchema,
   BrowserPoolHostDesiredResponseSchema,
   BrowserPoolHostIdSchema,
+  BrowserPoolHostReplaceUnreadyRequestSchema,
+  BrowserPoolHostReplaceUnreadyResponseSchema,
   BrowserPoolHostReportSchema,
   BrowserPoolSlotBumpTermRequestSchema,
   BrowserPoolSlotBumpTermResponseSchema,
@@ -130,8 +132,8 @@ export function registerCloudComputerRoutes(
   app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);
     await options.verifyProvisioner(request.headers.authorization);
-    const { holder } = CloudComputerLeaseSchema.parse(request.body);
-    if (!(await store.lease(holder, true))) {
+    const { holder, poolConfigured } = CloudComputerLeaseSchema.parse(request.body);
+    if (!(await store.lease(holder, true, poolConfigured))) {
       throw new ControlPlaneError("conflict", "Another Cloud Computer provisioner holds the lease");
     }
     return { acquired: true };
@@ -243,6 +245,19 @@ export function registerCloudComputerRoutes(
     return CloudComputerReportResponseSchema.parse(await store.reportPoolHost(report));
   });
 
+  // T8: Provisioner replaces an unenrolled host that missed its readiness window (at most twice).
+  app.post(`${poolHostPath}/replace-unready`, async (request, reply) => {
+    privateResponse(reply);
+    await requireLease(request);
+    const { id } = poolHostParams.parse(request.params);
+    return BrowserPoolHostReplaceUnreadyResponseSchema.parse(
+      await store.replaceUnenrolledPoolHost(
+        id,
+        BrowserPoolHostReplaceUnreadyRequestSchema.parse(request.body),
+      ),
+    );
+  });
+
   const poolHostBootLimit = new BootRateLimit();
   for (const action of ["boot", "boot-complete"] as const) {
     app.post(`${poolHostPath}/${action}`, { bodyLimit: 4096 }, async (request, reply) => {
@@ -269,12 +284,16 @@ export function registerCloudComputerRoutes(
     });
   }
 
-  // S4: Pool host slot-egress pull (signed by host key; uniform refusal on any check failure).
-  const poolHostEgressLimit = new BootRateLimit();
+  // S4 + T9: Pool host slot-egress pull (rate-limited per host and slot; uniform refusal).
+  // Cold-start pulls run on every browser start/wake, so allow 30/min per (host, slot) while stopping floods.
+  const poolHostEgressLimit = new BootRateLimit(browserPoolHostSlotEgressRateLimitPerMinute);
   app.post(`${poolHostPath}/slot-egress`, { bodyLimit: 4096 }, async (request, reply) => {
     privateResponse(reply);
     const rawHostId = String((request.params as { id?: unknown })?.id ?? "");
-    if (!poolHostEgressLimit.allow(rawHostId, request.ip)) {
+    const rawBody = request.body as { slotId?: unknown } | undefined;
+    const rawSlotId = typeof rawBody?.slotId === "string" ? rawBody.slotId : "";
+    const limitKey = rawSlotId ? `${rawHostId}:${rawSlotId}` : rawHostId;
+    if (!poolHostEgressLimit.allow(limitKey, request.ip)) {
       return reply
         .code(429)
         .header("retry-after", "60")
@@ -428,9 +447,17 @@ function privateResponse(reply: FastifyReply) {
   void reply.header("cache-control", "no-store");
 }
 
+export const browserPoolHostSlotEgressRateLimitPerMinute = 30;
+
 class BootRateLimit {
   readonly #counts = new Map<string, number>();
   #resetAt = 0;
+
+  readonly #maxPerMinute: number;
+
+  constructor(maxPerMinute = 20) {
+    this.#maxPerMinute = maxPerMinute;
+  }
 
   allow(id: string, ip: string): boolean {
     const now = Date.now();
@@ -440,7 +467,7 @@ class BootRateLimit {
     }
     const key = `${id}:${ip}`;
     const count = this.#counts.get(key) ?? 0;
-    if (count >= 20 || (count === 0 && this.#counts.size >= 20_000)) return false;
+    if (count >= this.#maxPerMinute || (count === 0 && this.#counts.size >= 20_000)) return false;
     this.#counts.set(key, count + 1);
     return true;
   }

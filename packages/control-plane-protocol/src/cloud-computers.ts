@@ -199,7 +199,10 @@ export type CloudComputerReport = z.infer<typeof CloudComputerReportSchema>;
 export const CloudComputerReportResponseSchema = z.object({ recorded: z.boolean() });
 export type CloudComputerReportResponse = z.infer<typeof CloudComputerReportResponseSchema>;
 
-export const CloudComputerLeaseSchema = z.strictObject({ holder: z.uuid() });
+export const CloudComputerLeaseSchema = z.strictObject({
+  holder: z.uuid(),
+  poolConfigured: z.boolean().optional(),
+});
 export const CloudComputerCheckSchema = z.discriminatedUnion("operation", [
   z.strictObject({ operation: z.literal("orphan") }),
   z.strictObject({

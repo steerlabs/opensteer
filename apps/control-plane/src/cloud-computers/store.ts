@@ -27,6 +27,7 @@ import {
   type BrowserPoolHostBootRequest,
   type BrowserPoolHostCheck,
   type BrowserPoolHostId,
+  type BrowserPoolHostReplaceUnreadyRequest,
   type BrowserPoolHostReport,
   type BrowserPoolSlotBumpTermRequest,
   type BrowserPoolSlotCheck,
@@ -908,7 +909,9 @@ export class CloudComputerStore {
           updatedAt: now,
         })
         .executeTakeFirst();
-      await this.#pool.markComputerDeleted(tx, row.id, now);
+      if (row.browserMode === "pool") {
+        await this.#pool.markComputerDeleted(tx, row.id, now);
+      }
       return;
     }
     const status =
@@ -1143,14 +1146,22 @@ export class CloudComputerStore {
       throw new ControlPlaneError("conflict", "The holder does not have an expired lease");
   }
 
-  async lease(holder: string, acquire: boolean): Promise<boolean> {
+  async lease(holder: string, acquire: boolean, poolConfigured?: boolean): Promise<boolean> {
     const now = this.#now();
     const expires = new Date(now.getTime() + 10 * 60_000);
+    const poolFlag = poolConfigured ?? null;
     const result = acquire
       ? await sql`
-          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at)
-          values (true, ${holder}::uuid, ${expires})
-          on conflict (singleton) do update set holder = excluded.holder, expires_at = excluded.expires_at
+          insert into cloud_computer_provisioner_lease (singleton, holder, expires_at, pool_configured)
+          values (true, ${holder}::uuid, ${expires}, ${poolFlag})
+          on conflict (singleton) do update set
+            holder = excluded.holder,
+            expires_at = excluded.expires_at,
+            pool_configured = case
+              when ${poolFlag}::boolean is not null then ${poolFlag}::boolean
+              when cloud_computer_provisioner_lease.holder = excluded.holder then cloud_computer_provisioner_lease.pool_configured
+              else null
+            end
           where cloud_computer_provisioner_lease.expires_at <= ${now}
              or cloud_computer_provisioner_lease.holder = excluded.holder
           returning holder
@@ -1776,6 +1787,7 @@ export class CloudComputerStore {
       .updateTable("cloudComputers")
       .set({ egressUnavailable: !endpoint })
       .where("id", "=", id)
+      .where("egressUnavailable", "!=", !endpoint)
       .executeTakeFirst();
     return endpoint;
   }
@@ -1843,7 +1855,9 @@ export class CloudComputerStore {
 
   async egressForHome(id: CloudComputerId, authorization: string | undefined) {
     return this.#db.transaction().execute(async (tx) => {
-      await this.#requireBootedHome(tx, id, authorization, "share");
+      const row = await this.#requireBootedHome(tx, id, authorization, "share");
+      // T9: A pooled Cloud Computer's egress password is held only by its pool host.
+      if (row.browserMode === "pool") return {};
       const endpoint = await tx
         .selectFrom("cloudComputerEgressEndpoints")
         .selectAll()
@@ -2969,6 +2983,10 @@ export class CloudComputerStore {
 
   reportPoolHost(report: BrowserPoolHostReport) {
     return this.#pool.reportPoolHost(report);
+  }
+
+  replaceUnenrolledPoolHost(id: BrowserPoolHostId, input: BrowserPoolHostReplaceUnreadyRequest) {
+    return this.#pool.replaceUnenrolledHost(id, input);
   }
 
   bootPoolHost(id: BrowserPoolHostId, input: BrowserPoolHostBootRequest) {

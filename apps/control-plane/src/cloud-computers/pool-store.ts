@@ -4,6 +4,7 @@ import {
   BrowserPoolHostIdSchema,
   BrowserPoolHostSlotEgressRequestSchema,
   BrowserPoolSlotIdSchema,
+  CloudComputerEgressSchema,
   ManagedBrowserPoolTargetResponseSchema,
   browserPoolHostSlotEgressSigningBytes,
   browserPoolHostSlotEgressWindowMs,
@@ -17,6 +18,8 @@ import {
   type BrowserPoolHostCheck,
   type BrowserPoolHostDesiredResponse,
   type BrowserPoolHostId,
+  type BrowserPoolHostReplaceUnreadyRequest,
+  type BrowserPoolHostReplaceUnreadyResponse,
   type BrowserPoolHostReport,
   type BrowserPoolSlotBumpTermRequest,
   type BrowserPoolSlotBumpTermResponse,
@@ -38,6 +41,11 @@ import { ControlPlaneError } from "../server/errors.js";
 import type { CloudComputerConfig } from "./config.js";
 import type { BrowserPoolHostTable, BrowserPoolSlotTable } from "./pool-tables.js";
 import type { CloudComputerEgressEndpointTable } from "./tables.js";
+import {
+  beginJournalWrite,
+  finishJournalWrite,
+  sendOrRecoverJournalWrite,
+} from "./write-journal.js";
 
 type Database = Kysely<ControlPlaneDatabaseSchema>;
 type TransactionDb = Transaction<ControlPlaneDatabaseSchema>;
@@ -45,8 +53,7 @@ type PoolHost = Selectable<BrowserPoolHostTable>;
 type PoolSlot = Selectable<BrowserPoolSlotTable>;
 
 const bootstrapLifetimeMs = 20 * 60_000;
-const writeGraceMs = 3 * 60_000;
-const dispatchedWriteGraceMs = 15 * 60_000;
+export const maxUnenrolledHostAutoReplacements = 2;
 const emptyDigest = "0".repeat(64);
 const clearBootToken = {
   bootstrapDigest: null,
@@ -106,25 +113,24 @@ export class BrowserPoolStore {
         appliedTerm: null,
         appliedHostGeneration: null,
         state: "active",
-        phase: "waiting_keys",
+        phase: "preparing",
         homeKey: null,
         relayKey: null,
         ticketKeyId: null,
         ticketKeySpki: null,
         keysRegisteredAt: null,
+        keysIssuedAt: null,
         controlKey: null,
         guestVcpus: pool.guestVcpus,
         guestMemoryMib: pool.guestMemoryMib,
         profileMib: pool.profileMib,
         pendingAgentWrites: "[]",
-        deletionRequestedAt: null,
         slotErasedAt: null,
         profileErasedAt: null,
         credentialsErasedAt: null,
         lastError: null,
         createdAt: now,
         updatedAt: now,
-        deletedAt: null,
         tombstonedAt: null,
       })
       .executeTakeFirstOrThrow();
@@ -155,11 +161,9 @@ export class BrowserPoolStore {
           state: "deleted",
           phase: "deleted",
           controlKey: null,
-          deletionRequestedAt: slot.deletionRequestedAt ?? now,
           slotErasedAt: slot.slotErasedAt ?? now,
           profileErasedAt: slot.profileErasedAt ?? now,
           credentialsErasedAt: slot.credentialsErasedAt ?? now,
-          deletedAt: slot.deletedAt ?? now,
           tombstonedAt: now,
           lastError: null,
           updatedAt: now,
@@ -193,7 +197,6 @@ export class BrowserPoolStore {
         .set({
           state: "deleting",
           phase: "deleting",
-          deletionRequestedAt: slot.deletionRequestedAt ?? now,
           lastError: null,
           updatedAt: now,
         })
@@ -202,18 +205,17 @@ export class BrowserPoolStore {
   }
 
   /**
-   * W2: Reconciles pool host count and places unplaced slots onto the ready host with the most
-   * free slots. Also catches any Cloud Computer deleted outside the direct path (e.g. org offboard).
+   * W2 + T7: Syncs externally deleted Cloud Computers in a separate transaction
+   * (`cloud_computers -> browser_pool_slots`), then reconciles capacity and placement in declared
+   * lock order (`advisory:browser-pool-capacity -> browser_pool_hosts -> browser_pool_slots`).
    */
   async #reconcileCapacity(): Promise<void> {
     const pool = this.#config.browserPool;
-    await this.#db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(hashtextextended('browser-pool-capacity', 0))`.execute(
-        tx,
-      );
-      const now = this.#now();
+    if (!pool) return;
 
-      // 1. Sync deleted Cloud Computers -> deleting/tombstoned slots in lock order (cloud_computers -> browser_pool_slots).
+    // 1. Separate transaction so slot locks are never held before host locks (T7).
+    await this.#db.transaction().execute(async (tx) => {
+      const now = this.#now();
       const deletedComputerIds = (
         await tx
           .selectFrom("browserPoolSlots")
@@ -225,22 +227,26 @@ export class BrowserPoolStore {
           .orderBy("cloudComputers.id")
           .execute()
       ).map(({ id }) => id);
-      if (deletedComputerIds.length > 0) {
-        await tx
-          .selectFrom("cloudComputers")
-          .select("id")
-          .where("id", "in", deletedComputerIds)
-          .orderBy("id")
-          .forNoKeyUpdate()
-          .execute();
-        for (const computerId of deletedComputerIds) {
-          await this.markComputerDeleted(tx, computerId, now);
-        }
+      if (deletedComputerIds.length === 0) return;
+      await tx
+        .selectFrom("cloudComputers")
+        .select("id")
+        .where("id", "in", deletedComputerIds)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      for (const computerId of deletedComputerIds) {
+        await this.markComputerDeleted(tx, computerId, now);
       }
+    });
 
-      if (!pool) return;
+    // 2. Capacity sizing and placement in declared lock order (advisory -> hosts -> slots).
+    await this.#db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(hashtextextended('browser-pool-capacity', 0))`.execute(
+        tx,
+      );
+      const now = this.#now();
 
-      // 2. Lock live hosts (ordered by id), then read/lock live slots (ordered by slotId).
       const hosts = await tx
         .selectFrom("browserPoolHosts")
         .selectAll()
@@ -276,7 +282,6 @@ export class BrowserPoolStore {
             generation: 1,
             state: "active",
             phase: "provisioning",
-            region: pool.region,
             machineType: pool.machineType,
             slotsCapacity: pool.slotsPerHost,
             profileDiskName,
@@ -291,6 +296,8 @@ export class BrowserPoolStore {
             bootstrapExpiresAt: null,
             completedBootDigest: null,
             enrolledAt: null,
+            everEnrolled: false,
+            autoReplaceCount: 0,
             hostPublicKey: null,
             relayPublicKey: null,
             pendingProviderWrites: "[]",
@@ -298,7 +305,6 @@ export class BrowserPoolStore {
             lastError: null,
             createdAt: now,
             updatedAt: now,
-            reportedAt: null,
             deletedAt: null,
             tombstonedAt: null,
           })
@@ -343,7 +349,7 @@ export class BrowserPoolStore {
           .where("slotId", "=", slot.slotId)
           .set({
             hostId: chosen.id,
-            phase: slot.keysRegisteredAt ? "provisioning" : "waiting_keys",
+            phase: "preparing",
             updatedAt: now,
           })
           .executeTakeFirstOrThrow();
@@ -355,6 +361,8 @@ export class BrowserPoolStore {
     after?: BrowserPoolHostId,
     limit = 100,
   ): Promise<BrowserPoolHostDesiredResponse> {
+    const pool = this.#config.browserPool;
+    if (!pool) return { hosts: [] };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolHosts")
@@ -400,12 +408,12 @@ export class BrowserPoolStore {
           generation: row.generation,
           revision: row.revision,
           state: row.state,
-          region: row.region,
           machineType: row.machineType,
-          slotsCapacity: row.slotsCapacity,
           profileDiskName: row.profileDiskName,
           profileDiskSizeGb: row.profileDiskSizeGb,
           ...(row.profileDiskRef ? { profileDiskRef: row.profileDiskRef } : {}),
+          agentPort: pool.agentPort,
+          relayPort: pool.relayPort,
           release: row.release,
           ...(row.providerServerRef ? { providerServerRef: row.providerServerRef } : {}),
           ...(row.previousProviderServerRef
@@ -413,17 +421,24 @@ export class BrowserPoolStore {
             : {}),
           ...(row.internalIp ? { internalIp: row.internalIp } : {}),
           enrolled: row.enrolledAt !== null,
+          everEnrolled: row.everEnrolled,
+          autoReplaceCount: row.autoReplaceCount,
           ...(token ? { bootstrapToken: token } : {}),
           ...(row.hostPublicKey ? { hostKey: row.hostPublicKey } : {}),
-          ...(row.relayPublicKey ? { relayKey: row.relayPublicKey } : {}),
           ...(row.pendingProviderWrites.length
             ? { pendingProviderWrites: row.pendingProviderWrites }
             : {}),
-          readinessStartedAt: row.readinessStartedAt.toISOString(),
+          ...(row.readinessStartedAt
+            ? { readinessStartedAt: row.readinessStartedAt.toISOString() }
+            : {}),
         });
       }),
     );
-    return { hosts, ...(rows.length > limit ? { next: page.at(-1)!.id } : {}) };
+    return {
+      poolEnabled: true,
+      hosts,
+      ...(rows.length > limit ? { next: page.at(-1)!.id } : {}),
+    };
   }
 
   async checkPoolHost(id: BrowserPoolHostId, check: BrowserPoolHostCheck): Promise<boolean> {
@@ -442,7 +457,7 @@ export class BrowserPoolStore {
           .where("id", "=", id)
           .set({
             pendingProviderWrites: JSON.stringify(
-              row.pendingProviderWrites.filter(({ token }) => token !== check.token),
+              finishJournalWrite(row.pendingProviderWrites, check.token),
             ),
           })
           .executeTakeFirst();
@@ -453,45 +468,21 @@ export class BrowserPoolStore {
         check.operation === "recover-provider-write" ||
         check.operation === "send-provider-write"
       ) {
-        const write = row.pendingProviderWrites.find(({ token }) => token === check.token);
-        if (!write) return check.operation === "recover-provider-write";
-        const expired =
-          !!write.recoverAfter && Date.parse(write.recoverAfter) <= this.#now().getTime();
-        if (check.operation === "send-provider-write") {
-          if (row.state === "deleted" || expired) return false;
-          if (!write.dispatched) {
-            await tx
-              .updateTable("browserPoolHosts")
-              .where("id", "=", id)
-              .set({
-                pendingProviderWrites: JSON.stringify(
-                  row.pendingProviderWrites.map((entry) =>
-                    entry.token === write.token
-                      ? {
-                          ...entry,
-                          dispatched: true,
-                          recoverAfter: new Date(
-                            this.#now().getTime() + dispatchedWriteGraceMs,
-                          ).toISOString(),
-                        }
-                      : entry,
-                  ),
-                ),
-              })
-              .executeTakeFirstOrThrow();
-          }
-          return true;
+        const result = sendOrRecoverJournalWrite(
+          row.pendingProviderWrites,
+          check.operation === "send-provider-write" ? "send" : "recover",
+          check.token,
+          this.#now(),
+          () => row.state !== "deleted",
+        );
+        if (!result.allowed) return false;
+        if (result.nextWrites) {
+          await tx
+            .updateTable("browserPoolHosts")
+            .where("id", "=", id)
+            .set({ pendingProviderWrites: JSON.stringify(result.nextWrites) })
+            .executeTakeFirstOrThrow();
         }
-        if (!expired) return false;
-        await tx
-          .updateTable("browserPoolHosts")
-          .where("id", "=", id)
-          .set({
-            pendingProviderWrites: JSON.stringify(
-              row.pendingProviderWrites.filter(({ token }) => token !== check.token),
-            ),
-          })
-          .executeTakeFirstOrThrow();
         return true;
       }
       if (check.operation === "create") return needsPoolHostVm(row) && Boolean(row.bootstrapDigest);
@@ -500,7 +491,6 @@ export class BrowserPoolStore {
         if (
           row.state === "deleted" ||
           write.generation !== row.generation ||
-          row.pendingProviderWrites.some(({ kind }) => kind === write.kind) ||
           (write.kind === "create-disk" &&
             (Boolean(row.profileDiskRef) || write.diskName !== row.profileDiskName)) ||
           (write.kind === "create" && (!needsPoolHostVm(row) || !row.bootstrapDigest)) ||
@@ -508,22 +498,79 @@ export class BrowserPoolStore {
         ) {
           return false;
         }
+        const result = beginJournalWrite(row.pendingProviderWrites, write, this.#now());
+        if (!result.allowed || !result.nextWrites) return false;
         await tx
           .updateTable("browserPoolHosts")
           .where("id", "=", id)
-          .set({
-            pendingProviderWrites: JSON.stringify([
-              ...row.pendingProviderWrites,
-              {
-                ...write,
-                dispatched: false,
-                recoverAfter: new Date(this.#now().getTime() + writeGraceMs).toISOString(),
-              },
-            ]),
-          })
+          .set({ pendingProviderWrites: JSON.stringify(result.nextWrites) })
           .executeTakeFirst();
       }
       return true;
+    });
+  }
+
+  /**
+   * T8: Auto-replaces an unenrolled host that missed its readiness window, at most twice.
+   * Never replaces a host that has ever enrolled (that requires an operator decision).
+   */
+  async replaceUnenrolledHost(
+    id: BrowserPoolHostId,
+    input: BrowserPoolHostReplaceUnreadyRequest,
+  ): Promise<BrowserPoolHostReplaceUnreadyResponse> {
+    return this.#db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom("browserPoolHosts")
+        .selectAll()
+        .where("id", "=", id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.tombstonedAt !== null ||
+        row.state !== "active" ||
+        row.revision !== input.revision ||
+        row.generation !== input.generation ||
+        row.everEnrolled ||
+        row.enrolledAt !== null ||
+        row.autoReplaceCount >= maxUnenrolledHostAutoReplacements ||
+        row.pendingProviderWrites.length !== 0
+      ) {
+        return { replaced: false };
+      }
+      const liveSlot = await tx
+        .selectFrom("browserPoolSlots")
+        .select("slotId")
+        .where("hostId", "=", id)
+        .where("tombstonedAt", "is", null)
+        .limit(1)
+        .forShare()
+        .executeTakeFirst();
+      if (liveSlot) return { replaced: false };
+
+      const now = this.#now();
+      const updated = await tx
+        .updateTable("browserPoolHosts")
+        .where("id", "=", id)
+        .set({
+          ...clearBootToken,
+          generation: row.generation + 1,
+          autoReplaceCount: row.autoReplaceCount + 1,
+          previousProviderServerRef: row.providerServerRef ?? row.previousProviderServerRef,
+          providerServerRef: null,
+          internalIp: null,
+          completedBootDigest: null,
+          enrolledAt: null,
+          hostPublicKey: null,
+          relayPublicKey: null,
+          phase: "provisioning",
+          lastError: null,
+          readinessStartedAt: now,
+          updatedAt: now,
+        })
+        .returning(["generation", "revision"])
+        .executeTakeFirstOrThrow();
+      return { replaced: true, generation: updated.generation, revision: updated.revision };
     });
   }
 
@@ -568,7 +615,6 @@ export class BrowserPoolStore {
           profileDiskRef: deleted ? null : (report.profileDiskRef ?? row.profileDiskRef),
           internalIp: deleted ? null : report.internalIp,
           lastError: report.lastError,
-          reportedAt: now,
           updatedAt: now,
           ...(deleted
             ? { ...clearBootToken, deletedAt: row.deletedAt ?? now, tombstonedAt: now }
@@ -650,6 +696,7 @@ export class BrowserPoolStore {
           ...clearBootToken,
           completedBootDigest: row.bootstrapDigest,
           enrolledAt: now,
+          everEnrolled: true,
           hostPublicKey: input.hostKey,
           relayPublicKey: input.relayKey,
           updatedAt: now,
@@ -660,8 +707,8 @@ export class BrowserPoolStore {
 
   /**
    * S4: Pool host pulls one slot's exclusive egress credentials over HTTPS, signed by its current
-   * enrolled host key. Every failure returns one uniform refusal revealing nothing about which
-   * check failed.
+   * enrolled host key. Note: assigns a free egress endpoint as an intentional S4 side effect when
+   * the Cloud Computer does not yet hold one. Every failure returns one uniform refusal.
    */
   async egressForPoolHost(hostIdParam: string, rawBody: unknown) {
     const refuse = () =>
@@ -754,7 +801,9 @@ export class BrowserPoolStore {
         throw refuse();
       }
       const endpoint = await this.#assignEgress(tx, computer.id);
-      return endpoint ? { egress: this.#egressCredentials(endpoint) } : {};
+      return endpoint
+        ? { egress: CloudComputerEgressSchema.parse(this.#egressCredentials(endpoint)) }
+        : {};
     });
   }
 
@@ -762,13 +811,13 @@ export class BrowserPoolStore {
     after?: BrowserPoolSlotId,
     limit = 100,
   ): Promise<BrowserPoolSlotDesiredResponse> {
+    if (!this.#config.browserPool) return { slots: [] };
     await this.#reconcileCapacity();
     let query = this.#db
       .selectFrom("browserPoolSlots as slot")
       .innerJoin("browserPoolHosts as host", "host.id", "slot.hostId")
       .select([
         "slot.slotId",
-        "slot.computerId",
         "slot.hostId",
         "slot.term",
         "slot.appliedTerm",
@@ -813,7 +862,6 @@ export class BrowserPoolStore {
     return {
       slots: page.map((row) => ({
         slotId: row.slotId,
-        computerId: row.computerId,
         hostId: row.hostId!,
         hostGeneration: row.hostGeneration,
         hostInternalIp: row.hostInternalIp!,
@@ -844,7 +892,9 @@ export class BrowserPoolStore {
         slotErased: row.slotErasedAt !== null,
         profileErased: row.profileErasedAt !== null,
         credentialsErased: row.credentialsErasedAt !== null,
-        ...(row.pendingAgentWrites.length ? { pendingAgentWrites: row.pendingAgentWrites } : {}),
+        ...(row.pendingAgentWrites.length
+          ? { pendingAgentWrites: [...row.pendingAgentWrites] }
+          : {}),
       })),
       ...(rows.length > limit ? { next: page.at(-1)!.slotId } : {}),
     };
@@ -865,7 +915,7 @@ export class BrowserPoolStore {
           .where("slotId", "=", slotId)
           .set({
             pendingAgentWrites: JSON.stringify(
-              row.pendingAgentWrites.filter(({ token }) => token !== check.token),
+              finishJournalWrite(row.pendingAgentWrites, check.token),
             ),
           })
           .executeTakeFirst();
@@ -873,78 +923,39 @@ export class BrowserPoolStore {
       }
       if (!row || row.revision !== check.revision || row.tombstonedAt !== null) return false;
       if (check.operation === "recover-agent-write" || check.operation === "send-agent-write") {
-        const write = row.pendingAgentWrites.find(({ token }) => token === check.token);
-        if (!write) return check.operation === "recover-agent-write";
-        const expired =
-          !!write.recoverAfter && Date.parse(write.recoverAfter) <= this.#now().getTime();
-        if (check.operation === "send-agent-write") {
-          const validState =
-            write.kind === "delete" ? row.state === "deleting" : row.state === "active";
-          if (!validState || expired) return false;
-          if (!write.dispatched) {
-            await tx
-              .updateTable("browserPoolSlots")
-              .where("slotId", "=", slotId)
-              .set({
-                pendingAgentWrites: JSON.stringify(
-                  row.pendingAgentWrites.map((entry) =>
-                    entry.token === write.token
-                      ? {
-                          ...entry,
-                          dispatched: true,
-                          recoverAfter: new Date(
-                            this.#now().getTime() + dispatchedWriteGraceMs,
-                          ).toISOString(),
-                        }
-                      : entry,
-                  ),
-                ),
-              })
-              .executeTakeFirstOrThrow();
-          }
-          return true;
+        const result = sendOrRecoverJournalWrite(
+          row.pendingAgentWrites,
+          check.operation === "send-agent-write" ? "send" : "recover",
+          check.token,
+          this.#now(),
+          (write) => (write.kind === "delete" ? row.state === "deleting" : row.state === "active"),
+        );
+        if (!result.allowed) return false;
+        if (result.nextWrites) {
+          await tx
+            .updateTable("browserPoolSlots")
+            .where("slotId", "=", slotId)
+            .set({ pendingAgentWrites: JSON.stringify(result.nextWrites) })
+            .executeTakeFirstOrThrow();
         }
-        if (!expired) return false;
-        await tx
-          .updateTable("browserPoolSlots")
-          .where("slotId", "=", slotId)
-          .set({
-            pendingAgentWrites: JSON.stringify(
-              row.pendingAgentWrites.filter(({ token }) => token !== check.token),
-            ),
-          })
-          .executeTakeFirstOrThrow();
         return true;
       }
-      if (check.operation === "begin-agent-write") {
-        const { write } = check;
-        const validState =
-          write.kind === "delete"
-            ? row.state === "deleting"
-            : row.state === "active" && row.keysRegisteredAt !== null;
-        if (
-          !validState ||
-          write.hostId !== row.hostId ||
-          write.term !== row.term ||
-          row.pendingAgentWrites.some(({ kind }) => kind === write.kind)
-        ) {
-          return false;
-        }
-        await tx
-          .updateTable("browserPoolSlots")
-          .where("slotId", "=", slotId)
-          .set({
-            pendingAgentWrites: JSON.stringify([
-              ...row.pendingAgentWrites,
-              {
-                ...write,
-                dispatched: false,
-                recoverAfter: new Date(this.#now().getTime() + writeGraceMs).toISOString(),
-              },
-            ]),
-          })
-          .executeTakeFirst();
+      if (check.operation !== "begin-agent-write") return false;
+      const { write } = check;
+      const validState =
+        write.kind === "delete"
+          ? row.state === "deleting"
+          : row.state === "active" && row.keysRegisteredAt !== null;
+      if (!validState || write.hostId !== row.hostId || write.term !== row.term) {
+        return false;
       }
+      const result = beginJournalWrite(row.pendingAgentWrites, write, this.#now());
+      if (!result.allowed || !result.nextWrites) return false;
+      await tx
+        .updateTable("browserPoolSlots")
+        .where("slotId", "=", slotId)
+        .set({ pendingAgentWrites: JSON.stringify(result.nextWrites) })
+        .executeTakeFirst();
       return true;
     });
   }
@@ -979,7 +990,7 @@ export class BrowserPoolStore {
           appliedTerm: null,
           appliedHostGeneration: null,
           controlKey: null,
-          phase: "provisioning",
+          phase: "preparing",
           lastError: null,
           updatedAt: this.#now(),
         })
@@ -989,6 +1000,7 @@ export class BrowserPoolStore {
     });
   }
 
+  /** T1 + T5: Settles deletion on accumulated `*_erased_at` columns and checks `hostGeneration`. */
   async reportPoolSlot(report: BrowserPoolSlotReport): Promise<{ recorded: boolean }> {
     return this.#db.transaction().execute(async (tx) => {
       const peek = await tx
@@ -1015,15 +1027,14 @@ export class BrowserPoolStore {
               .executeTakeFirst()
           : undefined;
 
-      const host =
-        report.phase === "ready" && peek.hostId
-          ? await tx
-              .selectFrom("browserPoolHosts")
-              .select(["id", "generation", "phase", "enrolledAt"])
-              .where("id", "=", peek.hostId)
-              .forShare()
-              .executeTakeFirst()
-          : undefined;
+      const host = peek.hostId
+        ? await tx
+            .selectFrom("browserPoolHosts")
+            .select(["id", "generation", "phase", "enrolledAt"])
+            .where("id", "=", peek.hostId)
+            .forShare()
+            .executeTakeFirst()
+        : undefined;
 
       const row = await tx
         .selectFrom("browserPoolSlots")
@@ -1039,17 +1050,30 @@ export class BrowserPoolStore {
         row.term !== report.term ||
         row.tombstonedAt !== null ||
         !poolSlotPhaseMatchesState(row.state, report.phase) ||
-        (report.phase === "ready" && (!host || host.phase !== "ready" || !host.enrolledAt)) ||
-        (report.phase === "deleted" &&
-          (row.pendingAgentWrites.length !== 0 ||
-            !report.slotErased ||
-            !report.profileErased ||
-            !report.credentialsErased))
+        !host ||
+        host.generation !== report.hostGeneration ||
+        (report.phase === "ready" && (host.phase !== "ready" || !host.enrolledAt))
       ) {
         return { recorded: false };
       }
 
       const now = this.#now();
+      const nextSlotErasedAt = report.slotErased ? (row.slotErasedAt ?? now) : row.slotErasedAt;
+      const nextProfileErasedAt = report.profileErased
+        ? (row.profileErasedAt ?? now)
+        : row.profileErasedAt;
+      const nextCredentialsErasedAt = report.credentialsErased
+        ? (row.credentialsErasedAt ?? now)
+        : row.credentialsErasedAt;
+      const allErased =
+        nextSlotErasedAt !== null &&
+        nextProfileErasedAt !== null &&
+        nextCredentialsErasedAt !== null;
+
+      if (report.phase === "deleted" && (row.pendingAgentWrites.length !== 0 || !allErased)) {
+        return { recorded: false };
+      }
+
       const deleted = report.phase === "deleted";
       await tx
         .updateTable("browserPoolSlots")
@@ -1059,18 +1083,14 @@ export class BrowserPoolStore {
           phase: report.phase,
           appliedTerm: report.phase === "ready" ? report.term : row.appliedTerm,
           appliedHostGeneration:
-            report.phase === "ready" && host ? host.generation : row.appliedHostGeneration,
+            report.phase === "ready" ? report.hostGeneration : row.appliedHostGeneration,
           controlKey: deleted ? null : (report.controlKey ?? row.controlKey),
-          slotErasedAt: report.slotErased ? (row.slotErasedAt ?? now) : row.slotErasedAt,
-          profileErasedAt: report.profileErased
-            ? (row.profileErasedAt ?? now)
-            : row.profileErasedAt,
-          credentialsErasedAt: report.credentialsErased
-            ? (row.credentialsErasedAt ?? now)
-            : row.credentialsErasedAt,
+          slotErasedAt: nextSlotErasedAt,
+          profileErasedAt: nextProfileErasedAt,
+          credentialsErasedAt: nextCredentialsErasedAt,
           lastError: report.lastError,
           updatedAt: now,
-          ...(deleted ? { deletedAt: row.deletedAt ?? now, tombstonedAt: now } : {}),
+          ...(deleted ? { tombstonedAt: now } : {}),
         })
         .executeTakeFirstOrThrow();
 
@@ -1093,8 +1113,9 @@ export class BrowserPoolStore {
   }
 
   /**
-   * W4 + S5: Pooled Home registers its three public keys, authenticated by both its Host bearer
-   * credential and an Ed25519 signature verified against the pinned key in `deployments.authorityEnvelope`.
+   * W4 + S5 + T4: Pooled Home registers its three public keys, authenticated by both its Host
+   * bearer credential and an Ed25519 signature verified against `deployments.authorityEnvelope`.
+   * Keeps the accepted `issuedAt` and refuses any non-newer registration unless identical.
    */
   async registerHomeBrowserPoolKeys(
     deploymentId: DeploymentId,
@@ -1205,17 +1226,36 @@ export class BrowserPoolStore {
       }
 
       const { homeKey, relayKey, ticketKey } = input.document.keys;
-      const unchanged =
+      const sameKeys =
         slot.keysRegisteredAt !== null &&
         slot.homeKey === homeKey &&
         slot.relayKey === relayKey &&
         slot.ticketKeyId === ticketKey.keyId &&
         slot.ticketKeySpki === ticketKey.spki;
-      if (unchanged) {
+
+      // T4: Identical document replay is idempotent; any non-newer non-identical document is refused.
+      if (sameKeys && slot.keysIssuedAt !== null && slot.keysIssuedAt.getTime() === issuedAtMs) {
         return this.#targetResponse(slot, host);
+      }
+      if (slot.keysIssuedAt !== null && issuedAtMs <= slot.keysIssuedAt.getTime()) {
+        throw new ControlPlaneError(
+          "unauthorized",
+          "Browser pool key registration timestamp must be newer than the accepted registration",
+        );
       }
 
       const now = this.#now();
+      const issuedAt = new Date(issuedAtMs);
+      if (sameKeys) {
+        const updated = await tx
+          .updateTable("browserPoolSlots")
+          .where("slotId", "=", slot.slotId)
+          .set({ keysIssuedAt: issuedAt, updatedAt: now })
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        return this.#targetResponse(updated, host);
+      }
+
       const rotation = slot.keysRegisteredAt !== null;
       const updated = await tx
         .updateTable("browserPoolSlots")
@@ -1226,8 +1266,9 @@ export class BrowserPoolStore {
           ticketKeyId: ticketKey.keyId,
           ticketKeySpki: ticketKey.spki,
           keysRegisteredAt: now,
+          keysIssuedAt: issuedAt,
           term: rotation ? slot.term + 1 : slot.term,
-          phase: slot.hostId ? (rotation ? "updating_keys" : "provisioning") : "waiting_host",
+          phase: "preparing",
           lastError: null,
           updatedAt: now,
         })
@@ -1258,8 +1299,8 @@ export class BrowserPoolStore {
       .selectAll()
       .where("computerId", "=", computer.id)
       .executeTakeFirst();
-    if (!slot) {
-      throw new ControlPlaneError("not_found", "Browser slot was not found");
+    if (!slot || slot.tombstonedAt !== null || slot.state !== "active") {
+      return { status: "failed" };
     }
     const host = slot.hostId
       ? await this.#db
@@ -1272,65 +1313,81 @@ export class BrowserPoolStore {
   }
 
   #targetResponse(slot: PoolSlot, host: PoolHost | undefined): ManagedBrowserPoolTargetResponse {
-    if (slot.keysRegisteredAt === null) {
-      return ManagedBrowserPoolTargetResponseSchema.parse({ status: "unregistered" });
-    }
-    if (slot.phase === "failed" || slot.state !== "active") {
-      return ManagedBrowserPoolTargetResponseSchema.parse({ status: "failed" });
-    }
-    if (
-      slot.phase === "ready" &&
-      slot.appliedTerm === slot.term &&
-      slot.controlKey !== null &&
-      host &&
-      slot.appliedHostGeneration === host.generation &&
+    if (slot.keysRegisteredAt === null) return { status: "unregistered" };
+    if (slot.phase === "failed") return { status: "failed" };
+    const hostReady =
+      host !== undefined &&
       host.tombstonedAt === null &&
       host.state !== "deleted" &&
       host.phase === "ready" &&
       host.enrolledAt !== null &&
       host.internalIp !== null &&
       host.hostPublicKey !== null &&
-      host.relayPublicKey !== null
-    ) {
-      const agentPort = this.#config.browserPool?.agentPort ?? defaultBrowserPoolAgentPort;
-      const relayPort = this.#config.browserPool?.relayPort ?? defaultBrowserPoolRelayPort;
-      return ManagedBrowserPoolTargetResponseSchema.parse({
-        status: "ready",
-        target: {
-          kind: "managed-pool",
-          agentUrl: `http://${host.internalIp}:${agentPort}`,
-          slotId: slot.slotId,
-          term: slot.term,
-          agentKey: slot.controlKey,
-          hostKey: host.hostPublicKey,
-          relay: {
-            host: host.internalIp,
-            port: relayPort,
-            relayHostKey: host.relayPublicKey,
-          },
+      host.relayPublicKey !== null;
+    const slotReady =
+      slot.state === "active" &&
+      slot.phase === "ready" &&
+      slot.controlKey !== null &&
+      slot.appliedTerm === slot.term &&
+      slot.appliedHostGeneration === host?.generation;
+    if (!hostReady || !slotReady) return { status: "preparing" };
+
+    const agentPort = this.#config.browserPool?.agentPort ?? defaultBrowserPoolAgentPort;
+    const relayPort = this.#config.browserPool?.relayPort ?? defaultBrowserPoolRelayPort;
+    return ManagedBrowserPoolTargetResponseSchema.parse({
+      status: "ready",
+      target: {
+        kind: "managed-pool",
+        agentUrl: `http://${host.internalIp}:${agentPort}`,
+        slotId: slot.slotId,
+        term: slot.term,
+        agentKey: slot.controlKey,
+        hostKey: host.hostPublicKey,
+        relay: {
+          host: host.internalIp,
+          port: relayPort,
+          relayHostKey: host.relayPublicKey,
         },
-      });
+      },
+    });
+  }
+
+  async #poolProvisionerWarning(): Promise<string | undefined> {
+    if (!this.#config.browserPool) return undefined;
+    const result = await sql<{ poolConfigured: boolean | null }>`
+      select pool_configured as "poolConfigured" from cloud_computer_provisioner_lease where singleton
+    `.execute(this.#db);
+    const lease = result.rows[0];
+    if (lease && lease.poolConfigured !== true) {
+      return (
+        "Browser pooling is enabled in Account, but the active home-provisioner does not have " +
+        "OPENSTEER_POOL_PROVISIONER_KEY configured. Pool hosts and slots will not be reconciled."
+      );
     }
-    return ManagedBrowserPoolTargetResponseSchema.parse({ status: "preparing" });
+    return undefined;
   }
 
   async operatorListHosts() {
-    const rows = await this.#db
-      .selectFrom("browserPoolHosts")
-      .selectAll()
-      .orderBy("createdAt", "desc")
-      .execute();
-    return rows.map(poolHostOperatorView);
+    const [rows, warning] = await Promise.all([
+      this.#db.selectFrom("browserPoolHosts").selectAll().orderBy("createdAt", "desc").execute(),
+      this.#poolProvisionerWarning(),
+    ]);
+    return {
+      hosts: rows.map(poolHostOperatorView),
+      ...(warning ? { warning } : {}),
+    };
   }
 
   async operatorShowHost(id: BrowserPoolHostId) {
-    const row = await this.#db
-      .selectFrom("browserPoolHosts")
-      .selectAll()
-      .where("id", "=", id)
-      .executeTakeFirst();
+    const [row, warning] = await Promise.all([
+      this.#db.selectFrom("browserPoolHosts").selectAll().where("id", "=", id).executeTakeFirst(),
+      this.#poolProvisionerWarning(),
+    ]);
     if (!row) throw new ControlPlaneError("not_found", "Browser pool host was not found");
-    return poolHostOperatorView(row);
+    return {
+      ...poolHostOperatorView(row),
+      ...(warning ? { warning } : {}),
+    };
   }
 
   async operatorDrainHost(id: BrowserPoolHostId) {
@@ -1373,7 +1430,6 @@ export class BrowserPoolStore {
           phase: "provisioning",
           lastError: null,
           readinessStartedAt: now,
-          reportedAt: null,
           updatedAt: now,
         })
         .returningAll()
@@ -1420,22 +1476,30 @@ export class BrowserPoolStore {
   }
 
   async operatorListSlots() {
-    const rows = await this.#db
-      .selectFrom("browserPoolSlots")
-      .selectAll()
-      .orderBy("createdAt", "desc")
-      .execute();
-    return rows.map(poolSlotOperatorView);
+    const [rows, warning] = await Promise.all([
+      this.#db.selectFrom("browserPoolSlots").selectAll().orderBy("createdAt", "desc").execute(),
+      this.#poolProvisionerWarning(),
+    ]);
+    return {
+      slots: rows.map(poolSlotOperatorView),
+      ...(warning ? { warning } : {}),
+    };
   }
 
   async operatorShowSlot(slotId: BrowserPoolSlotId) {
-    const row = await this.#db
-      .selectFrom("browserPoolSlots")
-      .selectAll()
-      .where("slotId", "=", slotId)
-      .executeTakeFirst();
+    const [row, warning] = await Promise.all([
+      this.#db
+        .selectFrom("browserPoolSlots")
+        .selectAll()
+        .where("slotId", "=", slotId)
+        .executeTakeFirst(),
+      this.#poolProvisionerWarning(),
+    ]);
     if (!row) throw new ControlPlaneError("not_found", "Browser pool slot was not found");
-    return poolSlotOperatorView(row);
+    return {
+      ...poolSlotOperatorView(row),
+      ...(warning ? { warning } : {}),
+    };
   }
 }
 
@@ -1446,7 +1510,6 @@ function poolHostOperatorView(row: PoolHost) {
     revision: row.revision,
     state: row.state,
     phase: row.phase,
-    region: row.region,
     machineType: row.machineType,
     slotsCapacity: row.slotsCapacity,
     profileDiskName: row.profileDiskName,
@@ -1456,6 +1519,8 @@ function poolHostOperatorView(row: PoolHost) {
     previousProviderServerRef: row.previousProviderServerRef,
     internalIp: row.internalIp,
     enrolledAt: row.enrolledAt,
+    everEnrolled: row.everEnrolled,
+    autoReplaceCount: row.autoReplaceCount,
     lastError: row.lastError,
     deletedAt: row.deletedAt,
     tombstonedAt: row.tombstonedAt,
@@ -1475,11 +1540,11 @@ function poolSlotOperatorView(row: PoolSlot) {
     state: row.state,
     phase: row.phase,
     keysRegisteredAt: row.keysRegisteredAt,
+    keysIssuedAt: row.keysIssuedAt,
     slotErasedAt: row.slotErasedAt,
     profileErasedAt: row.profileErasedAt,
     credentialsErasedAt: row.credentialsErasedAt,
     lastError: row.lastError,
-    deletedAt: row.deletedAt,
     tombstonedAt: row.tombstonedAt,
     updatedAt: row.updatedAt,
   };
@@ -1552,13 +1617,7 @@ function poolSlotPhaseMatchesState(
 ) {
   if (state === "deleting")
     return phase === "deleting" || phase === "deleted" || phase === "failed";
-  if (state === "active")
-    return (
-      phase === "provisioning" ||
-      phase === "ready" ||
-      phase === "updating_keys" ||
-      phase === "failed"
-    );
+  if (state === "active") return phase === "preparing" || phase === "ready" || phase === "failed";
   return false;
 }
 

@@ -217,20 +217,23 @@ See the machine requirements and release commands in the [Home deployment guide]
 
 ## Browser pool hosts (optional)
 
-When pooling is enabled (`OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` set in Account and
-`OPENSTEER_POOL_PROVISIONER_KEY` set in the provisioner), the provisioner also manages Firecracker
-browser pool hosts in the same Compute project, VPC, subnet, and zone. Leave both unset to keep
-pooling completely disabled.
+When pooling is enabled (**both** `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` set in Account
+**and** `OPENSTEER_POOL_PROVISIONER_KEY` set in `home-provisioner`), the provisioner also
+manages Firecracker browser pool hosts in the same Compute project, VPC, subnet, and zone as Cloud
+Computer Homes. Both switches must be set together: if Account pooling is enabled while the active
+provisioner has no `OPENSTEER_POOL_PROVISIONER_KEY`, `home-provisioner` logs a
+`home-provisioner.pool.misconfigured` error on every pass and Account operator pool commands show a
+warning until both switches match.
 
-### Network prerequisites
+### Additional Google Cloud prerequisites
 
-1. **Same VPC subnet, internal-only pool hosts:** Pool host VMs are created with no external IP
-   (`--no-address`), nested virtualization enabled (`enableNestedVirtualization: true`,
-   `threadsPerCore: 1`, `onHostMaintenance: TERMINATE`), NVMe Local SSDs for scratch/saved guest
-   state, and a separate durable persistent disk (`autoDelete: false`) mounted at the agent's
-   `driver.profilesRoot` for slot profiles only.
-2. **Cloud NAT:** Create a Cloud Router and Cloud NAT on the subnet's region so pool host VMs can
-   reach HTTPS origins (release artifacts, Ubuntu updates, Account's `/boot`, `/boot-complete`, and
+1. **Nested virtualization & Local SSDs:** Pool host VMs default to `n2-standard-8` with
+   `enableNestedVirtualization: true`, `threadsPerCore: 1`, `onHostMaintenance: "TERMINATE"`, and
+   NVMe Local SSD scratch disks (`OPENSTEER_POOL_LOCAL_SSD_COUNT`, default `1`). Confirm your
+   project has N2 CPU and Local SSD quota in the configured zone.
+2. **Cloud NAT on the VPC:** Pool host VMs are created with `--no-address` (internal VPC IPv4
+   only). Configure a Cloud Router and Cloud NAT covering the pool subnet so pool hosts can reach
+   HTTPS origins (release artifacts, Ubuntu updates, Account's `/boot`, `/boot-complete`, and
    `/slot-egress`, and upstream browser egress proxies) without public IP addresses.
    ```sh
    gcloud compute routers create "${NETWORK}-nat-router" --project="$PROJECT" \
@@ -240,35 +243,69 @@ pooling completely disabled.
      --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges
    ```
 3. **Provisioner private-network reach:** The provisioner calls each pool host's signed admin port
-   (`7311`, HTTP over VPC) directly on the host's internal IPv4 address. Run the provisioner inside
-   the same VPC (or peered/VPC-native GKE cluster) and set `OPENSTEER_POOL_PROVISIONER_CIDR` to the
-   narrow CIDR of the provisioner's pods/nodes.
+   (`OPENSTEER_POOL_ADMIN_PORT`, default `7311`, HTTP over VPC) directly on the host's internal
+   IPv4 address. Run the provisioner inside the same VPC (or peered/VPC-native GKE cluster) and set
+   `OPENSTEER_POOL_PROVISIONER_CIDR` to the narrow CIDR of the provisioner's pods/nodes.
 4. **VPC firewall rules:** In addition to `opensteer-cloud-computers-v4`/`v6`, the provisioner
    verifies or creates:
-   - `opensteer-pool-hosts-home`: TCP `7310` and `7312` from tag `opensteer-cloud-computers` to tag
-     `opensteer-pool-hosts`.
-   - `opensteer-pool-hosts-admin`: TCP `7311` from `OPENSTEER_POOL_PROVISIONER_CIDR` to tag
-     `opensteer-pool-hosts`.
-5. **Additional IAM permissions:** Add `compute.disks.get`, `compute.disks.list`,
-   `compute.disks.delete`, `compute.disks.setLabels`, and `compute.disks.use` to
-   `opensteerHomeProvisioner` so the provisioner can manage durable profile disks.
+   - `opensteer-pool-hosts-home`: TCP `agentPort` (default `7310`) and `relayPort` (default
+     `7312`) from tag `opensteer-cloud-computers` to tag `opensteer-pool-hosts`.
+   - `opensteer-pool-hosts-admin`: TCP `OPENSTEER_POOL_ADMIN_PORT` (default `7311`) from
+     `OPENSTEER_POOL_PROVISIONER_CIDR` to tag `opensteer-pool-hosts`.
+5. **Additional IAM permissions:** Add `compute.disks.create`, `compute.disks.get`,
+   `compute.disks.list`, `compute.disks.delete`, `compute.disks.setLabels`, and
+   `compute.disks.use` to `opensteerHomeProvisioner` so the provisioner can manage durable profile
+   disks.
 
 ### Pool variables and capacity sizing
 
+Each port is configured in one place: `agentPort` and `relayPort` live in Account (because Account
+publishes them in each Home's target and forwards them to the provisioner), and `adminPort` lives
+in `home-provisioner`.
+
 | Variable                                             | Where       | Value                                                                                                                                                                         |
 | ---------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`       | Account     | Positive integer; enables pooling for newly created Cloud Computers.                                                                                                          |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`       | Account     | Positive integer; enables pooling for newly created Cloud Computers (must be paired with `OPENSTEER_POOL_PROVISIONER_KEY`).                                                   |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_RELEASE_JSON`         | Account     | Pool host installer URL/SHA-256 and pinned agent/relay/rootfs/kernel/egress artifacts.                                                                                        |
-| `OPENSTEER_CLOUD_COMPUTER_POOL_MACHINE_TYPE`         | Account     | Defaults to `n2-standard-8` (nested-virt-capable Intel Ice Lake/Cascade Lake).                                                                                                |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_MACHINE_TYPE`         | Account     | Defaults to `n2-standard-8` (32 GiB RAM, nested-virt-capable Intel Ice Lake/Cascade Lake).                                                                                    |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_MIB`          | Account     | Per-slot profile size in MiB (`64`–`1048576`, default `2048`).                                                                                                                |
 | `OPENSTEER_CLOUD_COMPUTER_POOL_PROFILE_DISK_SIZE_GB` | Account     | Durable profile disk size in GiB (default `500`). Account refuses configurations where `slotsPerHost * profileMib` exceeds 90% of disk size (10% reserved for ext4 overhead). |
-| `OPENSTEER_POOL_PROVISIONER_KEY` (`_FILE`)           | Provisioner | Ed25519 private key (base64 PKCS8 DER or PEM) used to sign admin requests to pool hosts.                                                                                      |
-| `OPENSTEER_POOL_HOME_CIDR`                           | Provisioner | Subnet CIDR of Cloud Computer Home VMs (for host-side `nftables` on 7310/7312).                                                                                               |
-| `OPENSTEER_POOL_PROVISIONER_CIDR`                    | Provisioner | Provisioner CIDR (for VPC firewall and host-side `nftables` on 7311).                                                                                                         |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_AGENT_PORT`           | Account     | Optional Home-to-agent port (default `7310`).                                                                                                                                 |
+| `OPENSTEER_CLOUD_COMPUTER_POOL_RELAY_PORT`           | Account     | Optional Home-to-relay port (default `7312`).                                                                                                                                 |
+| `OPENSTEER_POOL_PROVISIONER_KEY` (`_FILE`)           | Provisioner | Ed25519 private key (base64 PKCS8 DER or PEM) used to sign admin requests to pool hosts (must be paired with `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST`).                 |
+| `OPENSTEER_POOL_HOME_CIDR`                           | Provisioner | Subnet CIDR of Cloud Computer Home VMs (for host-side `nftables` on agent/relay ports).                                                                                       |
+| `OPENSTEER_POOL_PROVISIONER_CIDR`                    | Provisioner | Provisioner CIDR (for VPC firewall and host-side `nftables` on the admin port).                                                                                               |
+| `OPENSTEER_POOL_ADMIN_PORT`                          | Provisioner | Optional provisioner-to-agent admin port (default `7311`).                                                                                                                    |
 | `OPENSTEER_POOL_LOCAL_SSD_COUNT`                     | Provisioner | NVMe Local SSDs attached per pool host (`1`–`24`, default `1`).                                                                                                               |
 | `OPENSTEER_POOL_PROFILE_DISK_TYPE`                   | Provisioner | Durable profile disk type (`pd-ssd`, `pd-balanced`, `pd-standard`; default `pd-ssd`).                                                                                         |
 
-Because `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` counts assigned slots rather than
-simultaneously active browsers, operators may oversubscribe host RAM (inactive guests park to
-Local SSD). Size `slotsPerHost` for your expected concurrent working set and ensure the durable
-profile disk fits every assigned slot with at least 10% filesystem headroom.
+#### Simultaneous memory capacity and oversubscription
+
+On the default `n2-standard-8` (32 GiB RAM) with 2048 MiB guests, the host reserves 10% for the
+host OS (~3.2 GiB) and 1536 MiB for the egress proxy slice (up to 12 proxies at 128 MiB each),
+leaving ~27.3 GiB for guests. At 2560 MiB per in-memory guest (`2048 + 512 MiB` cgroup ceiling),
+**10 browsers fit in memory at the same time** (`OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST=10`
+for zero oversubscription).
+
+Setting `OPENSTEER_CLOUD_COMPUTER_POOL_SLOTS_PER_HOST` above 10 oversubscribes host RAM: inactive
+browsers park to Local SSD so more people can share one host, but if more than 10 browsers on the
+same host try to run at once, waking a sleeping browser can be refused until memory frees. Ensure
+the durable profile disk fits every assigned slot with at least 10% ext4 filesystem headroom.
+
+#### Failed hosts, replacement, and profile disks
+
+- **Unenrolled host failures:** A new host that misses its readiness window before ever enrolling
+  holds no slots; `home-provisioner` automatically replaces it in place up to twice. If it still
+  fails to enrol after two automatic replacements, it stays `failed` with the reason shown in
+  `pool-host-list` / `pool-host-show`.
+- **Enrolled host failures and operator recovery:** A host that has already enrolled is **never**
+  replaced automatically. Recover a failed host manually with `pool-host-replace <host-id>` (after
+  inspecting `pool-host-show <host-id>`).
+- **Effect of `pool-host-replace`:** Replacing a pool host hard-stops every running browser on that
+  host so the durable profile disk can detach cleanly and reattach to the new instance. Every
+  browser on the host starts cold on the replacement instance with its saved profile intact.
+- **Durable profile disks are never swept:** The orphan sweep deletes abandoned pool VMs after the
+  grace period, but never deletes durable profile disks. Untracked pool-labelled disks are logged
+  (`home-provisioner.pool.untracked-profile-disk`) and left for an operator. A profile disk is
+  deleted only through `pool-host-delete <host-id>` once zero slots remain in Account and on the
+  host.

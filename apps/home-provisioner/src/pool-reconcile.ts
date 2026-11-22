@@ -20,6 +20,7 @@ import {
   ProviderOutcomeUnknown,
   ProviderRateLimited,
   ProviderWriteRejected,
+  UntrackedPoolProfileDiskError,
 } from "./http.js";
 import {
   isDefiniteAgentRefusal,
@@ -32,6 +33,8 @@ import type { PoolHostProvider, PoolHostVm, PoolProfileDisk } from "./provider.j
 type HostFailure = NonNullable<BrowserPoolHostReport["lastError"]>;
 class Superseded extends Error {}
 
+const maxAutoReplacements = 2;
+
 export interface PoolReconcilerOptions {
   readonly account: PoolAccountApi;
   readonly provider: PoolHostProvider;
@@ -42,7 +45,6 @@ export interface PoolReconcilerOptions {
   readonly readinessTimeoutMs: number;
   readonly concurrency: number;
   readonly orphanGraceMs?: number;
-  readonly sharedInventory?: boolean;
   readonly onError?: (error: unknown) => void;
   readonly now?: () => number;
 }
@@ -65,9 +67,7 @@ export class PoolReconciler {
     const abort = new AbortController();
     const signal = AbortSignal.any([shutdown, abort.signal]);
 
-    if (!this.#options.sharedInventory) {
-      await provider.beginPass?.(signal);
-    }
+    await provider.beginPass?.(signal);
 
     const [desiredHosts, desiredSlots] = await Promise.all([
       account.desiredHosts(signal),
@@ -83,7 +83,7 @@ export class PoolReconciler {
     }
     const hostsWithSlots = new Set(desiredSlots.map(({ hostId }) => hostId));
 
-    let firewallsReady: Promise<void> | undefined;
+    const firewallsByPorts = new Map<string, Promise<void>>();
     let failed = false;
 
     // 1. Reconcile pool hosts (durable profile disks + VMs + enrolment metadata scrub).
@@ -95,20 +95,27 @@ export class PoolReconciler {
           if (next.done) return;
           try {
             const host = next.value;
+            const portsKey = `${host.agentPort}:${host.relayPort}`;
             const report = await this.#applyHost(
               host,
               hostsWithSlots.has(host.id),
-              (operationSignal, check) =>
-                (firewallsReady ??= provider.ensurePoolFirewalls(
-                  {
-                    provisionerCidr: this.#options.pool.provisionerCidr,
-                    agentPort: this.#options.pool.agentPort,
-                    adminPort: this.#options.pool.adminPort,
-                    relayPort: this.#options.pool.relayPort,
-                  },
-                  operationSignal,
-                  check,
-                )),
+              (operationSignal, check) => {
+                let promise = firewallsByPorts.get(portsKey);
+                if (!promise) {
+                  promise = provider.ensurePoolFirewalls(
+                    {
+                      provisionerCidr: this.#options.pool.provisionerCidr,
+                      agentPort: host.agentPort,
+                      adminPort: this.#options.pool.adminPort,
+                      relayPort: host.relayPort,
+                    },
+                    operationSignal,
+                    check,
+                  );
+                  firewallsByPorts.set(portsKey, promise);
+                }
+                return promise;
+              },
               signal,
             );
             const key = JSON.stringify(report);
@@ -157,7 +164,7 @@ export class PoolReconciler {
     );
     signal.throwIfAborted();
 
-    // 3. Orphan sweep for pool host VMs and detached profile disks.
+    // 3. Orphan sweep for pool host VMs only. Durable profile disks are NEVER swept (T2).
     if (this.#now() >= this.#nextSweep) {
       await this.#sweep(activeHostIds, signal);
       this.#nextSweep = this.#now() + 60_000;
@@ -217,12 +224,10 @@ export class PoolReconciler {
         );
       }
     }
+    // T2: Never delete durable profile disks in the sweep. Report any untracked disk to an operator.
     for (const disk of disks) {
-      await clean(`pool-disk:${disk.name}`, disk.hostId, async (job) => {
-        await provider.deletePoolProfileDisk(disk.name, disk.hostId, job, () =>
-          this.#checkHost(disk.hostId, { operation: "orphan" }, job),
-        );
-      });
+      if (activeHostIds.has(disk.hostId)) continue;
+      this.#options.onError?.(new UntrackedPoolProfileDiskError(disk.name, disk.hostId));
     }
     for (const key of this.#orphanSeen.keys()) {
       if (!present.has(key)) this.#orphanSeen.delete(key);
@@ -253,15 +258,31 @@ export class PoolReconciler {
       internalIp: phase === "deleted" ? null : (current?.internalIpv4 ?? null),
       lastError,
     });
-    const unready = (phase: "provisioning" | "booting") =>
-      host.readinessStartedAt &&
-      this.#now() - Date.parse(host.readinessStartedAt) >= this.#options.readinessTimeoutMs
-        ? report("failed", "The pool host did not become ready before its deadline.")
-        : report(phase);
-
     const pending = new Map(
       (host.pendingProviderWrites ?? []).map((write) => [write.token, write]),
     );
+    const deadlineExceeded = () =>
+      Boolean(
+        host.readinessStartedAt &&
+        this.#now() - Date.parse(host.readinessStartedAt) >= this.#options.readinessTimeoutMs,
+      );
+    const unready = async (phase: "provisioning" | "booting"): Promise<BrowserPoolHostReport> => {
+      if (!deadlineExceeded()) return report(phase);
+      // T8: An unenrolled host that never enrolled holds no slot: auto-replace in place at most twice.
+      // An enrolled host that later fails is never replaced automatically.
+      if (!host.enrolled && !host.everEnrolled && pending.size === 0) {
+        if (host.autoReplaceCount < maxAutoReplacements) {
+          const result = await account.replaceUnenrolledHost(id, { revision, generation }, signal);
+          if (result.replaced) throw new Superseded();
+        }
+        return report(
+          "failed",
+          "The pool host did not enrol before its deadline after automatic replacement retries.",
+        );
+      }
+      return report("failed", "The pool host did not become ready before its deadline.");
+    };
+
     const finish = async (token: string) => {
       await this.#checkHost(id, { operation: "finish-provider-write", token }, signal);
       pending.delete(token);
@@ -383,7 +404,7 @@ export class PoolReconciler {
       }
 
       if (state === "deleted") {
-        // W10: never delete host VM or durable profile disk while any slot exists in Account or agent list.
+        // W10 + T2: durable disk is deleted ONLY here, with zero slots in Account and host `list`.
         if (hasAccountSlots) return report("deleting");
         if (
           current?.status === "running" &&
@@ -431,12 +452,12 @@ export class PoolReconciler {
       // Active or draining host.
       for (const write of pending.values()) await recover(write);
       if ([...pending.values()].some(({ kind }) => kind === "create" || kind === "create-disk")) {
-        return unready("provisioning");
+        return await unready("provisioning");
       }
       if (matching.length > 1) {
         return report("failed", "The pool host has more than one server for this generation.");
       }
-      if (current?.status === "deleting") return unready("provisioning");
+      if (current?.status === "deleting") return await unready("provisioning");
 
       // Ensure durable profile disk exists (W1: created once, kept across host replacements).
       if (!disk) {
@@ -468,7 +489,7 @@ export class PoolReconciler {
             await act((job, check) => provider.deletePoolHost(old.id, job, check));
           }
           const stillThere = await provider.describePoolHost(old.id, signal, old.generation);
-          if (stillThere) return unready("provisioning");
+          if (stillThere) return await unready("provisioning");
         }
       }
 
@@ -477,6 +498,8 @@ export class PoolReconciler {
       }
       if (!current && host.bootstrapToken) {
         await act((job, check) => ensureFirewalls(job, check));
+        // T6: Format durable profile disk ONLY on first attach (generation 1, never previously attached).
+        const firstAttach = generation === 1 && !host.previousProviderServerRef;
         const userData = renderPoolHostUserData(
           {
             hostId: id,
@@ -489,9 +512,10 @@ export class PoolReconciler {
             homeCidr: pool.homeCidr,
             provisionerCidr: pool.provisionerCidr,
             profileDiskDevice: poolProfileDiskDevicePath,
-            agentPort: pool.agentPort,
+            firstAttach,
+            agentPort: host.agentPort,
             adminPort: pool.adminPort,
-            relayPort: pool.relayPort,
+            relayPort: host.relayPort,
           },
           provider.updatePoolHostBootstrap !== undefined,
         );
@@ -502,7 +526,6 @@ export class PoolReconciler {
                 {
                   id,
                   generation,
-                  region: host.region,
                   machineType: host.machineType,
                   image: this.#options.image,
                   bootDiskSizeGb: pool.bootDiskSizeGb,
@@ -519,7 +542,7 @@ export class PoolReconciler {
         );
       }
 
-      if (!current) return unready("provisioning");
+      if (!current) return await unready("provisioning");
       if (host.providerServerRef !== current.id || host.profileDiskRef !== disk.ref) {
         // Record server + disk ref in Account so the 20-minute bootstrap window opens before boot.
         if (!(await account.reportHost(report("provisioning"), signal))) throw new Superseded();
@@ -534,12 +557,12 @@ export class PoolReconciler {
           provider.updatePoolHostBootstrap!(server.id, false, job, check),
         ))
       ) {
-        return unready("provisioning");
+        return await unready("provisioning");
       }
 
       if (current.status === "off") {
         if ([...pending.values()].some(({ kind }) => kind === "power-on")) {
-          return unready("provisioning");
+          return await unready("provisioning");
         }
         await act((job) =>
           journal(
@@ -550,8 +573,10 @@ export class PoolReconciler {
         );
         current = await provider.describePoolHost(server.id, signal, server.generation);
       }
-      if (current?.status !== "running" || !current.internalIpv4) return unready("provisioning");
-      if (!host.enrolled || !host.hostKey) return unready("booting");
+      if (current?.status !== "running" || !current.internalIpv4) {
+        return await unready("provisioning");
+      }
+      if (!host.enrolled || !host.hostKey) return await unready("booting");
 
       await scrubBootstrap(current);
 
@@ -568,7 +593,7 @@ export class PoolReconciler {
         );
       } catch (error) {
         this.#options.onError?.(error);
-        return unready("booting");
+        return await unready("booting");
       }
 
       return report("ready");
@@ -586,7 +611,7 @@ export class PoolReconciler {
             ({ kind }) => kind === "create" || kind === "create-disk" || kind === "power-on",
           )
         ) {
-          return unready("provisioning");
+          return await unready("provisioning");
         }
         return report("booting");
       }
@@ -643,7 +668,7 @@ export class PoolReconciler {
     signal: AbortSignal,
   ): Promise<BrowserPoolSlotReport | undefined> {
     const { account, agent } = this.#options;
-    const { slotId } = slot;
+    const { slotId, hostGeneration } = slot;
     let term = slot.term;
     let revision = slot.revision;
 
@@ -708,6 +733,7 @@ export class PoolReconciler {
         if (pending.size > 0) {
           return {
             slotId,
+            hostGeneration,
             revision,
             term,
             phase: "deleting",
@@ -722,28 +748,34 @@ export class PoolReconciler {
         const evidence = await journal("delete", (job) =>
           agent.delete(target, { slotId, term: deleteTerm, eraseProfile: true }, job),
         );
-        // W10: Settle deletion ONLY on erased + profileErased + credentialsErased together.
-        const settled = evidence.erased && evidence.profileErased && evidence.credentialsErased;
+        // W10 + T1: Accumulate evidence across passes; settle ONLY once all three are proven.
+        const slotErased = slot.slotErased || evidence.erased;
+        const profileErased = slot.profileErased || evidence.profileErased;
+        const credentialsErased = slot.credentialsErased || evidence.credentialsErased;
+        const settled = slotErased && profileErased && credentialsErased;
         return {
           slotId,
+          hostGeneration,
           revision,
           term,
           phase: settled ? "deleted" : "deleting",
           controlKey: null,
-          slotErased: evidence.erased,
-          profileErased: evidence.profileErased,
-          credentialsErased: evidence.credentialsErased,
+          slotErased,
+          profileErased,
+          credentialsErased,
           lastError: null,
         };
       }
 
       if (!slot.keys) return undefined;
+      if (slot.phase === "failed") return undefined;
       if (pending.size > 0) return undefined;
 
       if (observed) {
         if (observed.term > term) {
           return {
             slotId,
+            hostGeneration,
             revision,
             term,
             phase: "failed",
@@ -757,6 +789,7 @@ export class PoolReconciler {
         if (observed.term === term) {
           return {
             slotId,
+            hostGeneration,
             revision,
             term,
             phase: "ready",
@@ -773,6 +806,7 @@ export class PoolReconciler {
         );
         return {
           slotId,
+          hostGeneration,
           revision,
           term,
           phase: "ready",
@@ -804,6 +838,7 @@ export class PoolReconciler {
       );
       return {
         slotId,
+        hostGeneration,
         revision,
         term,
         phase: "ready",
@@ -818,8 +853,11 @@ export class PoolReconciler {
       if (error instanceof Superseded || accountRefused(error)) throw error;
       this.#options.onError?.(error);
       if (isDefiniteAgentRefusal(error)) {
+        const diskFull =
+          error.refusal === "conflict" && /exceed their filesystem/u.test(error.message);
         return {
           slotId,
+          hostGeneration,
           revision,
           term,
           phase: "failed",
@@ -827,7 +865,9 @@ export class PoolReconciler {
           slotErased: slot.slotErased,
           profileErased: slot.profileErased,
           credentialsErased: slot.credentialsErased,
-          lastError: "The pool host rejected the slot administration request.",
+          lastError: diskFull
+            ? "This host's profile disk is full."
+            : "The pool host rejected the slot administration request.",
         };
       }
       // Unknown stays unknown: leave pending write and current Account phase unchanged.
