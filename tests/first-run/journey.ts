@@ -127,7 +127,9 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
     await screen(page, desktopFirstScreenWords.whereTitle);
     // The row's name is its title and its detail: it starts with the title.
     await page
-      .getByRole("button", { name: new RegExp(`^${desktopFirstScreenWords.onThisMac}`, "u") })
+      .getByRole("button", {
+        name: new RegExp(`^${escaped(desktopFirstScreenWords.onThisMac)}`, "u"),
+      })
       .click();
     if (trial === "settled") await homeReady(page);
     await skipToPhoneStep(page);
@@ -276,6 +278,11 @@ async function phoneStepSettles(page: Page): Promise<string> {
 
 async function screen(page: Page, words: string): Promise<void> {
   await page.getByText(words, { exact: true }).waitFor({ timeout: settleMs });
+}
+
+/** Product words as a pattern that means exactly those words. */
+function escaped(words: string): string {
+  return words.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 /** A step that never comes fails the trial instead of holding the run until the VM's own limit. */

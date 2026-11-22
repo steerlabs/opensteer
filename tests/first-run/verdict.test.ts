@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { pageForm } from "./browser.js";
 import {
+  couldNotAdd,
   helperMissingSentence,
   judgeFirstRunTrial,
   firstScreenStopReason,
@@ -138,5 +141,23 @@ describe("a trial that stops before the phone step", () => {
       "the trial stopped: Timed out waiting for the phone step",
       'the log says "Another deployment access operation is already running" 1 times',
     ]);
+  });
+});
+
+describe("the sentences the journey reads as a failure to add this Mac", () => {
+  const product = (file: string) =>
+    readFileSync(path.resolve(import.meta.dirname, "../..", file), "utf8");
+
+  it("are the product's own: the phone step's and the account link's", () => {
+    const phoneStep = product("packages/client/src/host/remote-access.ts").match(
+      /`(Couldn’t add \$\{name\} to your account\. Try again\.)`/u,
+    )?.[1];
+    expect(phoneStep).toBeDefined();
+    expect(couldNotAdd.test(phoneStep!.replace("${name}", "Studio Mac"))).toBe(true);
+    const accountLink = product("apps/web/src/account/use-personal-account-link.ts").match(
+      /"(This computer wasn’t added to your account\. Try again\.)"/u,
+    )?.[1];
+    expect(accountLink).toBeDefined();
+    expect(couldNotAdd.test(accountLink!)).toBe(true);
   });
 });

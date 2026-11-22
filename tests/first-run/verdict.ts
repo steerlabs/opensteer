@@ -10,8 +10,13 @@ import { RemoteAccessHelperUnavailableError } from "../../apps/desktop/src/relea
 /** The phone step's sentence when the tunnel helper is missing: the Mac app's own words. */
 export const helperMissingSentence = new RemoteAccessHelperUnavailableError(null).message;
 
-/** The phone step's sentence when adding this Mac to the account failed: a fail, always. */
-const couldNotAdd = /Couldn[’']t add .+ to your account\. Try again\./u;
+/**
+ * The sentences that say adding this Mac to the account failed, a fail always: the phone step's
+ * (`packages/client/src/host/remote-access.ts`) and the account link's
+ * (`apps/web/src/account/use-personal-account-link.ts`). `verdict.test.ts` reads both from there.
+ */
+export const couldNotAdd =
+  /Couldn[’']t add .+ to your account\. Try again\.|This computer wasn[’']t added to your account\. Try again\./u;
 const alreadyRunning = "Another deployment access operation is already running";
 const initializeFailed = "desktop.personal.remote-access.initialize-failed";
 

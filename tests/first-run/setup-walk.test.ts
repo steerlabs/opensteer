@@ -29,7 +29,9 @@ const steps = [
     id: "permissions",
     file: "devices/home-setup-step.tsx",
     title: "Your agent on this Mac",
-    draws: (move: string, text: string) => text.includes(`"${move}"`),
+    // The move is this step's own action: the button of the frame whose title this is.
+    draws: (move: string, text: string) =>
+      frameOf(text, "Your agent on this Mac").includes(`"${move}"`),
   },
   {
     id: "permissions",
@@ -39,11 +41,25 @@ const steps = [
   },
 ] as const;
 
+/** The `<SetupFrame …>` element whose title is `title`: from its opening tag to that title. */
+function frameOf(text: string, title: string): string {
+  const end = text.indexOf(`title="${title}"`);
+  const start = text.lastIndexOf("<SetupFrame", end);
+  return end < 0 || start < 0 ? "" : text.slice(start, end);
+}
+
 describe("the first-run journey's walk through setup", () => {
   it("knows every step before the phone, in a Mac's order, and ends at the phone", () => {
     expect(setupSteps({ mac: true, onThisComputer: true })).toEqual(["ai", "permissions", "phone"]);
     expect(Object.keys(setupMoves)).toEqual(steps.map(({ title }) => title));
     expect(source("first-run/setup-phone-step.tsx")).toContain(`title="${phoneStepTitle}"`);
+  });
+
+  it("reads the step's title by the class the setup frame gives it", () => {
+    expect(source("first-run/setup-frame.tsx")).toContain('className="setup-frame__title"');
+    expect(readFileSync(path.resolve(import.meta.dirname, "remote.ts"), "utf8")).toContain(
+      'document.querySelector(".setup-frame__title")',
+    );
   });
 
   for (const step of steps)
