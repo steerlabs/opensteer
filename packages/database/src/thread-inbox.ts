@@ -5670,7 +5670,15 @@ export async function delegateThreadInTransaction(
         icon: null,
         iconSource: "provisional",
       });
-  await ensureSelectedProviderSession(transaction, threadRow);
+  // A new worker in a lineage without the person's personal context never has a personal
+  // session, not even its first (none is queried for the person's own work).
+  await ensureSelectedProviderSession(
+    transaction,
+    threadRow,
+    reusedRow
+      ? {}
+      : { personalContext: await lineagePersonalContext(transaction, childConnectionId) },
+  );
   await transaction
     .insertInto("commands")
     .values({

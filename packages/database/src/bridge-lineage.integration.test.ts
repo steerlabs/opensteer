@@ -1,13 +1,8 @@
-import { sql } from "kysely";
 import { expect } from "vitest";
 import type { AgentGrant, ThreadId } from "@opensteer/core";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
-import {
-  bindingAgentConnectionId,
-  lineageHasPersonalContext,
-  lineagePersonalContext,
-} from "./resource-access.js";
+import { bindingAgentConnectionId, lineagePersonalContext } from "./resource-access.js";
 import { describeStore, testModelSelection } from "./store.integration.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
 
@@ -105,13 +100,8 @@ describeStore(
       });
       expect(await lineageOf(worker.thread.id)).toBe(anyone.id);
       expect(await runLineage(worker.run.id)).toBe(anyone.id);
-      expect(
-        await f.database
-          .selectFrom("providerSessions")
-          .select("personalContext")
-          .where("id", "=", worker.run.providerSessionId!)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ personalContext: false });
+      // Its worker never held a personal session, not even its first.
+      expect(await sessions(worker.thread.id)).toEqual([{ personalContext: false }]);
 
       // An automation on the task, whether its agent or the person made it: what its program
       // starts runs in the task's lineage.
@@ -151,14 +141,8 @@ describeStore(
         expect(await lineagePersonalContext(f.database, lineage), key).toBe(false);
       }
 
-      // None of it is ever read into the person's memory; the person's own task is.
-      const personal = await f.database
-        .selectFrom("threads")
-        .select("id")
-        .where("id", "in", [root.id, sub.id, worker.thread.id, fixture.thread.id])
-        .where(lineageHasPersonalContext(sql.ref("threads.origin_connection_id")))
-        .execute();
-      expect(personal).toEqual([{ id: fixture.thread.id }]);
+      // That none of it is read into the person's memory is tested through the memory pass's
+      // own tools (memory-pass-service.integration.test.ts).
     });
   },
 );
