@@ -34,6 +34,7 @@ import { ComputerScreen } from "./screens/computer.js";
 import { DevicePageScreen } from "./screens/device-page.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
+import { deploymentsTitle } from "./screens/deployments-title.js";
 import { NeedsYouScreen } from "./screens/needs-you.js";
 import { HomeScreen } from "./screens/home.js";
 import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
@@ -196,7 +197,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         headerLargeTitle: true,
-        title: "Computers",
+        title: deploymentsTitle,
       }),
     },
     // Home: the new-task composer, holding its one unsent draft.
@@ -573,7 +574,7 @@ const RootStack = createNativeStackNavigator({
           },
         }),
         presentation: screenPresentations.DeploymentSwitcher,
-        title: "Switch deployment",
+        title: deploymentsTitle,
       }),
     },
   },

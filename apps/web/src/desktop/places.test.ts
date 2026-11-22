@@ -38,7 +38,7 @@ it("offers an update only where this app holds a route to the computer", () => {
   });
 });
 
-it("names the Mac an Opensteer lives on when it differs from the Opensteer", () => {
+it('calls a Home on a Mac "Mac" under its own name, from the one table of kinds', () => {
   const ids = [createId("deployment"), createId("deployment"), createId("deployment")];
   const deployment = (id: string, name: string) => ({
     id,
@@ -74,9 +74,9 @@ it("names the Mac an Opensteer lives on when it differs from the Opensteer", () 
     },
   );
   expect(Object.fromEntries(rows.map((row) => [row.name, row.detail]))).toEqual({
-    "Tim’s Opensteer": "Home: Mac mini",
-    "Mac mini": "Your computer",
-    Studio: "Your computer",
+    "Tim’s Opensteer": "Mac",
+    "Mac mini": "Mac",
+    Studio: "Mac",
   });
 });
 
@@ -151,8 +151,8 @@ describe("what kind of Home a row is", () => {
   it("calls a Cloud Computer a Cloud Computer, with the cloud, never a laptop", () => {
     expect(kinds(rows(new Set([cloud, gone])))).toEqual({
       "Mine in the cloud": ["Cloud Computer", "cloud"],
-      Studio: ["Your computer", "laptop"],
-      Basement: ["Your computer", "server"],
+      Studio: ["Mac", "laptop"],
+      Basement: ["Server", "server"],
       Here: ["This Mac", "laptop"],
       // A Home this app cannot reach is named what the Account says it is, too.
       Away: ["Cloud Computer", "cloud"],
@@ -161,8 +161,8 @@ describe("what kind of Home a row is", () => {
 
   it("gives a personal Home on a server the server icon, and no kind while the Account can't say", () => {
     expect(kinds(rows(new Set()))).toMatchObject({
-      "Mine in the cloud": ["Your computer", "server"],
-      Basement: ["Your computer", "server"],
+      "Mine in the cloud": ["Server", "server"],
+      Basement: ["Server", "server"],
       Away: ["In your account", "server"],
     });
     // The read failed or hasn't answered: an address and no kind, never a wrong one.
@@ -170,7 +170,7 @@ describe("what kind of Home a row is", () => {
       "Mine in the cloud": ["w3r8.cloud.opensteer.example", "globe"],
       Basement: ["home.example.net", "globe"],
       // A Mac is a Mac whatever that read says.
-      Studio: ["Your computer", "laptop"],
+      Studio: ["Mac", "laptop"],
       Here: ["This Mac", "laptop"],
     });
   });

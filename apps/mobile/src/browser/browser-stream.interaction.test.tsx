@@ -927,6 +927,73 @@ describe("native browser picture presenter", () => {
     expect(hostClient.browserFrames.claim).toHaveBeenCalledOnce();
   });
 
+  // A page opened while the app comes to the foreground, or before its view has its window:
+  // the view drops the first picture, and a still page sends no other.
+  it("offers a picture the view dropped again once the view can show it", async () => {
+    native.presenter = "picture";
+    const { container, decode, emit, render } = setup();
+    render("synchronized");
+    emit();
+    await decode("dropped");
+    expect(container.textContent).toContain("Loading the page…");
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    expect(native.presented.map(({ bytes }) => [...bytes])).toEqual([[0xff, 0xd8, 0xff]]);
+    await decode();
+    expect(container.textContent).not.toContain("Loading the page…");
+  });
+
+  // A walk cannot see why a page stays on "Loading the page…": a development build says.
+  it("traces every picture the view is offered and answers, and what a page waits for", async () => {
+    const { setPictureTraceSink } = await import("./picture-trace.js");
+    const lines: string[] = [];
+    const previous = setPictureTraceSink((line) => lines.push(line));
+    vi.useFakeTimers();
+    try {
+      native.presenter = "picture";
+      const { container, decode, emit, render } = setup();
+      render("synchronized");
+      emit();
+      await decode("dropped");
+      expect(lines).toEqual([
+        expect.stringMatching(
+          /^\[opensteer-picture\] offered surface=\S+ picture=1 size=800x600 bytes=3 generation=\d+$/u,
+        ),
+        expect.stringMatching(
+          /^\[opensteer-picture\] answered surface=\S+ picture=1 outcome=dropped$/u,
+        ),
+      ]);
+      expect(container.textContent).toContain("Loading the page…");
+      expect(container.textContent).not.toContain("development");
+      await act(async () => vi.advanceTimersByTimeAsync(4000));
+      expect(lines.at(-1)).toMatch(
+        /^\[opensteer-picture\] waiting surface=\S+ feed=live the view dropped every picture so far \(1\)$/u,
+      );
+      expect(container.textContent).toContain(
+        "Loading the page… (development: the view dropped every picture so far (1))",
+      );
+    } finally {
+      setPictureTraceSink(previous);
+    }
+  });
+
+  it("says nothing of its pictures where it does not trace", async () => {
+    const { setPictureTraceSink } = await import("./picture-trace.js");
+    const previous = setPictureTraceSink(null);
+    vi.useFakeTimers();
+    try {
+      native.presenter = "picture";
+      const { container, decode, emit, render } = setup();
+      render("synchronized");
+      emit();
+      await decode("dropped");
+      await act(async () => vi.advanceTimersByTimeAsync(4000));
+      expect(container.textContent).toContain("Loading the page…");
+      expect(container.textContent).not.toContain("development");
+    } finally {
+      setPictureTraceSink(previous);
+    }
+  });
+
   it("draws its picture again when the view drops it and can show again in one batch", async () => {
     const { container, decode, emit, render } = setup();
     render("synchronized", true, { held: true });
@@ -1400,5 +1467,66 @@ describe("a Cloud Computer's browser waking", () => {
     await pooled.decode();
     pooled.render("connecting");
     expect(pooled.container.innerHTML).toBe(before);
+  });
+});
+
+/*
+ * The phone walk's page that stayed on "Loading the page…" while the mock Home reported a
+ * live picture: the mock Home's own feed, through the native picture view, as a phone opens it.
+ */
+describe("the mock Home's page through the native picture view", () => {
+  it("asks the view to present the tab's picture, and shows it once presented", async () => {
+    const { MockHostClient, mockConnectedAgents } = await import("@opensteer/client/mock");
+    native.presenter = "picture";
+    const host = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("seeded") });
+    try {
+      host.mockAgentWork({ question: false });
+      await host.load();
+      const tabId = "mock-tab-1-0";
+      // The mock's session summaries carry the surfaces they hold.
+      const page = host
+        .getSnapshot()
+        .browserSessions.find((candidate) =>
+          (candidate as unknown as { surfaces?: readonly { id: string }[] }).surfaces?.some(
+            (surface) => surface.id === tabId,
+          ),
+        )!;
+      const container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      await act(async () =>
+        root!.render(
+          <BrowserStream
+            active
+            hostClient={host}
+            interactive
+            label="Travel"
+            session={page}
+            tabId={tabId}
+          />,
+        ),
+      );
+      await vi.waitFor(() => expect(native.presented.length).toBeGreaterThan(0));
+      const first = native.presented[0]!;
+      expect(first.metadata).toMatchObject({ height: 600, width: 960 });
+      const generation = native.generation;
+      await act(async () => first.settle("presented"));
+      await vi.waitFor(() => expect(container.textContent).not.toContain("Loading the page"));
+      // The mock world changes on: the page stays drawn, never cleared under it.
+      const thread = host.getSnapshot().threads[0]!;
+      const clears: number[] = [];
+      for (let step = 0; step < 5; step += 1) {
+        await act(async () => {
+          await host.renameThread(thread.id, `Renamed ${step}`);
+        });
+        for (const { settle } of native.presented.splice(0))
+          await act(async () => settle("presented"));
+        clears.push(native.generation);
+      }
+      expect(new Set(clears)).toEqual(new Set([generation]));
+      expect(container.textContent).not.toContain("Loading the page");
+    } finally {
+      host.dispose();
+    }
   });
 });

@@ -82,11 +82,11 @@ export function deploymentUnavailableReasonExplanation(
 ): string {
   if (reason === "client-too-old") return "Update this app to connect to this Opensteer.";
   if (reason === "host-too-old") return "This Opensteer needs updating to work with this app.";
-  if (reason === "host-unavailable") return "This deployment did not answer.";
+  if (reason === "host-unavailable") return "This Opensteer did not answer.";
   if (reason === "identity-mismatch") {
-    return "This deployment did not match the identity your Account has on file. The deployment refreshes that record the next time it starts.";
+    return "This Opensteer did not match the identity your account has on file. It refreshes that record the next time it starts.";
   }
-  return "This deployment is no longer active.";
+  return "This Opensteer is no longer active.";
 }
 
 export const hostNeedsUpdateLabel = "Needs update";
@@ -220,7 +220,7 @@ export function deploymentStatusFromPersonalConnect(
 ): DeploymentStatusInfo {
   if (!reachability.hasConnectRoute) {
     return {
-      reason: "Remote access is off on the computer that runs this deployment.",
+      reason: "Remote access is off on the computer that runs this Opensteer.",
       status: "offline",
     };
   }
@@ -255,13 +255,13 @@ export function deploymentStatusFromAccountDirectory(
 ): DeploymentStatusInfo | null {
   if (!deployment.present) {
     return {
-      reason: "You no longer have access to this deployment.",
+      reason: "You no longer have access to this Opensteer.",
       status: "offline",
     };
   }
   if (!deployment.compatible) {
     return {
-      reason: "Update Opensteer to use this deployment’s published connection details.",
+      reason: "Update Opensteer to reach this Opensteer at its published address.",
       status: "attention",
     };
   }

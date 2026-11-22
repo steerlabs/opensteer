@@ -1,14 +1,16 @@
 // @vitest-environment happy-dom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
 import {
+  desktopRefusal,
   DeploymentAccessSnapshotSchema,
   type DeploymentAccessDeployment,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { ComputerFactsStore } from "../../desktop/computer-facts.js";
+import { DesktopChooser } from "./desktop-entry.js";
 import { PlaceMenuPlaces } from "./place-menu.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -21,7 +23,16 @@ afterEach(() => {
 
 const unanswered = () => new Promise<never>(() => undefined);
 
-async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expired = false) {
+async function mount(
+  overrides: Partial<DeploymentAccessDeployment> = {},
+  expired = false,
+  options: {
+    readonly severalOnly?: boolean;
+    readonly second?: boolean;
+    /** The screen that asks which Opensteer to open, instead of the sidebar's menu. */
+    readonly chooser?: boolean;
+  } = {},
+) {
   const id = createId("deployment");
   const snapshot = DeploymentAccessSnapshotSchema.parse({
     account: {
@@ -48,6 +59,29 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
         statusInfo: { status: "attention", reason: "This server did not answer." },
         ...overrides,
       },
+      ...(options.second
+        ? [
+            {
+              id: createId("deployment"),
+              name: "Studio server",
+              kind: "personal",
+              access: "native",
+              activeOrigin: "https://studio.example.test",
+              canonicalOrigin: "https://studio.example.test",
+              routes: [
+                { kind: "canonical", origin: "https://studio.example.test", selected: true },
+              ],
+              lastUsedAt: null,
+              onThisComputer: false,
+              accountAccess: null,
+              availableActions: ["select"],
+              failure: null,
+              source: "manual",
+              status: "idle",
+              statusInfo: { status: "attention", reason: "This server did not answer." },
+            },
+          ]
+        : []),
     ],
     directoryFailure: null,
     personalAccountLink: {
@@ -69,12 +103,23 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
   const onAddPlace = vi.fn();
   const bridge = { select, checkDeployments, signIn } as unknown as OpensteerDesktopBridge;
   root = createRoot(document.body.appendChild(document.createElement("div")));
+  const places = { bridge, facts: new ComputerFactsStore(unanswered), snapshot, onAddPlace };
   await act(async () =>
     root?.render(
-      <PlaceMenuPlaces
-        onClose={onClose}
-        places={{ bridge, facts: new ComputerFactsStore(unanswered), snapshot, onAddPlace }}
-      />,
+      options.chooser ? (
+        <DesktopChooser
+          error={null}
+          onConnect={() => undefined}
+          onSetUpHere={null}
+          places={places}
+        />
+      ) : (
+        <PlaceMenuPlaces
+          onClose={onClose}
+          places={places}
+          severalOnly={options.severalOnly ?? false}
+        />
+      ),
     ),
   );
   return { id, select, checkDeployments, signIn, onClose, onAddPlace };
@@ -159,4 +204,76 @@ it("adding a computer closes the chooser before opening the add screen", async (
   expect(fixture.onClose.mock.invocationCallOrder[0]).toBeLessThan(
     fixture.onAddPlace.mock.invocationCallOrder[0]!,
   );
+});
+
+it("is a switcher in the sidebar only when there is more than one Opensteer to switch between", async () => {
+  await mount({}, false, { severalOnly: true });
+  expect(document.querySelector(".place-menu__places")).toBeNull();
+  act(() => root?.unmount());
+  root = null;
+  document.body.replaceChildren();
+
+  await mount({}, false, { severalOnly: true, second: true });
+  expect(document.querySelector(".place-menu__heading")?.textContent).toContain("Your Opensteers");
+  expect(document.querySelectorAll(".place-row")).toHaveLength(2);
+});
+
+it("asks which Opensteer to open over the same list the sidebar calls Your Opensteers", async () => {
+  // Signing in on a Mac whose account holds two Homes: the screen asks a question, and what it
+  // asks about is the one list of a person's Opensteers, named as the sidebar names it.
+  await mount({}, false, { chooser: true, second: true });
+  expect(document.querySelector("h1")?.textContent).toBe("Choose an Opensteer");
+  const list = document.querySelector("ul.place-list");
+  expect(list?.getAttribute("aria-label")).toBe("Your Opensteers");
+  const chooserRows = [...document.querySelectorAll("ul.place-list .place-row__name")].map(
+    (name) => name.textContent,
+  );
+  act(() => root?.unmount());
+  root = null;
+  document.body.replaceChildren();
+
+  await mount({}, false, { severalOnly: true, second: true });
+  expect(document.querySelector(".place-menu__heading")?.textContent).toContain("Your Opensteers");
+  const menuList = document.querySelector("ul.place-list");
+  expect(menuList?.getAttribute("aria-label")).toBe("Your Opensteers");
+  expect(
+    [...menuList!.querySelectorAll(".place-row__name")].map((name) => name.textContent),
+  ).toEqual(chooserRows);
+  expect(chooserRows).toEqual(["Lab server", "Studio server"]);
+});
+
+describe("what opening a Home from the chooser says when it can't", () => {
+  async function openFirst(failure: unknown) {
+    const fixture = await mount({ statusInfo: { reason: null, status: "ready" } }, false, {
+      chooser: true,
+      second: true,
+    });
+    fixture.select.mockImplementationOnce(async () => Promise.reject(failure));
+    await click("ul.place-list .place-row");
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => undefined);
+    expect(fixture.select).toHaveBeenCalledTimes(1);
+    return document.querySelector('[role="alert"]')?.textContent ?? null;
+  }
+
+  it("names the Home that was removed while the open waited its turn", async () => {
+    expect(await openFirst(desktopRefusal("Lab server is no longer in your Opensteers."))).toBe(
+      "Lab server is no longer in your Opensteers.",
+    );
+  });
+
+  it("says the Mac is still finishing another change when the turn never came", async () => {
+    expect(
+      await openFirst(
+        desktopRefusal(
+          "Opensteer is still finishing another change on this Mac. Try again in a moment.",
+        ),
+      ),
+    ).toBe("Opensteer is still finishing another change on this Mac. Try again in a moment.");
+  });
+
+  it("never shows a fault's own text", async () => {
+    const said = await openFirst(new Error("catalog row 42 failed its integrity check"));
+    expect(said).toBe("Couldn't confirm this change.");
+    expect(document.body.textContent).not.toContain("catalog row 42");
+  });
 });

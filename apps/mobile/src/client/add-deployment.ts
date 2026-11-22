@@ -113,7 +113,7 @@ export async function addPersonalDeployment(options: {
  * a name is described by what it is.
  */
 export function defaultDeploymentName(origin: string, personal: boolean): string {
-  if (personal) return "Personal computer";
+  if (personal) return "Mac";
   const hostname = new URL(origin).hostname;
-  return hostname.length > 0 && hostname.length <= 120 ? hostname : "Self-hosted deployment";
+  return hostname.length > 0 && hostname.length <= 120 ? hostname : "Server";
 }

@@ -18,6 +18,7 @@ import { Composer, type ComposerSubmission } from "../composer.js";
 import { personalReferenceCandidates } from "../composer-reference-picker.js";
 import { ExecutionControls } from "../execution-controls.js";
 import { UsageNotice } from "../usage-notice.js";
+import { SignInInvite } from "../sign-in-invite.js";
 import { hostMessageOutbox } from "@opensteer/client/host";
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { act, ActionNotDone, failureWords } from "../use-action.js";
@@ -319,6 +320,7 @@ function NewTaskComposer({
       ) : null}
       {discardError ? <p role="status">{discardError}</p> : null}
       <UsageNotice placements={placements} returnFocusTo={inputRef} selection={selection} />
+      <SignInInvite />
     </>
   );
 }

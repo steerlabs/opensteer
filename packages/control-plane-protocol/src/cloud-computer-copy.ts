@@ -22,6 +22,8 @@ export const cloudComputerCopy = {
   "cloud.price": "{price} a {interval}",
   "cloud.priceOnce": "{price}",
   "cloud.priceDetail": "Opensteer bills you through Stripe. Cancel any time.",
+  "cloud.notForSale": "Not available yet",
+  "cloud.notForSaleDetail": "Opensteer isn’t setting up new Cloud Computers right now.",
   "cloud.changes.title": "What changes",
   "cloud.changes.detail":
     "It starts as a new Home. Connected agents connect again to its new address. You sign in to your sites again in its browser. Your Mac can be added to it as a device.",

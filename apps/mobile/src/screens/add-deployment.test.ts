@@ -32,11 +32,19 @@ describe("accountDoorPresentation", () => {
     const detail =
       "FunctionCallException: getValueWithKeyAsync failed. KeychainException: A required entitlement isn't present. (at ExpoSecureStore/SecureStoreModule.swift:168)";
     expect(accountDoorPresentation(account({ available: false, detail }), false)).toEqual({
-      description:
-        "This app cannot access this device’s secure credential storage. Sign-in is unavailable.",
+      description: "Opensteer couldn't save your sign-in on this phone. Try again.",
       disabled: true,
       title: "Sign in",
     });
+  });
+
+  it("says the same plain sentence for the exception an unsigned build's sign-in meets", () => {
+    // What Expo says when the Keychain entitlement is missing, with no Keychain in its words.
+    const detail =
+      "Calling the 'setValueWithKeyAsync' function has failed → Caused by: A required entitlement isn't present.";
+    expect(accountDoorPresentation(account({ detail, status: "error" }), false).description).toBe(
+      "Opensteer couldn't save your sign-in on this phone. Try again.",
+    );
   });
 
   it("offers a retry after a sign-in that failed", () => {
@@ -67,7 +75,7 @@ describe("signed-in Account presentation", () => {
     "does not claim the directory is empty while it is %s",
     (status) => {
       expect(signedInDirectoryPresentation({ detail: null, status, unavailableCount: 0 })).toEqual({
-        detail: "Checking your Account for deployments…",
+        detail: "Checking your Opensteer account…",
         refreshDisabled: true,
         refreshLabel: "Refreshing…",
         title: "Signed in to your Account",

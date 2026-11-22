@@ -87,7 +87,6 @@ it("keeps secure-storage sign-in failures readable", () => {
   ).toMatchObject({
     disabled: true,
     title: "Sign in",
-    description:
-      "This app cannot access this device’s secure credential storage. Sign-in is unavailable.",
+    description: "Opensteer couldn't save your sign-in on this phone. Try again.",
   });
 });

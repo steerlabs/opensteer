@@ -43,6 +43,12 @@ vi.mock("react-native-reanimated", () => ({
   default: { View: (props: { children?: ReactNode }) => <div>{props.children}</div> },
 }));
 vi.mock("../ui/motion.js", () => ({ appear: undefined }));
+// The pane keeps off the bar and the screen's edges; here they take no room.
+vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaFrame: () => ({ height: 800, width: 390, x: 0, y: 0 }),
+  useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+}));
 vi.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Heavy: "heavy", Medium: "medium" },
   NotificationFeedbackType: { Error: "error", Success: "success", Warning: "warning" },

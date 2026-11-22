@@ -450,6 +450,19 @@ running. "Quit Opensteer Completely" exits. It opens at login while the Mac host
 one, unless the person turns that off. Before sleeping, the Mac tells the other Homes it serves as
 a device, which then show it as asleep instead of offline.
 
+**First run.** The Opensteer account is the front door on the Mac, the phone and the account's
+website: one primary action, Sign in. After sign-in the account decides what comes next: one
+Home opens by itself (on the Mac and the phone, never on the website); none asks "Where should
+your Opensteer live?" (this Mac, free while it is awake, or an Opensteer Cloud Computer at the
+price checkout sells now, from the account's `offer`); several are a list. Starting a Home on the
+Mac while signed in creates it, links it to the account and turns Remote access on in one step
+(`remoteAccessOnWhenSignedInStart`, `packages/client/src/host/remote-access.ts`). "Use without an
+account" starts the same Home as always and it never has to sign in; such a Home shows one card
+inviting sign-in. Tailscale, an own address and pairing codes are under Remote access → Advanced
+("Private network"). The phone shows no Cloud Computer price and no purchase button
+(`phoneShowsCloudComputerPrice`, `apps/mobile/src/screens/cloud-computer-entry.ts`). Every client
+names a Home's kind from one table (`homeKindWords`, `packages/control-plane-protocol`).
+
 The Host never opens a device's files. The hosting device creates the Agent home folder and
 serves bounded listings, previews and bytes over its authenticated channel. Devices always dial
 the Home; nothing dials a device.

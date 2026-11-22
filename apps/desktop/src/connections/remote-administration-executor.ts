@@ -3,6 +3,7 @@ import type {
   DesktopPersonalAccountLinkStatus,
   DesktopPersonalRemoteAccessPhase,
 } from "@opensteer/protocol/desktop";
+import { RemoteAccessHelperUnavailableError } from "../releases/cloudflared-release.js";
 import { PersonalHostRefusalError } from "../supervisor/personal-host-control.js";
 import type { DesktopSupervisor } from "./desktop-supervisor.js";
 
@@ -12,6 +13,11 @@ import type { DesktopSupervisor } from "./desktop-supervisor.js";
  * only to the caller's redacting log.
  */
 export function remoteAccessFailureDetail(error: unknown): string {
+  // A missing or damaged tunnel helper may surface wrapped in the change that needed it.
+  for (let cause: unknown = error, depth = 0; cause && depth < 5; depth += 1) {
+    if (cause instanceof RemoteAccessHelperUnavailableError) return cause.message;
+    cause = cause instanceof Error ? cause.cause : undefined;
+  }
   return error instanceof PersonalHostRefusalError
     ? error.message
     : "Something went wrong. Try again.";

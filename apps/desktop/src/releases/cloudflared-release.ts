@@ -13,6 +13,32 @@ const CloudflaredReleaseManifestSchema = z.strictObject({
   version: z.string().regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u),
 });
 
+/**
+ * The tunnel helper Remote access runs is missing or damaged in this install. Its message is
+ * the one sentence a person reads where they turn Remote access on; the cause, with its paths,
+ * goes only to the log.
+ */
+export class RemoteAccessHelperUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "Remote access can’t start because part of Opensteer is missing or damaged on this Mac. Reinstall Opensteer, then turn it on again.",
+      { cause },
+    );
+    this.name = "RemoteAccessHelperUnavailableError";
+  }
+}
+
+/** The packaged helper, or the one plain refusal a person can act on. */
+export function packagedCloudflaredOrRefuse(
+  resourcesDirectory: string,
+): PackagedCloudflaredRelease {
+  try {
+    return readPackagedCloudflaredRelease(resourcesDirectory);
+  } catch (error) {
+    throw new RemoteAccessHelperUnavailableError(error);
+  }
+}
+
 interface PackagedCloudflaredRelease {
   readonly binaryPath: string;
   readonly version: string;

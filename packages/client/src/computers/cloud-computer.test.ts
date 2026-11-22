@@ -14,6 +14,7 @@ import {
 import {
   CloudComputerClient,
   cloudComputerDetail,
+  cloudCheckoutWatchMs,
   cloudComputerScreen,
   currentCloudComputer,
   workHomeBadges,
@@ -84,6 +85,68 @@ describe("Cloud Computer screen", () => {
       waiting: false,
       plan: { line: "$20.00 a month" },
     });
+    stop();
+  });
+
+  it("offers no price while checkout sells none, and none from an Account that doesn't say", async () => {
+    const { store, stop } = await started(new MockCloudComputerAccount("not-for-sale"));
+    expect(store.getSnapshot().screen).toMatchObject({ kind: "offer", plan: null });
+    stop();
+    expect(
+      cloudComputerScreen({
+        read: {
+          kind: "ready",
+          data: {
+            computers: [],
+            plan: { name: "Cloud", currency: "usd", amountMinor: 2000, interval: "month" },
+          },
+          work: [],
+        },
+        checkoutOpened: false,
+        deleted: false,
+      }),
+    ).toMatchObject({ kind: "offer", plan: null });
+  });
+
+  it("stops following checkout when the person turns back: no waiting, no more reading", async () => {
+    const { store, stop, schedule } = await started(new MockCloudComputerAccount("none"));
+    store.checkoutOpened();
+    await vi.waitFor(() => expect(schedule.pending).toHaveLength(1));
+    expect(store.getSnapshot()).toMatchObject({
+      checkoutFollowed: true,
+      screen: { kind: "offer", waiting: true },
+    });
+    store.stopFollowingCheckout();
+    expect(store.getSnapshot()).toMatchObject({
+      checkoutFollowed: false,
+      screen: { kind: "offer", waiting: false },
+    });
+    expect(schedule.pending).toHaveLength(0);
+    stop();
+  });
+
+  it("stops waiting on checkout when its watch ends, and reads no more for it", async () => {
+    let now = Date.parse("2026-11-21T12:00:00.000Z");
+    const schedule = manualSchedule();
+    const store = new CloudComputerClient({
+      account: new MockCloudComputerAccount("none"),
+      schedule: schedule.schedule,
+      now: () => now,
+      locale: "en-US",
+    });
+    const stop = store.start();
+    await vi.waitFor(() => expect(store.getSnapshot().screen.kind).not.toBe("loading"));
+    store.checkoutOpened();
+    await vi.waitFor(() => expect(schedule.pending).toHaveLength(1));
+    now += cloudCheckoutWatchMs;
+    await schedule.fire();
+    await vi.waitFor(() =>
+      expect(store.getSnapshot()).toMatchObject({
+        checkoutFollowed: false,
+        screen: { kind: "offer", waiting: false },
+      }),
+    );
+    expect(schedule.pending).toHaveLength(0);
     stop();
   });
 

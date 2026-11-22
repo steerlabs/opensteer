@@ -19,6 +19,9 @@ import type { ChromeConnectEnvironment } from "./chrome-environment.js";
 export type ConnectChromeClient = Pick<HostClient, "dispatch" | "rpc">;
 
 const extensionsPage = "chrome://extensions";
+/** Said in the Mac app where Chrome isn't installed: connecting works only inside Chrome. */
+const chromeNeededSentence =
+  "Connecting needs Google Chrome on this Mac. Install Chrome, then try again.";
 const probeEveryMs = 1_500;
 const pollEveryMs = 2_000;
 
@@ -233,7 +236,12 @@ export function ConnectChrome({
           retry: opened ? null : () => environment.openExtensionConnect(pairing.invitation),
         });
       } else if (environment.place === "desktop") {
-        await environment.openInDefaultBrowser(pageLink);
+        if ((await environment.openInChrome(pageLink)) === "no-chrome") {
+          setWatchUntil(null);
+          setError(chromeNeededSentence);
+          setStage({ detected: false, kind: "ready" });
+          return;
+        }
         setStage({ kind: "waiting", link: pageLink, retry: null });
       } else {
         const copied = await environment.copy(pageLink);
@@ -321,8 +329,7 @@ export function ConnectChrome({
             <>
               {environment.place === "desktop" ? (
                 <p className="connect-chrome__hint">
-                  If your default browser isn’t Chrome, copy this link into Chrome. It works once,
-                  for 15 minutes.
+                  If Chrome didn’t open, copy this link into Chrome. It works once, for 15 minutes.
                 </p>
               ) : null}
               <LinkField link={stage.link} />
@@ -432,7 +439,7 @@ function ReadyStep({
     place === "chromium"
       ? "Chrome opens a tab to confirm, then closes it."
       : place === "desktop"
-        ? "Opens a page in your default browser. If that isn’t Chrome, paste the page’s address into Chrome."
+        ? "Opens a page in Chrome to finish connecting."
         : "This browser can’t connect Chrome. Paste the link into Chrome on this computer.";
   return (
     <div className="connect-chrome__ready">

@@ -17,24 +17,40 @@ import { Icon, type IconName } from "../icon.js";
 import { OptionRow } from "../option-row.js";
 import { SettingsError } from "../settings/primitives.js";
 import { AddIphoneDialog } from "./add-iphone-dialog.js";
+import { AddChrome } from "../chrome/add-chrome.js";
 import { cancelDeviceSetup } from "./device-access.js";
 import { IphoneSetupOnMac } from "./iphone-setup-needs.js";
 import { localEnrollmentModules } from "./this-device.js";
 
-type Choice = "sign-in" | "iphone-screen" | "agent-phone" | "server";
+type Choice = "mac" | "phone" | "chrome" | "iphone-screen" | "agent-phone" | "server" | "pairing";
 
+/**
+ * Adding a device is organised by the thing being added. Each Mac or phone signs in with the
+ * same Opensteer account; a pairing code, for a device that won't sign in, is under Advanced.
+ */
 const choices: readonly {
-  readonly id: Choice;
+  readonly id: Exclude<Choice, "pairing">;
   readonly icon: IconName;
   readonly title: string;
   readonly detail: string;
 }[] = [
   {
-    id: "sign-in",
-    icon: "devices",
-    title: "Sign in on it",
-    detail:
-      "A Mac or phone with the Opensteer app. Scan a code, open a link or use a pairing code.",
+    id: "mac",
+    icon: "laptop",
+    title: "A Mac",
+    detail: "Install Opensteer on it and sign in with the same account.",
+  },
+  {
+    id: "phone",
+    icon: "phone",
+    title: "A phone",
+    detail: "Get the Opensteer app and sign in, or scan this code.",
+  },
+  {
+    id: "chrome",
+    icon: "globe",
+    title: "Chrome",
+    detail: "Share tabs from your Chrome.",
   },
   {
     id: "iphone-screen",
@@ -45,16 +61,26 @@ const choices: readonly {
   {
     id: "agent-phone",
     icon: "phone",
-    title: "Agent Phone",
+    title: "Android Agent Phone",
     detail: "An Android phone you give to your agent, set up over USB.",
   },
   {
     id: "server",
     icon: "server",
-    title: "Server",
+    title: "Linux server",
     detail: "A computer without a screen, connected with one command.",
   },
 ];
+
+const choiceTitles: Readonly<Record<Choice, string>> = {
+  mac: "Add a Mac",
+  phone: "Add a phone",
+  chrome: "Add Chrome",
+  "iphone-screen": "Control an iPhone’s screen",
+  "agent-phone": "Add an Android Agent Phone",
+  server: "Add a Linux server",
+  pairing: "Use a pairing code",
+};
 
 export function AddDeviceDialog({
   homeName,
@@ -109,20 +135,16 @@ export function AddDeviceDialog({
       }
       labelledBy={titleId}
       onClose={onClose}
-      title={
-        <span id={titleId}>
-          {choice === "sign-in"
-            ? "Sign in on it"
-            : choice === "iphone-screen"
-              ? "Control an iPhone’s screen"
-              : choice === "server"
-                ? "Add a server"
-                : "Add a device"}
-        </span>
-      }
+      title={<span id={titleId}>{choice ? choiceTitles[choice] : "Add a device"}</span>}
     >
-      {choice === "sign-in" ? (
-        <SignInOnIt homeName={homeName} />
+      {choice === "mac" ? (
+        <AddMac homeName={homeName} />
+      ) : choice === "phone" ? (
+        <AddPhone homeName={homeName} />
+      ) : choice === "chrome" ? (
+        <AddChrome />
+      ) : choice === "pairing" ? (
+        <PairingCode homeName={homeName} />
       ) : choice === "iphone-screen" ? (
         <IphoneScreenOnMac />
       ) : choice === "server" ? (
@@ -145,6 +167,22 @@ export function AddDeviceDialog({
               trailing={<Icon name="chevron-right" />}
             />
           ))}
+          <details className="settings-advanced add-device__advanced">
+            <summary>Advanced</summary>
+            <OptionRow
+              as="button"
+              detail="For a device that won’t sign in."
+              framed
+              leading={
+                <span className="option-row__glyph option-row__glyph--outline">
+                  <Icon name="devices" />
+                </span>
+              }
+              onClick={() => setChoice("pairing")}
+              title="Use a pairing code"
+              trailing={<Icon name="chevron-right" />}
+            />
+          </details>
         </div>
       )}
     </Dialog>
@@ -160,27 +198,44 @@ function IphoneScreenOnMac() {
   );
 }
 
-function SignInOnIt({ homeName }: { readonly homeName: string }) {
+/** Remote access off on a Mac's own Opensteer: nothing else can reach it, so it says so first. */
+function useRemoteAccessOff(): boolean {
   const { hostClient, snapshot } = useShell();
-  // A networked Home is reached at its own address; pairing codes ride a loopback Home's route.
+  // A networked Home is reached at its own address; only a loopback one has Remote access.
   const networked = snapshot.identityConfig?.exposure === "networked";
-  const cloud = snapshot.identityConfig?.homeKind === "cloud-computer";
   const remote = usePersonalRemoteAccess(networked ? null : hostClient);
-  const portal = snapshot.identityConfig?.portalOrigin ?? null;
-  const link = portal && snapshot.deploymentId ? phoneOpenUrl(portal, snapshot.deploymentId) : null;
-  const [copied, setCopied] = useState(false);
-  const off = remote.status?.access.mode === "off";
+  return remote.status?.access.mode === "off";
+}
+
+function RemoteAccessOffNotice({ homeName }: { readonly homeName: string }) {
+  return useRemoteAccessOff() ? (
+    <p className="notice" role="status">
+      Turn on Remote access on {homeName} first, so the new device can reach it.
+    </p>
+  ) : null;
+}
+
+function AddMac({ homeName }: { readonly homeName: string }) {
   return (
     <div className="add-device__panel">
       <p>
-        Install Opensteer on it and sign in with the same account. It sets itself up as one of your
-        devices.
+        Install Opensteer on the Mac and sign in with the same Opensteer account. It sets itself up
+        as one of your devices, and you choose what your agent can use there.
       </p>
-      {off ? (
-        <p className="notice" role="status">
-          Turn on Remote access on {homeName} first, so the new device can reach it.
-        </p>
-      ) : null}
+      <RemoteAccessOffNotice homeName={homeName} />
+    </div>
+  );
+}
+
+function AddPhone({ homeName }: { readonly homeName: string }) {
+  const { snapshot } = useShell();
+  const portal = snapshot.identityConfig?.portalOrigin ?? null;
+  const link = portal && snapshot.deploymentId ? phoneOpenUrl(portal, snapshot.deploymentId) : null;
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="add-device__panel">
+      <p>Get the Opensteer app on the phone and sign in with the same Opensteer account.</p>
+      <RemoteAccessOffNotice homeName={homeName} />
       {link ? (
         <div className="add-device__qr">
           <QrCode
@@ -205,42 +260,66 @@ function SignInOnIt({ homeName }: { readonly homeName: string }) {
           </div>
         </div>
       ) : null}
-      {networked && cloud ? (
-        // A Cloud Computer has no password of its own: the Opensteer account is how in.
+    </div>
+  );
+}
+
+/** For a device that won't sign in with the Opensteer account. */
+function PairingCode({ homeName }: { readonly homeName: string }) {
+  const { hostClient, snapshot } = useShell();
+  // A networked Home is reached at its own address; pairing codes ride a loopback Home's route.
+  const networked = snapshot.identityConfig?.exposure === "networked";
+  const cloud = snapshot.identityConfig?.homeKind === "cloud-computer";
+  const remote = usePersonalRemoteAccess(networked ? null : hostClient);
+  const off = remote.status?.access.mode === "off";
+  if (networked && cloud)
+    return (
+      <div className="add-device__panel">
+        {/* A Cloud Computer has no password of its own: the Opensteer account is how in. */}
         <p>
-          Or open <code>{snapshot.identityConfig?.publicOrigin}</code> on it and sign in with your
+          Open <code>{snapshot.identityConfig?.publicOrigin}</code> on it and sign in with your
           Opensteer account.
         </p>
-      ) : networked ? (
+      </div>
+    );
+  if (networked)
+    return (
+      <div className="add-device__panel">
         <p>
-          No account on it? Open <code>{snapshot.identityConfig?.publicOrigin}</code> on it and sign
-          in with your password.
+          Open <code>{snapshot.identityConfig?.publicOrigin}</code> on it and sign in with your
+          password.
         </p>
-      ) : (
-        <div className="add-device__pairing">
-          <span className="add-device__label">No account on it?</span>
-          {remote.pairing ? (
-            <p>
-              Enter <code>{remote.pairing.code}</code> on the other device. It works once, until{" "}
-              {new Date(remote.pairing.expiresAt).toLocaleTimeString([], {
-                hour: "numeric",
-                minute: "2-digit",
-              })}
-              .
-            </p>
-          ) : (
-            <button
-              className="btn btn--small"
-              disabled={!remote.pair || remote.working || off}
-              onClick={() => void remote.pair?.()}
-              type="button"
-            >
-              Create a pairing code
-            </button>
-          )}
-          <SettingsError message={remote.actionError ?? null} />
-        </div>
-      )}
+      </div>
+    );
+  return (
+    <div className="add-device__panel">
+      {off ? (
+        <p className="notice" role="status">
+          Turn on Remote access on {homeName} first, so the new device can reach it.
+        </p>
+      ) : null}
+      <div className="add-device__pairing">
+        {remote.pairing ? (
+          <p>
+            Enter <code>{remote.pairing.code}</code> on the other device. It works once, until{" "}
+            {new Date(remote.pairing.expiresAt).toLocaleTimeString([], {
+              hour: "numeric",
+              minute: "2-digit",
+            })}
+            .
+          </p>
+        ) : (
+          <button
+            className="btn btn--small"
+            disabled={!remote.pair || remote.working || off}
+            onClick={() => void remote.pair?.()}
+            type="button"
+          >
+            Create a pairing code
+          </button>
+        )}
+        <SettingsError message={remote.actionError ?? null} />
+      </div>
     </div>
   );
 }

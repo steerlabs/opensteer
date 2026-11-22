@@ -1822,7 +1822,9 @@ function SidebarFooter({
               </button>
             ))}
           </div>
-          {places ? <PlaceMenuPlaces onClose={() => setOpen(false)} places={places} /> : null}
+          {places ? (
+            <PlaceMenuPlaces onClose={() => setOpen(false)} places={places} severalOnly />
+          ) : null}
           {places ? (
             <PlaceAccountFooter
               account={places.snapshot.account}

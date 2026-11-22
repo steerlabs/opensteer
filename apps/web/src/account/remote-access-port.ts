@@ -13,7 +13,11 @@ import {
   type usePersonalRemoteAccess,
 } from "@opensteer/client/react";
 import type { PersonalRemoteAdministrationStatus } from "@opensteer/protocol";
-import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import {
+  desktopRefusalWords,
+  type DeploymentAccessSnapshot,
+  type OpensteerDesktopBridge,
+} from "@opensteer/protocol/desktop";
 import { useShell } from "../components/app-shell.js";
 import { deploymentNameFrom } from "../components/deployment-name.js";
 import { linkAccountThroughPortal } from "../components/settings/link-personal-account.js";
@@ -46,15 +50,36 @@ type DesktopSignInBridge = Pick<
 export function desktopRemoteAccessPort(
   link: PersonalAccountLinkController,
   bridge: DesktopSignInBridge,
+  name = "This computer",
 ): RemoteAccessPort {
   return {
     signIn: (signal) => signInThroughBrowser(bridge, signal),
-    link: async () => refuseUnfinished(await link.link()),
+    link: async ({ activating }) => {
+      const outcome = await saidAsRefused(() => link.link());
+      refuseUnfinished(outcome);
+      // Finishing a saved link that still isn't added: say so now, as what it is, rather than
+      // waiting out the settle time for a change that isn't coming.
+      if (activating && outcome.kind === "activation-pending")
+        throw new RemoteAccessPortError(
+          `${name.charAt(0).toUpperCase()}${name.slice(1)} is saved to your account but not added yet.`,
+        );
+    },
     repair: async () => {
-      const outcome = await link.repair();
+      const outcome = await saidAsRefused(() => link.repair());
       if (!outcome.succeeded) throw new RemoteAccessPortError(outcome.message);
     },
   };
+}
+
+/** The Mac app's own refusal, in its words; any other failure is left to the step's sentence. */
+async function saidAsRefused<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const words = desktopRefusalWords(error);
+    if (words !== null) throw new RemoteAccessPortError(words);
+    throw error;
+  }
 }
 
 /**
@@ -235,7 +260,8 @@ export function useWebRemoteAccess(
   const name = deploymentNameFrom(desktopDeployment, snapshot);
   const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
   const port = useMemo(() => {
-    if (route.kind === "desktop") return desktopRemoteAccessPort(link, route.bridge);
+    if (route.kind === "desktop")
+      return desktopRemoteAccessPort(link, route.bridge, name ?? undefined);
     const common = { hostClient, name: name ?? "Opensteer", status: remote.status };
     return route.kind === "courier"
       ? courierRemoteAccessPort({ ...common, bridge: route.bridge })

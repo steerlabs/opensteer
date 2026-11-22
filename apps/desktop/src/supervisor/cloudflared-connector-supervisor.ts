@@ -19,7 +19,7 @@ import {
 } from "@opensteer/deployment-authority";
 import { z } from "zod";
 import { preparePrivateDesktopDeploymentDirectories } from "../app/application-paths.js";
-import { readPackagedCloudflaredRelease } from "../releases/cloudflared-release.js";
+import { packagedCloudflaredOrRefuse } from "../releases/cloudflared-release.js";
 import type { DesktopPrivateFilesystem } from "../secrets/desktop-private-files.js";
 import {
   PersonalHostRuntimeRecordSchema,
@@ -160,7 +160,7 @@ export class CloudflaredConnectorSupervisor {
   #state: CloudflaredConnectorState = "stopped";
 
   constructor(options: CloudflaredConnectorSupervisorOptions) {
-    const release = readPackagedCloudflaredRelease(options.resourcesDirectory);
+    const release = packagedCloudflaredOrRefuse(options.resourcesDirectory);
     this.#binaryPath = release.binaryPath;
     this.#cloudflaredVersion = release.version;
     this.#privateFiles = options.privateFiles;
