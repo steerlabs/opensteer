@@ -132,16 +132,6 @@ describe("Browser Use port", () => {
       await expect(port.command(target, method, {}, target.sessionId, call)).rejects.toMatchObject({
         code: "forbidden",
       });
-    // C8: a script naming a person's saved tab to claim its restored page is refused here.
-    await expect(
-      port.command(
-        target,
-        browserHostMethods.openTab,
-        { surfaceId: "srf_00000000-0000-4000-8000-00000000c801", url: "https://example.com/" },
-        undefined,
-        call,
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
     expect(dispatch).toHaveBeenCalledTimes(4);
   });
 

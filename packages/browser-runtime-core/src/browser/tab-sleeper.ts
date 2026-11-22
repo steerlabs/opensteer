@@ -108,6 +108,8 @@ export class TabSleeper {
   private nextPressureSample = 0;
   private samplingPressure = false;
   private pendingAsyncPressurePass = false;
+  /** An open over the threshold asked for a pass: it runs past a backoff, never past a settle. */
+  private openAsked = false;
   private readonly passWaiters: Array<() => void> = [];
   private declined = new WeakSet<TabRecord>();
   private reclaimFrom: {
@@ -377,9 +379,7 @@ export class TabSleeper {
     const pressureDriven = this.usesLinuxMemoryPressure();
     const budget =
       (!this.options.rendererUsage && !pressureDriven && this.overBudget()) ||
-      (this.pendingAsyncPressurePass &&
-        this.releasing &&
-        now >= Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0));
+      (this.pendingAsyncPressurePass && this.releasing && now >= this.pressureHoldUntil());
     let earliest = Infinity;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
@@ -453,20 +453,28 @@ export class TabSleeper {
     this.applyMemoryPressureSample(reading, now);
     if (!this.releasing) return;
     this.pendingAsyncPressurePass = true;
-    // The open waits only for a pass that is admitted and can free something for it (K9): a
-    // page that may sleep right now. A running pass that can free nothing (every page blocked,
-    // a backoff, its retirement arm) holds nothing, and neither does scheduling that is off.
-    if (!this.canShedNow(now)) {
+    // K9 corrected: over the threshold an open waits while a reclaim is settling (memory is on its
+    // way down, and the open would hide it) or while some tab can sleep, asking for that pass
+    // even through a backoff. It goes on when scheduling is off, or nothing can sleep and nothing
+    // is settling.
+    const settling = this.reclaimFrom !== null && now < this.reclaimFrom.settledAt;
+    const canShed = this.canShedNow(now);
+    if (this.options.scheduling === false || (!settling && !canShed)) {
       this.poke();
       return;
     }
+    if (canShed) this.openAsked = true;
     let release: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
       release = resolve;
       this.passWaiters.push(resolve);
     });
     this.poke();
-    await withTimeout(settled, openPressureWaitMs, {
+    // Waiting on a settle alone ends with it; waiting for a pass, within the open's bound.
+    const bound = canShed
+      ? openPressureWaitMs
+      : Math.min(openPressureWaitMs, this.reclaimFrom!.settledAt - now);
+    await withTimeout(settled, Math.max(1, bound), {
       timeoutError: () => new Error("Pressure pass did not settle."),
     }).catch(() => {
       // A waiter that timed out leaves; it does not stay until some later pass ends.
@@ -475,10 +483,18 @@ export class TabSleeper {
     });
   }
 
-  /** Whether a pass started now could sleep some page under pressure. */
+  /**
+   * Until when a pressure pass sleeps nothing: a reclaim still settling always holds it; a backoff
+   * after ineffective reclaims holds only the sleeper's own background passes (K9 corrected).
+   */
+  private pressureHoldUntil(): number {
+    const settling = this.reclaimFrom?.settledAt ?? 0;
+    return this.openAsked ? settling : Math.max(this.pressureBackoffUntil, settling);
+  }
+
+  /** Whether some page may sleep right now, whatever a backoff or a settle holds back. */
   private canShedNow(now: number): boolean {
     if (this.options.scheduling === false) return false;
-    if (now < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)) return false;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
       for (const record of session.ledger.policyRecords()) {
@@ -707,11 +723,7 @@ export class TabSleeper {
           ? this.memoryPressureState.known
           : this.rendererUsage !== null;
         if (measuredPressure && deadline > Date.now()) {
-          if (
-            !this.releasing ||
-            Date.now() < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)
-          )
-            continue;
+          if (!this.releasing || Date.now() < this.pressureHoldUntil()) continue;
           // In single-step Electron renderer mode, finish pending sleeps before deciding the next one.
           if (!pressureDriven && pending.size) await Promise.all(pending);
           if (this.closed) break;
@@ -757,7 +769,7 @@ export class TabSleeper {
         this.usesLinuxMemoryPressure() &&
         this.memoryPressureState.known &&
         this.releasing &&
-        Date.now() >= Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)
+        Date.now() >= this.pressureHoldUntil()
       ) {
         const now = Date.now();
         const youngest = candidates
@@ -793,6 +805,7 @@ export class TabSleeper {
       }
     } finally {
       this.running = false;
+      this.openAsked = false;
       if (attempted < sleepsPerPass) this.declined = new WeakSet();
       const pressureDriven = this.usesLinuxMemoryPressure();
       if ((pressureDriven || this.rendererUsage) && this.releasing) {

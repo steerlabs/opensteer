@@ -109,7 +109,6 @@ export interface BrowserControllerSink extends BrowserFrameSink {
 
 interface BrowserControllerOptions {
   sessionState?: (state: import("@opensteer/protocol/browser").BrowserSessionState) => void;
-  onSavedTabs?: (savedTabIds: ReadonlySet<BrowserSurfaceId>) => Promise<void>;
   loginAuthority?: BrowserLoginAuthority | undefined;
   nativePresentation?:
     ((surfaceId: BrowserSurfaceId, consumerToken: string) => boolean) | undefined;
@@ -383,10 +382,6 @@ export class BrowserController {
     { id: BrowserSurfaceId },
     Record<string, never>
   >();
-  private readonly onSavedTabs:
-    ((savedTabIds: ReadonlySet<BrowserSurfaceId>) => Promise<void>) | undefined;
-  private savedTabsReconcile: Promise<void> | null = null;
-  private savedTabsReconcileError: unknown = undefined;
   private readonly tabPublisher = new KeyedStreamPublisher<BrowserTabRecord, BrowserTabStreamMeta>({
     ids: () => this.tabRows.keys(),
     read: (id) => this.tabRows.get(id),
@@ -448,7 +443,6 @@ export class BrowserController {
   }
   constructor(options: BrowserControllerOptions) {
     this.sessionState = options.sessionState;
-    this.onSavedTabs = options.onSavedTabs;
     this.personAuthority =
       options.claims.personFillVersion &&
       options.loginAuthority?.personFillAccounts &&
@@ -560,9 +554,8 @@ export class BrowserController {
     };
     if (!previous) {
       this.openedTabs.set(navigation.operationKey, { fingerprint, tabId: result.surfaceId });
-      // The engine already starts the initial blank document to create its renderer,
-      // or restored the tab's document from Chromium's session files.
-      if (navigation.url === undefined || page.restoredFromSession) return result;
+      // The engine already starts the initial blank document to create its renderer.
+      if (navigation.url === undefined) return result;
       const url = safeNavigationUrl(navigation.url);
       void this.ledger
         .navigate(
@@ -957,27 +950,7 @@ export class BrowserController {
       return this.drainTabs();
     }
     if (message.type === "session.saved") {
-      const applied = this.savedTabs.apply(message.stream);
-      if (applied === "applied" && this.savedTabs.state === "committed" && this.onSavedTabs) {
-        const savedIds = new Set<BrowserSurfaceId>();
-        for (const id of this.savedTabs.rows.keys()) {
-          savedIds.add(BrowserSurfaceIdSchema.parse(id));
-        }
-        const reconciling = Promise.resolve(this.onSavedTabs(savedIds))
-          .then(
-            () => {
-              this.savedTabsReconcileError = undefined;
-            },
-            (error: unknown) => {
-              this.savedTabsReconcileError = error;
-            },
-          )
-          .finally(() => {
-            if (this.savedTabsReconcile === reconciling) this.savedTabsReconcile = null;
-          });
-        this.savedTabsReconcile = reconciling;
-        return reconciling;
-      }
+      this.savedTabs.apply(message.stream);
       return Promise.resolve();
     }
 
@@ -3812,15 +3785,6 @@ export class BrowserController {
       return;
     }
     if (message.command.method === browserHostMethods.listTabs) {
-      if (this.savedTabsReconcile) await this.savedTabsReconcile;
-      if (this.savedTabsReconcileError !== undefined) {
-        throw new BrowserRuntimeError(
-          "conflict",
-          this.savedTabsReconcileError instanceof Error
-            ? this.savedTabsReconcileError.message
-            : "Saved-tab reconciliation failed.",
-        );
-      }
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
       const ledger = this.ledger;
@@ -3911,15 +3875,6 @@ export class BrowserController {
     )
       throw new BrowserRuntimeError("bad_message", "Unsupported Opensteer method.");
     if (message.command.method === browserHostMethods.openTab) {
-      if (this.savedTabsReconcile) await this.savedTabsReconcile;
-      if (this.savedTabsReconcileError !== undefined) {
-        throw new BrowserRuntimeError(
-          "conflict",
-          this.savedTabsReconcileError instanceof Error
-            ? this.savedTabsReconcileError.message
-            : "Saved-tab reconciliation failed.",
-        );
-      }
       const fields = BrowserSessionTabOpenCommandSchema.omit({
         type: true,
         sessionId: true,
@@ -3968,10 +3923,6 @@ export class BrowserController {
         );
         origin = authority.creationOrigin;
       }
-      // A surface id names a person's saved tab, whose restored page this open may claim. Only
-      // the Home names one, for the person; an open carrying an agent's authority never may.
-      if (origin === "agent" && parameters?.surfaceId !== undefined)
-        throw new BrowserRuntimeError("forbidden", "This operation is reserved for the Host.");
       if (remaining <= 0)
         throw new BrowserRuntimeError("conflict", "The browser opening authority expired.");
       const opening = new AbortController();
@@ -4022,12 +3973,10 @@ export class BrowserController {
         if (url !== undefined) {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
-          if (!binding.page.restoredFromSession) {
-            if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
-            const navigation = this.ledger.navigate(tabId, url, message.navigationId);
-            if (message.replyBudget) await navigation;
-            else void navigation.catch(() => undefined);
-          }
+          if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
+          const navigation = this.ledger.navigate(tabId, url, message.navigationId);
+          if (message.replyBudget) await navigation;
+          else void navigation.catch(() => undefined);
         }
       }
       await this.drainTabs();

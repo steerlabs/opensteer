@@ -569,9 +569,16 @@ describe("TabSleeper", () => {
       expect(suspended()).toBeGreaterThan(0);
       expect(opened).toBe(true);
 
-      // Under pressure with nothing that may sleep (every page pinned), the open is not held,
-      // and leaves no waiter behind.
+      // Under pressure with nothing that may sleep (every page pinned), an open still waits
+      // while the reclaim just started is settling (K9 corrected), and then is not held, and
+      // leaves no waiter behind.
       f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
+      opened = false;
+      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(opened).toBe(false);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(opened).toBe(true);
       opened = false;
       void f.sleeper.beforePageOpen().then(() => (opened = true));
       await vi.advanceTimersByTimeAsync(0);
@@ -590,6 +597,81 @@ describe("TabSleeper", () => {
       internals.applyMemoryPressureSample(null, Date.now());
       expect(internals.ineffectiveReclaims).toBe(2);
       expect(internals.pressureBackoffUntil).toBeGreaterThan(Date.now());
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("holds a burst of 46 opens so the sample never passes the limit: sleeping starts at the threshold and each wait is bounded (K9 corrected)", async () => {
+    const mib = 1024 ** 2;
+    const limit = 2048 * mib;
+    const baseBytes = 600 * mib;
+    const perTab = 45 * mib;
+    const settleMs = 500;
+    // Each open adds a fixed amount; each sleep frees it once its settle time has passed.
+    const suspendedAt = new Map<string, number>();
+    let ledgerRef: SurfaceLedger | undefined;
+    const used = () => {
+      let bytes = baseBytes;
+      const now = Date.now();
+      for (const record of ledgerRef?.policyRecords() ?? []) {
+        if (record.live) bytes += perTab;
+        else {
+          const since = suspendedAt.get(record.id) ?? now;
+          suspendedAt.set(record.id, since);
+          if (now - since < settleMs) bytes += perTab;
+        }
+      }
+      return bytes;
+    };
+    const samples: number[] = [];
+    const f = await fixture({
+      memoryPressure: () => {
+        const usedBytes = used();
+        samples.push(usedBytes / limit);
+        return Promise.resolve({ usedBytes, limitBytes: limit });
+      },
+    });
+    ledgerRef = f.ledger;
+    try {
+      const ids = [f.record.id];
+      const waits: number[] = [];
+      let firstSleepRatio: number | null = null;
+      const burst = (async () => {
+        for (let i = 0; i < 46; i++) {
+          const started = Date.now();
+          await f.sleeper.beforePageOpen();
+          waits.push(Date.now() - started);
+          ids.push((await f.ledger.openSurface()).id);
+          f.sleeper.setSessionState("session", {
+            runs: 0,
+            personUsed: ids,
+            viewed: [],
+            pinned: [],
+          });
+          if (firstSleepRatio === null && ids.some((id) => f.ledger.stateOf(id) === "suspended"))
+            firstSleepRatio = samples.at(-1) ?? null;
+        }
+      })();
+      let done = false;
+      void burst.finally(() => (done = true));
+      for (let step = 0; step < 20_000 && !done; step++) await vi.advanceTimersByTimeAsync(5);
+      await burst;
+      const sorted = [...waits].sort((a, b) => a - b);
+      const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;
+      process.stdout.write(
+        `${JSON.stringify({
+          event: "k9.burst",
+          peak: Math.max(...samples),
+          firstSleepRatio,
+          waits: { median: at(0.5), p95: at(0.95), max: sorted.at(-1) },
+        })}\n`,
+      );
+      expect(Math.max(...samples)).toBeLessThan(1);
+      expect(firstSleepRatio).not.toBeNull();
+      expect(firstSleepRatio!).toBeGreaterThan(0.7);
+      expect(firstSleepRatio!).toBeLessThan(0.8);
+      expect(sorted.at(-1)!).toBeLessThanOrEqual(2_000 + 250 + 10);
     } finally {
       await f.close();
     }
@@ -684,9 +766,10 @@ describe("TabSleeper", () => {
       const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended");
       expect(suspended()).toEqual([freeTab]);
 
-      // With every tab in use, none sleeps and the open is not held.
+      // With every tab in use, none sleeps, and once the reclaim settled the open is not held.
       state([...ids], []);
       const before = suspended();
+      await vi.advanceTimersByTimeAsync(600);
       opened = false;
       void f.sleeper.beforePageOpen().then(() => (opened = true));
       await vi.advanceTimersByTimeAsync(0);

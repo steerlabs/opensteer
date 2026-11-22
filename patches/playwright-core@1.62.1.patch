@@ -1,40 +1,7 @@
 diff --git a/lib/coreBundle.js b/lib/coreBundle.js
 --- a/lib/coreBundle.js
 +++ b/lib/coreBundle.js
-@@ -37351,9 +37351,10 @@
-           this._addRendererListeners();
-         this._addBrowserListeners();
-         this._bufferedAttachedToTargetEvents = [];
-+        let frameTreeReady;
-         const promises2 = [
-           this._client.send("Page.enable"),
--          this._client.send("Page.getFrameTree").then(({ frameTree }) => {
-+          frameTreeReady = this._client.send("Page.getFrameTree").then(({ frameTree }) => {
-             if (this._isMainFrame()) {
-               this._handleFrameTree(frameTree);
-               this._addRendererListeners();
-@@ -37395,7 +37396,7 @@
-           if (this._crPage._browserContext.needsPlaywrightBinding())
-             promises2.push(this.exposePlaywrightBinding());
-           if (this._isMainFrame() && !skipDefaultOverrides)
--            promises2.push(this._client.send("Emulation.setFocusEmulationEnabled", { enabled: true }));
-+            promises2.push(frameTreeReady.then(() => this._client.send("Emulation.setFocusEmulationEnabled", { enabled: true })));
-           const options = this._crPage._browserContext._options;
-           if (options.bypassCSP)
-             promises2.push(this._client.send("Page.setBypassCSP", { enabled: true }));
-@@ -38116,7 +38117,10 @@
-           }),
-           browser._defaultContext.initialize()
-         ]);
--        await browser._waitForAllPagesToBeInitialized();
-+        const launchArgs = options.originalLaunchOptions?.args;
-+        const deferRestoredPages = Array.isArray(launchArgs) && launchArgs.includes("--restore-last-session") && !launchArgs.includes("--no-startup-window");
-+        if (!deferRestoredPages)
-+          await browser._waitForAllPagesToBeInitialized();
-         return browser;
-       }
-       async doCreateNewContext(options) {
-@@ -39481,8 +39485,9 @@
+@@ -39481,8 +39481,9 @@
              await browser._defaultContext.loadDefaultContext(progress2);
            return browser;
          } catch (error) {
@@ -46,7 +13,7 @@ diff --git a/lib/coreBundle.js b/lib/coreBundle.js
            throw error;
          }
        }
-@@ -39608,8 +39612,8 @@
+@@ -39608,8 +39609,8 @@
            }
            return { browserProcess, artifactsDir: prepared.artifactsDir, userDataDir: prepared.userDataDir, transport, wsEndpoint };
          } catch (error) {
@@ -57,7 +24,7 @@ diff --git a/lib/coreBundle.js b/lib/coreBundle.js
            throw error;
          }
        }
-@@ -56857,22 +56861,27 @@
+@@ -56857,22 +56858,27 @@
            rewriteErrorMessage(e, `${e.message} Failed to launch browser.${log2}`);
            throw e;
          }
@@ -101,7 +68,7 @@ diff --git a/lib/coreBundle.js b/lib/coreBundle.js
        }
      };
    }
-@@ -62911,6 +62920,11 @@
+@@ -62911,6 +62917,11 @@
            return context3;
          });
          await this._instrumentation.runAfterCreateBrowserContext(context2);

@@ -1,86 +1,38 @@
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserCookieFromCdp } from "@opensteer/browser-profile/cookies";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CDPSession } from "playwright-core";
 
-async function writeFileAtomic(filePath: string, content: string): Promise<void> {
-  const tempPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  try {
-    await writeFile(tempPath, content, { mode: 0o600 });
-    await rename(tempPath, filePath);
-  } catch (error) {
-    await unlink(tempPath).catch(() => undefined);
-    throw error;
-  }
-}
-
-/**
- * Prepares Chromium's native profile Preferences while preserving Chromium's own
- * `Default/Sessions/` files for cold-start session restore. When Chromium exited
- * uncleanly (e.g. `SIGKILL` or host crash), resets `profile.exit_type` to
- * `"Normal"` so `--restore-last-session` restores the session instead of pausing
- * on an unclean-exit recovery bubble. Without `restoreLastSession` (K4) Chromium
- * opens a new tab instead of its last session (`restore_on_startup` 5).
- */
-export async function initializeNativePreferences(
-  directory: string,
-  restoreLastSession = true,
-): Promise<void> {
+export async function initializeNativePreferences(directory: string): Promise<void> {
   if (!path.isAbsolute(directory)) throw new Error("Native profile directory must be absolute.");
-  const restoreOnStartup = restoreLastSession ? 1 : 5;
-  const defaultDir = path.join(directory, "Default");
-  const preferencesPath = path.join(defaultDir, "Preferences");
-  await mkdir(defaultDir, { recursive: true, mode: 0o700 });
-  try {
-    await writeFile(
-      preferencesPath,
-      JSON.stringify({ session: { restore_on_startup: restoreOnStartup } }),
-      { flag: "wx", mode: 0o600 },
-    );
-    return;
-  } catch (error) {
+  // The runtime holds the root lock and this profile's lifecycle lane, with no
+  // browser owning this directory. Chromium defers tab restore to the first
+  // window; Opensteer's durable tab descriptors are the only tab-restore authority.
+  const sessions = path.join(directory, "Default", "Sessions");
+  const records = await readdir(sessions, { withFileTypes: true }).catch((error) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const record of records) {
+    if (
+      !/^(?:Session_.*|Tabs_.*|Current Session|Last Session|Current Tabs|Last Tabs)$/u.test(
+        record.name,
+      )
+    )
+      continue;
+    if (!record.isFile()) throw new Error("Chromium tab-restore record is not a regular file.");
+    await unlink(path.join(sessions, record.name));
+  }
+  await mkdir(path.join(directory, "Default"), { recursive: true, mode: 0o700 });
+  await writeFile(
+    path.join(directory, "Default", "Preferences"),
+    JSON.stringify({ session: { restore_on_startup: 1 } }),
+    { flag: "wx", mode: 0o600 },
+  ).catch((error) => {
     if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-  }
-
-  // Existing Preferences belong to Chromium; only unclean-exit markers and the startup choice change.
-  let raw: string;
-  try {
-    raw = await readFile(preferencesPath, "utf8");
-  } catch {
-    return;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
-  const prefs = parsed as Record<string, unknown>;
-  const profile =
-    prefs.profile && typeof prefs.profile === "object" && !Array.isArray(prefs.profile)
-      ? (prefs.profile as Record<string, unknown>)
-      : null;
-  const session =
-    prefs.session && typeof prefs.session === "object" && !Array.isArray(prefs.session)
-      ? (prefs.session as Record<string, unknown>)
-      : {};
-  const unclean =
-    (typeof profile?.exit_type === "string" && profile.exit_type !== "Normal") ||
-    profile?.exited_cleanly === false;
-  // A launch that restores changes the startup choice only back from the one K4 wrote.
-  const startup = restoreLastSession
-    ? session.restore_on_startup === 5
-    : session.restore_on_startup !== 5;
-  if (!unclean && !startup) return;
-  const normalized = {
-    ...prefs,
-    ...(unclean ? { profile: { ...profile, exit_type: "Normal", exited_cleanly: true } } : {}),
-    session: { ...session, restore_on_startup: restoreOnStartup },
-  };
-  await writeFileAtomic(preferencesPath, JSON.stringify(normalized));
+  });
 }
 
 export function assertImportedCookies(

@@ -6773,7 +6773,6 @@ export class BrowserService {
         origin !== "trigger" &&
         !input.agentBindingId?.startsWith("trigger:") &&
         !input.agentBindingId?.startsWith("watch:");
-      const groupId = input.tabGroupId ?? sessionId;
       const attachAuthority: Parameters<BrowserAttachTicketSigner["issue"]>[0] = {
         creationOrigin:
           origin === "person" && record.opener?.kind === "person" ? "person" : "agent",
@@ -6860,6 +6859,7 @@ export class BrowserService {
         throw browserStartUnavailable(correlationId, stage, error);
       }
       let readinessBudget = input.operationBudget;
+      const groupId = input.tabGroupId ?? sessionId;
       const personUse = this.#personUseGroups.get(groupId) ?? {
         tabs: new Set<BrowserSurfaceId>(),
         ended: false,
@@ -6884,10 +6884,7 @@ export class BrowserService {
             },
             tabRestoreVersion: tabRestore,
             ...(tabRestore && input.initialSurfaceId
-              ? {
-                  savedTabIds: [input.initialSurfaceId, ...(input.dormantSurfaceIds ?? [])],
-                  reconcileSavedTabs: localIdentity?.binding.engine === "chromium",
-                }
+              ? { savedTabIds: [input.initialSurfaceId, ...(input.dormantSurfaceIds ?? [])] }
               : {}),
             profileId: record.profileId,
             ...(initialHistoryNavigation ? { initialHistoryNavigation } : {}),
@@ -7751,7 +7748,6 @@ interface HostedBrowserBrokerOptions {
     Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">
   >;
   readonly savedTabIds?: readonly BrowserSurfaceId[];
-  readonly reconcileSavedTabs?: boolean | undefined;
   readonly tabRestoreVersion?: boolean | undefined;
   readonly initialHistoryNavigation?: { navigationId: string; ownerId: UserId; typed: boolean };
   readonly profileId: BrowserProfileId | null;
@@ -7912,8 +7908,6 @@ export class HostedBrowserBroker {
     return this.#navigation && this.live ? 1 : undefined;
   }
   readonly #restoreTabs: boolean;
-  readonly #reconcileSavedTabs: boolean;
-  #reconcilingSavedTabs = false;
   readonly #savedTabIds: readonly BrowserSurfaceId[] | undefined;
   readonly #tabs = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
   readonly #dirtyTabs = new Map<string, PageDescriptor>();
@@ -8067,7 +8061,6 @@ export class HostedBrowserBroker {
     this.#onPersonUseChanged = options.onPersonUseChanged ?? (() => undefined);
     this.#readSessionState = options.readSessionState;
     this.#restoreTabs = options.tabRestoreVersion === true;
-    this.#reconcileSavedTabs = options.reconcileSavedTabs === true;
     this.#savedTabIds = options.savedTabIds;
     this.profileId = options.profileId;
     this.#historyWrite = options.historyWrite;
@@ -8320,63 +8313,6 @@ export class HostedBrowserBroker {
       await this.#sendCommand({ type: "session.saved", stream });
       publisher.settled(stream, true);
     }
-  }
-
-  /**
-   * Waits for the runtime to finish reconciling `session.saved` before reporting
-   * the session ready, using the existing `Opensteer.listTabs` command barrier
-   * so no new wire message or capability name is needed.
-   */
-  async #awaitSavedTabsReconciled(): Promise<void> {
-    if (
-      !this.#restoreTabs ||
-      !this.#reconcileSavedTabs ||
-      !this.#savedTabIds ||
-      !this.cdpBoundary ||
-      this.#settled
-    )
-      return;
-    const requestId = randomUUID();
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pendingCdpRequests.delete(requestId);
-        reject(
-          new OpensteerError({
-            code: "timeout",
-            message: "Browser Runtime did not finish saved-tab reconciliation in time.",
-            retryable: true,
-          }),
-        );
-      }, 10_000);
-      timeout.unref();
-      const pending = {
-        expectedType: "cdp.result" as const,
-        submitted: false,
-        reject,
-        resolve: () => resolve(),
-        timeout,
-        bounded: false,
-        removeAbort: () => undefined,
-        acknowledge: undefined,
-      };
-      this.#pendingCdpRequests.set(requestId, pending);
-      void this.#sendCommand(
-        {
-          type: "cdp.command",
-          requestId,
-          command: { method: browserHostMethods.listTabs, parameters: {} },
-        },
-        undefined,
-        () => {
-          pending.submitted = true;
-        },
-      ).catch((error) => {
-        if (this.#pendingCdpRequests.get(requestId) !== pending) return;
-        clearTimeout(timeout);
-        this.#pendingCdpRequests.delete(requestId);
-        reject(error);
-      });
-    });
   }
 
   ready(): Promise<void> {
@@ -8968,21 +8904,8 @@ export class HostedBrowserBroker {
           () => undefined,
         );
         void handled
-          .then(async (readiness) => {
-            if (!readiness || ready) return;
-            if (readiness === "reconcile") {
-              this.#reconcilingSavedTabs = true;
-              try {
-                await this.#awaitSavedTabsReconciled();
-              } finally {
-                this.#reconcilingSavedTabs = false;
-              }
-              await this.#onState("ready");
-              this.#reconnecting = false;
-              this.#runtimeReady = true;
-              await this.#sendSessionState();
-            }
-            if (ready || this.#settled) return;
+          .then((becameReady) => {
+            if (!becameReady || ready) return;
             ready = true;
             clearTimeout(timeout);
             resolve();
@@ -9033,10 +8956,7 @@ export class HostedBrowserBroker {
     });
   }
 
-  async #handleRuntimeFrame(
-    raw: RawData,
-    isBinary: boolean,
-  ): Promise<false | "ready" | "reconcile"> {
+  async #handleRuntimeFrame(raw: RawData, isBinary: boolean): Promise<boolean> {
     if (this.#settled || this.#protocolFailed) return false;
     const frame = rawDataBuffer(raw);
     if (isBinary) {
@@ -9325,30 +9245,14 @@ export class HostedBrowserBroker {
       });
       assertBrowserDialogSurface(this.#snapshot?.dialog ?? null, this.#surfaces);
       this.#reconcileHistory(this.#surfaces);
-      let needsReconcileBarrier = false;
       if (!this.#runtimeReady) {
         if (!this.#reconnecting) {
-          if (!this.#adoptedFromPool) {
-            await this.#sendSavedTabs();
-            if (
-              this.#restoreTabs &&
-              this.#reconcileSavedTabs &&
-              this.#savedTabIds &&
-              this.cdpBoundary
-            ) {
-              needsReconcileBarrier = true;
-            } else {
-              await this.#onState("ready");
-            }
-          } else {
-            await this.#onState("ready");
-          }
+          if (!this.#adoptedFromPool) await this.#sendSavedTabs();
+          await this.#onState("ready");
         }
-        if (!needsReconcileBarrier) {
-          this.#reconnecting = false;
-          this.#runtimeReady = true;
-          await this.#sendSessionState();
-        }
+        this.#reconnecting = false;
+        this.#runtimeReady = true;
+        await this.#sendSessionState();
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
       this.#onTabsChanged();
@@ -9376,7 +9280,7 @@ export class HostedBrowserBroker {
         changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id)))
       )
         this.refreshSessionState();
-      return stream.op === "end" ? (needsReconcileBarrier ? "reconcile" : "ready") : false;
+      return stream.op === "end";
     } else if (message.type === "browser.dialog.changed") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
       assertBrowserDialogSurface(message.dialog, this.#surfaces);
@@ -10251,12 +10155,7 @@ export class HostedBrowserBroker {
             this.#protocolFailed ||
             (!this.#runtimeReady &&
               message.type !== "session.saved" &&
-              message.type !== "tabs.resync" &&
-              !(
-                this.#reconcilingSavedTabs &&
-                message.type === "cdp.command" &&
-                message.command.method === "Opensteer.listTabs"
-              )) ||
+              message.type !== "tabs.resync") ||
             this.#socket.readyState !== WebSocket.OPEN
           ) {
             reject(

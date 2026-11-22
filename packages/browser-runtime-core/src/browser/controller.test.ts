@@ -653,60 +653,6 @@ describe("BrowserController", () => {
       }
     },
   );
-  it.each(["agent", "person"] as const)(
-    "lets only the Home's own open of a person's tab name a surface: %s (C8)",
-    async (creationOrigin) => {
-      const claims = validClaims({ tabRestoreVersion: 1 });
-      const url = "https://example.test/named";
-      const surfaceId = "srf_00000000-0000-4000-8000-00000000c801";
-      const controller = new BrowserController({
-        cdpRouter,
-        claims,
-        files,
-        ledger,
-        replaceSiteCookies,
-        platform: "darwin",
-        signIns: noSignIns(),
-        sink,
-        verifyOpenAuthority: async () => ({
-          ...claims,
-          creationOrigin,
-          initialNavigation: { operationKey: `named-${creationOrigin}`, url },
-        }),
-      });
-      try {
-        await controller.start();
-        const requestId = randomUUID();
-        await controller.handle({
-          type: "cdp.command",
-          requestId,
-          command: {
-            method: browserHostMethods.openTab,
-            parameters: {
-              idempotencyKey: `named-${creationOrigin}`,
-              operationAuthority: "signed",
-              surfaceId,
-              url,
-            },
-          },
-        });
-        const answer = sink.messages.find(
-          (message) =>
-            (message.type === "cdp.result" || message.type === "cdp.error") &&
-            message.requestId === requestId,
-        );
-        if (creationOrigin === "agent") {
-          expect(answer).toMatchObject({ type: "cdp.error", error: { code: "forbidden" } });
-          expect([...ledger.policyRecords()].some((entry) => entry.id === surfaceId)).toBe(false);
-        } else {
-          expect(answer).toMatchObject({ type: "cdp.result", result: { tabId: surfaceId } });
-        }
-      } finally {
-        await controller.close();
-        await ledger.close();
-      }
-    },
-  );
   it("commits a tab before its open result and its removal before its close result", async () => {
     [...ledger.policyRecords()][0]!.favicon = "data:image/png;base64,AAAA";
     const controller = createController();

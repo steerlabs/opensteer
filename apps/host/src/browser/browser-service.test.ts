@@ -1,5 +1,4 @@
 import { RunnerIdSchema, type DeviceId } from "@opensteer/core";
-import { z } from "zod";
 import { DeviceIdSchema } from "@opensteer/core";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
 import {
@@ -20,10 +19,8 @@ import { browserRows } from "./browser-rows.test-support.js";
 import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserTabRecordSchema,
-  type BrowserEngine,
   type BrowserTabRecord,
   type BrowserSurface,
-  type BrowserSurfaceId,
   type BrowserViewerSurface,
 } from "@opensteer/protocol/browser";
 import {
@@ -122,7 +119,6 @@ function runnerTarget(options: {
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
   readonly tabRestoreVersion?: boolean;
-  readonly localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   readonly environmentIds?: readonly EnvironmentId[];
   readonly label?: string;
   readonly runnerId?: RunnerId;
@@ -171,7 +167,7 @@ function runnerTarget(options: {
               installWebSocketLiveness(socket);
               return socket;
             },
-            localProfileStorage: options.localProfileStorage ?? fixtureStorage,
+            localProfileStorage: fixtureStorage,
             main: true,
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
@@ -7855,258 +7851,6 @@ it("batches additive person-use marks once per runtime connection and replays on
   ).toEqual([]);
 });
 
-it("keeps non-Chromium runtimes on the pre-branch start path with no listTabs reconcile barrier", async () => {
-  const keys = generateKeyPairSync("ed25519");
-  const ownerId = createId("user");
-  const startAndInspect = async (engine: "electron" | "chromium", answerListTabs: boolean) => {
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const repository = new MemoryBrowserRepository(ownerId);
-    const runnerId = createId("runner");
-    const storage = { storageInstanceId: randomUUID(), engine };
-    const profile = await repository.createBrowserProfile({
-      ownerId,
-      name: `Profile-${engine}`,
-    });
-    const memory = memoryTabs();
-    Object.assign(memory.store, {
-      bindPage: async (
-        _ownerId: unknown,
-        id: string,
-        _expectedGeneration: unknown,
-        _previousBinding: unknown,
-        next: {
-          lineageId: BrowserSessionId;
-          sessionId: BrowserSessionId;
-          surfaceId: BrowserSurfaceId;
-        },
-      ) => {
-        const current = memory.rows.get(id);
-        if (!current) return false;
-        current.pageBinding = next;
-        return true;
-      },
-    });
-    const sentCommands: Record<string, unknown>[] = [];
-    const targetResolver = runnerTarget({
-      runnerId,
-      url: runtime.url,
-      tabRestoreVersion: true,
-      localProfileStorage: storage,
-    });
-    const service = new BrowserService({
-      ...nativeProfileOptions(),
-      ...profileStateOptions,
-      connectTimeoutMs: 1_500,
-      repository,
-      signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-      targetResolver,
-      tabs: memory.store,
-      tabPlaces: { write: async () => false, notice: () => {} },
-    });
-    cleanups.push(() => service.close());
-
-    // Seed a dormant saved tab on this profile so pageTabs.activate cold-starts with savedTabIds.
-    const oldSessionId = createBrowserSessionId();
-    const row = await memory.add({
-      id: BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`),
-      kind: "page",
-      title: "Saved",
-      url: "https://example.com",
-      profileId: profile.id,
-      computerId: runnerId,
-      generation: 1,
-      closedAt: null,
-      pageBinding: {
-        lineageId: oldSessionId,
-        sessionId: oldSessionId,
-        surfaceId: BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`),
-      },
-    } as never);
-
-    const activating = service.pageTabs.activate(ownerId, row, `activate-${engine}`);
-
-    const settled = activating.then(
-      () => "done" as const,
-      () => "done" as const,
-    );
-    const drain = (async () => {
-      for (;;) {
-        const command = await Promise.race([runtime.nextCommand(), settled]);
-        if (command === "done") break;
-        sentCommands.push(command);
-        if (
-          answerListTabs &&
-          command.type === "cdp.command" &&
-          (command.command as { method?: string } | undefined)?.method === "Opensteer.listTabs"
-        ) {
-          runtime.sendServer({
-            type: "cdp.result",
-            requestId: String(command.requestId),
-            result: { tabs: [], nextCursor: null },
-          });
-        }
-      }
-    })();
-
-    const activated = await activating;
-    await drain;
-    return { activated, sentCommands };
-  };
-
-  // Electron (Mac app) must never receive Opensteer.listTabs before ready and must succeed without answering it.
-  const electron = await startAndInspect("electron", false);
-  expect(electron.activated.sessionId).toBeDefined();
-  expect(
-    electron.sentCommands.some(
-      (cmd) =>
-        cmd.type === "cdp.command" &&
-        (cmd.command as { method?: string } | undefined)?.method === "Opensteer.listTabs",
-    ),
-  ).toBe(false);
-
-  // Chromium local profile restore waits for the Opensteer.listTabs reconcile barrier before ready.
-  const chromiumRun = await startAndInspect("chromium", true);
-  expect(chromiumRun.activated.sessionId).toBeDefined();
-  expect(
-    chromiumRun.sentCommands.some(
-      (cmd) =>
-        cmd.type === "cdp.command" &&
-        (cmd.command as { method?: string } | undefined)?.method === "Opensteer.listTabs",
-    ),
-  ).toBe(true);
-});
-
-it("issues restore tickets that parse under main's strict BrowserAttachTicketClaimsSchema for released Linux runtimes (B1)", async () => {
-  // Frozen key set of main's z.strictObject BrowserAttachTicketClaimsSchema (4910b97d7).
-  // A released Linux runtime advertising tabRestoreVersion: 1 and engine "chromium" rejects
-  // any unknown claim key with strictObject parsing.
-  const mainReleasedAttachClaimsSchema = z.strictObject({
-    access: z.unknown(),
-    audience: z.literal("opensteer-browser-runtime"),
-    creationOrigin: z.enum(["agent", "person"]),
-    actor: z.enum(["agent", "person"]).optional(),
-    standardCdp: z.unknown().optional(),
-    standardCdpAttempt: z.unknown().optional(),
-    standardCdpLineage: z.unknown().optional(),
-    standardCdpLease: z.unknown().optional(),
-    passkeys: z.literal(1).optional(),
-    navigationVersion: z.literal(1).optional(),
-    wireVersion: z.literal(2),
-    operationExpiresAt: z.string(),
-    remainingBudgetMs: z.number(),
-    initialNavigation: z.unknown().optional(),
-    reattach: z.literal(true).optional(),
-    navigationAttributionVersion: z.literal(1).optional(),
-    editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
-    basicInput: z.literal(1).optional(),
-    surfaceState: z.literal(1).optional(),
-    clipboard: z.boolean().optional(),
-    tabRestoreVersion: z.literal(1).optional(),
-    popupFollowVersion: z.literal(1).optional(),
-    personFillVersion: z.unknown().optional(),
-    initialSurfaceId: z.string().optional(),
-    expiresAt: z.string(),
-    identity: z.unknown(),
-    issuedAt: z.string(),
-    nonce: z.string(),
-    runtimeId: z.string(),
-    sessionId: z.string(),
-    subject: z.string(),
-    viewport: z.unknown().optional(),
-  });
-
-  const keys = generateKeyPairSync("ed25519");
-  const ownerId = createId("user");
-  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const repository = new MemoryBrowserRepository(ownerId);
-  const runnerId = createId("runner");
-  const storage = { storageInstanceId: randomUUID(), engine: "chromium" as const };
-  const profile = await repository.createBrowserProfile({
-    ownerId,
-    name: "Released Linux Chromium",
-  });
-  const memory = memoryTabs();
-  Object.assign(memory.store, {
-    bindPage: async (
-      _ownerId: unknown,
-      id: string,
-      _expectedGeneration: unknown,
-      _previousBinding: unknown,
-      next: {
-        lineageId: BrowserSessionId;
-        sessionId: BrowserSessionId;
-        surfaceId: BrowserSurfaceId;
-      },
-    ) => {
-      const current = memory.rows.get(id);
-      if (!current) return false;
-      current.pageBinding = next;
-      return true;
-    },
-  });
-  const service = new BrowserService({
-    ...nativeProfileOptions(),
-    ...profileStateOptions,
-    connectTimeoutMs: 1_500,
-    repository,
-    signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-    targetResolver: runnerTarget({
-      runnerId,
-      url: runtime.url,
-      tabRestoreVersion: true,
-      localProfileStorage: storage,
-    }),
-    tabs: memory.store,
-    tabPlaces: { write: async () => false, notice: () => {} },
-  });
-  cleanups.push(() => service.close());
-
-  const oldSessionId = createBrowserSessionId();
-  const row = await memory.add({
-    id: BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`),
-    kind: "page",
-    title: "Saved",
-    url: "https://example.com",
-    profileId: profile.id,
-    computerId: runnerId,
-    generation: 1,
-    closedAt: null,
-    pageBinding: {
-      lineageId: oldSessionId,
-      sessionId: oldSessionId,
-      surfaceId: BrowserSurfaceIdSchema.parse(`srf_${randomUUID()}`),
-    },
-  } as never);
-
-  const activating = service.pageTabs.activate(ownerId, row, "activate-released-linux");
-  const settled = activating.then(
-    () => "done" as const,
-    () => "done" as const,
-  );
-  const drain = (async () => {
-    for (;;) {
-      const command = await Promise.race([runtime.nextCommand(), settled]);
-      if (command === "done") break;
-      if (
-        command.type === "cdp.command" &&
-        (command.command as { method?: string } | undefined)?.method === "Opensteer.listTabs"
-      ) {
-        runtime.sendServer({
-          type: "cdp.result",
-          requestId: String(command.requestId),
-          result: { tabs: [], nextCursor: null },
-        });
-      }
-    }
-  })();
-  await activating;
-  await drain;
-
-  const issuedClaims = runtime.lastClaims();
-  expect(issuedClaims).toBeDefined();
-  expect(mainReleasedAttachClaimsSchema.parse(issuedClaims)).toEqual(issuedClaims);
-});
-
 it("sends authoritative sleep state after commit and keeps two viewers and Watch independent of Run holds", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -8257,20 +8001,6 @@ it("admits paged listing and exact resume only inside an agent's own session", a
   await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
     code: "forbidden",
   });
-  // C8: naming a person's saved tab, to claim its restored page, is refused and never forwarded.
-  const beforeNamed = runtime.receivedCommands().length;
-  await expect(
-    cdp.request({
-      method: "Opensteer.openTab",
-      parameters: { surfaceId: "srf_00000000-0000-4000-8000-00000000c801" },
-    }),
-  ).rejects.toMatchObject({ code: "forbidden" });
-  expect(
-    runtime
-      .receivedCommands()
-      .slice(beforeNamed)
-      .some((m) => m.type === "cdp.command" && JSON.stringify(m).includes("Opensteer.openTab")),
-  ).toBe(false);
   cdp.close();
 });
 
