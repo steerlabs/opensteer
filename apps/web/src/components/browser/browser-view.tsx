@@ -6,6 +6,7 @@ import {
   browserRestartFailure,
   browserSiteLabel,
   browserSleepWords,
+  browserNotReady,
   browserStartFailure,
   browserWakeLine,
   restartPooledBrowser,
@@ -674,24 +675,28 @@ export function PlaceBrowserView({
     : [];
 
   const startFailure = browserStartFailure(sleep.browser);
+  // Nothing the person does helps a browser being set up or paused: its words, and no action.
+  const notReady = browserNotReady(sleep.browser);
   const ended = lastingReason
     ? { title: lastingReason, detail: null }
     : startFailure
       ? { title: startFailure.title, detail: startFailure.detail }
-      : activationError
-        ? { title: activationError, detail: null }
-        : dormant
-          ? null
-          : placeEnded(
-              session,
-              tabListed,
-              whole,
-              presentationError ??
-                (viewer.error ? presentClientIssue(viewer.error).title : null) ??
-                retentionError ??
-                mode.error ??
-                nativePresentation.error,
-            );
+      : notReady
+        ? { title: notReady.title, detail: notReady.detail }
+        : activationError
+          ? { title: activationError, detail: null }
+          : dormant
+            ? null
+            : placeEnded(
+                session,
+                tabListed,
+                whole,
+                presentationError ??
+                  (viewer.error ? presentClientIssue(viewer.error).title : null) ??
+                  retentionError ??
+                  mode.error ??
+                  nativePresentation.error,
+              );
   const placement = nativePresentation.placement;
   const geometry = nativeBrowserGeometry(placement);
   const prePaint =

@@ -156,6 +156,12 @@ export interface BrowserPoolCoordinatorOptions {
   readonly onSuspect?: () => void;
   /** How long calls may go unanswered before the target is suspected (two minutes). */
   readonly unansweredMs?: number;
+  /**
+   * How long calls may go unanswered before the report says the browser cannot be reached
+   * (two minutes): until then a wake shows waking; past it, "Browsing paused". Only what is
+   * shown changes: nothing is discarded and no start is counted as failed.
+   */
+  readonly unreachableAfterMs?: number;
   /** Tests lose a commit's reply, a read, or a journal acknowledgement. */
   readonly testHooks?: {
     readonly beginPark?: typeof beginBrowserPoolPark;
@@ -230,6 +236,10 @@ export class BrowserPoolCoordinator {
    * sessions are ended, nothing more is sent to it, and the loop waits for a new target.
    */
   #over: string | undefined;
+  /** Since when every call has gone unanswered (or been refused unsigned): not knowing. */
+  #unknownSince: number | undefined;
+  /** The report says the browser cannot be reached: unknown has lasted past its bound. */
+  #unreachable = false;
   /**
    * The end of an over target's sessions: a step of its own, repeated until it has succeeded
    * (P18). `settle`: holders still sending are settled with their outcomes first (a swap).
@@ -508,6 +518,7 @@ export class BrowserPoolCoordinator {
         }
         if (failing === step.name) failures = 0;
         unanswered = 0;
+        await this.#answered();
         refusals = 0;
         failingSince = undefined;
         suspectedAt = undefined;
@@ -537,22 +548,14 @@ export class BrowserPoolCoordinator {
           continue;
         }
         if (error instanceof BrowserPoolNotStarted) {
+          await this.#answered();
           // Not started, and nothing of the guest lost: asked again later, never a reason to
           // give live state up, and spaced so the host is not asked in a loop.
           const announce = this.#refused?.reason !== error.reason;
           this.#refused = { reason: error.reason, since: this.#refused?.since ?? new Date() };
           // Subscribed clients learn of a refusal when it begins or its reason changes; the
           // announcement has its own bound, and a removal ends it.
-          if (announce)
-            await Promise.resolve()
-              .then(() =>
-                withDatabaseOperationSignal(
-                  AbortSignal.any([changed, AbortSignal.timeout(announceMs)]),
-                  Date.now() + announceMs,
-                  () => announceBrowserPool(this.#options.database),
-                ),
-              )
-              .catch(() => undefined);
+          if (announce) await this.#announce(changed);
           const first = this.#options.refusedRetryMs ?? refusedRetryMs;
           await delay(
             Math.min(first * 2 ** Math.min(refusals++, 16), refusedRetryMaxMs),
@@ -565,17 +568,27 @@ export class BrowserPoolCoordinator {
         }
         if (unknownAnswer(error)) {
           // Not knowing (P18): asked again, later each time; it never counts toward a discard,
-          // and nothing of the guest is given up for it.
-          await delay(
-            Math.min(
-              (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
-              unansweredRetryMaxMs,
-            ),
-            undefined,
-            { signal: changed },
-          ).catch(() => undefined);
+          // and nothing of the guest is given up for it. Past its bound the report says the
+          // browser cannot be reached; a turn falls at the bound so that is said on time.
+          const at = Date.now();
+          this.#unknownSince ??= at;
+          let wait = Math.min(
+            (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
+            unansweredRetryMaxMs,
+          );
+          if (!this.#unreachable) {
+            const left =
+              this.#unknownSince + (this.#options.unreachableAfterMs ?? unreachableAfterMs) - at;
+            if (left <= 0) {
+              this.#unreachable = true;
+              await this.#announce(changed);
+            } else wait = Math.min(wait, left);
+          }
+          await delay(wait, undefined, { signal: changed }).catch(() => undefined);
           continue;
         }
+        // An answer came, even a refusal: the browser can be reached.
+        await this.#answered();
         if (step) {
           failures = failing === step.name ? failures + 1 : 1;
           failing = step.name;
@@ -721,6 +734,14 @@ export class BrowserPoolCoordinator {
     if (past.length) {
       await this.#finishRunning(slot, await this.#lossesOf(slot, past, "not-adopted"));
       for (const sessionId of past) this.#lost.delete(sessionId);
+      return;
+    }
+    // The guest's host is asked first: an answer that does not come is not knowing (and, past
+    // its bound, shown as a browser that cannot be reached); a guest that died or changed is
+    // recovery's, which ends these sessions with that evidence.
+    const status = await this.#status();
+    if (status.phase !== "running" || !sameFence(statusFence(status), fenceOf(slot))) {
+      this.#recovered = false;
       return;
     }
     // The losses this attempt answers: one recorded since is a new loss and stays.
@@ -1550,6 +1571,27 @@ export class BrowserPoolCoordinator {
     }
   }
 
+  /** Tells clients the shown state changed, outside any step: its own bound, and a removal's. */
+  async #announce(changed: AbortSignal): Promise<void> {
+    await Promise.resolve()
+      .then(() =>
+        withDatabaseOperationSignal(
+          AbortSignal.any([changed, AbortSignal.timeout(announceMs)]),
+          Date.now() + announceMs,
+          () => announceBrowserPool(this.#options.database),
+        ),
+      )
+      .catch(() => undefined);
+  }
+
+  /** An answer came: not knowing ends, and a report that said unreachable is taken back. */
+  async #answered(): Promise<void> {
+    this.#unknownSince = undefined;
+    if (!this.#unreachable) return;
+    this.#unreachable = false;
+    await this.#announce(this.#changed.signal);
+  }
+
   /**
    * The phase a client shows: a fresh start or a restart in progress, or a failed start. A start
    * or wake the controller refused carries its reason (`egress-required`,
@@ -1557,16 +1599,32 @@ export class BrowserPoolCoordinator {
    */
   report():
     | {
-        readonly phase: "starting" | "restarting" | "failed";
+        readonly phase: "starting" | "restarting" | "failed" | "waking" | "running" | "parked";
         readonly since: Date;
         readonly refused?: string;
+        /** Calls have gone unanswered past their bound: the browser cannot be reached now. */
+        readonly unreachable?: true;
       }
     | undefined {
+    // A wake asked while nothing answers: the slot is still parked (its phase changes only on
+    // the guest's word), and the person is shown it waking.
+    const unknown = this.#unknownSince === undefined ? undefined : new Date(this.#unknownSince);
+    const waking =
+      unknown && this.gate.demand && this.#slot?.phase === "parked"
+        ? { phase: "waking" as const, since: unknown }
+        : undefined;
+    const shown = this.#display ?? waking;
+    const unreachable = this.#unreachable ? { unreachable: true as const } : {};
     const refused = this.#refused;
-    if (!refused) return this.#display;
+    if (!refused) {
+      if (!this.#unreachable) return shown;
+      const phase = this.#slot?.phase === "parked" ? ("parked" as const) : ("running" as const);
+      return { ...(shown ?? { phase, since: unknown ?? new Date() }), ...unreachable };
+    }
     return {
-      ...(this.#display ?? { phase: "failed" as const, since: refused.since }),
+      ...(shown ?? { phase: "failed" as const, since: refused.since }),
       refused: refused.reason,
+      ...unreachable,
     };
   }
 
@@ -1892,6 +1950,8 @@ const defaultStepMs = 60_000;
 const quiesceMs = 15_000;
 /** The longest wait before an unanswered call is asked again. */
 const unansweredRetryMaxMs = 30_000;
+/** How long nothing may answer before the person is shown that the browser cannot be reached. */
+const unreachableAfterMs = 120_000;
 /** The bound of a refusal's announcement to clients, outside any step. */
 const announceMs = 5_000;
 const restartKeysKept = 64;

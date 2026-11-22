@@ -3,6 +3,7 @@ import { contactSupport } from "../report-mail.js";
 import {
   browserRestartFailure,
   browserSleepWords,
+  browserNotReady,
   browserStartFailure,
   canRespondToRequests,
   placeAgentState,
@@ -1024,6 +1025,10 @@ function BrowserTab(props: {
       />
     );
   }
+  // Nothing the person does helps a browser being set up or paused: its words, and no action.
+  const notReady = browserNotReady(sleep.browser);
+  if (notReady)
+    return <TabStatus detail={notReady.detail} title={notReady.title} waiting={notReady.waiting} />;
 
   if ((live || local) && session !== null)
     return (

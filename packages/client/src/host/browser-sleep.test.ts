@@ -5,6 +5,7 @@ import {
   BrowserReturnNotes,
   browserRestartFailure,
   browserNotPooled,
+  browserNotReady,
   browserSleepFromHome,
   browserSleepWords,
   browserStartFailure,
@@ -319,5 +320,64 @@ describe("a second loss of the same tab", () => {
     expect(notes.note(computer, tab, lost("id-2"))).not.toBeNull();
     notes.seen(computer, tab, lost("id-2"));
     expect(told).toEqual(["id-1", "id-2"]);
+  });
+});
+
+describe("a browser that cannot be used now", () => {
+  const report = (
+    notReady: string | undefined,
+    phase: "running" | "parked" | "waking" = "parked",
+  ) =>
+    browserSleepFromHome(
+      [
+        {
+          runnerId: computer,
+          phase,
+          since,
+          ...(notReady ? { notReady: { reason: notReady } } : {}),
+        },
+      ],
+      computer,
+      tab,
+    ).browser;
+
+  it("is being set up while no browser is placed, and says so as a wait", () => {
+    expect(report("setting-up")).toEqual({ kind: "setting-up", computerId: computer });
+    expect(browserNotReady(report("setting-up"))).toEqual({
+      title: "Setting up your browser…",
+      detail: "This can take a few minutes.",
+      waiting: true,
+    });
+  });
+
+  it("is paused for a missing exit address in the words a Cloud Computer uses for it today", () => {
+    expect(browserNotReady(report("egress-required"))).toEqual({
+      title: "Browsing paused",
+      detail:
+        "Its Browser IP isn’t available. Opensteer keeps trying and waits for this IP before loading pages.",
+      waiting: false,
+    });
+  });
+
+  it.each(["profile-disk-missing", "unreachable", "a-reason-this-client-does-not-know"])(
+    "is paused for %s with its tabs and sign-ins kept, never as a lost profile",
+    (reason) => {
+      expect(report(reason, "running")).toEqual({ kind: "paused", computerId: computer, reason });
+      expect(browserNotReady(report(reason, "running"))).toEqual({
+        title: "Browsing paused",
+        detail:
+          "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+        waiting: false,
+      });
+      expect(browserWakeLine(report(reason), 60_000, { picture: true })).toBeNull();
+      expect(browserStartFailure(report(reason))).toBeNull();
+    },
+  );
+
+  it("keeps today's lines while it wakes or starts", () => {
+    expect(browserNotReady(report(undefined, "waking"))).toBeNull();
+    expect(browserWakeLine(report(undefined, "waking"), 9_000, { picture: false })?.text).toBe(
+      "Taking longer than usual…",
+    );
   });
 });

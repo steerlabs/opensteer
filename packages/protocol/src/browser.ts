@@ -1545,6 +1545,13 @@ export const BrowserPoolReportSchema = z.object({
     )
     .max(500)
     .optional(),
+  /**
+   * Why the browser cannot be used now, while it cannot: `setting-up` (no browser placed yet, or
+   * a new place awaited), `egress-required`, `profile-disk-missing`, `unreachable` (nothing has
+   * answered for long), or a reason this client does not know. Optional; a released client
+   * ignores it.
+   */
+  notReady: z.object({ reason: z.string().min(1).max(64) }).optional(),
 });
 export type BrowserPoolReportView = z.infer<typeof BrowserPoolReportSchema>;
 export const BrowserPoolReportsViewSchema = z.array(BrowserPoolReportSchema).max(129);

@@ -1106,3 +1106,50 @@ it("tells clients of a placement change only when something a person sees change
   await advanceBrowserPoolSlot(p.fixture.database, slot, { phase: "parked" });
   expect(await revision()).toBeGreaterThan(before);
 });
+
+// ---- An unknown that never ends: shown as waiting, then as a browser that cannot be reached ---
+
+it("shows a wake that nothing answers as waking, then as unreachable past its bound, and takes it back when the host answers", async () => {
+  const mounted = await mountedAgentController("slot-unreachable-wake");
+  const p = await pair("unreachable-wake", mounted);
+  const home = p.home(undefined, { extra: { unreachableAfterMs: 600 } });
+  await home.recover();
+  expect(await home.tryPark()).toBe("parked");
+  mounted.answer("unsigned");
+  const asked = Date.now();
+  const wanting = home.gate.reserve(AbortSignal.timeout(60_000));
+  // Before the bound: waking, as any wake looks to the person.
+  await vi.waitFor(() => expect(mounted.unknown()).toBeGreaterThanOrEqual(1));
+  expect(home.report()).toMatchObject({ phase: "waking" });
+  expect(home.report()?.unreachable).toBeUndefined();
+  // Past it: the browser cannot be reached, and the report says so; nothing else changed.
+  await vi.waitFor(() => expect(home.report()?.unreachable).toBe(true), { timeout: 10_000 });
+  expect(Date.now() - asked).toBeGreaterThanOrEqual(600);
+  expect(await p.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
+  expect(p.controller.effects).toEqual(["start", "pause"]);
+  // The host answers again: the same browser wakes, and the report takes it back.
+  mounted.answer("signed");
+  (await wanting).release();
+  expect(p.controller.effects).toEqual(["start", "pause", "resume"]);
+  await vi.waitFor(() => expect(home.report()).toBeUndefined());
+});
+
+it("shows a running browser whose host stopped answering as unreachable past its bound", async () => {
+  const mounted = await mountedAgentController("slot-unreachable-running");
+  const p = await pair("unreachable-running", mounted);
+  const first = p.home();
+  await first.recover();
+  first.close();
+  mounted.answer("unreachable");
+  const next = p.home(undefined, { extra: { unreachableAfterMs: 600 } });
+  const recovering = next.recover();
+  await vi.waitFor(() => expect(next.report()).toMatchObject({ unreachable: true }), {
+    timeout: 10_000,
+  });
+  expect(await p.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+  mounted.answer("signed");
+  await recovering;
+  // Recovery resolves as its step ends; the step's answer then takes the report back.
+  await vi.waitFor(() => expect(next.report()).toBeUndefined());
+  expect(p.controller.effects).toEqual(["start"]);
+});

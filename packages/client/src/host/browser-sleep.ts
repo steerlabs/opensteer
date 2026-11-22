@@ -12,6 +12,7 @@
  * that changes as the wait grows. A page that came back by reloading, or not at all, says so
  * once, in that page.
  */
+import { cloudWords } from "../computers/cloud-computer-copy.js";
 import type { HostSnapshot } from "./client.js";
 
 /* ------------------------------------------------------------------------- *
@@ -76,6 +77,12 @@ export interface BrowserPoolReport {
         readonly typed: BrowserTabTyped;
       }[]
     | undefined;
+  /**
+   * Why the browser cannot be used now: `setting-up` (no browser placed yet, or a new place
+   * awaited), `egress-required`, `profile-disk-missing`, `unreachable` (nothing answered for
+   * long), or one this client does not know. Absent while it can be used.
+   */
+  readonly notReady?: { readonly reason: string } | undefined;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -101,6 +108,13 @@ export type BrowserSleep =
     }
   /** Restarting because the person asked. */
   | { readonly kind: "restarting"; readonly computerId: string; readonly since: string }
+  /** Not placed yet, or placed again: the browser is being set up. Nothing the person does helps. */
+  | { readonly kind: "setting-up"; readonly computerId: string }
+  /**
+   * Cannot be used now and nothing the person does will help: its exit address is missing
+   * (`egress-required`), its host is not ready, or it cannot be reached. Tabs and sign-ins kept.
+   */
+  | { readonly kind: "paused"; readonly computerId: string; readonly reason: string }
   /** Could not start. Tabs and sign-ins are kept. `repeated` from the second failure in a row. */
   | {
       readonly kind: "failed";
@@ -164,6 +178,9 @@ export function browserSleepFromHome(
 function browserOf(report: BrowserPoolReport): BrowserSleep {
   const computerId = report.runnerId;
   const since = report.since;
+  const notReady = report.notReady?.reason;
+  if (notReady === "setting-up") return { kind: "setting-up", computerId };
+  if (notReady) return { kind: "paused", computerId, reason: notReady };
   switch (report.phase) {
     case "running":
     case "preparing":
@@ -287,6 +304,12 @@ export const browserSleepWords = {
   restarting: "Restarting browser…",
   longer: "Taking longer than usual…",
 
+  settingUp: "Setting up your browser…",
+  settingUpDetail: "This can take a few minutes.",
+  paused: "Browsing paused",
+  pausedDetail:
+    "Your Cloud Computer’s browser can’t start right now. Your tabs and sign-ins are kept.",
+
   failedTitle: "Your browser couldn’t start",
   failedDetail: "Your tabs and sign-ins are kept. Try again in a moment.",
   failedRepeatedDetail:
@@ -370,6 +393,34 @@ export function browserTabNote(
         : tab.typed === "unknown"
           ? `This page reloaded because ${restarted.because}. Check anything you were typing.`
           : `This page reloaded because ${restarted.because}.`,
+  };
+}
+
+/**
+ * What a browser that cannot be used now says in place of its page, with no action: nothing the
+ * person does will help. Null for every other browser.
+ */
+export function browserNotReady(browser: BrowserSleep): {
+  readonly title: string;
+  readonly detail: string;
+  /** Under way (being set up): shown as a wait, not a stop. */
+  readonly waiting: boolean;
+} | null {
+  if (browser.kind === "setting-up")
+    return {
+      title: browserSleepWords.settingUp,
+      detail: browserSleepWords.settingUpDetail,
+      waiting: true,
+    };
+  if (browser.kind !== "paused") return null;
+  return {
+    title: browserSleepWords.paused,
+    // The exit address's own sentence, as an ordinary Cloud Computer says it today.
+    detail:
+      browser.reason === "egress-required"
+        ? cloudWords("cloud.ip.pausedDetail")
+        : browserSleepWords.pausedDetail,
+    waiting: false,
   };
 }
 

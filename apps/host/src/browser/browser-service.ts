@@ -6631,8 +6631,17 @@ export class BrowserService {
     const database = (this.#repository as OpensteerStore).database;
     const slot = await readBrowserPoolSlot(database, runnerId);
     const shown = this.#pool(runnerId)?.report();
+    const notReady = poolNotReady(shown);
     // A first start the controller refused has no slot row yet: it is reported all the same.
-    if (!slot && shown) return [{ runnerId, phase: shown.phase, since: shown.since.toISOString() }];
+    if (!slot && shown)
+      return [
+        {
+          runnerId,
+          phase: shown.phase,
+          since: shown.since.toISOString(),
+          ...(notReady ? { notReady } : {}),
+        },
+      ];
     // A removed device's slot waits only for its guest to stop: there is no browser to show.
     if (!slot || slot.phase === "releasing") return [];
     const start = slot.lastStart as { reason?: string; id?: string } | null;
@@ -6669,6 +6678,7 @@ export class BrowserService {
           : {}),
         ...(slot.failedStarts ? { failures: slot.failedStarts } : {}),
         ...(pages.length ? { pages } : {}),
+        ...(notReady ? { notReady } : {}),
       },
     ];
   }
@@ -11229,6 +11239,23 @@ function safeNavigationUrl(value: string): string {
     });
   }
   return url.toString();
+}
+
+/** Reasons the coordinator gives when its target is over: a new one is awaited. */
+const poolOverReasons = new Set(["slot-deleted", "fenced", "browser-replaced"]);
+
+/**
+ * Why a pooled browser cannot be used now, as its report says it: a target that is over is a
+ * browser being set up again; a start the host refused carries its reason; calls unanswered past
+ * their bound mean the browser cannot be reached.
+ */
+function poolNotReady(
+  shown: ReturnType<BrowserPoolCoordinator["report"]>,
+): { readonly reason: string } | undefined {
+  if (shown?.refused)
+    return { reason: poolOverReasons.has(shown.refused) ? "setting-up" : shown.refused };
+  if (shown?.unreachable) return { reason: "unreachable" };
+  return undefined;
 }
 
 /** `promise`, or the signal's reason once it fires first; what it awaits goes on. */
