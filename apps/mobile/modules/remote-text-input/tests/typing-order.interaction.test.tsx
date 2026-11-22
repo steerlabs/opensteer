@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { readFileSync, writeFileSync } from "node:fs";
 import { act, useImperativeHandle } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -41,6 +42,19 @@ const harness = vi.hoisted(() => ({
   answers: [] as (() => void)[],
   /** Every text the proxy rendered: refusals among them. */
   texts: [] as string[],
+  /** A sequence being recorded for the view's own replay (CU2). */
+  recording: null as null | {
+    answers: unknown[];
+    packets: unknown[];
+    steps: {
+      call: unknown[];
+      answers: unknown[];
+      packets: unknown[];
+      text: string;
+      selection: unknown;
+      marked: unknown;
+    }[];
+  },
   /** The far field of the open test, for a generator to look at. */
   remote: null as null | { composition: unknown },
 }));
@@ -160,6 +174,7 @@ async function open(abilities?: EditingTargetAbilities) {
     respond: (instruction) => {
       return new Promise<void>((resolve) =>
         harness.answers.push(() => {
+          harness.recording?.answers.push(instruction as Answer);
           native!.respond(instruction as Answer);
           resolve();
         }),
@@ -171,6 +186,7 @@ async function open(abilities?: EditingTargetAbilities) {
   };
   native = new NativeField((packet) => {
     if (process.env.OPENSTEER_TYPING_TRACE) console.log("    PACKET", JSON.stringify(packet.event));
+    harness.recording?.packets.push(packet);
     harness.field!.deliver(packet);
   });
   native.contextId = context.contextId;
@@ -573,12 +589,30 @@ describe("a person's caret moves and selections in the native field", () => {
     };
     /** The native field has taken every action and every answer: its text is the person's. */
     const settledHere = () => oracle.caughtUp && harness.answers.length === 0;
+    /** For the view's own replay: the call, then what it left and delivered. */
+    const record = (call: unknown[]) => {
+      const recording = harness.recording;
+      if (!recording) return;
+      recording.steps.push({
+        call,
+        answers: recording.answers.splice(0),
+        packets: recording.packets.splice(0),
+        text: native.text,
+        selection: { ...native.selection },
+        marked: native.marked ? { ...native.marked } : null,
+      });
+    };
     const does = async (step: string, act: Action, call: (field: NativeField) => void) => {
       steps.push(step);
       labels.push(step);
       oracle.act(act);
       trace(step);
       await keyboard(call);
+      record(
+        JSON.parse(
+          `[${step.replace(/^(\w+)\((.*)\)$/, '"$1"$2').replace(/^("\w+")(?!$)/, "$1,")}]`,
+        ),
+      );
     };
     const said = JSON.stringify;
     return {
@@ -628,7 +662,8 @@ describe("a person's caret moves and selections in the native field", () => {
         const range = oracle.fromNative({ start, end });
         oracle.choose(caret ? (p) => p.move(distance) : (p) => p.select(range));
         trace(steps.at(-1)!);
-        return keyboard((f) => f.moveSelection(start, end));
+        await keyboard((f) => f.moveSelection(start, end));
+        record(["moveSelection", start, end]);
       },
       /** UIKit's own replacement (an autocorrect), made when the native field has caught up. */
       replaceRange: async (start: number, end: number, word: string, ahead = false) => {
@@ -667,9 +702,10 @@ describe("a person's caret moves and selections in the native field", () => {
           (p) => p.commit(),
           (f) => f.unmarkText(),
         ),
-      answer: (count: number) => {
+      answer: async (count: number) => {
         steps.push(`answer(${count})`);
-        return opened.answer(count);
+        await opened.answer(count);
+        record(["answer", count]);
       },
       /**
        * Everything settles. The promise of regime A, exactly: the far text and caret are the
@@ -677,6 +713,7 @@ describe("a person's caret moves and selections in the native field", () => {
        */
       async check(seed: number | string) {
         await opened.answerAll();
+        record(["answerAll"]);
         const failure = `seed ${seed}: ${steps.join("; ")}`;
         expect(remote.mismatched, failure).toEqual([]);
         expect(remote.refused, `${failure}: refused`).toEqual([]);
@@ -897,6 +934,34 @@ describe("a person's caret moves and selections in the native field", () => {
     await run.replaceRange(0, 0, "the", true);
     await run.check("F5");
     expect(harness.remote).toMatchObject({ value: "thea" });
+  });
+
+  // CU2: regime A's sequences, recorded from the port for the real view's replay
+  // (ios/Tests/Cases/typing-sequences.json, RemoteTextInputReplayTests.swift, which compares every
+  // step on the real view). Here the port must still record exactly what is committed, so the two
+  // compare the same thing; OPENSTEER_TYPING_EXPORT=1 writes it again after a deliberate change.
+  it("records regime A for the view's replay, as committed", async () => {
+    const sequences: unknown[] = [];
+    const run = async (name: string, play: () => Promise<void>) => {
+      harness.recording = { answers: [], packets: [], steps: [] };
+      await play();
+      sequences.push({ name, steps: harness.recording.steps });
+      harness.recording = null;
+    };
+    for (const seed of [32, 4363]) await run(`first ${seed}`, () => sequence(seed));
+    for (const seed of [81, 9944, 4021, 15915, 16868])
+      await run(`second ${seed}`, () => sequence2(seed));
+    for (const seed of [750, 988, 697]) await run(`third ${seed}`, () => sequence2(seed, true));
+    for (let seed = 1; seed <= 300; seed++) await run(`third ${seed}`, () => sequence2(seed, true));
+    const file =
+      // Under this file's DOM environment import.meta.url is not a file URL: the root runs the tests.
+      `${process.cwd()}/apps/mobile/modules/remote-text-input/ios/Tests/Cases/typing-sequences.json`;
+    const recorded = `${JSON.stringify({ about: "Regime A sequences recorded from the TypeScript port (typing-order.interaction.test.tsx); RemoteTextInputReplayTests.swift replays each on the real view and compares every step.", contextId: context.contextId, sequences })}\n`;
+    if (process.env.OPENSTEER_TYPING_EXPORT === "1") writeFileSync(file, recorded);
+    expect(
+      recorded === readFileSync(file, "utf8"),
+      "the port no longer records the committed sequences",
+    ).toBe(true);
   });
 
   // 300 sequences of the third generator a run; OPENSTEER_TYPING_FUZZ_RUNS and _SEED run more,

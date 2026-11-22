@@ -48,3 +48,5 @@ packages/protocol/src/device-wire-v60.fixture.json
 
 # Dependency patches pnpm applies to the plugin engine's packages.
 patches/plugin-engine-*.patch
+# Recorded from the TypeScript port by typing-order.interaction.test.tsx, which compares it byte for byte.
+apps/mobile/modules/remote-text-input/ios/Tests/Cases/typing-sequences.json
