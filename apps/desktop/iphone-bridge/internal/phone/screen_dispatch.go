@@ -158,6 +158,72 @@ func (m *Manager) displayOperation(ctx context.Context, method string, params in
 	}
 	factory, publish, root := m.mediaFactory, m.publishDisplay, m.rootPath
 	m.mu.Unlock()
+	// Non-blocking display control operations (refresh, demand, inputReset, stop)
+	// operate solely on displaySession/pipeline/inputMu and must never serialize
+	// behind a slow agent observe/perform on p.lane.
+	if method == "display.refresh" || method == "display.demand" || method == "display.inputReset" || method == "display.stop" {
+		m.mu.Lock()
+		var session *Session
+		valid := !m.closed && phone != nil && phone.entry.DeviceID != 0 && phone.epoch == ref.NativeEpoch && phone.binding == ref.BindingToken
+		if valid {
+			session = phone.session
+		}
+		m.mu.Unlock()
+		if !valid {
+			if phone == nil {
+				return nil, wire.Fail(wire.NoSession)
+			}
+			return nil, wire.Fail(wire.StaleEpoch)
+		}
+		if session == nil {
+			if method == "display.stop" || method == "display.inputReset" {
+				return wire.Empty{}, nil
+			}
+			return nil, wire.Fail(wire.NoSession)
+		}
+		s := session.screenState()
+		if method == "display.inputReset" || method == "display.stop" {
+			s.abortOwnerBatch(ref, method == "display.stop")
+		}
+		s.displayMu.Lock()
+		d := s.display
+		match := d != nil && d.ref == ref
+		if match {
+			if p, ok := params.(*wire.DisplayDemandParams); ok {
+				if p.MaxLongSide != nil {
+					d.config.MaxLongSide = *p.MaxLongSide
+				}
+				if p.MaxFPS != nil {
+					d.config.MaxFPS = *p.MaxFPS
+				}
+				maxLongSide, maxFPS := d.config.MaxLongSide, d.config.MaxFPS
+				pipeline := d.pipeline
+				s.displayMu.Unlock()
+				pipeline.UpdateDemand(maxLongSide, maxFPS)
+				return wire.Empty{}, nil
+			}
+			if method == "display.refresh" {
+				pipeline := d.pipeline
+				s.displayMu.Unlock()
+				pipeline.RequestKeyframe()
+				return wire.Empty{}, nil
+			}
+		}
+		s.displayMu.Unlock()
+		if !match {
+			if method == "display.stop" || method == "display.inputReset" {
+				return wire.Empty{}, nil
+			}
+			return nil, wire.Fail(wire.StaleEpoch)
+		}
+		switch method {
+		case "display.stop":
+			return wire.Empty{}, s.stopDisplay(&ref)
+		case "display.inputReset":
+			return wire.Empty{}, s.resetOwnerInput()
+		}
+		return wire.Empty{}, nil
+	}
 	call := func(ctx context.Context, phone *localPhone) (interface{}, error) {
 		m.mu.Lock()
 		session := phone.session
@@ -192,11 +258,12 @@ func (m *Manager) displayOperation(ctx context.Context, method string, params in
 			return nil
 		}
 		s := session.screenState()
-		ctx, finish, err := s.begin(ctx)
-		if err != nil {
-			return nil, err
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if closed {
+			return nil, wire.Fail(wire.NoSession)
 		}
-		defer finish()
 		guard := func() error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -214,9 +281,6 @@ func (m *Manager) displayOperation(ctx context.Context, method string, params in
 		match := d != nil && d.ref == ref
 		s.displayMu.Unlock()
 		if !match {
-			if method == "display.stop" || method == "display.inputReset" {
-				return wire.Empty{}, nil
-			}
 			return nil, wire.Fail(wire.StaleEpoch)
 		}
 		switch p := params.(type) {
@@ -235,41 +299,8 @@ func (m *Manager) displayOperation(ctx context.Context, method string, params in
 			}
 			s.invalidateObservation()
 			return wire.Empty{}, s.setPower(ctx, state, p.Action, guard, waitDuration)
-		case *wire.DisplayDemandParams:
-			if p.MaxLongSide != nil {
-				d.config.MaxLongSide = *p.MaxLongSide
-			}
-			if p.MaxFPS != nil {
-				d.config.MaxFPS = *p.MaxFPS
-			}
-			d.pipeline.UpdateDemand(d.config.MaxLongSide, d.config.MaxFPS)
-		case *wire.DisplayRef:
-			switch method {
-			case "display.stop":
-				return wire.Empty{}, s.stopDisplay(&ref)
-			case "display.refresh":
-				d.pipeline.RequestKeyframe()
-			case "display.inputReset":
-				return wire.Empty{}, s.resetOwnerInput()
-			}
 		}
 		return wire.Empty{}, nil
-	}
-	if method == "display.inputReset" || method == "display.stop" {
-		m.mu.Lock()
-		var native *Session
-		if phone != nil && phone.epoch == ref.NativeEpoch && phone.binding == ref.BindingToken {
-			native = phone.session
-		}
-		m.mu.Unlock()
-		if native != nil {
-			native.mu.Lock()
-			screen := native.screen
-			native.mu.Unlock()
-			if screen != nil {
-				screen.abortOwnerBatch(ref, method == "display.stop")
-			}
-		}
 	}
 	var result interface{}
 	err := error(wire.Fail(wire.NoSession))

@@ -24,35 +24,96 @@ type screenBackend interface {
 	Launch(context.Context, string, func() error) error
 }
 type nativeScreen struct {
-	open channelOpener
-	dial ServiceDialer
-	lock func(context.Context) string
-	apps *appCache
+	open      channelOpener
+	dial      ServiceDialer
+	lock      func(context.Context) string
+	apps      *appCache
+	stateConn *warmDeviceInfo
+	procConn  *warmProcesses
 }
 
+const appCacheTTL = 5 * time.Minute
+
 // appCache keeps the installed-app list for front-app labels; it rarely
-// changes, and reading it costs about half a second per call.
+// changes, and reading it costs about half a second per call. Once warm, stale
+// entries refresh asynchronously in the background so privacy monitoring ticks
+// never block or time out on installation_proxy.
 type appCache struct {
-	mu   sync.Mutex
-	apps []InstalledApp
-	at   time.Time
+	life       context.Context
+	mu         sync.Mutex
+	apps       []InstalledApp
+	at         time.Time
+	refreshing bool
+	wait       chan struct{}
+	lastErr    error
 }
 
 func (c *appCache) read(ctx context.Context, dial ServiceDialer) ([]InstalledApp, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.apps != nil && time.Since(c.at) < time.Minute {
-		return c.apps, nil
+	if c.apps != nil {
+		apps := c.apps
+		stale := time.Since(c.at) >= appCacheTTL
+		if stale && !c.refreshing {
+			c.refreshing = true
+			life := c.life
+			if life == nil {
+				life = context.Background()
+			}
+			go func() {
+				bgCtx, cancel := context.WithTimeout(life, 10*time.Second)
+				fresh, err := readInstalledApps(bgCtx, dial)
+				cancel()
+				c.mu.Lock()
+				if err == nil {
+					c.apps, c.at = fresh, time.Now()
+				}
+				c.refreshing = false
+				c.mu.Unlock()
+			}()
+		}
+		c.mu.Unlock()
+		return apps, nil
 	}
+	if c.wait != nil {
+		wait := c.wait
+		c.mu.Unlock()
+		select {
+		case <-wait:
+			c.mu.Lock()
+			apps, err := c.apps, c.lastErr
+			c.mu.Unlock()
+			if apps != nil {
+				return apps, nil
+			}
+			return nil, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	wait := make(chan struct{})
+	c.wait = wait
+	c.mu.Unlock()
+
 	apps, err := readInstalledApps(ctx, dial)
+	c.mu.Lock()
+	if err == nil {
+		c.apps, c.at, c.lastErr = apps, time.Now(), nil
+	} else {
+		c.lastErr = err
+	}
+	c.wait = nil
+	close(wait)
+	c.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	c.apps, c.at = apps, time.Now()
 	return apps, nil
 }
 
 func (n nativeScreen) State(ctx context.Context) (DeviceState, error) {
+	if n.stateConn != nil {
+		return readDeviceStateWarm(ctx, n.stateConn, n.lock)
+	}
 	return readDeviceState(ctx, n.open, n.lock)
 }
 func (n nativeScreen) Capture(ctx context.Context, display string) ([]byte, error) {
@@ -71,6 +132,9 @@ func (n nativeScreen) Capture(ctx context.Context, display string) ([]byte, erro
 	return data, nil
 }
 func (n nativeScreen) Foreground(ctx context.Context) (*Foreground, error) {
+	if n.procConn != nil {
+		return readForegroundWith(ctx, n.procConn.read, n.dial, n.apps.read)
+	}
 	return readForeground(ctx, n.dial, n.apps.read)
 }
 func (n nativeScreen) AX(ctx context.Context) (AXSnapshot, error) {
@@ -154,6 +218,8 @@ func (n nativeScreen) editingReasons() (*wire.Reason, *wire.Reason) {
 type screenSession struct {
 	privacyRevision  uint64
 	ownerBatchCancel context.CancelFunc
+	lifeCancel       context.CancelFunc
+	closeWarm        func()
 	mu               sync.Mutex
 	backend          screenBackend
 	observation      *Observation
@@ -229,7 +295,28 @@ func (s *Session) screenState() *screenSession {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.screen == nil {
-		s.screen = &screenSession{backend: nativeScreen{open: func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }, dial: s, lock: s.readLockState, apps: &appCache{}}, apps: map[string]bool{}, closed: s.closed, visionOCR: s.visionOCR}
+		life, lifeCancel := context.WithCancel(context.Background())
+		opener := func(ctx context.Context, name string) (xpcChannel, error) { return s.OpenXPC(ctx, name) }
+		stateConn := &warmDeviceInfo{life: life, open: opener}
+		procConn := &warmProcesses{life: life, dial: s}
+		s.screen = &screenSession{
+			lifeCancel: lifeCancel,
+			closeWarm: func() {
+				stateConn.close()
+				procConn.close()
+			},
+			backend: nativeScreen{
+				open:      opener,
+				dial:      s,
+				lock:      s.readLockState,
+				apps:      &appCache{life: life},
+				stateConn: stateConn,
+				procConn:  procConn,
+			},
+			apps:      map[string]bool{},
+			closed:    s.closed,
+			visionOCR: s.visionOCR,
+		}
 	}
 	return s.screen
 }
@@ -293,6 +380,12 @@ func (s *screenSession) close() {
 	}
 	_ = s.stopDisplay(nil)
 	s.closeInput()
+	if s.lifeCancel != nil {
+		s.lifeCancel()
+	}
+	if s.closeWarm != nil {
+		s.closeWarm()
+	}
 }
 
 // foregroundChecked reads the front app and reports whether the lookup itself succeeded.

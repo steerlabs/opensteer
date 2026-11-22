@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	reorderWindow  = 32
+	reorderWindow  = 128
 	maxNALsPerUnit = 512
-	reorderDelay   = 30 * time.Millisecond
+	reorderDelay   = 40 * time.Millisecond
 )
 
 var startCode = []byte{0, 0, 0, 1}

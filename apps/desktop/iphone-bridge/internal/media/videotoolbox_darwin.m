@@ -14,6 +14,7 @@ typedef struct OSVideoDecoder {
 
 typedef struct OSVideoEncoder {
     VTCompressionSessionRef session;
+    VTPixelTransferSessionRef transfer;
     int width, height, fps;
 } OSVideoEncoder;
 
@@ -34,6 +35,14 @@ void os_wipe_free(void *data, size_t size) {
     }
 }
 
+void os_pixel_buffer_retain(void *buf) {
+    if (buf) CVPixelBufferRetain((CVPixelBufferRef)buf);
+}
+
+void os_pixel_buffer_release(void *buf) {
+    if (buf) CVPixelBufferRelease((CVPixelBufferRef)buf);
+}
+
 void os_decoder_close(OSVideoDecoder *decoder) {
     if (!decoder) return;
     if (decoder->session) {
@@ -49,6 +58,10 @@ void os_encoder_close(OSVideoEncoder *encoder) {
     if (encoder->session) {
         VTCompressionSessionInvalidate(encoder->session);
         CFRelease(encoder->session);
+    }
+    if (encoder->transfer) {
+        VTPixelTransferSessionInvalidate(encoder->transfer);
+        CFRelease(encoder->transfer);
     }
     free(encoder);
 }
@@ -103,7 +116,10 @@ int os_decoder_configure(OSVideoDecoder **current, int hevc, const uint8_t *para
         }
         decoder->format = format;
         NSDictionary *spec = @{(__bridge NSString *)kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: @YES};
-        NSDictionary *attrs = @{(__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
+        NSDictionary *attrs = @{
+            (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+            (__bridge NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
+        };
         VTDecompressionOutputCallbackRecord callback = {receive_pixels, NULL};
         status = VTDecompressionSessionCreate(NULL, format, (__bridge CFDictionaryRef)spec,
                                               (__bridge CFDictionaryRef)attrs, &callback, &decoder->session);
@@ -116,8 +132,8 @@ int os_decoder_configure(OSVideoDecoder **current, int hevc, const uint8_t *para
     }
 }
 
-int os_decode(OSVideoDecoder *decoder, const uint8_t *data, size_t size,
-              uint8_t **rgba, int *width, int *height) {
+int os_decode_surface(OSVideoDecoder *decoder, const uint8_t *data, size_t size,
+                      void **surfaceOut, int *width, int *height) {
     @autoreleasepool {
         CMBlockBufferRef block = NULL;
         CMSampleBufferRef sample = NULL;
@@ -140,37 +156,66 @@ int os_decode(OSVideoDecoder *decoder, const uint8_t *data, size_t size,
         if (!pixels) return status;
         if (status == noErr) {
             size_t w = CVPixelBufferGetWidth(pixels), h = CVPixelBufferGetHeight(pixels);
-            if (w < 1 || h < 1 || w > MAX_DIMENSION || h > MAX_DIMENSION ||
-                CVPixelBufferGetPixelFormatType(pixels) != kCVPixelFormatType_32BGRA) {
-                status = paramErr;
-            } else {
-                status = CVPixelBufferLockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
-                if (status == noErr) {
-                    const uint8_t *base = CVPixelBufferGetBaseAddress(pixels);
-                    size_t stride = CVPixelBufferGetBytesPerRow(pixels);
-                    uint8_t *dst = malloc(w*h*4);
-                    if (dst) {
-                        for (size_t y = 0; y < h; y++) {
-                            for (size_t x = 0; x < w; x++) {
-                                const uint8_t *src = base + y*stride + x*4;
-                                uint8_t *pixel = dst + (y*w+x)*4;
-                                pixel[0] = src[2];
-                                pixel[1] = src[1];
-                                pixel[2] = src[0];
-                                pixel[3] = 255;
-                            }
-                        }
-                        *rgba = dst;
-                        *width = (int)w;
-                        *height = (int)h;
-                    } else {
-                        status = memFullErr;
-                    }
-                    CVPixelBufferUnlockBaseAddress(pixels, kCVPixelBufferLock_ReadOnly);
-                }
+            if (w < 1 || h < 1 || w > MAX_DIMENSION || h > MAX_DIMENSION) {
+                CVPixelBufferRelease(pixels);
+                return paramErr;
             }
+            *surfaceOut = (void *)pixels;
+            *width = (int)w;
+            *height = (int)h;
+            return noErr;
         }
         CVPixelBufferRelease(pixels);
+        return status;
+    }
+}
+
+int os_surface_to_rgba(void *surface, int dstWidth, int dstHeight, uint8_t **rgbaOut) {
+    @autoreleasepool {
+        if (!surface || dstWidth < 1 || dstHeight < 1 || dstWidth > MAX_DIMENSION || dstHeight > MAX_DIMENSION) {
+            return paramErr;
+        }
+        CVPixelBufferRef src = (CVPixelBufferRef)surface;
+        VTPixelTransferSessionRef transfer = NULL;
+        OSStatus status = VTPixelTransferSessionCreate(NULL, &transfer);
+        if (status != noErr) return status;
+        VTSessionSetProperty(transfer, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Normal);
+
+        CVPixelBufferRef bgra = NULL;
+        status = CVPixelBufferCreate(NULL, (size_t)dstWidth, (size_t)dstHeight, kCVPixelFormatType_32BGRA, NULL, &bgra);
+        if (status == noErr) {
+            status = VTPixelTransferSessionTransferImage(transfer, src, bgra);
+        }
+        VTPixelTransferSessionInvalidate(transfer);
+        CFRelease(transfer);
+        if (status != noErr) {
+            if (bgra) CVPixelBufferRelease(bgra);
+            return status;
+        }
+        status = CVPixelBufferLockBaseAddress(bgra, kCVPixelBufferLock_ReadOnly);
+        if (status == noErr) {
+            const uint8_t *base = CVPixelBufferGetBaseAddress(bgra);
+            size_t stride = CVPixelBufferGetBytesPerRow(bgra);
+            size_t w = (size_t)dstWidth, h = (size_t)dstHeight;
+            uint8_t *dst = malloc(w * h * 4);
+            if (dst) {
+                for (size_t y = 0; y < h; y++) {
+                    const uint8_t *rowSrc = base + y * stride;
+                    uint8_t *rowDst = dst + y * w * 4;
+                    for (size_t x = 0; x < w; x++) {
+                        rowDst[x*4 + 0] = rowSrc[x*4 + 2];
+                        rowDst[x*4 + 1] = rowSrc[x*4 + 1];
+                        rowDst[x*4 + 2] = rowSrc[x*4 + 0];
+                        rowDst[x*4 + 3] = 255;
+                    }
+                }
+                *rgbaOut = dst;
+            } else {
+                status = memFullErr;
+            }
+            CVPixelBufferUnlockBaseAddress(bgra, kCVPixelBufferLock_ReadOnly);
+        }
+        CVPixelBufferRelease(bgra);
         return status;
     }
 }
@@ -193,12 +238,21 @@ static OSStatus configure_encoder(OSVideoEncoder **current, int width, int heigh
     if (!encoder) return memFullErr;
 
     NSDictionary *spec = @{(__bridge NSString *)kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: @YES};
-    NSDictionary *attrs = @{(__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
+    NSDictionary *attrs = @{
+        (__bridge NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (__bridge NSString *)kCVPixelBufferWidthKey: @(width),
+        (__bridge NSString *)kCVPixelBufferHeightKey: @(height),
+        (__bridge NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
+    };
     OSStatus status = VTCompressionSessionCreate(NULL, width, height, kCMVideoCodecType_H264,
                                                  (__bridge CFDictionaryRef)spec, (__bridge CFDictionaryRef)attrs,
                                                  NULL, receive_sample, NULL, &encoder->session);
     if (status == noErr) {
-        int bitrate = MAX(300000, MIN(6000000, width*height*fps/5));
+        status = VTPixelTransferSessionCreate(NULL, &encoder->transfer);
+    }
+    if (status == noErr) {
+        VTSessionSetProperty(encoder->transfer, kVTPixelTransferPropertyKey_ScalingMode, kVTScalingMode_Normal);
+        int bitrate = MAX(600000, MIN(6000000, width*height*fps/6));
         NSDictionary *properties = @{
             (__bridge NSString *)kVTCompressionPropertyKey_RealTime: @YES,
             (__bridge NSString *)kVTCompressionPropertyKey_AllowFrameReordering: @NO,
@@ -266,6 +320,64 @@ static OSStatus copy_h264_sample(CMSampleBufferRef sample, uint8_t **out, size_t
     return noErr;
 }
 
+static OSStatus encode_pixel_buffer(OSVideoEncoder *encoder, CVPixelBufferRef input,
+                                    int width, int height, int fps, uint64_t pts, int force,
+                                    uint8_t **out, size_t *size, int *key) {
+    VTCompressionSessionRef session = encoder->session;
+    CVPixelBufferRef toEncode = input;
+    CVPixelBufferRef pooled = NULL;
+    OSStatus status = noErr;
+
+    size_t srcW = CVPixelBufferGetWidth(input);
+    size_t srcH = CVPixelBufferGetHeight(input);
+    OSType srcFmt = CVPixelBufferGetPixelFormatType(input);
+    if (srcW != (size_t)width || srcH != (size_t)height ||
+        srcFmt != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+        CVPixelBufferPoolRef pool = VTCompressionSessionGetPixelBufferPool(session);
+        if (pool) {
+            status = CVPixelBufferPoolCreatePixelBuffer(NULL, pool, &pooled);
+        } else {
+            NSDictionary *attrs = @{
+                (__bridge NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{}
+            };
+            status = CVPixelBufferCreate(NULL, (size_t)width, (size_t)height,
+                                         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                         (__bridge CFDictionaryRef)attrs, &pooled);
+        }
+        if (status != noErr) return status;
+        status = VTPixelTransferSessionTransferImage(encoder->transfer, input, pooled);
+        if (status != noErr) {
+            CVPixelBufferRelease(pooled);
+            return status;
+        }
+        toEncode = pooled;
+    }
+
+    NSDictionary *options = force ? @{(__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES} : nil;
+    EncodeResult result = {0};
+    status = VTCompressionSessionEncodeFrame(session, toEncode, CMTimeMake(pts, 1000000),
+                                             CMTimeMake(1, fps), (__bridge CFDictionaryRef)options, &result, NULL);
+    if (pooled) CVPixelBufferRelease(pooled);
+    OSStatus waitStatus = VTCompressionSessionCompleteFrames(session, kCMTimeInvalid);
+    if (status == noErr) status = waitStatus;
+    if (status == noErr) status = result.status;
+    if (result.sample) {
+        if (status == noErr) status = copy_h264_sample(result.sample, out, size, key);
+        CFRelease(result.sample);
+    }
+    return status;
+}
+
+int os_encode_surface(OSVideoEncoder **current, void *surface, int width, int height, int fps,
+                      uint64_t pts, int force, uint8_t **out, size_t *size, int *key) {
+    @autoreleasepool {
+        if (!surface) return paramErr;
+        OSStatus status = configure_encoder(current, width, height, fps);
+        if (status != noErr) return status;
+        return encode_pixel_buffer(*current, (CVPixelBufferRef)surface, width, height, fps, pts, force, out, size, key);
+    }
+}
+
 static void wipe_pixel_buffer(void *releaseRefCon, const void *baseAddress) {
     os_wipe_free((void *)baseAddress, (size_t)(uintptr_t)releaseRefCon);
 }
@@ -275,19 +387,18 @@ int os_encode(OSVideoEncoder **current, const uint8_t *rgba, int width, int heig
     @autoreleasepool {
         OSStatus status = configure_encoder(current, width, height, fps);
         if (status != noErr) return status;
-        VTCompressionSessionRef session = (*current)->session;
         size_t stride = (((size_t)width * 4) + 63) & ~(size_t)63;
         size_t totalSize = stride * (size_t)height;
         uint8_t *base = calloc(1, totalSize);
         if (!base) return memFullErr;
         for (int y = 0; y < height; y++) {
+            const uint8_t *rowSrc = rgba + (size_t)y * (size_t)width * 4;
+            uint8_t *rowDst = base + (size_t)y * stride;
             for (int x = 0; x < width; x++) {
-                const uint8_t *src = rgba + ((size_t)y*width+x)*4;
-                uint8_t *dst = base + (size_t)y*stride + (size_t)x*4;
-                dst[0] = src[2];
-                dst[1] = src[1];
-                dst[2] = src[0];
-                dst[3] = 255;
+                rowDst[x*4 + 0] = rowSrc[x*4 + 2];
+                rowDst[x*4 + 1] = rowSrc[x*4 + 1];
+                rowDst[x*4 + 2] = rowSrc[x*4 + 0];
+                rowDst[x*4 + 3] = 255;
             }
         }
         CVPixelBufferRef pixels = NULL;
@@ -298,18 +409,8 @@ int os_encode(OSVideoEncoder **current, const uint8_t *rgba, int width, int heig
             os_wipe_free(base, totalSize);
             return status;
         }
-        NSDictionary *options = force ? @{(__bridge NSString *)kVTEncodeFrameOptionKey_ForceKeyFrame: @YES} : nil;
-        EncodeResult result = {0};
-        status = VTCompressionSessionEncodeFrame(session, pixels, CMTimeMake(pts, 1000000),
-                                                 CMTimeMake(1, fps), (__bridge CFDictionaryRef)options, &result, NULL);
+        status = encode_pixel_buffer(*current, pixels, width, height, fps, pts, force, out, size, key);
         CVPixelBufferRelease(pixels);
-        OSStatus waitStatus = VTCompressionSessionCompleteFrames(session, kCMTimeInvalid);
-        if (status == noErr) status = waitStatus;
-        if (status == noErr) status = result.status;
-        if (result.sample) {
-            if (status == noErr) status = copy_h264_sample(result.sample, out, size, key);
-            CFRelease(result.sample);
-        }
         return status;
     }
 }

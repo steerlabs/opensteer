@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
+	"github.com/danielpaulus/go-ios/ios/xpc"
 	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
@@ -505,3 +506,79 @@ func TestPasteboardMissingChangeCountAndBadSetReply(t *testing.T) {
 		t.Fatalf("failed set reply skipped cleanup: inserted=%v writes=%d", inserted, failedSet.writes)
 	}
 }
+
+func TestDisplayRefreshAndDemandDoNotBlockBehindPhoneLane(t *testing.T) {
+	ctx := context.Background()
+	screen, backend, _ := screenFixture(t)
+	screen.backend = &runtimeScreen{fixtureScreen: backend}
+	root, err := os.MkdirTemp("/tmp", "ib-fast-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	m := NewManager(ctx, nil, nil)
+	defer m.Close()
+	m.rootPath = root
+	session := &Session{screen: screen}
+	phone := &localPhone{id: "fixture", binding: "binding", epoch: 1, session: session, entry: ios.DeviceEntry{DeviceID: 1}, lane: make(chan struct{}, 1), routeCtx: ctx}
+	m.phones["fixture"] = phone
+	var pipeline *fixtureMedia
+	m.SetDisplayBackend(func(_ context.Context, _ *Session, cfg MediaPipelineConfig) (MediaPipeline, error) {
+		pipeline = &fixtureMedia{cfg: cfg}
+		return pipeline, nil
+	}, nil, nil)
+
+	ref := wire.DisplayRef{BindingToken: "binding", NativeEpoch: 1, StreamID: "dsp_c2a11f7c-8568-4d02-80ec-754ae26bb150"}
+	if _, err := m.displayOperation(ctx, "display.start", &wire.DisplayStartParams{DisplayRef: ref, MaxLongSide: 1280, MaxFPS: 30}); err != nil {
+		t.Fatal(err)
+	}
+	screen.display.cancelMonitor()
+	<-screen.display.monitorDone
+
+	// Hold p.lane (simulating an in-flight phone.observe) and verify refresh & demand complete immediately.
+	phone.lane <- struct{}{}
+	defer func() { <-phone.lane }()
+
+	fastCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if _, err := m.displayOperation(fastCtx, "display.refresh", &ref); err != nil {
+		t.Fatalf("display.refresh blocked or failed while lane was held: %v", err)
+	}
+	fps := 60
+	if _, err := m.displayOperation(fastCtx, "display.demand", &wire.DisplayDemandParams{DisplayRef: ref, MaxFPS: &fps}); err != nil {
+		t.Fatalf("display.demand blocked or failed while lane was held: %v", err)
+	}
+	if pipeline.refreshes != 1 || pipeline.profile[1] != 60 {
+		t.Fatalf("expected refresh=1 and fps=60, got refreshes=%d profile=%v", pipeline.refreshes, pipeline.profile)
+	}
+}
+
+func TestAppCacheServesWarmEntriesWithoutBlockingOnRefresh(t *testing.T) {
+	life, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cache := &appCache{
+		life: life,
+		apps: []InstalledApp{{AppID: "com.example.app", Label: "Example"}},
+		at:   time.Now().Add(-10 * time.Minute),
+	}
+	// Passing a blocking dialer verifies warm cache returns immediately while refreshing in background.
+	start := time.Now()
+	got, err := cache.read(context.Background(), stubSlowDialer{})
+	if err != nil || len(got) != 1 || got[0].AppID != "com.example.app" {
+		t.Fatalf("unexpected warm cache result: %+v, err=%v", got, err)
+	}
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("warm cache blocked for %v", time.Since(start))
+	}
+}
+
+type stubSlowDialer struct{}
+
+func (stubSlowDialer) DialService(ctx context.Context, _ string) (net.Conn, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (stubSlowDialer) OpenXPC(ctx context.Context, _ string) (*xpc.Connection, error) {
+	return nil, errors.New("unused")
+}
+func (stubSlowDialer) Close() error { return nil }

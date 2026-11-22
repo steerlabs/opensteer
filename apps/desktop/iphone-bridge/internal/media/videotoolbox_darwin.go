@@ -11,8 +11,12 @@ typedef struct OSVideoDecoder OSVideoDecoder;
 typedef struct OSVideoEncoder OSVideoEncoder;
 void os_decoder_close(OSVideoDecoder *);
 void os_encoder_close(OSVideoEncoder *);
+void os_pixel_buffer_retain(void *);
+void os_pixel_buffer_release(void *);
 int os_decoder_configure(OSVideoDecoder **, int, const uint8_t *, size_t);
-int os_decode(OSVideoDecoder *, const uint8_t *, size_t, uint8_t **, int *, int *);
+int os_decode_surface(OSVideoDecoder *, const uint8_t *, size_t, void **, int *, int *);
+int os_surface_to_rgba(void *, int, int, uint8_t **);
+int os_encode_surface(OSVideoEncoder **, void *, int, int, int, uint64_t, int, uint8_t **, size_t *, int *);
 int os_encode(OSVideoEncoder **, const uint8_t *, int, int, int, uint64_t, int, uint8_t **, size_t *, int *);
 void os_wipe_free(void *, size_t);
 */
@@ -23,8 +27,98 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 )
+
+// vtSurface wraps a reference-counted CoreVideo CVPixelBufferRef so decoded
+// GPU frames can be retained by the latest-frame mailbox and encoded directly
+// via VideoToolbox without ever reading pixels back to CPU memory.
+type vtSurface struct {
+	mu   sync.Mutex
+	buf  unsafe.Pointer
+	refs int
+}
+
+func newVTSurface(buf unsafe.Pointer) *vtSurface {
+	return &vtSurface{buf: buf, refs: 1}
+}
+
+func (s *vtSurface) retain() pictureSurface {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.buf == nil || s.refs <= 0 {
+		return nil
+	}
+	s.refs++
+	return s
+}
+
+func (s *vtSurface) release() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.refs <= 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.refs--
+	var drop unsafe.Pointer
+	if s.refs == 0 {
+		drop = s.buf
+		s.buf = nil
+	}
+	s.mu.Unlock()
+	if drop != nil {
+		C.os_pixel_buffer_release(drop)
+	}
+}
+
+func (s *vtSurface) pointer() unsafe.Pointer {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refs <= 0 {
+		return nil
+	}
+	return s.buf
+}
+
+func (s *vtSurface) toRGBA(width, height int) ([]byte, error) {
+	if s == nil {
+		return nil, errors.New("missing VideoToolbox pixel surface")
+	}
+	if !validDimensions(width, height) {
+		return nil, errors.New("invalid VideoToolbox target dimensions")
+	}
+	// Pin the underlying CVPixelBuffer while C reads it so a concurrent
+	// privacy release cannot drop the last ref mid-transfer.
+	if s.retain() == nil {
+		return nil, errors.New("released VideoToolbox pixel surface")
+	}
+	defer s.release()
+	ptr := s.pointer()
+	if ptr == nil {
+		return nil, errors.New("released VideoToolbox pixel surface")
+	}
+	var out *C.uint8_t
+	status := C.os_surface_to_rgba(ptr, C.int(width), C.int(height), &out)
+	if status != 0 {
+		return nil, fmt.Errorf("VideoToolbox surface conversion: %d", status)
+	}
+	if out == nil {
+		return nil, errors.New("VideoToolbox returned no RGBA pixels")
+	}
+	size := width * height * 4
+	defer C.os_wipe_free(unsafe.Pointer(out), C.size_t(size))
+	return C.GoBytes(unsafe.Pointer(out), C.int(size)), nil
+}
 
 type vtDecoder struct {
 	session *C.OSVideoDecoder
@@ -77,18 +171,16 @@ func (d *vtDecoder) decode(unit accessUnit, codec string) (decodedPicture, error
 	if d.session == nil || d.codec != codec || len(sample) == 0 {
 		return decodedPicture{}, errors.New("VideoToolbox needs a configured keyframe")
 	}
-	var out *C.uint8_t
+	var surface unsafe.Pointer
 	var width, height C.int
-	status := C.os_decode(d.session, cBytes(sample), C.size_t(len(sample)), &out, &width, &height)
+	status := C.os_decode_surface(d.session, cBytes(sample), C.size_t(len(sample)), &surface, &width, &height)
 	if status != 0 {
 		return decodedPicture{}, fmt.Errorf("VideoToolbox decode: %d", status)
 	}
-	if out == nil {
+	if surface == nil {
 		return decodedPicture{}, nil
 	}
-	size := int(width) * int(height) * 4
-	defer C.os_wipe_free(unsafe.Pointer(out), C.size_t(size))
-	return decodedPicture{C.GoBytes(unsafe.Pointer(out), C.int(size)), int(width), int(height)}, nil
+	return decodedPicture{surface: newVTSurface(surface), width: int(width), height: int(height)}, nil
 }
 
 func (e *vtEncoder) close() {
@@ -96,17 +188,41 @@ func (e *vtEncoder) close() {
 	e.session = nil
 }
 
-func (e *vtEncoder) encode(picture decodedPicture, fps int, ptsUs uint64, force bool) (encodedPicture, error) {
-	width, height := picture.width, picture.height
+func (e *vtEncoder) encode(picture decodedPicture, width, height, fps int, ptsUs uint64, force bool) (encodedPicture, error) {
 	if !validDimensions(width, height) || width%2 != 0 || height%2 != 0 ||
-		max(width, height) > 1920 || len(picture.rgba) != width*height*4 || fps < 1 || fps > 60 {
+		max(width, height) > 1920 || fps < 1 || fps > 60 {
 		return encodedPicture{}, errors.New("invalid VideoToolbox encoder input")
 	}
 	var out *C.uint8_t
 	var size C.size_t
 	var key C.int
-	status := C.os_encode(&e.session, cBytes(picture.rgba), C.int(width), C.int(height),
-		C.int(fps), C.uint64_t(ptsUs), boolInt(force), &out, &size, &key)
+	var status C.int
+	if surf, ok := picture.surface.(*vtSurface); ok && surf != nil {
+		if surf.retain() == nil {
+			return encodedPicture{}, errors.New("released VideoToolbox surface")
+		}
+		ptr := surf.pointer()
+		if ptr == nil {
+			surf.release()
+			return encodedPicture{}, errors.New("released VideoToolbox surface")
+		}
+		status = C.os_encode_surface(&e.session, ptr, C.int(width), C.int(height),
+			C.int(fps), C.uint64_t(ptsUs), boolInt(force), &out, &size, &key)
+		surf.release()
+	} else {
+		scaled := scalePicture(picture, width, height)
+		if len(scaled.rgba) != width*height*4 {
+			if scaled.width != picture.width || scaled.height != picture.height {
+				clear(scaled.rgba)
+			}
+			return encodedPicture{}, errors.New("invalid VideoToolbox encoder RGBA input")
+		}
+		status = C.os_encode(&e.session, cBytes(scaled.rgba), C.int(width), C.int(height),
+			C.int(fps), C.uint64_t(ptsUs), boolInt(force), &out, &size, &key)
+		if scaled.width != picture.width || scaled.height != picture.height {
+			clear(scaled.rgba)
+		}
+	}
 	if status != 0 {
 		return encodedPicture{}, fmt.Errorf("VideoToolbox encode: %d", status)
 	}

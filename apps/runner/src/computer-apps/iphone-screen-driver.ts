@@ -1109,7 +1109,8 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           frame.type === "host.integrations.display.power"
         )
           this.#refuseDisplayInput(frame, "unavailable");
-        else this.#failDisplay(active, "capture-failed");
+        else if (frame.type !== "host.integrations.display.refresh")
+          this.#failDisplay(active, "capture-failed");
       });
     this.#track(active.tail);
   }
