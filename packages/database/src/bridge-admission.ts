@@ -27,6 +27,21 @@ export type BridgeSenderAdmission =
  * the bridge's caller and the inbox all ask it; none keeps a query of its own. A message
  * admitted under one revision is refused under another.
  */
+/**
+ * Said by every layer that finds a chat paused while it handles a message: the message is given
+ * back to wait, never dropped. Only the Home's own chat calls ever hear it.
+ */
+export const chatPausedMessage = "This chat is paused: its message waits until it is back.";
+export function chatWaitingError(): OpensteerError {
+  return new OpensteerError({ code: "conflict", message: chatPausedMessage, retryable: true });
+}
+export function isChatWaiting(error: unknown): boolean {
+  return (
+    error instanceof OpensteerError &&
+    error.code === "conflict" &&
+    error.message === chatPausedMessage
+  );
+}
 export async function admitBridgeSender(
   database: Kysely<DatabaseSchema>,
   input: {

@@ -30,39 +30,76 @@ const chatHoldsTasks = sql<boolean>`(agent_connections."grant"->>'scope' = 'ever
 const workHomeActive = sql<boolean>`exists (select 1 from work_home_policy bridge_work
   where bridge_work.singleton and bridge_work.state = 'active')`;
 
-/** The chat account and its channel are not gone, and they are the person's. */
-const chatAccountHeld = sql<boolean>`exists (
+/** The chat account and its channel are not gone. */
+function accountHeld(account: RawBuilder<unknown>) {
+  return sql<boolean>`exists (
+    select 1 from channel_accounts bridge_account
+    join integration_connections bridge_channel
+      on bridge_channel.id = bridge_account.connection_id
+    where bridge_account.id = ${account}
+      and bridge_account.status <> 'revoked'
+      and bridge_channel.status <> 'revoked')`;
+}
+
+/** The chat's account and its channel belong to the person the chat works for. */
+const chatOwnerHolds = sql<boolean>`exists (
   select 1 from channel_accounts bridge_account
   join integration_connections bridge_channel
     on bridge_channel.id = bridge_account.connection_id
   where bridge_account.id = agent_connections.bridge_account_id
-    and bridge_account.status <> 'revoked'
-    and bridge_channel.status <> 'revoked'
     and bridge_channel.owner_user_id = agent_connections.user_id)`;
 
 /**
- * A chat that runs on a computer still has that computer's Messages app at read and send, and
- * the computer itself: its device not removed, its own driver attached, its Runner not revoked.
+ * An account that runs on a computer still has that computer's Messages app at read and send,
+ * and the computer itself: its device not removed, its own driver attached, its Runner not
+ * revoked.
  */
-const chatComputerHeld = sql<boolean>`exists (
-  select 1 from channel_accounts bridge_account
-  join integration_connections bridge_channel
-    on bridge_channel.id = bridge_account.connection_id
-  left join integration_connections bridge_source
-    on bridge_source.id = bridge_channel.source_connection_id
-  where bridge_account.id = agent_connections.bridge_account_id
-    and (bridge_channel.transport_kind <> 'computer' or (
-      bridge_source.status is not null and bridge_source.status <> 'revoked'
-      and bridge_source.computer_access = 'read-write'
-      and bridge_source.owner_user_id = bridge_channel.owner_user_id
-      and exists (
-        select 1 from device_drivers bridge_driver
-        join devices bridge_device on bridge_device.id = bridge_driver.device_id
-        join runners bridge_runner on bridge_runner.id = bridge_driver.runner_id
-        where bridge_driver.device_id = coalesce(bridge_source.device_id, bridge_source.runner_id)
-          and bridge_driver.role = 'self' and bridge_driver.detached_at is null
-          and bridge_device.removed_at is null and bridge_runner.revoked_at is null
-          and bridge_runner.id = bridge_channel.runner_id))))`;
+function computerHeld(account: RawBuilder<unknown>) {
+  return sql<boolean>`exists (
+    select 1 from channel_accounts bridge_account
+    join integration_connections bridge_channel
+      on bridge_channel.id = bridge_account.connection_id
+    left join integration_connections bridge_source
+      on bridge_source.id = bridge_channel.source_connection_id
+    where bridge_account.id = ${account}
+      and (bridge_channel.transport_kind <> 'computer' or (
+        bridge_source.status is not null and bridge_source.status <> 'revoked'
+        and bridge_source.computer_access = 'read-write'
+        and bridge_source.owner_user_id = bridge_channel.owner_user_id
+        and exists (
+          select 1 from device_drivers bridge_driver
+          join devices bridge_device on bridge_device.id = bridge_driver.device_id
+          join runners bridge_runner on bridge_runner.id = bridge_driver.runner_id
+          where bridge_driver.device_id = coalesce(bridge_source.device_id, bridge_source.runner_id)
+            and bridge_driver.role = 'self' and bridge_driver.detached_at is null
+            and bridge_device.removed_at is null and bridge_runner.revoked_at is null
+            and bridge_runner.id = bridge_channel.runner_id))))`;
+}
+
+/** The account is connected and its channel is on. */
+function accountOn(account: RawBuilder<unknown>) {
+  return sql<boolean>`exists (
+    select 1 from channel_accounts bridge_account
+    join integration_connections bridge_channel
+      on bridge_channel.id = bridge_account.connection_id
+    where bridge_account.id = ${account}
+      and bridge_account.status = 'connected'
+      and bridge_channel.status in ('pending', 'connected', 'needs-attention'))`;
+}
+
+/**
+ * Where a chat account stands, the account's part of every chat's state: `ended` when it or its
+ * channel is gone or its computer is; `waiting` while it is paused or needs attention, or its
+ * channel is paused; `live` otherwise. A chat's state is this, unless the chat itself ended.
+ */
+export function chatAccountState(account: RawBuilder<unknown>): RawBuilder<ConnectionState> {
+  return sql<ConnectionState>`(case
+    when not ${accountHeld(account)} or not ${computerHeld(account)} then 'ended'
+    when ${accountOn(account)} then 'live'
+    else 'waiting' end)`;
+}
+
+const chatAccount = sql.ref("agent_connections.bridge_account_id");
 
 export function connectionState(
   database: object,
@@ -77,15 +114,8 @@ export function connectionState(
       else 'ended' end)
     when not ${chatHoldsTasks} then 'ended'
     ${work ? sql`when not ${workHomeActive} then 'ended'` : sql``}
-    when not ${chatAccountHeld} or not ${chatComputerHeld} then 'ended'
-    when exists (
-      select 1 from channel_accounts bridge_account
-      join integration_connections bridge_channel
-        on bridge_channel.id = bridge_account.connection_id
-      where bridge_account.id = agent_connections.bridge_account_id
-        and bridge_account.status = 'connected'
-        and bridge_channel.status in ('pending', 'connected', 'needs-attention')) then 'live'
-    else 'waiting' end)`;
+    when not ${chatOwnerHolds} then 'ended'
+    else ${chatAccountState(chatAccount)} end)`;
 }
 
 /**
@@ -99,8 +129,8 @@ export function chatEndReason(database: object): RawBuilder<BridgeEndedBy> {
   return sql<BridgeEndedBy>`(case
     ${work ? sql`when not ${workHomeActive} then 'work-home'` : sql``}
     when not ${chatHoldsTasks} then 'organization'
-    when not ${chatAccountHeld} then 'account'
-    when not ${chatComputerHeld} then 'computer'
+    when not ${accountHeld(chatAccount)} or not ${chatOwnerHolds} then 'account'
+    when not ${computerHeld(chatAccount)} then 'computer'
     else 'you' end)`;
 }
 

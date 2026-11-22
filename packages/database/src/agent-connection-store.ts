@@ -3,6 +3,7 @@ import { withPersonalTransaction } from "./personal-transaction.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   AgentGrantSchema,
+  agentGrantAllowsTasks,
   OpensteerError,
   agentGrantNarrowed,
   everythingAgentGrant,
@@ -558,9 +559,17 @@ export class AgentConnectionStore {
       .returningAll()
       .executeTakeFirstOrThrow();
     return {
+      // As the list reads it: a chat that had ended, or that this edit left without tasks, is
+      // ending; a paused one is paused.
       connection: view(
         row,
-        row.bridgeAccountId !== null && chatState === "waiting" ? "paused" : "active",
+        row.bridgeAccountId === null
+          ? "active"
+          : chatState === "ended" || !agentGrantAllowsTasks(grant)
+            ? "stopping"
+            : chatState === "waiting"
+              ? "paused"
+              : "active",
       ),
       narrowed,
       changed,

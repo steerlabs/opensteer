@@ -1,7 +1,7 @@
 import type { PersonalInputQueue } from "@opensteer/protocol";
 import type { AuthSessionId } from "@opensteer/core";
 import { assignmentWasCancelled } from "./execution-authority.js";
-import { admitBridgeSender } from "./bridge-admission.js";
+import { admitBridgeSender, chatWaitingError } from "./bridge-admission.js";
 import { writeExecutionItem } from "./execution-changes.js";
 import {
   republishPendingRequestsShowing,
@@ -674,7 +674,7 @@ async function claimFollowUps(
   for (const messageId of ids) {
     const row = lockedById.get(messageId);
     if (!row) continue;
-    if (!eligible) {
+    if (!eligible || !(await chatSenderMaySpeak(transaction, row))) {
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({
@@ -3228,6 +3228,8 @@ async function resolveThreadInputFacts(
           expectedRevision: chat.revision,
         })
       : null;
+    // A chat that went paused while its message was on the way: the message waits for it.
+    if (admitted?.kind === "waiting") throw chatWaitingError();
     const connection =
       admitted?.kind === "admitted"
         ? { id: admitted.connection.agentConnectionId, label: admitted.connection.label }
@@ -3294,6 +3296,15 @@ async function resolveThreadInputFacts(
         kind: "connection",
         connectionId: connection.id,
         userId: input.requestedBy,
+        // Who wrote it, so that it runs only if they may still speak when its turn comes.
+        ...(chat
+          ? {
+              chat: {
+                conversationId: chat.conversationId,
+                externalUserId: chat.sender.externalUserId,
+              },
+            }
+          : {}),
       },
       causalChainId: null,
       kind: "input",
@@ -3851,7 +3862,7 @@ export async function ensureQueuedRun(
             : null,
         )
         .then(
-          () => true,
+          () => chatSenderMaySpeak(transaction, candidate),
           () => false,
         ))
     ) {
@@ -5841,4 +5852,28 @@ async function delegationListsThread(
     .where("runs.id", "=", origin.parentRunId)
     .executeTakeFirstOrThrow();
   return seed.voiceSessionId !== null || MessageAuthorSchema.parse(seed.author).kind === "human";
+}
+
+/**
+ * A chat's queued message runs only if its sender may still speak there when its turn comes: if
+ * "me" was linked to another identity since (the person said the old one is no longer them), or
+ * the chat's senders no longer include them, it is cancelled, silently. A paused chat holds it
+ * (its own check holds the queue first); anything not from a chat is not asked.
+ */
+async function chatSenderMaySpeak(
+  transaction: Transaction<DatabaseSchema>,
+  input: {
+    readonly authoritySource: Readonly<Record<string, unknown>>;
+    readonly connectionId: string | null;
+    readonly requestedBy: UserId;
+  },
+): Promise<boolean> {
+  const chat = input.authoritySource["chat"] as { readonly externalUserId?: unknown } | undefined;
+  if (!chat || typeof chat.externalUserId !== "string" || input.connectionId === null) return true;
+  const admitted = await admitBridgeSender(transaction, {
+    ownerUserId: input.requestedBy,
+    bridgeId: input.connectionId,
+    externalUserId: chat.externalUserId,
+  });
+  return admitted.kind !== "refused";
 }

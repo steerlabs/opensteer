@@ -12,6 +12,7 @@ import { OpensteerError, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { channelSourceAllows, enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { admitBridgeSender } from "./bridge-admission.js";
+import { chatAccountState } from "./connection-liveness.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -159,6 +160,11 @@ export async function decideBridgeIngress(
       await finishIngress(tx, ingress.id, "ignored", reason);
       return { kind: "ignored", reason };
     };
+    // Not taken: its attempt is given back, and it is decided when the chat is back.
+    const giveBack = async (): Promise<BridgeIngressDecision> => {
+      await releaseWaitingIngress(tx, ingress.id);
+      return { kind: "waiting" };
+    };
     const parsed = NormalizedChannelEventSchema.safeParse(ingress.event);
     if (!parsed.success) return ignore("The message could not be read");
     const event = parsed.data;
@@ -174,27 +180,14 @@ export async function decideBridgeIngress(
         await finishIngress(tx, ingress.id, "ignored", "Linked the person's own account");
         return { kind: "linked" };
       }
+      // A code that arrived while the account was paused is redeemed when it is back.
+      if (redeemed === "waiting") return giveBack();
       // A live code that could not link is a code, not a message: nothing runs, nothing is said.
       if (redeemed === "refused") return ignore("The code could not link this account");
     }
 
     const admitted = await admitChatMessage(tx, ingress.accountId, event);
-    if (admitted.kind === "waiting") {
-      // Not taken: its attempt is given back, and it is decided when the chat is back.
-      await tx
-        .updateTable("channelIngressEvents")
-        .set({
-          attempts: sql<number>`greatest(attempts - 1, 0)`,
-          claimExpiresAt: null,
-          claimOwner: null,
-          claimTokenHash: null,
-          status: "pending",
-          updatedAt: new Date(),
-        })
-        .where("id", "=", ingress.id)
-        .executeTakeFirstOrThrow();
-      return { kind: "waiting" };
-    }
+    if (admitted.kind === "waiting") return giveBack();
     if (admitted.kind === "refused") return ignore(admitted.reason);
     const { bridge, conversation } = admitted;
     // Too old to act on: the person who may speak hears that, and may send it again.
@@ -463,12 +456,34 @@ async function finishIngress(
  * Link the account that sent a live code to the person who was shown it. The code is read
  * first, the identity locked next and the code consumed last, in the declared lock order.
  */
+/**
+ * A message whose chat is paused goes back to pending with its attempt given back: it is decided
+ * when the chat is back, and never dropped for the pause. Every layer that hears "waiting" while
+ * handling a message gives it back through this.
+ */
+export async function releaseWaitingIngress(
+  tx: Transaction<DatabaseSchema>,
+  ingressId: ChannelIngressId,
+): Promise<void> {
+  await tx
+    .updateTable("channelIngressEvents")
+    .set({
+      attempts: sql<number>`greatest(attempts - 1, 0)`,
+      claimExpiresAt: null,
+      claimOwner: null,
+      claimTokenHash: null,
+      status: "pending",
+      updatedAt: new Date(),
+    })
+    .where("id", "=", ingressId)
+    .executeTakeFirstOrThrow();
+}
 async function redeemLinkCode(
   tx: Transaction<DatabaseSchema>,
   accountId: ReturnType<typeof ChannelAccountIdSchema.parse>,
   code: string,
   event: NormalizedChannelEvent,
-): Promise<"not-a-code" | "linked" | "refused"> {
+): Promise<"not-a-code" | "linked" | "waiting" | "refused"> {
   const live = () =>
     tx
       .selectFrom("bridgeLinkCodes")
@@ -481,22 +496,15 @@ async function redeemLinkCode(
   // A message that is not a live code is an ordinary message: nothing is locked for it.
   if (!(await live())) return "not-a-code";
   // The account row is held while the code is redeemed, and read again under it: only a
-  // connected account links "me", and a code that waited while it was paused or removed, or
-  // that another redemption took meanwhile, links nothing.
+  // connected account links "me". A code that arrived while the account was paused waits for it
+  // to be back; one on an account that was removed, or that another redemption took meanwhile,
+  // links nothing.
   await lockChatAccount(tx, accountId);
-  const connected = await tx
-    .selectFrom("channelAccounts")
-    .innerJoin(
-      "integrationConnections",
-      "integrationConnections.id",
-      "channelAccounts.connectionId",
-    )
-    .select("channelAccounts.id")
-    .where("channelAccounts.id", "=", accountId)
-    .where("channelAccounts.status", "=", "connected")
-    .where("integrationConnections.status", "in", ["pending", "connected", "needs-attention"])
-    .executeTakeFirst();
-  const pending = connected ? await live() : undefined;
+  const { rows } = await sql<{ state: string }>`
+    select ${chatAccountState(sql`${accountId}::text`)} as state`.execute(tx);
+  const state = rows[0]?.state;
+  if (state === "waiting") return "waiting";
+  const pending = state === "live" ? await live() : undefined;
   if (!pending) return "refused";
   // Every identity this touches, in one ordered lock: the sender's and any linked to the person.
   await tx

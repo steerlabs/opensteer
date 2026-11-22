@@ -6,8 +6,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { jsonValue } from "./store-primitives.js";
-import { connectionState, liveConnection } from "./connection-liveness.js";
-import { wakeChatQueues } from "./thread-store.js";
+import { chatAccountState, connectionState, liveConnection } from "./connection-liveness.js";
 import { noticeDeadChatMessage } from "./bridge-ingress.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -117,16 +116,23 @@ const atIngressLaneHead = sql<boolean>`not exists (
     )
 )`;
 /**
- * The message's chat account is paused (or needs attention), not ended: it waits, unclaimed, and
- * is decided once the account is back.
+ * The message waits, unclaimed, and is decided once its chat is back: asked of the one state
+ * function. It waits while a chat on its account is waiting, or, on an account that is itself
+ * waiting, while a code to link "me" there is live (a code is redeemed only on a connected
+ * account). When every chat on the account has ended and no code waits, it is decided now, and
+ * ignored with the rest.
  */
-const ingressAccountWaiting = sql<boolean>`exists (
-  select 1 from channel_accounts held_account
-  join integration_connections held_channel on held_channel.id = held_account.connection_id
-  where held_account.id = claimable.account_id
-    and held_account.status <> 'revoked' and held_channel.status <> 'revoked'
-    and (held_account.status <> 'connected' or held_channel.status = 'paused')
-)`;
+function ingressWaiting(database: object) {
+  return sql<boolean>`(exists (
+      select 1 from agent_connections
+      where agent_connections.bridge_account_id = claimable.account_id
+        and agent_connections.revoked_at is null
+        and ${connectionState(database)} = 'waiting')
+    or (${chatAccountState(sql.ref("claimable.account_id"))} = 'waiting' and exists (
+      select 1 from bridge_link_codes held_code
+      where held_code.account_id = claimable.account_id
+        and held_code.consumed_at is null and held_code.expires_at > now())))`;
+}
 const retentionMs = 7 * 24 * 60 * 60 * 1_000;
 const deliveryAttemptCeiling = 20;
 const ingressAttemptCeiling = 20;
@@ -399,8 +405,8 @@ export class ChannelStore {
           .execute();
       }),
     );
-    // Back on: what its chats held while it waited goes on, each task in queue order.
-    if (status === "connected") await wakeChatQueues(this.#database, connectionId);
+    // What its chats held while it waited is woken by the service (`ChannelService`), with the
+    // messages that waited: one wake for all three ways a chat comes back.
   }
 
   /**
@@ -615,7 +621,10 @@ export class ChannelStore {
     readonly runnerId: RunnerId;
     readonly reason: import("@opensteer/channel-core").ChannelConnectionIssueKind | null;
     readonly status: "connecting" | "connected" | "needs-attention";
-  }): Promise<void> {
+  }): Promise<{
+    /** The account was not connected (it needed attention) and is now: its chats are back. */
+    readonly back: boolean;
+  }> {
     const status = input.status === "connecting" ? "pending" : input.status;
     const result = await this.#database
       .updateTable("integrationConnections")
@@ -633,18 +642,24 @@ export class ChannelStore {
     if (result.numUpdatedRows !== 1n) {
       throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
     }
-    await this.#database
-      .updateTable("channelAccounts")
-      .set({
-        // Once connected, the transport keeps its own position: where setup
-        // said to start no longer applies (`accountInitialCursor`).
-        ...(status === "connected" ? { metadata: sql`metadata - 'initialCursor'` } : {}),
-        status: status === "needs-attention" ? "needs-attention" : "connected",
-        updatedAt: new Date(),
-      })
-      .where("connectionId", "=", input.connectionId)
-      .where("status", "not in", ["paused", "revoked"])
-      .execute();
+    const accountStatus = status === "needs-attention" ? "needs-attention" : "connected";
+    // Once connected, the transport keeps its own position: where setup said to start no longer
+    // applies (`accountInitialCursor`). The row as it was before is read in the same statement.
+    const { rows } = await sql<{ was: string }>`
+      update channel_accounts as account set
+        metadata = ${
+          status === "connected" ? sql`account.metadata - 'initialCursor'` : sql`account.metadata`
+        },
+        status = ${accountStatus},
+        updated_at = now()
+      from channel_accounts as before
+      where before.id = account.id
+        and account.connection_id = ${input.connectionId}
+        and account.status not in ('paused', 'revoked')
+      returning before.status as was`.execute(this.#database);
+    return {
+      back: accountStatus === "connected" && rows.some(({ was }) => was !== "connected"),
+    };
   }
 
   async commitIngress(
@@ -743,7 +758,7 @@ export class ChannelStore {
             eb("status", "=", "pending"),
             eb.or([
               eb("attempts", ">=", ingressAttemptCeiling),
-              eb.and([atIngressLaneHead, eb.not(ingressAccountWaiting)]),
+              eb.and([atIngressLaneHead, eb.not(ingressWaiting(this.#database))]),
             ]),
           ]),
         ]),
@@ -852,7 +867,7 @@ export class ChannelStore {
         .where("claimable.status", "=", "pending")
         .where("claimable.nextAttemptAt", "<=", now)
         .where(atIngressLaneHead)
-        .where((eb) => eb.not(ingressAccountWaiting))
+        .where((eb) => eb.not(ingressWaiting(transaction)))
         .orderBy("claimable.receivedAt", "asc")
         .orderBy("claimable.id", "asc")
         .limit(1)
@@ -893,7 +908,14 @@ export class ChannelStore {
     id: ChannelIngressId,
     claimToken: string,
     error: string,
-    options: { readonly deferred?: boolean } = {},
+    options: {
+      readonly deferred?: boolean;
+      /**
+       * Its chat is paused: it goes back with its attempt given back and is decided as soon as
+       * the chat is back (it is not claimed while it waits), never dropped for the pause.
+       */
+      readonly waiting?: boolean;
+    } = {},
   ): Promise<void> {
     const observed = await this.#database
       .selectFrom("channelIngressEvents")
@@ -903,17 +925,23 @@ export class ChannelStore {
     const result = await this.#database
       .updateTable("channelIngressEvents")
       .set({
-        ...(options.deferred ? { attempts: sql<number>`greatest(attempts - 1, 0)` } : {}),
+        ...(options.deferred || options.waiting
+          ? { attempts: sql<number>`greatest(attempts - 1, 0)` }
+          : {}),
         claimExpiresAt: null,
         claimOwner: null,
         claimTokenHash: null,
         lastError: error.slice(0, 2_000),
-        nextAttemptAt: new Date(
-          Date.now() +
-            (options.deferred
-              ? ingressDeferralDelayMs(observed?.receivedAt ?? null)
-              : channelRetryDelayMs(observed?.attempts ?? 1, null)),
-        ),
+        ...(options.waiting
+          ? {}
+          : {
+              nextAttemptAt: new Date(
+                Date.now() +
+                  (options.deferred
+                    ? ingressDeferralDelayMs(observed?.receivedAt ?? null)
+                    : channelRetryDelayMs(observed?.attempts ?? 1, null)),
+              ),
+            }),
         status: "pending",
         updatedAt: new Date(),
       })

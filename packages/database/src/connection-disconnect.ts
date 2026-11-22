@@ -897,17 +897,15 @@ export function connectionCdpAttempts(database: Kysely<DatabaseSchema>) {
   return {
     async open(sessionId: BrowserSessionId, id: string, witness: Witness): Promise<void> {
       await commitPersonalMutation(database, async (tx) => {
+        // Only a live connection opens one: a paused or ended chat opens nothing, by the one
+        // state function.
         const connection = await tx
           .selectFrom("agentConnections")
-          .select(["grantRevision", "revokedAt", "expiresAt", "bridgeAccountId"])
+          .select(["grantRevision", liveConnection(tx).as("live")])
           .where("id", "=", witness.connectionId)
           .forShare()
           .executeTakeFirst();
-        if (
-          !connection ||
-          !connectionActive(connection, new Date()) ||
-          connection.grantRevision !== witness.grantRevision
-        )
+        if (!connection || !connection.live || connection.grantRevision !== witness.grantRevision)
           throw new Error("This browser authority has ended");
         const changed = await tx
           .updateTable("browserSessions")

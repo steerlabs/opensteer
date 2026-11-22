@@ -1,4 +1,8 @@
-import { commitPersonalMutation, threadPendingRequestsCount } from "./personal-mutation.js";
+import {
+  commitPersonalMutation,
+  threadPendingRequestsCount,
+  wakeExecutionCommands,
+} from "./personal-mutation.js";
 import { closeAgentOperationRequestsAboveMode } from "./agent-session-store.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
@@ -1634,7 +1638,9 @@ export async function updateThreadExecutionSelection(
 /**
  * A chat that is back wakes the work it held: each task in its lineage with a message waiting
  * starts it, in queue order, each in its own transaction (the task first, then what its Run
- * needs, as any queued Run is started).
+ * needs, as any queued Run is started); and its Runs that were held, unlisted, while it waited
+ * are listed again (the dispatcher is woken once). The Home's messages that waited are woken by
+ * the service with this (`ChannelService`).
  */
 export async function wakeChatQueues(
   database: Kysely<DatabaseSchema>,
@@ -1667,6 +1673,7 @@ export async function wakeChatQueues(
         .executeTakeFirst();
       if (thread) await ensureQueuedRun(transaction, thread);
     });
+  await commitPersonalMutation(database, (transaction) => wakeExecutionCommands(transaction));
 }
 
 export async function resumeThreadInputQueue(

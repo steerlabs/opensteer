@@ -454,7 +454,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         runConnectionId !== null &&
         (await this.#store.connectionWaiting(command.requestedBy, runConnectionId))
       )
-        throw new CommandDispatchError("Its chat is paused; this waits until it is back.", "retry");
+        throw chatRunHeld();
       throw new CommandDispatchError(
         error instanceof OpensteerError ? error.message : "This task's access ended.",
         "failed",
@@ -768,14 +768,22 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const dispatch = {
       beforeSend: async () => {
         if (authority.agentConnection) {
-          await this.#assertPlannedAuthority(context.run, authority);
-          await this.#store.recordConnectionRunHandoff({
-            runId: context.run.id,
-            bindingGeneration: binding.bindingGeneration,
-            connectionId: authority.agentConnection.agentConnectionId,
-            grantRevision: authority.agentConnection.grantRevision,
-            mode: authority.mode,
-          });
+          const connectionId = authority.agentConnection.agentConnectionId;
+          try {
+            await this.#assertPlannedAuthority(context.run, authority);
+            await this.#store.recordConnectionRunHandoff({
+              runId: context.run.id,
+              bindingGeneration: binding.bindingGeneration,
+              connectionId,
+              grantRevision: authority.agentConnection.grantRevision,
+              mode: authority.mode,
+            });
+          } catch (error) {
+            // Paused while the Run was being prepared: held for the chat, as at the first check.
+            if (await this.#store.connectionWaiting(command.requestedBy, connectionId))
+              throw chatRunHeld();
+            throw error;
+          }
         }
         await this.#store.assertActiveGrant({
           bindingGeneration: binding.bindingGeneration,
@@ -1143,4 +1151,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     await this.#store.succeedCommand(command.id);
   }
+}
+
+/** A Run of a paused chat waits for the chat: no failure, no error, no timer; its resume wakes it. */
+function chatRunHeld(): CommandDispatchError {
+  return new CommandDispatchError("Its chat is paused; this waits until it is back.", "held");
 }

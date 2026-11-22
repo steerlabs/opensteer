@@ -13,11 +13,14 @@ import {
 } from "@opensteer/channel-core";
 import {
   AgentConnectionStore,
+  chatPausedMessage,
   ChannelStore,
   declineBridgeIngress,
   decideBridgeIngress,
   recordBridgeIngress,
+  isChatWaiting,
   startBridgeOwnerLink,
+  wakeChatQueues,
   type OpensteerStore,
 } from "@opensteer/database";
 import {
@@ -94,6 +97,17 @@ export class ChannelService {
 
   wake(): void {
     this.#drains.wake();
+  }
+
+  /**
+   * A chat account is back: everything its chats held while they waited goes on. Its waiting
+   * messages are decided, each task's waiting inputs start in queue order, and its Runs that
+   * were held are dispatched. The one wake, for each way a chat comes back: the person resumes
+   * it, a check of the account succeeds, or the runtime reports it healthy again.
+   */
+  async #wakeHeld(connectionId: string): Promise<void> {
+    await wakeChatQueues(this.#store.database, connectionId);
+    this.wake();
   }
 
   /**
@@ -383,6 +397,7 @@ export class ChannelService {
       return accountMismatch ? { ...inspection, issues: [issue!], ready: false } : inspection;
     }
     await this.#channels.setConnectionStatus(connectionId, ownerUserId, "connected");
+    await this.#wakeHeld(connectionId);
     await this.#syncRuntime(connection.runnerId);
     return inspection;
   }
@@ -393,12 +408,9 @@ export class ChannelService {
     status: "connected" | "paused" | "revoked",
     administration?: AdministrationCommandIdentity | undefined,
   ): Promise<void> {
-    await this.#channels.setConnectionStatus(
-      IntegrationConnectionIdSchema.parse(connectionId),
-      ownerUserId,
-      status,
-      administration,
-    );
+    const parsed = IntegrationConnectionIdSchema.parse(connectionId);
+    await this.#channels.setConnectionStatus(parsed, ownerUserId, status, administration);
+    if (status === "connected") await this.#wakeHeld(parsed);
     if (status === "revoked") this.#onAccountEnded();
     await this.syncRuntimes();
     this.#onChanged();
@@ -610,12 +622,14 @@ export class ChannelService {
       case "delivery.finish":
         await this.finishDelivery(request.payload);
         return {};
-      case "connection.health":
-        await this.#channels.setRuntimeConnectionHealth({
+      case "connection.health": {
+        const { back } = await this.#channels.setRuntimeConnectionHealth({
           ...request.payload,
           runnerId,
         });
+        if (back) await this.#wakeHeld(request.payload.connectionId);
         return {};
+      }
     }
   }
 
@@ -692,6 +706,7 @@ export class ChannelService {
     try {
       caller = await resolve();
     } catch (error) {
+      if (isChatWaiting(error)) return this.#giveBack(claim);
       if (!(error instanceof OpensteerError)) throw error;
       await this.#channels.markIngressIgnored(claim.id, claim.claimToken, error.message);
       return;
@@ -720,6 +735,8 @@ export class ChannelService {
         await call("opensteer_task_interrupt", { taskId: decision.taskId });
       }
     } catch (error) {
+      // Its chat was paused on the way: the message waits for it, and is decided when it is back.
+      if (isChatWaiting(error)) return this.#giveBack(claim);
       // Refused for what it is (no longer admitted, not found, not allowed): nothing runs, and
       // nothing is said in the chat. Anything else is retried with the same operation key.
       if (
@@ -746,6 +763,16 @@ export class ChannelService {
       claimToken: claim.claimToken,
       conversationId: decision.conversationId,
       taskId: taskId!,
+    });
+  }
+
+  /**
+   * Its chat is paused: the message goes back with its attempt given back, is not claimed while
+   * the chat waits, and is decided as soon as it is back. Never dropped for the pause.
+   */
+  async #giveBack(claim: ClaimedChannelIngress): Promise<void> {
+    await this.#channels.releaseIngress(claim.id, claim.claimToken, chatPausedMessage, {
+      waiting: true,
     });
   }
 

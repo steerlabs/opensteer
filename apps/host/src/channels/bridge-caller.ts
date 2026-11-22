@@ -1,5 +1,10 @@
 import { OpensteerError, type UserId } from "@opensteer/core";
-import { admitBridgeSender, type BridgeChatSource, type OpensteerStore } from "@opensteer/database";
+import {
+  admitBridgeSender,
+  chatWaitingError,
+  type BridgeChatSource,
+  type OpensteerStore,
+} from "@opensteer/database";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
 
 /**
@@ -21,6 +26,7 @@ export async function resolveBridgeCaller(
     externalUserId: input.chat.sender.externalUserId,
     expectedRevision: input.chat.revision,
   });
+  if (admitted.kind === "waiting") throw chatWaitingError();
   if (admitted.kind !== "admitted")
     throw new OpensteerError({
       code: "forbidden",

@@ -62,6 +62,7 @@ import {
   type Run,
 } from "@opensteer/core";
 import { type InsertObject, type Transaction, sql, type Kysely } from "kysely";
+import { connectionState } from "./connection-liveness.js";
 import {
   jsonValue,
   threadExecutionIsAvailableToUser,
@@ -1414,42 +1415,60 @@ export async function listPendingCommands(
   database: Kysely<DatabaseSchema>,
   limit = 500,
 ): Promise<readonly PendingCommandRow[]> {
-  return database
-    .selectFrom("commands")
-    .leftJoin("threads", "threads.id", "commands.threadId")
-    .leftJoin("runs", "runs.id", "commands.runId")
-    .selectAll("commands")
-    .select("runs.harnessInstanceId as runHarnessInstanceId")
-    .where("commands.status", "=", "pending")
-    .where("runs.finishIntent", "is", null)
-    .where((expression) =>
-      expression.or([
-        expression("commands.type", "!=", "run.execute"),
-        expression.and([
-          expression("threads.inputQueuePaused", "=", false),
-          expression("runs.status", "=", "queued"),
+  return (
+    database
+      .selectFrom("commands")
+      .leftJoin("threads", "threads.id", "commands.threadId")
+      .leftJoin("runs", "runs.id", "commands.runId")
+      .selectAll("commands")
+      .select("runs.harnessInstanceId as runHarnessInstanceId")
+      .where("commands.status", "=", "pending")
+      .where("runs.finishIntent", "is", null)
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "run.execute"),
+          expression.and([
+            expression("threads.inputQueuePaused", "=", false),
+            expression("runs.status", "=", "queued"),
+          ]),
         ]),
-      ]),
-    )
-    .where((expression) =>
-      expression.or([
-        expression("commands.type", "!=", "run.execute"),
-        expression.not(
-          expression.exists(
-            expression
-              .selectFrom("runs as predecessor")
-              .innerJoin("runs as candidate", "candidate.threadId", "predecessor.threadId")
-              .select("predecessor.id")
-              .whereRef("candidate.id", "=", "commands.runId")
-              .whereRef("predecessor.runOrdinal", "<", "candidate.runOrdinal")
-              .where("predecessor.status", "in", nonTerminalRunStatuses),
+      )
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "run.execute"),
+          expression.not(
+            expression.exists(
+              expression
+                .selectFrom("runs as predecessor")
+                .innerJoin("runs as candidate", "candidate.threadId", "predecessor.threadId")
+                .select("predecessor.id")
+                .whereRef("candidate.id", "=", "commands.runId")
+                .whereRef("predecessor.runOrdinal", "<", "candidate.runOrdinal")
+                .where("predecessor.status", "in", nonTerminalRunStatuses),
+            ),
           ),
-        ),
-      ]),
-    )
-    .orderBy("commands.createdAt", "asc")
-    .limit(Math.min(Math.max(limit, 1), 20_000))
-    .execute();
+        ]),
+      )
+      // A Run of a paused chat waits for the chat, not for time: it is not listed until it is back.
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "run.execute"),
+          expression("runs.connectionId", "is", null),
+          expression.not(chatRunHeld(database)),
+        ]),
+      )
+      .orderBy("commands.createdAt", "asc")
+      .limit(Math.min(Math.max(limit, 1), 20_000))
+      .execute()
+  );
+}
+/** The Run works for a chat that is paused: asked of the one state function. */
+function chatRunHeld(database: object) {
+  return sql<boolean>`exists (
+    select 1 from agent_connections
+    where agent_connections.id = runs.connection_id
+      and agent_connections.bridge_account_id is not null
+      and ${connectionState(database)} = 'waiting')`;
 }
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,

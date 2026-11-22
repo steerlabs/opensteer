@@ -5,6 +5,7 @@ import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { describeStore, testMessagingRunnerId } from "./store.integration.test-support.js";
 
 /**
@@ -56,6 +57,130 @@ describeStore("a chat is live, waiting or ended, and every layer reads which", (
         claimToken: claimed!.claimToken,
       }),
     ).toMatchObject({ kind: "work", text: "Do this later" });
+  });
+
+  it('gives back a code to link "me" that was taken just before a pause, and links it when the chat is back', async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("state-code");
+    const { channels, configured, fixture } = bridge;
+    const { database } = storeFixture;
+    const { decideBridgeIngress, startBridgeOwnerLink } = await import("./bridge-ingress.js");
+    const { code } = await startBridgeOwnerLink(database, {
+      userId: fixture.userId,
+      accountId: configured.account.id,
+    });
+    const claimed = await bridge.claim({
+      eventId: "code",
+      text: code,
+      externalUserId: "U-NEW-PHONE",
+    });
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    expect(
+      await decideBridgeIngress(database, {
+        ingressId: claimed.id,
+        claimToken: claimed.claimToken,
+      }),
+    ).toEqual({ kind: "waiting" });
+    expect(
+      await database
+        .selectFrom("channelIngressEvents")
+        .select(["status", "attempts"])
+        .where("id", "=", claimed.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "pending", attempts: 0 });
+    // It waits, unclaimed, while the account is paused; back, it links.
+    expect(await channels.claimIngress("state-code")).toBeNull();
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+    const again = await channels.claimIngress("state-code");
+    expect(again?.id).toBe(claimed.id);
+    expect(
+      await decideBridgeIngress(database, { ingressId: again!.id, claimToken: again!.claimToken }),
+    ).toEqual({ kind: "linked" });
+  });
+
+  it("decides a message that waited for a paused chat once that chat ends some other way", async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("state-paused-ended");
+    const { channels, configured, fixture } = bridge;
+    const { database } = storeFixture;
+    const committed = await channels.commitIngress(
+      configured.connection.id,
+      bridge.event({ eventId: "held", text: "Do this later" }),
+    );
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    expect(await channels.claimIngress("state-ended")).toBeNull();
+    // The person disconnects the chat while its account stays paused: nothing waits for it.
+    await new AgentConnectionStore(database).revoke(fixture.userId, bridge.bridge.id);
+    const claimed = await channels.claimIngress("state-ended");
+    expect(claimed?.id).toBe(committed.ingressId);
+    const { decideBridgeIngress } = await import("./bridge-ingress.js");
+    expect(
+      await decideBridgeIngress(database, {
+        ingressId: claimed!.id,
+        claimToken: claimed!.claimToken,
+      }),
+    ).toMatchObject({ kind: "ignored" });
+  });
+
+  it("opens no standard CDP attempt for a paused chat", async ({ storeFixture }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("state-cdp");
+    const { database, store } = storeFixture;
+    const { grantRevision } = await database
+      .selectFrom("agentConnections")
+      .select("grantRevision")
+      .where("id", "=", bridgeId!)
+      .executeTakeFirstOrThrow();
+    await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+    await expect(
+      store.connectionCdpAttempts().open(`bsn_${randomUUID()}` as never, "attempt", {
+        connectionId: bridgeId!,
+        grantRevision,
+        mode: "approval-required",
+        threadId: null,
+      }),
+    ).rejects.toThrow("This browser authority has ended");
+  });
+
+  // A person's own message on a chat's task takes the task's lineage (thread-inbox.ts,
+  // `executionConnectionId`), so the chat's Disconnect set holds it.
+  it("cancels the person's own queued message on a chat's task when the chat ends", async ({
+    storeFixture,
+  }) => {
+    const bridge = await storeFixture.createBridgeFixture("state-own-input");
+    const { database, store } = storeFixture;
+    const { fixture } = bridge;
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const enqueue = (key: string) =>
+      store.enqueueThreadInput({
+        requestedBy: fixture.userId,
+        threadId: fixture.thread.id,
+        content: [{ type: "text", text: key }],
+        source: { kind: "human" },
+        policy: "queue",
+        idempotencyKey: key,
+      });
+    const first = await enqueue("state-own-first");
+    await startPersonalQueuedRunFixture(store, first.run!.id);
+    const own = await enqueue("state-own-second");
+    const state = async () =>
+      (
+        await database
+          .selectFrom("threadInputs")
+          .select("state")
+          .where("messageId", "=", own.input.messageId)
+          .executeTakeFirstOrThrow()
+      ).state;
+    expect(await state()).toBe("pending");
+    await new AgentConnectionStore(database).revoke(fixture.userId, bridge.bridge.id);
+    await store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });
+    expect(await state()).toBe("cancelled");
   });
 
   it("ends when the organization's work Home is offboarding: nothing more is enqueued, sent or handed off", async ({

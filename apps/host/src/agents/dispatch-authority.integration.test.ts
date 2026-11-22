@@ -3,17 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readPluginSnapshot, pluginSnapshotDigest } from "@opensteer/agent-plugins";
 import type { AgentGrant, ThreadAccessMode } from "@opensteer/core";
-import { AgentConnectionStore, TriggerStore } from "@opensteer/database";
+import { AgentConnectionStore, TriggerStore, wakeChatQueues } from "@opensteer/database";
 import {
   createStoreFixture,
   describeStore,
   testReadyHarnessCatalog,
 } from "@opensteer/database/test-support/store";
-import { CommandDispatchError, type RunnerRegistry } from "@opensteer/orchestration";
+import {
+  CommandDispatchError,
+  ExecutionCoordinator,
+  type RunnerRegistry,
+} from "@opensteer/orchestration";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import type { RunnerCommand } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import {
   packageStillGranted,
   PluginPackageService,
@@ -318,10 +322,127 @@ describeStore("a connected agent's authority at the send", (it) => {
         () => null,
         (error: unknown) => error,
       );
-    // Nothing is sent, and the Run is tried again later rather than failed.
+    // Nothing is sent, and the Run is held for its chat rather than failed or retried on a timer.
     expect(sent).toEqual([]);
     expect(failure).toBeInstanceOf(CommandDispatchError);
-    expect((failure as CommandDispatchError).disposition).toBe("retry");
+    expect((failure as CommandDispatchError).disposition).toBe("held");
+  });
+
+  it("holds a chat's Run paused while it is being prepared: no failure, no error, no timer, until the chat is back", async ({
+    storeFixture,
+  }) => {
+    const { bridgeId, channels, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("dispatch-planning");
+    const { database, store } = storeFixture;
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridgeId })
+      .where("id", "=", fixture.thread.id)
+      .execute();
+    const queued = await store.enqueueThreadInput({
+      requestedBy: fixture.userId,
+      threadId: fixture.thread.id,
+      content: [{ type: "text", text: "From the chat" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "dispatch-planning",
+    });
+    if (!queued.run || !queued.command) throw new Error("Expected a queued Run");
+    // The person pauses the chat while the Run is being prepared, after the first check.
+    let pauseWhilePlanning = true;
+    const sent: RunnerCommand[] = [];
+    const host = dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      {
+        planning: async () => {
+          if (!pauseWhilePlanning) return;
+          pauseWhilePlanning = false;
+          await channels.setConnectionStatus(configured.connection.id, fixture.userId, "paused");
+        },
+      },
+      sent,
+      [],
+    );
+    const errors: unknown[] = [];
+    const timers: number[] = [];
+    let dispatches = 0;
+    let listings = 0;
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async (command, signal) => {
+          dispatches += 1;
+          await host.dispatch(command, signal);
+        },
+      },
+      dispatcherId: "dispatch-planning",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 1_000_000,
+      maxQueuedCommands: 10,
+      store: {
+        claimCommand: (...args) => store.claimCommand(...args),
+        failCommand: (...args) => store.failCommand(...args),
+        markSteerUnknown: (...args) => store.markSteerUnknown(...args),
+        retryCommand: (...args) => store.retryCommand(...args),
+        listPendingCommands: async (...args) => {
+          const listed = await store.listPendingCommands(...args);
+          listings += 1;
+          return listed;
+        },
+      },
+      onDispatchError: (error) => errors.push(error),
+      clock: {
+        now: Date.now,
+        schedule: (callback, milliseconds) => {
+          timers.push(milliseconds);
+          const timer = setTimeout(callback, milliseconds);
+          return () => clearTimeout(timer);
+        },
+      },
+    });
+    const run = () =>
+      database
+        .selectFrom("runs")
+        .innerJoin("commands", "commands.runId", "runs.id")
+        .select(["runs.status as run", "commands.status as command"])
+        .where("commands.id", "=", queued.command!.id)
+        .executeTakeFirstOrThrow();
+    coordinator.start();
+    try {
+      await vi.waitFor(async () => {
+        expect(dispatches).toBe(1);
+        expect(await run()).toEqual({ run: "queued", command: "pending" });
+      }, 20_000);
+      // Woken again while the chat waits, it is not taken again: nothing is listed for it.
+      expect((await store.listPendingCommands()).map(({ id }) => id)).not.toContain(
+        queued.command.id,
+      );
+      const before = listings;
+      coordinator.wake();
+      await vi.waitFor(() => expect(listings).toBeGreaterThan(before), 20_000);
+      expect(dispatches).toBe(1);
+      expect(sent).toEqual([]);
+      expect(errors).toEqual([]);
+      expect(timers).toEqual([]);
+      // No failure, and nothing said in the chat.
+      expect(
+        await database
+          .selectFrom("bridgeDeliveries")
+          .select("id")
+          .where("bridgeId", "=", bridgeId!)
+          .execute(),
+      ).toEqual([]);
+      // The chat is back: what it held is woken, and the Run is sent.
+      await channels.setConnectionStatus(configured.connection.id, fixture.userId, "connected");
+      await wakeChatQueues(database, configured.connection.id);
+      coordinator.wake();
+      await vi.waitFor(() => expect(sent).toHaveLength(1), 20_000);
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop();
+    }
   });
 
   it("ends a connected Run locally when revoke wins before its handoff stamp", async ({

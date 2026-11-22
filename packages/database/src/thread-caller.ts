@@ -12,12 +12,13 @@ import {
 import type { Kysely, Transaction } from "kysely";
 import {
   bindingAgentConnectionId,
+  connectionWaiting,
   lineageEndedMessage,
   liveAgentConnection,
   tasksWithdrawnMessage,
   type AgentConnectionAuthority,
 } from "./resource-access.js";
-import { admitBridgeSender } from "./bridge-admission.js";
+import { admitBridgeSender, chatWaitingError } from "./bridge-admission.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -165,6 +166,13 @@ export async function assertThreadCaller(
     try {
       lineage = await liveAgentConnection(tx, caller.userId, lineageId);
     } catch {
+      // A chat's message that finds its chat paused waits for it; it is not refused.
+      if (
+        caller.kind === "connection" &&
+        caller.chat &&
+        (await connectionWaiting(tx, caller.userId, lineageId))
+      )
+        throw chatWaitingError();
       throw forbidden(
         caller.kind === "connection"
           ? "The connected agent credential is invalid or expired."
@@ -172,17 +180,20 @@ export async function assertThreadCaller(
       );
     }
     if (!agentGrantAllowsTasks(lineage.grant)) throw forbidden(tasksWithdrawnMessage);
+    const sender =
+      caller.kind === "connection" && caller.chat
+        ? await admitBridgeSender(tx, {
+            ownerUserId: caller.userId,
+            bridgeId: caller.connectionId,
+            externalUserId: caller.chat.externalUserId,
+            expectedRevision: caller.chat.revision,
+          })
+        : null;
+    if (sender?.kind === "waiting") throw chatWaitingError();
     if (
       caller.kind === "connection" &&
       caller.chat &&
-      ((
-        await admitBridgeSender(tx, {
-          ownerUserId: caller.userId,
-          bridgeId: caller.connectionId,
-          externalUserId: caller.chat.externalUserId,
-          expectedRevision: caller.chat.revision,
-        })
-      ).kind !== "admitted" ||
+      (sender?.kind !== "admitted" ||
         !(await tx
           .selectFrom("bridgeConversations")
           .select("id")
