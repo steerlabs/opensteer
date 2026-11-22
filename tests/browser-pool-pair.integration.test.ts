@@ -38,6 +38,12 @@ import {
   testSessionFilesRoot,
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import { readBrowserPoolSlot } from "../packages/database/src/browser-pool-store.js";
+import {
+  createBrowserSession,
+  getBrowserSessionForOwner,
+  transitionBrowserSession,
+} from "../packages/database/src/browser-session-store.js";
+import { BrowserSessionIdSchema } from "../packages/protocol/src/browser.js";
 import { createStoreFixture } from "../packages/database/src/store.integration.test-support.js";
 import { createPoolController } from "./browser-pool-controller-under-test.test-support.js";
 import { FakeHypervisorDriver } from "../apps/pool-agent/src/fake-driver.test-support.js";
@@ -266,6 +272,8 @@ async function pair(key: string, mounted?: Awaited<ReturnType<typeof mountedAgen
     options: {
       /** Runs before every read of the runtime's state; a throw is a read that failed. */
       readingState?: () => Promise<void>;
+      /** While false, every controller call fails as a pool host that cannot be reached. */
+      reachable?: () => boolean;
       /** Runs before a runtime control is handed to the runtime, which then gets it as sent. */
       sending?: (control: BrowserPoolControl) => Promise<void>;
       /** The runtime's own answer to each control it was handed, whoever still waits for it. */
@@ -289,13 +297,21 @@ async function pair(key: string, mounted?: Awaited<ReturnType<typeof mountedAgen
           ? crash.pass(`runtime:${control.kind}`, () => deliver(control, signature))
           : deliver(control, signature),
     };
+    const reach = <T>(call: () => Promise<T>) =>
+      options.reachable && !options.reachable()
+        ? Promise.reject(new Error("The pool host cannot be reached."))
+        : call();
     const port: BrowserPoolPhysicalController = crash
       ? {
           status: (slot, term) => crash.pass("status", () => controller.status(slot, term)),
           result: (slot, term, id) => crash.pass("result", () => controller.result(slot, term, id)),
           apply: (call) => crash.pass(call.kind, () => controller.apply(call)),
         }
-      : controller;
+      : {
+          status: (slot, term) => reach(() => controller.status(slot, term)),
+          result: (slot, term, id) => reach(() => controller.result(slot, term, id)),
+          apply: (call) => reach(() => controller.apply(call)),
+        };
     const coordinator = new BrowserPoolCoordinator({
       database: fixture.database,
       runnerId: task.runnerId,
@@ -317,6 +333,8 @@ async function pair(key: string, mounted?: Awaited<ReturnType<typeof mountedAgen
     times: (kind: string) => answeredAt.filter((entry) => entry.kind === kind).map(({ at }) => at),
     home,
     slot: () => readBrowserPoolSlot(fixture.database, task.runnerId),
+    fixture,
+    task,
     runtime: () => runtime,
     status: () => controller.status(slotId, 1),
   };
@@ -515,4 +533,37 @@ it("keeps a parked browser whose wake from disk the agent refuses for a missing 
   (await waiting).release();
   expect(p.controller.effects).toEqual(["start", "pause", "resume"]);
   expect((await p.slot())?.phase).toBe("running");
+});
+
+// ---- P7: removal closes a stopped session only with the guest's end ----------------------------
+
+it("keeps a stopped session closing through a removal until the guest is known stopped", async () => {
+  const p = await pair("removal-closing");
+  let reachable = true;
+  const home = p.home(undefined, { reachable: () => reachable });
+  await home.recover();
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  await createBrowserSession(p.fixture.database, {
+    id: sessionId,
+    ownerId: p.task.userId,
+    opener: { kind: "person", userId: p.task.userId },
+    origin: "person",
+    placementKey: "pool-test",
+    profileId: null,
+    runnerId: p.task.runnerId,
+    runtimeId: "pool-runtime",
+  });
+  await transitionBrowserSession(p.fixture.database, { sessionId, state: "ready" });
+  await transitionBrowserSession(p.fixture.database, { sessionId, state: "closing" });
+  // The pool host cannot be reached: the removal begins, and nothing shows the guest stopped.
+  reachable = false;
+  await home.releaseDevice();
+  const state = async () =>
+    (await getBrowserSessionForOwner(p.fixture.database, sessionId, p.task.userId))?.state;
+  expect(await state()).toBe("closing");
+  // Reached again: the guest is stopped with evidence, and only then is the session closed.
+  reachable = true;
+  await home.released();
+  expect((await p.status()).phase).toBe("stopped");
+  expect(await state()).toBe("closed");
 });

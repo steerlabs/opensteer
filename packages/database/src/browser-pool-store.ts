@@ -303,6 +303,8 @@ async function recordBrowserPoolLosses(
   tx: Kysely<DatabaseSchema>,
   slot: BrowserPoolSlot,
   losses: readonly BrowserPoolSessionLoss[],
+  /** False when the guest's end is not known yet (a removal's start): closing rows stay. */
+  guestEnded = true,
 ): Promise<void> {
   if (losses.length) {
     const ownerId = await readBrowserPoolOwner(tx);
@@ -341,8 +343,11 @@ async function recordBrowserPoolLosses(
     const ended = new Set(
       losses.filter((loss) => loss.endSession !== false).map(({ sessionId }) => sessionId),
     );
-    // One a Stop left closing is answered by this end: it closed, as the person asked.
-    for (const { id, state } of sessions.filter(({ id }) => ended.has(id)))
+    // One a Stop left closing is answered by this end: it closed, as the person asked. Without
+    // the guest's end it stays closing; the removal's finish closes it.
+    for (const { id, state } of sessions.filter(
+      ({ id, state }) => ended.has(id) && (guestEnded || state !== "closing"),
+    ))
       await transitionBrowserSession(tx, {
         from: ["starting", "ready", "closing"],
         sessionId: id,
@@ -393,7 +398,7 @@ export async function beginBrowserPoolRelease(
         .where("runnerId", "=", slot.runnerId)
         .returningAll()
         .executeTakeFirst(databaseOperationOptions());
-      await recordBrowserPoolLosses(tx, slot, losses);
+      await recordBrowserPoolLosses(tx, slot, losses, false);
       return released;
     },
     undefined,
@@ -450,6 +455,17 @@ export async function finishBrowserPoolRelease(
             relays.map(({ id }) => id),
           )
           .execute(databaseOperationOptions());
+
+      // The guest is known stopped: a session a Stop left closing has its end now.
+      const closing = await tx
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("runnerId", "=", runnerId)
+        .where("state", "=", "closing")
+        .orderBy("id")
+        .execute(databaseOperationOptions());
+      for (const { id } of closing)
+        await transitionBrowserSession(tx, { from: ["closing"], sessionId: id, state: "closed" });
     },
     undefined,
     "non-retrying",
