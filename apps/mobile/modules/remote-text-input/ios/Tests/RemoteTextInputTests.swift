@@ -354,5 +354,36 @@ import UIKit
     let types = field.packets[settled...].compactMap { ($0["event"] as? [String: Any])?["type"] as? String }
     XCTAssertEqual(types, [])
   }
+
+  // The walk's caret variant (b): a tap on the misspelled "helloab" in the typing field selected
+  // it, and "!" replaced it on both sides (the field's accessibility value was "!"). The field's
+  // text and caret are invisible: no underline marks a word, and a tap while editing changes no
+  // selection; a long press still opens the edit menu, for Paste.
+  func testTheHiddenFieldMarksNoWordAndATapWhileEditingSelectsNothing() {
+    let view = RemoteInputTextView()
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    XCTAssertEqual(view.spellCheckingType, .no)
+    XCTAssertNotEqual(view.autocorrectionType, .no)
+    XCTAssertFalse(RemoteInputTextView.letsTouchBegin(UITapGestureRecognizer(), editing: true))
+    XCTAssertTrue(RemoteInputTextView.letsTouchBegin(UITapGestureRecognizer(), editing: false))
+    XCTAssertTrue(RemoteInputTextView.letsTouchBegin(UILongPressGestureRecognizer(), editing: true))
+  }
+
+  // The walk's variant (b) as the native field took it: the selected word, then "!" typed over it.
+  // The selection is reported, with the text it was made in, before the keystroke that replaces
+  // it, so the far side can restate exactly the text it passes over.
+  func testASelectionIsReportedBeforeTheKeystrokeTypedOverIt() {
+    let field = Field(settled: "helloab")
+    let settled = field.packets.count
+    field.select(NSRange(location: 0, length: 7))
+    field.view.insertText("!")
+    field.answerAll()
+    let events = field.packets[settled...].compactMap { $0["event"] as? [String: Any] }
+    XCTAssertEqual(events.compactMap { $0["type"] as? String }, ["selection", "beforeinput", "input"])
+    let selection = events[0]["proxy"] as? [String: Any]
+    XCTAssertEqual(selection?["value"] as? String, "helloab")
+    XCTAssertEqual([selection?["selectionStart"] as? Int, selection?["selectionEnd"] as? Int], [0, 7])
+    XCTAssertEqual(field.view.text, "!")
+  }
 }
 #endif

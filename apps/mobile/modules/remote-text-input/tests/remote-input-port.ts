@@ -1,4 +1,4 @@
-import type { EditingProxyInstruction } from "@opensteer/client/editing";
+import type { EditingOperation, EditingProxyInstruction } from "@opensteer/client/editing";
 
 /*
  * A TypeScript port of ios/Core/RemoteInputEdits.swift (Edits), RemoteInputGate.swift and
@@ -28,7 +28,7 @@ export interface Span {
 }
 
 /** The composed characters (grapheme clusters) of `text`, as UTF-16 spans. */
-function characters(text: string): Span[] {
+export function characters(text: string): Span[] {
   return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(
     ({ index, segment }) => ({ start: index, end: index + segment.length }),
   );
@@ -400,4 +400,72 @@ export class NativeField {
     this.edits.choose(moved);
     this.report(() => this.event({ type: "selection", proxy: this.snapshot(this.range(moved)) }));
   }
+}
+
+/**
+ * The far side: a page's text field as packages/browser-runtime-core's editing observer applies
+ * operations to it (editingOwner.prepare, the control path). An edit is taken only where the
+ * field's own text matches its `before` and `after` around a collapsed caret, replaces exactly
+ * that span and leaves the caret after its text; anything else is refused. A caret command moves
+ * by one grapheme, as Blink's moveBackward and moveForward do. Paste inserts at the caret.
+ */
+export class FarField {
+  value = "";
+  caret = 0;
+  composition: Span | null = null;
+  refused: EditingOperation[] = [];
+  /** Every operation the field was sent, in order. */
+  sent: EditingOperation[] = [];
+  take = (operation: EditingOperation): boolean => {
+    this.sent.push(operation);
+    switch (operation.kind) {
+      case "edit": {
+        const { before = "", after = "", text } = operation.edit;
+        const range = this.composition ?? {
+          start: this.caret - before.length,
+          end: this.caret + after.length,
+        };
+        if (
+          !this.composition &&
+          (range.start < 0 ||
+            this.value.slice(range.start, this.caret) !== before ||
+            this.value.slice(this.caret, range.end) !== after)
+        ) {
+          this.refused.push(operation);
+          return false;
+        }
+        this.value = this.value.slice(0, range.start) + text + this.value.slice(range.end);
+        this.caret = range.start + text.length;
+        this.composition = null;
+        return true;
+      }
+      case "compose": {
+        const { before = "", after = "", text } = operation.composition;
+        const range = this.composition ?? {
+          start: this.caret - before.length,
+          end: this.caret + after.length,
+        };
+        this.value = this.value.slice(0, range.start) + text + this.value.slice(range.end);
+        this.composition = text ? { start: range.start, end: range.start + text.length } : null;
+        this.caret = range.start + text.length;
+        return true;
+      }
+      case "command":
+        if (operation.command === "moveBackward")
+          this.caret = this.caret > 0 ? characterAt(this.value, this.caret - 1).start : 0;
+        else if (operation.command === "moveForward")
+          this.caret =
+            this.caret < this.value.length ? characterAt(this.value, this.caret).end : this.caret;
+        return true;
+      case "paste": {
+        const item = operation.items.find((candidate) => candidate.type === "text/plain");
+        const text = item ? new TextDecoder().decode(item.bytes) : "";
+        this.value = this.value.slice(0, this.caret) + text + this.value.slice(this.caret);
+        this.caret += text.length;
+        return true;
+      }
+      default:
+        return true;
+    }
+  };
 }

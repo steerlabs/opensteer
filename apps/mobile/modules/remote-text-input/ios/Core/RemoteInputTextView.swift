@@ -34,6 +34,16 @@ import UniformTypeIdentifiers
   public convenience init() { self.init(frame: .zero, textContainer: nil) }
   required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
   public func respond(_ instruction: [String: Any]) { gate.respond(instruction) }
+  /// The field's text and caret are invisible, so a touch while it is editing must not select or
+  /// move anything in it: a tap on a word selected it, and the next keystroke replaced it on both
+  /// sides. A tap still focuses the field when it is not editing; a long press still opens the
+  /// edit menu, for Paste. The person moves the caret on the page, or with the keyboard.
+  static func letsTouchBegin(_ recognizer: UIGestureRecognizer, editing: Bool) -> Bool {
+    !(editing && recognizer is UITapGestureRecognizer)
+  }
+  public override func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+    Self.letsTouchBegin(recognizer, editing: isFirstResponder) && super.gestureRecognizerShouldBegin(recognizer)
+  }
   private func snapshot(selection: NSRange? = nil) -> [String: Any] {
     let selection = selection ?? selectedRange
     var state: [String: Any] = ["value": text ?? "", "selectionStart": selection.location, "selectionEnd": selection.location + selection.length]
@@ -279,7 +289,8 @@ import UniformTypeIdentifiers
       isEditable = nextTraits.editable
       isSecureTextEntry = nextTraits.sensitive
       autocorrectionType = nextTraits.allowsSuggestions ? .default : .no
-      spellCheckingType = nextTraits.allowsSuggestions ? .default : .no
+      // No spelling marks in a field whose text nobody sees: iOS selects a marked word on a tap.
+      spellCheckingType = .no
       if #available(iOS 17.0, *) {
         inlinePredictionType = nextTraits.keyboardMayReplaceText ? .default : .no
       }

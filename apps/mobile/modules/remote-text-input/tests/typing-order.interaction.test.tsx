@@ -1,9 +1,15 @@
 // @vitest-environment happy-dom
 import { act, useImperativeHandle } from "react";
-import type { EditingOperation } from "@opensteer/client/editing";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NativeField, type Answer, type Packet, type Proxy } from "./remote-input-port.js";
+import {
+  characters,
+  FarField,
+  NativeField,
+  type Answer,
+  type Packet,
+  type Proxy,
+} from "./remote-input-port.js";
 
 /*
  * Text typed into a remote page arrives in the order typed, at any speed. The walk typed
@@ -17,64 +23,8 @@ import { NativeField, type Answer, type Packet, type Proxy } from "./remote-inpu
  * over it.
  */
 
-/** The remote field: it takes an edit only where its own text says it goes. */
-class RemoteField {
-  value = "";
-  caret = 0;
-  composition: { start: number; end: number } | null = null;
-  refused: EditingOperation[] = [];
-  /** Every operation the field was sent, in order. */
-  sent: EditingOperation[] = [];
-  take = (operation: EditingOperation): boolean => {
-    this.sent.push(operation);
-    switch (operation.kind) {
-      case "edit": {
-        const { before = "", after = "", text } = operation.edit;
-        const range = this.composition ?? {
-          start: this.caret - before.length,
-          end: this.caret + after.length,
-        };
-        if (
-          !this.composition &&
-          (this.value.slice(range.start, this.caret) !== before ||
-            this.value.slice(this.caret, range.end) !== after)
-        ) {
-          this.refused.push(operation);
-          return false;
-        }
-        this.value = this.value.slice(0, range.start) + text + this.value.slice(range.end);
-        this.caret = range.start + text.length;
-        this.composition = null;
-        return true;
-      }
-      case "compose": {
-        const { before = "", after = "", text } = operation.composition;
-        const range = this.composition ?? {
-          start: this.caret - before.length,
-          end: this.caret + after.length,
-        };
-        this.value = this.value.slice(0, range.start) + text + this.value.slice(range.end);
-        this.composition = text ? { start: range.start, end: range.start + text.length } : null;
-        this.caret = range.start + text.length;
-        return true;
-      }
-      case "command":
-        if (operation.command === "moveBackward") this.caret = Math.max(0, this.caret - 1);
-        else if (operation.command === "moveForward")
-          this.caret = Math.min(this.value.length, this.caret + 1);
-        return true;
-      case "paste": {
-        const item = operation.items.find((candidate) => candidate.type === "text/plain");
-        const text = item ? new TextDecoder().decode(item.bytes) : "";
-        this.value = this.value.slice(0, this.caret) + text + this.value.slice(this.caret);
-        this.caret += text.length;
-        return true;
-      }
-      default:
-        return true;
-    }
-  };
-}
+/** The remote field: the page's own applier, as the port models it. */
+class RemoteField extends FarField {}
 
 const harness = vi.hoisted(() => ({
   field: null as null | {
@@ -383,4 +333,139 @@ describe("typing into a remote field", () => {
     expect(native.text).toBe("abce");
     expect(remote.value).toBe("abce");
   });
+});
+
+// The walk's caret variants, as the native field took them (its accessibility value after each
+// attempt): the far side ends with the native text and caret either way.
+describe("a person's caret moves and selections in the native field", () => {
+  async function settled(text: string) {
+    const opened = await open();
+    for (const character of text) await opened.keyboard((field) => field.type(character));
+    await opened.answerAll();
+    return opened;
+  }
+  const same = (remote: RemoteField, native: NativeField) => {
+    expect(remote.refused).toEqual([]);
+    expect(remote.value).toBe(native.text);
+    if (native.selection.start === native.selection.end)
+      expect(remote.caret).toBe(native.selection.start);
+  };
+
+  it("(a) a tap that leaves the caret where it was: the character goes there on both sides", async () => {
+    const { remote, native, keyboard, answerAll } = await settled("hello");
+    await keyboard((field) => field.moveSelection(5));
+    await keyboard((field) => field.insertText("!"));
+    await answerAll();
+    expect(native.text).toBe("hello!");
+    same(remote, native);
+  });
+
+  it("(b) a tap that selects the misspelled word: typing replaces it on both sides", async () => {
+    const { remote, native, keyboard, answer, answerAll } = await settled("hello");
+    await keyboard((field) => field.insertText("a"));
+    await keyboard((field) => field.insertText("b"));
+    await answer(2);
+    await keyboard((field) => field.moveSelection(0, 7));
+    await keyboard((field) => field.insertText("!"));
+    await answerAll();
+    expect(native.text).toBe("!");
+    same(remote, native);
+  });
+
+  it("moves the far caret to a caret put in the middle, and types there", async () => {
+    const { remote, native, keyboard, answerAll } = await settled("hello");
+    await keyboard((field) => field.moveSelection(2));
+    await keyboard((field) => field.insertText("X"));
+    await answerAll();
+    expect(native.text).toBe("heXllo");
+    same(remote, native);
+  });
+
+  it("types over a range the person selected", async () => {
+    const { remote, native, keyboard, answerAll } = await settled("hello");
+    await keyboard((field) => field.moveSelection(1, 4));
+    await keyboard((field) => field.insertText("X"));
+    await answerAll();
+    expect(native.text).toBe("hXo");
+    same(remote, native);
+  });
+
+  /*
+   * The family's structural test: random sequences of typing (UIKit's insertText and the
+   * delegate), Backspace (the delegate) and deleteBackward, the person's caret moves and range
+   * selections, with the answers arriving late and in random numbers. After everything settles,
+   * the far field holds the native text, and the native caret where it is a caret.
+   */
+  const random = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const alphabet = ["a", "b", "é", " ", "👩‍💻"];
+  /** One seeded sequence, through the real proxy, reducer and port, to a settled comparison. */
+  async function sequence(seed: number) {
+    const next = random(seed);
+    const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
+    const steps: string[] = [];
+    const { remote, native, keyboard, answer, answerAll } = await open();
+    const length = 1 + Math.floor(next() * 24);
+    for (let step = 0; step < length; step++) {
+      const boundaries = [0, ...characters(native.text).map(({ end }) => end)];
+      const choice = next();
+      if (choice < 0.3) {
+        const character = pick(alphabet);
+        steps.push(`insertText(${JSON.stringify(character)})`);
+        await keyboard((field) => field.insertText(character));
+      } else if (choice < 0.45) {
+        const character = pick(alphabet);
+        steps.push(`type(${JSON.stringify(character)})`);
+        await keyboard((field) => field.type(character));
+      } else if (choice < 0.55) {
+        steps.push("backspace()");
+        await keyboard((field) => field.backspace());
+      } else if (choice < 0.62) {
+        steps.push("deleteBackward()");
+        await keyboard((field) => field.deleteBackward());
+      } else if (choice < 0.74) {
+        const at = pick(boundaries);
+        steps.push(`moveSelection(${at})`);
+        await keyboard((field) => field.moveSelection(at));
+      } else if (choice < 0.8) {
+        const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
+        steps.push(`moveSelection(${start}, ${end})`);
+        await keyboard((field) => field.moveSelection(start!, end!));
+      } else {
+        const count = 1 + Math.floor(next() * 3);
+        steps.push(`answer(${count})`);
+        await answer(count);
+      }
+    }
+    await answerAll();
+    const failure = `seed ${seed}: ${steps.join("; ")}`;
+    expect(remote.refused, failure).toEqual([]);
+    expect(remote.value, failure).toBe(native.text);
+    if (native.selection.start === native.selection.end)
+      expect(remote.caret, failure).toBe(native.selection.start);
+    await act(async () => root.render(null));
+    harness.answers = [];
+    harness.mounted = false;
+  }
+
+  // What the random sequences found, kept: seed 32, a prevented Backspace on an empty field whose
+  // suppression swallowed a later deletion; seed 4363, a replacement next to a repeated character
+  // the reducer could not verify, refused and the field cleared.
+  it.each([32, 4363])("replays the sequence the random test found at seed %i", (seed) =>
+    sequence(seed),
+  );
+
+  // 300 sequences a run; OPENSTEER_TYPING_FUZZ_RUNS and _SEED run more, 300 to a test.
+  const runs = Number(process.env.OPENSTEER_TYPING_FUZZ_RUNS ?? 300);
+  const firstSeed = Number(process.env.OPENSTEER_TYPING_FUZZ_SEED ?? 1);
+  for (let chunk = firstSeed; chunk < firstSeed + runs; chunk += 300) {
+    const last = Math.min(chunk + 300, firstSeed + runs) - 1;
+    it(`keeps the far field equal to the native one over random sequences ${chunk} to ${last}`, async () => {
+      for (let seed = chunk; seed <= last; seed++) await sequence(seed);
+    });
+  }
 });
