@@ -2468,6 +2468,10 @@ class ElectronDebuggerHub {
   /** Each channel screencasting, with the parameters it asked for, in the order they started. */
   readonly #renderingOwners = new Map<ElectronCdpChannel, number>();
   readonly #screencastOwners = new Map<ElectronCdpChannel, Record<string, unknown> | undefined>();
+  /** The cast's latest frame, for an owner that joins it: a still page sends no other. */
+  #lastScreencastFrame: Record<string, unknown> | null = null;
+  /** Frames whose ack Chromium has had: it hears one a frame, whoever of the owners saw it. */
+  readonly #ackedScreencastFrames = new Set<unknown>();
   readonly #webContents: WebContents;
   readonly #setRenderingDemand: (demanded: boolean) => void;
   readonly #prepareInput: () => Promise<void>;
@@ -2550,6 +2554,7 @@ class ElectronDebuggerHub {
       const pageEvent = this.#agentWorlds.observe(method, record);
       if (method.startsWith("Runtime.executionContext"))
         for (const channel of this.#channels) channel.observeContextEvent(method, record);
+      if (method === "Page.screencastFrame") this.#lastScreencastFrame = record;
       const recipients =
         method === "Page.screencastFrame"
           ? [...this.#screencastOwners.keys()]
@@ -2833,15 +2838,26 @@ class ElectronDebuggerHub {
       return this.#serializeOwnership(async () => {
         const generation = this.#rendererGeneration;
         const casting = this.#screencastOwners.size > 0;
+        const running = this.#deciding()?.[1];
         const restarted = this.#screencastOwners.has(channel);
         const previous = this.#screencastOwners.get(channel);
         this.#screencastOwners.delete(channel);
         this.#screencastOwners.set(channel, parameters);
         this.#updateThrottling();
+        const deciding = this.#deciding()?.[1];
+        // One cast serves everyone who wants this page's picture: an owner that asks for what is
+        // already being cast joins it, with no stop and no new start, and has its latest frame.
+        if (casting && sameCast(running, deciding)) {
+          const frame = this.#lastScreencastFrame;
+          if (frame !== null && !restarted) channel.emit("Page.screencastFrame", frame);
+          return {};
+        }
         try {
-          if (casting) await send("Page.stopScreencast");
           this.#assertCurrent(generation);
-          await send(method, this.#deciding()?.[1]);
+          // A new start replaces the running cast's settings: no stop between, so no one
+          // watching sees the page go stale or blank while it changes.
+          await send(method, deciding);
+          this.#lastScreencastFrame = null;
           return {};
         } catch (error) {
           this.#screencastOwners.delete(channel);
@@ -2857,12 +2873,21 @@ class ElectronDebuggerHub {
       return this.#serializeOwnership(async () => {
         if (!this.#screencastOwners.delete(channel)) return {};
         this.#updateThrottling();
-        if (this.#screencastOwners.size === 0) await send(method, parameters);
+        if (this.#screencastOwners.size === 0) {
+          this.#lastScreencastFrame = null;
+          await send(method, parameters);
+        }
         return {};
       });
     }
-    if (method === "Page.screencastFrameAck" && this.#deciding()?.[0] !== channel) {
-      return Promise.resolve({});
+    if (method === "Page.screencastFrameAck") {
+      // The deciding owner paces the cast; Chromium hears one ack a frame, never one again.
+      const frame = asRecord(parameters).sessionId;
+      if (this.#deciding()?.[0] !== channel || this.#ackedScreencastFrames.has(frame))
+        return Promise.resolve({});
+      this.#ackedScreencastFrames.add(frame);
+      if (this.#ackedScreencastFrames.size > 64)
+        this.#ackedScreencastFrames.delete(this.#ackedScreencastFrames.values().next().value);
     }
     if (method === "Target.setAutoAttach" || method === "Target.sendMessageToTarget") {
       // Out-of-process frames' sessions are the platform's, as the agent
@@ -3199,6 +3224,7 @@ class ElectronDebuggerHub {
     this.#interrupt(error);
     this.#domainOwners.clear();
     this.#screencastOwners.clear();
+    this.#lastScreencastFrame = null;
     this.#renderingOwners.clear();
     this.#updateThrottling();
     const teardown = (async () => {
@@ -3722,4 +3748,14 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/** Whether two casts' settings are the same: the cast already running serves the other. */
+function sameCast(
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown> | undefined,
+): boolean {
+  const settled = (value: Record<string, unknown> | undefined) =>
+    JSON.stringify(Object.entries(value ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+  return settled(left) === settled(right);
 }

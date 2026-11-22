@@ -1623,15 +1623,16 @@ describe("Electron debugger teardown", () => {
     const hub = await hubPage("14");
     const platform = await hub.page.cdp();
     await platform.send("Page.startScreencast", { format: "png", quality: 10 });
-    const stop = hub.hold("Page.stopScreencast");
+    // A restart is a new start with no stop before it: the channel goes while it is held.
+    const start = hub.hold("Page.startScreencast");
     const restarting = platform
       .send("Page.startScreencast", { format: "png", quality: 20 })
       .catch((error: unknown) => error);
-    await vi.waitFor(() => expect(stop.replies).toHaveLength(1));
+    await vi.waitFor(() => expect(start.replies).toHaveLength(1));
     expect(await within(platform.detach())).toBe("fulfilled");
+    start.release();
+    start.replies[0]!.resolve({});
     expect(await restarting).toBeInstanceOf(Error);
-    stop.release();
-    stop.replies[0]!.resolve({});
     const agent = await hub.page.agentCdp();
     const before = hub.contents.debugger.sendCommand.mock.calls.length;
     await agent.send("Page.startScreencast", { format: "jpeg", quality: 30 });
@@ -1644,6 +1645,63 @@ describe("Electron debugger teardown", () => {
       ["Page.startScreencast", { format: "jpeg", quality: 30 }],
       ["Page.screencastFrameAck", { sessionId: 7 }],
     ]);
+    await hub.browser.close();
+  });
+
+  // Run 20261122T201214Z-67db1a88: a tab a person opened and never showed started its cast three
+  // times, each a stop and a start, so whoever was watching saw it go stale or blank. One cast
+  // serves everyone who wants the tab's picture.
+  it("starts one cast for every channel that asks for the same picture, and never stops it under them", async () => {
+    const hub = await hubPage("21");
+    // The page's own channel, and two agents' (each a channel of its own).
+    const stream = await hub.page.cdp();
+    const picture = await hub.page.agentCdp();
+    const cast = { everyNthFrame: 1, format: "jpeg", maxHeight: 600, maxWidth: 800, quality: 80 };
+    const frames = { late: [] as unknown[], picture: [] as unknown[], stream: [] as unknown[] };
+    const watch = (
+      channel: { onEvent(listener: (method: string, parameters: unknown) => void): unknown },
+      into: unknown[],
+    ) =>
+      channel.onEvent((method, parameters) => {
+        if (method === "Page.screencastFrame") into.push(parameters);
+      });
+    watch(stream, frames.stream);
+    watch(picture, frames.picture);
+    // Two owners at once, then one asking again for the same picture.
+    await Promise.all([
+      stream.send("Page.startScreencast", cast),
+      picture.send("Page.startScreencast", cast),
+    ]);
+    const frame = { data: "AAAA", metadata: { deviceWidth: 800 }, sessionId: 1 };
+    hub.deliver("Page.screencastFrame", frame);
+    await stream.send("Page.startScreencast", cast);
+    expect(hub.sent("Page.startScreencast")).toHaveLength(1);
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
+    expect(frames.stream).toEqual([frame]);
+    expect(frames.picture).toEqual([frame]);
+    // One that joins after the frame has it at once: a still page sends no other.
+    const late = await hub.page.agentCdp();
+    watch(late, frames.late);
+    await late.send("Page.startScreencast", cast);
+    expect(frames.late).toEqual([frame]);
+    // Chromium hears one ack a frame: the page's own, once, whoever else acks it.
+    await picture.send("Page.screencastFrameAck", { sessionId: 1 });
+    await stream.send("Page.screencastFrameAck", { sessionId: 1 });
+    await late.send("Page.screencastFrameAck", { sessionId: 1 });
+    await stream.send("Page.screencastFrameAck", { sessionId: 1 });
+    expect(hub.sent("Page.screencastFrameAck")).toEqual([
+      ["Page.screencastFrameAck", { sessionId: 1 }],
+    ]);
+    // A new size is a new start, with no stop between while anyone is watching.
+    await stream.send("Page.startScreencast", { ...cast, maxWidth: 1_200 });
+    expect(hub.sent("Page.startScreencast")).toHaveLength(2);
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
+    // The last one to go stops it.
+    await late.send("Page.stopScreencast");
+    await picture.send("Page.stopScreencast");
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
+    await stream.send("Page.stopScreencast");
+    expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
     await hub.browser.close();
   });
 
