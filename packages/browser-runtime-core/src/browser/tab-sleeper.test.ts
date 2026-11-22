@@ -567,18 +567,19 @@ describe("TabSleeper", () => {
       void f.sleeper.beforePageOpen().then(() => (opened = true));
       await vi.advanceTimersByTimeAsync(10);
       expect(suspended()).toBeGreaterThan(0);
-      expect(opened).toBe(true);
-
-      // Under pressure with nothing that may sleep (every page pinned), an open still waits
-      // while the reclaim just started is settling (K9 corrected), and then is not held, and
-      // leaves no waiter behind.
-      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
-      opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
-      await vi.advanceTimersByTimeAsync(0);
+      // Released by that pass, it checks again (M4): held while memory is still over the
+      // threshold and the reclaim settles, and goes once a reading is under it.
       expect(opened).toBe(false);
+      pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
       await vi.advanceTimersByTimeAsync(600);
       expect(opened).toBe(true);
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(600);
+
+      // Under pressure with nothing that may sleep (every page pinned) and nothing reclaiming,
+      // the open is not held, and leaves no waiter behind.
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
+      await vi.advanceTimersByTimeAsync(600);
       opened = false;
       void f.sleeper.beforePageOpen().then(() => (opened = true));
       await vi.advanceTimersByTimeAsync(0);
@@ -649,8 +650,9 @@ describe("TabSleeper", () => {
             viewed: [],
             pinned: [],
           });
+          // The highest reading before the first sleep was seen: where sleeping started.
           if (firstSleepRatio === null && ids.some((id) => f.ledger.stateOf(id) === "suspended"))
-            firstSleepRatio = samples.at(-1) ?? null;
+            firstSleepRatio = Math.max(...samples);
         }
       })();
       let done = false;
@@ -672,6 +674,36 @@ describe("TabSleeper", () => {
       expect(firstSleepRatio!).toBeGreaterThan(0.7);
       expect(firstSleepRatio!).toBeLessThan(0.8);
       expect(sorted.at(-1)!).toBeLessThanOrEqual(2_000 + 250 + 10);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("releases several opens waiting on one pass one check at a time: each reads again and waits out the settle before it goes (M4)", async () => {
+    const mib = 1024 ** 2;
+    const limit = 2048 * mib;
+    let usedBytes = Math.round(limit * 0.8);
+    const f = await fixture({
+      memoryPressure: () => Promise.resolve({ usedBytes, limitBytes: limit }),
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 3; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      const opened: number[] = [];
+      const started = Date.now();
+      for (let i = 0; i < 3; i++)
+        void f.sleeper.beforePageOpen().then(() => opened.push(Date.now() - started));
+      // The pass sleeps and releases them; still over the threshold while its reclaim settles,
+      // none goes yet.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(ids.some((id) => f.ledger.stateOf(id) === "suspended")).toBe(true);
+      expect(opened).toEqual([]);
+      // The memory came back: each reads again after the settle and goes.
+      usedBytes = Math.round(limit * 0.62);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(opened).toHaveLength(3);
+      expect(Math.min(...opened)).toBeGreaterThanOrEqual(500);
     } finally {
       await f.close();
     }
@@ -741,7 +773,7 @@ describe("TabSleeper", () => {
 
   it("under pressure sleeps the least recently used tab not in use, whatever its age, and never one in use", async () => {
     const limit = 2 * 1024 ** 3;
-    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    let pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
     const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
     try {
       // Every tab is younger than the quiet period: a burst of opens.
@@ -762,9 +794,19 @@ describe("TabSleeper", () => {
       let opened = false;
       void f.sleeper.beforePageOpen().then(() => (opened = true));
       await vi.advanceTimersByTimeAsync(50);
-      expect(opened).toBe(true);
       const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended");
       expect(suspended()).toEqual([freeTab]);
+      // Held through the settle of that sleep (M4); its memory came back, so it goes.
+      expect(opened).toBe(false);
+      pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+      await vi.advanceTimersByTimeAsync(600);
+      expect(opened).toBe(true);
+      // Still over the stop threshold, the sleeper goes on with the next one not in use; never
+      // one in use.
+      expect(suspended()).not.toContain(viewedTab);
+      expect(suspended()).not.toContain(pinnedTab);
+      expect(suspended()).not.toContain(f.record.id);
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
 
       // With every tab in use, none sleeps, and once the reclaim settled the open is not held.
       state([...ids], []);

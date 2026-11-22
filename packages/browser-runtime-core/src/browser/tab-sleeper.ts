@@ -110,6 +110,8 @@ export class TabSleeper {
   private pendingAsyncPressurePass = false;
   /** An open over the threshold asked for a pass: it runs past a backoff, never past a settle. */
   private openAsked = false;
+  /** Sleeps a pass has started and not finished: their memory is on its way back (M4). */
+  private reclaimInFlight = 0;
   private readonly passWaiters: Array<() => void> = [];
   private declined = new WeakSet<TabRecord>();
   private reclaimFrom: {
@@ -440,47 +442,71 @@ export class TabSleeper {
   async beforePageOpen(): Promise<void> {
     const measure = this.options.memoryPressure;
     if (!measure || !this.usesLinuxMemoryPressure() || this.closed) return;
-    let reading: BrowserMemoryPressure | null;
-    try {
-      reading = await withTimeout(Promise.resolve(measure()), openPressureReadMs, {
-        timeoutError: () => new Error("Memory pressure reading timed out."),
-      });
-    } catch {
+    /** A fresh reading: true while the open is at or over the start threshold. */
+    const over = async (): Promise<boolean> => {
+      let reading: BrowserMemoryPressure | null;
+      try {
+        reading = await withTimeout(Promise.resolve(measure()), openPressureReadMs, {
+          timeoutError: () => new Error("Memory pressure reading timed out."),
+        });
+      } catch {
+        return false;
+      }
+      if (this.closed || reading === null) return false;
+      this.applyMemoryPressureSample(reading, Date.now());
+      return (
+        this.releasing &&
+        reading.limitBytes > 0 &&
+        reading.usedBytes / reading.limitBytes > linuxMemorySleepStartRatio
+      );
+    };
+    if (!(await over())) {
+      if (this.releasing) {
+        this.pendingAsyncPressurePass = true;
+        this.poke();
+      }
       return;
     }
-    if (this.closed || reading === null) return;
     const now = Date.now();
-    this.applyMemoryPressureSample(reading, now);
-    if (!this.releasing) return;
-    this.pendingAsyncPressurePass = true;
-    // K9 corrected: over the threshold an open waits while a reclaim is settling (memory is on its
-    // way down, and the open would hide it) or while some tab can sleep, asking for that pass
-    // even through a backoff. It goes on when scheduling is off, or nothing can sleep and nothing
-    // is settling.
-    const settling = this.reclaimFrom !== null && now < this.reclaimFrom.settledAt;
-    const canShed = this.canShedNow(now);
-    if (this.options.scheduling === false || (!settling && !canShed)) {
+    // M4: an open over the threshold waits, within its own bound, while a reclaim is in flight
+    // (a tab detached, its memory not yet back) or settling (memory on its way down, which the
+    // open would hide), or while some tab can sleep for it, asking for that pass even through a
+    // backoff. Each time it is released it reads again and goes on once under the threshold. It
+    // goes on when scheduling is off, or nothing can sleep and nothing is reclaiming: there is no
+    // hard ceiling.
+    const until = now + openPressureWaitMs;
+    for (let first = true; ; first = false) {
+      if (this.closed || (!first && !(await over()))) return;
+      this.pendingAsyncPressurePass = true;
+      const at = Date.now();
+      const settleUntil =
+        this.reclaimInFlight > 0
+          ? until
+          : this.reclaimFrom !== null && at < this.reclaimFrom.settledAt
+            ? this.reclaimFrom.settledAt
+            : 0;
+      const canShed = this.canShedNow(at);
+      if (this.options.scheduling === false || (settleUntil <= at && !canShed) || at >= until) {
+        this.poke();
+        return;
+      }
+      if (canShed) this.openAsked = true;
+      let release: () => void = () => undefined;
+      const settled = new Promise<void>((resolve) => {
+        release = resolve;
+        this.passWaiters.push(resolve);
+      });
       this.poke();
-      return;
+      // Waiting on a reclaim alone ends with it; waiting for a pass, within the open's bound.
+      const bound = (canShed ? until : Math.min(until, settleUntil)) - at;
+      await withTimeout(settled, Math.max(1, bound), {
+        timeoutError: () => new Error("Pressure pass did not settle."),
+      }).catch(() => {
+        // A waiter that timed out leaves; it does not stay until some later pass ends.
+        const index = this.passWaiters.indexOf(release);
+        if (index >= 0) this.passWaiters.splice(index, 1);
+      });
     }
-    if (canShed) this.openAsked = true;
-    let release: () => void = () => undefined;
-    const settled = new Promise<void>((resolve) => {
-      release = resolve;
-      this.passWaiters.push(resolve);
-    });
-    this.poke();
-    // Waiting on a settle alone ends with it; waiting for a pass, within the open's bound.
-    const bound = canShed
-      ? openPressureWaitMs
-      : Math.min(openPressureWaitMs, this.reclaimFrom!.settledAt - now);
-    await withTimeout(settled, Math.max(1, bound), {
-      timeoutError: () => new Error("Pressure pass did not settle."),
-    }).catch(() => {
-      // A waiter that timed out leaves; it does not stay until some later pass ends.
-      const index = this.passWaiters.indexOf(release);
-      if (index >= 0) this.passWaiters.splice(index, 1);
-    });
   }
 
   /**
@@ -745,6 +771,7 @@ export class TabSleeper {
             !this.overBudget(pending.size))
         )
           continue;
+        this.reclaimInFlight++;
         const sleeping = session.ledger
           .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
           .then((committed) => {
@@ -755,7 +782,10 @@ export class TabSleeper {
             }
             this.trimRestore();
           })
-          .finally(() => pending.delete(sleeping));
+          .finally(() => {
+            this.reclaimInFlight--;
+            pending.delete(sleeping);
+          });
         pending.add(sleeping);
         attempted++;
       }
@@ -784,9 +814,10 @@ export class TabSleeper {
         if (youngest) {
           const { id, session, record } = youngest;
           attempted++;
-          const committed = await session.ledger.sleep(record.id, (next) =>
-            this.blocked(id, next, Date.now(), undefined, true),
-          );
+          this.reclaimInFlight++;
+          const committed = await session.ledger
+            .sleep(record.id, (next) => this.blocked(id, next, Date.now(), undefined, true))
+            .finally(() => this.reclaimInFlight--);
           if (committed) slept++;
           else {
             this.declined.add(record);
@@ -795,7 +826,9 @@ export class TabSleeper {
           this.trimRestore();
         }
       }
-      // Opens waiting on this pass go once its sleeps are done; none waits on a host retiring.
+      // Opens waiting on this pass go once its sleeps are done and their settle is set, so each
+      // checks again against it (M4); none waits on a host retiring.
+      this.establishSettle(slept);
       this.releasePassWaiters();
       if (!this.closed && attempted < sleepsPerPass) {
         for (const host of this.retirementCandidates()) {
@@ -808,19 +841,10 @@ export class TabSleeper {
       this.openAsked = false;
       if (attempted < sleepsPerPass) this.declined = new WeakSet();
       const pressureDriven = this.usesLinuxMemoryPressure();
+      this.establishSettle(slept);
       if ((pressureDriven || this.rendererUsage) && this.releasing) {
         const now = Date.now();
         const settleMs = pressureDriven ? linuxPressureSettleMs : rendererSettleMs;
-        if (slept > 0) {
-          this.reclaimFrom ??= {
-            usage: this.rendererUsage,
-            pressureUsedBytes: this.memoryPressureState.reading?.usedBytes ?? null,
-            settledAt: now + settleMs,
-            waiting: false,
-          };
-          this.reclaimFrom.settledAt = now + settleMs;
-          this.reclaimFrom.waiting = false;
-        }
         if (attempted >= sleepsPerPass) {
           this.nextRendererSample = Math.min(this.nextRendererSample, now + pressureScanMs);
           if (pressureDriven) {
@@ -839,6 +863,21 @@ export class TabSleeper {
       this.poke(attempted >= sleepsPerPass ? pressureScanMs : 0);
       if (this.options.onPass) this.reportPass({ ...this.summary(attempted, slept), livePages });
     }
+  }
+
+  /** After a pass slept something under pressure: its reclaim settles from now. */
+  private establishSettle(slept: number): void {
+    const pressureDriven = this.usesLinuxMemoryPressure();
+    if (slept === 0 || !(pressureDriven || this.rendererUsage) || !this.releasing) return;
+    const settledAt = Date.now() + (pressureDriven ? linuxPressureSettleMs : rendererSettleMs);
+    this.reclaimFrom ??= {
+      usage: this.rendererUsage,
+      pressureUsedBytes: this.memoryPressureState.reading?.usedBytes ?? null,
+      settledAt,
+      waiting: false,
+    };
+    this.reclaimFrom.settledAt = settledAt;
+    this.reclaimFrom.waiting = false;
   }
 
   close(): void {
