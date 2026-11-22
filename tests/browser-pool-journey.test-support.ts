@@ -326,6 +326,8 @@ export async function journey(
     const home = { service, coordinator };
     homes.push(home);
     await service.initialize();
+    // initialize does not wait for the pool's recovery; these journeys start from a recovered one.
+    await coordinator.recover();
     return home;
     function target() {
       return {
@@ -359,6 +361,10 @@ export async function journey(
   const restartHome = async (home: Home, channel?: BrowserPoolRuntimeChannel) => {
     await home.service.close();
     home.coordinator.close();
+    // The Home's link to the Runner ends with it: the Runner closes what it carried for the Home
+    // (1001), as it does when its stream to the Home goes.
+    bridge.closeAll(1001, "browser stream closed");
+    for (const connection of connections.splice(0)) connection.lose(1006, "home gone");
     return startHome(channel);
   };
   /** The Home process dies: nothing is closed gracefully, every channel drops, and it starts. */

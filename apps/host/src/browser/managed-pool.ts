@@ -10,6 +10,7 @@ import type {
   BrowserPoolRuntimeState,
 } from "@opensteer/browser-runtime-core";
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   PoolRelayRefused,
   poolRelayTransport,
@@ -35,11 +36,21 @@ type GuestStatus = (signal?: AbortSignal) => Promise<BrowserPoolPhysicalStatus>;
 export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel {
   readonly #transport: Transport;
   readonly #guest: GuestStatus | undefined;
+  readonly #controlTimeoutMs: number;
 
-  /** `guest`: the agent's signed status, which says whether there is a runtime to ask. */
-  constructor(transport: Transport, guest?: GuestStatus) {
+  /**
+   * `guest`: the agent's signed status, which says whether there is a runtime to ask.
+   * `controlTimeoutMs`: the bound of a control's request on its tunnel (30 s): past it the
+   * tunnel is ended, and the control's outcome is read with the state later.
+   */
+  constructor(
+    transport: Transport,
+    guest?: GuestStatus,
+    options: { readonly controlTimeoutMs?: number } = {},
+  ) {
     this.#transport = transport;
     this.#guest = guest;
+    this.#controlTimeoutMs = options.controlTimeoutMs ?? 30_000;
   }
 
   /**
@@ -73,14 +84,19 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
       "POST",
       "/v1/pool/control",
       JSON.stringify({ control, signature: Buffer.from(signature).toString("base64") }),
+      AbortSignal.timeout(this.#controlTimeoutMs),
     );
     const body = JSON.parse(answer.text || "{}") as {
       state?: BrowserPoolRuntimeState;
       code?: string;
       message?: string;
+      reason?: string;
     };
     if (answer.status !== 200 || !body.state)
-      throw new Error(body.message ?? `The runtime refused the ${control.kind} control.`);
+      throw Object.assign(
+        new Error(body.message ?? `The runtime refused the ${control.kind} control.`),
+        body.reason ? { reason: body.reason } : {},
+      );
     return body.state;
   }
 
@@ -110,13 +126,18 @@ export class RelayBrowserPoolRuntimeChannel implements BrowserPoolRuntimeChannel
       } catch (error) {
         if (!(error instanceof PoolRelayRefused) || error.code !== "unavailable") throw error;
         if (Date.now() + wait > until || signal?.aborted) throw error;
-        await new Promise((resolve) => setTimeout(resolve, wait));
+        // The wait ends with the signal, and nothing is opened after it fired.
+        await delay(wait, undefined, signal ? { signal } : {});
       }
     }
   }
 
   async #send(method: "GET" | "POST", path: string, body?: string, signal?: AbortSignal) {
     const { socket, bridgeToken } = await this.#open(signal);
+    if (signal?.aborted) {
+      socket.destroy();
+      throw signal.reason;
+    }
     return requestOverTunnel(socket, {
       method,
       path,

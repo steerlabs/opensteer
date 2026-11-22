@@ -417,7 +417,8 @@ export function browserNotReady(browser: BrowserSleep): {
     title: browserSleepWords.paused,
     // The exit address's own sentence, as an ordinary Cloud Computer says it today.
     detail:
-      browser.reason === "egress-required"
+      // Its way out to the internet is missing or down: the same words as for a missing address.
+      browser.reason === "egress-required" || browser.reason === "egress-proxy-down"
         ? cloudWords("cloud.ip.pausedDetail")
         : browserSleepWords.pausedDetail,
     waiting: false,

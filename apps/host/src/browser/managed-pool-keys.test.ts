@@ -84,3 +84,16 @@ it("makes a self-signed certificate that carries the relay key and works for TLS
   server.close();
   expect(() => selfSignedCertificate(createPublicKey(keys.relayKey) as never)).toThrow();
 });
+
+it("gives every start racing the first one the same whole keys, never a file being written", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-pool-keys-race-"));
+  try {
+    const all = await Promise.all(
+      Array.from({ length: 16 }, () => loadOrCreateManagedBrowserPoolKeys(directory)),
+    );
+    const first = managedBrowserPoolRegistration(all[0]!);
+    for (const keys of all) expect(managedBrowserPoolRegistration(keys)).toEqual(first);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

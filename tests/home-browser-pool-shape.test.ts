@@ -1,8 +1,9 @@
 // A Cloud Computer is pooled only by its boot answer's own flag (phase B, piece 2): the installer
 // marks it, the marker adds one override, and the default recipe is the self-hosted one.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { expect, it } from "vitest";
 import { parse } from "yaml";
 
@@ -46,4 +47,48 @@ it("adds the pooled override only for a marked Home, and keeps the default recip
   });
   for (const installer of ["install.sh", "package-installer.sh"])
     expect(read(installer)).toContain("compose.browser-pool.yaml");
+});
+
+/** The compose files `common.sh` names for a Home directory holding these markers. */
+function composeFiles(markers: readonly string[]): string[] {
+  const directory = mkdtempSync(join(tmpdir(), "opensteer-home-shape-"));
+  try {
+    writeFileSync(join(directory, "config.env"), "COMPOSE_PROJECT_NAME='shape'\n");
+    for (const marker of markers) {
+      mkdirSync(dirname(join(directory, marker)), { recursive: true });
+      writeFileSync(join(directory, marker), marker.endsWith("egress_url") ? "http://e\n" : "");
+    }
+    const printed = execFileSync(
+      "bash",
+      [
+        "-c",
+        // compose() runs `env -i ... docker compose <args>`: print the args instead.
+        `source "$1"; env() { printf '%s\\n' "$@"; }; compose config`,
+        "shape",
+        join(home, "common.sh"),
+      ],
+      { env: { ...process.env, OPENSTEER_HOME_DIR: directory }, encoding: "utf8" },
+    );
+    const lines = printed.split("\n");
+    return lines.flatMap((line, index) =>
+      line === "-f" ? [lines[index + 1]!.slice(directory.length + 1)] : [],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+it("waits for a Home's own exit address only on a Cloud Computer whose browser runs at home", () => {
+  expect(composeFiles(["managed"])).toEqual(["compose.yaml", "compose.egress-pending.yaml"]);
+  expect(composeFiles(["managed", "secrets/egress_url"])).toEqual([
+    "compose.yaml",
+    "compose.egress.yaml",
+  ]);
+  // A pooled Cloud Computer's browser leaves through its own address on the pool host: its Home
+  // waits for none.
+  expect(composeFiles(["managed", "browser-pool"])).toEqual([
+    "compose.yaml",
+    "compose.browser-pool.yaml",
+  ]);
+  expect(composeFiles([])).toEqual(["compose.yaml"]);
 });

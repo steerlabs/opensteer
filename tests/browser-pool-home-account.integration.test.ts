@@ -42,12 +42,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadOrCreateManagedBrowserPoolKeys } from "../apps/host/src/browser/managed-pool-keys.js";
+import { startManagedBrowserPool } from "../apps/host/src/browser/managed-pool-home.js";
+import { createStoreFixture } from "../packages/database/src/store.integration.test-support.js";
 import {
+  databaseManagedBrowserPoolTargetRecord,
   ManagedBrowserPoolAccountClient,
   ManagedBrowserPoolTargetService,
   signedManagedBrowserPoolRegistration,
   type ManagedBrowserPoolTarget,
-  type ManagedBrowserPoolTargetRecord,
 } from "../apps/host/src/browser/managed-pool-target.js";
 import { ConnectLifecycleService } from "../apps/control-plane/src/account/connect-lifecycle.js";
 import {
@@ -688,26 +690,10 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
           }),
         ),
       ).rejects.toThrow(/refused/u);
-      const row: { current?: Awaited<ReturnType<ManagedBrowserPoolTargetRecord["read"]>> } = {};
-      const record: ManagedBrowserPoolTargetRecord = {
-        read: async () => row.current,
-        attempt: async (attemptKeys) => {
-          row.current = {
-            attemptKeys,
-            registeredKeys: row.current?.registeredKeys ?? null,
-            status: row.current?.status ?? "unregistered",
-            target: null,
-          };
-        },
-        answer: async ({ response, registered }) => {
-          row.current = {
-            attemptKeys: null,
-            registeredKeys: registered ?? row.current?.registeredKeys ?? null,
-            status: response.status,
-            target: (response.target as Record<string, unknown> | undefined) ?? null,
-          };
-        },
-      };
+      // The Home's own record, on its own PostgreSQL (never a stand-in: the database gives back
+      // jsonb with its keys reordered).
+      const homeDatabase = await createStoreFixture();
+      const record = databaseManagedBrowserPoolTargetRecord(homeDatabase.database, computer.id);
       const targets: ManagedBrowserPoolTarget[] = [];
       const service = new ManagedBrowserPoolTargetService({
         cloudComputerId: computer.id,
@@ -722,7 +708,7 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
       });
       service.start();
       try {
-        await vi.waitFor(() => expect(row.current?.status).toBe("preparing"));
+        await vi.waitFor(async () => expect((await record.read())?.status).toBe("preparing"));
         // The provisioner places the slot and its host reports it ready.
         const slot = (await h.getDesiredSlots())[0]!;
         const ready = await h.app.inject({
@@ -748,8 +734,70 @@ integration("A pooled Home against its Opensteer account (phase B, piece 4)", ()
         // The refused one and the Home's own: it read the target afterwards and never
         // registered again.
         expect(sent.filter((method) => method === "PUT")).toHaveLength(2);
+        // Asked again (a suspicion): the keys it holds are the ones registered, so it reads the
+        // target and registers nothing.
+        service.suspect();
+        await vi.waitFor(() =>
+          expect(sent.filter((method) => method === "GET").length).toBeGreaterThan(1),
+        );
+        expect(sent.filter((method) => method === "PUT")).toHaveLength(2);
+        // The target is over (its host said the slot is gone) while the account still names it:
+        // the service keeps asking, paced, until a different target is placed (V6).
+        const reads = sent.filter((method) => method === "GET").length;
+        service.suspect({ over: true });
+        await vi.waitFor(
+          () => expect(sent.filter((method) => method === "GET").length).toBeGreaterThan(reads + 2),
+          { timeout: 10_000 },
+        );
+        expect(targets).toHaveLength(1);
+        // The provisioner places the slot again: its host reports a new control key.
+        const replaced = await h.app.inject({
+          method: "POST",
+          url: browserPoolSlotStatusPath(slot.slotId),
+          headers: h.leaseHeaders,
+          payload: {
+            slotId: slot.slotId,
+            hostGeneration: 1,
+            revision: slot.revision,
+            term: slot.term,
+            phase: "ready",
+            controlKey: keyPairSpkiBase64().spki,
+            slotErased: false,
+            profileErased: false,
+            credentialsErased: false,
+            lastError: null,
+          },
+        });
+        expect(replaced.statusCode).toBe(200);
+        await vi.waitFor(() => expect(targets).toHaveLength(2), { timeout: 10_000 });
+        expect(targets[1]!.agentKey).not.toBe(targets[0]!.agentKey);
       } finally {
         await service.close();
+      }
+      // The Home starts again with that target stored: it is chosen, read again from the account
+      // as the same target, and nothing is retired.
+      const browser = { adoptPool: vi.fn(async () => {}), retirePool: vi.fn(async () => {}) };
+      const restarted = await startManagedBrowserPool({
+        database: homeDatabase.database,
+        dataDirectory: directory,
+        cloudComputerId: computer.id,
+        runnerId: "rnr_0192f4a1-1111-4000-8000-000000000001" as never,
+        hostKey: claimed.hostKey.privateKey,
+        browser: browser as never,
+        account,
+      });
+      try {
+        const reads = sent.filter((method) => method === "GET").length;
+        await vi.waitFor(() =>
+          expect(sent.filter((method) => method === "GET").length).toBeGreaterThan(reads),
+        );
+        await restarted.close();
+        expect(browser.adoptPool).toHaveBeenCalledTimes(1);
+        expect(browser.retirePool).not.toHaveBeenCalled();
+        expect(sent.filter((method) => method === "PUT")).toHaveLength(2);
+      } finally {
+        await restarted.close();
+        await homeDatabase.close();
       }
     } finally {
       await rm(directory, { recursive: true });

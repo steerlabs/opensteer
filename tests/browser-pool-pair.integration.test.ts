@@ -703,6 +703,8 @@ it("ends the sessions of a browser whose slot the host deleted, sends nothing mo
   const calls = p.answered.length;
   await home.restart().catch(() => undefined);
   expect(p.answered.length).toBe(calls);
+  // A start into a target that is over is no failed start: nothing failed to come up.
+  expect((await p.slot())?.failedStarts ?? 0).toBe(0);
 });
 
 it("ends an over target's sessions as a step repeated until it succeeds", async () => {
@@ -1071,7 +1073,11 @@ it("ends several lost sessions with attachments in one write, in lock order", as
     p.fixture.database,
     slot,
     { phase: slot.phase },
-    ids.map((sessionId) => ({ sessionId, reason: "not-reattached", surfaces: [] })),
+    {
+      losses: ids.map((sessionId) => ({ sessionId, reason: "not-reattached", surfaces: [] })),
+      // The guest's own word that it ended them (an adoption's outcome).
+      closing: { kind: "runtime-ended" },
+    },
   );
   expect(await ended()).toEqual({ states: ["closed", "closed"], attachments: 0 });
 });

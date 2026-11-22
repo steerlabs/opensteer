@@ -350,14 +350,17 @@ describe("a browser that cannot be used now", () => {
     });
   });
 
-  it("is paused for a missing exit address in the words a Cloud Computer uses for it today", () => {
-    expect(browserNotReady(report("egress-required"))).toEqual({
-      title: "Browsing paused",
-      detail:
-        "Its Browser IP isn’t available. Opensteer keeps trying and waits for this IP before loading pages.",
-      waiting: false,
-    });
-  });
+  it.each(["egress-required", "egress-proxy-down"])(
+    "is paused for %s in the words a Cloud Computer uses for a missing exit address today",
+    (reason) => {
+      expect(browserNotReady(report(reason))).toEqual({
+        title: "Browsing paused",
+        detail:
+          "Its Browser IP isn’t available. Opensteer keeps trying and waits for this IP before loading pages.",
+        waiting: false,
+      });
+    },
+  );
 
   it.each(["profile-disk-missing", "unreachable", "a-reason-this-client-does-not-know"])(
     "is paused for %s with its tabs and sign-ins kept, never as a lost profile",

@@ -633,6 +633,99 @@ it("takes a stored, signed fenced answer as final: nothing more is sent, and cal
   }
 });
 
+it("waits longer after each failure in a row, retryMs or not", async () => {
+  const f = await poolFixture("growing-backoff");
+  try {
+    const first = f.home();
+    await first.recover();
+    first.close();
+    // The runtime's state cannot be read for a while: each recovery attempt fails.
+    const tries: number[] = [];
+    const next = f.home(undefined, f.controller, {
+      retryMs: 20,
+      runtime: {
+        poolState: async () => {
+          tries.push(Date.now());
+          if (tries.length <= 5) throw new Error("The runtime's state could not be read.");
+          return f.runtime.poolState() ?? null;
+        },
+        controlPool: (control, signature) => f.runtime.controlPool(control, signature),
+        endSession: (ticket) => f.runtime.endPoolSession(ticket),
+      },
+    });
+    await next.recover();
+    const waits = tries.slice(1).map((at, index) => at - tries[index]!);
+    expect(waits.length).toBeGreaterThanOrEqual(5);
+    // 20 ms doubling: the fifth wait is far longer than the first.
+    expect(waits[4]!).toBeGreaterThan(waits[0]! * 4);
+  } finally {
+    await f.close();
+  }
+});
+
+it("keeps a parked browser whose wake the host refused for a down egress proxy, counts no failed start, and wakes it later", async () => {
+  const f = await poolFixture("proxy-refused");
+  try {
+    let refusing = false;
+    const physical: BrowserPoolPhysicalController = {
+      status: (slot, term) => f.controller.status(slot, term),
+      result: (slot, term, id) => f.controller.result(slot, term, id),
+      // The host's proxy did not serve within its bound: the resume left nothing running.
+      apply: async (call) =>
+        refusing && call.kind === "resume"
+          ? {
+              id: call.id,
+              applied: false,
+              reason: "egress-proxy-down",
+              status: await f.controller.status(call.slotId, call.term),
+            }
+          : f.controller.apply(call),
+    };
+    const home = f.home(undefined, physical, { refusedRetryMs: 50 });
+    await home.recover();
+    expect(await home.tryPark()).toBe("parked");
+    refusing = true;
+    const waiting = home.gate.reserve(AbortSignal.timeout(20_000));
+    await vi.waitFor(() => expect(home.report()).toMatchObject({ refused: "egress-proxy-down" }));
+    // Nothing given up: still parked with its saved state, and no failed start.
+    expect(await f.slot()).toMatchObject({ phase: "parked", failedStarts: 0 });
+    refusing = false;
+    (await waiting).release();
+    expect(await f.slot()).toMatchObject({ phase: "running", failedStarts: 0 });
+    expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+  } finally {
+    await f.close();
+  }
+});
+
+// The pool agent on this branch does not report its proxy yet (it does from the overhaul at
+// 3aa134d3e on): until that merge this runs against the fake controller only.
+it.skipIf(poolControllerKind() === "agent")(
+  "reports a running browser whose egress proxy is down, parks it once to bring the proxy back, and shows it paused if that did not",
+  async () => {
+    const f = await poolFixture("proxy-down");
+    try {
+      const home = f.home(undefined, f.controller, { statusEveryMs: 50 });
+      await home.recover();
+      expect(home.report()).toBeUndefined();
+      f.controller.observe({ proxy: "down" });
+      await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+      // Nothing holds it: the Home parks it once, which is what brings a proxy back.
+      await vi.waitFor(() => expect(f.controller.effects).toEqual(["start", "pause"]));
+      (await home.gate.reserve(AbortSignal.timeout(10_000))).release();
+      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+      // Still down after that wake: shown paused, and not parked again for it.
+      await vi.waitFor(() => expect(home.report()).toMatchObject({ proxyDown: true }));
+      await vi.waitFor(async () => expect((await f.slot())?.phase).toBe("running"));
+      expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
+      f.controller.observe({ proxy: "up" as never });
+      await vi.waitFor(() => expect(home.report()).toBeUndefined());
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 it("takes a stored, signed fenced answer to the park's retire as final too", async () => {
   const f = await poolFixture("over-fenced-retire");
   try {
@@ -2210,7 +2303,7 @@ it("ends a recovery that keeps failing at start in a discard and an open gate", 
   }
 });
 
-it("reports a lost session whose end could not be confirmed, and keeps the other session usable", async () => {
+it("never serves from a guest whose lost session's pages could not be confirmed closed, and replaces it", async () => {
   const f = await poolFixture("end-unconfirmed");
   try {
     const home = f.home();
@@ -2219,38 +2312,35 @@ it("reports a lost session whose end could not be confirmed, and keeps the other
     const other = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
     await f.openSession(home, other);
     expect(await home.tryPark()).toBe("parked");
-    // The first session is not reattached, and ending it fails; the second is reattached.
+    // The first session is not reattached, and its page will not close: every close is taken
+    // and none happens (the strongest close the runtime has fails too).
     f.skip.add(f.sessionId);
-    (f.runtime as unknown as { endPooledSession: () => Promise<void> }).endPooledSession =
-      async () => {
-        throw new Error("The page close could not be confirmed.");
-      };
-    const woken = await home.gate.reserve(AbortSignal.timeout(10_000));
-    woken.release();
-    expect(f.runtime.poolState()).toMatchObject({
-      phase: "running",
-      adoption: {
-        outcome: {
-          adopted: [other],
-          lost: [{ sessionId: f.sessionId, reason: "not-reattached; end-unconfirmed" }],
-        },
-      },
+    const close = FakePage.prototype.close;
+    const stuck = vi.spyOn(FakePage.prototype, "close").mockImplementation(async function (
+      this: FakePage,
+    ) {
+      // Until the guest is replaced (the loopback guest stands for the next one too).
+      if (f.controller.effects.length > 3) return close.call(this);
+      this.closeCount += 1;
     });
-    // No blanket discard: the controller saw no fresh start, and the other session works.
-    expect(f.controller.effects).toEqual(["start", "pause", "resume"]);
-    expect(await f.slot()).toMatchObject({ phase: "running", epoch: 2 });
-    expect((await f.row(other))?.state).toBe("ready");
-    await expect(
-      f.sinks.get(other)!.handle(
-        JSON.stringify({
-          type: "session.state",
-          runs: 0,
-          personUsed: [],
-          viewed: [],
-          pinned: [],
-        }),
-      ),
-    ).resolves.toBeUndefined();
+    const phases: string[] = [];
+    const watched = f.runtime;
+    const read = watched.poolState.bind(watched);
+    vi.spyOn(watched, "poolState").mockImplementation(() => {
+      const state = read();
+      if (state) phases.push(state.phase);
+      return state;
+    });
+    const woken = await home.gate.reserve(AbortSignal.timeout(30_000));
+    woken.release();
+    stuck.mockRestore();
+    // That guest never served: its adoption failed, and a fresh guest replaced it (V2).
+    expect(phases).not.toContain("running");
+    expect(f.controller.effects.slice(0, 3)).toEqual(["start", "pause", "resume"]);
+    expect(f.controller.effects.slice(3)).toContain("start");
+    // Both sessions ended with the replaced guest, with their notes; none is closed on a guess.
+    expect((await f.row(f.sessionId))?.state).toBe("failed");
+    expect((await f.row(other))?.state).toBe("failed");
   } finally {
     await f.close();
   }

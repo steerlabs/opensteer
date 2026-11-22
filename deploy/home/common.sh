@@ -29,7 +29,8 @@ compose() {
   if [[ -f "$home_dir/browser-pool" ]]; then args+=(-f "$home_dir/compose.browser-pool.yaml"); fi
   if [[ -s "$home_dir/secrets/egress_url" ]]; then
     args+=(-f "$home_dir/compose.egress.yaml")
-  elif [[ -f "$home_dir/managed" ]]; then
+  elif [[ -f "$home_dir/managed" && ! -f "$home_dir/browser-pool" ]]; then
+    # A pooled Cloud Computer's browser leaves through its own address on the pool host.
     args+=(-f "$home_dir/compose.egress-pending.yaml")
   fi
   if [[ -s "$home_dir/secrets/oidc_client_secret" ]]; then

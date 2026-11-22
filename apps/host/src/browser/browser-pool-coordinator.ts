@@ -153,7 +153,7 @@ export interface BrowserPoolCoordinatorOptions {
    * The target may be over: it answered so, signed, or this target's calls have gone unanswered
    * (or been refused unsigned) for `unansweredMs`. The Home asks its account for its target.
    */
-  readonly onSuspect?: () => void;
+  readonly onSuspect?: (reason?: "over") => void;
   /** How long calls may go unanswered before the target is suspected (two minutes). */
   readonly unansweredMs?: number;
   /**
@@ -162,6 +162,10 @@ export interface BrowserPoolCoordinatorOptions {
    * shown changes: nothing is discarded and no start is counted as failed.
    */
   readonly unreachableAfterMs?: number;
+  /** The longest wait before an unanswered call is asked again (30 s). */
+  readonly unansweredRetryMaxMs?: number;
+  /** How often a running guest's status is read when nothing else reads it (one minute). */
+  readonly statusEveryMs?: number;
   /** Tests lose a commit's reply, a read, or a journal acknowledgement. */
   readonly testHooks?: {
     readonly beginPark?: typeof beginBrowserPoolPark;
@@ -240,6 +244,12 @@ export class BrowserPoolCoordinator {
   #unknownSince: number | undefined;
   /** The report says the browser cannot be reached: unknown has lasted past its bound. */
   #unreachable = false;
+  /** The host's signed status said the running guest's egress proxy is down. */
+  #proxyDown = false;
+  /** When the host's status was last read. */
+  #statusReadAt = 0;
+  /** The guest (its instance) the Home parked once to bring its proxy back. */
+  #proxyParkedFor: string | undefined;
   /**
    * The end of an over target's sessions: a step of its own, repeated until it has succeeded
    * (P18). `settle`: holders still sending are settled with their outcomes first (a swap).
@@ -468,7 +478,10 @@ export class BrowserPoolCoordinator {
         }
         if (!step) {
           failures = 0;
-          await abortableWait(changed);
+          // Nothing to do until something changes, or the next status read of a running guest.
+          await delay(this.#options.statusEveryMs ?? statusEveryMs, undefined, {
+            signal: changed,
+          }).catch(() => undefined);
           continue;
         }
         // Everything the step awaits takes its signal, or has its own bound, so a deadline or a
@@ -541,10 +554,14 @@ export class BrowserPoolCoordinator {
             this.#options.onSuspect?.();
           }
         }
+        // The runtime could not confirm a stopped session's pages gone at its adoption: it does
+        // not serve, and this guest is replaced (its end is those rows' evidence, V2).
+        if (endUnconfirmed(error) && !this.#released) this.#discardWanted = "end-unconfirmed";
         const over = targetOver(error);
         if (over && !this.#released) {
           this.#beginOver(over);
-          this.#options.onSuspect?.();
+          // Over: the account is asked until it places a different target (V6).
+          this.#options.onSuspect?.("over");
           continue;
         }
         if (error instanceof BrowserPoolNotStarted) {
@@ -566,6 +583,19 @@ export class BrowserPoolCoordinator {
           ).catch(() => undefined);
           continue;
         }
+        if (error instanceof BrowserPoolPending) {
+          // An answer, not yet the one wanted: asked again, later each time, never counted.
+          await this.#answered();
+          await delay(
+            Math.min(
+              (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
+              this.#options.unansweredRetryMaxMs ?? unansweredRetryMaxMs,
+            ),
+            undefined,
+            { signal: changed },
+          ).catch(() => undefined);
+          continue;
+        }
         if (unknownAnswer(error)) {
           // Not knowing (P18): asked again, later each time; it never counts toward a discard,
           // and nothing of the guest is given up for it. Past its bound the report says the
@@ -574,7 +604,7 @@ export class BrowserPoolCoordinator {
           this.#unknownSince ??= at;
           let wait = Math.min(
             (this.#options.retryMs ?? 100) * 2 ** Math.min(unanswered++, 16),
-            unansweredRetryMaxMs,
+            this.#options.unansweredRetryMaxMs ?? unansweredRetryMaxMs,
           );
           if (!this.#unreachable) {
             const left =
@@ -601,7 +631,7 @@ export class BrowserPoolCoordinator {
         // The turn's own change signal: anything asked since this turn began (a removal, a
         // restart, demand) ends the wait, even when it arrived while the step was running.
         await delay(
-          Math.min(this.#options.retryMs ?? 100 * 2 ** Math.min(failures, 6), 5_000),
+          Math.min((this.#options.retryMs ?? 100) * 2 ** Math.min(failures, 6), 5_000),
           undefined,
           { signal: changed },
         ).catch(() => undefined);
@@ -665,6 +695,18 @@ export class BrowserPoolCoordinator {
     if (this.#parkWanted && slot.phase === "running")
       return { name: "park", run: () => this.#parkStep() };
     if (this.#parkWanted) this.#settlePark("vetoed");
+    // A running guest's host is asked how it is now and then: its egress proxy can go down under
+    // it, which only its status says (the browser then cannot reach the internet).
+    if (
+      slot.phase === "running" &&
+      Date.now() - this.#statusReadAt >= (this.#options.statusEveryMs ?? statusEveryMs)
+    )
+      return {
+        name: "check",
+        run: async () => {
+          await this.#status();
+        },
+      };
     return undefined;
   }
 
@@ -732,7 +774,12 @@ export class BrowserPoolCoordinator {
     const past = sessions.filter((sessionId) => remaining(sessionId) <= 0);
     const within = sessions.filter((sessionId) => remaining(sessionId) > 0);
     if (past.length) {
-      await this.#finishRunning(slot, await this.#lossesOf(slot, past, "not-adopted"));
+      // No word from the guest that it ended them: a session a Stop left closing meanwhile
+      // stays closing, for the end step (V1).
+      await this.#finishRunning(slot, {
+        losses: await this.#lossesOf(slot, past, "not-adopted"),
+        closing: null,
+      });
       for (const sessionId of past) this.#lost.delete(sessionId);
       return;
     }
@@ -856,7 +903,15 @@ export class BrowserPoolCoordinator {
           this.#options.database,
           slot,
           { phase: slot.phase },
-          await this.#lossesOf(slot, sessions, reason),
+          {
+            losses: await this.#lossesOf(slot, sessions, reason),
+            // The host's signed word that the guest is gone; a swap has none from the old host,
+            // so its closing rows stay closing (V1).
+            closing:
+              reason === "slot-deleted" || reason === "fenced"
+                ? { kind: "guest-gone", by: reason }
+                : null,
+          },
         );
     }
   }
@@ -883,13 +938,19 @@ export class BrowserPoolCoordinator {
       return;
     }
     const fence = fenceOf(slot);
-    let unanswered = 0;
+    let pending = 0;
+    let unknown: unknown;
     for (const sessionId of sessions) {
       signal.throwIfAborted();
       const ticket = await adopter.endTicket({ sessionId, fence, signal });
       if (ticket === "gone") continue;
+      if (ticket === undefined) {
+        pending++;
+        continue;
+      }
       let answer: BrowserPoolEndAnswer | undefined;
-      if (ticket !== undefined)
+      let refusal: unknown;
+      try {
         answer = await withTimeout(
           this.#options.runtime.endSession(ticket, signal),
           this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
@@ -898,19 +959,43 @@ export class BrowserPoolCoordinator {
             timeoutError: () =>
               new BrowserPoolUnanswered("The pooled runtime did not answer in time."),
           },
-        ).catch((error: unknown) => {
-          this.#options.onError?.(error);
-          return undefined;
-        });
+        );
+      } catch (error) {
+        refusal = error;
+      }
       if (
         answer?.outcome === "ended" &&
         answer.state.phase === "running" &&
         sameFence(answer.state.fence, fence)
-      )
+      ) {
         await adopter.ended(sessionId);
-      else unanswered++;
+        continue;
+      }
+      // An answer, or a refusal, from a runtime that is not the running one under this fence:
+      // the guest is not what the slot says, and recovery replaces it; that end is the
+      // evidence for these rows (V4).
+      const state = answer
+        ? answer.state
+        : refusal !== undefined && !unknownAnswer(refusal)
+          ? await this.#runtimeState().catch(() => undefined)
+          : undefined;
+      if (
+        state !== undefined &&
+        (state === null || state.phase !== "running" || !sameFence(state.fence, fence))
+      ) {
+        this.#recovered = false;
+        return;
+      }
+      if (refusal !== undefined) unknown ??= refusal;
+      else pending++;
     }
-    if (unanswered) throw new Error("A stopped session's end is not answered yet.");
+    // Not answered: unknown, asked again later and later (P18). Answered, not yet with the end:
+    // asked again, later each time, as an answer.
+    if (unknown !== undefined)
+      throw unknownAnswer(unknown)
+        ? unknown
+        : new BrowserPoolUnanswered("A stopped session's end was refused.", { cause: unknown });
+    if (pending) throw new BrowserPoolPending("A stopped session's end is not answered yet.");
   }
 
   /** The removal, to its end; a turn that fails is tried again before anything else. */
@@ -1084,11 +1169,11 @@ export class BrowserPoolCoordinator {
   async #advance(
     slot: BrowserPoolSlot,
     next: Parameters<typeof advanceBrowserPoolSlot>[2],
-    losses?: readonly BrowserPoolSessionLoss[],
+    ending?: Parameters<typeof advanceBrowserPoolSlot>[3],
   ): Promise<BrowserPoolSlot> {
     // A step whose deadline passed, or that a removal ended, writes nothing more.
     this.#signal?.throwIfAborted();
-    this.#slot = await advanceBrowserPoolSlot(this.#options.database, slot, next, losses);
+    this.#slot = await advanceBrowserPoolSlot(this.#options.database, slot, next, ending);
     return this.#slot;
   }
 
@@ -1112,8 +1197,35 @@ export class BrowserPoolCoordinator {
     return state;
   }
 
-  #status(): Promise<BrowserPoolPhysicalStatus> {
-    return this.#journal.status(this.#options.slotId, this.#options.term, this.#signal);
+  async #status(): Promise<BrowserPoolPhysicalStatus> {
+    const status = await this.#journal.status(
+      this.#options.slotId,
+      this.#options.term,
+      this.#signal,
+    );
+    this.#statusReadAt = Date.now();
+    const down = status.phase === "running" && status.proxy === "down";
+    if (down !== this.#proxyDown) {
+      this.#proxyDown = down;
+      // Clients learn at once that browsing is paused, or back.
+      void this.#announce(this.#changed.signal);
+    }
+    // Only a pause and a resume (or a fresh start) bring the proxy back: the Home parks this
+    // guest once for it, when nothing holds it (a park is vetoed otherwise, and asked again at
+    // the next read). After that wake the browser is shown paused for as long as it lasts.
+    const instance = `${status.instance}`;
+    if (down && this.#proxyParkedFor !== instance && !this.#parkWanted && this.gate.admits) {
+      this.#proxyParkedFor = instance;
+      void this.tryPark().then(
+        (outcome) => {
+          if (outcome === "vetoed") this.#proxyParkedFor = undefined;
+        },
+        () => {
+          this.#proxyParkedFor = undefined;
+        },
+      );
+    }
+    return status;
   }
 
   /** `replacing`: this call replaces the guest, and closes every open journal row with `status`. */
@@ -1334,7 +1446,7 @@ export class BrowserPoolCoordinator {
     if (state.phase === "running" && state.cancelled) {
       // A page the vetoed retire could not thaw was closed: it is that page's loss, with its
       // note; its session is kept.
-      await this.#finishRunning(slot, pageLosses(state.unthawed ?? []));
+      await this.#finishRunning(slot, { losses: pageLosses(state.unthawed ?? []), closing: null });
       return "vetoed";
     }
     throw new Error(`The runtime is still ${state.phase}.`);
@@ -1536,10 +1648,13 @@ export class BrowserPoolCoordinator {
           )?.documentId ?? null,
       ),
     ];
-    await this.#finishRunning(slot, losses, {
-      adopted: outcome.adopted,
-      lost: outcome.lost,
-    });
+    // The running runtime's own outcome under this fence: it ended every session it left out,
+    // and confirmed their pages gone, before it served anyone (V2).
+    await this.#finishRunning(
+      slot,
+      { losses, closing: { kind: "runtime-ended" } },
+      { adopted: outcome.adopted, lost: outcome.lost },
+    );
   }
 
   /** The ladder's last rung: the live state is discarded and a fresh guest is started. */
@@ -1563,7 +1678,9 @@ export class BrowserPoolCoordinator {
         throw error;
       }
       this.#display = { phase: "failed", since: new Date() };
-      if (!(error instanceof BrowserPoolNotStarted))
+      // A start the host refused, or one into a target that is over (the slot deleted, or the
+      // term superseded), is no failed start: the browser did not fail to come up.
+      if (!(error instanceof BrowserPoolNotStarted) && !targetOver(error))
         await recordBrowserPoolStartFailure(this.#options.database, slot.runnerId).catch(
           () => undefined,
         );
@@ -1604,6 +1721,8 @@ export class BrowserPoolCoordinator {
         readonly refused?: string;
         /** Calls have gone unanswered past their bound: the browser cannot be reached now. */
         readonly unreachable?: true;
+        /** The running guest's egress proxy is down: the browser cannot reach the internet. */
+        readonly proxyDown?: true;
       }
     | undefined {
     // A wake asked while nothing answers: the slot is still parked (its phase changes only on
@@ -1614,10 +1733,13 @@ export class BrowserPoolCoordinator {
         ? { phase: "waking" as const, since: unknown }
         : undefined;
     const shown = this.#display ?? waking;
-    const unreachable = this.#unreachable ? { unreachable: true as const } : {};
+    const unreachable = {
+      ...(this.#unreachable ? { unreachable: true as const } : {}),
+      ...(this.#proxyDown ? { proxyDown: true as const } : {}),
+    };
     const refused = this.#refused;
     if (!refused) {
-      if (!this.#unreachable) return shown;
+      if (!this.#unreachable && !this.#proxyDown) return shown;
       const phase = this.#slot?.phase === "parked" ? ("parked" as const) : ("running" as const);
       return { ...(shown ?? { phase, since: unknown ?? new Date() }), ...unreachable };
     }
@@ -1695,7 +1817,8 @@ export class BrowserPoolCoordinator {
         ...(keys.size ? { restartKeys: withRestartKeys(slot, [...keys]), restartWanted: [] } : {}),
         failedStarts: 0,
       },
-      losses,
+      // The fresh guest replaced the old one by the host's signed answer: the old is gone.
+      { losses, closing: { kind: "guest-gone", by: "replaced" } },
     );
     // Held by the slot now; until this write, the slot's own fence says the same, so a write that
     // fails changes nothing the person sees (the slot never installs a Start it holds again).
@@ -1731,13 +1854,13 @@ export class BrowserPoolCoordinator {
 
   async #finishRunning(
     slot: BrowserPoolSlot,
-    losses: readonly BrowserPoolSessionLoss[],
+    ending: Parameters<typeof advanceBrowserPoolSlot>[3],
     outcome?: Readonly<Record<string, unknown>>,
   ): Promise<void> {
     const settled = await this.#advance(
       slot,
       { phase: "running", savedState: null, ...(outcome ? { outcome } : {}) },
-      losses,
+      ending,
     );
     await pruneBrowserPoolBookkeeping(this.#options.database, settled).catch((error: unknown) =>
       this.#options.onError?.(error),
@@ -1785,7 +1908,7 @@ export class BrowserPoolCoordinator {
     if (!expected(state.fence)) return this.#discard(slot, "guest-restarted");
     switch (slot.phase) {
       case "running":
-        if (state.phase === "running") return this.#finishRunning(slot, []);
+        if (state.phase === "running") return this.#finishRunning(slot, undefined);
         await this.#abort(slot);
         return;
       case "preparing":
@@ -1926,6 +2049,15 @@ const networkCodes = new Set([
   "UND_ERR_SOCKET",
 ]);
 
+/** The runtime refused to serve: a page of a session the Home ended would not close. */
+function endUnconfirmed(error: unknown): boolean {
+  for (let cause = error, depth = 0; cause && depth < 4; depth++) {
+    if ((cause as { reason?: unknown }).reason === "end-unconfirmed") return true;
+    cause = (cause as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 function targetOver(error: unknown): string | undefined {
   if (error instanceof BrowserPoolAgentSlotDeleted) return "slot-deleted";
   if (error instanceof BrowserPoolNotStarted && error.reason === "fenced") return "fenced";
@@ -1935,6 +2067,9 @@ function targetOver(error: unknown): string | undefined {
 
 /** A call the controller refused, signed and stored, because its term is not the slot's. */
 class BrowserPoolTargetFenced extends Error {}
+
+/** The runtime answered, and not yet with the end asked for: asked again, later each time. */
+class BrowserPoolPending extends Error {}
 
 /** The controller answered, signed and stored, that it did not start or wake the guest. */
 class BrowserPoolNotStarted extends Error {
@@ -1952,6 +2087,8 @@ const quiesceMs = 15_000;
 const unansweredRetryMaxMs = 30_000;
 /** How long nothing may answer before the person is shown that the browser cannot be reached. */
 const unreachableAfterMs = 120_000;
+/** A running guest's status is read at least this often (its egress proxy can go down). */
+const statusEveryMs = 60_000;
 /** The bound of a refusal's announcement to clients, outside any step. */
 const announceMs = 5_000;
 const restartKeysKept = 64;
@@ -1987,13 +2124,6 @@ function unrecorded(slot: BrowserPoolSlot | undefined, keys: ReadonlySet<string>
 }
 
 /** Resolves when `signal` aborts. */
-function abortableWait(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) =>
-    signal.addEventListener("abort", () => resolve(), { once: true }),
-  );
-}
-
 /** Why a fresh start happened, in the words clients branch on. */
 function startReason(reason: string): "expired" | "host" | "person" {
   if (reason === "person") return "person";

@@ -193,6 +193,8 @@ import type { BrowserPoolDocument, BrowserPoolRuntimeFence } from "@opensteer/br
 import {
   listBrowserPoolRuntimeSessions,
   readBrowserPoolOwner,
+  closeBrowserPoolSessions,
+  type BrowserPoolCloseEvidence,
   readBrowserPoolSlot,
   listBrowserPoolReportedNotices,
   listBrowserPoolReadySessions,
@@ -1171,9 +1173,11 @@ export class BrowserService {
     }
     await this.pruneHistory();
     for (const [runnerId, pool] of this.#pools) {
-      // The gate stays closed until the state the sweep kept is recovered.
+      // The gate stays closed until the state the sweep kept is recovered. Recovery is not
+      // waited for: while its host does not answer it goes on for as long as that lasts, and the
+      // Home starts all the same (as adoptPool does).
       pool.setAdopter(this.#poolAdopter(runnerId));
-      await pool.recover();
+      void pool.recover().catch((error: unknown) => this.#onError(error));
     }
   }
 
@@ -1262,7 +1266,12 @@ export class BrowserService {
           ? await this.#repository.getBrowserSessionForOwner(sessionId, owner)
           : null;
         if (row?.state !== "closing") return;
-        await this.#transitionBrowserSession({ from: ["closing"], sessionId, state: "closed" });
+        await this.#transitionBrowserSession({
+          from: ["closing"],
+          sessionId,
+          state: "closed",
+          evidence: { kind: "runtime-ended" },
+        });
       },
       quiesce: async (signal) => {
         if (!(this.#repository instanceof OpensteerStore)) return;
@@ -1464,7 +1473,20 @@ export class BrowserService {
         fileStaging: false,
         signIn: false,
         stateImport: false,
-        onState: (state) => this.#transitionBrowserSession({ sessionId, state }),
+        // A pooled broker says closed only on its runtime's `closed` status (P16): that runtime,
+        // under the fence its ticket named, ended the session (V1).
+        onState: (state) =>
+          state === "closed"
+            ? this.#transitionBrowserSession({
+                sessionId,
+                state,
+                evidence: { kind: "runtime-ended" },
+              })
+            : // A reattach that did not take ends nothing: the session stays ready for the next
+              // attempt, and its window's end records the loss with its note.
+              state === "failed"
+              ? Promise.resolve(record)
+              : this.#transitionBrowserSession({ sessionId, state }),
         onTerminal: () => {
           if (this.#brokers.get(sessionId) === broker) {
             this.#brokers.delete(sessionId);
@@ -1555,7 +1577,6 @@ export class BrowserService {
       retiring: () => pool.gate.retiringOrAdopting,
       // An adoption's pass has no end of its own; a restart's or a removal's hold still refuses.
       refusesWrite: (reservation) => pool.gate.refusesWrite(reservation),
-      closing: () => pool.stopped(),
     };
   }
 
@@ -6762,7 +6783,15 @@ export class BrowserService {
           this.#flushTabDescriptors(sessionId, broker),
         ),
       );
-      await Promise.allSettled([...this.#brokers.values()].map((broker) => broker.stop()));
+      // A pooled session outlives this Home: nothing is sent for its channel (a close would be
+      // relayed to the guest as the session's end) and its row is kept. The Home's link to the
+      // Runner ends with the Home, the guest sees its channel lost and keeps the person's pages
+      // for its window, and the next Home reattaches them (V7).
+      await Promise.allSettled(
+        [...this.#brokers.values()].map((broker) =>
+          broker.pooled ? broker.letGoPooled("The Home is shutting down.") : broker.stop(),
+        ),
+      );
       await Promise.allSettled(this.#historyTails.values());
       this.#brokers.clear();
       for (const id of this.#personUseGroups.keys()) this.#endPersonUse(id);
@@ -7187,6 +7216,13 @@ export class BrowserService {
                   !localIdentity.initialized
                 )
                   await this.#localProfiles!.acknowledgeReady(localIdentity.binding);
+                // A pooled broker says closed only on its runtime's `closed` status (P16, V1).
+                if (state === "closed")
+                  return this.#transitionBrowserSession({
+                    sessionId,
+                    state,
+                    evidence: pooled ? { kind: "runtime-ended" } : "not-pooled",
+                  });
                 return this.#transitionBrowserSession({
                   ...(state === "ready" ? { from: ["starting", "ready"] as const } : {}),
                   sessionId,
@@ -7798,19 +7834,51 @@ export class BrowserService {
       pool.stopped();
       return;
     }
+    // Only a store without pools reaches here: no pooled row is closed by it.
     await this.#transitionBrowserSession({
       from: ["starting", "ready", "closing"],
       sessionId: record.id,
       state: "closed",
+      evidence: "not-pooled",
     });
   }
 
-  async #transitionBrowserSession(input: {
-    readonly from?: readonly HostedBrowserSessionState[];
-    readonly sessionId: BrowserSessionId;
-    readonly state: HostedBrowserSessionState;
-  }): Promise<BrowserSessionRecord> {
-    const transitioned = await this.#repository.transitionBrowserSession(input);
+  /**
+   * Every write of a session's state here. `closed` names its evidence (V1): a pooled row is
+   * closed only through the pool's one writer, with the evidence it holds; any other row says
+   * `not-pooled` and is written as before.
+   */
+  async #transitionBrowserSession(
+    input:
+      | {
+          readonly from?: readonly HostedBrowserSessionState[];
+          readonly sessionId: BrowserSessionId;
+          readonly state: Exclude<HostedBrowserSessionState, "closed">;
+        }
+      | {
+          readonly from?: readonly HostedBrowserSessionState[];
+          readonly sessionId: BrowserSessionId;
+          readonly state: "closed";
+          readonly evidence: BrowserPoolCloseEvidence | "not-pooled";
+        },
+  ): Promise<BrowserSessionRecord> {
+    if (input.state === "closed" && input.evidence !== "not-pooled") {
+      const database = (this.#repository as OpensteerStore).database;
+      await closeBrowserPoolSessions(database, [input.sessionId], input.evidence);
+      const owner = await readBrowserPoolOwner(database);
+      const row = owner
+        ? await this.#repository.getBrowserSessionForOwner(input.sessionId, owner)
+        : null;
+      if (!row) throw new Error("The pooled browser session is gone.");
+      this.#onSessionsChanged([row.id]);
+      return row;
+    }
+    const { from, sessionId, state } = input;
+    const transitioned = await this.#repository.transitionBrowserSession({
+      ...(from ? { from } : {}),
+      sessionId,
+      state,
+    });
     this.#onSessionsChanged([transitioned.session.id]);
     return transitioned.session;
   }
@@ -7984,8 +8052,6 @@ interface PoolBrokerAdmission {
   retiring(): boolean;
   /** At the write: whether these bytes may not leave for the guest now (`refusesWrite`). */
   refusesWrite(reservation: BrowserPoolReservation | undefined): boolean;
-  /** The channel ended a session the runtime was closing: its end step asks for the rest. */
-  closing(): void;
 }
 
 interface HostedBrowserBrokerOptions {
@@ -9185,6 +9251,14 @@ export class HostedBrowserBroker {
     await untilSettledOrAborted(finished, signal);
   }
 
+  /** The Home goes: this broker finishes here and sends nothing; its row is kept as it is. */
+  async letGoPooled(reason: string): Promise<void> {
+    this.#failure ??= reason;
+    this.#stopping = true;
+    await this.#runtimeFrameTail;
+    await this.#finish("pooled", 1001, "Browser Runtime disconnected");
+  }
+
   async abort(reason: string): Promise<void> {
     this.#failure ??= reason;
     if (this.#socket.readyState === WebSocket.CONNECTING) this.#socket.terminate();
@@ -9253,8 +9327,7 @@ export class HostedBrowserBroker {
           !retired &&
           ready &&
           this.#poolAdmission !== undefined &&
-          !this.#runtimeEnded &&
-          !this.#runtimeClosing;
+          !this.#runtimeEnded;
         // A pooled session says closed only on the runtime's `closed` (or its end request's
         // answer): never on the channel's own close, whatever its code, before or after ready.
         const pooledOutcome = (): "closed" | "failed" | "pooled" =>
@@ -9281,17 +9354,6 @@ export class HostedBrowserBroker {
               this.#stopping ? 1000 : 1011,
               this.#stopping ? "Browser session closed" : "Browser Runtime disconnected",
             );
-            // The runtime was ending the session and the channel went first: its row is closing,
-            // and, this broker gone, the end step asks the runtime for the rest.
-            if (
-              this.#poolAdmission &&
-              outcome === "pooled" &&
-              this.#runtimeClosing &&
-              !this.#stopping &&
-              !channelLost &&
-              !retired
-            )
-              this.#poolAdmission.closing();
           })
           .catch((error: unknown) => {
             console.error("browser.session.finish.failed", this.#sessionId, error);
@@ -9650,7 +9712,9 @@ export class HostedBrowserBroker {
       if (message.state === "closing") {
         this.#runtimeReady = false;
         this.#latestFrames.clear();
-        await this.#onState("closing");
+        // A pooled session the runtime ends on its own, not on a Stop, is not the person's
+        // closing: its row stays as it is, and its end is a loss with its note.
+        if (!this.#poolAdmission || this.#stopping) await this.#onState("closing");
       }
       if (message.state === "closed") this.#runtimeReady = false;
     }
@@ -9798,6 +9862,19 @@ export class HostedBrowserBroker {
         .catch(() => undefined);
     }
     if (message.type === "browser.status" && message.state === "closed") {
+      // A pooled session the runtime ended on its own (its browser went, or its host was
+      // retired), not on a Stop: the person did not end it, so its row is not closed here. It is
+      // a loss, the pool's to record with its notes when its window ends.
+      if (this.#poolAdmission && !this.#stopping) {
+        const documents = new Map(
+          [...this.#tabs.rows].map(([surfaceId, row]) => [surfaceId, row.documentId]),
+        );
+        queueMicrotask(() => this.#onChannelLost?.(documents));
+        if (this.#socket.readyState === WebSocket.OPEN)
+          this.#socket.close(1000, "Browser Runtime closed session");
+        await this.#finish("pooled", 1011, "Browser Runtime disconnected");
+        return false;
+      }
       if (message.reason === "retired") this.#stopping = true;
       if (this.#socket.readyState === WebSocket.OPEN) {
         this.#socket.close(1000, "Browser Runtime closed session");
@@ -11255,6 +11332,7 @@ function poolNotReady(
   if (shown?.refused)
     return { reason: poolOverReasons.has(shown.refused) ? "setting-up" : shown.refused };
   if (shown?.unreachable) return { reason: "unreachable" };
+  if (shown?.proxyDown) return { reason: "egress-proxy-down" };
   return undefined;
 }
 

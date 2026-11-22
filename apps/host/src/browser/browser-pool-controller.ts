@@ -31,6 +31,11 @@ export interface BrowserPoolPhysicalStatus {
   readonly epoch: number | null;
   readonly phase: "running" | "paused" | "stopped";
   readonly savedState: BrowserPoolSavedState | null;
+  /**
+   * The guest's egress proxy is down for good (its restarts exhausted): the guest has no way out
+   * until its next start or wake brings the proxy back. Absent otherwise.
+   */
+  readonly proxy?: "down";
 }
 
 export type BrowserPoolPhysicalKind = "start" | "pause" | "resume" | "stop" | "sign";

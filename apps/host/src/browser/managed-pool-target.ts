@@ -24,6 +24,7 @@ import {
   type ManagedBrowserPoolTargetResponse,
 } from "@opensteer/control-plane-protocol";
 import { setTimeout as delay } from "node:timers/promises";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   readBrowserPoolTarget,
   recordBrowserPoolRegistrationAttempt,
@@ -170,6 +171,8 @@ export class ManagedBrowserPoolTargetService {
   #delivered: string | undefined;
   /** The target in hand is ready and answering: nothing is read until it is suspected. */
   #settled = false;
+  /** The target that is over: the account is asked, paced, until it places a different one. */
+  #over: string | undefined;
 
   constructor(options: ManagedBrowserPoolTargetServiceOptions) {
     this.#options = options;
@@ -186,7 +189,9 @@ export class ManagedBrowserPoolTargetService {
    * The target in hand may be over: it answered that it is, or its calls have gone unanswered or
    * been refused unsigned for long. The account is asked again.
    */
-  suspect(): void {
+  suspect(options: { readonly over?: boolean } = {}): void {
+    // Over: the target in hand is known gone, so the same one read again is no answer (V6).
+    if (options.over) this.#over = this.#delivered;
     this.#settled = false;
     this.#kick();
   }
@@ -209,9 +214,17 @@ export class ManagedBrowserPoolTargetService {
       const woken = this.#wake.signal;
       try {
         const response = await this.#turn();
-        if (response.status === "ready" && response.target) {
+        // Compared canonically: the database gives back an object with its keys reordered.
+        const key =
+          response.status === "ready" && response.target
+            ? canonicalJson(response.target)
+            : undefined;
+        if (response.target && key !== undefined && key === this.#over) {
+          // The account still names the target that is over: asked again later, paced.
+          failures++;
+        } else if (response.status === "ready" && response.target && key !== undefined) {
           failures = 0;
-          const key = JSON.stringify(response.target);
+          this.#over = undefined;
           if (key !== this.#delivered) {
             // Delivered once it has been taken: one that failed is delivered again.
             await this.#options.onTarget(response.target);
@@ -281,7 +294,7 @@ function sameKeys(
   a: Readonly<Record<string, unknown>> | null | undefined,
   b: Readonly<Record<string, unknown>>,
 ): boolean {
-  return a !== null && a !== undefined && JSON.stringify(a) === JSON.stringify(b);
+  return a !== null && a !== undefined && canonicalJson(a) === canonicalJson(b);
 }
 
 function untilAborted(signal: AbortSignal): Promise<void> {

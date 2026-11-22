@@ -8,6 +8,7 @@ import type { KeyObject } from "node:crypto";
 import type { Kysely } from "kysely";
 import type { RunnerId } from "@opensteer/core";
 import { retireBrowserPoolTarget, type DatabaseSchema } from "@opensteer/database";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { BrowserPoolCoordinator } from "./browser-pool-coordinator.js";
 import type { BrowserService } from "./browser-service.js";
 import { managedBrowserPool, type ManagedBrowserPoolHomeKeys } from "./managed-pool.js";
@@ -35,7 +36,7 @@ export function managedBrowserPoolCoordinator(input: {
   readonly runnerId: RunnerId;
   readonly target: ManagedBrowserPoolTarget;
   readonly keys: ManagedBrowserPoolHomeKeys;
-  readonly onSuspect: () => void;
+  readonly onSuspect: (reason?: "over") => void;
   readonly onError?: (error: unknown) => void;
 }): BrowserPoolCoordinator {
   const parts = managedBrowserPool(input.target, input.keys);
@@ -75,7 +76,8 @@ export async function startManagedBrowserPool(input: {
   let changing: Promise<void> = Promise.resolve();
   const choose = (target: ManagedBrowserPoolTarget) => {
     changing = changing.then(async () => {
-      const key = JSON.stringify(target);
+      // Canonical: a target read back from the database has its keys in another order.
+      const key = canonicalJson(target);
       if (key === current) return;
       if (current !== undefined) {
         await input.browser.retirePool(input.runnerId, "browser-replaced");
@@ -90,7 +92,7 @@ export async function startManagedBrowserPool(input: {
           runnerId: input.runnerId,
           target,
           keys,
-          onSuspect: () => targets.suspect(),
+          onSuspect: (reason) => targets.suspect(reason === "over" ? { over: true } : {}),
           ...(input.onError ? { onError: input.onError } : {}),
         }),
       );

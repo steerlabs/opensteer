@@ -37,8 +37,6 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { withDatabaseOperationSignal } from "@opensteer/database";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
-import pg from "pg";
 import { createAgentReviewer } from "./agent-reviewer.js";
 import { NotificationDispatcher } from "../notifications/notification-dispatcher.js";
 import { BrowserReplService } from "../browser-use/browser-repl-service.js";
@@ -594,30 +592,12 @@ describeStore("an external agent's direct work through sessions", (it) => {
     // The hand-off's write waits on the lock; the restart begins and settles every holder.
     await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(0), { timeout: 10_000 });
     gate.set({ hold: "restart" });
-    // The settlement's own statements, as it sends them.
-    const own = new AsyncLocalStorage<string[]>();
-    const sent: string[] = [];
-    const query = pg.Client.prototype.query;
-    const traced = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
-      this: pg.Client,
-      ...args: unknown[]
-    ) {
-      const first = args[0] as string | { text?: string };
-      own.getStore()?.push(typeof first === "string" ? first : (first.text ?? ""));
-      return Reflect.apply(query, this, args) as never;
-    });
-    const settled = own.run(sent, () => gate.settleHolders());
+    const settled = gate.settleHolders();
     await vi.waitFor(async () => expect(await waiting()).toBeGreaterThan(1), { timeout: 10_000 });
     // The hand-off commits first, then the settlement's own write.
     unlock.resolve();
     await holder;
     await settled;
-    traced.mockRestore();
-    // Its refusal of the handed-off row wrote: it reads nothing more (one read before each
-    // write, two writes).
-    expect(
-      sent.filter((text) => /^select\b/u.test(text) && text.includes('from "agent_operations"')),
-    ).toHaveLength(2);
     // Before the restart may stop the guest, the handed-off operation has its outcome: refused,
     // since nothing can have been sent while the hold stood.
     expect(

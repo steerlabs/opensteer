@@ -2,21 +2,27 @@ import { generateKeyPairSync, verify } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { managedBrowserPoolRegistrationSigningBytes } from "@opensteer/control-plane-protocol";
+// The Home's target service against its real record on PostgreSQL (V5: the database gives jsonb
+// back with its keys reordered, which an in-memory record never does). The account here answers
+// as scripted; tests/browser-pool-home-account.integration.test.ts runs the real one.
+import { managedBrowserPoolRegistrationSigningBytes } from "../packages/control-plane-protocol/src/index.js";
 import { afterEach, expect, it, vi } from "vitest";
-import { loadOrCreateManagedBrowserPoolKeys } from "./managed-pool-keys.js";
+import { loadOrCreateManagedBrowserPoolKeys } from "../apps/host/src/browser/managed-pool-keys.js";
 import {
+  databaseManagedBrowserPoolTargetRecord,
   ManagedBrowserPoolTargetService,
   type ManagedBrowserPoolAccount,
   type ManagedBrowserPoolTarget,
-  type ManagedBrowserPoolTargetRecord,
   type ManagedBrowserPoolTargetResponse,
-} from "./managed-pool-target.js";
+} from "../apps/host/src/browser/managed-pool-target.js";
+import { createStoreFixture } from "../packages/database/src/store.integration.test-support.js";
 
 const directories: string[] = [];
 const services: ManagedBrowserPoolTargetService[] = [];
+const stores: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const service of services.splice(0)) await service.close();
+  for (const close of stores.splice(0)) await close();
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true });
 });
 
@@ -31,30 +37,12 @@ const target = (term: number): ManagedBrowserPoolTarget => ({
   relay: { host: "10.40.0.10", port: 7312, relayHostKey: "C".repeat(43) + "=" },
 });
 
-/** The record as the Home's database keeps it, in memory, with what each step saw. */
-function memoryRecord() {
-  let row: Awaited<ReturnType<ManagedBrowserPoolTargetRecord["read"]>>;
-  const record: ManagedBrowserPoolTargetRecord = {
-    read: async () => row,
-    attempt: async (keys) => {
-      row = {
-        attemptKeys: keys,
-        registeredKeys: row?.registeredKeys ?? null,
-        status: row?.status ?? "unregistered",
-        target: row?.target ?? null,
-      };
-    },
-    answer: async ({ response, registered, attemptUnreceived }) => {
-      const settle = registered !== undefined || attemptUnreceived === true;
-      row = {
-        attemptKeys: settle ? null : (row?.attemptKeys ?? null),
-        registeredKeys: registered ?? row?.registeredKeys ?? null,
-        status: response.status,
-        target: (response.target as Record<string, unknown> | undefined) ?? null,
-      };
-    },
-  };
-  return { record, row: () => row };
+/** The Home's own record of its registration and target, in its own database. */
+async function databaseRecord() {
+  const store = await createStoreFixture();
+  stores.push(() => store.close());
+  const record = databaseManagedBrowserPoolTargetRecord(store.database, cloudComputerId);
+  return { record, read: () => record.read() };
 }
 
 async function fixture(account: ManagedBrowserPoolAccount, onTarget = vi.fn()) {
@@ -62,7 +50,7 @@ async function fixture(account: ManagedBrowserPoolAccount, onTarget = vi.fn()) {
   directories.push(directory);
   const keys = await loadOrCreateManagedBrowserPoolKeys(directory);
   const hostKey = generateKeyPairSync("ed25519");
-  const memory = memoryRecord();
+  const memory = await databaseRecord();
   const service = new ManagedBrowserPoolTargetService({
     cloudComputerId,
     keys,
@@ -84,7 +72,7 @@ it("writes the attempt before the registration leaves, signs it with the pinned 
     register: async (request) => {
       calls.push("register");
       // Durable before it was sent.
-      expect(f!.memory.row()?.attemptKeys).toEqual(request.document.keys);
+      expect((await f!.memory.read())?.attemptKeys).toEqual(request.document.keys);
       expect(
         verify(
           null,
@@ -104,7 +92,7 @@ it("writes the attempt before the registration leaves, signs it with the pinned 
   f.service.start();
   await vi.waitFor(() => expect(f!.onTarget).toHaveBeenCalledWith(target(1)));
   expect(calls).toEqual(["register"]);
-  expect(f.memory.row()).toMatchObject({ attemptKeys: null, status: "ready" });
+  expect(await f.memory.read()).toMatchObject({ attemptKeys: null, status: "ready" });
 });
 
 it("reads what the account holds before registering again after an answer that did not come", async () => {

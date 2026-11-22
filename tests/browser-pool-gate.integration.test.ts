@@ -1183,21 +1183,21 @@ it("writes closed only for the runtime's ended, from a running runtime under the
   }
 });
 
-it("keeps a pooled row closing when the runtime said closing and its channel closed cleanly before it said closed", async () => {
-  const j = await journey("closing-status");
+it("never closes a pooled row the runtime ended on its own, closing status and clean close included: it is a loss with its note", async () => {
+  const j = await journey("closing-status", { channelDeadlineMs: 1_500 });
   try {
-    let reachable = false;
     let asked = 0;
     const home = await j.startHome({
       ...loopbackPoolChannel(j.guest),
       endSession: (ticket) => {
         asked++;
-        return reachable
-          ? j.guest.endPoolSession(ticket)
-          : Promise.reject(new Error("The guest cannot be reached."));
+        return j.guest.endPoolSession(ticket);
       },
     });
-    const { sessionId } = await home.service.openTab(j.task.userId, j.command("closing-status"));
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("closing-status"),
+    );
     await j.draft();
     // The runtime's closing status reaches the Home; then its channel closes with 1000, before
     // the runtime said closed.
@@ -1231,19 +1231,21 @@ it("keeps a pooled row closing when the runtime said closing and its channel clo
         }),
       );
       await until(() => expect(closingSeen).toHaveLength(1));
-      // The Home took the closing status; then the channel closes cleanly.
-      await until(async () => expect((await j.row(sessionId))?.state).toBe("closing"));
+      // The Home took the closing status (the person asked nothing); then the channel closes
+      // cleanly.
+      expect((await j.row(sessionId))?.state).toBe("ready");
       closingSeen[0]!.lose(1000, "closed");
       await ending;
-      // Closing is not closed: nothing the channel did is the runtime's word that it ended; the
-      // end step asks the runtime, which cannot be reached yet.
-      await until(() => expect(asked).toBeGreaterThan(0));
     } finally {
       frames.mockRestore();
     }
-    expect((await j.row(sessionId))?.state).toBe("closing");
-    reachable = true;
-    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    // Neither closing nor closed: the person did not stop it. Its window ends it as a loss,
+    // with its note, and no end request was ever needed.
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("failed"));
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
+    expect(asked).toBe(0);
   } finally {
     await j.close();
   }
@@ -1338,6 +1340,23 @@ it("ends an abandoned pooled session through the pool loop when its runtime did 
     // The loop is told: it asks the runtime to end the session, and its answer is the receipt.
     await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
     expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("keeps the person's pooled tabs through a clean Home shutdown, and stops none of them", async () => {
+  const j = await journey("clean-shutdown");
+  try {
+    let home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("clean"));
+    const page = await j.draft();
+    home = await j.restartHome(home);
+    await until(() => expect(home.service.pageInventory(sessionId)).toBeDefined());
+    // The session stayed the person's: ready, its page alive, reattached by the new Home.
+    expect((await j.row(sessionId))?.state).toBe("ready");
+    expect(page.page.isClosed()).toBe(false);
+    expect(JSON.parse(await page.value())).toEqual(["unsent draft", 99]);
   } finally {
     await j.close();
   }

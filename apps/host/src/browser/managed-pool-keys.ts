@@ -13,7 +13,7 @@ import {
   X509Certificate,
   type KeyObject,
 } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { dirname, resolve } from "node:path";
 import { z } from "zod";
@@ -46,12 +46,16 @@ export async function loadOrCreateManagedBrowserPoolKeys(
   });
   if (text === undefined) {
     await mkdir(dirname(path), { mode: 0o700, recursive: true });
-    const made = JSON.stringify(makeKeys());
+    // Written whole beside it, then linked into place: the file exists only complete, and a
+    // second start racing this one finds the first one's keys or none (never a partial file).
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    await writeFile(temporary, JSON.stringify(makeKeys()), { flag: "wx", mode: 0o600 });
     try {
-      // Created once: a second start racing this one reads the first one's keys.
-      await writeFile(path, made, { flag: "wx", mode: 0o600 });
+      await link(temporary, path);
     } catch (error) {
       if ((error as { code?: string }).code !== "EEXIST") throw error;
+    } finally {
+      await unlink(temporary).catch(() => undefined);
     }
     text = await readFile(path, "utf8");
   }
