@@ -96,7 +96,8 @@ struct RemoteInputEdits {
   /// How many composed characters `range` of `text` holds; none for a range outside the text.
   static func composedCount(in text: String, range: NSRange) -> Int {
     let string = text as NSString
-    guard range.location >= 0, range.length >= 0, range.location + range.length <= string.length else { return 0 }
+    // Compared without adding, so a huge location cannot overflow.
+    guard range.location >= 0, range.length >= 0, range.location <= string.length, range.length <= string.length - range.location else { return 0 }
     var count = 0
     string.enumerateSubstrings(in: range, options: [.byComposedCharacterSequences, .substringNotRequired]) { _, _, _, _ in count += 1 }
     return count

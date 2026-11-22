@@ -380,6 +380,7 @@ export class NativeField {
       if (!this.marked) return;
       const data = this.text.slice(this.marked.start, this.marked.end);
       this.marked = null;
+      this.ownSelection = { ...this.selection };
       this.notify({ type: "compositionend", data, proxy: this.snapshot() });
     });
   }
