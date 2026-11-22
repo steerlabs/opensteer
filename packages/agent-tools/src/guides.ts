@@ -15,7 +15,7 @@ Authority:
 Needs you:
 - A pending or declined Request grants nothing; never obtain the same access through Guest, another account or another route.
 - If a Request hold expires, Opensteer stops the Run; a later answer resumes this task.
-- \`opensteer_request_read\` shows status, not the answer. Answer questions about a Request from its current kind and title, never memory.`;
+- \`opensteer_request_read\` shows status and non-secret question details or answers, never credentials or approvals. Answer questions about a Request from its current kind and title, never memory.`;
 
 const routingGuide = `Routing:
 - Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.

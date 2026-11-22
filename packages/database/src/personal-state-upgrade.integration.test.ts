@@ -15,6 +15,7 @@ import {
   browserSessionTabsIndexMigrationName,
   inlineTranscriptMessagesMigrationName,
   stoppedRunsNotNewsMigrationName,
+  threadDoneByMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
@@ -89,6 +90,7 @@ test.each(["empty", "personal", "team", "personal-0035"] as const)(
         browserSessionTabsIndexMigrationName,
         inlineTranscriptMessagesMigrationName,
         stoppedRunsNotNewsMigrationName,
+        threadDoneByMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

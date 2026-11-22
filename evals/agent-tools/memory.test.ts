@@ -9,6 +9,7 @@ import {
 import { agentTools, toolsFor } from "@opensteer/agent-tools";
 import { CaseSchema, caseAtTime, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
+import { startFakeHost } from "./host.js";
 
 const memoryCases = async () =>
   parseCases(await readFile(new URL("./cases/memory.ndjson", import.meta.url), "utf8"));
@@ -451,5 +452,69 @@ it("rejects erasure that drops standing instructions outside the Memory section"
     expect((await gradeWorkspaceFiles(c.expect, root)).every((check) => check.pass)).toBe(true);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("synthesizes dismissed-question wake signals and serves settled question cards in eval Host", async () => {
+  const cases = await memoryCases();
+  const dismissed = cases.find((entry) => entry.id === "memory-light-dismissed-question")!;
+  const [wake] = inputForCaseTurn(dismissed.turns[0]!).content;
+  expect(wake).toMatchObject({ type: "text" });
+  expect((wake as { text: string }).text).toContain(
+    "taskId thr_00000000-0000-4000-8000-000000000051, 1 question dismissed by person.",
+  );
+  expect((wake as { text: string }).text).not.toContain("marked Done");
+  const host = await startFakeHost(dismissed);
+  try {
+    const readRes = await fetch(new URL("/harness/tools", host.url), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${host.secret}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "opensteer_task_read",
+        input: { taskId: "thr_00000000-0000-4000-8000-000000000051" },
+      }),
+    });
+    const readBody = (await readRes.json()) as { items?: { itemId?: string; text?: string }[] };
+    expect(readBody.items).toContainEqual(
+      expect.objectContaining({
+        itemId: "request:req_00000000-0000-4000-8000-000000000051",
+        text: expect.stringContaining("Dismissed by the person without answering."),
+      }),
+    );
+    const listRes = await fetch(new URL("/harness/tools", host.url), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${host.secret}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "opensteer_task_list",
+        input: { changedSince: "2026-11-16T15:30:00.000Z" },
+      }),
+    });
+    const listBody = (await listRes.json()) as {
+      tasks?: { id?: string; questionsDismissed?: number }[];
+    };
+    expect(listBody.tasks).toContainEqual(
+      expect.objectContaining({
+        id: "thr_00000000-0000-4000-8000-000000000051",
+        questionsDismissed: 1,
+      }),
+    );
+  } finally {
+    await host.close();
+  }
+  for (const id of [
+    "memory-light-soft-acceptance",
+    "memory-light-deadline-no-new-info",
+    "memory-light-routine-history",
+  ]) {
+    expect(
+      cases.some((entry) => entry.id === id),
+      id,
+    ).toBe(true);
   }
 });

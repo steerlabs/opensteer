@@ -310,6 +310,8 @@ export type TaskPurpose = z.infer<typeof TaskPurposeSchema>;
 /** Why a Done task is Done, when the Host rather than a person put it there. */
 export const ThreadDoneReasonSchema = z.enum(["quiet"]);
 export type ThreadDoneReason = z.infer<typeof ThreadDoneReasonSchema>;
+export const ThreadDoneBySchema = z.enum(["person", "agent", "quiet"]);
+export type ThreadDoneBy = z.infer<typeof ThreadDoneBySchema>;
 /** Days a person's task sits untouched before the Host moves it to Done; 0 never. */
 export const QuietTaskDaysSchema = z.union([
   z.literal(0),
@@ -350,6 +352,8 @@ export const ThreadSchema = z.object({
   doneAt: IsoDateTimeSchema.nullable().default(null),
   /** Null while open and when a person or its own agent marked it Done. */
   doneReason: ThreadDoneReasonSchema.nullable().default(null),
+  /** Who marked the task Done: the person, an agent/automation, or quiet auto-close. */
+  doneBy: ThreadDoneBySchema.nullable().optional(),
   environmentId: EnvironmentIdSchema,
   harnessInstanceId: HarnessInstanceIdSchema,
   id: ThreadIdSchema,
@@ -378,6 +382,7 @@ export const ThreadViewSchema = z.object({
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
   doneReason: ThreadDoneReasonSchema.nullable().default(null).catch(null),
+  doneBy: ThreadDoneBySchema.nullable().optional().catch(null),
   continuationIdentity: ProviderContinuationIdentityViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
 });

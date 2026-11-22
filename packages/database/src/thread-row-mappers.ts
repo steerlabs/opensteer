@@ -63,6 +63,7 @@ type ThreadReadRow = {
   readonly askedAt: Date;
   readonly doneAt: Date | null;
   readonly doneReason?: Thread["doneReason"];
+  readonly doneBy?: Thread["doneBy"];
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
   readonly purpose: Thread["purpose"];
@@ -110,6 +111,7 @@ function threadValueFromRow(row: ThreadReadRow) {
     createdAt: row.createdAt.toISOString(),
     doneAt: row.doneAt?.toISOString() ?? null,
     doneReason: row.doneReason ?? null,
+    ...(row.doneBy === undefined ? {} : { doneBy: row.doneBy }),
     pendingRequests: row.pendingRequests,
     updatedAt: row.updatedAt.toISOString(),
   };

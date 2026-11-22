@@ -12,12 +12,12 @@ Done.
 
 ## Read the day
 
-Your wake lists every task with new messages since your last completed pass, or the last four
-weeks on your first. Read your own recent history with `opensteer_task_read` (no `taskId`): the
-final reply of the Run your wake names is your last handoff, with where you read each connected
-source through. For any source it gives no position for, take it from `memory/passes/nightly.md`
-if an older version left it, even when that is more than four weeks back; otherwise start four
-weeks back. A handoff from before the
+Your wake lists every task with new messages, settled questions, or Done changes since your last
+completed pass, or the last four weeks on your first. Read your own recent history with
+`opensteer_task_read` (no `taskId`): the final reply of the Run your wake names is your last
+handoff, with where you read each connected source through. For any source it gives no position
+for, take it from `memory/passes/nightly.md` if an older version left it, even when that is more
+than four weeks back; otherwise start four weeks back. A handoff from before the
 `Memory: on again from` time in `## Memory` doesn't count.
 
 Then read everything since, in full, investigating however you judge useful. Read each task the
@@ -46,9 +46,10 @@ sources in the handoff. Then read all of `memory/`.
   pass can ask them once, and keep it out of the summary and notes: until the person confirms in a
   task, it is not theirs. Never ask about one they removed or declined.
 - **The open list.** Add promises and requests the light pass missed, especially ones said on calls
-  or in long threads, following [the open list](light-pass.md#the-open-list) rules. Close what the
-  day's evidence settled. Mark anything urgent as urgent; the morning's first light pass decides
-  how to raise it. Delete Recently closed lines older than two weeks.
+  or in long threads, following [the open list](light-pass.md#the-open-list). Close what the day's
+  evidence or the person's responses settled. Mark genuinely urgent, unaddressed items as urgent;
+  don't re-escalate items the person already saw, dismissed, or chose to leave alone without new
+  evidence. Delete Recently closed lines older than two weeks.
 - **Forgetting.** Each line in `memory/forgotten.md` is something the person asked to forget: never
   relearn it from old transcripts. At the end of every run, reread it and remove anything it covers
   from the summary, notes and open list; a write that crossed a forget can bring something back.
