@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { homeKindWords, homesListTitle } from "./home-kind-copy.js";
+import { homeKindWords, homesChooserTitle, homesListTitle } from "./home-kind-copy.js";
 
 describe("the one table of words for kinds of Home", () => {
   it("names each kind by where it lives, and only a work Home carries its organization", () => {
@@ -17,5 +17,10 @@ describe("the one table of words for kinds of Home", () => {
 
   it("titles every list of Homes the same way", () => {
     expect(homesListTitle).toBe("Your Opensteers");
+  });
+
+  it("asks for one of that list as a question, not as another list", () => {
+    expect(homesChooserTitle).toBe("Choose an Opensteer");
+    expect(homesChooserTitle).not.toBe(homesListTitle);
   });
 });

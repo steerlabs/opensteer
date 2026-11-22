@@ -1,5 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { cloudComputerWebsite, cloudWords, homesListTitle } from "@opensteer/client/computers";
+import {
+  cloudComputerWebsite,
+  cloudWords,
+  homesChooserTitle,
+  homesListTitle,
+} from "@opensteer/client/computers";
 import { remoteAccessOnWhenSignedInStart } from "@opensteer/client/host";
 import { useCloudComputer } from "@opensteer/client/react";
 import { DeploymentIdSchema } from "@opensteer/core";
@@ -592,7 +597,7 @@ export function DesktopChooser({
       .finally(() => setPending(false));
   };
   const account = snapshot.account;
-  const title = notice?.title ?? (rows.length > 1 ? "Choose an Opensteer" : "Open your Opensteer");
+  const title = notice?.title ?? (rows.length > 1 ? homesChooserTitle : "Open your Opensteer");
   const startSeparate = startHere ? (
     <EntryRow
       detail={

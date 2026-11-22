@@ -9,6 +9,7 @@ import {
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { ComputerFactsStore } from "../../desktop/computer-facts.js";
+import { DesktopChooser } from "./desktop-entry.js";
 import { PlaceMenuPlaces } from "./place-menu.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -24,7 +25,12 @@ const unanswered = () => new Promise<never>(() => undefined);
 async function mount(
   overrides: Partial<DeploymentAccessDeployment> = {},
   expired = false,
-  options: { readonly severalOnly?: boolean; readonly second?: boolean } = {},
+  options: {
+    readonly severalOnly?: boolean;
+    readonly second?: boolean;
+    /** The screen that asks which Opensteer to open, instead of the sidebar's menu. */
+    readonly chooser?: boolean;
+  } = {},
 ) {
   const id = createId("deployment");
   const snapshot = DeploymentAccessSnapshotSchema.parse({
@@ -96,13 +102,23 @@ async function mount(
   const onAddPlace = vi.fn();
   const bridge = { select, checkDeployments, signIn } as unknown as OpensteerDesktopBridge;
   root = createRoot(document.body.appendChild(document.createElement("div")));
+  const places = { bridge, facts: new ComputerFactsStore(unanswered), snapshot, onAddPlace };
   await act(async () =>
     root?.render(
-      <PlaceMenuPlaces
-        onClose={onClose}
-        places={{ bridge, facts: new ComputerFactsStore(unanswered), snapshot, onAddPlace }}
-        severalOnly={options.severalOnly ?? false}
-      />,
+      options.chooser ? (
+        <DesktopChooser
+          error={null}
+          onConnect={() => undefined}
+          onSetUpHere={null}
+          places={places}
+        />
+      ) : (
+        <PlaceMenuPlaces
+          onClose={onClose}
+          places={places}
+          severalOnly={options.severalOnly ?? false}
+        />
+      ),
     ),
   );
   return { id, select, checkDeployments, signIn, onClose, onAddPlace };
@@ -199,4 +215,28 @@ it("is a switcher in the sidebar only when there is more than one Opensteer to s
   await mount({}, false, { severalOnly: true, second: true });
   expect(document.querySelector(".place-menu__heading")?.textContent).toContain("Your Opensteers");
   expect(document.querySelectorAll(".place-row")).toHaveLength(2);
+});
+
+it("asks which Opensteer to open over the same list the sidebar calls Your Opensteers", async () => {
+  // Signing in on a Mac whose account holds two Homes: the screen asks a question, and what it
+  // asks about is the one list of a person's Opensteers, named as the sidebar names it.
+  await mount({}, false, { chooser: true, second: true });
+  expect(document.querySelector("h1")?.textContent).toBe("Choose an Opensteer");
+  const list = document.querySelector("ul.place-list");
+  expect(list?.getAttribute("aria-label")).toBe("Your Opensteers");
+  const chooserRows = [...document.querySelectorAll("ul.place-list .place-row__name")].map(
+    (name) => name.textContent,
+  );
+  act(() => root?.unmount());
+  root = null;
+  document.body.replaceChildren();
+
+  await mount({}, false, { severalOnly: true, second: true });
+  expect(document.querySelector(".place-menu__heading")?.textContent).toContain("Your Opensteers");
+  const menuList = document.querySelector("ul.place-list");
+  expect(menuList?.getAttribute("aria-label")).toBe("Your Opensteers");
+  expect(
+    [...menuList!.querySelectorAll(".place-row__name")].map((name) => name.textContent),
+  ).toEqual(chooserRows);
+  expect(chooserRows).toEqual(["Lab server", "Studio server"]);
 });

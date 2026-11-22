@@ -13,6 +13,7 @@ export * from "./menu-bar-copy.js";
 export {
   homeKindCopy,
   homeKindWords,
+  homesChooserTitle,
   homesListTitle,
   type HomeKindWord,
 } from "@opensteer/control-plane-protocol";

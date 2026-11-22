@@ -26,6 +26,12 @@ export const homeKindCopy = {
 /** What a list of a person's Homes is titled, on the desktop, the phone and the portal. */
 export const homesListTitle = "Your Opensteers";
 
+/**
+ * What a screen that asks a person to pick one of their Homes is titled. It is a question, not a
+ * second list: the list it asks about is the same one, named `homesListTitle` there too.
+ */
+export const homesChooserTitle = "Choose an Opensteer";
+
 export function homeKindWords(
   kind: HomeKindWord,
   input: { readonly organization?: string | null } = {},

@@ -1,3 +1,4 @@
+import { homesChooserTitle } from "@opensteer/client/computers";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { useState } from "react";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
@@ -174,7 +175,7 @@ export function DeviceSignInScreen({
         </button>
       ) : null}
       <button className="btn btn--ghost" type="button" onClick={onChoose}>
-        Choose an Opensteer
+        {homesChooserTitle}
       </button>
     </OnboardingCard>
   );
