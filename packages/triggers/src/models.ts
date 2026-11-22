@@ -248,6 +248,7 @@ const TriggerOccurrenceStatusSchema = z.enum([
   "succeeded",
   "failed",
   "canceled",
+  "unknown",
 ]);
 
 export const TriggerOccurrenceSchema = z.strictObject({

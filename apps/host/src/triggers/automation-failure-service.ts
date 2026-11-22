@@ -96,7 +96,7 @@ function noticeText(notice: PendingAutomationFailure): string {
     notice.destinationThreadId === notice.anchorThreadId
       ? `The automation "${notice.triggerName}"`
       : `The automation "${notice.triggerName}", which runs in its own task ${JSON.stringify(notice.anchorThreadTitle)} (${notice.anchorThreadId}),`;
-  if (notice.reason === "final-occurrence-interrupted") {
+  if (notice.reason === "final-occurrence-interrupted" || notice.reason === "outcome-unknown") {
     // Opensteer cannot know whether the program's effects happened, and running
     // it again is the agent's decision, not something to do silently.
     return [

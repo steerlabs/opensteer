@@ -30,12 +30,16 @@ export interface ProgramEndpointSet {
  */
 export async function startProgramEndpoints(input: {
   readonly capabilities: () => ProgramCapabilities;
+  readonly resolveMcpToken?: () => string | Promise<string>;
   readonly transport: Pick<RunnerConfig, "mode">;
 }): Promise<ProgramEndpointSet> {
   const initial = input.capabilities();
   const proxy = new CredentialProxy({
     routes: {
-      "agent-tools": { token: () => input.capabilities().mcp.token, upstream: initial.mcp.url },
+      "agent-tools": {
+        token: input.resolveMcpToken ?? (() => input.capabilities().mcp.token),
+        upstream: initial.mcp.url,
+      },
     },
     transport: input.transport,
   });

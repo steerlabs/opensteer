@@ -105,7 +105,7 @@
       "select \"canonical_origin\", \"deployment_shape\" from \"deployments\" where \"singleton_key\" = $1",
       "select \"canonical_origin\", \"deployment_shape\" from \"deployments\" where \"singleton_key\" = $1",
       "select \"capabilities\", \"id\", \"kind\", \"name\", \"runner_id\" from \"execution_environments\" order by \"created_at\" asc limit $1",
-      "select \"command_id\", \"event\", \"id\", \"revision_id\", \"trigger_id\" from \"trigger_occurrences\" where \"status\" = $1 and \"connection_id\" is null order by \"id\" asc for no key update",
+      "select \"command_id\", \"connection_id\", \"event\", \"id\", \"revision_id\", \"trigger_id\" from \"trigger_occurrences\" where \"status\" = $1 and \"runner_id\" = $2 order by \"id\" asc for no key update",
       "select \"computer_use_stops\".\"run_id\", \"computer_use_stops\".\"runner_id\" as \"device_id\" from \"computer_use_stops\" inner join \"runs\" on \"runs\".\"id\" = \"computer_use_stops\".\"run_id\" where \"runs\".\"status\" in ($1, $2, $3, $4)",
       "select \"config\", \"driver_kind\", \"enabled\", \"environment_id\", \"id\", \"is_default\", \"name\", \"removed_at\", \"runtime_revision\", \"source_id\", \"state_kind\" from \"harness_instances\" where \"environment_id\" in ($1) order by \"created_at\" asc limit $2",
       "select \"config\", \"driver_kind\", \"enabled\", \"environment_id\", \"id\", \"is_default\", \"name\", \"removed_at\", \"runtime_revision\", \"source_id\", \"state_kind\" from \"harness_instances\" where \"removed_at\" is null and \"environment_id\" in ($1) order by \"created_at\" asc limit $2",

@@ -43,6 +43,7 @@ interface ActiveWatch {
   leaseTimer?: NodeJS.Timeout;
   observed: "starting" | "running" | "backoff" | "expired" | "stopped";
   process: SupervisedProcess | undefined;
+  renewingToken?: Promise<boolean>;
   restartCount: number;
   sink: RunnerMessageSink;
   stderrTail: Buffer;
@@ -479,6 +480,7 @@ export class WatchSupervisor {
   async #writeCapabilities(active: ActiveWatch): Promise<void> {
     active.endpoints ??= await startProgramEndpoints({
       capabilities: () => active.desired.capabilities,
+      resolveMcpToken: () => this.#freshMcpToken(active),
       transport: this.#transport,
     });
     const { endpoints } = active.endpoints;
@@ -493,6 +495,44 @@ export class WatchSupervisor {
         mcp: { ...endpoints.mcp, expiresAt: capabilities.mcp.expiresAt },
       }),
     );
+  }
+
+  async #freshMcpToken(active: ActiveWatch): Promise<string> {
+    const expiresAt = Date.parse(active.desired.capabilities.mcp.expiresAt);
+    if (Number.isFinite(expiresAt) && expiresAt - Date.now() > 60_000) {
+      return active.desired.capabilities.mcp.token;
+    }
+    await this.#renewCapabilities(active);
+    return active.desired.capabilities.mcp.token;
+  }
+
+  async #renewCapabilities(active: ActiveWatch): Promise<boolean> {
+    const renew = active.sink.renewProxyToken;
+    if (!renew || active.abort.signal.aborted) return false;
+    active.renewingToken ??= renew({
+      activationId: active.desired.activationId,
+      executionGeneration: active.desired.executionGeneration,
+      kind: "watch",
+    })
+      .then((answer) => {
+        if (!answer?.mcp || this.#watches.get(active.desired.activationId) !== active) {
+          return false;
+        }
+        active.desired = {
+          ...active.desired,
+          capabilities: {
+            browserCdp: answer.browserCdp,
+            mcp: answer.mcp,
+          },
+        };
+        this.#armLease(active);
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        delete active.renewingToken;
+      });
+    return active.renewingToken;
   }
 
   /** Ends the program's access to the Host and whatever it left running. */
@@ -524,6 +564,8 @@ export class WatchSupervisor {
   }
 
   async #expire(active: ActiveWatch): Promise<void> {
+    if (this.#watches.get(active.desired.activationId) !== active) return;
+    if (await this.#renewCapabilities(active)) return;
     if (this.#watches.get(active.desired.activationId) !== active) return;
     active.abort.abort(new Error("Watch capability lease expired"));
     await this.#endExecution(active);

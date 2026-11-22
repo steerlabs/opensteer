@@ -2019,7 +2019,35 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
         }),
       )
       .max(1_000),
+    firings: z
+      .array(
+        z.strictObject({
+          environmentId: EnvironmentIdSchema,
+          executionGeneration: z.number().int().positive(),
+          occurrenceId: TriggerOccurrenceIdSchema,
+          terminal: z.boolean(),
+        }),
+      )
+      .max(1_000)
+      .optional(),
     type: z.literal("runner.executions.attach"),
+  }),
+  z.strictObject({
+    ...fencedMessageBase,
+    requestId: CorrelationIdSchema,
+    target: z.discriminatedUnion("kind", [
+      z.strictObject({
+        executionGeneration: z.number().int().positive(),
+        kind: z.literal("firing"),
+        occurrenceId: TriggerOccurrenceIdSchema,
+      }),
+      z.strictObject({
+        activationId: TriggerWatchActivationIdSchema,
+        executionGeneration: z.number().int().positive(),
+        kind: z.literal("watch"),
+      }),
+    ]),
+    type: z.literal("runner.proxy-token.renew"),
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -2176,6 +2204,22 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
         ]),
       )
       .max(1_000),
+    firingResults: z
+      .array(
+        z.discriminatedUnion("status", [
+          z.strictObject({
+            occurrenceId: TriggerOccurrenceIdSchema,
+            status: z.literal("attached"),
+          }),
+          z.strictObject({
+            occurrenceId: TriggerOccurrenceIdSchema,
+            reason: z.string().trim().min(1).max(500),
+            status: z.literal("revoked"),
+          }),
+        ]),
+      )
+      .max(1_000)
+      .optional(),
     type: z.literal("host.executions.attached"),
   }),
   /**
@@ -2183,19 +2227,40 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
    * `throughOrdinal`, and the session binding when `sessionBound`. The Runner
    * stops holding them for replay.
    */
+  z
+    .strictObject({
+      ...fencedMessageBase,
+      acks: z
+        .array(
+          z.strictObject({
+            runId: RunIdSchema,
+            sessionBound: z.boolean(),
+            throughOrdinal: z.number().int().min(-1),
+          }),
+        )
+        .max(1_000),
+      firingAcks: z
+        .array(
+          z.strictObject({
+            executionGeneration: z.number().int().positive(),
+            occurrenceId: TriggerOccurrenceIdSchema,
+          }),
+        )
+        .max(1_000)
+        .optional(),
+      type: z.literal("host.executions.acked"),
+    })
+    .refine(
+      (message) => message.acks.length > 0 || (message.firingAcks?.length ?? 0) > 0,
+      "At least one Run or firing acknowledgement is required",
+    ),
   z.strictObject({
     ...fencedMessageBase,
-    acks: z
-      .array(
-        z.strictObject({
-          runId: RunIdSchema,
-          sessionBound: z.boolean(),
-          throughOrdinal: z.number().int().min(-1),
-        }),
-      )
-      .min(1)
-      .max(1_000),
-    type: z.literal("host.executions.acked"),
+    browserCdp: WatchCapabilityPlanSchema.nullable(),
+    mcp: WatchCapabilityPlanSchema.nullable(),
+    reason: z.string().trim().min(1).max(500).optional(),
+    requestId: CorrelationIdSchema,
+    type: z.literal("host.proxy-token.renewed"),
   }),
   /**
    * The Host renewed these Runs' leases for `leaseMs` from the heartbeat sent

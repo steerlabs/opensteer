@@ -961,8 +961,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         }),
       // Held here, the Runner never had it: the registry records it not admitted, which undoes
       // the running stamp, and the coordinator returns it to pending.
-      beforeSend: () =>
-        heldIfChatWaits(() =>
+      beforeSend: async () => {
+        await heldIfChatWaits(() =>
           this.#triggers.assertActiveExecutionBinding({
             environmentId: context.anchorThread.environmentId,
             executionGeneration,
@@ -972,7 +972,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             runnerId: identity.runnerId,
             threadId: context.anchorThread.id,
           }),
-        ),
+        );
+        // Stamp frame_sent_at right before the wire send so retryCommand can never reset a
+        // firing that may have left the Home without explicit pre-execution Runner refusal (T12).
+        await this.#store.markCommandFrameSent(command.id);
+      },
       ...(notAdmitted ? { onNotAdmitted: notAdmitted } : {}),
     });
   }

@@ -200,7 +200,10 @@ import {
   inspectHarnessCatalogsAfterUsageLimit,
   reconcileAndRecordHarnessCatalogs,
 } from "../agents/harness-catalogs.js";
-import { RunCapabilityTokenService } from "../agents/run-capability.js";
+import {
+  runCapabilityLifetimeSeconds,
+  RunCapabilityTokenService,
+} from "../agents/run-capability.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import {
   AttachmentService,
@@ -2171,7 +2174,6 @@ export async function createHostRuntime(
     // routes exist: a row left open by the previous Host would otherwise hold
     // capacity for a session whose sockets went with that process.
     await store.endAllOpenShellSessions("host-shutdown");
-    await triggerStore.failActiveAfterHostRestart();
     let dispatchingRunIds = (): readonly RunId[] => [];
     let watchService: WatchService | undefined;
     const registeringRunners = new Set<string>();
@@ -2242,6 +2244,9 @@ export async function createHostRuntime(
               "tab",
             ] as const)),
       );
+    let renewProxyToken:
+      | NonNullable<ConstructorParameters<typeof RunnerRegistry>[0]["hooks"]["onRenewProxyToken"]>
+      | undefined;
     const runners: RunnerRegistry = new RunnerRegistry({
       ...(options.executionClock ? { now: executionNow } : {}),
       executionLeaseMs: config.executionLeaseMs,
@@ -2493,22 +2498,21 @@ export async function createHostRuntime(
           // reader nothing.
           runnerChanged();
           notices.notify({ runnerId: identity.runnerId });
-          // A lost connection costs a Run nothing: it keeps executing on its
-          // lease and reattaches. A revoked Runner can never come back, so its
-          // Runs end now; a replaced boot's are settled by the new boot's attach.
+          // A lost connection costs a Run or firing nothing: both keep executing
+          // and reattach. A revoked Runner can never come back, so its Runs fail
+          // and its firings settle to unknown now; a replaced boot's are settled on attach.
           if (scope.reason === "revoked") {
             await store.failActiveRunsForRunnerDisconnect({
               activeRunIds: scope.runIds,
               runnerBootId: identity.bootId,
               runnerId: identity.runnerId,
             });
+            const unknownCount = await triggerStore.markActiveUnknownForRevokedRunner({
+              runnerBootId: identity.bootId,
+              runnerId: identity.runnerId,
+            });
+            if (unknownCount > 0) realtime.publishTriggersChanged();
           }
-          const failedTriggerCount = await triggerStore.failActiveForRunnerDisconnect({
-            activeOccurrenceIds: scope.triggerOccurrenceIds,
-            runnerBootId: identity.bootId,
-            runnerId: identity.runnerId,
-          });
-          if (failedTriggerCount > 0) realtime.publishTriggersChanged();
         },
         onHeartbeat: async (identity, activeRunIds) => {
           // The registry delivers heartbeats only from the current connection
@@ -2557,6 +2561,20 @@ export async function createHostRuntime(
           }
           return attached.results;
         },
+        onAttachFirings: async (identity, firings) => {
+          const attached = await triggerStore.attachRunnerFirings({
+            dispatchingOccurrenceIds: [],
+            firings,
+            runnerBootId: identity.bootId,
+            runnerId: identity.runnerId,
+          });
+          if (attached.settledUnknownCount > 0) realtime.publishTriggersChanged();
+          return attached.results;
+        },
+        onRenewProxyToken: async (identity, request) =>
+          renewProxyToken
+            ? renewProxyToken(identity, request)
+            : { browserCdp: null, mcp: null, reason: "Token renewal is unavailable." },
         onAttached: runnerAttachedReaction(
           () => wakeExecutionCoordinator(),
           () => idleCompactionService?.reconcile() ?? Promise.resolve(),
@@ -2809,6 +2827,62 @@ export async function createHostRuntime(
       store: triggerStore,
       tokens,
     });
+    const firingMcpUrl = new URL("/internal/v1/mcp", config.runtimeOrigin).toString();
+    const firingBrowserCdpUrl = new URL(
+      "/internal/v1/trigger-cdp",
+      config.runtimeOrigin,
+    ).toString();
+    const watchBrowserCdpUrl = new URL("/internal/v1/watch-cdp", config.runtimeOrigin).toString();
+    renewProxyToken = async (identity, request) => {
+      if (request.target.kind === "firing") {
+        const scope = await triggerStore.activeFiringCapabilityScope({
+          executionGeneration: request.target.executionGeneration,
+          occurrenceId: request.target.occurrenceId,
+          runnerBootId: identity.bootId,
+          runnerId: identity.runnerId,
+        });
+        if (!scope) {
+          return {
+            browserCdp: null,
+            mcp: null,
+            reason: "Automation firing is no longer active.",
+          };
+        }
+        const token = triggerControlTokens.issue(scope);
+        const expiresAt = new Date(Date.now() + runCapabilityLifetimeSeconds * 1_000).toISOString();
+        const hasBrowser = await browser.hasBrowserProfiles(
+          scope.requestedBy,
+          `trigger:${scope.occurrenceId}`,
+        );
+        return {
+          browserCdp: hasBrowser ? { expiresAt, token, url: firingBrowserCdpUrl } : null,
+          mcp: { expiresAt, token, url: firingMcpUrl },
+        };
+      }
+      const scope = await triggerStore.activeWatchCapabilityScope({
+        activationId: request.target.activationId,
+        executionGeneration: request.target.executionGeneration,
+        runnerBootId: identity.bootId,
+        runnerId: identity.runnerId,
+      });
+      if (!scope) {
+        return {
+          browserCdp: null,
+          mcp: null,
+          reason: "Watch activation is no longer active.",
+        };
+      }
+      const mcp = watchControlTokens.issue(scope);
+      const hasBrowser = await browser.hasBrowserProfiles(
+        scope.createdBy,
+        `watch:${scope.activationId}`,
+      );
+      const browserCdp = hasBrowser ? watchBrowserTokens.issue(scope) : null;
+      return {
+        browserCdp: browserCdp ? { ...browserCdp, url: watchBrowserCdpUrl } : null,
+        mcp: { ...mcp, url: firingMcpUrl },
+      };
+    };
     watchService = new WatchService({
       runnerStore: store,
       browser,

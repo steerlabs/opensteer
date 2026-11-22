@@ -601,13 +601,14 @@ integration.sequential("automation failure notices", () => {
     await failManual(fixture, created.trigger.id, "after-pause");
     expect(await storedNotices()).toHaveLength(1);
   });
-  it("records a notice when a Runner disconnect or Host restart loses a one-shot's only run", async ({
+  it("marks unannounced firings unknown on attach for every lineage, notices one-shots, and lets a late proof settle unknown (T12)", async ({
     storeFixture,
   }) => {
     const {
       createFixture,
       createOneShotTrigger,
       createCronTrigger,
+      database,
       start,
       fireOneShot,
       triggers,
@@ -626,38 +627,71 @@ integration.sequential("automation failure notices", () => {
       }),
       "boot-a",
     );
+    // Also mark a connection-lineage firing on the same runner so Fault B is proved fixed:
+    // connection-lineage firings must settle to unknown instead of staying 'running' forever.
+    await database
+      .updateTable("triggerOccurrences")
+      .set({ connectionId: "acn_test_lineage" })
+      .where("id", "=", lostRecurring.id)
+      .execute();
 
-    // Both runs are lost together, as a disconnect loses every run it held.
-    await expect(
-      triggers.failActiveForRunnerDisconnect({
-        activeOccurrenceIds: [lostRecurring.id, lostOneShot.id],
-        runnerBootId: "boot-a",
-        runnerId: fixture.runnerId,
-      }),
-    ).resolves.toBe(2);
+    // New boot attaches without either firing: both personal and connection lineages settle to unknown.
+    const attached = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [],
+      runnerBootId: "boot-b",
+      runnerId: fixture.runnerId,
+    });
+    expect(attached.settledUnknownCount).toBe(2);
+    expect(attached.results).toEqual([]);
 
-    // The recurring Trigger runs again on its schedule; the one-shot never will.
+    const rows = await database
+      .selectFrom("triggerOccurrences")
+      .select(["id", "status", "outcome", "terminalEvidenceAt", "contactLostAt"])
+      .where("id", "in", [lostOneShot.id, lostRecurring.id])
+      .execute();
+    for (const row of rows) {
+      expect(row.outcome).toBe("unknown");
+      // Legacy status column stays within its 5-value enum (Y8).
+      expect(row.status).toBe("failed");
+    }
+    const connRow = rows.find((r) => r.id === lostRecurring.id)!;
+    expect(connRow.terminalEvidenceAt).not.toBeNull();
+    expect(connRow.contactLostAt).not.toBeNull();
+
+    // The recurring Trigger runs again on its schedule; the one-shot gets an outcome-unknown notice.
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "The computer disconnected before the automation program finished",
+        detail: "Outcome unknown: the computer reconnected without this firing.",
         occurrenceId: lostOneShot.id,
-        reason: "final-occurrence-interrupted",
+        reason: "outcome-unknown",
         settledAt: null,
         triggerId: oneShot.trigger.id,
       },
     ]);
-    const restarted = await createOneShotTrigger(fixture, "restarted-one-shot");
-    const lostToRestart = await start(fixture, await fireOneShot(restarted.trigger.id), "boot-b");
-    await expect(triggers.failActiveAfterHostRestart()).resolves.toBe(1);
-    expect((await storedNotices()).at(-1)).toEqual({
-      activationId: null,
-      detail: "Host restarted before the automation program finished",
-      occurrenceId: lostToRestart.id,
-      reason: "final-occurrence-interrupted",
-      settledAt: null,
-      triggerId: restarted.trigger.id,
+
+    // Late proof with the exact (runnerId, runnerBootId, executionGeneration) settles unknown
+    // to its real exit code & outcome (Fault A fixed!).
+    const lateSettled = await triggers.completeExecution({
+      executionGeneration: lostOneShot.executionGeneration,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId: lostOneShot.id,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "finished before restart\n",
+      },
+      runnerBootId: "boot-a",
+      runnerId: fixture.runnerId,
+      verifiedContainment: true,
     });
+    expect(lateSettled?.status).toBe("succeeded");
+    expect(lateSettled?.exitCode).toBe(0);
+    expect(lateSettled?.stdout).toBe("finished before restart\n");
   });
   it("records one notice when a crash-looping watch is auto-paused", async ({ storeFixture }) => {
     const { createFixture, triggers, storedNotices, detail } = storeFixture;

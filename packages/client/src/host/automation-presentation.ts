@@ -75,6 +75,8 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
       return { group: "upcoming", problem: null };
     case "failed":
       return attention("It failed when it ran.");
+    case "unknown":
+      return attention("Opensteer lost contact while it was running.");
     case "canceled":
       return attention("It was canceled before it ran.");
     case "succeeded":
@@ -310,6 +312,8 @@ export function latestRun(
       };
     case "failed":
       return { text: "Last run failed", tone: "bad" };
+    case "unknown":
+      return { text: "Last run outcome unknown", tone: "warn" };
     case "canceled":
       return { text: "Last run canceled", tone: "muted" };
     case "running":
@@ -338,6 +342,8 @@ export function runOutcome(
       return "Canceled";
     case "failed":
       return "Failed";
+    case "unknown":
+      return "Outcome unknown";
     case "succeeded":
       if (replyIn === null) return "Finished without a message";
       switch (replyStatus) {

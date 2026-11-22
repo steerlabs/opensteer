@@ -1858,6 +1858,7 @@ export class TriggerStore {
             terminalEvidenceAt: null,
             contactLostAt: null,
             executionGeneration,
+            outcome: "running",
             runnerBootId: input.runnerBootId,
             runnerId: input.runnerId,
             startedAt: new Date(),
@@ -1903,6 +1904,92 @@ export class TriggerStore {
   }
   async assertActiveExecutionBinding(input: ActiveTriggerExecutionBindingInput): Promise<void> {
     await assertActiveTriggerExecutionBinding(this.#database, input);
+  }
+  async activeFiringCapabilityScope(input: {
+    readonly executionGeneration: number;
+    readonly occurrenceId: TriggerOccurrenceId;
+    readonly runnerBootId: string;
+    readonly runnerId: RunnerId;
+  }): Promise<
+    | (ActiveTriggerExecutionBindingInput & {
+        readonly toolContractVersion: typeof currentProgramVersion;
+      })
+    | null
+  > {
+    const row = await this.#database
+      .selectFrom("triggerOccurrences")
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+      .select(["threads.environmentId", "triggers.anchorThreadId", "triggers.createdBy"])
+      .where("triggerOccurrences.id", "=", input.occurrenceId)
+      .where("triggerOccurrences.executionGeneration", "=", input.executionGeneration)
+      .where("triggerOccurrences.runnerId", "=", input.runnerId)
+      .where("triggerOccurrences.runnerBootId", "=", input.runnerBootId)
+      .where("triggerOccurrences.status", "=", "running")
+      .executeTakeFirst();
+    if (!row) return null;
+    const scope: ActiveTriggerExecutionBindingInput = {
+      environmentId: row.environmentId,
+      executionGeneration: input.executionGeneration,
+      occurrenceId: input.occurrenceId,
+      requestedBy: row.createdBy,
+      runnerBootId: input.runnerBootId,
+      runnerId: input.runnerId,
+      threadId: row.anchorThreadId,
+    };
+    try {
+      await assertActiveTriggerExecutionBinding(this.#database, scope);
+    } catch (error) {
+      if (
+        error instanceof OpensteerError &&
+        (error.code === "forbidden" || error.code === "not_found")
+      ) {
+        return null;
+      }
+      throw error;
+    }
+    return { ...scope, toolContractVersion: currentProgramVersion };
+  }
+  async activeWatchCapabilityScope(input: {
+    readonly activationId: TriggerWatchActivationId;
+    readonly executionGeneration: number;
+    readonly runnerBootId: string;
+    readonly runnerId: RunnerId;
+  }): Promise<
+    | (ActiveWatchBindingInput & { readonly toolContractVersion: typeof currentProgramVersion })
+    | null
+  > {
+    const row = await this.#database
+      .selectFrom("triggerWatchActivations")
+      .select(["id", "triggerId", "revisionId", "environmentId", "anchorThreadId", "createdBy"])
+      .where("id", "=", input.activationId)
+      .where("executionGeneration", "=", String(input.executionGeneration))
+      .where("runnerId", "=", input.runnerId)
+      .where("runnerBootId", "=", input.runnerBootId)
+      .where("desired", "=", "active")
+      .executeTakeFirst();
+    if (!row) return null;
+    const scope: ActiveWatchBindingInput = {
+      activationId: row.id,
+      anchorThreadId: row.anchorThreadId,
+      createdBy: row.createdBy,
+      environmentId: row.environmentId,
+      executionGeneration: input.executionGeneration,
+      revisionId: row.revisionId,
+      triggerId: row.triggerId,
+    };
+    try {
+      await assertActiveWatchBinding(this.#database, scope);
+    } catch (error) {
+      if (
+        error instanceof OpensteerError &&
+        (error.code === "forbidden" || error.code === "not_found")
+      ) {
+        return null;
+      }
+      throw error;
+    }
+    return { ...scope, toolContractVersion: currentProgramVersion };
   }
   async acceptExecution(input: {
     readonly commandId: CommandId;
@@ -1970,9 +2057,10 @@ export class TriggerStore {
           message: "Trigger result binding is stale",
         });
       }
-      if (occurrence.status !== "running" && !occurrence.connectionId)
+      const settledAsUnknown = occurrence.outcome === "unknown";
+      if (occurrence.status !== "running" && !settledAsUnknown && !occurrence.connectionId)
         return occurrenceFromRow(occurrence);
-      if (occurrence.terminalEvidenceAt && occurrence.status !== "running")
+      if (occurrence.terminalEvidenceAt && occurrence.status !== "running" && !settledAsUnknown)
         return occurrenceFromRow(occurrence);
       const trigger = await transaction
         .selectFrom("triggers")
@@ -1984,7 +2072,7 @@ export class TriggerStore {
         .updateTable("triggerOccurrences")
         .set({
           completedAt: new Date(input.output.completedAt),
-          ...(occurrence.connectionId && !occurrence.terminalEvidenceAt
+          ...(occurrence.connectionId && (!occurrence.terminalEvidenceAt || settledAsUnknown)
             ? {
                 terminalEvidenceAt: now,
                 contactLostAt: input.verifiedContainment ? null : now,
@@ -1996,6 +2084,7 @@ export class TriggerStore {
               })
             : null,
           exitCode: input.output.exitCode,
+          outcome: input.output.status,
           result: input.output.result === null ? null : jsonValue(input.output.result),
           status: input.output.status,
           stderr: input.output.stderr,
@@ -2070,104 +2159,204 @@ export class TriggerStore {
           updatedAt: now,
         })
         .where("id", "=", occurrence.commandId)
-        .where("status", "=", "dispatched")
+        .where("status", "in", ["dispatched", "unknown"])
         .execute();
       return occurrenceFromRow(updated);
     });
   }
-  failActiveAfterHostRestart(): Promise<number> {
-    return this.#failActive({
-      code: "host_restarted",
-      message: "Host restarted before the automation program finished",
-    });
-  }
-  failActiveForRunnerDisconnect(input: {
-    readonly activeOccurrenceIds: readonly TriggerOccurrenceId[];
+
+  /**
+   * Reconciles a reconnecting Runner's firing inventory (T12, Fault A, Fault B).
+   * - Announced active/settled firings whose binding and trigger are still live attach.
+   * - Announced firings whose trigger or lineage stopped are revoked so the Runner kills them.
+   * - Every running occurrence on this Runner (personal OR connection lineage) NOT announced and
+   *   NOT currently being dispatched settles to `outcome = 'unknown'` (never re-run, never left
+   *   stuck `running`). A late proven result for the exact `(runnerId, runnerBootId, generation)`
+   *   can still settle `unknown` to its real exit code in `completeExecution`.
+   */
+  async attachRunnerFirings(input: {
+    readonly dispatchingOccurrenceIds: readonly TriggerOccurrenceId[];
+    readonly firings: readonly {
+      readonly environmentId: EnvironmentId;
+      readonly executionGeneration: number;
+      readonly occurrenceId: TriggerOccurrenceId;
+      readonly terminal: boolean;
+    }[];
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
-  }): Promise<number> {
-    if (input.activeOccurrenceIds.length === 0) return Promise.resolve(0);
-    return this.#failActive({
-      activeOccurrenceIds: input.activeOccurrenceIds,
-      code: "runner_disconnected",
-      message: "The computer disconnected before the automation program finished",
-      runnerBootId: input.runnerBootId,
-      runnerId: input.runnerId,
+  }): Promise<{
+    readonly results: readonly (
+      | { readonly occurrenceId: TriggerOccurrenceId; readonly status: "attached" }
+      | {
+          readonly occurrenceId: TriggerOccurrenceId;
+          readonly reason: string;
+          readonly status: "revoked";
+        }
+    )[];
+    readonly settledUnknownCount: number;
+  }> {
+    return commitPersonalMutation(this.#database, async (transaction) => {
+      const results: (
+        | { readonly occurrenceId: TriggerOccurrenceId; readonly status: "attached" }
+        | {
+            readonly occurrenceId: TriggerOccurrenceId;
+            readonly reason: string;
+            readonly status: "revoked";
+          }
+      )[] = [];
+      const heldIds = new Set<TriggerOccurrenceId>(input.dispatchingOccurrenceIds);
+
+      const sortedFirings = [...input.firings].toSorted((a, b) =>
+        a.occurrenceId.localeCompare(b.occurrenceId),
+      );
+      for (const firing of sortedFirings) {
+        heldIds.add(firing.occurrenceId);
+        const row = await transaction
+          .selectFrom("triggerOccurrences")
+          .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+          .select([
+            "triggerOccurrences.connectionId",
+            "triggerOccurrences.environmentId",
+            "triggerOccurrences.executionGeneration",
+            "triggerOccurrences.id",
+            "triggerOccurrences.outcome",
+            "triggerOccurrences.runnerBootId",
+            "triggerOccurrences.runnerId",
+            "triggerOccurrences.status",
+            "triggers.status as triggerStatus",
+          ])
+          .where("triggerOccurrences.id", "=", firing.occurrenceId)
+          .forNoKeyUpdate("triggerOccurrences")
+          .executeTakeFirst();
+        if (
+          !row ||
+          row.environmentId !== firing.environmentId ||
+          row.runnerId !== input.runnerId ||
+          row.runnerBootId !== input.runnerBootId ||
+          row.executionGeneration !== firing.executionGeneration
+        ) {
+          results.push({
+            occurrenceId: firing.occurrenceId,
+            reason: "The Host does not hold this firing",
+            status: "revoked",
+          });
+          continue;
+        }
+        if (row.status !== "running" && row.outcome !== "unknown") {
+          results.push({
+            occurrenceId: firing.occurrenceId,
+            reason: "This firing has already ended",
+            status: "revoked",
+          });
+          continue;
+        }
+        if (!firing.terminal && row.triggerStatus === "archived") {
+          results.push({
+            occurrenceId: firing.occurrenceId,
+            reason: "The automation was archived",
+            status: "revoked",
+          });
+          continue;
+        }
+        results.push({ occurrenceId: firing.occurrenceId, status: "attached" });
+      }
+
+      const settledUnknownCount = await this.#markActiveUnknownInTransaction(transaction, {
+        excludeOccurrenceIds: [...heldIds],
+        message: "Outcome unknown: the computer reconnected without this firing.",
+        runnerId: input.runnerId,
+      });
+
+      return { results, settledUnknownCount };
     });
   }
 
-  /** Permanently disables a revoked member's Triggers and fences all live work. */
-
-  async #failActive(input: {
-    readonly activeOccurrenceIds?: readonly TriggerOccurrenceId[];
-    readonly code: string;
-    readonly message: string;
+  /** Settles active firings on a revoked Runner to unknown (it can never reconnect). */
+  async markActiveUnknownForRevokedRunner(input: {
     readonly runnerBootId?: string;
-    readonly runnerId?: RunnerId;
+    readonly runnerId: RunnerId;
   }): Promise<number> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      let query = transaction
-        .selectFrom("triggerOccurrences")
-        .select(["commandId", "event", "id", "revisionId", "triggerId"])
-        .where("status", "=", "running")
-        .where("connectionId", "is", null);
-      if (input.activeOccurrenceIds) {
-        query = query.where("id", "in", input.activeOccurrenceIds);
-      }
-      if (input.runnerId) query = query.where("runnerId", "=", input.runnerId);
-      if (input.runnerBootId) query = query.where("runnerBootId", "=", input.runnerBootId);
-      const rows = await query.orderBy("id", "asc").forNoKeyUpdate().execute();
-      if (rows.length === 0) return 0;
-      const now = new Date();
-      const ids = rows.map((row) => row.id);
-      const commandIds = rows.map((row) => row.commandId);
-      await transaction
-        .updateTable("triggerOccurrences")
-        .set({
-          completedAt: now,
-          error: jsonValue({
-            code: input.code,
-            message: input.message,
-          }),
-          status: "failed",
-          updatedAt: now,
-        })
-        .where("id", "in", ids)
-        .where("status", "=", "running")
-        .execute();
-      await transaction
-        .selectFrom("commands")
-        .select("id")
-        .where("id", "in", commandIds)
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute();
-      await transaction
-        .updateTable("commands")
-        .set({
-          lastError: jsonValue({
-            code: input.code,
-            message: input.message,
-          }),
-          status: "failed",
-          updatedAt: now,
-        })
-        .where("id", "in", commandIds)
-        .where("status", "=", "dispatched")
-        .execute();
-      // A recurring Trigger runs again; a one-shot one that lost its only run
-      // to a restart or a disconnect never will, so its Thread hears of it.
-      for (const row of rows) {
-        if (!(await isFinalOccurrence(transaction, row))) continue;
-        await recordAutomationFailure(transaction, {
-          detail: input.message,
-          occurrenceId: row.id,
-          reason: "final-occurrence-interrupted",
-          triggerId: row.triggerId,
-        });
-      }
-      return rows.length;
+    return commitPersonalMutation(this.#database, async (transaction) =>
+      this.#markActiveUnknownInTransaction(transaction, {
+        message: "Outcome unknown: the computer was removed before this firing finished.",
+        ...(input.runnerBootId ? { runnerBootId: input.runnerBootId } : {}),
+        runnerId: input.runnerId,
+      }),
+    );
+  }
+
+  async #markActiveUnknownInTransaction(
+    transaction: Transaction<DatabaseSchema>,
+    input: {
+      readonly excludeOccurrenceIds?: readonly TriggerOccurrenceId[];
+      readonly message: string;
+      readonly runnerBootId?: string;
+      readonly runnerId: RunnerId;
+    },
+  ): Promise<number> {
+    let query = transaction
+      .selectFrom("triggerOccurrences")
+      .select(["commandId", "connectionId", "event", "id", "revisionId", "triggerId"])
+      .where("status", "=", "running")
+      .where("runnerId", "=", input.runnerId);
+    if (input.runnerBootId) query = query.where("runnerBootId", "=", input.runnerBootId);
+    if (input.excludeOccurrenceIds && input.excludeOccurrenceIds.length > 0) {
+      query = query.where("id", "not in", input.excludeOccurrenceIds);
+    }
+    const rows = await query.orderBy("id", "asc").forNoKeyUpdate().execute();
+    if (rows.length === 0) return 0;
+
+    const now = new Date();
+    const ids = rows.map((row) => row.id);
+    const commandIds = rows.map((row) => row.commandId);
+    const errorPayload = jsonValue({
+      code: "outcome_unknown",
+      message: input.message,
     });
+
+    await transaction
+      .updateTable("triggerOccurrences")
+      .set({
+        completedAt: now,
+        contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
+        error: errorPayload,
+        outcome: "unknown",
+        status: "failed",
+        terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
+        updatedAt: now,
+      })
+      .where("id", "in", ids)
+      .where("status", "=", "running")
+      .execute();
+
+    await transaction
+      .selectFrom("commands")
+      .select("id")
+      .where("id", "in", commandIds)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    await transaction
+      .updateTable("commands")
+      .set({
+        lastError: errorPayload,
+        status: "unknown",
+        updatedAt: now,
+      })
+      .where("id", "in", commandIds)
+      .where("status", "=", "dispatched")
+      .execute();
+
+    for (const row of rows) {
+      if (!(await isFinalOccurrence(transaction, row))) continue;
+      await recordAutomationFailure(transaction, {
+        detail: input.message,
+        occurrenceId: row.id,
+        reason: "outcome-unknown",
+        triggerId: row.triggerId,
+      });
+    }
+    return rows.length;
   }
 }
 
@@ -2846,7 +3035,7 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
     result: row.result,
     revisionId: row.revisionId,
     startedAt: row.startedAt?.toISOString() ?? null,
-    status: row.status,
+    status: row.outcome ?? row.status,
     stderr: row.stderr,
     stdout: row.stdout,
     triggerId: row.triggerId,

@@ -12,16 +12,19 @@ import { systemClock, type Clock } from "@opensteer/shared/clock";
 export type DispatchDisposition = "retry" | "held" | "uncertain" | "failed";
 export class CommandDispatchError extends Error {
   readonly disposition: DispatchDisposition;
+  readonly provenNotStarted: boolean;
   constructor(
     message: string,
     disposition: DispatchDisposition,
     options?: {
       readonly cause?: unknown;
+      readonly provenNotStarted?: boolean | undefined;
     },
   ) {
     super(message, options);
     this.name = "CommandDispatchError";
     this.disposition = disposition;
+    this.provenNotStarted = options?.provenNotStarted === true;
   }
 }
 export interface DurableCommandDispatcher {
@@ -349,7 +352,11 @@ export class ExecutionCoordinator {
         dispatchError.disposition === "uncertain" && isResendableControlCommand(command.type);
       if (dispatchError.disposition === "retry" || resendable) {
         await this.#settle(command.id, async () => {
-          await this.#store.retryCommand(command.id, dispatchError);
+          await this.#store.retryCommand(
+            command.id,
+            dispatchError,
+            dispatchError.provenNotStarted ? { provenNotStarted: true } : undefined,
+          );
           // Recorded once the retry has committed: a listing read before then
           // misses the command, and must not take it for one that left.
           this.#backOff(command.id, command.environmentId ?? null);
@@ -423,6 +430,11 @@ export class ExecutionCoordinator {
 }
 function normalizeDispatchError(error: unknown): CommandDispatchError {
   if (error instanceof CommandDispatchError) return error;
+  if (error instanceof Error && error.name === "AbortError") {
+    return new CommandDispatchError("Dispatch was aborted before sending.", "retry", {
+      cause: error,
+    });
+  }
   if (error instanceof OpensteerError && error.code !== "internal") {
     return new CommandDispatchError(error.message, error.retryable ? "retry" : "failed", {
       cause: error,

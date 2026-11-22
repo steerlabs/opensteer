@@ -1635,20 +1635,46 @@ export async function loadSteerDispatchInput(
     threadId: row.targetThreadId,
   };
 }
+export async function markCommandFrameSent(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+): Promise<void> {
+  await commitPersonalMutation(database, async (transaction) => {
+    const now = new Date();
+    await transaction
+      .updateTable("commands")
+      .set({ frameSentAt: now, updatedAt: now })
+      .where("id", "=", commandId)
+      .where("status", "=", "dispatched")
+      .execute();
+  });
+}
+
 export async function retryCommand(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   commandId: CommandRow["id"],
   error: unknown,
+  options?: { readonly provenNotStarted?: boolean | undefined },
 ): Promise<void> {
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
-      .select(["id", "runId", "type"])
+      .select(["frameSentAt", "id", "runId", "type"])
       .where("id", "=", commandId)
       .where("status", "=", "dispatched")
       .executeTakeFirst();
     if (!observed) return;
+    if (
+      observed.type === "trigger.execute" &&
+      observed.frameSentAt !== null &&
+      !options?.provenNotStarted
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Cannot retry an automation firing after its dispatch frame was sent.",
+      });
+    }
     if (observed.type === "trigger.execute") {
       await transaction
         .selectFrom("triggerOccurrences")
@@ -1699,6 +1725,7 @@ export async function retryCommand(
       .updateTable("commands")
       .set({
         dispatcherId: null,
+        frameSentAt: null,
         lastError: safeError(error),
         status: "pending",
         updatedAt: new Date(),
@@ -1738,6 +1765,7 @@ export async function retryCommand(
           runnerBootId: null,
           runnerId: null,
           startedAt: null,
+          outcome: "pending",
           status: "pending",
           updatedAt: new Date(),
         })

@@ -1,6 +1,12 @@
 import type { TriggerSummary } from "@opensteer/triggers/models";
 import { describe, expect, it } from "vitest";
-import { formatNextRun, placeAutomation, sectionAutomations } from "./automation-presentation.js";
+import {
+  formatNextRun,
+  latestRun,
+  placeAutomation,
+  runOutcome,
+  sectionAutomations,
+} from "./automation-presentation.js";
 
 const now = new Date(2026, 10, 6, 16, 31).getTime();
 const at = (days: number, hours: number, minutes = 0) =>
@@ -38,6 +44,28 @@ describe("placing automations", () => {
       "repeating",
       "system",
     ]);
+  });
+
+  it("places and describes unknown firing outcomes without claiming failure", () => {
+    const unknownOccurrence = {
+      completedAt: at(0, 16, 20),
+      createdAt: at(0, 16, 15),
+      status: "unknown",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+    const once = automation({
+      latestOccurrence: unknownOccurrence,
+      nextFireAt: null,
+      source: { kind: "schedule", schedule: { at: at(0, 16, 15), kind: "at" } },
+    });
+    expect(placeAutomation(once, now)).toEqual({
+      group: "attention",
+      problem: "Opensteer lost contact while it was running.",
+    });
+    expect(latestRun(unknownOccurrence, now)).toEqual({
+      text: "Last run outcome unknown",
+      tone: "warn",
+    });
+    expect(runOutcome(unknownOccurrence as never, null, null, now)).toBe("Outcome unknown");
   });
 });
 

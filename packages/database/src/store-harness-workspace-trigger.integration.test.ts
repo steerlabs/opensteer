@@ -1574,9 +1574,8 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).resolves.toBeUndefined();
     await expect(
-      triggers.failActiveForRunnerDisconnect({
-        activeOccurrenceIds: [createId("triggerOccurrence")],
-        runnerBootId: "boot-trigger-lifecycle",
+      triggers.markActiveUnknownForRevokedRunner({
+        runnerBootId: "other-boot",
         runnerId: fixture.runnerId,
       }),
     ).resolves.toBe(0);

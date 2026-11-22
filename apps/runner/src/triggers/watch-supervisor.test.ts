@@ -232,6 +232,131 @@ describe("WatchSupervisor", () => {
     }
   });
 
+  it("renews an expiring watch token on demand via sink.renewProxyToken without expiring the watch", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-watch-renew-"));
+    roots.push(root);
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const toolAuthorizations: string[] = [];
+    const program = {
+      language: "javascript",
+      source:
+        'export default async ({ opensteer }) => { await new Promise(() => setInterval(() => { const { mcp } = opensteer.capabilities(); void fetch(mcp.url, { body: "{}", headers: { accept: "application/json, text/event-stream", authorization: "Bearer " + mcp.token, "content-type": "application/json" }, method: "POST" }).catch(() => undefined); }, 30)); }',
+      toolContractVersion: 5,
+    } as const;
+    const server = createServer((request, response) => {
+      if (
+        ignoreForeignTestRequest(
+          request,
+          response,
+          (path) => path === "/mcp" || path.startsWith("/internal/v1/triggers/revisions/"),
+        )
+      )
+        return;
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/mcp") {
+        toolAuthorizations.push(String(request.headers.authorization ?? ""));
+        request.resume();
+        response.end("{}");
+        return;
+      }
+      response.end(JSON.stringify(program));
+    });
+    await new Promise<void>((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server");
+    const mcpUrl = `http://127.0.0.1:${address.port}/mcp`;
+    const environmentId = createId("environment");
+    const activationId = createId("triggerWatchActivation");
+    const anchorThreadId = createId("thread");
+    const revisionId = createId("triggerRevision");
+    const triggerId = createId("trigger");
+    const messages: RunnerOperationalReport[] = [];
+    const renewCalls: unknown[] = [];
+    const sink: RunnerMessageSink = {
+      async send(message) {
+        messages.push(message);
+      },
+      async renewProxyToken(target) {
+        renewCalls.push(target);
+        return {
+          browserCdp: null,
+          mcp: {
+            expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+            token: "renewed-watch-token",
+            url: mcpUrl,
+          },
+        };
+      },
+    };
+    const supervisor = new WatchSupervisor({
+      agentHome: {
+        folder: async ({ path }) => path,
+        prepare: async () => ({ instructions: undefined, path: workspace }),
+      },
+      environmentId,
+      nodeExecutable: process.execPath,
+      planLaunch: async () => (launch) => launch,
+      privateStateDirectory: join(root, "private"),
+      terminate: async () => "proven",
+      transport: { mode: "development" },
+    });
+    try {
+      await supervisor.reconcile(
+        {
+          commandId: createId("command"),
+          correlationId: CorrelationIdSchema.parse(`watch-renew:${crypto.randomUUID()}`),
+          desired: [
+            {
+              activationId,
+              agentHome: { computerId: createId("runner"), path: workspace },
+              anchorThreadId,
+              capabilities: {
+                browserCdp: null,
+                // Already within the 60s on-demand refresh window
+                mcp: {
+                  expiresAt: new Date(Date.now() + 1_500).toISOString(),
+                  token: "initial-expiring-token",
+                  url: mcpUrl,
+                },
+              },
+              executionGeneration: 1,
+              revisionId,
+              triggerId,
+            },
+          ],
+          environmentId,
+          reconcileGeneration: 1,
+          type: "watch.reconcile",
+        },
+        sink,
+      );
+      await vi.waitFor(
+        () => {
+          expect(toolAuthorizations).toContain("Bearer renewed-watch-token");
+        },
+        { timeout: 5_000 },
+      );
+      expect(renewCalls).toEqual([
+        {
+          activationId,
+          executionGeneration: 1,
+          kind: "watch",
+        },
+      ]);
+      expect(
+        messages.some(
+          (message) => message.type === "runner.watch-status" && message.observed === "expired",
+        ),
+      ).toBe(false);
+    } finally {
+      await supervisor.close();
+      await new Promise<void>((resolvePromise, reject) =>
+        server.close((error) => (error ? reject(error) : resolvePromise())),
+      );
+    }
+  });
+
   it("withholds the stop receipt when containment cannot be verified", async () => {
     let proved = false;
     const fixture = await watchHarness("export default async () => {};", undefined, async () =>

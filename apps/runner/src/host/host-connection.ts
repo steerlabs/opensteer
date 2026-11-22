@@ -20,6 +20,7 @@ import type {
   HostRunFileRequest,
 } from "@opensteer/protocol";
 import {
+  CorrelationIdSchema,
   HomeFileOutputImageExtensionSchema,
   agentHomeFilesCapability,
   homeFilesOutputImageMaxBytes,
@@ -100,6 +101,8 @@ import {
   RunnerRuntime,
   errorCatalog,
   type HarnessDriverAvailability,
+  type ProxyTokenRenewalResult,
+  type ProxyTokenRenewalTarget,
   type RefreshedRunCredentials,
   type RunnerMessageSink,
 } from "../runtime/runtime.js";
@@ -353,6 +356,11 @@ export class ReconnectingHostConnection {
     string,
     (credentials: RefreshedRunCredentials | undefined) => void
   >();
+  /** On-demand proxy token renewals this connection has asked for and not yet been answered. */
+  readonly #proxyTokenWaiters = new Map<
+    string,
+    (result: ProxyTokenRenewalResult | undefined) => void
+  >();
   #enrollmentCredential: RunnerEnrollmentCredential | undefined;
   /**
    * The macOS grant as this Runner last probed it, which the prepared module
@@ -534,7 +542,8 @@ export class ReconnectingHostConnection {
       const ceiling = this.#unenrollable()
         ? unenrollableReconnectDelayMs
         : Math.min(
-            (this.#agents?.runtime.attachInventory().length ?? 0) > 0
+            (this.#agents?.runtime.attachInventory().length ?? 0) > 0 ||
+              (this.#agents?.runtime.attachFiringInventory().length ?? 0) > 0
               ? reconnectDelayHoldingRunsMs
               : maximumReconnectDelayMs,
             500 * 2 ** Math.min(failures, 6),
@@ -681,6 +690,7 @@ export class ReconnectingHostConnection {
         new WebSocketMessageSink(socket, this.#fence),
         (runId) => this.#refreshRunCredentials(socket, runId),
         welcome.acceptsAttemptStopState === true,
+        (target) => this.#renewProxyToken(socket, target),
       );
       const browserHandler = this.#browserModuleHandler();
       const integrationsHandler = this.#integrationsHandler;
@@ -1147,6 +1157,32 @@ export class ReconnectingHostConnection {
     }
   }
 
+  /** Asks the Host for a fresh capability token for an active watch or firing on demand. */
+  async #renewProxyToken(
+    socket: WebSocket,
+    target: ProxyTokenRenewalTarget,
+  ): Promise<ProxyTokenRenewalResult | undefined> {
+    const requestId = CorrelationIdSchema.parse(randomUUID());
+    const answered = new Promise<ProxyTokenRenewalResult | undefined>((resolve) => {
+      this.#proxyTokenWaiters.set(requestId, resolve);
+    });
+    try {
+      await sendWireMessage(socket, {
+        ...this.#fence.fence,
+        requestId,
+        target,
+        type: "runner.proxy-token.renew",
+      });
+      return await withTimeout(answered, handshakeTimeoutMs, {
+        abortFallback: "Runner connection closed",
+        signal: AbortSignal.timeout(handshakeTimeoutMs * 2),
+        timeoutError: () => new Error("Host did not answer a proxy token renewal"),
+      }).catch(() => undefined);
+    } finally {
+      this.#proxyTokenWaiters.delete(requestId);
+    }
+  }
+
   /** Hands a ticket to the module waiting for it, or refuses an unasked one. */
   #acceptModuleTicket(
     message: Extract<HostToRunnerMessage, { readonly type: "host.auxiliary.ticket" }>,
@@ -1387,6 +1423,14 @@ export class ReconnectingHostConnection {
             );
             this.#credentialWaiters.delete(message.requestId);
             break;
+          case "host.proxy-token.renewed":
+            this.#proxyTokenWaiters.get(message.requestId)?.({
+              browserCdp: message.browserCdp,
+              mcp: message.mcp,
+              ...(message.reason !== undefined ? { reason: message.reason } : {}),
+            });
+            this.#proxyTokenWaiters.delete(message.requestId);
+            break;
           default:
             if (stoppedReplies && !stoppedWorkAllowed[message.type])
               await stoppedReplies.handle(message);
@@ -1399,9 +1443,11 @@ export class ReconnectingHostConnection {
       // The Host hears the first settings.json read, then every Run this Runner
       // holds, and answers which continue here before it dispatches anything.
       await work.initialReports();
+      const firings = work.attachFiringInventory?.();
       await sink.send({
         complete: true,
         executions: work.attachInventory(),
+        ...(firings && firings.length > 0 ? { firings } : {}),
         type: "runner.executions.attach",
       });
       for (;;) {
@@ -1425,6 +1471,7 @@ export class ReconnectingHostConnection {
       }
       this.#ticketWaiters.clear();
       this.#credentialWaiters.clear();
+      this.#proxyTokenWaiters.clear();
       await Promise.allSettled(supervision);
       await work.close();
     }
@@ -1474,7 +1521,7 @@ export const stoppedWorkAllowed = {
 } satisfies Record<
   Exclude<
     RunnerWorkMessage["type"],
-    "host.grants.credentials" | "host.shell.probe-full-disk-access"
+    "host.grants.credentials" | "host.proxy-token.renewed" | "host.shell.probe-full-disk-access"
   >,
   boolean
 >;
@@ -1506,6 +1553,9 @@ interface RunnerWorkSession {
     RunnerOperationalReport,
     { readonly type: "runner.executions.attach" }
   >["executions"];
+  attachFiringInventory?(): NonNullable<
+    Extract<RunnerOperationalReport, { readonly type: "runner.executions.attach" }>["firings"]
+  >;
   /** What the Host must hear before it dispatches anything: the first read of settings.json. */
   initialReports(): Promise<void>;
   handle(message: RunnerWorkMessage): Promise<void>;
@@ -1629,6 +1679,10 @@ export class AgentsWorkSession implements RunnerWorkSession {
     return this.#options.agents.runtime.attachInventory();
   }
 
+  attachFiringInventory(): ReturnType<NonNullable<RunnerWorkSession["attachFiringInventory"]>> {
+    return this.#options.agents.runtime.attachFiringInventory();
+  }
+
   async handle(message: RunnerWorkMessage): Promise<void> {
     switch (message.type) {
       case "host.background-text":
@@ -1700,10 +1754,12 @@ export class AgentsWorkSession implements RunnerWorkSession {
         this.#options.agents.runtime.resynchronizeLive(message.runId);
         return;
       case "host.executions.acked":
-        this.#options.agents.runtime.acknowledge(message.acks);
+        this.#options.agents.runtime.acknowledge(message.acks, message.firingAcks);
         return;
       case "host.executions.renewed":
         this.#options.agents.runtime.renewLeases(message);
+        return;
+      case "host.proxy-token.renewed":
         return;
       // In order with commands: a revocation names Runs the Host saw this
       // connection execute, so it must never overtake the execute it follows.
@@ -2530,6 +2586,7 @@ function reachOnlyWorkSession(
         case "host.executions.attached":
         case "host.executions.acked":
         case "host.executions.renewed":
+        case "host.proxy-token.renewed":
           return;
       }
     },
@@ -2572,16 +2629,22 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
 
   readonly #refresh: ((runId: RunId) => Promise<RefreshedRunCredentials | undefined>) | undefined;
   readonly #acceptsAttemptStopState: boolean;
+  readonly #renewProxyToken:
+    ((target: ProxyTokenRenewalTarget) => Promise<ProxyTokenRenewalResult | undefined>) | undefined;
   #publishOutputImage: RunnerMessageSink["publishOutputImage"] | undefined;
 
   constructor(
     delegate: RunnerReportSink,
     refresh?: (runId: RunId) => Promise<RefreshedRunCredentials | undefined>,
     acceptsAttemptStopState = false,
+    renewProxyToken?: (
+      target: ProxyTokenRenewalTarget,
+    ) => Promise<ProxyTokenRenewalResult | undefined>,
   ) {
     this.#delegate = delegate;
     this.#refresh = refresh;
     this.#acceptsAttemptStopState = acceptsAttemptStopState;
+    this.#renewProxyToken = renewProxyToken;
   }
 
   setOutputImagePublisher(publisher: RunnerMessageSink["publishOutputImage"] | undefined): void {
@@ -2596,6 +2659,11 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   refreshRunCredentials(runId: RunId): Promise<RefreshedRunCredentials | undefined> {
     if (this.#closed || !this.#refresh) return Promise.resolve(undefined);
     return this.#refresh(runId);
+  }
+
+  renewProxyToken(target: ProxyTokenRenewalTarget): Promise<ProxyTokenRenewalResult | undefined> {
+    if (this.#closed || !this.#renewProxyToken) return Promise.resolve(undefined);
+    return this.#renewProxyToken(target);
   }
 
   send(message: RunnerOperationalReport): Promise<void> {

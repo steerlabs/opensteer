@@ -1232,7 +1232,7 @@ describe("Runner connection registry", () => {
       message: "Provider acknowledgement was lost",
     });
   });
-  it("rejects an uncertain receipt for a command that is not a steer", async () => {
+  it("preserves uncertain disposition for trigger.execute without failing or dropping the connection", async () => {
     const registry = new RunnerRegistry({
       hooks: {
         authorize: vi.fn(async () => undefined),
@@ -1253,10 +1253,71 @@ describe("Runner connection registry", () => {
         message: "Cannot confirm",
         type: "runner.command-uncertain",
       }),
-    ).rejects.toThrow("uncertain delivery for trigger.execute");
+    ).resolves.toBeUndefined();
     await expect(dispatched).rejects.toMatchObject({
-      disposition: "failed",
-      message: "Runner reported uncertain delivery for trigger.execute",
+      disposition: "uncertain",
+      message: "Cannot confirm",
+    });
+  });
+
+  it("forwards firing inventory on attach and acknowledges committed trigger results", async () => {
+    const occurrenceId = createId("triggerOccurrence");
+    const environmentId = createId("environment");
+    const onAttachFirings = vi.fn(async () => [{ occurrenceId, status: "attached" as const }]);
+    const onTriggerResult = vi.fn(async () => undefined);
+    const registry = new RunnerRegistry({
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onAttach: vi.fn(async () => []),
+        onAttachFirings,
+        onEvent: vi.fn(commitThrough),
+        onTriggerResult,
+      },
+    });
+    const peer = new MemoryRunnerPeer("runner");
+    await registry.register(hello(createId("runner"), environmentId, "boot-1"), peer);
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      complete: true,
+      executions: [],
+      firings: [
+        {
+          environmentId,
+          executionGeneration: 2,
+          occurrenceId,
+          terminal: false,
+        },
+      ],
+      type: "runner.executions.attach",
+    });
+    expect(onAttachFirings).toHaveBeenCalledWith(expect.anything(), [
+      { environmentId, executionGeneration: 2, occurrenceId, terminal: false },
+    ]);
+    expect(peer.messages.find((m) => m.type === "host.executions.attached")).toMatchObject({
+      firingResults: [{ occurrenceId, status: "attached" }],
+      results: [],
+      type: "host.executions.attached",
+    });
+    await registry.handle(peer, {
+      ...fenceOf(peer),
+      environmentId,
+      executionGeneration: 2,
+      output: {
+        completedAt: new Date().toISOString(),
+        error: null,
+        exitCode: 0,
+        occurrenceId,
+        result: null,
+        status: "succeeded",
+        stderr: "",
+        stdout: "ok\n",
+      },
+      type: "runner.trigger-result",
+    });
+    expect(onTriggerResult).toHaveBeenCalledTimes(1);
+    expect(peer.messages.find((m) => m.type === "host.executions.acked")).toMatchObject({
+      firingAcks: [{ executionGeneration: 2, occurrenceId }],
+      type: "host.executions.acked",
     });
   });
   it("preserves a proven steer refusal reason", async () => {

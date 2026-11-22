@@ -241,6 +241,30 @@ describe("WatchService", () => {
       vi.useRealTimers();
     }
   });
+
+  it("arms no periodic renewal timer on an idle Home (Y2 / Rule 7)", async () => {
+    vi.useFakeTimers();
+    const fixture = watchFixture();
+    const reconcileWatchesForRunner = vi.fn(async () => ({
+      activations: [],
+      reconcileGeneration: 1,
+    }));
+    const service = new WatchService(
+      options(fixture, {
+        reconcileWatchesForRunner,
+      }),
+    );
+    try {
+      service.start();
+      expect(vi.getTimerCount()).toBe(0);
+      // Advancing 24 hours on an idle Home must trigger zero watch reconciliation timers.
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+      expect(reconcileWatchesForRunner).not.toHaveBeenCalled();
+    } finally {
+      await service.close();
+      vi.useRealTimers();
+    }
+  });
 });
 function options(
   fixture: ReturnType<typeof watchFixture>,

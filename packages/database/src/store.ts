@@ -1727,8 +1727,15 @@ export class OpensteerStore {
   }> {
     return commandStore.loadSteerDispatchInput(this.#database, commandId);
   }
-  async retryCommand(commandId: CommandRow["id"], error: unknown): Promise<void> {
-    return commandStore.retryCommand(this.#database, this.#links, commandId, error);
+  async markCommandFrameSent(commandId: CommandRow["id"]): Promise<void> {
+    return commandStore.markCommandFrameSent(this.#database, commandId);
+  }
+  async retryCommand(
+    commandId: CommandRow["id"],
+    error: unknown,
+    options?: { readonly provenNotStarted?: boolean | undefined },
+  ): Promise<void> {
+    return commandStore.retryCommand(this.#database, this.#links, commandId, error, options);
   }
   async failCommand(
     commandId: CommandRow["id"],

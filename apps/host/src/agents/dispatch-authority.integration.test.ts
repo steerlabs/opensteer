@@ -274,7 +274,16 @@ describeStore("a connected agent's authority at the send", (it) => {
       await queue.dispatch(claimed.command, new AbortController().signal);
     };
     await dispatch();
-    await store.retryCommand(occurrence.commandId, new Error("Retried before ACK"));
+    // Once the dispatch frame may have left the Home (frame_sent_at stamped), retryCommand
+    // refuses to reset the firing to pending and send a second generation (T12 / Rule 4).
+    await expect(
+      store.retryCommand(occurrence.commandId, new Error("Retried before ACK")),
+    ).rejects.toThrow(/dispatch frame was sent/iu);
+    expect(sent).toHaveLength(1);
+    // Only an explicit pre-execution Runner refusal (provenNotStarted: true) allows retry.
+    await store.retryCommand(occurrence.commandId, new Error("Runner draining"), {
+      provenNotStarted: true,
+    });
     await dispatch();
     const [first, current] = sent;
     if (first?.type !== "trigger.execute" || current?.type !== "trigger.execute")

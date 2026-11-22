@@ -184,6 +184,7 @@ it("makes an explicit stopped-mode decision for every primary work message", () 
     "host.connection.lease-renewed",
     "host.auxiliary.ticket",
     "host.grants.credentials",
+    "host.proxy-token.renewed",
     "host.shell.probe-full-disk-access",
   ]);
   const work = HostToRunnerMessageSchema.options
