@@ -917,7 +917,6 @@ describe("Remote access on start", () => {
     // Setup is left while it is turning on.
     act(() => root?.unmount());
     root = undefined;
-    await act(async () => new Promise((done) => setTimeout(done, 0)));
     // The person turns Remote access off; later Setup is opened again from the menu.
     await remoteChanged({
       ...remoteStatus,
@@ -929,6 +928,23 @@ describe("Remote access on start", () => {
     expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
     expect(requests()).toHaveLength(0);
     expect(remoteAccessWishHeld()).toBe(false);
+  });
+
+  it("forgets the wish when Setup is left before it was sent", async () => {
+    const { bridge } = unlinkedSignedIn();
+    wish();
+    // Remote access is still being read: nothing can be sent yet.
+    shell.hostClient.rpc["personal.remoteAccess.get"].mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    vi.useFakeTimers();
+    await mount();
+    expect(remoteAccessWishHeld()).toBe(true);
+    act(() => root?.unmount());
+    root = undefined;
+    await act(async () => vi.runAllTimersAsync());
+    expect(remoteAccessWishHeld()).toBe(false);
+    expect(bridge.linkPersonal).not.toHaveBeenCalled();
   });
 
   it("does nothing for another account that signed in before the link was made", async () => {
