@@ -52,6 +52,7 @@ import { useNavigation } from "@react-navigation/native";
 import { setStringAsync } from "expo-clipboard";
 import { useEffect, type ReactNode } from "react";
 import { color } from "../theme.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { addressWords } from "../ui/address-words.js";
 import { RowMarkIcon } from "../ui/integration-icon.js";
 import type {
@@ -157,6 +158,8 @@ export function NativeSettingsSections(props: {
 }
 
 function Row({ row }: { readonly row: NativeSettingsRow }) {
+  // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
+  const stacked = useStackedLayout();
   if (row.kind === "chips")
     return (
       <Picker
@@ -184,15 +187,29 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         {...linesAddress(row.addressIn)}
       />
     ) : (
-      <HStack alignment="center" spacing={12}>
-        <IdentityMark circular initial={row.initial} />
-        <Lines
-          detail={row.detail ?? null}
-          title={row.label}
-          titleParts={row.labelParts}
-          {...linesAddress(row.addressIn)}
-        />
-      </HStack>
+      (() => {
+        const mark = <IdentityMark circular initial={row.initial} />;
+        const lines = (
+          <Lines
+            detail={row.detail ?? null}
+            title={row.label}
+            titleParts={row.labelParts}
+            {...linesAddress(row.addressIn)}
+          />
+        );
+        // Above the address at the largest sizes, so the address has the row's whole width.
+        return stacked ? (
+          <VStack alignment="leading" spacing={8}>
+            {mark}
+            {lines}
+          </VStack>
+        ) : (
+          <HStack alignment="center" spacing={12}>
+            {mark}
+            {lines}
+          </HStack>
+        );
+      })()
     );
   if (row.kind === "status") return <StatusRow row={row} />;
   if (row.kind === "choice") return <ChoiceRow row={row} />;

@@ -3,6 +3,7 @@ import { fillMaxWidth, padding } from "@expo/ui/jetpack-compose/modifiers";
 import { SymbolView, type AndroidSymbol } from "expo-symbols";
 import { useState, type ReactNode } from "react";
 import { color } from "../theme.js";
+import { useStackedLayout } from "../ui/stacked-layout.js";
 import { RowMarkIcon } from "../ui/integration-icon.js";
 import type { SFSymbolName } from "../ui/symbol.js";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
@@ -120,6 +121,8 @@ export function NativeSettingsSections(props: {
 }
 
 function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
+  // At the largest sizes a row's mark takes a line of its own (`stacked-layout.ts`).
+  const stacked = useStackedLayout();
   switch (row.kind) {
     case "chips":
       return (
@@ -148,6 +151,7 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
           {...rowAddress(row.addressIn)}
           detail={row.detail}
           lead={row.initial === undefined ? null : <Avatar initial={row.initial} />}
+          leadAbove={stacked}
           title={row.label}
           titleParts={row.labelParts}
         />

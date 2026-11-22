@@ -267,6 +267,8 @@ export function LinkRow(props: {
   readonly destructive?: boolean | undefined;
   readonly disabled?: boolean | undefined;
   readonly lead?: ReactNode;
+  /** The lead on a line of its own above the title, so the lines have the row's width. */
+  readonly leadAbove?: boolean | undefined;
   readonly onPress?: (() => void) | null | undefined;
   readonly title: string;
   /** A short word on the right, such as the current choice or an action. */
@@ -306,6 +308,7 @@ export function LinkRow(props: {
       ]}
     >
       <ListItem.HeadlineContent>
+        {props.leadAbove === true && props.lead ? props.lead : null}
         <Text
           color={
             props.disabled === true
@@ -323,7 +326,9 @@ export function LinkRow(props: {
           <Text color={props.detailTone === "attention" ? color.amber : color.muted}>{detail}</Text>
         </ListItem.SupportingContent>
       ) : null}
-      {props.lead ? <ListItem.LeadingContent>{props.lead}</ListItem.LeadingContent> : null}
+      {props.lead && props.leadAbove !== true ? (
+        <ListItem.LeadingContent>{props.lead}</ListItem.LeadingContent>
+      ) : null}
       {props.trailing === undefined || props.trailing === null ? null : (
         <ListItem.TrailingContent>
           {typeof props.trailing === "string" ? (

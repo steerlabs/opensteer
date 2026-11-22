@@ -17,6 +17,8 @@ vi.mock("expo-symbols", () => ({ SymbolView: () => null }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 24 }) }));
 vi.mock("../ui/integration-icon.js", () => ({ RowMarkIcon: () => null }));
 vi.mock("../theme.js", () => ({ color: new Proxy({}, { get: () => "#000000" }) }));
+const stacked = vi.hoisted(() => ({ value: false }));
+vi.mock("../ui/stacked-layout.js", () => ({ useStackedLayout: () => stacked.value }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -237,4 +239,49 @@ it("draws the addresses among a row's words as addresses, heard as the sentence"
   } finally {
     act(() => root.unmount());
   }
+});
+
+// As on iOS: at the largest sizes the account's initial stands above its address, so the address
+// has the row's width; otherwise it leads the row.
+it("puts the account's initial above its address at the largest sizes", async () => {
+  const draw = async (large: boolean) => {
+    stacked.value = large;
+    const element = document.createElement("div");
+    const root = createRoot(element);
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage
+          sections={[
+            {
+              key: "account",
+              title: "Account",
+              rows: [
+                {
+                  addressIn: "label",
+                  detail: "Opensteer account",
+                  initial: "F",
+                  key: "email",
+                  kind: "text",
+                  label: "first.last+travel@studio-mac-mini.fixture.invalid",
+                },
+              ],
+            },
+          ]}
+        />,
+      ),
+    );
+    const spans = [...element.querySelectorAll("span")].map((span) =>
+      (span.textContent ?? "").replace(/[\u2060\u200B]/gu, ""),
+    );
+    act(() => root.unmount());
+    const mark = spans.indexOf("F");
+    const address = spans.indexOf("first.last+travel@studio-mac-mini.fixture.invalid");
+    expect(mark).toBeGreaterThanOrEqual(0);
+    expect(address).toBeGreaterThanOrEqual(0);
+    return mark < address ? "above" : "leading";
+  };
+  // The row's leading slot is drawn after its lines; a mark above them comes first.
+  expect(await draw(false)).toBe("leading");
+  expect(await draw(true)).toBe("above");
+  stacked.value = false;
 });

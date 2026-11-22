@@ -104,6 +104,8 @@ vi.mock("expo-clipboard", () => ({
     return true;
   },
 }));
+const stacked = vi.hoisted(() => ({ value: false }));
+vi.mock("../ui/stacked-layout.js", () => ({ useStackedLayout: () => stacked.value }));
 const { NativeSettingsPage } = await import("./native-settings-page.ios.js");
 const { addressWords } = await import("../ui/address-words.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -303,4 +305,47 @@ it("draws the addresses among a row's words as addresses, and reads the sentence
   } finally {
     act(() => root.unmount());
   }
+});
+
+// Build 9's walk: at the largest size Settings drew the account's email beside its initial, in a
+// column 47 points narrower, and "last+travel@" no longer fit a line. As the Your Opensteers card
+// does at that size, the initial stands above the address and the address has the row's width.
+it("puts the account's initial above its address at the largest sizes, and beside it otherwise", async () => {
+  const draw = async (large: boolean) => {
+    stacked.value = large;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () =>
+      root.render(
+        <NativeSettingsPage
+          sections={[
+            {
+              key: "account",
+              title: "Account",
+              rows: [
+                {
+                  addressIn: "label",
+                  detail: "Opensteer account",
+                  initial: "F",
+                  key: "email",
+                  kind: "text",
+                  label: "first.last+travel@studio-mac-mini.fixture.invalid",
+                },
+              ],
+            },
+          ]}
+        />,
+      ),
+    );
+    const mark = [...container.querySelectorAll("[data-native]")].find(
+      (node) => node.textContent === "F",
+    )!;
+    const holder = mark.closest('[data-native="HStack"], [data-native="VStack"]');
+    const kind = holder?.getAttribute("data-native");
+    act(() => root.unmount());
+    return kind;
+  };
+  expect(await draw(false)).toBe("HStack");
+  expect(await draw(true)).toBe("VStack");
+  stacked.value = false;
 });
