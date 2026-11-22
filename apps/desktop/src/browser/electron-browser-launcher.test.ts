@@ -964,6 +964,48 @@ async function hubPage(session: string) {
   };
 }
 
+/**
+ * Each attach the hub makes for itself gets a session of its own, as Chromium gives it; what was
+ * attached, and what the hub let go, is read back. `announce`: Chromium tells the parent session of
+ * the attach before it answers it. `refuseStartIn`: a start in that session is refused.
+ */
+function ownSessions(
+  hub: Awaited<ReturnType<typeof hubPage>>,
+  options: { readonly announce?: boolean; readonly refuseStartIn?: string } = {},
+) {
+  const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+  const attached: string[] = [];
+  hub.contents.debugger.sendCommand.mockImplementation(
+    (method: string, parameters?: Record<string, unknown>, session?: string) => {
+      if (method === "Target.attachToTarget") {
+        const sessionId = `cast-${attached.length + 1}`;
+        attached.push(sessionId);
+        if (options.announce)
+          hub.deliver("Target.attachedToTarget", {
+            sessionId,
+            targetInfo: { targetId: "target-1", type: "page" },
+            waitingForDebugger: false,
+          });
+        return Promise.resolve({ sessionId });
+      }
+      if (
+        method === "Page.startScreencast" &&
+        options.refuseStartIn !== undefined &&
+        session === options.refuseStartIn
+      )
+        return Promise.reject(new Error("Session with given id not found."));
+      return answer(method, parameters, session);
+    },
+  );
+  return {
+    attached,
+    detached: () =>
+      hub
+        .sent("Target.detachFromTarget")
+        .map(([, parameters]) => String((parameters as { sessionId: string }).sessionId)),
+  };
+}
+
 function world(id: number | string) {
   return {
     context: {
@@ -1622,11 +1664,12 @@ describe("Electron debugger teardown", () => {
   it("gives a cast that a released channel was restarting to no one", async () => {
     const hub = await hubPage("14");
     const platform = await hub.page.cdp();
-    await platform.send("Page.startScreencast", { format: "png", quality: 10 });
+    // JPEG: a PNG's quality is not a setting Chromium uses, so it would be the same cast.
+    await platform.send("Page.startScreencast", { format: "jpeg", quality: 10 });
     // A restart is a new start with no stop before it: the channel goes while it is held.
     const start = hub.hold("Page.startScreencast");
     const restarting = platform
-      .send("Page.startScreencast", { format: "png", quality: 20 })
+      .send("Page.startScreencast", { format: "jpeg", quality: 20 })
       .catch((error: unknown) => error);
     await vi.waitFor(() => expect(start.replies).toHaveLength(1));
     expect(await within(platform.detach())).toBe("fulfilled");
@@ -1815,8 +1858,13 @@ describe("Electron debugger teardown", () => {
     });
     const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
     const ask = { format: "png", maxHeight: 240, maxWidth: 320 };
-    const jpeg = () =>
-      hub.deliver("Page.screencastFrame", { data: "jpeg 1400x900", metadata: {}, sessionId: 1 });
+    // Chromium numbers each cast in a session upward: the person's second cast sends frame id 2.
+    const jpeg = (frame = 1) =>
+      hub.deliver("Page.screencastFrame", {
+        data: "jpeg 1400x900",
+        metadata: {},
+        sessionId: frame,
+      });
     const png = () =>
       hub.deliver(
         "Page.screencastFrame",
@@ -1851,7 +1899,7 @@ describe("Electron debugger teardown", () => {
     // The person comes back: their cast starts again, and each still sees only its own.
     await person.send("Page.startScreencast", view);
     expect(hub.sent("Page.startScreencast").at(-1)).toEqual(["Page.startScreencast", view]);
-    jpeg();
+    jpeg(2);
     png();
     expect(frames.person).toEqual(["jpeg 1400x900", "jpeg 1400x900"]);
     expect(new Set(frames.agent)).toEqual(new Set(["png 320x240"]));
@@ -1863,7 +1911,7 @@ describe("Electron debugger teardown", () => {
     ]);
     expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
     const agentFrames = frames.agent.length;
-    jpeg();
+    jpeg(2);
     expect(frames.person).toHaveLength(3);
     expect(frames.agent).toHaveLength(agentFrames);
     await hub.browser.close();
@@ -1905,6 +1953,330 @@ describe("Electron debugger teardown", () => {
     // Chromium sends no third frame while two wait for an ack: each one is acked.
     expect(hub.sent("Page.screencastFrameAck")).toHaveLength(8);
     await hub.browser.close();
+  });
+
+  // The read of 564ca7424..5d197dfbc, findings 3 and 4: a frame and its ack belong to the run of
+  // the cast that produced them, by its identity, not by where its owner stands when it arrives.
+  describe("a cast's frames and acks, by the run that produced them", () => {
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const small = { format: "png", maxHeight: 240, maxWidth: 320 };
+    const frame = (data: string, sessionId: number) => ({ data, metadata: {}, sessionId });
+    const seen = (channel: { onEvent(l: (m: string, p: unknown) => void): unknown }) => {
+      const into: string[] = [];
+      channel.onEvent((method, parameters) => {
+        if (method === "Page.screencastFrame") into.push((parameters as { data: string }).data);
+      });
+      return into;
+    };
+
+    // Finding 3: the old cast's acks still queued after a hand-over were counted against the new
+    // one and sent with the old id, which Chromium ignores; the new cast's own were then dropped.
+    it("drops the acks of a cast handed over, and sends the new cast's", async () => {
+      const hub = await hubPage("31");
+      const person = await hub.page.cdp();
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      hub.deliver("Page.screencastFrame", frame("view 2", 1));
+      await person.send("Page.startScreencast", small);
+      hub.deliver("Page.screencastFrame", frame("small 1", 2));
+      hub.deliver("Page.screencastFrame", frame("small 2", 2));
+      for (const id of [1, 1, 2, 2])
+        await person.send("Page.screencastFrameAck", { sessionId: id });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 2 }],
+        ["Page.screencastFrameAck", { sessionId: 2 }],
+      ]);
+      await hub.browser.close();
+    });
+
+    // Finding 4: a frame of the old settings arriving while the new start was still unanswered
+    // was delivered as the new cast's, kept as its latest and replayed to the next owner.
+    it("delivers and keeps nothing before a start has resolved", async () => {
+      const hub = await hubPage("32");
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const personSaw = seen(person);
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("jpeg 1400x900", 1));
+      const start = hub.hold("Page.startScreencast");
+      const starting = person.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      // Late, in the old settings, before Chromium has answered the new start.
+      hub.deliver("Page.screencastFrame", frame("jpeg 1400x900 late", 1));
+      start.release();
+      start.replies[0]!.resolve({});
+      await starting;
+      await agent.send("Page.startScreencast", small);
+      expect(personSaw).toEqual(["jpeg 1400x900"]);
+      expect(agentSaw).toEqual([]);
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([]);
+      await hub.browser.close();
+    });
+
+    // Two owners share a cast; one moves to other settings, a second cast in a session of its
+    // own. Its ack of a frame of the first goes to the first; of the second, to the second.
+    it("sends each ack to the cast that handed that frame, though two casts share a frame id", async () => {
+      const hub = await hubPage("33");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view", 1));
+      await agent.send("Page.startScreencast", small);
+      expect(own.attached).toEqual(["cast-1"]);
+      hub.deliver("Page.screencastFrame", frame("small", 1), "cast-1");
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      // The person's ack of the same frame finds it acked already.
+      await person.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }],
+        ["Page.screencastFrameAck", { sessionId: 1 }, "cast-1"],
+      ]);
+      await hub.browser.close();
+    });
+
+    // Finding 4, second part: an owner joined the running cast before its own old cast had ended,
+    // and was handed a frame arriving meanwhile twice, live and as the replay.
+    it("hands an owner that moves to a running cast each frame once", async () => {
+      const hub = await hubPage("34");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      // Its old cast ends as it leaves: its session's detach is held, and a frame arrives.
+      const detach = hub.hold("Target.detachFromTarget");
+      const moving = agent.send("Page.startScreencast", view);
+      await vi.waitFor(() => expect(detach.replies).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      detach.release();
+      detach.replies[0]!.resolve({});
+      await moving;
+      expect(agentSaw).toEqual(["view 1"]);
+      await hub.browser.close();
+    });
+  });
+
+  // Finding 5: every session the hub attaches for itself is detached exactly once, on every path
+  // a cast ends by, and no channel hears of it.
+  describe("the hub's own sessions", () => {
+    const view = { format: "jpeg", maxHeight: 900, maxWidth: 1_400, quality: 80 };
+    const small = { format: "png", maxHeight: 240, maxWidth: 320 };
+    type Hub = Awaited<ReturnType<typeof hubPage>>;
+    const fire = (hub: Hub, event: string, ...args: unknown[]) => {
+      for (const [name, listener] of [
+        ...hub.contents.on.mock.calls,
+        ...hub.contents.once.mock.calls,
+      ])
+        if (name === event) (listener as (...a: unknown[]) => void)({}, ...args);
+    };
+    /** Each own session let go once: by the hub, or, where `implicit`, with the debugger itself. */
+    const expectOnce = (hub: Hub, own: ReturnType<typeof ownSessions>, implicit = false) => {
+      expect(own.attached.length).toBeGreaterThan(0);
+      for (const id of own.attached) {
+        const explicit = own.detached().filter((detached) => detached === id).length;
+        expect(explicit, `${id} detached ${explicit} times`).toBeLessThanOrEqual(1);
+        if (!implicit) expect(explicit, `${id} never detached`).toBe(1);
+      }
+      if (implicit)
+        expect(
+          hub.contents.debugger.detach.mock.calls.length > 0 || hub.contents.isDestroyed(),
+        ).toBe(true);
+    };
+    async function casting(label: string) {
+      const hub = await hubPage(label);
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      expect(own.attached).toEqual(["cast-1"]);
+      return { agent, hub, own, person };
+    }
+
+    it("lets go of a cast's session when it is stopped", async () => {
+      const { agent, hub, own } = await casting("41");
+      await agent.send("Page.stopScreencast");
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("when its owner is released", async () => {
+      const { agent, hub, own } = await casting("42");
+      await agent.detach();
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("after a navigation, when it is stopped, and not at the navigation", async () => {
+      const { agent, hub, own } = await casting("43");
+      fire(hub, "did-navigate");
+      expect(own.detached()).toEqual([]);
+      await agent.send("Page.stopScreencast");
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("when the renderer is gone, and not again when its owner stops", async () => {
+      const { agent, hub, own } = await casting("44");
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      await vi.waitFor(() => expect(own.detached()).toEqual(["cast-1"]));
+      await agent.send("Page.stopScreencast").catch(() => undefined);
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    // The read's sequence: a release already under way when the renderer goes.
+    it("when the renderer goes while its owner's release is under way", async () => {
+      const { agent, hub, own, person } = await casting("45");
+      // The person's restart holds the page's ownership changes: the agent's release, begun in
+      // this generation, waits behind it while the renderer goes.
+      const start = hub.hold("Page.startScreencast");
+      const restarting = person
+        .send("Page.startScreencast", { ...view, maxWidth: 1_200 })
+        .catch(() => undefined);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const releasing = agent.detach();
+      await Promise.resolve();
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      start.release();
+      start.replies[0]!.resolve({});
+      await restarting;
+      await releasing;
+      await vi.waitFor(() => expect(own.detached()).toEqual(["cast-1"]));
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    // The read's sequence: a session attached for a start that fails, while another owner stays.
+    it("when a start it was attached for fails, though another owner remains", async () => {
+      const hub = await hubPage("46");
+      const own = ownSessions(hub, { refuseStartIn: "cast-2" });
+      const person = await hub.page.cdp();
+      const first = await hub.page.agentCdp();
+      const second = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", view);
+      await first.send("Page.startScreencast", small);
+      await second.send("Page.startScreencast", small);
+      fire(hub, "render-process-gone", { reason: "crashed" });
+      fire(hub, "did-navigate");
+      await person.send("Page.startScreencast", view);
+      await expect(first.send("Page.startScreencast", small)).rejects.toThrow();
+      expect(own.attached).toEqual(["cast-1", "cast-2"]);
+      expectOnce(hub, own);
+      await hub.browser.close();
+    });
+
+    it("with the debugger, when the page is closed", async () => {
+      const { hub, own } = await casting("47");
+      await hub.page.close();
+      expectOnce(hub, own, true);
+      await hub.browser.close();
+    });
+
+    it("with the debugger, when the app quits", async () => {
+      const { hub, own } = await casting("48");
+      await hub.browser.close();
+      expectOnce(hub, own, true);
+    });
+
+    it("with the page, when its window is destroyed", async () => {
+      const { hub, own } = await casting("49");
+      hub.destroy();
+      expectOnce(hub, own, true);
+      await hub.browser.close();
+    });
+
+    it("with the debugger, when it detaches, and is not let go again", async () => {
+      const { agent, hub, own } = await casting("50");
+      for (const [name, listener] of hub.contents.debugger.on.mock.calls)
+        if (name === "detach") listener({}, "target closed");
+      // As Electron has it once the debugger has let go.
+      (hub.contents.debugger.detach as unknown as () => void)();
+      await agent.send("Page.stopScreencast").catch(() => undefined);
+      expectOnce(hub, own, true);
+      expect(own.detached()).toEqual([]);
+      await hub.browser.close();
+    });
+
+    it("reaches no channel that has Target enabled, while that channel's own frames do", async () => {
+      const hub = await hubPage("51");
+      const own = ownSessions(hub, { announce: true });
+      const platform = await hub.page.cdp();
+      const heard: string[] = [];
+      platform.onEvent((method, parameters) => {
+        if (method.startsWith("Target."))
+          heard.push(`${method} ${String((parameters as { sessionId?: string }).sessionId)}`);
+      });
+      await platform.send("Target.setAutoAttach", {
+        autoAttach: true,
+        flatten: true,
+        waitForDebuggerOnStart: false,
+      });
+      const agent = await hub.page.agentCdp();
+      await platform.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      await agent.send("Page.stopScreencast");
+      hub.deliver("Target.detachedFromTarget", { sessionId: "cast-1", targetId: "target-1" });
+      // An out-of-process frame of the page's own is still the platform's.
+      hub.deliver("Target.attachedToTarget", {
+        sessionId: "frame-1",
+        targetInfo: { targetId: "iframe-1", type: "iframe" },
+        waitingForDebugger: false,
+      });
+      expect(own.attached).toEqual(["cast-1"]);
+      expect(heard).toEqual(["Target.attachedToTarget frame-1"]);
+      await hub.browser.close();
+    });
+  });
+
+  // Finding 8: a page runs a few casts at most, and equal settings are one cast.
+  describe("how many casts a page runs", () => {
+    it("takes settings that differ only by Chromium's defaults for one cast", async () => {
+      const hub = await hubPage("61");
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const other = await hub.page.agentCdp();
+      await person.send("Page.startScreencast", { format: "jpeg", quality: 80 });
+      await agent.send("Page.startScreencast", { everyNthFrame: 1, format: "jpeg", quality: 80 });
+      await other.send("Page.startScreencast", { format: "jpeg" });
+      expect(hub.sent("Page.startScreencast")).toHaveLength(1);
+      await hub.browser.close();
+    });
+
+    it("refuses a fourth in a sentence, takes nothing from those that run, and never refuses the person", async () => {
+      const hub = await hubPage("62");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agents = await Promise.all([1, 2, 3].map(() => hub.page.agentCdp()));
+      await person.send("Page.startScreencast", { format: "jpeg", maxWidth: 1_400 });
+      await agents[0]!.send("Page.startScreencast", { format: "png", maxWidth: 320 });
+      await agents[1]!.send("Page.startScreencast", { format: "png", maxWidth: 640 });
+      // The third agent watches the person's cast, then asks for a fourth.
+      await agents[2]!.send("Page.startScreencast", { format: "jpeg", maxWidth: 1_400 });
+      const saw: string[] = [];
+      agents[2]!.onEvent((method, parameters) => {
+        if (method === "Page.screencastFrame") saw.push((parameters as { data: string }).data);
+      });
+      const starts = hub.sent("Page.startScreencast").length;
+      await expect(
+        agents[2]!.send("Page.startScreencast", { format: "png", maxWidth: 800 }),
+      ).rejects.toThrow(/already pictured in 3 formats or sizes at once/u);
+      expect(hub.sent("Page.startScreencast")).toHaveLength(starts);
+      expect(own.attached).toEqual(["cast-1", "cast-2"]);
+      hub.deliver("Page.screencastFrame", { data: "person's", metadata: {}, sessionId: 1 });
+      expect(saw).toEqual(["person's"]);
+      // The person's own view in another size is never the one refused.
+      const phone = await hub.page.cdp();
+      await phone.send("Page.startScreencast", { format: "jpeg", maxWidth: 390 });
+      expect(own.attached).toEqual(["cast-1", "cast-2", "cast-3"]);
+      await hub.browser.close();
+    });
   });
 
   it("lets go of a released channel's domains when the renderer is lost during its release", async () => {
