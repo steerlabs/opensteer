@@ -18,6 +18,11 @@ import { describe, expect, it } from "vitest";
  *    value in a native row's text, or joined into a sentence's string, where it belongs in parts
  *    (`sentence-parts.ts`).
  *
+ * 3. A one-line host (`HostLine`) is only where no one decides anything about the site: it may give up
+ *    labels from its left. Where a person decides something about a site (a page's dialog, a
+ *    consent, a sign-in), the whole origin is drawn (`AddressText`, `AddressSentence`).
+ *    `hostLineFiles` names each file that may use it, and why it is not a decision.
+ *
  * What it reads is names: a value built elsewhere under a name that says nothing is not seen.
  */
 
@@ -34,6 +39,18 @@ export const drawingFiles: Readonly<Record<string, string>> = {
     "SwiftUI: a status row draws its address detail, with Copy of the plain value in its menu",
   "apps/mobile/src/screens/settings-form-primitives.android.tsx":
     "Compose: a row draws the line marked as an address, its spoken words the plain value",
+};
+
+/** The only files that may draw a one-line host, each with why no one decides there. */
+export const hostLineFiles: Readonly<Record<string, string>> = {
+  "apps/mobile/src/browser/address-bar.tsx":
+    "the bar names the page shown, and a press opens the field with the whole address; the switch-to-tab suggestion goes to a tab already open",
+  "apps/mobile/src/tabs/tab-list.tsx":
+    "a tab's row names its site beside its title; opening the tab decides nothing about the site",
+  "apps/mobile/src/thread/live-place.tsx":
+    "the cover of a page still loading names its site; nothing is asked of the person",
+  "apps/mobile/src/thread/surface-chips.tsx":
+    "a thread's chip names the page or app an agent works in; a press opens it, nothing more",
 };
 
 /** A name that says the value is an address, a host or a URL: whole, or as its camelCase end. */
@@ -80,6 +97,12 @@ export const allowed: readonly {
   readonly snippet: string;
   readonly reason: string;
 }[] = [
+  {
+    file: "apps/mobile/src/ui/address-text.tsx",
+    snippet: "{`${before}${host}${after}`}",
+    reason:
+      "HostLine's unseen copy of its own line, which only measures the room it may fill: never seen, never heard",
+  },
   {
     file: "apps/mobile/src/markdown/reference-link.tsx",
     snippet: "const link = { href: url, label: url };",
@@ -347,6 +370,24 @@ export function rawAddressesIn(file: string, source: string): Finding[] {
   return findings;
 }
 
+/** Rule 3: every one-line host a file draws. */
+export function hostLinesIn(file: string, source: string): Finding[] {
+  const lines = source.split("\n");
+  const findings: Finding[] = [];
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(visit);
+    if (!isNode(node)) return;
+    if (node.type === "JSXOpeningElement" && elementName(node) === "HostLine") {
+      const line = node.loc?.start.line ?? 0;
+      findings.push({ file, line, snippet: (lines[line - 1] ?? "").trim() });
+    }
+    for (const [key, value] of Object.entries(node))
+      if (key !== "loc" && typeof value === "object") visit(value);
+  };
+  visit(parseSource(source, file).program);
+  return findings;
+}
+
 function appFiles(directory: string): string[] {
   return readdirSync(directory, { recursive: true, withFileTypes: true })
     .filter(
@@ -432,5 +473,33 @@ describe("no address is drawn raw", () => {
       setSaveNotice({ title: said.message, detail: \`\${offer.username} · \${site}\` });
       Alert.alert("Link could not be opened", url);`;
     expect(rawAddressesIn("screen.tsx", screen).map(({ line }) => line)).toEqual([2, 3]);
+  });
+});
+
+describe("a one-line host is only where no one decides anything about the site", () => {
+  const uses = () =>
+    appFiles(mobileSource).flatMap((file) =>
+      hostLinesIn(path.relative(repositoryRoot, file), readFileSync(file, "utf8")),
+    );
+
+  it("is drawn only in the files that say why none of theirs is a decision", () => {
+    expect(
+      uses()
+        .filter(({ file }) => !(file in hostLineFiles) && !file.endsWith("ui/address-text.tsx"))
+        .map(({ file, line, snippet }) => `${file}:${line}: ${snippet}`),
+    ).toEqual([]);
+  });
+
+  it("names only files that draw one", () => {
+    const drawing = new Set(uses().map(({ file }) => file));
+    expect(Object.keys(hostLineFiles).filter((file) => !drawing.has(file))).toEqual([]);
+  });
+
+  it("sees one in a page's dialog", () => {
+    const screen = `
+      export function PageDialog(props) {
+        return <HostLine after=" says" host={props.site} role="caption" />;
+      }`;
+    expect(hostLinesIn("page-dialog.tsx", screen).map(({ line }) => line)).toEqual([3]);
   });
 });

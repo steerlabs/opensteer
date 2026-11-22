@@ -148,28 +148,15 @@ describe("a sentence that holds an address", () => {
 });
 
 describe("a host where there is one line", () => {
-  it("is drawn plain on one line, the host cut alone at its start, and heard whole", async () => {
-    const texts = await draw(
-      <HostLine before="Switch to tab · " host="accounts.google.com.evil.example" />,
-    );
-    expect(
-      texts.map((text) => [text.textContent, text.dataset["lines"], text.dataset["ellipsize"]]),
-    ).toEqual([
-      ["Switch to tab · ", "1", "tail"],
-      ["accounts.google.com.evil.example", "1", "head"],
-    ]);
-    expect(texts.some((text) => drawnForm.test(text.textContent ?? ""))).toBe(false);
+  // How it is laid out, cut and wrapped is held by `host-line-layout.interaction.test.tsx`.
+  it("is heard once, whole, as written", async () => {
+    await draw(<HostLine before="Switch to tab · " host="accounts.google.com.evil.example" />);
     expect(heard()).toEqual(["Switch to tab · accounts.google.com.evil.example"]);
+    expect(heard().some((label) => label !== null && drawnForm.test(label))).toBe(false);
   });
 
-  it("draws a scheme it is shown with on its own, never cut", async () => {
-    const texts = await draw(<HostLine host="http://accounts.google.com.evil.example:8080" />);
-    expect(
-      texts.map((text) => [text.textContent, text.dataset["lines"], text.dataset["ellipsize"]]),
-    ).toEqual([
-      ["http://", "1", "tail"],
-      ["accounts.google.com.evil.example:8080", "1", "head"],
-    ]);
+  it("is heard with a scheme it is shown with", async () => {
+    await draw(<HostLine host="http://accounts.google.com.evil.example:8080" />);
     expect(heard()).toEqual(["http://accounts.google.com.evil.example:8080"]);
   });
 });

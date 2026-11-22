@@ -1,6 +1,7 @@
-import type { ComponentProps, ReactNode } from "react";
+import { useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import { addressWords, isAddress } from "./address-words.js";
+import { hostLineParts, planHostLine } from "./host-line-parts.js";
 import { AppText } from "./primitives.js";
 import { plainSentence, type SentencePart } from "./sentence-parts.js";
 
@@ -76,12 +77,18 @@ export function AddressSentence(
 }
 
 /**
- * A host where there is one line, as a browser's address bar has it: drawn plain, never wrapped (a
- * host wrapped at a dot reads as two hosts). The line is for the host, so the host is cut alone,
- * at its start, keeping the end that says whose it is. The words around it (`before`, `after`)
- * are texts of their own, cut at their own end, and give way first. A scheme the host is shown
- * with (one that is not https, a warning) is drawn on its own and never gives way. A screen reader
- * hears the line once, whole.
+ * A host where there is one line, as a browser's address bar has it: drawn plain, never wrapped
+ * while it fits (a host wrapped at a dot reads as two hosts). It never cuts inside its registrable
+ * domain (`host-line-parts.ts`): the words before and after it go first, entirely, then whole
+ * labels from its left behind an ellipsis, and when even its registrable domain does not fit it
+ * takes another line, wrapping at its joints, never cut. A scheme it is shown with (one that is
+ * not https, a warning) never goes. A screen reader hears the line once, whole.
+ *
+ * Not for a decision about a site, where a person must see the whole origin: there the address is
+ * drawn whole (`AddressSentence`). `tests/mobile-address-text.test.ts` lists where it may be used.
+ *
+ * Its pieces are measured unseen and unheard, and the line it may fill by an unseen copy of
+ * itself whole, so it takes the room a plain line of its words would and nothing more.
  */
 export function HostLine(
   props: Omit<
@@ -96,40 +103,115 @@ export function HostLine(
   },
 ): ReactNode {
   const { accessibilityLabel, after = "", before = "", host, style, ...text } = props;
-  const scheme = /^[a-z][a-z0-9+.-]*:\/\//iu.exec(host)?.[0] ?? "";
+  const parts = useMemo(() => hostLineParts(host), [host]);
+  const pieces = useMemo(
+    () =>
+      [
+        ["before", before],
+        ["after", after],
+        ["scheme", parts.scheme],
+        ["ellipsis", "…"],
+        ["kept", parts.kept],
+        ...parts.labels.map((label, index) => [`label:${index}`, label] as const),
+      ].filter(([, words]) => words !== "") as [string, string][],
+    [after, before, parts],
+  );
+  const [room, setRoom] = useState<number | null>(null);
+  const [widths, setWidths] = useState<Readonly<Record<string, number>>>({});
+  const measured = pieces.every(([key]) => widths[key] !== undefined);
+  const plan =
+    room === null || !measured
+      ? null
+      : planHostLine({ parts, room, width: (piece) => widths[piece] ?? 0 });
+  const whole = `${parts.scheme}${parts.labels.join("")}${parts.kept}`;
+  const unseen = {
+    accessibilityElementsHidden: true,
+    importantForAccessibility: "no-hide-descendants",
+    pointerEvents: "none",
+  } as const;
   return (
     <View
       accessibilityLabel={accessibilityLabel ?? `${before}${host}${after}`}
       accessibilityRole="text"
       accessible
+      onLayout={(event) => {
+        const width = event.nativeEvent.layout.width;
+        setRoom((current) => (current === width ? current : width));
+      }}
       style={[styles.hostLine, style]}
     >
-      {before === "" ? null : (
-        <AppText {...text} ellipsizeMode="tail" numberOfLines={1} style={styles.givesWay}>
-          {before}
+      <View {...unseen} style={styles.measure} testID="host-line-measure">
+        {pieces.map(([key, words]) => (
+          <View
+            key={key}
+            onLayout={(event) => {
+              const width = event.nativeEvent.layout.width;
+              setWidths((current) =>
+                current[key] === width ? current : { ...current, [key]: width },
+              );
+            }}
+            style={styles.measured}
+          >
+            <AppText {...text} numberOfLines={1}>
+              {words}
+            </AppText>
+          </View>
+        ))}
+      </View>
+      {plan?.kind === "wrap" ? (
+        // Its registrable domain does not fit one line: it wraps at its joints, never cut.
+        <AppText {...text} noHyphens style={styles.wrapped}>
+          {isAddress(whole) ? addressWords(whole) : whole}
         </AppText>
-      )}
-      {scheme === "" ? null : (
-        <AppText {...text} numberOfLines={1} style={styles.kept}>
-          {scheme}
-        </AppText>
-      )}
-      <AppText {...text} ellipsizeMode="head" numberOfLines={1} style={styles.host}>
-        {host.slice(scheme.length)}
-      </AppText>
-      {after === "" ? null : (
-        <AppText {...text} ellipsizeMode="tail" numberOfLines={1} style={styles.givesWay}>
-          {after}
-        </AppText>
+      ) : (
+        <>
+          <View {...unseen} style={styles.room} testID="host-line-room">
+            <AppText {...text} numberOfLines={1}>
+              {`${before}${host}${after}`}
+            </AppText>
+          </View>
+          {plan === null ? null : (
+            <View {...unseen} style={styles.drawn}>
+              {plan.before && before !== "" ? (
+                <AppText {...text} numberOfLines={1} style={styles.kept}>
+                  {before}
+                </AppText>
+              ) : null}
+              {parts.scheme === "" ? null : (
+                <AppText {...text} numberOfLines={1} style={styles.kept}>
+                  {parts.scheme}
+                </AppText>
+              )}
+              <AppText {...text} numberOfLines={1} style={styles.kept}>
+                {`${plan.dropped > 0 ? "…" : ""}${parts.labels.slice(plan.dropped).join("")}${parts.kept}`}
+              </AppText>
+              {after === "" || plan.after === "none" ? null : (
+                <AppText
+                  {...text}
+                  ellipsizeMode="tail"
+                  numberOfLines={1}
+                  style={plan.after === "whole" ? styles.kept : styles.stump}
+                >
+                  {after}
+                </AppText>
+              )}
+            </View>
+          )}
+        </>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  // The words around the host give way so much faster than it that they are gone before it is cut.
-  givesWay: { flexShrink: 10_000 },
-  host: { flexShrink: 1 },
-  hostLine: { flexDirection: "row", flexShrink: 1, minWidth: 0 },
+  // Drawn over the unseen copy of the line, which gives it its room.
+  drawn: { flexDirection: "row", left: 0, position: "absolute", right: 0, top: 0 },
+  hostLine: { flexShrink: 1, minWidth: 0 },
   kept: { flexShrink: 0 },
+  // Each piece at its own width, wherever the line stands.
+  measure: { left: 0, opacity: 0, position: "absolute", top: 0, width: 100_000 },
+  measured: { alignSelf: "flex-start" },
+  room: { opacity: 0 },
+  stump: { flexShrink: 1, minWidth: 0 },
+  wrapped: { flexShrink: 1 },
 });
