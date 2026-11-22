@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
+import { ExecutionCoordinator } from "@opensteer/orchestration";
 import { TabService } from "../tabs/tab-service.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
 import { MemoryPassService } from "../agents/memory-pass-service.js";
@@ -148,14 +149,17 @@ it.skipIf(Boolean(reportPath))(
       });
     close.unshift(() => refreshing.mockRestore());
     // MemoryPassService's provisioning drain (`reconcileMissing`, run by its DeadlineDrain) is
-    // work the start leaves running: it is counted on no path. The fixture once held the first
+    // work the start leaves running: it is counted on no path, and its cost is pinned on a path
+    // of its own, "memory provisioning pass", one pass the test makes by itself. The fixture once held the first
     // statement of its two passes at the start (`select "owner_id" from "personal_settings"`),
     // which always ran inside the start while the rest of each pass raced its end; those two are
     // deliberately not listed, so a raw trace of a start shows two statements more.
     const reconcile = MemoryPassService.prototype.reconcileMissing;
+    let memoryPass: MemoryPassService | undefined;
     const reconciling = vi
       .spyOn(MemoryPassService.prototype, "reconcileMissing")
       .mockImplementation(function (this: MemoryPassService) {
+        memoryPass ??= this;
         return own.exit(() => Reflect.apply(reconcile, this, []) as ReturnType<typeof reconcile>);
       });
     close.unshift(() => reconciling.mockRestore());
@@ -163,14 +167,28 @@ it.skipIf(Boolean(reportPath))(
     // `OpensteerStore.listPendingCommands`) is work the start leaves running too: counted on no
     // path. The fixture once held its three reads at the start, which usually, not always, landed
     // inside it; they are deliberately not listed, so a raw trace of a start shows them.
+    // Its cost is pinned on a path of its own, "execution dispatch pass": one pass the test asks
+    // for (the coordinator's `wake()`) and records by itself.
     const listPending = OpensteerStore.prototype.listPendingCommands;
+    let armed: { readonly sql: string[]; readonly done: PromiseWithResolvers<void> } | undefined;
     const claiming = vi
       .spyOn(OpensteerStore.prototype, "listPendingCommands")
       .mockImplementation(function (this: OpensteerStore, ...args) {
-        return own.exit(
-          () => Reflect.apply(listPending, this, args) as ReturnType<typeof listPending>,
-        );
+        const read = () => Reflect.apply(listPending, this, args) as ReturnType<typeof listPending>;
+        const pass = armed;
+        if (!pass) return own.exit(read);
+        armed = undefined;
+        return own.run(pass.sql, read).finally(() => pass.done.resolve());
       });
+    let dispatcher: ExecutionCoordinator | undefined;
+    const start = ExecutionCoordinator.prototype.start;
+    const starting = vi.spyOn(ExecutionCoordinator.prototype, "start").mockImplementation(function (
+      this: ExecutionCoordinator,
+    ) {
+      dispatcher ??= this;
+      Reflect.apply(start, this, []);
+    });
+    close.unshift(() => starting.mockRestore());
     close.unshift(() => claiming.mockRestore());
     const record = async <T>(path: string, action: () => Promise<T>): Promise<T> => {
       const sql: string[] = [];
@@ -421,6 +439,15 @@ it.skipIf(Boolean(reportPath))(
       );
       expect(ran.status).toBe("completed");
       expect(brokerControllers).toEqual([]);
+      // Each background pass, made once on purpose and measured by itself.
+      if (!dispatcher || !memoryPass) throw new Error("A background pass never started.");
+      const pass = { sql: [] as string[], done: Promise.withResolvers<void>() };
+      armed = pass;
+      dispatcher.wake();
+      await pass.done.promise;
+      recorded["execution dispatch pass"] = [...pass.sql].sort();
+      const memory = memoryPass;
+      await record("memory provisioning pass", () => Reflect.apply(reconcile, memory, []));
       if (parityReport)
         await writeFile(parityReport, `${JSON.stringify({ issued, recorded }, null, 2)}\n`);
       expect(
