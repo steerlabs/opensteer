@@ -1,7 +1,9 @@
 import {
   SessionCdpRouterError,
+  cdpProfileRefusal,
   contextScopedCdpMethods,
   CdpProductIsolation,
+  type CdpProfileRefusal,
   ExecutionContextInventory,
   type BrowserCdpBackend,
   type CdpChannel,
@@ -119,8 +121,12 @@ const pageCloseGraceMs = 1_000;
 const targetLookupMs = 5_000;
 const pageDestroyMs = 500;
 
+/** Why an agent's CPU profile was refused, for the Home's own log and never the agent. */
+export type ElectronProfileRefusal = CdpProfileRefusal | "page-changed";
+
 interface ElectronBrowserLauncherOptions {
   readonly onPageCleanupFailure?: (() => void) | undefined;
+  readonly onProfileRefused?: ((reason: ElectronProfileRefusal) => void) | undefined;
   readonly onLocalProfileOpenTiming?: (timing: ElectronLocalProfileOpenTiming) => void;
   readonly onLocalProfileDiagnostic?: (diagnostic: ElectronLocalProfileDiagnostic) => void;
   readonly authenticator?: PasskeyAuthenticator;
@@ -155,6 +161,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly #views: ElectronBrowserViewPool;
   readonly #localProfileRoot: string | undefined;
   readonly #onPageCleanupFailure: ElectronBrowserLauncherOptions["onPageCleanupFailure"];
+  readonly #onProfileRefused: ElectronBrowserLauncherOptions["onProfileRefused"];
   readonly #onLocalProfileOpenTiming: ElectronBrowserLauncherOptions["onLocalProfileOpenTiming"];
   readonly #onLocalProfileDiagnostic: ElectronBrowserLauncherOptions["onLocalProfileDiagnostic"];
   readonly localProfiles: LocalProfileEngine = {
@@ -225,6 +232,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     electronSession.defaultSession.setUserAgent(brandedFallback);
     this.#localProfileRoot = options.localProfileRoot;
     this.#onPageCleanupFailure = options.onPageCleanupFailure;
+    this.#onProfileRefused = options.onProfileRefused;
     this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
     this.#onLocalProfileDiagnostic = options.onLocalProfileDiagnostic;
     this.#authenticator = options.authenticator;
@@ -336,6 +344,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     const context = new ElectronBrowserContext({
       wakeSeeds: this.#wakeSeeds,
       onPageCleanupFailure: this.#onPageCleanupFailure,
+      onProfileRefused: this.#onProfileRefused,
       protection: (contents) => this.#protection(contents),
       createView: (options, opener) => this.#views.create(options, opener, request.initialViewport),
       createHelper: (options) => this.#views.createHelper(options),
@@ -364,6 +373,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     return new ElectronBrowserContext({
       wakeSeeds: this.#wakeSeeds,
       onPageCleanupFailure: this.#onPageCleanupFailure,
+      onProfileRefused: this.#onProfileRefused,
       protection: (contents) => this.#protection(contents),
       createView: (options, opener, timing, startRenderer) =>
         this.#views.create(options, opener, viewport, timing, startRenderer),
@@ -752,6 +762,7 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 
 interface ElectronBrowserContextOptions {
   readonly onPageCleanupFailure?: (() => void) | undefined;
+  readonly onProfileRefused?: ElectronBrowserLauncherOptions["onProfileRefused"];
   readonly wakeSeeds: WakeSeeds;
   readonly protection: (contents: WebContents) => {
     method(): string;
@@ -978,6 +989,7 @@ class ElectronBrowserContext implements BrowserContext {
       }),
       browserAcceptLanguages(app.getPreferredSystemLanguages()),
       this.#options.onPageCleanupFailure,
+      this.#options.onProfileRefused,
     );
     this.#pages.add(page);
     for (const listener of this.#handOffs) listener(page, opener);
@@ -1220,6 +1232,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     identity?: BrowserIdentity,
     acceptLanguage?: string,
     onPageCleanupFailure?: () => void,
+    onProfileRefused?: ElectronBrowserLauncherOptions["onProfileRefused"],
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1294,6 +1307,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       () => this.#displayScale(),
       authenticator ? ["Network", "Security"] : [],
       () => timing?.("renderer-ready"),
+      onProfileRefused,
     );
     const installBridge = (channel: ElectronCdpChannel) => {
       if (!authenticator || !providerConfig) return;
@@ -2378,6 +2392,16 @@ interface ElectronPopupDetails {
 
 type ChannelRole = "agent" | "platform";
 
+interface ProfileInventory {
+  /** The agent channel whose Profiler.start opened it. */
+  readonly channel: ElectronCdpChannel;
+  readonly sessionId: string;
+  readonly scripts: CdpProductIsolation;
+  readonly isolate: string;
+  readonly renderer: number;
+  readonly context: number;
+}
+
 /**
  * Shares one `webContents.debugger` among logical channels. Each channel must
  * behave as a fresh CDP session, which the agent CDP router relies on to know
@@ -2418,6 +2442,13 @@ class ElectronDebuggerHub {
     (method: string, parameters: CdpParameters) => void
   >();
   #profileContextGeneration = 0;
+  /**
+   * The page's scripts as they are parsed, from an agent's Profiler.start to
+   * its stop, so a script the page ran and dropped meanwhile is still known.
+   */
+  #profileInventory: ProfileInventory | null = null;
+  #profileInventoryOpening: Promise<unknown> | null = null;
+  readonly #onProfileRefused: ElectronBrowserLauncherOptions["onProfileRefused"];
   readonly #debugger: Debugger;
   readonly #destroyed: Promise<void>;
   readonly #domainOwners = new Map<string, Set<ElectronCdpChannel>>();
@@ -2465,7 +2496,9 @@ class ElectronDebuggerHub {
     displayScale: () => number,
     persistentPlatformDomains: readonly string[] = [],
     onRendererReady?: () => void,
+    onProfileRefused?: ElectronBrowserLauncherOptions["onProfileRefused"],
   ) {
+    this.#onProfileRefused = onProfileRefused;
     this.#persistentPlatformDomains = new Set(persistentPlatformDomains);
     this.#onRendererReady = onRendererReady;
     this.#webContents = webContents;
@@ -2683,9 +2716,14 @@ class ElectronDebuggerHub {
     const send = (method: string, parameters?: Record<string, unknown>) =>
       channel.role === "agent" && method === "Profiler.stop"
         ? this.#stopAgentProfile(parameters)
-        : this.#command(method, parameters);
+        : channel.role === "agent" && method === "Profiler.start"
+          ? this.#startAgentProfile(channel, parameters)
+          : this.#command(method, parameters);
     if (channel.role === "agent" && method.startsWith("Target."))
       return this.#agentTargets(channel, method, parameters);
+    // Disabling the profiler ends a profile with no stop to classify.
+    if (method === "Profiler.disable" && this.#profileInventory?.channel === channel)
+      void this.#closeProfileInventory(this.#profileInventory);
     if (this.#closed || !this.#channels.has(channel))
       return Promise.reject(new Error("CDP channel is closed."));
     if (
@@ -2865,41 +2903,131 @@ class ElectronDebuggerHub {
     });
   }
 
-  async #stopAgentProfile(parameters: CdpParameters | undefined): Promise<unknown> {
-    const renderer = this.#rendererGeneration;
-    const context = this.#profileContextGeneration;
-    const isolate = this.#dispatch("Runtime.getIsolateId").catch(() => undefined);
-    const result = await this.#dispatch("Profiler.stop", parameters);
-    await this.#agentWorlds.observeProfileResult(result, async (observe) => {
-      const isolateId = asRecord(await isolate).id;
-      if (typeof isolateId !== "string") return;
+  async #startAgentProfile(
+    channel: ElectronCdpChannel,
+    parameters: CdpParameters | undefined,
+  ): Promise<unknown> {
+    const opened = await this.#openProfileInventory(channel).catch(() => null);
+    try {
+      return await this.#command("Profiler.start", parameters);
+    } catch (error) {
+      if (opened) await this.#closeProfileInventory(opened);
+      throw error;
+    }
+  }
+
+  /**
+   * A private session that reports each script of the page with its world
+   * from now on, and every script alive now. Without it, stop falls back to
+   * the scripts still alive then.
+   */
+  async #openProfileInventory(channel: ElectronCdpChannel): Promise<ProfileInventory | null> {
+    if (this.#profileInventory || this.#profileInventoryOpening) return null;
+    const opening = Promise.withResolvers<void>();
+    this.#profileInventoryOpening = opening.promise;
+    let inventory: ProfileInventory | null = null;
+    try {
+      const renderer = this.#rendererGeneration;
+      const context = this.#profileContextGeneration;
+      const isolate = asRecord(await this.#dispatch("Runtime.getIsolateId")).id;
+      if (typeof isolate !== "string") return null;
       const info = asRecord(await this.#command("Target.getTargetInfo"));
       const targetId = asRecord(info.targetInfo).targetId;
-      if (typeof targetId !== "string") return;
+      if (typeof targetId !== "string") return null;
       const { sessionId } = asRecord(
         await this.#command("Target.attachToTarget", { targetId, flatten: true }),
       );
-      if (typeof sessionId !== "string") return;
+      if (typeof sessionId !== "string") return null;
+      const scripts = new CdpProductIsolation();
+      inventory = { channel, sessionId, scripts, isolate, renderer, context };
+      this.#profileInspections.set(sessionId, (method, parameters) => {
+        scripts.observe(method, parameters);
+      });
+      this.#profileInventory = inventory;
+      const inspected = asRecord(await this.#dispatch("Runtime.getIsolateId", {}, sessionId));
+      if (inspected.id !== isolate) throw new Error("The profile inventory reached another page.");
+      await this.#dispatch("Runtime.enable", {}, sessionId);
+      await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
+      await this.#dispatch("Debugger.setBreakpointsActive", { active: false }, sessionId);
+      await this.#dispatch("Debugger.enable", { maxScriptsCacheSize: 0 }, sessionId);
+      return inventory;
+    } catch (error) {
+      if (inventory) await this.#closeProfileInventory(inventory);
+      throw error;
+    } finally {
+      this.#profileInventoryOpening = null;
+      opening.resolve();
+    }
+  }
 
-      this.#profileInspections.set(sessionId, observe);
-      try {
-        const inspected = asRecord(await this.#dispatch("Runtime.getIsolateId", {}, sessionId));
-        if (inspected.id !== isolateId) return;
-        await this.#dispatch("Runtime.enable", {}, sessionId);
-        await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
-        await this.#dispatch("Debugger.setBreakpointsActive", { active: false }, sessionId);
-        await this.#dispatch("Debugger.enable", { maxScriptsCacheSize: 0 }, sessionId);
-        if (renderer !== this.#rendererGeneration || context !== this.#profileContextGeneration)
-          throw new SessionCdpRouterError(
-            "forbidden",
-            "The page changed while reading its profile.",
-          );
-      } finally {
-        await this.#command("Target.detachFromTarget", { sessionId }).catch(() => undefined);
-        this.#profileInspections.delete(sessionId);
+  async #closeProfileInventory(inventory: ProfileInventory): Promise<void> {
+    if (this.#profileInventory === inventory) this.#profileInventory = null;
+    try {
+      await this.#command("Target.detachFromTarget", { sessionId: inventory.sessionId });
+    } catch {
+      // A renderer change or teardown has ended the session already.
+    } finally {
+      this.#profileInspections.delete(inventory.sessionId);
+    }
+  }
+
+  async #stopAgentProfile(parameters: CdpParameters | undefined): Promise<unknown> {
+    const live = this.#profileInventory;
+    const renderer = this.#rendererGeneration;
+    const context = this.#profileContextGeneration;
+    const isolate = this.#dispatch("Runtime.getIsolateId").catch(() => undefined);
+    try {
+      const result = await this.#dispatch("Profiler.stop", parameters);
+      // Script ids name scripts only within one isolate and its documents'
+      // lifetimes; anything else is judged on what is alive now, as before.
+      if (
+        live &&
+        live.renderer === renderer &&
+        live.context === context &&
+        renderer === this.#rendererGeneration &&
+        context === this.#profileContextGeneration &&
+        asRecord(await isolate).id === live.isolate
+      ) {
+        await this.#agentWorlds.observeProfileResult(result, live.scripts);
+        return result;
       }
-    });
-    return result;
+      await this.#agentWorlds.observeProfileResult(result, async (observe) => {
+        const isolateId = asRecord(await isolate).id;
+        if (typeof isolateId !== "string") return;
+        const info = asRecord(await this.#command("Target.getTargetInfo"));
+        const targetId = asRecord(info.targetInfo).targetId;
+        if (typeof targetId !== "string") return;
+        const { sessionId } = asRecord(
+          await this.#command("Target.attachToTarget", { targetId, flatten: true }),
+        );
+        if (typeof sessionId !== "string") return;
+
+        this.#profileInspections.set(sessionId, observe);
+        try {
+          const inspected = asRecord(await this.#dispatch("Runtime.getIsolateId", {}, sessionId));
+          if (inspected.id !== isolateId) return;
+          await this.#dispatch("Runtime.enable", {}, sessionId);
+          await this.#dispatch("Debugger.setSkipAllPauses", { skip: true }, sessionId);
+          await this.#dispatch("Debugger.setBreakpointsActive", { active: false }, sessionId);
+          await this.#dispatch("Debugger.enable", { maxScriptsCacheSize: 0 }, sessionId);
+          if (renderer !== this.#rendererGeneration || context !== this.#profileContextGeneration)
+            throw new SessionCdpRouterError(
+              "forbidden",
+              "The page changed while reading its profile.",
+            );
+        } finally {
+          await this.#command("Target.detachFromTarget", { sessionId }).catch(() => undefined);
+          this.#profileInspections.delete(sessionId);
+        }
+      });
+      return result;
+    } catch (error) {
+      if (error instanceof SessionCdpRouterError && error.code === "forbidden")
+        this.#onProfileRefused?.(cdpProfileRefusal(error) ?? "page-changed");
+      throw error;
+    } finally {
+      if (live) await this.#closeProfileInventory(live);
+    }
   }
 
   async #agentTargets(
@@ -2930,6 +3058,8 @@ class ElectronDebuggerHub {
 
   async release(channel: ElectronCdpChannel): Promise<void> {
     if (!this.#channels.delete(channel)) return;
+    if (this.#profileInventory?.channel === channel)
+      void this.#closeProfileInventory(this.#profileInventory);
     if (channel.targetSessionId)
       void this.#command("Target.detachFromTarget", { sessionId: channel.targetSessionId }).catch(
         () => undefined,
@@ -3222,6 +3352,7 @@ class ElectronDebuggerHub {
 
   #interrupt(error: Error): void {
     this.#rendererGeneration += 1;
+    if (this.#profileInventory) void this.#closeProfileInventory(this.#profileInventory);
     this.#inputReady = null;
     this.#gate = null;
     for (const reject of this.#pending) reject(error);

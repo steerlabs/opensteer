@@ -1,3 +1,4 @@
+import { cdpProfileRefusal } from "@opensteer/browser-core";
 import { SurfaceLedger, type BrowserLaunchRequest } from "@opensteer/browser-runtime-core";
 import { createId } from "@opensteer/core";
 import type { LocalProfileBinding } from "@opensteer/protocol";
@@ -1091,7 +1092,93 @@ it("inspects profiler scripts on a private Electron session and refuses a render
     rendererChanges = true;
     await agent.send("Profiler.start");
     await expect(agent.send("Profiler.stop")).rejects.toMatchObject({ code: "forbidden" });
-    expect(hub.sent("Target.detachFromTarget")).toHaveLength(2);
+    // The page changed under the profile's own inventory, so the scripts alive
+    // at stop are read on a second session; every session read is let go.
+    expect(hub.sent("Target.attachToTarget")).toHaveLength(3);
+    expect(hub.sent("Target.detachFromTarget")).toHaveLength(3);
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("knows a page script that ran during a profile and was collected before it stopped", async () => {
+  const hub = await hubPage("92");
+  const debug = hub.contents.debugger;
+  const answer = debug.sendCommand.getMockImplementation()!;
+  const inventorySessionId = "agent-native-session";
+  const platformWorld = {
+    context: { ...world(30).context, id: 30, uniqueId: "world-30", name: "opensteer-editing" },
+  };
+  const watching = new Set<string>();
+  /** Scripts V8 holds now; a collected one is reported to nobody who enables Debugger later. */
+  const alive = new Map<string, number>([["17", 17]]);
+  let parsedDuringProfile: [string, number][] = [];
+  const frame = (scriptId: string) => ({
+    scriptId,
+    functionName: `work${scriptId}`,
+    url: "https://page.test/work.js",
+    lineNumber: 4,
+    columnNumber: 2,
+  });
+  let stopped: unknown = null;
+  debug.sendCommand.mockImplementation(async (method, parameters, sessionId) => {
+    if (method === "Runtime.getIsolateId") return { id: "page-isolate" };
+    if (method === "Profiler.start") {
+      // The page compiles, runs and drops scripts while it is profiled.
+      for (const [scriptId, executionContextId] of parsedDuringProfile)
+        for (const session of watching)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, session);
+      return {};
+    }
+    if (method === "Profiler.stop") return stopped;
+    if (sessionId === inventorySessionId) {
+      if (method === "Runtime.enable") {
+        hub.deliver("Runtime.executionContextCreated", world(17), sessionId);
+        hub.deliver("Runtime.executionContextCreated", platformWorld, sessionId);
+      }
+      if (method === "Debugger.enable") {
+        watching.add(sessionId);
+        for (const [scriptId, executionContextId] of alive)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, sessionId);
+      }
+      return {};
+    }
+    if (method === "Target.detachFromTarget") watching.delete(String(parameters?.sessionId));
+    return answer(method, parameters);
+  });
+  const profile = async (scripts: [string, number][]) => {
+    parsedDuringProfile = scripts;
+    stopped = {
+      profile: {
+        nodes: ["17", ...scripts.map(([id]) => id)].map((id, index) => ({
+          id: index + 1,
+          callFrame: frame(id),
+        })),
+      },
+    };
+    await agent.send("Profiler.start");
+    return agent.send("Profiler.stop");
+  };
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    // The page's own script, gone by the time the profile stops, is still the page's.
+    await expect(profile([["23", 17]])).resolves.toEqual(stopped);
+    // One parsed in a platform world during the profile is still refused, and says why.
+    const platform = await profile([["31", 30]]).catch((error: unknown) => error);
+    expect(platform).toMatchObject({
+      code: "forbidden",
+      message: "Profiler.stop returned Opensteer's preload or platform state.",
+    });
+    expect(cdpProfileRefusal(platform)).toBe("platform-script");
+    // A frame of a script nobody ever reported cannot be classified, so it is refused.
+    parsedDuringProfile = [];
+    stopped = { profile: { nodes: [{ id: 1, callFrame: frame("99") }] } };
+    await agent.send("Profiler.start");
+    const unknown = await agent.send("Profiler.stop").catch((error: unknown) => error);
+    expect(unknown).toMatchObject({ code: "forbidden" });
+    expect(cdpProfileRefusal(unknown)).toBe("unknown-script");
+    expect(watching.size).toBe(0);
   } finally {
     await hub.browser.close();
   }

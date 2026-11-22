@@ -391,9 +391,12 @@ export function captureJourney(
         });
         assert(result.ok && result.data.type === "tab.open");
         const behindId = result.data.tab.tabId;
-        const records = Reflect.get(ledger, "records") as Map<string, { page: BrowserPage }>;
-        await kit.until(async () => records.has(behindId), "unshown tab registered", 5_000);
-        const behindPage = records.get(behindId)!.page;
+        await kit.until(
+          async () => ledger.binding(behindId as never) !== undefined,
+          "unshown tab registered",
+          5_000,
+        );
+        const behindPage = ledger.binding(behindId as never)!.page;
         const behind = await agent({
           surfaceId: behindId,
           sessionId: surface.sessionId,

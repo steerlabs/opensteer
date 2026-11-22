@@ -1,6 +1,7 @@
 import { committedBrowserTabs } from "@opensteer/browser-runtime-core/test-support";
 import {
   browserFrameFits,
+  cdpProfileRefusal,
   defaultBrowserViewport,
   SessionCdpRouter,
 } from "@opensteer/browser-core";
@@ -439,7 +440,30 @@ async function run(): Promise<void> {
   const enabled = profilerProbe.send("Profiler.enable");
   const started = profilerProbe.send("Profiler.start");
   await Promise.all([released, enabled, started]);
-  await profilerProbe.send("Profiler.stop");
+  // What this profile holds is whatever V8 sampled while the probe waited: on
+  // a busy machine that can be Opensteer's own worlds, which the guard must
+  // refuse. Either outcome keeps the contract; any other refusal breaks it.
+  const stopped = await profilerProbe.send("Profiler.stop").then(
+    (result: unknown) => ({ result }),
+    (error: unknown) => ({ error }),
+  );
+  if ("error" in stopped) {
+    const reason = cdpProfileRefusal(stopped.error);
+    if (reason !== "platform-script")
+      throw new Error(
+        `Profiler.stop was refused ${reason ? `as ${reason}` : `without a reason: ${String(stopped.error)}`}.`,
+      );
+  } else {
+    const nodes = (stopped.result as { profile?: { nodes?: unknown } } | undefined)?.profile?.nodes;
+    if (!Array.isArray(nodes) || nodes.length === 0)
+      throw new Error("Profiler.stop returned no CPU profile.");
+  }
+  process.stdout.write(
+    `${JSON.stringify({
+      event: "electron-browser-smoke.profile",
+      outcome: "error" in stopped ? "refused-platform-script" : "returned",
+    })}\n`,
+  );
   await profilerProbe.close();
   progress("domain-order-kept");
 

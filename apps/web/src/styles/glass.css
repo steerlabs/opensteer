@@ -1,8 +1,10 @@
 /* The native window composites this document over another app; only its
-   explicit overlay controls may paint or intercept input. */
-html,
-body,
-#root {
+   explicit overlay controls may paint or intercept input. The build may link
+   this sheet before the shared one (Vite puts a shared chunk of only CSS
+   last), so the attribute glass.html sets on <html> wins, not the order. */
+html[data-panel="glass"],
+html[data-panel="glass"] body,
+html[data-panel="glass"] #root {
   background: transparent;
   overflow: hidden;
   pointer-events: none;
