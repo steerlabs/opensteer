@@ -499,6 +499,19 @@ describe("a chat, as a connected agent", () => {
     expect(buttonNamed(page, "Try again")).toBeTruthy();
   });
 
+  it("shows a chat none of a signed-in agent's identity lines", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(2)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
+    for (const id of [
+      "agent.about.says",
+      "agent.about.origin",
+      "agent.about.originUnknown",
+    ] as const)
+      expect(page.textContent, id).not.toContain(agentWords(id));
+    expect(page.textContent).not.toMatch(/Says it is|an app on this computer/u);
+  });
+
   it("offers an anyone chat only what the Home says it may hold, and keeps Tasks on", async () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(2)}`);

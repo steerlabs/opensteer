@@ -516,6 +516,15 @@ describe("a chat on the phone", () => {
     expect(section("gone")).toBeUndefined();
   });
 
+  it("shows a chat none of a signed-in agent's identity lines", async () => {
+    await open(chat(2), chats());
+    expect(section("who")).toBeUndefined();
+    const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+    for (const id of ["agent.about.says", "agent.about.origin"] as const)
+      expect(labels, id).not.toContain(agentWords(id));
+    expect(labels.join(" ")).not.toMatch(/Says it is|an app on this computer/u);
+  });
+
   it("says a reply may have been sent, never that it failed", async () => {
     await open(chat(4), chats());
     expect(row("chat-unknown", "unknown").label).toBe(

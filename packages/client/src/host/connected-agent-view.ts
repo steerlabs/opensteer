@@ -481,14 +481,20 @@ export function connectedAgentDetail(
     accessMode: connection.accessMode,
     live,
     activity: options.activity ?? { kind: "unavailable" },
+    // What it calls itself and the address it signed in from are facts of an agent that signed
+    // in; a chat did neither, so it shows neither.
     about: [
-      ...(identity.clientName !== identity.label
-        ? [{ label: agentWords("agent.about.says"), value: identity.clientName }]
-        : []),
-      {
-        label: agentWords("agent.about.origin"),
-        value: identity.origin ?? agentWords("agent.about.originUnknown"),
-      },
+      ...(connection.bridge
+        ? []
+        : [
+            ...(identity.clientName !== identity.label
+              ? [{ label: agentWords("agent.about.says"), value: identity.clientName }]
+              : []),
+            {
+              label: agentWords("agent.about.origin"),
+              value: identity.origin ?? agentWords("agent.about.originUnknown"),
+            },
+          ]),
       { label: agentWords("agent.about.connected"), value: formatDay(connection.createdAt) },
       ...(row.phase === "active" && connection.expiresAt
         ? [{ label: agentWords("agent.about.expires"), value: formatDay(connection.expiresAt) }]

@@ -338,32 +338,38 @@ export function connectedAgentSections(props: {
     onPress: props.onDisconnect,
   });
   const sections: NativeSettingsSection[] = [
-    {
-      key: "who",
-      title: "",
-      rows: [
-        // The title is already its name: say only that it is verified, and never repeat it.
-        ...(who.heading === agent && !who.verified
-          ? []
-          : [
-              {
-                key: "who",
-                kind: "text" as const,
-                label: who.verified
-                  ? who.heading === agent
-                    ? workWords("who.verified")
-                    : workWords("who.verifiedAs", { name: who.heading })
-                  : who.heading,
-                ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
-              },
-            ]),
-        ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
-          key: origin.role,
-          kind: "text",
-          label: agentWhoOriginLine(origin),
-        })),
-      ],
-    },
+    // Who it says it is, and where it signed in from: facts of an agent that signed in, never of
+    // a chat.
+    ...(chat
+      ? []
+      : [
+          {
+            key: "who",
+            title: "",
+            rows: [
+              // The title is already its name: say only that it is verified, and never repeat it.
+              ...(who.heading === agent && !who.verified
+                ? []
+                : [
+                    {
+                      key: "who",
+                      kind: "text" as const,
+                      label: who.verified
+                        ? who.heading === agent
+                          ? workWords("who.verified")
+                          : workWords("who.verifiedAs", { name: who.heading })
+                        : who.heading,
+                      ...(detail.row.identity.who.origins.length ? {} : { detail: who.detail }),
+                    },
+                  ]),
+              ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
+                key: origin.role,
+                kind: "text",
+                label: agentWhoOriginLine(origin),
+              })),
+            ],
+          },
+        ]),
     // Opensteer stopped vouching for it: said once, with the one way to act on it.
     ...(who.withdrawn !== null && active
       ? [
