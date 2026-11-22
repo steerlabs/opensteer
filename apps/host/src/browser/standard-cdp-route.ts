@@ -10,6 +10,7 @@ import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { unversionedRoute } from "../server/unversioned-route.js";
 import { OpensteerError } from "@opensteer/core";
+import { connectionClipboardRefusal, usesBrowserClipboard } from "@opensteer/browser-runtime-core";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import {
@@ -122,6 +123,8 @@ function relayStandardCdp(
   pool?: StandardCdpPoolReservation,
 ): void {
   const stopping = new AbortController();
+  // Settled when the ticket was issued, from the one authority rule's resolution of its binding.
+  const connectionWork = claims.facts.agentConnectionId !== null;
   const pending = new Map<string, number>();
   let inBytes = 0;
   let outBytes = 0;
@@ -294,6 +297,24 @@ function relayStandardCdp(
           );
           await send(data);
           end(1008, "Browser attachment refused");
+          return;
+        }
+        // Refused here for every runtime, before anything reaches the browser: the clipboard
+        // is in no grant.
+        if (connectionWork && usesBrowserClipboard(request.method, request.params)) {
+          await send(
+            Buffer.from(
+              JSON.stringify({
+                id: request.id,
+                sessionId: request.sessionId,
+                error: { code: -32000, message: connectionClipboardRefusal },
+              }),
+            ),
+          );
+          if (pending.has(key)) {
+            inBytes -= pending.get(key)!;
+            pending.delete(key);
+          }
           return;
         }
         await authorize(attached.reauthorize);

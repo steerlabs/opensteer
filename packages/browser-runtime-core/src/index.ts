@@ -24,6 +24,8 @@ export { normalizeElectronCursor } from "./browser/cursor-hints.js";
 export { pageWithTarget } from "./browser/target-lookup.js";
 
 export {
+  connectionClipboardRefusal,
+  usesBrowserClipboard,
   SessionCdpRouter,
   SessionCdpRouterError,
   type BrowserCdpBackend,

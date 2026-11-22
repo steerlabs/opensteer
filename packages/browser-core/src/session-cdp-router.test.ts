@@ -1899,3 +1899,162 @@ function asContext(event: import("./session-cdp-router.js").CdpEvent) {
     ? (event.parameters.context as { id: number })
     : null;
 }
+
+describe("SessionCdpRouter clipboard under a connection", () => {
+  const sentence =
+    "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const cmdV = {
+    type: "rawKeyDown",
+    modifiers: 4,
+    key: "v",
+    code: "KeyV",
+    windowsVirtualKeyCode: 86,
+  };
+  const refused = [
+    ["Cmd+V stated", { ...cmdV, commands: ["paste"] }],
+    ["Cmd+V inferred", { ...cmdV, nativeVirtualKeyCode: 9 }],
+    [
+      "pasteAndMatchStyle",
+      { type: "keyDown", key: "v", code: "KeyV", commands: ["pasteAndMatchStyle"] },
+    ],
+    ["Cmd+C inferred", { type: "rawKeyDown", modifiers: 4, key: "c", code: "KeyC" }],
+    ["Cmd+X inferred", { type: "rawKeyDown", modifiers: 4, key: "x", code: "KeyX" }],
+    ["Ctrl+V, Blink's own binding", { type: "keyDown", modifiers: 2, key: "v", code: "KeyV" }],
+    ["Ctrl+Shift+V", { type: "keyDown", modifiers: 10, key: "V", code: "KeyV" }],
+    ["Shift+Insert", { type: "rawKeyDown", modifiers: 8, key: "Insert", code: "Insert" }],
+    ["Ctrl+Insert", { type: "rawKeyDown", modifiers: 2, windowsVirtualKeyCode: 45 }],
+    ["Shift+Delete", { type: "rawKeyDown", modifiers: 8, key: "Delete", code: "Delete" }],
+    [
+      "a paste key code behind another key",
+      { type: "rawKeyDown", modifiers: 2, key: "a", code: "KeyA", windowsVirtualKeyCode: 86 },
+    ],
+    ["a Cocoa selector", { type: "keyDown", key: "c", commands: ["Copy:"] }],
+  ] as const;
+  const permissions = [
+    ["Browser.grantPermissions", { permissions: ["geolocation", "clipboardReadWrite"] }],
+    ["Browser.grantPermissions", { permissions: ["clipboardSanitizedWrite"] }],
+    ["Browser.setPermission", { permission: { name: "clipboard-read" }, setting: "granted" }],
+    ["Browser.setPermission", { permission: { name: "clipboard-write" }, setting: "granted" }],
+  ] as const;
+
+  async function attached(connection: boolean, kind: "standard" | "script") {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    let send: (command: CdpCommand) => Promise<unknown>;
+    if (kind === "standard") {
+      const client = router.openStandardClient("a", {
+        wholeContext: true,
+        ...(connection
+          ? { connection, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+          : {}),
+      });
+      send = (command) => client.send(command);
+    } else {
+      const budget = { maxBytes: 64 * 1024, maxDepth: 16, maxEntries: 1024 };
+      router.openScriptAttachment("a", "script", "seed", budget, () => undefined, {
+        ...(connection ? { connection } : {}),
+      });
+      send = (command) => router.send("a", { ...command, scriptAttachmentId: "script" });
+    }
+    const { sessionId } = (await send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    const key = (parameters: CdpParameters) =>
+      send({ method: "Input.dispatchKeyEvent", parameters, sessionId });
+    return { backend, router, channel, send, key, sessionId };
+  }
+
+  for (const kind of ["standard", "script"] as const)
+    it(`refuses a ${kind} connection's copy, cut and paste before anything reaches the page`, async () => {
+      const f = await attached(true, kind);
+      for (const [name, parameters] of refused) {
+        const error = await f.key(parameters).catch((caught: unknown) => caught);
+        expect(error, name).toBeInstanceOf(SessionCdpRouterError);
+        expect(error, name).toMatchObject({ code: "forbidden", message: sentence });
+      }
+      // A nested message is read as the same command.
+      await expect(
+        f.send({
+          method: "Target.sendMessageToTarget",
+          parameters: {
+            sessionId: f.sessionId,
+            message: JSON.stringify({
+              id: 1,
+              method: "Input.dispatchKeyEvent",
+              params: { ...cmdV, commands: ["paste"] },
+            }),
+          },
+        }),
+      ).rejects.toMatchObject({ message: sentence });
+      for (const [method, parameters] of permissions) {
+        for (const scope of [{}, { sessionId: f.sessionId }])
+          await expect(f.send({ method, parameters, ...scope }), method).rejects.toMatchObject({
+            code: "forbidden",
+            message: sentence,
+          });
+      }
+      expect(f.channel.commands.filter(({ method }) => method.startsWith("Input."))).toEqual([]);
+      expect(f.backend.commands.filter(({ method }) => method.startsWith("Browser."))).toEqual([]);
+
+      // A chord that maps to no clipboard command, text and other permissions are untouched.
+      await f.key({ type: "rawKeyDown", modifiers: 4, key: "a", code: "KeyA" });
+      await f.key({ type: "keyDown", key: "v", code: "KeyV", text: "v" });
+      await f.key({ type: "keyUp", modifiers: 4, key: "v", code: "KeyV" });
+      await f.send({
+        method: "Input.insertText",
+        parameters: { text: "typed" },
+        sessionId: f.sessionId,
+      });
+      await f.send({
+        method: "Browser.grantPermissions",
+        parameters: { permissions: ["geolocation"] },
+      });
+      expect(f.channel.commands.filter(({ method }) => method.startsWith("Input."))).toEqual([
+        {
+          method: "Input.dispatchKeyEvent",
+          parameters: {
+            type: "rawKeyDown",
+            modifiers: 4,
+            key: "a",
+            code: "KeyA",
+            commands: ["selectAll"],
+          },
+        },
+        {
+          method: "Input.dispatchKeyEvent",
+          parameters: { type: "keyDown", key: "v", code: "KeyV", text: "v" },
+        },
+        {
+          method: "Input.dispatchKeyEvent",
+          parameters: { type: "keyUp", modifiers: 4, key: "v", code: "KeyV" },
+        },
+        { method: "Input.insertText", parameters: { text: "typed" } },
+      ]);
+      await f.router.close();
+    });
+
+  for (const kind of ["standard", "script"] as const)
+    it(`forwards the person's own agent's ${kind} copy, cut and paste exactly as before`, async () => {
+      const f = await attached(false, kind);
+      for (const [, parameters] of refused) await f.key(parameters);
+      for (const [method, parameters] of permissions) await f.send({ method, parameters });
+      const { nativeVirtualKeyCode: _native, ...inferredPaste } = refused[1][1];
+      expect(f.channel.commands.map(({ parameters }) => parameters)).toEqual([
+        refused[0][1],
+        { ...inferredPaste, commands: ["paste"] },
+        refused[2][1],
+        { ...refused[3][1], commands: ["copy"] },
+        { ...refused[4][1], commands: ["cut"] },
+        ...refused.slice(5).map(([, parameters]) => parameters),
+      ]);
+      expect(f.backend.commands.filter(({ method }) => method.startsWith("Browser."))).toHaveLength(
+        permissions.length,
+      );
+      await f.router.close();
+    });
+});

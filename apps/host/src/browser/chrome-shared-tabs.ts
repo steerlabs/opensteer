@@ -694,6 +694,7 @@ export class ChromeSharedTabs {
       if (group.attempt?.finishing) throw unavailable();
       const client = source.router.openStandardClient(group.sessionId, {
         wholeContext: false,
+        ...(connection ? { connection: true } : {}),
         ...(onOverflow ? { onOverflow } : {}),
       });
       group.clients.add(client);

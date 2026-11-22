@@ -13,6 +13,8 @@ import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
+import { connectionClipboardRefusal, usesBrowserClipboard } from "./connection-clipboard.js";
+export { connectionClipboardRefusal, usesBrowserClipboard } from "./connection-clipboard.js";
 
 export interface SessionCdpRouterPorts {
   readonly uuid: () => string;
@@ -73,6 +75,11 @@ export interface SessionCdpRouterLimits {
 
 export interface StandardCdpAttachmentOptions {
   readonly wholeContext: boolean;
+  /**
+   * The attachment acts under a connected agent's authority, as the Home decided when it was
+   * made: it never uses the clipboard in the browser.
+   */
+  readonly connection?: boolean;
   readonly lineage?: { readonly attachmentId: string; readonly seedTargetId: string };
   readonly adoptTarget?: (targetId: string) => Promise<boolean>;
   readonly recoverUnadoptedTarget?: (targetId: string) => Promise<void>;
@@ -168,6 +175,8 @@ function targetRoot(discoverTargets: boolean, aliasId?: string): TargetRoot {
 
 interface ConnectionState extends TargetRoot {
   readonly session: BrowserSessionState;
+  /** Work under a connected agent's authority, settled when the connection was opened. */
+  readonly connection: boolean;
   readonly standard?: StandardCdpAttachmentOptions;
   readonly lineagePages?: Set<string>;
   readonly script?: {
@@ -425,6 +434,7 @@ export class SessionCdpRouter {
     session: BrowserSessionState,
     standard?: StandardCdpAttachmentOptions,
     script?: ConnectionState["script"],
+    connection = standard?.connection === true,
   ): ConnectionState {
     let resolve!: () => void;
     const promise = new Promise<void>((done) => {
@@ -432,6 +442,7 @@ export class SessionCdpRouter {
     });
     const state: ConnectionState = {
       session,
+      connection,
       ...(standard ? { standard } : {}),
       ...(standard?.lineage ? { lineagePages: new Set([standard.lineage.seedTargetId]) } : {}),
       ...(script ? { script } : {}),
@@ -542,6 +553,7 @@ export class SessionCdpRouter {
     root: string,
     eventBudget: JsonSizeBudget,
     onEvent: (event: CdpEvent) => void,
+    options: { readonly connection?: boolean } = {},
   ): void {
     const session = this.#requireSession(sessionId);
     this.#assertOwnedTarget(session, root);
@@ -549,13 +561,12 @@ export class SessionCdpRouter {
       throw new SessionCdpRouterError("conflict", "Browser script attachment already exists.");
     if (session.session.scripts.size >= 128)
       throw new SessionCdpRouterError("too_large", "Too many browser script attachments.");
-    const state = this.#openConnection(session.session, undefined, {
-      id,
-      root,
-      eventBudget,
-      closing: false,
-      active: new Set(),
-    });
+    const state = this.#openConnection(
+      session.session,
+      undefined,
+      { id, root, eventBudget, closing: false, active: new Set() },
+      options.connection === true,
+    );
     session.session.scripts.set(id, state);
     this.#observe(state, onEvent);
   }
@@ -751,6 +762,7 @@ export class SessionCdpRouter {
       command.method === "Target.detachFromTarget",
       command.method,
     );
+    this.#assertClipboardFree(state, command);
     if (state.standard && command.parameters?.browserContextId !== undefined) {
       const { browserContextId, ...parameters } = command.parameters;
       if (browserContextId !== state.session.sessionId)
@@ -1465,6 +1477,12 @@ export class SessionCdpRouter {
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
 
+  /** A connection's work is refused before any effect when it would use the clipboard. */
+  #assertClipboardFree(state: ConnectionState, command: CdpCommand): void {
+    if (state.connection && usesBrowserClipboard(command.method, command.parameters))
+      throw new SessionCdpRouterError("forbidden", connectionClipboardRefusal);
+  }
+
   #admitAttachedCommand(state: ConnectionState, command: CdpCommand): AttachedChannel {
     const attached = state.channels.get(command.sessionId ?? "");
     if (!attached) {
@@ -1473,6 +1491,7 @@ export class SessionCdpRouter {
     const parameters = command.parameters ?? {};
     this.#assertOwnedTarget(state, attached.physicalTargetId);
     this.#assertScope(state, parameters, false, command.method);
+    this.#assertClipboardFree(state, command);
     if (command.method === "Page.navigate") {
       assertSafeNavigationUrl(parameters.url, false, Boolean(state.standard || state.script));
     }

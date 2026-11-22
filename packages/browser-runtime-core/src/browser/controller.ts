@@ -601,6 +601,8 @@ export class BrowserController {
     if (scope && !seed) throw new BrowserRuntimeError("not_found", "The browser page closed.");
     const client = this.cdpRouter.openStandardClient(this.claims.sessionId, {
       wholeContext,
+      // The Home issues a lineage only for a connected agent's own direct work.
+      ...(scope ? { connection: true } : {}),
       ...(scope && seed
         ? { lineage: { attachmentId: scope.attachmentId, seedTargetId: seed.targetId } }
         : {}),
