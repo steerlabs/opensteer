@@ -16,7 +16,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, space } from "../theme.js";
+import { color, controlFontScaleLimit, space, touchTarget } from "../theme.js";
 import { AnswerPill } from "../thread/answer-pill.js";
 import { taskHeading } from "../thread/task-status.js";
 import { ComposerAction } from "../ui/composer-action.js";
@@ -81,7 +81,6 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
         {props.agent === null ? null : <AgentMarks agents={[props.agent]} size={16} />}
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={1}
           role={needsYou ? "secondaryMedium" : "secondary"}
           style={[styles.words, needsYou && styles.needsYou]}
           tone={failed ? "danger" : "soft"}
@@ -89,23 +88,27 @@ export const PlaceStatusRow = memo(function PlaceStatusRow(props: {
           {words}
         </AppText>
       </View>
-      {needsYou ? (
-        <AnswerPill
-          accessibilityHint="Returns to the conversation, where you answer it"
-          label="Answer"
-          onPress={props.onAnswer}
-          tone="primary"
-        />
+      {needsYou || runId !== null ? (
+        <View style={styles.controls}>
+          {needsYou ? (
+            <AnswerPill
+              accessibilityHint="Returns to the conversation, where you answer it"
+              label="Answer"
+              onPress={props.onAnswer}
+              tone="primary"
+            />
+          ) : null}
+          {runId === null ? null : (
+            <ComposerAction
+              busy={busy}
+              disabled={!props.canRespond}
+              kind="stop"
+              label={props.stopLabel}
+              onPress={onStop}
+            />
+          )}
+        </View>
       ) : null}
-      {runId === null ? null : (
-        <ComposerAction
-          busy={busy}
-          disabled={!props.canRespond}
-          kind="stop"
-          label={props.stopLabel}
-          onPress={onStop}
-        />
-      )}
     </View>
   );
 });
@@ -122,17 +125,44 @@ export function stopLabel(stops: "reply" | "task" | "run"): string {
       : "Stop this run";
 }
 
+/**
+ * The least room the words keep beside the controls. Narrower than this, as when Answer joins
+ * Stop on a small phone or at a large text size, the controls go under the words instead, so
+ * who is using the tab and for what is never cut to fit them.
+ */
+const wordsBesideControls = 176;
+
 const styles = StyleSheet.create({
-  needsYou: { color: color.amber },
-  // The bar's own inset, so the row's control stands over the bar's last one.
-  row: {
+  // At the row's end, on its own line once the words need that room.
+  controls: {
     alignItems: "center",
     flexDirection: "row",
     gap: space[8],
-    flex: 1,
-    paddingHorizontal: space[12],
+    marginLeft: "auto",
   },
-  said: { alignItems: "center", flex: 1, flexDirection: "row", gap: space[8], minWidth: 0 },
+  needsYou: { color: color.amber },
+  // The bar's own inset, so the row's control stands over the bar's last one. It grows with
+  // its words: the room it takes is measured, never assumed to be one line.
+  row: {
+    alignItems: "center",
+    columnGap: space[8],
+    flexDirection: "row",
+    flexGrow: 1,
+    flexWrap: "wrap",
+    paddingHorizontal: space[12],
+    paddingVertical: space[2],
+    rowGap: space[2],
+  },
+  said: {
+    alignItems: "center",
+    flexBasis: wordsBesideControls,
+    flexDirection: "row",
+    flexGrow: 1,
+    flexShrink: 1,
+    gap: space[8],
+    minHeight: touchTarget,
+    minWidth: 0,
+  },
   words: { flexShrink: 1 },
 });
 
@@ -322,7 +352,7 @@ const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
  * A connected agent using this tab, for which task, and the Stop that ends its session; while
  * it waits on the person, Answer back to the task's question beside that Stop.
  */
-function SessionStatusRow(props: {
+export function SessionStatusRow(props: {
   readonly busy: boolean;
   /** Returns to the task, where its question is answered; null while nothing waits. */
   readonly onAnswer: (() => void) | null;
@@ -340,7 +370,6 @@ function SessionStatusRow(props: {
         />
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={1}
           role="secondary"
           style={styles.words}
           tone={props.onStop === null ? "muted" : "soft"}
@@ -348,22 +377,26 @@ function SessionStatusRow(props: {
           {session.line}
         </AppText>
       </View>
-      {props.onAnswer !== null ? (
-        <AnswerPill
-          accessibilityHint={`${workWords("tab.needsYou", { agent: session.agent.name })}. Returns to the task, where you answer it`}
-          label={workWords("tab.answer")}
-          onPress={props.onAnswer}
-          tone="primary"
-        />
-      ) : null}
-      {props.onStop === null ? null : (
-        <ComposerAction
-          busy={props.busy}
-          disabled={false}
-          kind="stop"
-          label={workWords("work.stop", { agent: session.agent.name })}
-          onPress={props.onStop}
-        />
+      {props.onAnswer === null && props.onStop === null ? null : (
+        <View style={styles.controls}>
+          {props.onAnswer !== null ? (
+            <AnswerPill
+              accessibilityHint={`${workWords("tab.needsYou", { agent: session.agent.name })}. Returns to the task, where you answer it`}
+              label={workWords("tab.answer")}
+              onPress={props.onAnswer}
+              tone="primary"
+            />
+          ) : null}
+          {props.onStop === null ? null : (
+            <ComposerAction
+              busy={props.busy}
+              disabled={false}
+              kind="stop"
+              label={workWords("work.stop", { agent: session.agent.name })}
+              onPress={props.onStop}
+            />
+          )}
+        </View>
       )}
     </View>
   );

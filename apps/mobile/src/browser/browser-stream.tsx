@@ -61,6 +61,7 @@ import {
 } from "./browser-frame.js";
 import { nativePictureView } from "../computers/phone-display-native.js";
 import { browserPictureFence, useNativeBrowserPicture } from "./native-browser-picture.js";
+import { pictureTraceEnabled, pictureWait, tracePicture } from "./picture-trace.js";
 
 export interface BrowserStreamProps {
   /** On screen in the foreground: pictures flow while it is. */
@@ -773,6 +774,21 @@ function BrowserStreamView({
   useEffect(() => {
     if (wakeWords !== null) AccessibilityInfo.announceForAccessibility(wakeWords);
   }, [wakeWords]);
+  // A development build says what a page that will not paint is waiting for.
+  const waiting = usePictureWait({
+    describe: () =>
+      `surface=${tabId} feed=${feed.status} ${pictureWait(
+        picture.tally,
+        frames.get(session.id, tabId) !== null,
+      )}`,
+    waiting:
+      native &&
+      drawn &&
+      ready &&
+      !sharedWatch &&
+      displayed === null &&
+      feedState === "synchronized",
+  });
   if (!requestedActive && !kept) return null;
   // The page as it last was, while it isn't arriving: marked as such, and
   // input waits for it to be readmitted. A tap there pulses the chip.
@@ -785,7 +801,7 @@ function BrowserStreamView({
       (displayed === null
         ? browserWaits && feedError === null
           ? (wakeAlone?.text ?? null)
-          : streamLabel(session.state, feedState, feedError)
+          : withPictureWait(streamLabel(session.state, feedState, feedError), waiting)
         : null));
 
   return (
@@ -1213,3 +1229,38 @@ const styles = StyleSheet.create({
   },
   retryLabel: { ...textType.secondaryMedium, color: color.text },
 });
+
+/** How long "Loading the page…" stands before a development build says what it waits for. */
+export const pictureWaitMs = 4000;
+
+/**
+ * Development builds only: once a page has waited `pictureWaitMs` for its picture, one trace
+ * line says what it is waiting for, and the wait is returned for its label to say too.
+ */
+function usePictureWait(input: {
+  readonly describe: () => string;
+  readonly waiting: boolean;
+}): string | null {
+  const [said, setSaid] = useState<string | null>(null);
+  const describe = useRef(input.describe);
+  describe.current = input.describe;
+  const tracing = pictureTraceEnabled();
+  useEffect(() => {
+    if (!tracing || !input.waiting) {
+      setSaid(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const line = describe.current();
+      tracePicture(`waiting ${line}`);
+      setSaid(line.replace(/^surface=\S+ feed=\S+ /u, ""));
+    }, pictureWaitMs);
+    return () => clearTimeout(timer);
+  }, [input.waiting, tracing]);
+  return input.waiting ? said : null;
+}
+
+/** "Loading the page…", and in a development build what it has waited for. */
+function withPictureWait(label: string, waiting: string | null): string {
+  return waiting === null ? label : `${label} (development: ${waiting})`;
+}

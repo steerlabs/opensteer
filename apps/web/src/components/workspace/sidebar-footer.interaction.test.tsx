@@ -132,7 +132,7 @@ it("desktop shows computers with attention facts, then closes on selection or ad
   expect(readFacts).not.toHaveBeenCalled();
   await openMenu();
   expect(menuLabels()).toEqual(["Automations", "Apps", "Settings"]);
-  const computers = element('[aria-label="Your computers"]');
+  const computers = element('[aria-label="Your Opensteers"]');
   expect([...computers.querySelectorAll(".place-row__name")].map((row) => row.textContent)).toEqual(
     ["Home Mac", "Lab Mac"],
   );

@@ -468,6 +468,8 @@ export function desktopExternalUrlAllowed(value: string): boolean {
     url.protocol === "http:" &&
     loopbackExternalHostnames.has(url.hostname) &&
     ((url.pathname === loopbackChromeConnectPath && url.search === "") ||
+      // A development account website on this computer: its Cloud Computer checkout.
+      (url.pathname === "/cloud-computer/checkout" && url.search === "" && !url.hash) ||
       (url.pathname === "/oauth/mcp/complete" &&
         !url.hash &&
         url.searchParams.size === 1 &&
@@ -482,6 +484,52 @@ export const DesktopOpenExternalUrlInputSchema = z.strictObject({
 export type DesktopOpenExternalUrlInput = z.infer<typeof DesktopOpenExternalUrlInputSchema>;
 export const DesktopOpenExternalUrlResultSchema = z.strictObject({ opened: z.literal(true) });
 export type DesktopOpenExternalUrlResult = z.infer<typeof DesktopOpenExternalUrlResultSchema>;
+/**
+ * What an access operation answers, in place of throwing, when it refuses on purpose with words
+ * written for a person: a Home gone by the time its turn came, a turn that never came. Any
+ * other failure still throws, and a person never reads its text.
+ */
+export const DesktopAccessRefusedSchema = z.strictObject({
+  refused: z.string().trim().min(1).max(500),
+});
+
+const desktopRefusalKind = "opensteer.desktop-refusal";
+
+/**
+ * Such a refusal as the Mac app's window receives it. A plain frozen object, because the context
+ * bridge keeps an Error's message and drops every field of its own.
+ */
+export interface DesktopRefusal {
+  readonly kind: typeof desktopRefusalKind;
+  readonly message: string;
+  readonly words: string;
+}
+
+export function desktopRefusal(words: string): DesktopRefusal {
+  return Object.freeze({ kind: desktopRefusalKind, message: words, words });
+}
+
+/** The sentence a refusal carries for a person, or null for anything else that was thrown. */
+export function desktopRefusalWords(reason: unknown): string | null {
+  if (typeof reason !== "object" || reason === null) return null;
+  const { kind, words } = reason as { readonly kind?: unknown; readonly words?: unknown };
+  if (kind !== desktopRefusalKind || typeof words !== "string") return null;
+  const parsed = DesktopAccessRefusedSchema.shape.refused.safeParse(words);
+  return parsed.success ? parsed.data : null;
+}
+
+/** The preload's reading of an access operation's answer: nothing, or the refusal it throws. */
+export function settleDesktopAccessAnswer(answer: unknown): void {
+  const refused = DesktopAccessRefusedSchema.safeParse(answer);
+  if (refused.success) throw desktopRefusal(refused.data.refused);
+}
+
+/** A page opened in Google Chrome itself, or why it couldn't be: Chrome isn't installed. */
+export const DesktopOpenInChromeResultSchema = z.discriminatedUnion("opened", [
+  z.strictObject({ opened: z.literal(true) }),
+  z.strictObject({ opened: z.literal(false), reason: z.literal("chrome-not-installed") }),
+]);
+export type DesktopOpenInChromeResult = z.infer<typeof DesktopOpenInChromeResultSchema>;
 
 /**
  * One notification the Host decided this person gets, as the operating system
@@ -1050,6 +1098,11 @@ export const DeploymentAccessSnapshotSchema = z.strictObject({
     detail: z.string().trim().min(1).max(1_000).optional(),
     email: z.string().email().max(320).optional(),
     issuer: z.url().optional(),
+    /**
+     * The Opensteer website this app's account is managed on: where checkout happens. A bare
+     * https origin (loopback http in development), as the app opens nothing else there.
+     */
+    portalOrigin: DesktopAccessOriginSchema.optional(),
     status: DesktopAccountAuthStatusSchema,
     subject: z.string().min(1).max(200).optional(),
   }),
@@ -1924,6 +1977,8 @@ export interface OpensteerDesktopBridge {
   tailscaleShare(): Promise<DesktopTailscaleShareResult>;
   setBadgeCount(input: DesktopBadgeCountInput): Promise<void>;
   openExternalUrl(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenExternalUrlResult>;
+  /** Opens a page in Google Chrome itself, which connecting Chrome needs. */
+  openInChrome?(input: DesktopOpenExternalUrlInput): Promise<DesktopOpenInChromeResult>;
   /** Called before `begin`, because the Account seals the port into the attempt. */
   prepareIntegrationAuthorizationReturn(
     input: DesktopPrepareIntegrationAuthorizationReturnInput,

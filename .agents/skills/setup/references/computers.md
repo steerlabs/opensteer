@@ -1,9 +1,10 @@
 # Set up a computer
 
-Open the desktop app on that Mac, choose **Connect to my Opensteer** and sign in, then confirm
-**Connect this Mac to …**: it becomes one of the person's devices. A headless computer is added
-from Settings → Devices → **Add a device** → Server.
-Let the owner-session Host choose the grant and target. Use from anywhere (Settings → Account) must
+Open the desktop app on that Mac, press **Sign in** and sign in with the Opensteer account. An
+account with one Opensteer opens it and the Mac becomes one of the person's devices; with several,
+choose one. A headless computer is added from Settings → Devices → **Add a device** → Linux
+server; a pairing code is under **Add a device** → Advanced.
+Let the owner-session Host choose the grant and target. Remote access (Settings → Account) must
 be on before a remote computer connects, and tasks execute only on the hosting computer; other
 devices are tool targets. Change what a device offers with its switches on its Devices page; never
 remove and re-add it for that: removal signs it out and deletes its identity and SSH host key.

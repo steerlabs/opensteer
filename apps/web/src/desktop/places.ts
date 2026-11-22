@@ -1,4 +1,4 @@
-import { deviceWords } from "@opensteer/client/computers";
+import { homeKindWords } from "@opensteer/client/computers";
 import { isNetworkedHome } from "@opensteer/client/connections";
 import { hostNeedsUpdateLabel, placeStatus } from "@opensteer/protocol/deployment-status";
 import type {
@@ -99,11 +99,7 @@ function placeRow(
     current,
     facts: context.facts?.get(deployment.id),
     detail:
-      kind === "cloud"
-        ? deviceWords("place.kind.cloud")
-        : kind === "unknown"
-          ? originHost(deployment.canonicalOrigin)
-          : placeDetail(deployment, context),
+      kind === "unknown" ? originHost(deployment.canonicalOrigin) : placeDetail(deployment, kind),
     icon: homeIcons[kind],
     id: deployment.id,
     name: deployment.name,
@@ -150,12 +146,14 @@ function homeKindOf(
   return context.cloud === null || context.cloud === undefined ? "unknown" : "server";
 }
 
-function placeDetail(deployment: DeploymentAccessDeployment, context: PlaceRowContext): string {
-  if (deployment.onThisComputer) return context.thisComputer;
+/**
+ * Under the Home's own name, what kind of Home it is, in the one table of words every client
+ * reads. A Home shared with this person says so instead.
+ */
+function placeDetail(deployment: DeploymentAccessDeployment, kind: RowHomeKind): string {
+  if (deployment.onThisComputer) return homeKindWords("this-mac").label;
   if (deployment.accountAccess === "member") return "Shared with you";
-  const homeName = context.facts?.get(deployment.id)?.homeName;
-  if (homeName && homeName !== deployment.name) return `Home: ${homeName}`;
-  return deployment.source === "account" ? "Your computer" : "Computer · added here";
+  return homeKindWords(kind === "unknown" ? "unknown" : kind).label;
 }
 
 function placeRank(deployment: DeploymentAccessDeployment): number {
@@ -169,7 +167,7 @@ function unavailableRow(entry: DeploymentAccessUnavailable, context: PlaceRowCon
   return {
     current: false,
     detail: cloud
-      ? deviceWords("place.kind.cloud")
+      ? homeKindWords("cloud").label
       : entry.accountAccess === "member"
         ? "Shared with you"
         : "In your account",

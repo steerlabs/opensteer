@@ -40,7 +40,10 @@ import {
   PersonalPrivatePortUnavailableError,
   type PersonalLoopbackPortPort,
 } from "./personal-deployment-supervisor.js";
-import type { PersonalHostControlPort } from "./personal-host-control.js";
+import {
+  PersonalHostBootstrapRefusedError,
+  type PersonalHostControlPort,
+} from "./personal-host-control.js";
 import type {
   PersonalLocalBrowserHandle,
   PersonalLocalRuntimePort,
@@ -1852,6 +1855,12 @@ function supervisorFixture(
     readonly dataReset?: PersonalDataReset;
     readonly files?: PersonalDeploymentFilesystemPort;
     readonly agentsStoppedSince?: () => string | null;
+    readonly onContainedBoot?: (mode: string) => void;
+    readonly onUncontainedBoot?: (mode: string) => void;
+    readonly stopProofPollMs?: number;
+    readonly checkPluginAgentWorkStopped?: NonNullable<
+      PersonalHostControlPort["checkPluginAgentWorkStopped"]
+    >;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1902,6 +1911,9 @@ function supervisorFixture(
     waitForRunner: vi.fn<PersonalHostControlPort["waitForRunner"]>(async () => {
       lifecycle.push("host.waitForRunner");
     }),
+    ...(restarts.checkPluginAgentWorkStopped
+      ? { checkPluginAgentWorkStopped: restarts.checkPluginAgentWorkStopped }
+      : {}),
   } satisfies PersonalHostControlPort;
   const browsers: TestLocalBrowserHandle[] = [];
   const localRuntimes = {
@@ -1937,6 +1949,11 @@ function supervisorFixture(
       : {}),
     ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
     ...(restarts.agentsStoppedSince ? { agentsStoppedSince: restarts.agentsStoppedSince } : {}),
+    ...(restarts.onContainedBoot ? { onContainedBoot: restarts.onContainedBoot } : {}),
+    ...(restarts.onUncontainedBoot ? { onUncontainedBoot: restarts.onUncontainedBoot } : {}),
+    ...(restarts.stopProofPollMs !== undefined
+      ? { stopProofPollMs: restarts.stopProofPollMs }
+      : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),
@@ -2402,3 +2419,248 @@ it.each([false, true])(
     }
   },
 );
+
+it("keeps looking for Home Stop proof across transient faults and Home restarts, ends when Home changes or is removed, and fails on permanent refusal", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  const seenOrigins: string[] = [];
+  let checks = 0;
+  let mode: "slow-then-restart" | "refuse" | "remove" | "replace" = "slow-then-restart";
+
+  let fixture!: ReturnType<typeof supervisorFixture>;
+  fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      restartBackoffMs: 5,
+      stopProofPollMs: 5,
+      checkPluginAgentWorkStopped: vi.fn(async (origin, _dep, _env, _runner, since) => {
+        expect(since).toBe(stoppedSince);
+        seenOrigins.push(origin);
+        checks += 1;
+        if (mode === "refuse") {
+          throw new PersonalHostBootstrapRefusedError("unauthorized", "Sign in required");
+        }
+        if (mode === "slow-then-restart") {
+          if (checks === 1) throw new Error("transient fault while Home restarts");
+          // Wait until the crashed Host has restarted and reported ready again.
+          return (
+            childrenOf(fixture, "host").length >= 2 && fixture.supervisor.status.state === "ready"
+          );
+        }
+        return false;
+      }),
+    },
+  );
+
+  try {
+    // 1. Before any hosted Home exists: resolves true (nothing more to prove).
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe(true);
+
+    // 2. Start Home, begin looking for proof, restart Home mid-look, confirm once restarted.
+    await fixture.supervisor.start();
+    const looking = fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal);
+    await vi.waitFor(() => expect(checks).toBeGreaterThanOrEqual(2));
+    // Crash the Host process so the supervisor restarts it mid-look.
+    childrenOf(fixture, "host")[0]!.emit("exit", 1, null);
+    await expect(looking).resolves.toBe(true);
+    expect(childrenOf(fixture, "host").length).toBeGreaterThanOrEqual(2);
+    expect(seenOrigins.length).toBeGreaterThanOrEqual(3);
+
+    // 3. Permanent Home refusal rethrows PersonalHostBootstrapRefusedError.
+    mode = "refuse";
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).rejects.toBeInstanceOf(PersonalHostBootstrapRefusedError);
+
+    // 4. Replaced Home (manifest deploymentId changes mid-look): follows the new Home and asks it.
+    mode = "replace";
+    const originalLoad = fixture.files.load.bind(fixture.files);
+    const replacementDeploymentId = createId("deployment");
+    const askedDeployments: string[] = [];
+    let loadCount = 0;
+    const loadSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
+      const current = await originalLoad();
+      loadCount += 1;
+      if (!current) return null;
+      return loadCount >= 2 ? { ...current, deploymentId: replacementDeploymentId } : current;
+    });
+    vi.mocked(fixture.host.checkPluginAgentWorkStopped!).mockImplementation(
+      async (_origin, depId) => {
+        askedDeployments.push(depId);
+        return depId === replacementDeploymentId;
+      },
+    );
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe(true);
+    expect(askedDeployments).toContain(replacementDeploymentId);
+    loadSpy.mockRestore();
+
+    // 5. Removed Home (manifest becomes null mid-look): nothing left to prove, resolves true.
+    mode = "remove";
+    let removeCount = 0;
+    const removeSpy = vi.spyOn(fixture.files, "load").mockImplementation(async () => {
+      removeCount += 1;
+      return removeCount >= 2 ? null : originalLoad();
+    });
+    vi.mocked(fixture.host.checkPluginAgentWorkStopped!).mockResolvedValue(false);
+    await expect(
+      fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal),
+    ).resolves.toBe(true);
+    removeSpy.mockRestore();
+  } finally {
+    await fixture.supervisor.stop();
+  }
+});
+
+it("paces waitForStopProof from 250 ms doubling up to a 5 s cap", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  let checks = 0;
+  const fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      checkPluginAgentWorkStopped: vi.fn(async () => {
+        checks += 1;
+        return checks >= 8;
+      }),
+    },
+  );
+
+  await fixture.supervisor.start();
+  try {
+    vi.useFakeTimers();
+    const pending = fixture.supervisor.waitForStopProof(stoppedSince, new AbortController().signal);
+
+    // Poll 1 fires immediately.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(checks).toBe(1);
+
+    // Subsequent delays: 250, 500, 1000, 2000, 4000, 5000, 5000.
+    for (const [expectedStep, delayMs] of [
+      [2, 250],
+      [3, 500],
+      [4, 1_000],
+      [5, 2_000],
+      [6, 4_000],
+      [7, 5_000],
+      [8, 5_000],
+    ] as const) {
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(checks).toBe(expectedStep - 1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(checks).toBe(expectedStep);
+    }
+
+    await expect(pending).resolves.toBe(true);
+  } finally {
+    vi.useRealTimers();
+    await fixture.supervisor.stop();
+  }
+});
+
+it("reports positive and negative boot containment outcomes under a saved Stop", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  for (const contained of [true, false]) {
+    const onContainedBoot = vi.fn();
+    const onUncontainedBoot = vi.fn();
+    const dir = await mkdtemp(path.join(tmpdir(), "opensteer-boot-contain-"));
+    const fixture = supervisorFixture(
+      null,
+      undefined,
+      verifiedRelease(),
+      { assertAvailable: async () => undefined },
+      {
+        agentsStoppedSince: () => stoppedSince,
+        onContainedBoot,
+        onUncontainedBoot,
+      },
+    );
+    Object.assign(fixture.files.paths, { runnerDataDirectory: dir });
+    const originalSpawn = fixture.processes.spawn.bind(fixture.processes);
+    vi.spyOn(fixture.processes, "spawn").mockImplementation((spec) => {
+      const receipt = spec.environment.OPENSTEER_RUNNER_SHUTDOWN_RECEIPT;
+      if (spec.component === "runner" && receipt) {
+        const readyPayload = JSON.stringify({
+          port: 43210,
+          token: crypto.randomUUID(),
+          earlierBootsContained: contained,
+        });
+        void mkdir(path.dirname(receipt), { recursive: true }).then(() =>
+          writeFile(receipt, readyPayload, "utf8"),
+        );
+      }
+      return originalSpawn(spec);
+    });
+    try {
+      await fixture.supervisor.start();
+      if (contained) {
+        await vi.waitFor(() =>
+          expect(onContainedBoot).toHaveBeenCalledExactlyOnceWith(stoppedSince),
+        );
+        expect(onUncontainedBoot).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() =>
+          expect(onUncontainedBoot).toHaveBeenCalledExactlyOnceWith(stoppedSince),
+        );
+        expect(onContainedBoot).not.toHaveBeenCalled();
+      }
+    } finally {
+      await fixture.supervisor.stop().catch(() => undefined);
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+it("returns false when shutting down while looking for Stop proof so DesktopLocalStop never logs confirmation without proof", async () => {
+  const stoppedSince = "2026-11-22T09:00:00.000Z";
+  const firstCheck = Promise.withResolvers<void>();
+  const releaseCheck = Promise.withResolvers<boolean>();
+  const fixture = supervisorFixture(
+    null,
+    undefined,
+    verifiedRelease(),
+    { assertAvailable: async () => undefined },
+    {
+      stopProofPollMs: 5,
+      checkPluginAgentWorkStopped: vi.fn(async () => {
+        firstCheck.resolve();
+        return releaseCheck.promise;
+      }),
+    },
+  );
+  const log = vi.fn();
+  const { DesktopLocalStop } = await import("../app/local-stop.js");
+  const localStop = new DesktopLocalStop({
+    store: { load: async () => ({ stopped: false, at: null }), save: async () => {} },
+    restart: async () => {},
+    confirm: (since, signal) => fixture.supervisor.waitForStopProof(since, signal),
+    log,
+    now: () => new Date(stoppedSince),
+  });
+
+  await fixture.supervisor.start();
+  try {
+    await localStop.restore();
+    await localStop.stop();
+    await firstCheck.promise;
+    expect(localStop.confirming).toBe(true);
+
+    // Supervisor begins shutting down BEFORE localStop.dispose() aborts its controller.
+    fixture.supervisor.quiesce();
+    releaseCheck.resolve(false);
+
+    await vi.waitFor(() => expect(localStop.confirming).toBe(false));
+    expect(localStop.stoppedAt).toBeNull();
+    expect(log).not.toHaveBeenCalledWith("desktop.local-stop.home-confirmed", expect.anything());
+  } finally {
+    localStop.dispose();
+    await fixture.supervisor.stop();
+  }
+});

@@ -7,6 +7,7 @@ import type { IpcMain, IpcMainInvokeEvent, NativeImage, WebContents, WebFrameMai
 import type { DesktopUpdates } from "@opensteer/client/connections";
 import type { DeploymentId } from "@opensteer/core";
 import type {
+  DesktopOpenInChromeResult,
   DesktopComputerAppSetupStatus,
   DesktopComputerAppSetupTarget,
   DesktopOpenComputerAppSetupInput,
@@ -199,6 +200,8 @@ export interface DesktopBridgeOptions {
   };
   readonly portal: {
     readonly openExternal: (url: string) => Promise<void>;
+    /** Opens a page in Google Chrome itself; absent where there is no Chrome to ask for. */
+    readonly openInChrome?: (url: string) => Promise<DesktopOpenInChromeResult>;
     /** The chosen folder, or null when the dialog was closed without one. */
     readonly pickFolder: () => Promise<string | null>;
   };

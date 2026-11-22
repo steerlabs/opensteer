@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
+import { cardUseConsent } from "../packages/client/src/host/cards.js";
 import { passwordSignInPrivacy } from "../packages/client/src/host/passwords.js";
 
 /*
@@ -77,6 +78,19 @@ describe("what Opensteer says an agent sees of a password", () => {
         pattern.test("Agents never see it, but a tricked agent could reveal it."),
       ),
     ).toBe(true);
+  });
+
+  it("says on every saved-card sheet what the saved-login sheet says", () => {
+    const words = cardUseConsent("https://shop.example.com", "2026-11-21T23:46:00.000Z");
+    // Opensteer fills it, does not hand it to the agent, and an agent in that page can read it.
+    expect(words).toContain("Opensteer fills your saved card on shop.example.com");
+    expect(words).toContain("It isn't handed to the agent");
+    expect(words).toContain("an agent working in that page can read it");
+    expect(words).toContain("a tricked agent could reveal it");
+    // What it said before stays: who else reads it, and that it approves no charge.
+    expect(words).toContain("The website and its payment provider can read filled details.");
+    expect(words).toContain("This does not approve a particular charge.");
+    for (const pattern of forbidden) expect(words).not.toMatch(pattern);
   });
 
   it.each([

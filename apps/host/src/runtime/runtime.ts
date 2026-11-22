@@ -38,6 +38,7 @@ import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
 import { pluginSourceFiles, exportPluginSource } from "../plugins/plugin-source.js";
 import { PluginService, PluginServiceError } from "../plugins/plugin-service.js";
 import { hasUnfinishedPluginWorkflows } from "../plugins/engine-storage.js";
+import { PluginStopCoordinator } from "../plugins/plugin-stop-coordinator.js";
 import { PluginOwnerApi, pluginEngineStateView } from "../plugins/plugin-owner-api.js";
 import { changeDeviceDrivers } from "../administration/device-removal.js";
 import { DeviceDriverResolver } from "../computer-use/device-drivers.js";
@@ -1427,13 +1428,17 @@ export async function createHostRuntime(
     );
     const credentials = new CredentialService({ key: credentialKey, store });
     const pluginAgentStore = new PluginAgentStore(database);
-    let hostingPluginRunner: RunnerId | undefined;
-    let pluginStopProof: string | undefined;
-    let lastPluginMode: string | null = null;
-    let pluginStopTail: Promise<void> = Promise.resolve();
+    const pluginStopCoordinator = new PluginStopCoordinator({
+      pluginService: () => pluginService,
+      pluginExecutions: () => pluginExecutions,
+      hasUnfinishedWorkflows: () => hasUnfinishedPluginWorkflows(database),
+      isCurrent: (identity) => runnerRegistry?.isCurrentConnection(identity) === true,
+      log: { warn: (details, message) => app.log.warn(details, message) },
+    });
     const hostingComputerStopped = () => {
       const current = runnerRegistry?.identityForEnvironment(personalConfig.environmentId);
-      const hosting = current?.runnerKind === "main" ? current.runnerId : hostingPluginRunner;
+      const hosting =
+        current?.runnerKind === "main" ? current.runnerId : pluginStopCoordinator.hostingRunner;
       return hosting !== undefined && !!runnerRegistry?.agentsStoppedSince(hosting);
     };
     const pluginWorkMode = (identity: RunnerIdentity) => {
@@ -1442,35 +1447,7 @@ export async function createHostRuntime(
         !identity.environmentIds.includes(personalConfig.environmentId)
       )
         return;
-      hostingPluginRunner = identity.runnerId;
-      const mode = identity.agentsStoppedSince;
-      if (mode === undefined || (mode === null && lastPluginMode === null)) return;
-      lastPluginMode = mode;
-      pluginStopProof = undefined;
-      pluginStopTail = pluginStopTail
-        .then(async () => {
-          if (!runnerRegistry?.isCurrentConnection(identity) || !pluginService || !pluginExecutions)
-            return;
-          const control = { caller: "personal", mode: "automatic" } as const;
-          const background = pluginService.agentWork(
-            { stopped: mode !== null },
-            control,
-            AbortSignal.timeout(5_000),
-          );
-          if (!mode) {
-            await background;
-            return;
-          }
-          const drained = await Promise.allSettled([background, pluginExecutions.stopAgentWork()]);
-          // Workerd workflows can outlive the plugin execution that started them.
-          if (
-            drained.every((result) => result.status === "fulfilled" && result.value) &&
-            !(await hasUnfinishedPluginWorkflows(database)) &&
-            runnerRegistry.isCurrentConnection(identity)
-          )
-            pluginStopProof = mode;
-        })
-        .catch((error: unknown) => app.log.warn({ err: error }, "Plugin Stop proof unavailable"));
+      pluginStopCoordinator.onHostingRunnerRegistered(identity);
     };
     const pluginAuthority = new PluginAuthority({
       store,
@@ -3567,9 +3544,7 @@ export async function createHostRuntime(
         harnessAuthenticationCoordinator,
         pluginRequests: pluginExecutions,
         pluginAgentWorkStoppedSince: (runnerId) =>
-          runnerId === hostingPluginRunner && hostingComputerStopped()
-            ? pluginStopProof
-            : undefined,
+          pluginStopCoordinator.proofFor(runnerId, hostingComputerStopped()),
         plugins: pluginOwnerApi,
         pluginOAuth,
         integrations: {
@@ -3621,6 +3596,7 @@ export async function createHostRuntime(
     );
     attachmentGcTimer.unref();
     app.addHook("onClose", async () => clearInterval(attachmentGcTimer));
+    app.addHook("onClose", async () => pluginStopCoordinator.close());
     if (directory) {
       app.addHook("onClose", async () => directory.close());
       await directory.start();

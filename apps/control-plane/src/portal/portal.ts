@@ -11,16 +11,15 @@ import {
   AccountDeploymentSchema,
   ControlPlaneAccountIdSchema,
   IssueAccountHostSessionGrantResponseSchema,
-  cloudWords,
+  homeKindWords,
+  homesListTitle,
   isCanonicalPersonalHome,
-  orgWords,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { DeploymentIdSchema, opensteerMobileClient } from "@opensteer/core";
 import { sessionExchangePath } from "@opensteer/protocol";
 import {
-  deploymentKindLabel,
   deploymentStatusFromAccountDirectory,
   deploymentStatusFromPersonalConnect,
   deploymentStatusLabel,
@@ -227,11 +226,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         ),
         signOutAction: portalSignOutPath,
         cloudComputerHref: dependencies.cloudComputers ? cloudComputerPortalPath : null,
+        cloudOffer: dependencies.cloudComputers?.offer ?? null,
         organizationsHref: dependencies.organizations ? organizationsPortalPath : null,
       }),
       fonts,
       layout: "app",
-      title: "Your Opensteers",
+      title: homesListTitle,
     });
   }
 
@@ -788,19 +788,15 @@ function placeKind(
   readonly kindLabel: string;
   readonly badge: string | null;
 } {
-  if (typeof cloud === "object")
-    return {
-      kind: "cloud",
-      kindLabel: cloudWords("cloud.shortTitle"),
-      badge: cloud.organization
-        ? orgWords("org.work.badge", { organization: cloud.organization })
-        : null,
-    };
+  if (typeof cloud === "object") {
+    const words = homeKindWords(cloud.organization ? "work" : "cloud", cloud);
+    return { kind: "cloud", kindLabel: words.label, badge: words.badge };
+  }
   if (deployment.reachability === "routed")
-    return { kind: "personal", kindLabel: deploymentKindLabel("personal"), badge: null };
+    return { kind: "personal", kindLabel: homeKindWords("mac").label, badge: null };
   return cloud === "unknown" || !isCanonicalPersonalHome(deployment)
-    ? { kind: "unknown", kindLabel: "", badge: null }
-    : { kind: "server", kindLabel: "Server", badge: null };
+    ? { kind: "unknown", kindLabel: homeKindWords("unknown").label, badge: null }
+    : { kind: "server", kindLabel: homeKindWords("server").label, badge: null };
 }
 
 function currentAccountDeployment(deployment: AccountDeploymentDirectoryEntry) {

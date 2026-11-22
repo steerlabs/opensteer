@@ -8214,6 +8214,187 @@ it.each(["retained", "lost"] as const)(
   },
 );
 
+it("holds a viewer attaching during a Runner restart until the replacement reattaches, and marks reconnect races retryable", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const ownerId = createId("user");
+  const runnerId = createId("runner");
+  const runtimeId = "restart-viewer-fixture";
+  const initialUrl = "https://example.test/form";
+  eligibleRunners.set(runnerId, "Test computer");
+  const page = new FakePage({ url: initialUrl });
+  const runtime = new BrowserRuntime({
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(new FakeContext([page]))),
+    runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: {
+      verify: async (ticket) => verifyTicket(ticket, keys.publicKey, "host-primary"),
+    },
+  });
+  const hub = new RunnerBrowserHub();
+  const router = new RunnerBrowserRuntimeRouter({ registry: hub });
+  const repository = new MemoryBrowserRepository(ownerId);
+  const tabs = memoryTabs();
+  const service = new BrowserService({
+    ...nativeProfileOptions(),
+    ...profileStateOptions,
+    connectTimeoutMs: 400,
+    repository,
+    signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
+    tabs: tabs.store,
+    tabPlaces: { write: async () => false, notice: () => {} },
+    targetResolver: router,
+  });
+  cleanups.push(async () => {
+    try {
+      await service.close();
+    } finally {
+      router.close();
+      hub.close();
+      await runtime.shutdown();
+    }
+  });
+
+  const attachRunner = (connectionGeneration: number) => {
+    const auxiliaryStreamId = RunnerAuxiliaryStreamIdSchema.parse(`rax_${randomUUID()}`);
+    const runnerFence = {
+      bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+      connectionGeneration,
+      connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+      connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+      runnerId,
+    };
+    const fence = { ...runnerFence, auxiliaryStreamId, module: "browser" as const };
+    let attachment: BrowserAttachment | undefined;
+    const result = Promise.withResolvers<BrowserRuntimeError | null>();
+    const reply = (event: BrowserRuntimeRelayEvent) => hub.handleMessage(peer, event);
+    const peer: RunnerBrowserPeer = {
+      id: auxiliaryStreamId,
+      close: () => {},
+      send: async (message) => {
+        if (message.type === "capability.grant") {
+          const { capabilityGeneration, capabilityLeaseId, runtimeId } = message.lease;
+          await reply({
+            ...fence,
+            requestId: message.requestId,
+            type: "capability.accepted",
+            capability: { capabilityGeneration, capabilityLeaseId, runtimeId },
+          });
+        } else if (message.type === "capability.revoke") {
+          await reply({ ...message, type: "capability.revoked" });
+        } else if (message.type === "browser.attach") {
+          const { capability, channelId, requestId } = message;
+          const sink = new FakeSink();
+          sink.sendServerImplementation = (frame) =>
+            reply({
+              ...fence,
+              capability,
+              channelId,
+              type: "browser.server-message",
+              message: frame,
+            });
+          try {
+            attachment = await runtime.attach(message.attachTicket, sink);
+          } catch (error) {
+            if (!(error instanceof BrowserRuntimeError)) throw error;
+            result.resolve(error);
+            await reply({
+              ...fence,
+              requestId,
+              channelId,
+              type: "browser.command-error",
+              error: error.toProtocolError(),
+            });
+            return;
+          }
+          await reply({
+            ...fence,
+            requestId,
+            capability,
+            channelId,
+            type: "browser.attached",
+            ...(attachment.initialPage ? { initialPage: attachment.initialPage } : {}),
+          });
+          result.resolve(null);
+        } else if (message.type === "browser.client-message") {
+          await attachment?.handle(JSON.stringify(message.message));
+        } else if (message.type === "browser.close") {
+          await attachment?.close();
+          await reply({ ...message, type: "browser.closed", code: 1000, reason: "" });
+        }
+      },
+    };
+    hub.attach(peer, {
+      auxiliaryStreamId,
+      fence,
+      identity: {
+        ...runnerFence,
+        fence: runnerFence,
+        allowedModules: ["browser"],
+        capabilities: [],
+        name: "Test computer",
+        environmentIds: [],
+        personalRemoteAccessGeneration: null,
+        runnerKind: "local",
+        runtimeVersion: "test",
+        modules: { browser: { runtimeId, wireVersion: 2, actorClaim: 1, tabRestoreVersion: 1 } },
+      },
+      streamLeaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    return {
+      result: result.promise,
+      restart: async () => {
+        await attachment!.close(true, true);
+        hub.detach(peer, "device-restarting");
+      },
+    };
+  };
+
+  const first = attachRunner(1);
+  const { session } = await service.start({ fresh: true, initialUrl, ownerId });
+  expect(await first.result).toBeNull();
+  const [tab] = await service.savedPages(ownerId, session.id);
+  expect(tab).toBeDefined();
+
+  // Start a Runner restart and wait until the broker has entered reconnect state.
+  await first.restart();
+  await vi.waitFor(() => expect(service.pageInventory(session.id)?.ready).toBe(false));
+
+  // A viewer connecting mid-restart waits for the replacement instead of failing with conflict.
+  const waitingPeer = new RecordingPeer("viewer-mid-restart");
+  let settled = false;
+  const waitingAttach = service
+    .attach(ownerId, session.id, waitingPeer, { ...consumerOptions(), mode: "watch" })
+    .finally(() => {
+      settled = true;
+    });
+  for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+  expect(settled).toBe(false);
+
+  const second = attachRunner(2);
+  expect(await second.result).toBeNull();
+  const attached = await waitingAttach;
+  expect(
+    waitingPeer.textFrames.some((frame) => JSON.parse(frame).type === "browser.snapshot"),
+  ).toBe(true);
+
+  // If another Runner restart starts while an attached viewer sends a command, the rejection is retryable.
+  await second.restart();
+  await vi.waitFor(() => expect(service.pageInventory(session.id)?.ready).toBe(false));
+  await expect(
+    attached.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: tab!.id })),
+      false,
+    ),
+  ).rejects.toMatchObject({ code: "conflict", retryable: true });
+  attached.close();
+
+  // If the Runner does not return before connectTimeoutMs, a waiting viewer gets a retryable error.
+  const timedOutPeer = new RecordingPeer("viewer-reconnect-timeout");
+  await expect(
+    service.attach(ownerId, session.id, timedOutPeer, { ...consumerOptions(), mode: "watch" }),
+  ).rejects.toMatchObject({ code: "runner_offline", retryable: true });
+});
+
 it("lets the runtime sleep an unviewed leftover only after its Run's durable hold ends", async () => {
   const context = new FakeContext([new FakePage()]);
   const verifier = new FakeTicketVerifier();

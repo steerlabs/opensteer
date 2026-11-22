@@ -996,6 +996,10 @@ async function run(): Promise<void> {
       ),
     );
     await h.clickAt(point.x, point.y);
+    await waitFor(
+      "browser focused site B frame",
+      () => h.contents.focusedFrame?.origin === fixture.origin("other.test"),
+    );
     check(
       "browser focused site B frame",
       h.contents.focusedFrame?.origin === fixture.origin("other.test"),
@@ -1015,6 +1019,10 @@ async function run(): Promise<void> {
         .every((a) => !a.passwordReceived),
     );
     await h.clickAt(point.x, point.y);
+    await waitFor(
+      "browser refocused site B frame",
+      () => h.contents.focusedFrame?.origin === fixture.origin("other.test"),
+    );
     const child = await h.authorize("https://other.test");
     check("lease for B fills focused B", (await h.fill(child, "password")) === "filled");
     await h.screenshot("oopif");
@@ -1209,9 +1217,14 @@ async function run(): Promise<void> {
         ),
       );
       await h.clickAt(point.x, point.y);
+      await waitFor(
+        "child initially focused",
+        () => h.contents.focusedFrame?.origin === fixture.origin("other.test"),
+      );
       const childFrame = h.contents.focusedFrame;
       check("child initially focused", childFrame?.origin === fixture.origin("other.test"));
       await h.click("#outside");
+      await waitFor("focus left the child frame", () => h.contents.focusedFrame !== childFrame);
       check("focus left the child frame", h.contents.focusedFrame !== childFrame);
       // Whether Chromium keeps the departed frame's input locally active is
       // recorded, not assumed: the fill must refuse either way.

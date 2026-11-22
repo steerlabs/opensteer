@@ -11,6 +11,7 @@ import {
   type ClientIssue,
 } from "@opensteer/client/feedback";
 import { useClientAction } from "@opensteer/client/react";
+import { desktopRefusalWords } from "@opensteer/protocol/desktop";
 import { useEffect, useMemo, useRef } from "react";
 
 /**
@@ -191,6 +192,12 @@ export async function runAction<O>(
         return await spec.execute(signal);
       } catch (error) {
         if (error instanceof Refusal) caught.refusal = error;
+        else {
+          // The Mac app's own refusals, made on purpose in words written for a person, read as
+          // they are; every other failure keeps the shared wording, never its own text.
+          const words = desktopRefusalWords(error);
+          if (words !== null) caught.refusal = new Refusal(words);
+        }
         throw error;
       }
     },

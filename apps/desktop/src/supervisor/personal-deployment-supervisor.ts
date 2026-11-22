@@ -72,6 +72,7 @@ import {
 import type { ComputerUseRunnerTargetResult } from "./local-runner-authority.js";
 import {
   PersonalHostAuthorityMismatchError,
+  PersonalHostBootstrapRefusedError,
   PersonalOwnerClaimRequiredError,
   type PersonalHostBootstrapResult,
   type PersonalHostControlPort,
@@ -122,7 +123,10 @@ interface PersonalDeploymentSupervisorOptions {
    * says stopped, and the Home keeps that work queued until Resume.
    */
   readonly agentsStoppedSince?: () => string | null;
+  readonly onContainedBoot?: (mode: string) => void;
   readonly onUncontainedBoot?: (mode: string) => void;
+  readonly stopProofPollMs?: number;
+  readonly stopProofMaxPollMs?: number;
   readonly userDataDirectory?: string;
   readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
@@ -246,6 +250,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #agentsStoppedSince: (() => string | null) | undefined;
+  readonly #onContainedBoot: PersonalDeploymentSupervisorOptions["onContainedBoot"];
   readonly #onUncontainedBoot: PersonalDeploymentSupervisorOptions["onUncontainedBoot"];
   #runnerSpec: PersonalProcessSpec | null = null;
   #runnerShutdownUnconfirmed = false;
@@ -270,6 +275,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #messagingRestartPolicy: RestartPolicy;
   readonly #shutdownTimeoutMs: number;
   readonly #startupTimeoutMs: number;
+  readonly #stopProofPollMs: number;
+  readonly #stopProofMaxPollMs: number;
   readonly #userEnvironment: PersonalUserEnvironmentPort;
   #abort: AbortController | undefined;
   #browser: PersonalLocalBrowserHandle | null = null;
@@ -312,6 +319,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#passkeys = options.passkeys === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
     this.#agentsStoppedSince = options.agentsStoppedSince;
+    this.#onContainedBoot = options.onContainedBoot;
     this.#onUncontainedBoot = options.onUncontainedBoot;
     this.#userEnvironment =
       options.userEnvironment ??
@@ -341,6 +349,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#shutdownTimeoutMs = boundedDuration(
       options.shutdownTimeoutMs ?? defaultShutdownTimeoutMs,
       "Personal shutdown timeout",
+    );
+    this.#stopProofPollMs = boundedDuration(
+      options.stopProofPollMs ?? 250,
+      "Stop proof poll interval",
+    );
+    this.#stopProofMaxPollMs = Math.max(
+      this.#stopProofPollMs,
+      boundedDuration(options.stopProofMaxPollMs ?? 5_000, "Stop proof max poll interval"),
     );
     const restartBackoffMs = boundedDuration(
       options.restartBackoffMs ?? defaultRestartBackoffMs,
@@ -865,10 +881,15 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       );
       const runner = this.#spawn(this.#runnerSpec);
       const stoppedMode = this.#agentsStoppedSince?.();
-      if (stoppedMode && runner.runnerReceipt && this.#onUncontainedBoot) {
+      if (
+        stoppedMode &&
+        runner.runnerReceipt &&
+        (this.#onContainedBoot || this.#onUncontainedBoot)
+      ) {
         void waitForRunnerBoot(runner.runnerReceipt.file).then(
           (contained) => {
-            if (!contained) this.#onUncontainedBoot?.(stoppedMode);
+            if (contained) this.#onContainedBoot?.(stoppedMode);
+            else this.#onUncontainedBoot?.(stoppedMode);
           },
           () => this.#onUncontainedBoot?.(stoppedMode),
         );
@@ -1489,35 +1510,52 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         );
         if (!earlierBootsContained) errors.push(new Error(hostedStopProblem));
       }
-      const mode = this.#agentsStoppedSince?.();
-      const waitForPlugins = this.#host.waitForPluginAgentWorkStopped;
-      if (mode && waitForPlugins) {
-        const runtime = this.#runtime;
-        const manifest = await this.#files.load();
-        if (!runtime || !manifest) errors.push(new Error(hostedStopProblem));
-        else {
-          const deadline = AbortSignal.timeout(8_000);
-          await this.#raceChild(
-            child,
-            waitForPlugins.call(
-              this.#host,
-              runtime.localOrigin,
-              manifest.deploymentId,
-              manifest.environmentId as EnvironmentId,
-              manifest.runnerId,
-              mode,
-              deadline,
-            ),
-            deadline,
-            "Runner",
-          ).catch((error: unknown) => errors.push(error));
-        }
-      }
       this.#setStatus({
         components: componentState(this.#status.components, "runner", "ready"),
       });
       if (errors.length) throw new AggregateError(errors, hostedStopProblem);
     });
+  }
+
+  /**
+   * Polls whatever Home this Mac currently hosts until it proves plugin agent
+   * work is stopped for `stoppedSince`, keeping up across transient faults and
+   * Home restarts, doubling poll intervals up to `#stopProofMaxPollMs`.
+   * Resolves `true` when proved or when this Mac hosts no Home (nothing more to
+   * prove), `false` when cancelled or shutting down, and throws on permanent
+   * Home refusal.
+   */
+  async waitForStopProof(stoppedSince: string, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted || this.#shutdownRequested) return false;
+    const check = this.#host.checkPluginAgentWorkStopped;
+    if (!check) return true;
+    let waitMs = this.#stopProofPollMs;
+    for (;;) {
+      if (signal.aborted || this.#shutdownRequested) return false;
+      const manifest = await this.#files.load().catch(() => null);
+      if (signal.aborted || this.#shutdownRequested) return false;
+      if (!manifest) return true;
+      const runtime = this.#runtime;
+      if (runtime) {
+        try {
+          const confirmed = await check.call(
+            this.#host,
+            runtime.localOrigin,
+            manifest.deploymentId,
+            manifest.environmentId as EnvironmentId,
+            manifest.runnerId,
+            stoppedSince,
+            signal,
+          );
+          if (confirmed) return true;
+        } catch (error: unknown) {
+          if (signal.aborted || this.#shutdownRequested) return false;
+          if (error instanceof PersonalHostBootstrapRefusedError) throw error;
+        }
+      }
+      await delay(waitMs, signal).catch(() => undefined);
+      waitMs = Math.min(this.#stopProofMaxPollMs, waitMs * 2);
+    }
   }
 
   #spawn(spec: PersonalProcessSpec, onLine?: (line: string) => void): RunningChild {

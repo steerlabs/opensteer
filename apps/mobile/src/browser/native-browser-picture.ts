@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { NativePicture, PictureMetadata } from "../computers/phone-display-native.js";
 import { mobileBrowserFrameMaxBytes } from "./browser-frame.js";
+import { emptyPictureTally, tracePicture, type PictureTally } from "./picture-trace.js";
 
 /**
  * The geometry a picture is aimed with. A newer delivery under another fence
@@ -66,6 +67,9 @@ export function useNativeBrowserPicture(input: {
 }) {
   const { enabled, visible, frames, sessionId, tabId, settle, preserveLastFrame = false } = input;
   const view = useRef<NativePicture | null>(null);
+  // What this view was offered and answered, for a development build's trace.
+  const tally = useRef<PictureTally>(emptyPictureTally());
+  const counter = useRef(0);
   const generation = useRef(0);
   // Native clear events and presentation promises can reach JS in either order.
   const clearVersion = useRef(0);
@@ -128,21 +132,41 @@ export function useNativeBrowserPicture(input: {
         frames.claim?.(sessionId, tabId, latest.header.watchToken);
       const native = view.current;
       const size = latest.data.byteLength;
+      const picture = ++counter.current;
+      const { rasterHeight, rasterWidth } = latest.header;
       if (
         native === null ||
         latest.header.surfaceId !== tabId ||
         size < 1 ||
         size > mobileBrowserFrameMaxBytes
       ) {
+        tally.current.skipped += 1;
+        tracePicture(
+          `skipped surface=${tabId} picture=${picture} reason=${
+            native === null
+              ? "no-view"
+              : latest.header.surfaceId !== tabId
+                ? "other-surface"
+                : size < 1
+                  ? "empty"
+                  : "too-large"
+          } bytes=${size}`,
+        );
         release(latest);
         return;
       }
       const bytes = latest.data instanceof Uint8Array ? latest.data : new Uint8Array(latest.data);
       const beforeClear = clearVersion.current;
+      tally.current.offered += 1;
+      tracePicture(
+        `offered surface=${tabId} picture=${picture} size=${rasterWidth}x${rasterHeight} bytes=${size} generation=${current}`,
+      );
       native
         .present(bytes, browserPictureMetadata(latest, current))
         .then(
           (outcome) => {
+            tally.current[outcome] += 1;
+            tracePicture(`answered surface=${tabId} picture=${picture} outcome=${outcome}`);
             if (
               !disposed &&
               outcome === "presented" &&
@@ -195,16 +219,24 @@ export function useNativeBrowserPicture(input: {
       setDrawn(null);
     }
   }, []);
-  const shownAgain = useCallback((event: { nativeEvent: { generation: number } }) => {
-    if (event.nativeEvent.generation !== generation.current || drawnNow.current !== null) return;
-    replay.current = true;
-    setReplays((count) => count + 1);
-  }, []);
+  const shownAgain = useCallback(
+    (event: { nativeEvent: { generation: number } }) => {
+      tracePicture(
+        `shown-again surface=${tabId} generation=${event.nativeEvent.generation} current=${generation.current} drawn=${drawnNow.current !== null}`,
+      );
+      if (event.nativeEvent.generation !== generation.current || drawnNow.current !== null) return;
+      replay.current = true;
+      setReplays((count) => count + 1);
+    },
+    [tabId],
+  );
   return {
     view,
     present,
     drawn: shown && drawn?.header.surfaceId === tabId ? drawn : null,
     cleared,
     shownAgain,
+    /** What this view was offered and answered so far. */
+    tally: tally.current,
   };
 }

@@ -46,6 +46,8 @@ async function render(
     readonly cloud?: MockCloudComputerAccount;
     readonly machines?: (machines: readonly MachineSummary[]) => readonly MachineSummary[];
     readonly patch?: (snapshot: Snapshot) => Partial<Snapshot>;
+    /** This Mac runs this Opensteer, which no account holds, and nobody is signed in. */
+    readonly inviting?: boolean;
   } = {},
 ) {
   host = new MockHostClient({ latencyMs: 0 });
@@ -77,12 +79,20 @@ async function render(
           openExternalUrl: vi.fn(async () => undefined),
         }
       : null,
-    desktopDeployment:
-      options.onThisComputer === undefined
+    desktopDeployment: options.inviting
+      ? { id: snapshot.deploymentId, kind: "personal", name: "Studio", onThisComputer: true }
+      : options.onThisComputer === undefined
         ? null
         : { id: snapshot.deploymentId, onThisComputer: options.onThisComputer },
-    deploymentAccess: { deployments: [] },
+    deploymentAccess: options.inviting
+      ? {
+          account: { available: true, status: "signed-out" },
+          deployments: [],
+          personalAccountLink: { status: "unlinked" },
+        }
+      : { deployments: [] },
   } as unknown as React.ContextType<typeof ShellContext>;
+  if (options.inviting && !cloud) (context as { desktopBridge: unknown }).desktopBridge = {};
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -405,6 +415,24 @@ describe("the asleep line in a task's activity", () => {
       expect(container.textContent).toContain(`Couldn’t reach ${name}: asleep`),
     );
     expect(container.textContent).toContain("Keep agents working while your Mac sleeps");
+  });
+
+  it("holds the Cloud Computer back while this Mac's Opensteer is invited to sign in", async () => {
+    let id = "";
+    const { container } = await render(<Step />, {
+      inviting: true,
+      machines: (machines) => {
+        id = machines.find((machine) => !hostsDeployment(machine) && !machine.phoneDisplay)!.id;
+        return machines;
+      },
+    });
+    function Step() {
+      return <AsleepStepLine tool={asleepTool(id)} />;
+    }
+    await vi.waitFor(() => expect(container.textContent).toContain("asleep"));
+    // One prompt at a time: the sign-in card is the one, so this says what happened only.
+    expect(container.textContent).not.toContain("Keep agents working while your Mac sleeps");
+    expect(localStorage.getItem(cloudSuggestionStorageKey)).toBeNull();
   });
 
   it("says what happened but offers nothing on a server or Cloud Computer Home", async () => {

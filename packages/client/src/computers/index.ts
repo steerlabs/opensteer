@@ -10,3 +10,10 @@ export * from "./menu-bar.js";
 export * from "./cloud-computer.js";
 export * from "./cloud-computer-copy.js";
 export * from "./menu-bar-copy.js";
+export {
+  homeKindCopy,
+  homeKindWords,
+  homesChooserTitle,
+  homesListTitle,
+  type HomeKindWord,
+} from "@opensteer/control-plane-protocol";

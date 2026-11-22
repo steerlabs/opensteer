@@ -80,7 +80,8 @@
     "happy-dom": "^21.0.4",
     "react-refresh": "0.14.2",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "yoga-layout": "3.2.1"
   },
   "expo": {
     "autolinking": {
