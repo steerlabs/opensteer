@@ -9,6 +9,8 @@ export const journeySteps: Record<string, string> = {
   clipboard: "Own-agent CDP allows page paste while menu chords stay out of the Mac app",
   clipboardConnected:
     "A connected agent's paste, copy, cut and permission grants never reach the Mac's clipboard or devices",
+  clipboardPage:
+    "Page script writes the Mac's clipboard only from the tab the person's focused window shows",
   editing: "Person AppKit editing chords",
   find: "Find and Escape",
   fullscreen: "Contained HTML fullscreen and Escape",

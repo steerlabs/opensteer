@@ -340,7 +340,8 @@ The connection is confined (`packages/browser-core/src/portable-session-cdp-rout
 Through the browser, in `browser_use`, `browser_connect` or a Run in its lineage, a connected agent
 sends only the CDP methods a standard client may, reads a shared Chrome tab's own cookies only, and
 cannot read the clipboard or change a browser permission; a page it operates can replace what is on
-the clipboard, as any page can when it is clicked.
+the clipboard, as any page can when it is clicked. On a Linux Home or a Cloud Computer what a page writes goes to
+that browser's own clipboard; no person's clipboard is there.
 
 See [browser-sessions.md](browser-sessions.md).
 

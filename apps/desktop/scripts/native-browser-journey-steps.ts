@@ -448,6 +448,61 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       await runFile(kit.inputHelper, ["clipboard-restore", String(process.pid), previous]);
     }
   });
+  await step("clipboardPage", async () => {
+    const previous = path.join(kit.run, "clipboard-page.json");
+    await runFile(kit.inputHelper, ["clipboard-save", String(process.pid), previous]);
+    // A fixture value, never what was on the clipboard before.
+    await clipboard.writeText(`fixture-${randomUUID()}`);
+    const changeCount = async () =>
+      z
+        .object({ changeCount: z.number() })
+        .parse(
+          JSON.parse(
+            (await runFile(kit.inputHelper, ["clipboard-count", String(process.pid)])).stdout,
+          ),
+        ).changeCount;
+    const writes = {
+      writeText: `navigator.clipboard.writeText("opensteer-page-write").then(() => "written", (error) => "refused:" + error.name)`,
+      execCommand: `(() => { const field = document.createElement("textarea"); field.value = "opensteer-page-copy"; document.body.append(field); field.select(); const copied = document.execCommand("copy"); field.remove(); return copied; })()`,
+    };
+    /** Each page write under an agent's gesture, and whether the Mac's pasteboard moved. */
+    const measure = async (cdp: Awaited<ReturnType<typeof kit.agentCdp>>) => {
+      const moved: Record<string, { answer: unknown; moved: boolean }> = {};
+      for (const [name, expression] of Object.entries(writes)) {
+        const before = await changeCount();
+        const answer = await cdp.send("Runtime.evaluate", {
+          expression,
+          awaitPromise: true,
+          userGesture: true,
+          returnByValue: true,
+        });
+        moved[name] = { answer, moved: (await changeCount()) !== before };
+      }
+      return moved;
+    };
+    try {
+      // An agent-driven tab in the background, focus emulated as an agent can.
+      const background = await open("/q");
+      await kit.selectNativePage(kit.context.sessionId, initial);
+      await kit.foregroundApp();
+      await kit.focusPage();
+      const surface = kit.pages.get(background);
+      assert(surface, "The background tab has a surface");
+      const behind = await kit.agentCdp(surface);
+      await behind.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+      const fromBackground = await measure(behind);
+      // The tab the person's window shows, with real focus.
+      assert(kit.pageContents().isFocused());
+      const fromPerson = await measure(await kit.agentCdp());
+      kit.artifacts.event("clipboard.page-writes", { fromBackground, fromPerson });
+      for (const [name, { moved }] of Object.entries(fromBackground))
+        assert(!moved, `A background tab's ${name} reached the Mac's clipboard`);
+      for (const [name, { moved }] of Object.entries(fromPerson))
+        assert(moved, `The person's focused tab's ${name} did not reach the Mac's clipboard`);
+    } finally {
+      await runFile(kit.inputHelper, ["clipboard-restore", String(process.pid), previous]);
+    }
+  });
   await step("editing", async () => {
     await kit.focusPage();
     await nativeClick("#text");
