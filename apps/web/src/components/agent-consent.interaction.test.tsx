@@ -483,6 +483,11 @@ describe("agent consent with grants", () => {
     });
     const { container, openExternalUrl } = await mount(host);
     expect(container.querySelector("h1")?.textContent).toBe("Claude");
+    // A shared tab is one tab, with what the person already allowed its site in Chrome.
+    expect(container.textContent).toContain("read that tab’s own cookies.");
+    expect(container.textContent).toContain(
+      "In this tab it can use what you already allowed the site in Chrome, such as the camera, microphone, location and notifications.",
+    );
     const name = container.querySelector<HTMLInputElement>('input[placeholder="Connection name"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Mine");

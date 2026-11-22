@@ -662,6 +662,50 @@ async function proveChromeShares(
           ),
           method,
         ).rejects.toThrow("Browser permissions cannot be changed by a connected agent.");
+      // A shared tab is one tab: its own cookies, never the rest of the person's Chrome.
+      const tabOrigin = new URL(first.url()).origin;
+      await chrome.addCookies([
+        { name: "tab", value: "this-tab", url: tabOrigin },
+        { name: "elsewhere", value: "sentinel-elsewhere", url: "https://elsewhere.test/" },
+      ]);
+      const send = cdp as unknown as { send(m: string, p?: object): Promise<unknown> };
+      for (const [method, parameters] of [
+        ["Network.getAllCookies", {}],
+        ["Storage.getCookies", {}],
+        ["Network.getCookies", { urls: ["https://elsewhere.test/"] }],
+      ] as const)
+        await expect(send.send(method, parameters), method).rejects.toThrow(
+          /connected agent|whole browser context/u,
+        );
+      const own = (await send.send("Network.getCookies", {})) as { cookies: { name: string }[] };
+      expect(own.cookies.map(({ name }) => name)).toEqual(["tab"]);
+      // The same through browser_use on the same shared tab.
+      const cookieScript = (await browserTools.browser_use({
+        caller: agent.caller,
+        operationKey: "shared-cookies",
+        input: {
+          ...input,
+          code: `
+            const page = await openPage(${JSON.stringify(firstId)});
+            const seen = [];
+            for (const [method, params] of [["Network.getAllCookies", {}], ["Storage.getCookies", {}], ["Network.getCookies", { urls: ["https://elsewhere.test/"] }], ["Network.getCookies", {}]]) {
+              try { seen.push(method + ": " + JSON.stringify((await page.cdp(method, params)).cookies.map((cookie) => cookie.name))); }
+              catch (error) { seen.push(method + ": refused " + String(error && error.message)); }
+            }
+            return "outcome:" + encodeURIComponent(JSON.stringify(seen)) + ":end";
+          `,
+        },
+      })) as { content: unknown };
+      const seen = JSON.parse(
+        decodeURIComponent(/outcome:([^:"\\]*):end/u.exec(JSON.stringify(cookieScript))![1]!),
+      ) as string[];
+      expect(seen.slice(0, 3)).toEqual([
+        expect.stringMatching(/^Network\.getAllCookies: refused /u),
+        expect.stringMatching(/^Storage\.getCookies: refused /u),
+        expect.stringMatching(/^Network\.getCookies: refused /u),
+      ]);
+      expect(seen[3]).toBe('Network.getCookies: ["tab"]');
+      expect(JSON.stringify(seen)).not.toContain('elsewhere"');
       const attempts = async () => {
         const row = await fixture.database
           .selectFrom("agentConnections")

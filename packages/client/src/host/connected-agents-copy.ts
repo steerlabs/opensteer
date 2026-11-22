@@ -69,7 +69,7 @@ export const connectedAgentsCopy = {
   "consent.browser.device.unknown": "Not opened on a device yet",
   "consent.chromeTabs.label": "Tabs you share from Chrome on {device}",
   "consent.chromeTabs.detail":
-    "It can act in a tab only while you share it from Chrome’s toolbar. In that tab it can navigate anywhere and use sites that Chrome is signed in to.",
+    "It can act in a tab only while you share it from Chrome’s toolbar. In that tab it can navigate anywhere, use sites that Chrome is signed in to and read that tab’s own cookies. In this tab it can use what you already allowed the site in Chrome, such as the camera, microphone, location and notifications.",
   "consent.chromeTabs.repair": "To share tabs with a connected agent, pair Chrome again.",
   "consent.chromeTabs.repairOn": "To share tabs from Chrome on {device}, pair it again.",
   "consent.chromeTabs.repairOnMultiple":
