@@ -5,12 +5,29 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { AgentGrant, ThreadAccessMode, ThreadId } from "@opensteer/core";
 import type { ShellSessionId } from "@opensteer/protocol";
-import { AgentConnectionStore, admitCommand, commandSubject } from "@opensteer/database";
+import { AgentConnectionStore } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { testReadyHarnessCatalog } from "@opensteer/database/test-support/store";
-import { commandFaceStep, commandRow, type CommandRow } from "@opensteer/protocol/command-table";
+import {
+  commandFace,
+  commandResourceKey,
+  commandRow,
+  commandTable,
+  type CommandResource,
+  type CommandRow,
+} from "@opensteer/protocol/command-table";
+import { OpensteerError } from "@opensteer/core";
+import { CommandService } from "@opensteer/orchestration";
+import type { HostApiCommand } from "@opensteer/protocol";
+import expectedRows from "../../../../packages/protocol/src/command-table.rows.json" with { type: "json" };
+import { AdministrationService } from "../administration/administration-service.js";
+import type { AgentCaller } from "../mcp/agent-caller.js";
+import { ThreadService } from "../threads/thread-service.js";
+import { TriggerService } from "../triggers/trigger-service.js";
+import { agentCommandAdmission, agentCommandScope, dispatchCommand } from "./dispatch.js";
+import type { CommandRegistry } from "./registry.js";
 import { sql } from "kysely";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   connectionCredentialPrefix,
   credentialHash,
@@ -40,21 +57,18 @@ const fixturePath = new URL("./tool-parity.fixture.json", import.meta.url);
 
 type Caller = "own-full" | "own-supervised" | "everything" | "selected-covering" | "selected-not";
 type Outcome = "allowed" | "asked" | "not_found" | `refused:${string}`;
-type Door = "now" | "ask" | "not_found";
+/** What the door answers, or why it could not read the command at all. */
+type Door = "now" | "ask" | "not_found" | `invalid:${string}`;
 
 /** Differences the door makes on purpose, each with why; anything else fails. */
 const decided: Readonly<Record<string, string>> = {
   "trigger.cancel / everything":
-    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
-  "trigger.run / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.status.set (archive) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.status.set (pause) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.update (name) / everything":
-    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
-  "trigger.update (program) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "execution.preferences.remember (lower) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
@@ -69,8 +83,6 @@ const decided: Readonly<Record<string, string>> = {
   "thread.rename / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "thread.rename / selected-covering":
-    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
-  "trigger.create / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "trigger.create / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
@@ -101,8 +113,51 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
 };
 
+/** Step-A commands no tool performs today, each with why; a scenario for one of them fails. */
+const withoutTool: Readonly<Record<string, string>> = {
+  "channel.connection.status.set":
+    "the messaging bridge tools were removed at 5766f3613; a chat account is another connection (X13)",
+  "viewer.quietTasks.update": "no tool sets quiet-task days; only the person's settings screen",
+  "viewer.timeZone.update": "no tool sets the time zone; only the person's apps send it",
+  "integration.grant.revoke":
+    "no tool revokes a device grant: computer_apps lists, app_access_request asks for more",
+  "integration.disconnect":
+    "no tool disconnects a device app: computer_apps lists, app_access_request asks for more",
+};
+/**
+ * Step-A commands a tool performs that the recording does not cover yet, each with its tool;
+ * owed before this branch is trial-merged (the lead's item 2). The list only shrinks.
+ */
+const owed: Readonly<Record<string, string>> = {
+  "thread.inputQueue.resume": "opensteer_task_queue (resume)",
+  "thread.input.steer": "opensteer_task_queue (steer)",
+  "thread.input.cancel": "opensteer_task_queue (cancel)",
+  "thread.input.move": "opensteer_task_queue (move)",
+  "thread.execution.update": "opensteer_task_configure",
+  "run.interrupt": "opensteer_task_interrupt",
+  "node.stop": "opensteer_subagent_stop (a subagent)",
+  "assignment.cancel": "opensteer_delegation_cancel",
+  "request.respond": "opensteer_request_answer",
+  "plugin.remove": "local_server_remove",
+  "plugins.install": "opensteer_plugin_install",
+  "plugins.version.activate": "opensteer_plugin_activate",
+  "plugins.remove": "opensteer_plugin_remove",
+  "plugins.schedule.configure": "opensteer_plugin_resource_update",
+  "plugins.workflow.start": "opensteer_plugin_resource_update",
+  "plugins.workflow.stop": "opensteer_plugin_resource_update",
+  "plugins.webhook.remove": "opensteer_plugin_resource_update",
+  "tab.open": "tab_open",
+  "tab.close": "tab_close",
+  "tab.organize": "tab_organize",
+  "tab.group.update": "tab_group_update",
+  "app.start": "app_start",
+  "app.stop": "app_stop",
+  "app.delete": "app_delete",
+};
+
 /** The door's answer as the tool would have it: now runs, ask puts it to the person. */
 function corresponds(tool: Outcome, door: Door): boolean {
+  if (door.startsWith("invalid:")) return false;
   if (tool === "allowed") return door === "now";
   if (tool === "not_found") return door === "not_found";
   // A tool this caller is not offered is not there for it: the door may also say not found.
@@ -368,7 +423,19 @@ it("records what today's tools let each caller do, and the door answers the same
           message: "Start this",
           title: "Parity child",
         }),
-        command: () => ({ type: "thread.create", input: {}, title: "Parity child" }),
+        // A task a tool creates stands alone, in the caller's engine and its mode.
+        command: (c) => ({
+          type: "thread.create",
+          environmentId: machine.environmentId,
+          harnessInstanceId: machine.harnessInstanceId,
+          modelSelection: {
+            modelId: "gpt-5.6-sol",
+            options: { effort: "low" },
+            providerId: "openai",
+          },
+          title: "Parity child",
+          accessMode: c === "own-supervised" ? "approval-required" : "full-access",
+        }),
       },
       {
         name: "execution.preferences.remember (lower)",
@@ -413,7 +480,22 @@ it("records what today's tools let each caller do, and the door answers the same
           },
           source: { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" },
         }),
-        command: (c) => ({ type: "trigger.create", input: { anchorThreadId: callers[c].task } }),
+        command: (c) => ({
+          type: "trigger.create",
+          input: {
+            anchorThreadId: callers[c].task,
+            name: "Parity reminder",
+            program: {
+              language: "javascript",
+              source: "export default async () => null",
+              toolContractVersion: 5,
+            },
+            source: {
+              kind: "schedule",
+              schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+            },
+          },
+        }),
       },
       {
         name: "thread.done.set",
@@ -481,7 +563,10 @@ it("records what today's tools let each caller do, and the door answers the same
         command: (c) => ({
           type: "trigger.update",
           triggerId: automations["trigger.update (name)"]?.[c]?.id,
-          input: { name: "Renamed reminder" },
+          input: {
+            expectedRevisionId: automations["trigger.update (name)"]?.[c]?.revision,
+            name: "Renamed reminder",
+          },
         }),
       },
       {
@@ -502,7 +587,14 @@ it("records what today's tools let each caller do, and the door answers the same
         command: (c) => ({
           type: "trigger.update",
           triggerId: automations["trigger.update (program)"]?.[c]?.id,
-          input: { program: {} },
+          input: {
+            expectedRevisionId: automations["trigger.update (program)"]?.[c]?.revision,
+            program: {
+              language: "javascript",
+              source: "export default async () => 1",
+              toolContractVersion: 5,
+            },
+          },
         }),
       },
       control("trigger.status.set (pause)", "pause", "trigger.status.set", { status: "paused" }),
@@ -635,42 +727,201 @@ it("records what today's tools let each caller do, and the door answers the same
     );
 
     /** What the door answers this caller for this command, as the tool's outcome reads. */
-    const doorAnswer = async (
-      caller: Caller,
-      command: { readonly type: string; readonly idempotencyKey: string },
-    ): Promise<Door> => {
-      const admission = await admitCommand(host.store.database, {
-        ownerUserId: owner,
-        subject: commandSubject(callers[caller].key),
-        command: command as never,
-      });
-      const row = commandRow(command.type as never) as unknown as CommandRow;
-      const connection = caller !== "own-full" && caller !== "own-supervised";
-      return admission.answer === "now" &&
-        admission.face !== undefined &&
-        commandFaceStep(row, admission.face, {
-          connection,
-          selected: caller.startsWith("selected"),
-        }) === "A"
-        ? "now"
-        : admission.answer === "now"
-          ? "ask"
-          : admission.answer;
+    // The door as an agent meets it once A5 connects it: the one admission, and handlers that
+    // take agents (a stand-in that only says it ran). The command is the one the tool sent.
+    const standIn = Object.fromEntries(
+      Object.keys(commandTable).map((type) => [
+        type,
+        { accepts: "any", run: async () => ({ type }) },
+      ]),
+    ) as unknown as CommandRegistry;
+    const agentDoor = {
+      registry: standIn,
+      admit: agentCommandAdmission(host.store.database),
+      scope: agentCommandScope(host.store.database),
     };
+    const run = (threadId: ThreadId, runId: string, mode: ThreadAccessMode, key: string) =>
+      ({
+        kind: "run",
+        key,
+        userId: owner,
+        accessMode: mode,
+        thread: { id: threadId },
+        claims: { threadId, runId },
+      }) as unknown as AgentCaller;
+    const linked = (id: string, grant: AgentGrant, key: string) =>
+      ({
+        kind: "connection",
+        key,
+        userId: owner,
+        connectionId: id,
+        accessMode: "full-access",
+        grant,
+        grantRevision: 1,
+      }) as unknown as AgentCaller;
+    const agents: Record<Caller, AgentCaller> = {
+      "own-full": run(full.threadId, full.runId, "full-access", callers["own-full"].key),
+      "own-supervised": run(
+        supervised.threadId,
+        supervised.runId,
+        "approval-required",
+        callers["own-supervised"].key,
+      ),
+      everything: linked(everything.id, { scope: "everything" }, callers.everything.key),
+      "selected-covering": linked(
+        covering.id,
+        { scope: "selected", tasks: true, resources: [] },
+        callers["selected-covering"].key,
+      ),
+      "selected-not": linked(
+        not.id,
+        { scope: "selected", tasks: false, resources: [] },
+        callers["selected-not"].key,
+      ),
+    };
+    const doorAnswer = async (caller: Caller, command: Record<string, unknown>): Promise<Door> =>
+      dispatchCommand(
+        agents[caller],
+        { idempotencyKey: randomUUID(), ...command } as unknown as HostApiCommand,
+        agentDoor,
+      ).then(
+        (outcome): Door => (outcome.status === "done" ? "now" : "ask"),
+        (error: unknown): Door =>
+          error instanceof OpensteerError && error.code === "not_found"
+            ? "not_found"
+            : `invalid:${error instanceof OpensteerError ? error.code : "error"}: ${String(
+                error instanceof Error ? error.message : error,
+              ).slice(0, 200)}`,
+      );
+
+    // What a tool really sends, caught where it reaches the Home's services; the door answers
+    // it there, before the tool's effect, so the effect cannot change the answer.
+    let active:
+      | {
+          readonly caller: Caller;
+          readonly type: string;
+          captured?: Record<string, unknown>;
+          door?: Door;
+        }
+      | undefined;
+    const intercept = (
+      on: object,
+      method: string,
+      toCommand: (args: readonly unknown[]) => Record<string, unknown> | undefined,
+    ) => {
+      const original = (on as Record<string, (...args: unknown[]) => unknown>)[method]!;
+      vi.spyOn(on as Record<string, (...args: unknown[]) => unknown>, method).mockImplementation(
+        async function (this: unknown, ...args: unknown[]) {
+          const command = active && !active.captured ? toCommand(args) : undefined;
+          if (active && command?.type === active.type) {
+            active.captured = command;
+            active.door = await doorAnswer(active.caller, command);
+          }
+          return original.apply(this, args);
+        },
+      );
+    };
+    close.push(async () => vi.restoreAllMocks());
+    intercept(AdministrationService.prototype, "execute", ([, command]) => ({
+      ...(command as Record<string, unknown>),
+    }));
+    // A Run's task tools and a connection's reach the Home's command service the same way.
+    intercept(CommandService.prototype, "renameThread", ([input]) => {
+      const i = input as { threadId: string; title: string };
+      return { type: "thread.rename", threadId: i.threadId, title: i.title };
+    });
+    intercept(CommandService.prototype, "setThreadDone", ([input]) => {
+      const i = input as { threadId: string; done: boolean };
+      return { type: "thread.done.set", threadId: i.threadId, done: i.done };
+    });
+    intercept(CommandService.prototype, "createThread", ([input]) => {
+      const i = input as Record<string, unknown>;
+      return {
+        type: "thread.create",
+        ...Object.fromEntries(
+          [
+            "environmentId",
+            "harnessInstanceId",
+            "modelSelection",
+            "title",
+            "accessMode",
+            "parentThreadId",
+          ].flatMap((key) => (i[key] === undefined || i[key] === null ? [] : [[key, i[key]]])),
+        ),
+      };
+    });
+    intercept(ThreadService.prototype, "sendInput", ([, input]) => {
+      const i = input as { threadId: string; content: unknown; policy: string };
+      return {
+        type: "thread.sendMessage",
+        threadId: i.threadId,
+        content: i.content,
+        delivery: i.policy,
+      };
+    });
+    intercept(TriggerService.prototype, "manage", ([, value]) => {
+      const {
+        operation,
+        idempotencyKey: _key,
+        ...rest
+      } = value as Record<string, unknown> & {
+        operation: string;
+        triggerId?: string;
+      };
+      switch (operation) {
+        case "create":
+          return { type: "trigger.create", input: rest };
+        case "update": {
+          const { triggerId, ...input } = rest;
+          return { type: "trigger.update", triggerId, input };
+        }
+        case "set_status":
+          return { type: "trigger.status.set", ...rest };
+        case "run":
+          return { type: "trigger.run", ...rest };
+        case "cancel":
+          return { type: "trigger.cancel", ...rest };
+        default:
+          return undefined;
+      }
+    });
+
+    // Every step-A command has a scenario, or a reason no tool performs it, or is owed by name.
+    const covered = new Set(
+      scenarios.flatMap((scenario) => scenario.command?.("own-full").type ?? []),
+    );
+    const stepA = (
+      expectedRows.rows as readonly {
+        type: string;
+        step: string;
+        faces: readonly { step?: string }[];
+      }[]
+    )
+      .filter((row) => row.step === "A" || row.faces.some((face) => face.step === "A"))
+      .map((row) => row.type);
+    expect(
+      stepA.filter((type) => !covered.has(type) && !withoutTool[type] && !owed[type]),
+      "step-A commands with no scenario, no reason and no owed entry",
+    ).toEqual([]);
+    expect(
+      Object.keys({ ...withoutTool, ...owed }).filter((type) => covered.has(type)),
+      "a reason or an owed entry for a command that has a scenario",
+    ).toEqual([]);
+
     const recorded: Record<string, Record<Caller, Outcome>> = {};
     const differences: string[] = [];
+    const unfaithful: string[] = [];
+    const sent: Record<string, Caller[]> = {};
     for (const scenario of scenarios) {
       recorded[scenario.name] = {} as Record<Caller, Outcome>;
       for (const caller of callerNames) {
         await scenario.before?.();
-        // The thing it acts on first, then what the door answers, so the tool's effect cannot change it.
         const args = await scenario.args(caller);
-        const door = scenario.command
-          ? await doorAnswer(caller, {
-              idempotencyKey: randomUUID(),
-              ...scenario.command(caller),
-            } as { readonly type: string; readonly idempotencyKey: string })
-          : undefined;
+        // The command as the scenario builds it, answered before the tool acts; where the tool
+        // sends one, the door answers the tool's own command instead.
+        const built = scenario.command?.(caller);
+        const answered = built ? await doorAnswer(caller, built) : undefined;
+        active = built ? { caller, type: built.type as string } : undefined;
         // A server offering this caller no tools at all has no tools/call: the tool is not there.
         const result = await callers[caller].client
           .callTool({ name: scenario.tool, arguments: args })
@@ -678,7 +929,26 @@ it("records what today's tools let each caller do, and the door answers the same
             if (error instanceof Error && "code" in error && error.code === -32601)
               return { isError: true, structuredContent: { error: { code: "not_found" } } };
             throw error;
-          });
+          })
+          .finally(() => undefined);
+        const caught = active;
+        active = undefined;
+        if (caught?.captured && built) {
+          (sent[scenario.name] ??= []).push(caller);
+          // The built command decides as the sent one does, so where no tool sends it the door
+          // is still asked the same question.
+          const row = commandRow(built.type as never) as unknown as CommandRow;
+          const governs = (command: Record<string, unknown>) =>
+            commandResourceKey((row.governs as (c: unknown) => CommandResource)(command));
+          if (
+            commandFace(built as never) !== commandFace(caught.captured as never) ||
+            governs(built) !== governs(caught.captured)
+          )
+            unfaithful.push(
+              `${scenario.name} / ${caller}: built ${JSON.stringify(built).slice(0, 200)}, sent ${JSON.stringify(caught.captured).slice(0, 200)}`,
+            );
+        }
+        const door = caught?.door ?? answered;
         const error = (result.structuredContent as { error?: { code?: string } } | undefined)
           ?.error;
         // Asked: the tool handed back a Request for the person, not a pending occurrence or run.
@@ -700,15 +970,26 @@ it("records what today's tools let each caller do, and the door answers the same
         recorded[scenario.name]![caller] = tool;
         if (process.env.OPENSTEER_TOOL_PARITY_TRACE === "1" && result.isError)
           console.error("PARITY", scenario.name, caller, JSON.stringify(result).slice(0, 600));
-        const label = `${scenario.name} / ${caller}: tool ${tool}, door ${door}`;
-        if (door && !corresponds(tool, door) && !decided[`${scenario.name} / ${caller}`])
-          differences.push(label);
+        const key = `${scenario.name} / ${caller}`;
+        if (door && !corresponds(tool, door) !== Boolean(decided[key]))
+          differences.push(
+            decided[key]
+              ? `${key}: named as a difference, but tool ${tool} and door ${door} agree`
+              : `${key}: tool ${tool}, door ${door}`,
+          );
       }
       await scenario.after?.();
     }
-    if (process.env.OPENSTEER_RECORD_TOOL_PARITY === "1" || !existsSync(fixturePath))
+    if (process.env.OPENSTEER_TOOL_PARITY_TRACE === "1")
+      console.error("PARITY SENT", JSON.stringify(sent));
+    // Recorded once, then frozen: outside recording a missing record fails.
+    if (process.env.OPENSTEER_RECORD_TOOL_PARITY === "1")
       writeFileSync(fixturePath, `${JSON.stringify(recorded, null, 1)}\n`);
-    else expect(recorded).toEqual(JSON.parse(readFileSync(fixturePath, "utf8")));
+    else {
+      expect(existsSync(fixturePath), "the frozen recording").toBe(true);
+      expect(recorded).toEqual(JSON.parse(readFileSync(fixturePath, "utf8")));
+    }
+    expect(unfaithful).toEqual([]);
     expect(differences).toEqual([]);
   } finally {
     for (const step of close) await step().catch(() => undefined);
