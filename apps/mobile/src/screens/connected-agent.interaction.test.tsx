@@ -721,4 +721,19 @@ describe("a chat on the phone", () => {
     await open("mcn_00000000-0000-4000-8000-000000000003");
     expect(footers().some((text) => text.startsWith(warning))).toBe(true);
   });
+
+  it("offers Remove from list on an ended chat only, never on a live or paused one", async () => {
+    for (const [n, removable] of [
+      [1, false],
+      [2, false],
+      [3, false],
+      [4, false],
+      [5, true],
+    ] as const) {
+      await open(chat(n), chats());
+      const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+      expect(labels.includes("Remove from list"), `chat ${n}`).toBe(removable);
+      act(() => root?.unmount());
+    }
+  });
 });

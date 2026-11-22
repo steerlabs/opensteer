@@ -768,4 +768,23 @@ describe("a chat, as a connected agent", () => {
     await vi.waitFor(() => expect(trips.textContent).toContain("Disconnect Trip planner"));
     expect(trips.textContent).toContain(warning);
   });
+
+  it("offers Remove from list on an ended chat only, never on a live or paused one", async () => {
+    host = chats();
+    for (const [n, removable] of [
+      [1, false],
+      [2, false],
+      [3, false],
+      [4, false],
+      [5, true],
+    ] as const) {
+      const page = await mount(host, `${base}/${chat(n)}`);
+      await vi.waitFor(() => expect(page.textContent).toContain("Where"));
+      expect(
+        [...page.querySelectorAll("button")].some((b) => b.textContent === "Remove from list"),
+        `chat ${n}`,
+      ).toBe(removable);
+      act(() => root?.unmount());
+    }
+  });
 });
