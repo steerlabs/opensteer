@@ -603,6 +603,44 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("asks for a pass at once when a page no open of ours made arrives over the threshold with a tab that can sleep, not at the next timer tick (run 10, failure 2)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let pressure = { usedBytes: Math.round(limit * 0.65), limitBytes: limit };
+    let readings = 0;
+    const f = await fixture({
+      memoryPressure: () => {
+        readings++;
+        return Promise.resolve(pressure);
+      },
+    });
+    try {
+      const ids = [f.record.id];
+      for (let i = 0; i < 3; i++) ids.push((await f.ledger.openSurface()).id);
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const suspended = () => ids.filter((id) => f.ledger.stateOf(id) === "suspended").length;
+      expect(suspended()).toBe(0);
+      // Just after a timer sample, so the next one is most of its interval away.
+      const sampled = readings;
+      while (readings === sampled) await vi.advanceTimersByTimeAsync(10);
+      // Popups grow the browser past the start threshold between samples; the sleeper's last
+      // reading knows it (the open path or a sample read it), but no timer is due yet.
+      pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+      const internals = f.sleeper as unknown as {
+        applyMemoryPressureSample(reading: typeof pressure, now: number): void;
+      };
+      internals.applyMemoryPressureSample(pressure, Date.now());
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBe(0);
+      // A page arrives that no open of ours made: the pass runs now.
+      f.sleeper.notePageArrived();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(suspended()).toBeGreaterThan(0);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("holds a burst of 46 opens so the sample never passes the limit: sleeping starts at the threshold and each wait is bounded (K9 corrected)", async () => {
     const mib = 1024 ** 2;
     const limit = 2048 * mib;

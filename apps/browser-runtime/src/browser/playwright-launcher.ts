@@ -1147,6 +1147,33 @@ function findNamed(rows: readonly ChromiumTabEntry[], name: string): Named {
   return found ? { kind: "one", row: found } : { kind: "none" };
 }
 
+/**
+ * A sleep's name identifies its tab only together with that tab's own id or target (run 10):
+ * closing the active tab beside a sleeping tab makes Chromium activate (and load) it, and a tab a
+ * page then opens goes next to it, into its group, carrying its title (seen on real Chromium).
+ * Only the sleep's own tab is `one`; a different carrier is a newcomer, never it.
+ */
+function findOwn(
+  rows: readonly ChromiumTabEntry[],
+  sleep: { readonly title: string; readonly tabId: number; readonly targetId: string | null },
+): Named {
+  const own = rows.filter(
+    (row) =>
+      row.identity === sleep.title &&
+      (row.tabId === sleep.tabId || (sleep.targetId !== null && row.targetId === sleep.targetId)),
+  );
+  if (own.length > 1) return { kind: "many" };
+  return own[0] ? { kind: "one", row: own[0] } : { kind: "none" };
+}
+
+/** A tab that carries a sleep's name but is not that sleep's own: it joined the group. */
+function isNewcomer(
+  row: ChromiumTabEntry,
+  sleep: { readonly tabId: number; readonly targetId: string | null },
+): boolean {
+  return row.tabId !== sleep.tabId && (sleep.targetId === null || row.targetId !== sleep.targetId);
+}
+
 /** K1: one read that agrees with itself inside `deadline`, or null: not known. */
 function readRows(
   lifecycle: ChromiumTabLifecycleBridge,
@@ -1202,8 +1229,10 @@ function armWake(): ArmedWake {
     spoiled: false,
     settled: settled.promise,
     arrive: (page, row) => {
-      if (wake.arrived) wake.spoiled = true;
-      else wake.arrived = { page, row };
+      // The same page seen twice (found by the wake while its name was still being read, then
+      // placed by that read) is one arrival; only another page is a second arrival of the tab.
+      if (!wake.arrived) wake.arrived = { page, row };
+      else if (wake.arrived.page !== page) wake.spoiled = true;
       settled.resolve();
     },
     spoil: () => {
@@ -1430,12 +1459,21 @@ class PlaywrightContextHandle implements BrowserContext {
       this.handOutOrdinary(page);
       return;
     }
+    const record = tokenId ? this.sleeping.get(tokenId) : undefined;
+    if (record && isNewcomer(row, record)) {
+      // A tab that joined the sleeping tab's group (Chromium does that to a tab opened next to
+      // it while it is the active tab): the name is not its own, so it goes, and the page is an
+      // ordinary one. It never spoils a wake and is never closed.
+      void this.lifecycle?.unnameTab(row.tabId).catch(() => false);
+      this.handOutOrdinary(page);
+      return;
+    }
     this.identifyingPages.delete(page);
     this.pageTitles.set(page, title!);
-    const one = findNamed(rows, title!).kind === "one";
+    const one = record ? findOwn(rows, record).kind === "one" : false;
     if (wake) {
-      // K2, L4: the wake takes only the one tab carrying its name, seen once; a second carrier
-      // or a second arrival makes it give up. The page stays hidden either way.
+      // K2, L4: the wake takes only its own tab, seen once; a second arrival of it, or a page of
+      // a name it cannot tell from its own, makes it give up. The page stays hidden either way.
       if (one) wake.arrive(page, row);
       else wake.spoil();
       return;
@@ -1446,7 +1484,7 @@ class PlaywrightContextHandle implements BrowserContext {
         void this.onLane(tokenId!, () => this.sleepAgain(tokenId!)).catch(() => undefined);
       return;
     }
-    // A page of a sleeping tab given up, or of a name two tabs carry: closed with evidence.
+    // A page of a sleeping tab given up: closed with evidence.
     void this.closePageWithEvidence(page);
   }
 
@@ -1459,12 +1497,13 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!record || this.closed || this.wakes.has(record.title)) return;
     const deadline = performance.now() + 2 * nameTargetMs;
     const rows = await this.read(deadline);
-    const named = rows ? findNamed(rows, record.title) : null;
+    const named = rows ? findOwn(rows, record) : null;
     if (this.sleeping.get(tokenId) !== record || this.wakes.has(record.title)) return;
     if (named?.kind !== "one" || named.row.discarded || named.row.status === "unloaded") return;
     const discardedId = await this.lifecycle?.discardByTabId(named.row.tabId).catch(() => null);
     const after = await this.read(deadline);
-    const again = after ? findNamed(after, record.title) : null;
+    if (discardedId != null) record.tabId = discardedId;
+    const again = after ? findOwn(after, record) : null;
     if (again?.kind === "one" && again.row.discarded) {
       record.tabId = again.row.tabId;
       record.targetId = again.row.targetId;
@@ -1552,13 +1591,15 @@ class PlaywrightContextHandle implements BrowserContext {
     const lifecycle = this.lifecycle;
     if (!lifecycle) return false;
     const deadline = performance.now() + attempts * nameTargetMs;
+    // Its own tab: by its id or target, or a discarded carrier of its name (only Opensteer
+    // discards, so that one is its own even when a lost answer hid its new id). A live tab that
+    // only joined the group is a newcomer and is never removed.
     const ours = (row: ChromiumTabEntry) =>
-      row.tabId === record.tabId || (record.targetId !== null && row.targetId === record.targetId);
+      row.tabId === record.tabId ||
+      (record.targetId !== null && row.targetId === record.targetId) ||
+      (row.identity === record.title && row.discarded);
     const gone = (rows: readonly ChromiumTabEntry[] | null) =>
-      rows !== null &&
-      findNamed(rows, record.title).kind === "none" &&
-      !rows.some(ours) &&
-      (record.named || record.removeAsked);
+      rows !== null && !rows.some(ours) && (record.named || record.removeAsked);
     for (let attempt = 0; attempt < attempts; attempt++) {
       if (this.closed) return false;
       for (const page of this.context.pages())
@@ -1567,9 +1608,8 @@ class PlaywrightContextHandle implements BrowserContext {
       const rows = await this.read(deadline);
       if (this.closed) return false;
       if (gone(rows)) return true;
-      const named = rows ? findNamed(rows, record.title) : null;
-      const tab =
-        named?.kind === "one" ? named.row : named?.kind === "none" ? rows!.find(ours) : undefined;
+      const own = rows?.filter(ours) ?? [];
+      const tab = own.length === 1 ? own[0] : undefined;
       if (tab) {
         let resolved = await lifecycle.removeByTabId(tab.tabId).catch(() => false);
         if (!resolved && tab.targetId && this.closeTarget)
@@ -1741,7 +1781,13 @@ class PlaywrightContextHandle implements BrowserContext {
         if (asleepId !== null) record.tabId = asleepId;
         const asleep = async () => {
           const check = await this.read(deadline);
-          const named = check ? findNamed(check, record.title) : null;
+          let named = check ? findOwn(check, record) : null;
+          if (named?.kind === "none" && asleepId === null) {
+            // The answer was lost and the discard may have given the tab a new id: a lone
+            // discarded carrier of the name is this tab (only Opensteer discards).
+            const lone = findNamed(check!, record.title);
+            if (lone.kind === "one" && lone.row.discarded) named = lone;
+          }
           if (named?.kind !== "one" || this.closed) return named;
           record.tabId = named.row.tabId;
           record.targetId = named.row.targetId;
@@ -1824,7 +1870,8 @@ class PlaywrightContextHandle implements BrowserContext {
     try {
       if (!record.named || performance.now() >= deadline) throw new Error("The wake ran out.");
       const rows = await this.read(deadline);
-      const named = rows ? findNamed(rows, record.title) : null;
+      // Its own tab, by its name and its id or target: a newcomer in its group is not it.
+      const named = rows ? findOwn(rows, record) : null;
       if (named?.kind !== "one") throw new Error("The named tab is not exactly one tab.");
       const { row } = named;
       this.wakes.set(record.title, wake);
@@ -1859,7 +1906,7 @@ class PlaywrightContextHandle implements BrowserContext {
       if (!arrived || wake.spoiled) throw new Error("The woken tab was not the one tab named.");
       const targetId = await lookupTargetId(this.context, arrived.page, deadline);
       const last = await this.read(deadline);
-      const now = last ? findNamed(last, record.title) : null;
+      const now = last ? findOwn(last, record) : null;
       if (abandoned() || !current()) throw notWanted();
       // The last check at the take, on the candidate shortcut too; the take follows at once.
       if (

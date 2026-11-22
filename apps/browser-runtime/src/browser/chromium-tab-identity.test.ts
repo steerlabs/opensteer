@@ -318,3 +318,77 @@ it("reports no opener for a woken tab that another page opened (M1)", async () =
     `${JSON.stringify({ event: "m1.woken-opener", before, beforeCdp: targetId.openerId ?? null, after })}\n`,
   );
 }, 60_000);
+
+it("loads a sleeping tab when the active tab beside it closes, and puts a tab opened from a page next to it into its group, carrying its name (run 10)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-run10-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const gesture = async (page: Page, expression: string) =>
+    (await running.context.newCDPSession(page)).send("Runtime.evaluate", {
+      expression,
+      userGesture: true,
+    });
+  const first = await running.context.newPage();
+  await first.goto(url(1, "first"));
+  const bystander = await running.context.newPage();
+  await bystander.goto(url(2, "bystander"));
+  const sleeper = await running.context.newPage();
+  await sleeper.goto(url(3, "sleeper"));
+  await first.bringToFront();
+  const sleeperTab = (await running.lifecycle.inventory()).find((t) => t.url.includes("?sleeper"))!;
+  await running.lifecycle.nameAndDiscard(sleeperTab.tabId, "opensteer-sleep:run10");
+  const strip = async () =>
+    (await running.lifecycle.inventory())
+      .filter((t) => t.url.includes("/page?"))
+      .map((t) => ({
+        page: new URL(t.url).search.slice(1),
+        named: t.identity === "opensteer-sleep:run10",
+        discarded: t.discarded,
+        active: t.active,
+      }));
+  const seen: unknown[] = [];
+  // The run-10 loop: a popup from `first` opens a successor and closes itself; the successor is
+  // closed. Each popup lands just left of the sleeping tab, so its close activates that tab.
+  for (let round = 1; round <= 3; round++) {
+    const second = running.context.waitForEvent("page");
+    await gesture(
+      first,
+      `void window.open(${JSON.stringify(url(4, `second-r${round}`))}, "_blank")`,
+    );
+    const secondPage = await second;
+    await secondPage.waitForLoadState();
+    seen.push({ round, step: "second opened", strip: await strip() });
+    const third = running.context.waitForEvent("page");
+    await gesture(
+      secondPage,
+      `window.open(${JSON.stringify(url(5, `third-r${round}`))}, "_blank"); window.close();`,
+    );
+    const thirdPage = await third;
+    await thirdPage.waitForLoadState();
+    await thirdPage.close();
+    await vi.waitFor(async () => expect((await strip()).some((t) => t.active)).toBe(true));
+    seen.push({ round, step: "third closed", strip: await strip() });
+  }
+  process.stdout.write(`${JSON.stringify({ event: "run10.chromium", seen })}\n`);
+  const after = (round: number, step: string) =>
+    (seen as { round: number; step: string; strip: { page: string }[] }[]).find(
+      (entry) => entry.round === round && entry.step === step,
+    )!.strip;
+  // Round 2: the successor, next to the sleeping tab, closes; Chromium activates the sleeping
+  // tab, and it loads (no longer discarded), still under its name.
+  expect(after(2, "third closed")).toContainEqual({
+    page: "sleeper",
+    named: true,
+    discarded: false,
+    active: true,
+  });
+  // Round 3: the popup from `first` opens next to the now active sleeping tab, inside its group,
+  // and carries its name: a newcomer that is not the sleeping tab.
+  expect(after(3, "second opened")).toContainEqual({
+    page: "second-r3",
+    named: true,
+    discarded: false,
+    active: true,
+  });
+}, 90_000);

@@ -245,37 +245,62 @@ it("names a tab first and discards it second, wakes it by that name, and removes
   expect(f.internals.sleeping.size).toBe(0);
 });
 
-it("gives a wake up when a second tab carries its name as its page arrives: both pages are closed, never handed off, and nothing opens while the tab is not proven removed (K2, M2, test 2)", async () => {
+it("takes its own tab when a newcomer that joined the group carries its name as the pages arrive, and hands the newcomer off as an ordinary tab, ungrouped (run 10, test 2)", async () => {
   const f = await launchWith();
   const { token } = await f.sleepOne(20);
   const title = titleOf(token);
-  const first = fakePage("target-20", "https://tab-20.test/");
-  const second = fakePage("target-90", "https://tab-90.test/");
+  const own = fakePage("target-20", "https://tab-20.test/");
+  const newcomer = fakePage("target-90", "https://tab-90.test/");
   f.spies.activate.mockImplementation(async (tabId) => {
-    // While the wake is armed a second tab carries the same name, and both pages arrive.
+    // While the wake is armed a tab opened next to the group joined it, and both pages arrive.
     f.state.tabs = [
       row(21, { identity: title, targetId: "target-20" }),
       row(90, { identity: title, targetId: "target-90" }),
     ];
     queueMicrotask(() => {
-      f.arrive(first);
-      f.arrive(second);
+      f.arrive(newcomer);
+      f.arrive(own);
     });
     return { ok: true, tabId, discarded: false };
   });
-  const pagesBefore = f.spies.newPage.mock.calls.length;
-  await expect(f.launched.context.createPage({ restore: token })).rejects.toThrow(
-    /not the one tab named/,
-  );
-  expect(f.spies.newPage.mock.calls.length).toBe(pagesBefore);
-  expect(first.close).toHaveBeenCalled();
-  expect(second.close).toHaveBeenCalled();
-  expect(f.handedOff).not.toContain(first);
-  expect(f.handedOff).not.toContain(second);
+  const page = await f.launched.context.createPage({ restore: token });
+  expect((page as unknown as { rawPage: Page }).rawPage).toBe(own);
+  expect(f.handedOff).toContain(newcomer);
+  expect(newcomer.close).not.toHaveBeenCalled();
+  expect(f.spies.unname.mock.calls.map(([tabId]) => tabId)).toContain(90);
+});
+
+it("takes its own tab, with its state, when Chromium loaded it by itself and the wake finds its page while that page's name is still being read (run 10, test 2)", async () => {
+  const f = await launchWith();
+  const { token } = await f.sleepOne(50);
+  // Chromium activates the sleeping tab when the tab beside it closes, so the tab loads and its
+  // page arrives; the wake is armed while that page's name is still being read.
+  f.state.tabs = f.state.tabs.map((t) => ({ ...t, discarded: false, status: "complete" }));
+  const own = fakePage("target-50", "https://tab-50.test/");
+  const arrivalRead = Promise.withResolvers<void>();
+  const before = f.spies.read.mock.calls.length;
+  f.spies.read.mockImplementation(async () => {
+    const call = f.spies.read.mock.calls.length - before;
+    // 1: the arriving page's read, held. 2: the wake's read, which finds the page. 3: the take's
+    // read, before which the arriving page's read answers and places the same page.
+    if (call === 1) await arrivalRead.promise;
+    if (call === 3) {
+      arrivalRead.resolve();
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    }
+    return [...f.state.tabs];
+  });
+  f.arrive(own);
+  await vi.waitFor(() => expect(f.spies.read.mock.calls.length - before).toBe(1));
+  const page = await f.launched.context.createPage({ restore: token });
+  expect((page as unknown as { rawPage: Page }).rawPage).toBe(own);
+  expect((page as unknown as { openedFresh?: boolean }).openedFresh).not.toBe(true);
+  expect(own.close).not.toHaveBeenCalled();
+  expect(f.spies.remove).not.toHaveBeenCalled();
 });
 
 it.each(["arrival", "candidate"] as const)(
-  "takes a woken page only after a last check that its name is still on that one tab (L4, %s)",
+  "takes a woken page only after a last check that its name is still on its own tab and that tab is this page's (L4, %s)",
   async (path) => {
     const f = await launchWith();
     const { token } = await f.sleepOne(30);
@@ -291,11 +316,12 @@ it.each(["arrival", "candidate"] as const)(
       path === "candidate" ? internals.onLane(tokenOf(token), () => held.promise) : null;
     let readsBefore = f.spies.read.mock.calls.length;
     f.spies.read.mockImplementation(async () => {
-      // Every read after the wake's first one sees a second tab with the same name.
+      // The take's read (after the wake's first one, and the arriving page's own on the arrival
+      // path) sees its own tab under another target: not this page's any more.
       const reads = f.spies.read.mock.calls.length - readsBefore;
-      return reads <= 1
+      return reads <= (path === "arrival" ? 2 : 1)
         ? [...f.state.tabs]
-        : [...f.state.tabs, row(99, { identity: title, targetId: "target-99" })];
+        : f.state.tabs.map((t) => (t.identity === title ? { ...t, targetId: "target-other" } : t));
     });
     f.spies.activate.mockImplementation(async (tabId) => {
       f.state.tabs = f.state.tabs.map((t) => ({ ...t, discarded: false, status: "complete" }));
@@ -313,7 +339,10 @@ it.each(["arrival", "candidate"] as const)(
       held.resolve();
       await holding;
     }
-    await expect(opening).rejects.toThrow(/not the one tab named/);
+    // Given up, its own tab removed with evidence, it opens fresh at its address.
+    const page = await opening;
+    expect((page as unknown as { rawPage: Page }).rawPage).not.toBe(woken);
+    expect((page as unknown as { openedFresh: boolean }).openedFresh).toBe(true);
     expect(woken.close).toHaveBeenCalled();
     expect(f.handedOff).not.toContain(woken);
   },

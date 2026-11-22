@@ -1316,3 +1316,127 @@ it("sleeps a tab another page opened and wakes it as itself, not as a new popup 
       .sort(),
   ).toEqual([opener.id, popupId].sort());
 }, 60_000);
+
+it.each(["no tab asleep", "a tab asleep"] as const)(
+  "puts 20 popups in a row from a live tab in their session, each opening a successor and closing itself (run 10's loop, %s)",
+  async (state) => {
+    const server = await startFixtureServer();
+    const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-run10-loop-"));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const launcher = new PlaywrightChromiumLauncher({
+      executablePath,
+      chromiumSandbox: false,
+      headless: true,
+    });
+    const launched = await launcher.launch(nativeProfileRequest(directory));
+    cleanup.push(() => launched.close());
+    const pages = new PageOwnership();
+    pages.adopt(launched.context);
+    const session = async (name: string) => {
+      const root = await pages.create(name, null, "open-failed", (own, signal) =>
+        launched.context.createPage({ own, signal }),
+      ).page;
+      const ledger = new SurfaceLedger(launched.context, {
+        pages,
+        sessionId: name,
+        rootPages: [root],
+      });
+      await ledger.start();
+      cleanup.push(() => ledger.close());
+      const surface = ledger.snapshot().find((s) => ledger.binding(s.id)?.page === root)!;
+      return { ledger, live: ledger.binding(surface.id)! };
+    };
+    const a = await session("session-originating");
+    const b = await session("session-bystander");
+    await a.live.cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article?id=first` });
+    await waitLoaded(a.live.cdp, "/article");
+    await b.live.cdp.send("Page.navigate", {
+      url: `${server.originForSite(2)}/article?id=bystander`,
+    });
+    await waitLoaded(b.live.cdp, "/article");
+    let bgId: string | null = null;
+    if (state === "a tab asleep") {
+      const bg = await a.ledger.openSurface();
+      bgId = bg.id;
+      const bgLive = a.ledger.binding(bg.id)!;
+      await bgLive.cdp.send("Page.navigate", {
+        url: `${server.originForSite(3)}/article?id=bg-asleep`,
+      });
+      await waitLoaded(bgLive.cdp, "/article");
+      await evalValue(bgLive.cdp, `sessionStorage.setItem("mark", "bg-asleep")`);
+      expect(await a.ledger.sleep(bg.id, () => null)).toBe(true);
+    }
+    const inA = (part: string) =>
+      a.ledger.snapshot().find((s) => a.ledger.binding(s.id)?.page.url().includes(part));
+    for (let round = 1; round <= 20; round++) {
+      const second = `${server.originForSite(4)}/article?id=second-r${round}`;
+      const third = `${server.originForSite(5)}/form?id=third-r${round}`;
+      await a.live.cdp.send("Runtime.evaluate", {
+        expression: `void window.open(${JSON.stringify(second)}, "_blank")`,
+        userGesture: true,
+      });
+      const secondSurface = await vi
+        .waitFor(
+          () => {
+            const surface = inA(`second-r${round}`);
+            expect(surface).toBeDefined();
+            return surface!;
+          },
+          { timeout: 10_000, interval: 25 },
+        )
+        .catch((error: unknown) => {
+          process.stdout.write(
+            `${JSON.stringify({
+              event: "run10.missing",
+              round,
+              which: "second",
+              raw: launched.context.pages().map((p) => p.url()),
+              ledgerA: a.ledger.snapshot().map((s) => a.ledger.binding(s.id)?.page.url() ?? null),
+            })}\n`,
+          );
+          throw error;
+        });
+      const secondLive = a.ledger.binding(secondSurface.id)!;
+      await waitLoaded(secondLive.cdp, "/article");
+      await secondLive.cdp.send("Runtime.evaluate", {
+        expression: `window.open(${JSON.stringify(third)}, "_blank"); window.close();`,
+        userGesture: true,
+      });
+      const thirdSurface = await vi.waitFor(
+        () => {
+          const surface = inA(`third-r${round}`);
+          expect(surface).toBeDefined();
+          return surface!;
+        },
+        { timeout: 10_000, interval: 25 },
+      );
+      await waitLoaded(a.ledger.binding(thirdSurface.id)!.cdp, "/form");
+      await a.ledger.closeSurface(thirdSurface.id);
+    }
+    if (bgId) {
+      // One more popup stays open and carries the sleeping tab's name, as a tab that joined its
+      // group does: the wake armed now takes its own tab, with its state, and the newcomer stays.
+      const last = `${server.originForSite(6)}/article?id=last`;
+      await a.live.cdp.send("Runtime.evaluate", {
+        expression: `void window.open(${JSON.stringify(last)}, "_blank")`,
+        userGesture: true,
+      });
+      await vi.waitFor(() => expect(inA("id=last")).toBeDefined(), { timeout: 10_000 });
+      const lifecycle = (
+        launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+      ).contextHandle.lifecycle;
+      const rows = await lifecycle.inventory();
+      const name = rows.find((tab) => tab.url.includes("bg-asleep"))!.identity!;
+      expect(name).toMatch(/^opensteer-sleep:/);
+      const newcomer = rows.find((tab) => tab.url.includes("id=last"))!;
+      if (newcomer.identity !== name)
+        expect(await lifecycle.nameTab(newcomer.tabId, name)).toBe(true);
+      const woken = await a.ledger.wake(bgId as never);
+      await waitLoaded(woken.cdp, "/article");
+      expect(woken.page.url()).toContain("bg-asleep");
+      expect(await evalValue(woken.cdp, `sessionStorage.getItem("mark")`)).toBe("bg-asleep");
+      expect(inA("id=last")).toBeDefined();
+    }
+  },
+  240_000,
+);

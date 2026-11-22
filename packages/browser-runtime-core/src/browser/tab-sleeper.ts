@@ -454,9 +454,18 @@ export class TabSleeper {
     }
   }
 
-  /** A page arrived that no open of ours made (a popup, a new-tab link): it grows as it loads. */
+  /**
+   * A page arrived that no open of ours made (a popup, a new-tab link): it grows as it loads, and
+   * over the threshold with a tab that can sleep the pass is asked for now, not at the next tick.
+   * Its time only makes a reclaim overlapping that growth unmeasured; it never holds a pass back.
+   */
   notePageArrived(): void {
-    this.lastOpenAt = Date.now();
+    const now = Date.now();
+    this.lastOpenAt = now;
+    if (this.closed || !this.usesLinuxMemoryPressure() || !this.releasing) return;
+    if (!this.canShedNow(now)) return;
+    this.pendingAsyncPressurePass = true;
+    this.poke();
   }
 
   private async admitOpen(
