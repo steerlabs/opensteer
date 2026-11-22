@@ -40,7 +40,9 @@ export async function applyBrowserPool(database: Kysely<unknown>): Promise<void>
       request jsonb not null,
       result jsonb,
       created_at timestamptz not null default now(),
-      settled_at timestamptz
+      settled_at timestamptz,
+      restart_keys jsonb,
+      installed_at timestamptz
     )
   `.execute(database);
   await sql`

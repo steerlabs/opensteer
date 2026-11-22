@@ -154,7 +154,11 @@ export class BrowserPoolControllerJournal {
     intentId: string | null,
     closeOpen?: BrowserPoolPhysicalStatus,
     signal?: AbortSignal,
+    restartKeys?: readonly string[],
   ): Promise<BrowserPoolControllerResult> {
+    // One id per intent until it is settled: an open Start is delivered again by its own id
+    // before anything else is asked, never closed or replaced by a new one.
+    await this.settleStarts(signal);
     const call: BrowserPoolControllerCall = { id: randomUUID(), ...input };
     await recordBrowserPoolControllerCall(
       this.#database,
@@ -166,10 +170,29 @@ export class BrowserPoolControllerJournal {
         intentId,
         kind: call.kind,
         request: call as unknown as Record<string, unknown>,
+        ...(restartKeys?.length ? { restartKeys } : {}),
       },
       closeOpen as unknown as Record<string, unknown> | undefined,
     );
     return this.#deliver(call, signal);
+  }
+
+  /**
+   * Delivers every open Start again by its own id, oldest first, and settles it. Until each has
+   * its answer no stopped status is believed: a Start still on its way names a stopped guest as
+   * its predecessor and could bring one up after it. A Start that cannot be settled fails here,
+   * and the step that asked is tried again. (A Start the pool host agent receives after its slot
+   * was deleted is refused there, and one of an older term by that term: the agent's fence,
+   * proven in tests/browser-pool-pair.integration.test.ts.)
+   */
+  async settleStarts(signal?: AbortSignal): Promise<readonly BrowserPoolControllerResult[]> {
+    const settled: BrowserPoolControllerResult[] = [];
+    for (const row of await listOpenBrowserPoolControllerCalls(this.#database, this.#runnerId))
+      if (row.kind === "start")
+        settled.push(
+          await this.#deliver(row.request as unknown as BrowserPoolControllerCall, signal),
+        );
+    return settled;
   }
 
   /** Delivers every call the journal still has open, oldest first. */

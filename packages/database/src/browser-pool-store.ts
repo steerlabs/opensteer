@@ -470,13 +470,23 @@ export async function recordBrowserPoolControllerCall(
     readonly intentId: string | null;
     readonly kind: string;
     readonly request: Readonly<Record<string, unknown>>;
+    /** A restart's Start: the keys it answers, durable with the call before it is sent. */
+    readonly restartKeys?: readonly string[];
   },
   closeOpen?: Readonly<Record<string, unknown>>,
 ): Promise<void> {
+  const { restartKeys, ...row } = call;
   const insert = (executor: Kysely<DatabaseSchema>) =>
     executor
       .insertInto("browserPoolControllerCalls")
-      .values({ ...call, result: null, settledAt: null })
+      .values({
+        ...row,
+        result: null,
+        settledAt: null,
+        restartKeys: restartKeys?.length
+          ? sql<readonly string[]>`${JSON.stringify(restartKeys)}::jsonb`
+          : null,
+      })
       .onConflict((conflict) => conflict.column("id").doNothing())
       .execute();
   if (!closeOpen) {
@@ -496,6 +506,7 @@ export async function recordBrowserPoolControllerCall(
         .forNoKeyUpdate()
         .execute();
       // The guest is replaced: whether an open call applied is not known, and never claimed.
+      // Open Starts are never among them: the caller settled each by its id first.
       for (const { id } of open)
         await tx
           .updateTable("browserPoolControllerCalls")
@@ -536,6 +547,38 @@ export function listOpenBrowserPoolControllerCalls(
     .where("settledAt", "is", null)
     .orderBy("createdAt")
     .orderBy("id")
+    .execute();
+}
+
+/**
+ * The newest Starts the controller applied for this Runner and no slot has held yet, newest
+ * first: one whose guest is the one running now is installed, never replaced again.
+ */
+export function listAppliedBrowserPoolStarts(database: Kysely<DatabaseSchema>, runnerId: RunnerId) {
+  return database
+    .selectFrom("browserPoolControllerCalls")
+    .selectAll()
+    .where("runnerId", "=", runnerId)
+    .where("kind", "=", "start")
+    .where("settledAt", "is not", null)
+    .where("installedAt", "is", null)
+    .where(sql<boolean>`result->>'applied' = 'true'`)
+    .orderBy("createdAt", "desc")
+    .orderBy("id", "desc")
+    .limit(4)
+    .execute();
+}
+
+/** The slot holds this Start's guest now: it is no replacement still to be installed. */
+export async function markBrowserPoolStartInstalled(
+  database: Kysely<DatabaseSchema>,
+  id: string,
+): Promise<void> {
+  await database
+    .updateTable("browserPoolControllerCalls")
+    .set({ installedAt: new Date() })
+    .where("id", "=", id)
+    .where("installedAt", "is", null)
     .execute();
 }
 

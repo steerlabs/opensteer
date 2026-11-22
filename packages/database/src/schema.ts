@@ -2421,6 +2421,10 @@ export interface DatabaseSchema {
     result: JsonColumn<Readonly<Record<string, unknown>> | null>;
     createdAt: Generated<Timestamp>;
     settledAt: Timestamp | null;
+    /** A restart's Start: the keys it answers, written with the call before it is sent. */
+    restartKeys: JsonColumn<readonly string[] | null>;
+    /** A Start whose guest the slot holds: never installed again in place of a new one. */
+    installedAt: Timestamp | null;
   };
   browserPoolDocumentLosses: {
     intentId: string;

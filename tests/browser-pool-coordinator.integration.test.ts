@@ -742,7 +742,7 @@ it("keeps a restart's hold, and stops nothing, while a holder's outcome could no
   }
 });
 
-it("starts again after an install that never reached the runtime, and installs the next one", async () => {
+it("sends a restart's applied Start's install again when it never reached the runtime, and starts no other guest", async () => {
   const f = await poolFixture("install-lost");
   try {
     const home = f.home();
@@ -758,7 +758,9 @@ it("starts again after an install that never reached the runtime, and installs t
       phase: "running",
       fence: { slot: "slot-install-lost", term: 1, instance: status.instance, epoch: 1 },
     });
-    expect(f.controller.effects).toEqual(["start", "stop", "start", "stop", "start"]);
+    // One call id per intent (P1): the applied Start's guest is the restart's, so its install is
+    // sent again; no second stop and start.
+    expect(f.controller.effects).toEqual(["start", "stop", "start"]);
     expect(await f.slot()).toMatchObject({ phase: "running", instanceId: status.instance });
     await f.admitted();
   } finally {

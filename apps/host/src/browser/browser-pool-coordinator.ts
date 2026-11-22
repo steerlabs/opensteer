@@ -13,6 +13,8 @@ import {
   browserPoolSlotIdentity,
   installBrowserPoolSlot,
   listBrowserPoolRuntimeSessions,
+  listAppliedBrowserPoolStarts,
+  markBrowserPoolStartInstalled,
   listBrowserPoolSessionTabs,
   pruneBrowserPoolBookkeeping,
   announceBrowserPool,
@@ -630,7 +632,11 @@ export class BrowserPoolCoordinator {
     this.#released?.noted.resolve();
     // With or without a slot row the controller is asked: a guest started before its row was
     // written is stopped too. A failed status read is not knowing, never "stopped" (R2); only an
-    // applied stop or a status that reads stopped is evidence.
+    // applied stop or a status that reads stopped is evidence, and only once every Start this
+    // Home sent has its answer: each open one is sent again by its own id first (P1). A Start
+    // still on its way after the slot is deleted is the agent's to refuse, by the slot and its
+    // term (tests/browser-pool-pair.integration.test.ts).
+    await this.#journal.settleStarts(this.#signal);
     const status = await this.#status();
     if (status.phase !== "stopped") {
       const stopped = await this.#call(slot, "stop", status, true);
@@ -810,6 +816,7 @@ export class BrowserPoolCoordinator {
     kind: "start" | "pause" | "resume" | "stop",
     status: BrowserPoolPhysicalStatus,
     replacing = false,
+    restartKeys?: ReadonlySet<string>,
   ): Promise<BrowserPoolControllerResult> {
     this.#signal?.throwIfAborted();
     return this.#journal.call(
@@ -825,6 +832,7 @@ export class BrowserPoolCoordinator {
       slot?.intentId ?? null,
       replacing ? status : undefined,
       this.#signal,
+      restartKeys?.size ? [...restartKeys] : undefined,
     );
   }
 
@@ -1221,24 +1229,39 @@ export class BrowserPoolCoordinator {
   async #startFresh(
     slot: BrowserPoolSlot,
     reason: string,
-    keys: ReadonlySet<string> = new Set(),
+    asked: ReadonlySet<string> = new Set(),
   ): Promise<void> {
+    // Every Start sent before has its answer first: one that applied is this replacement's.
+    await this.#journal.settleStarts(this.#signal);
     let status = await this.#status();
-    // The first call of a replacement closes every open row: nothing old is replayed later.
-    let replacing = true;
-    if (status.phase !== "stopped") {
-      const stopped = await this.#call(slot, "stop", status, replacing);
-      replacing = false;
-      // A refusal returns the state now: a guest that is stopped anyway is stopped.
-      if (!stopped.applied && stopped.status.phase !== "stopped")
-        throw new Error(`The guest did not stop: ${stopped.reason}.`);
-      status = stopped.status;
+    const keys = new Set(asked);
+    let started = await this.#appliedStart(status, slot);
+    if (started) {
+      for (const key of started.restartKeys) keys.add(key);
+    } else {
+      // The first call of a replacement closes every open row: nothing old is replayed later.
+      let replacing = true;
+      if (status.phase !== "stopped") {
+        const stopped = await this.#call(slot, "stop", status, replacing);
+        replacing = false;
+        // A refusal returns the state now: a guest that is stopped anyway is stopped.
+        if (!stopped.applied && stopped.status.phase !== "stopped")
+          throw new Error(`The guest did not stop: ${stopped.reason}.`);
+        status = stopped.status;
+      }
+      // The restart's keys are written with its Start, before it is sent.
+      started = {
+        result: await this.#call(slot, "start", status, replacing, keys),
+        restartKeys: [],
+      };
     }
-    const started = await this.#call(slot, "start", status, replacing);
-    if (!started.applied || !started.control || !started.signature)
-      throw new Error(`The guest did not start: ${started.reason}.`);
-    const { state } = await this.#deliver(started.control, started.signature);
-    if (state.phase !== "running" || !sameFence(state.fence, started.control.fence))
+    const { result: startedResult } = started;
+    if (!startedResult.applied || !startedResult.control || !startedResult.signature)
+      throw new Error(`The guest did not start: ${startedResult.reason}.`);
+    const control = startedResult.control;
+    const signature = startedResult.signature;
+    const { state } = await this.#deliver(control, signature);
+    if (state.phase !== "running" || !sameFence(state.fence, control.fence))
       throw new Error("The fresh guest was not installed.");
     const sessions = await listBrowserPoolRuntimeSessions(
       this.#options.database,
@@ -1253,10 +1276,10 @@ export class BrowserPoolCoordinator {
       {
         phase: "running",
         fence: {
-          slotId: started.control.fence.slot,
-          term: started.control.fence.term,
-          instanceId: started.control.fence.instance,
-          epoch: started.control.fence.epoch,
+          slotId: control.fence.slot,
+          term: control.fence.term,
+          instanceId: control.fence.instance,
+          epoch: control.fence.epoch,
         },
         savedState: null,
         outcome: { adopted: [], lost: losses.map(({ sessionId }) => ({ sessionId, reason })) },
@@ -1271,6 +1294,8 @@ export class BrowserPoolCoordinator {
       },
       losses,
     );
+    // Held by the slot now; until this write, the slot's own fence says the same.
+    await markBrowserPoolStartInstalled(this.#options.database, startedResult.id);
   }
 
   async #lossesOf(
@@ -1377,8 +1402,10 @@ export class BrowserPoolCoordinator {
    * the controller reports is stopped and a fresh one started; its fence is the controller's.
    */
   async #install(status: BrowserPoolPhysicalStatus) {
+    // A first install that applied before the Home went: its guest is installed, not replaced.
+    const applied = await this.#appliedStart(status, undefined);
     let replacing = true;
-    if (status.phase !== "stopped") {
+    if (!applied && status.phase !== "stopped") {
       const stopped = await this.#call(undefined, "stop", status, replacing);
       replacing = false;
       // A refusal returns the state now: a guest that is stopped anyway is stopped.
@@ -1386,7 +1413,7 @@ export class BrowserPoolCoordinator {
         throw new Error(`The guest did not stop: ${stopped.reason}.`);
       status = stopped.status;
     }
-    const started = await this.#call(undefined, "start", status, replacing);
+    const started = applied?.result ?? (await this.#call(undefined, "start", status, replacing));
     if (!started.applied || !started.control || !started.signature)
       throw new Error(`The guest did not start: ${started.reason}.`);
     const { state: installed } = await this.#deliver(started.control, started.signature);
@@ -1397,6 +1424,35 @@ export class BrowserPoolCoordinator {
       this.#options.database,
       this.#target(started.control.fence),
     );
+    await markBrowserPoolStartInstalled(this.#options.database, started.id);
+  }
+
+  /**
+   * A Start the controller applied whose guest is the one running now and that the slot does
+   * not hold yet: a Home went between that Start and its install. It is this replacement's, so it
+   * is installed, never replaced again, and the restart keys written with it are answered by it.
+   */
+  async #appliedStart(
+    status: BrowserPoolPhysicalStatus,
+    slot: BrowserPoolSlot | undefined,
+  ): Promise<
+    | { readonly result: BrowserPoolControllerResult; readonly restartKeys: readonly string[] }
+    | undefined
+  > {
+    const running = statusFence(status);
+    if (status.phase !== "running" || !running) return undefined;
+    for (const row of await listAppliedBrowserPoolStarts(
+      this.#options.database,
+      this.#options.runnerId,
+    )) {
+      const result = row.result as unknown as BrowserPoolControllerResult | null;
+      if (!result?.control || !result.signature || !sameFence(running, result.control.fence))
+        continue;
+      // The slot already holds it: nothing is pending, and a new replacement is a new one.
+      if (slot && sameFence(fenceOf(slot), result.control.fence)) return undefined;
+      return { result, restartKeys: row.restartKeys ?? [] };
+    }
+    return undefined;
   }
 
   #target(fence: BrowserPoolRuntimeFence): BrowserPoolTargetIdentity {
