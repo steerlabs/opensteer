@@ -56,8 +56,26 @@ import UniformTypeIdentifiers
   }
   /// Focuses the field without placing its caret.
   @objc func focusTapped() {
+    onFocusTap?()
     if !isFirstResponder { becomeFirstResponder() }
   }
+  /// Told of each focus tap, for tests.
+  var onFocusTap: (() -> Void)?
+  /// VoiceOver's activation is the focus tap: no recognizer of UIKit's is left to focus the field.
+  public override func accessibilityActivate() -> Bool {
+    focusTapped()
+    return true
+  }
+  /// gestureRecognizerShouldBegin is asked only about recognizers on the view itself, so no touch
+  /// reaches its subviews (the text container view and whatever UIKit adds there): a touch
+  /// anywhere in the view is the view's.
+  public override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+    guard let hit = super.hitTest(point, with: event) else { return nil }
+    return hit.isDescendant(of: self) ? self : hit
+  }
+  /// Whether the pasteboard holds something Paste would send. Asking does not bring up the
+  /// system's paste prompt; reading the items does.
+  var pasteboardHasContent: () -> Bool = { UIPasteboard.general.hasStrings || UIPasteboard.general.hasImages }
   @objc private func pasteLongPressRecognized(_ recognizer: UILongPressGestureRecognizer) {
     if recognizer.state == .began { pasteLongPressed(at: recognizer.location(in: self)) }
   }
@@ -68,7 +86,8 @@ import UniformTypeIdentifiers
   }
   /// Paste alone: the system's own Paste command where it suggests one, so it is named as the
   /// system names it.
-  func pasteMenu(suggested: [UIMenuElement]) -> UIMenu {
+  /// No menu when nothing can be pasted.
+  func pasteMenu(suggested: [UIMenuElement]) -> UIMenu? {
     func find(_ elements: [UIMenuElement]) -> UIMenuElement? {
       for element in elements {
         if let command = element as? UICommand, command.action == #selector(UIResponderStandardEditActions.paste(_:)) { return command }
@@ -76,8 +95,9 @@ import UniformTypeIdentifiers
       }
       return nil
     }
-    let paste = find(suggested) ?? UIAction(title: NSLocalizedString("Paste", comment: "")) { [weak self] _ in self?.paste(nil) }
-    return UIMenu(children: [paste])
+    if let system = find(suggested) { return UIMenu(children: [system]) }
+    guard pasteboardHasContent() else { return nil }
+    return UIMenu(children: [UIAction(title: NSLocalizedString("Paste", comment: "")) { [weak self] _ in self?.paste(nil) }])
   }
   private func snapshot(selection: NSRange? = nil) -> [String: Any] {
     let selection = selection ?? selectedRange
@@ -271,7 +291,7 @@ import UniformTypeIdentifiers
   }
   public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
     if action == #selector(copy(_:)) || action == #selector(cut(_:)) { return isEditable && !isSecureTextEntry }
-    if action == #selector(paste(_:)) { return isEditable }
+    if action == #selector(paste(_:)) { return isEditable && pasteboardHasContent() }
     // Nothing in the menu selects in the hidden field: what it selected nobody would see. Cmd+A
     // reaches the page as its own selectAll instead.
     if action == #selector(UIResponderStandardEditActions.select(_:)) || action == #selector(UIResponderStandardEditActions.selectAll(_:)) { return false }

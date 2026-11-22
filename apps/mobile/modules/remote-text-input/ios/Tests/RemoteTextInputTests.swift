@@ -390,6 +390,7 @@ import UIKit
   func testTheEditMenuOffersPasteButNoSelection() {
     let view = RemoteInputTextView()
     view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    view.pasteboardHasContent = { true }
     view.insertText("hello")
     view.respond(["id": 1])
     XCTAssertTrue(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
@@ -414,8 +415,57 @@ import UIKit
   }
   func testThePasteMenuOffersOnlyPaste() {
     let view = RemoteInputTextView()
+    view.pasteboardHasContent = { true }
     let menu = view.pasteMenu(suggested: [])
-    XCTAssertEqual(menu.children.count, 1)
+    XCTAssertEqual(menu?.children.count, 1)
+  }
+
+  // CR7: nothing to paste offers no Paste (tapping it reset the mirror for nothing), from the menu
+  // or from Cmd+V.
+  func testNothingToPasteOffersNoPaste() {
+    let view = RemoteInputTextView()
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    view.pasteboardHasContent = { false }
+    XCTAssertNil(view.pasteMenu(suggested: []))
+    XCTAssertFalse(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+  }
+  // CR7: the system's own Paste command is kept whenever UIKit suggests one: it pastes without the
+  // prompt a programmatic read of the pasteboard brings up.
+  func testTheSystemsOwnPasteCommandIsKept() {
+    let view = RemoteInputTextView()
+    view.pasteboardHasContent = { false }
+    let system = UICommand(title: "Paste", action: #selector(UIResponderStandardEditActions.paste(_:)))
+    let suggested: [UIMenuElement] = [UICommand(title: "Select", action: #selector(UIResponderStandardEditActions.select(_:))), UIMenu(children: [system])]
+    let menu = view.pasteMenu(suggested: suggested)
+    XCTAssertEqual(menu?.children.count, 1)
+    XCTAssertTrue(menu?.children.first === system)
+  }
+  // CR7: VoiceOver's activation focuses the field, as the focus tap does: no recognizer of UIKit's
+  // is left to do it. Outside a window the view cannot become first responder; the windowed test
+  // checks the focus itself.
+  func testVoiceOverActivationIsTheFocusTap() {
+    let view = RemoteInputTextView()
+    var focused = 0
+    view.onFocusTap = { focused += 1 }
+    XCTAssertTrue(view.accessibilityActivate())
+    XCTAssertEqual(focused, 1)
+  }
+  // CR7: gestureRecognizerShouldBegin is asked only about the view's own recognizers, so a touch
+  // must never reach the text view's subviews (its text container view, and whatever UIKit adds
+  // there): hit testing anywhere in the view returns the view.
+  func testTouchesNeverReachTheTextViewsSubviews() {
+    let view = RemoteInputTextView(frame: CGRect(x: 0, y: 0, width: 390, height: 44), textContainer: nil)
+    view.insertText("hello")
+    view.respond(["id": 1])
+    view.layoutIfNeeded()
+    XCTAssertFalse(view.subviews.isEmpty, "UITextView keeps its text in a subview")
+    for x in stride(from: 1.0, to: 390.0, by: 13.0) {
+      for y in stride(from: 1.0, to: 44.0, by: 7.0) {
+        let hit = view.hitTest(CGPoint(x: x, y: y), with: nil)
+        XCTAssertTrue(hit === view, "a touch at (\(x), \(y)) reached \(hit.map { String(describing: type(of: $0)) } ?? "nothing")")
+      }
+    }
+    XCTAssertNil(view.hitTest(CGPoint(x: 500, y: 10), with: nil))
   }
   func testTheFocusTapAndThePasteLongPressLeaveTheCaretWhereItWas() {
     let field = Field(settled: "helloab")
@@ -450,6 +500,24 @@ import UIKit
     for recognizer in recognizers where !view.isOwn(recognizer) {
       XCTAssertFalse(view.gestureRecognizerShouldBegin(recognizer), "\(type(of: recognizer)) began")
     }
+    // Recognizers on the text view's subviews are never asked through the view: no touch may
+    // reach them. Every point of every subview that carries one hit-tests to the view.
+    view.insertText("hello")
+    view.respond(["id": packets.last!["id"]!])
+    view.layoutIfNeeded()
+    func walk(_ parent: UIView) -> [UIView] { parent.subviews + parent.subviews.flatMap(walk) }
+    for subview in walk(view) where !(subview.gestureRecognizers ?? []).isEmpty || !subview.interactions.isEmpty {
+      let frame = subview.convert(subview.bounds, to: view).intersection(view.bounds)
+      if frame.isNull || frame.isEmpty { continue }
+      for point in [CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.minX + 1, y: frame.minY + 1), CGPoint(x: frame.maxX - 1, y: frame.maxY - 1)] {
+        XCTAssertTrue(view.hitTest(point, with: nil) === view, "a touch reached \(type(of: subview))")
+      }
+    }
+    // VoiceOver's activation focuses the field.
+    view.resignFirstResponder()
+    XCTAssertFalse(view.isFirstResponder)
+    XCTAssertTrue(view.accessibilityActivate())
+    XCTAssertTrue(view.isFirstResponder)
     window.isHidden = true
     #endif
   }
