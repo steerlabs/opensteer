@@ -54,7 +54,15 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
-export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
+export type KeepAwakeReason =
+  | "upload"
+  | "post"
+  | "download"
+  | "media"
+  | "fullscreen"
+  | "capturing"
+  /** The tab-lifecycle helper is still being looked for after launch. */
+  | "tab-helper";
 
 /** A renderer after its page ended: gone, still serving other pages, or still running alone. */
 export type RendererExit = "exited" | "shared" | "running";

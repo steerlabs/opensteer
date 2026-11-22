@@ -25,6 +25,20 @@ import type { ChromiumTabLifecycleBridge } from "./tab-lifecycle-extension.js";
 
 const executablePath = findChromium();
 
+/**
+ * Launches and waits for the look for the tab helper to end, as the sleeper's next pass would: no
+ * tab sleeps before it has (R1).
+ */
+async function launchReady(
+  launcher: PlaywrightChromiumLauncher,
+  request: Parameters<PlaywrightChromiumLauncher["launch"]>[0],
+) {
+  const launched = await launcher.launch(request);
+  await (launched as unknown as { contextHandle: { lifecycleSettled: Promise<void> } })
+    .contextHandle.lifecycleSettled;
+  return launched;
+}
+
 function buildLoopingWavBuffer(): Buffer {
   const sampleRate = 8000;
   const numSamples = sampleRate * 2;
@@ -285,7 +299,7 @@ it("sleeps native Chromium tabs by discarding, restores scroll/forms/SPA/session
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     playwrightContext: { process(): { pid: number } };
@@ -459,7 +473,7 @@ it("keeps POST result and playing media tabs awake via existing blockers on nati
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -508,7 +522,7 @@ it("hides the helper extension from tab lists, session CDP, and connected agents
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     browserCdp: { send(method: string, params?: Record<string, unknown>): Promise<unknown> };
@@ -597,7 +611,7 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
     headless: true,
   });
   const request = nativeProfileRequest(directory);
-  const launched = await launcher.launch(request);
+  const launched = await launchReady(launcher, request);
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
@@ -647,7 +661,7 @@ it("removes sleeping tabs with evidence on session end and cold restart brings n
   // Cold restart must bring none of the ended session's sleeping tabs back.
   await ledger.close();
   await launched.close();
-  const restarted = await launcher.launch(request);
+  const restarted = await launchReady(launcher, request);
   cleanup.push(() => restarted.close());
   const internal2 = restarted as unknown as {
     contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
@@ -666,7 +680,7 @@ it("still sleeps and wakes by address without marking unrestorable when the help
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
@@ -722,7 +736,7 @@ it("serializes immediate wake behind an in-flight discard and settles helper tim
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
@@ -817,7 +831,7 @@ it("hands off new popups synchronously, without dropping short-lived popups", as
   });
   const request = nativeProfileRequest(directory);
 
-  const b2 = await launcher.launch(request);
+  const b2 = await launchReady(launcher, request);
   cleanup.push(() => b2.close());
   const internal2 = b2 as unknown as {
     playwrightContext: { on(event: string, listener: (p: unknown) => void): void };
@@ -872,7 +886,7 @@ it("refuses closing a sleeping tab retryably until Chromium confirms removal, th
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge };
@@ -953,7 +967,7 @@ it("wakes a stopped helper worker via ServiceWorker.startWorker without creating
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     browserCdp: {
@@ -1069,7 +1083,7 @@ it("does not steal foreground visibility or pause screencasting when a backgroun
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: {
@@ -1167,7 +1181,7 @@ async function selfClosingSetup(asleep: boolean) {
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   // As the runtime builds a session: one ownership for the browser, a root page the session
   // created, and a ledger that takes only the pages ownership gives the session (its root's
@@ -1301,7 +1315,7 @@ it("sleeps a tab another page opened and wakes it as itself, not as a new popup 
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const ledger = new SurfaceLedger(launched.context);
   await ledger.start();
@@ -1354,7 +1368,7 @@ it.each(["no tab asleep", "a tab asleep"] as const)(
       chromiumSandbox: false,
       headless: true,
     });
-    const launched = await launcher.launch(nativeProfileRequest(directory));
+    const launched = await launchReady(launcher, nativeProfileRequest(directory));
     cleanup.push(() => launched.close());
     const pages = new PageOwnership();
     pages.adopt(launched.context);
@@ -1497,7 +1511,7 @@ it.each([
       chromiumSandbox: false,
       headless: true,
     });
-    const launched = await launcher.launch(nativeProfileRequest(directory));
+    const launched = await launchReady(launcher, nativeProfileRequest(directory));
     cleanup.push(() => launched.close());
     const lifecycle = (
       launched as unknown as { contextHandle: { lifecycleCandidate: ChromiumTabLifecycleBridge } }
@@ -1566,7 +1580,7 @@ it("keeps sleeping tabs left of the private anchor and live tabs right of it thr
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const internal = launched as unknown as {
     contextHandle: {
@@ -1687,7 +1701,7 @@ it("sleeps and wakes a tab a connected agent works in as the runtime's own work,
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const sessionId = "session-connection";
   const router = new SessionCdpRouter(launched.cdp);
@@ -1769,7 +1783,7 @@ async function lineageSetup(name: string) {
     chromiumSandbox: false,
     headless: true,
   });
-  const launched = await launcher.launch(nativeProfileRequest(directory));
+  const launched = await launchReady(launcher, nativeProfileRequest(directory));
   cleanup.push(() => launched.close());
   const sessionId = `session-${name}`;
   const router = new SessionCdpRouter(launched.cdp);
@@ -2149,3 +2163,57 @@ it("tells the client of a noopener tab's opener nothing of that tab's wake, and 
   await expect(agentC.reach(woken.targetId)).rejects.toMatchObject(outsideLineage);
   expect(await agentC.targets()).toEqual([f.target(c)]);
 }, 90_000);
+
+it("sleeps a tab asked to sleep right after launch by discard, with its state, when the helper answers late (R1)", async () => {
+  // The helper's first answer comes 2.5 s after launch (a slow first worker start).
+  const { ChromiumTabLifecycleBridge: Bridge } = await import("./tab-lifecycle-extension.js");
+  const inventory = Bridge.prototype.inventory;
+  let first = true;
+  vi.spyOn(Bridge.prototype, "inventory").mockImplementation(async function (
+    this: ChromiumTabLifecycleBridge,
+    ...args: Parameters<ChromiumTabLifecycleBridge["inventory"]>
+  ) {
+    if (first) {
+      first = false;
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+    }
+    return inventory.apply(this, args);
+  });
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-late-helper-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const tab = await ledger.openSurface();
+  const cdp = ledger.binding(tab.id)!.cdp;
+  await cdp.send("Page.navigate", { url: `${server.originForSite(1)}/draft?id=late` });
+  await waitLoaded(cdp, "/draft");
+  await evalValue(cdp, `sessionStorage.setItem("mark", "kept")`);
+  await evalValue(cdp, "document.getElementById('draft').focus()");
+  await cdp.send("Input.insertText", { text: "typed early" });
+  await evalValue(cdp, "document.activeElement.blur()");
+  await evalValue(cdp, "window.scrollTo(0, 1750)");
+  // Asked to sleep at once, as the sleeper asks again after a refusal: it sleeps only with the
+  // helper's answer, by discard.
+  await vi.waitFor(async () => expect(await ledger.sleep(tab.id, () => null)).toBe(true), {
+    timeout: 15_000,
+    interval: 250,
+  });
+  const woken = await ledger.wake(tab.id);
+  await waitLoaded(woken.cdp, "/draft");
+  expect((woken.page as unknown as { openedFresh?: boolean }).openedFresh).not.toBe(true);
+  expect(
+    await evalValue(
+      woken.cdp,
+      `({ mark: sessionStorage.getItem("mark"), draft: document.getElementById("draft").value, scroll: window.scrollY })`,
+    ),
+  ).toEqual({ mark: "kept", draft: "typed early", scroll: 1750 });
+}, 60_000);

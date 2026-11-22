@@ -1068,8 +1068,6 @@ const wakeDiscardedTabMs = 10_000;
  * and its tabs sleep by closing.
  */
 const lifecycleProbeMs = 10_000;
-/** How long a sleep waits for that look to finish before it sleeps the tab by closing. */
-const lifecycleProbeWaitMs = 1_000;
 /** How long an arriving page's tab name is looked up while some tab is asleep. */
 const arrivalIdentifyMs = 2_000;
 /** How long the runtime's own new page may take; a page with no opener waits inside it (K3). */
@@ -1301,6 +1299,8 @@ class PlaywrightContextHandle implements BrowserContext {
   readonly lifecycleCandidate: ChromiumTabLifecycleBridge | undefined;
   /** Settles once the look for the helper has ended, either way. */
   lifecycleSettled: Promise<void> = Promise.resolve();
+  /** Until the look has ended, no tab sleeps: waiting costs time, closing would lose the page. */
+  lifecyclePending = false;
   /** A native profile's context: K3 holds for every page. */
   private readonly nativeProfile: boolean;
   private readonly privatePage: Page | undefined;
@@ -1791,14 +1791,17 @@ class PlaywrightContextHandle implements BrowserContext {
 
   /**
    * The helper is looked for once, in the background after launch: nothing on the way to the first
-   * page waits for its worker or its inventory. Until it answers, no tab sleeps by discard; a sleep
-   * meanwhile waits a bounded time for it, then sleeps the tab by closing.
+   * page waits for its worker or its inventory. Until the look has ended no tab sleeps (a page says
+   * it must stay awake, so the sleeper asks again later); then a tab sleeps by discard if the
+   * helper answered, by closing if not. The only caller of a sleep is the sleeper's own pass.
    */
   establishLifecycle(): void {
     const candidate = this.lifecycleCandidate;
     if (!candidate) return;
+    this.lifecyclePending = true;
     this.lifecycleSettled = readRows(candidate, performance.now() + lifecycleProbeMs).then(
       (rows) => {
+        this.lifecyclePending = false;
         if (this.closed) return;
         if (rows) this.lifecycle = candidate;
         else
@@ -2285,7 +2288,9 @@ class PlaywrightPageHandle implements BrowserPage {
     });
   }
 
-  async keepAwake(): Promise<"upload" | "post" | "media" | null> {
+  async keepAwake(): Promise<"tab-helper" | "upload" | "post" | "media" | null> {
+    // Not before the look for the tab helper has ended (R1): asked again later, never closed early.
+    if (this.contextHandle.lifecyclePending) return "tab-helper";
     if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
     for (const frame of this.page.frames()) {
@@ -2494,11 +2499,6 @@ class PlaywrightPageHandle implements BrowserPage {
   }
 
   private async captureDiscardRestore(): Promise<ChromiumDiscardRestore> {
-    // The first sleep after launch may come before the look for the helper has ended: it waits a
-    // bounded time, and the close then sleeps the tab by discard only if the helper answered.
-    await withTimeout(this.contextHandle.lifecycleSettled, lifecycleProbeWaitMs, {
-      timeoutError: () => new Error("The tab helper has not answered yet."),
-    }).catch(() => undefined);
     const targetId = this.knownTargetId ?? (await this.targetId());
     const tokenId = randomUUID();
     const url = this.url();
