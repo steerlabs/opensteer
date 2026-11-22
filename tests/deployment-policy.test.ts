@@ -49,7 +49,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     reason: "Device presentation kind selects a hardware label and icon, not Deployment policy.",
   },
   "apps/web/src/components/devices/add-device-dialog.tsx": {
-    counts: { choice: 2 },
+    counts: { choice: 1 },
     reason: "The add-device choice selects headless enrollment, not a Deployment kind.",
   },
   "apps/web/src/components/devices/devices-page.tsx": {

@@ -230,10 +230,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     ({ id }) => id === snapshot.selectedDeploymentId,
   );
   const selected = selectedConnection ? desktopSummaryFromAccess(selectedConnection) : undefined;
-  const startedHereId =
-    remoteAccessOnStart && selected?.onThisComputer && selected.kind === "personal"
-      ? selected.id
-      : null;
+  const startedHereId = remoteAccessOnStart && selected?.onThisComputer ? selected.id : null;
   useEffect(() => {
     if (startedHereId === null) return;
     rememberRemoteAccessOnStart(startedHereId);

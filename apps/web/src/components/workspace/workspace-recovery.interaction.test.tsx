@@ -651,6 +651,9 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     routes: [],
   } as unknown as NonNullable<Parameters<typeof AppShell>[0]["desktopDeployment"]>;
   const deploymentAccess = {
+    // As main's snapshot always carries them: signed in, this Mac's Opensteer in the account.
+    account: { available: true, status: "signed-in" },
+    personalAccountLink: { status: "linked" },
     deployments: [],
     selectedDeploymentId: deploymentId,
     personalSetup: {

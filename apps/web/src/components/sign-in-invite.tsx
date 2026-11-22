@@ -24,10 +24,7 @@ function declined(deploymentId: string): boolean {
  */
 export function useSignInInvitePending(): boolean {
   const { deploymentAccess, desktopBridge, desktopDeployment } = useShell();
-  const here =
-    desktopBridge !== null &&
-    desktopDeployment?.kind === "personal" &&
-    desktopDeployment.onThisComputer;
+  const here = desktopBridge !== null && desktopDeployment?.onThisComputer === true;
   if (!here || !deploymentAccess) return false;
   return (
     deploymentAccess.account.available &&

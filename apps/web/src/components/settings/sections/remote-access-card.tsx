@@ -65,10 +65,7 @@ function RemoteAccessCardBody() {
   const { desktopBridge, desktopDeployment } = useShell();
   const model = useRemoteAccessCardModel();
   // Only the Mac that runs this Opensteer can share it on a tailnet or pair a phone to it.
-  const here =
-    desktopBridge !== null &&
-    desktopDeployment?.kind === "personal" &&
-    desktopDeployment.onThisComputer;
+  const here = desktopBridge !== null && desktopDeployment?.onThisComputer === true;
   const privateNetworkSetup = here ? <PrivateNetworkSetup bridge={desktopBridge} /> : null;
   return (
     <RemoteAccessCardView
