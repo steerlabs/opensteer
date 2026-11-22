@@ -25,6 +25,11 @@ export { pageWithTarget } from "./browser/target-lookup.js";
 
 export {
   cdpCommandRefusal,
+  connectionAutoAttachParameters,
+  connectionCdpRefusal,
+  connectionMethodRefusal,
+  connectionNestedAutoAttachRefusal,
+  nestsAutoAttach,
   clipboardPermissionRefusal,
   connectionClipboardRefusal,
   connectionPermissionRefusal,

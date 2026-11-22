@@ -1,5 +1,10 @@
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
-import { cdpCommandRefusal, type BrowserRuntime } from "@opensteer/browser-runtime-core";
+import {
+  cdpCommandRefusal,
+  connectionAutoAttachParameters,
+  connectionCdpRefusal,
+  type BrowserRuntime,
+} from "@opensteer/browser-runtime-core";
 import type {
   StandardCdpAttemptReconciliation,
   StandardCdpLeaseReconciliation,
@@ -5624,13 +5629,27 @@ export class BrowserService {
     // Admission is everything before the command is handed to the browser; its
     // fences apply until then. The answer arrives on `result`.
     const dispatch = async (
-      command: BrowserCdpRequest["command"],
+      requested: BrowserCdpRequest["command"],
       confirmed?: ConfirmedCdpDispatch,
     ): Promise<{ readonly result: Promise<unknown> }> => {
       // Refused before any effect, whatever runtime the browser runs: neither the clipboard nor
       // a browser permission is in any grant. The runtime's router refuses the same commands.
-      const refusal = cdpCommandRefusal(command.method, command.parameters, connectionWork);
+      // A connection's work sends only what a standard browser_connect client may, and its
+      // page auto-attach reaches iframes and workers only, never paused at start.
+      const refusal =
+        cdpCommandRefusal(requested.method, requested.parameters, connectionWork) ??
+        (connectionWork
+          ? connectionCdpRefusal(
+              requested.method,
+              requested.parameters,
+              requested.sessionId !== undefined,
+            )
+          : undefined);
       if (refusal) throw new OpensteerError({ code: "forbidden", message: refusal });
+      const command =
+        connectionWork && requested.method === "Target.setAutoAttach" && requested.sessionId
+          ? { ...requested, parameters: connectionAutoAttachParameters(requested.parameters) }
+          : requested;
       return this.withRunnerAdmission(record.runnerId, async () => {
         confirmed?.signal?.throwIfAborted();
         if (confirmed && input.expiresAt !== undefined && input.expiresAt <= Date.now())

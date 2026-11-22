@@ -2093,3 +2093,145 @@ describe("SessionCdpRouter clipboard and browser permissions", () => {
       await f.router.close();
     });
 });
+
+describe("SessionCdpRouter under a connection: the standard lists, one tab's cookies, history and children", () => {
+  async function standard(connection: boolean, cookieReads = false) {
+    const backend = new FakeBackend();
+    backend.dedicatedContext = true;
+    Object.assign(backend, { allowsProfileCookieReads: cookieReads });
+    backend.targetInfos = [{ targetId: "seed", type: "page" }];
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("a", "seed", async () => true, "/files/a");
+    const client = router.openStandardClient("a", {
+      wholeContext: false,
+      ...(connection
+        ? { connection, lineage: { attachmentId: "agent", seedTargetId: "seed" } }
+        : {}),
+    });
+    const { sessionId } = (await client.send({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "seed", flatten: true },
+    })) as { sessionId: string };
+    const channel = backend.channels.get("seed")!;
+    const page = (method: string, parameters: CdpParameters = {}) =>
+      client.send({ method, parameters, sessionId }).catch((error: unknown) => error);
+    return { router, channel, page, sessionId, client };
+  }
+  const outside = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+
+  it("names the refused method and the page domains to a connection, and keeps the person's own wording", async () => {
+    const connected = await standard(true);
+    await expect(
+      connected.page("Storage.clearDataForOrigin", {
+        origin: "https://a.test",
+        storageTypes: "all",
+      }),
+    ).resolves.toMatchObject({
+      code: "forbidden",
+      message: outside("Storage.clearDataForOrigin"),
+    });
+    const own = await standard(false);
+    await expect(own.page("Storage.clearDataForOrigin", {})).resolves.toMatchObject({
+      message: "Storage.clearDataForOrigin cannot be scoped to this CDP attachment.",
+    });
+    await connected.router.close();
+    await own.router.close();
+  });
+
+  it("gives a connection on a shared tab only that page's own cookies; a person's own agent as before", async () => {
+    const connected = await standard(true, true);
+    for (const [method, parameters] of [
+      ["Network.getAllCookies", {}],
+      ["Storage.getCookies", {}],
+      ["Network.getCookies", { urls: ["https://other.test/"] }],
+    ] as const)
+      await expect(connected.page(method, parameters), method).resolves.toMatchObject({
+        code: "forbidden",
+      });
+    await expect(connected.page("Network.getCookies")).resolves.toEqual({
+      method: "Network.getCookies",
+    });
+    expect(connected.channel.commands.map(({ method }) => method)).toEqual(["Network.getCookies"]);
+    const own = await standard(false, true);
+    for (const method of ["Network.getAllCookies", "Network.getCookies"])
+      await expect(own.page(method, {}), method).resolves.toEqual({ method });
+    await connected.router.close();
+    await own.router.close();
+  });
+
+  it("traverses history only to an entry whose address passes the navigation rule", async () => {
+    const f = await standard(false);
+    f.channel.results.set("Page.getNavigationHistory", {
+      currentIndex: 1,
+      entries: [
+        { id: 1, url: "file:///etc/hosts" },
+        { id: 2, url: "https://example.test/" },
+        { id: 3, url: "javascript:alert(1)" },
+      ],
+    });
+    for (const entryId of [1, 3])
+      await expect(f.page("Page.navigateToHistoryEntry", { entryId })).resolves.toMatchObject({
+        code: "forbidden",
+        message: "CDP navigation is limited to HTTP and HTTPS URLs without embedded credentials.",
+      });
+    await expect(f.page("Page.navigateToHistoryEntry", { entryId: 9 })).resolves.toMatchObject({
+      code: "not_found",
+    });
+    await f.page("Page.navigateToHistoryEntry", { entryId: 2 });
+    expect(
+      f.channel.commands.filter(({ method }) => method === "Page.navigateToHistoryEntry"),
+    ).toEqual([{ method: "Page.navigateToHistoryEntry", parameters: { entryId: 2 } }]);
+    await f.router.close();
+  });
+
+  it("limits a connection's page auto-attach to iframes and workers, unpaused; the person's own as before", async () => {
+    const connected = await standard(true);
+    for (const parameters of [
+      { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+        filter: [{ type: "iframe", exclude: true }, {}],
+      },
+      { autoAttach: true, waitForDebuggerOnStart: false, filter: [{ type: "service_worker" }] },
+    ])
+      await connected.page("Target.setAutoAttach", parameters);
+    expect(
+      connected.channel.commands
+        .filter(({ method }) => method === "Target.setAutoAttach")
+        .map(({ parameters }) => parameters),
+    ).toEqual([
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+      },
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ type: "worker" }, { exclude: true }],
+      },
+      {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: false,
+        filter: [{ exclude: true }],
+      },
+    ]);
+    const own = await standard(false);
+    await own.page("Target.setAutoAttach", {
+      autoAttach: true,
+      waitForDebuggerOnStart: true,
+      flatten: true,
+    });
+    expect(
+      own.channel.commands.find(({ method }) => method === "Target.setAutoAttach")?.parameters,
+    ).toEqual({ autoAttach: true, waitForDebuggerOnStart: true, flatten: false });
+    await connected.router.close();
+    await own.router.close();
+  });
+});

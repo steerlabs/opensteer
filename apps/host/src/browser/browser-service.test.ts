@@ -9105,4 +9105,106 @@ describe("work under a connection's authority never uses the clipboard or change
     for (const outcome of await Promise.all(grants))
       expect(outcome).toMatchObject({ code: "forbidden", message: clipboardGrantSentence });
   });
+
+  const outsideList = [
+    ["Tracing.start", {}, undefined],
+    ["SystemInfo.getProcessInfo", {}, undefined],
+    ["Storage.getCookies", {}, undefined],
+    ["Storage.clearDataForOrigin", { origin: "https://a.test", storageTypes: "all" }, "cdp-page-1"],
+    ["ServiceWorker.unregister", { scopeURL: "https://a.test/" }, "cdp-page-1"],
+    ["Page.crash", {}, "cdp-page-1"],
+    ["Page.close", {}, "cdp-page-1"],
+    ["Network.getAllCookies", {}, "cdp-page-1"],
+    [
+      "Target.sendMessageToTarget",
+      {
+        sessionId: "child",
+        message: JSON.stringify({ id: 1, method: "Storage.clearDataForOrigin", params: {} }),
+      },
+      "cdp-page-1",
+    ],
+    [
+      "Target.sendMessageToTarget",
+      {
+        sessionId: "child",
+        message: JSON.stringify({
+          id: 1,
+          method: "Target.setAutoAttach",
+          params: { autoAttach: true, waitForDebuggerOnStart: true },
+        }),
+      },
+      "cdp-page-1",
+    ],
+  ] as const;
+
+  for (const binding of ["run:lineage", "trigger:lineage"])
+    it(`refuses a connection's ${binding.split(":")[0]} every method outside the standard lists before anything leaves the Home`, async () => {
+      const ownerId = createId("user");
+      const repository = new SelectedGrantRepository(ownerId);
+      repository.scope = "everything";
+      const { cdp, runtime } = await attached(repository, ownerId, binding);
+      const settled = outsideList.map(([method, parameters, sessionId]) =>
+        cdp.request({ method, parameters, ...(sessionId ? { sessionId } : {}) }).then(
+          () => "answered",
+          (error: unknown) => error,
+        ),
+      );
+      // Listed methods go out, and a page auto-attach goes out limited.
+      const next = [
+        cdp.request({ method: "Browser.getVersion" }),
+        cdp.request({
+          method: "Target.setAutoAttach",
+          parameters: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+          sessionId: "cdp-page-1",
+        }),
+      ];
+      const seen = [];
+      for (let index = 0; index < 2; index++) {
+        const command = await runtime.nextCommand();
+        seen.push(command.command);
+        runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+      }
+      expect(seen, "the first commands to reach the runtime").toEqual([
+        { method: "Browser.getVersion" },
+        {
+          method: "Target.setAutoAttach",
+          parameters: {
+            autoAttach: true,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+            filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
+          },
+          sessionId: "cdp-page-1",
+        },
+      ]);
+      await Promise.all(next);
+      for (const [index, outcome] of (await Promise.all(settled)).entries()) {
+        const [method] = outsideList[index]!;
+        expect(outcome, `${method} ${index}`).toMatchObject({
+          code: "forbidden",
+          message:
+            index === outsideList.length - 1
+              ? "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget."
+              : expect.stringMatching(
+                  new RegExp(
+                    `^${(index === outsideList.length - 2 ? "Storage.clearDataForOrigin" : method).replaceAll(".", "\\.")} is not available to a connected agent\\. Its CDP acts on its own pages through the Accessibility, `,
+                    "u",
+                  ),
+                ),
+        });
+      }
+    });
+
+  it("forwards the person's own Run every method as before", async () => {
+    const ownerId = createId("user");
+    const { forwarded } = await attached(new MemoryBrowserRepository(ownerId), ownerId, "run:own");
+    for (const [method, parameters] of outsideList)
+      await expect(forwarded(method, parameters), method).resolves.toMatchObject({
+        method,
+        parameters,
+      });
+    await expect(
+      forwarded("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true }),
+    ).resolves.toMatchObject({ parameters: { autoAttach: true, waitForDebuggerOnStart: true } });
+  });
 });

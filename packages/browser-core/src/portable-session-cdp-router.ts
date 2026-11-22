@@ -1,4 +1,7 @@
-import { standardCdpPageMethods } from "./standard-cdp-page-methods.js";
+import {
+  standardCdpPageMethods,
+  standardCdpRootTargetMethods as standardRootTargets,
+} from "./standard-cdp-page-methods.js";
 import {
   standardCdpMessageMaxBytes,
   standardCdpBufferedMaxBytes,
@@ -13,9 +16,18 @@ import { contextScopedCdpMethods } from "./cdp-context.js";
 import { CdpProductIsolation } from "./cdp-product-isolation.js";
 import { boundedJsonSize, type JsonSizeBudget } from "./bounded-json.js";
 import { utf8Size } from "./bytes.js";
-import { cdpCommandRefusal } from "./cdp-command-refusals.js";
+import {
+  cdpCommandRefusal,
+  connectionAutoAttachParameters,
+  connectionMethodRefusal,
+} from "./cdp-command-refusals.js";
 export {
   cdpCommandRefusal,
+  connectionAutoAttachParameters,
+  connectionCdpRefusal,
+  connectionMethodRefusal,
+  connectionNestedAutoAttachRefusal,
+  nestsAutoAttach,
   clipboardPermissionRefusal,
   connectionClipboardRefusal,
   connectionPermissionRefusal,
@@ -214,21 +226,6 @@ const defaultLimits: SessionCdpRouterLimits = {
 
 const browserRootLimit = standardCdpMessageMaxBytes - 4_096;
 const maxRetiredTargets = 256;
-
-const standardRootTargets = new Set([
-  "Target.attachToBrowserTarget",
-  "Target.getTargets",
-  "Target.getTargetInfo",
-  "Target.getBrowserContexts",
-  "Target.createTarget",
-  "Target.closeTarget",
-  "Target.activateTarget",
-  "Target.attachToTarget",
-  "Target.detachFromTarget",
-  "Target.setAutoAttach",
-  "Target.setDiscoverTargets",
-  "Target.sendMessageToTarget",
-]);
 
 function readTargetFilter(value: unknown): ConnectionState["discoveryFilter"] {
   if (value === undefined) return undefined;
@@ -822,12 +819,16 @@ export class SessionCdpRouter {
           "forbidden",
           "Saved login and card fills use browser_use on the personal hosting Mac. Open the approved tab there and call page.cdp.",
         );
+      // A shared tab is one tab: a connection reads only that page's own cookies, never the
+      // profile's.
       const pageCookieRead =
         this.#backend.allowsProfileCookieReads &&
         command.sessionId !== undefined &&
-        ["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"].includes(
-          command.method,
-        );
+        (state.connection
+          ? command.method === "Network.getCookies" && command.parameters?.urls === undefined
+          : ["Network.getCookies", "Network.getAllCookies", "Storage.getCookies"].includes(
+              command.method,
+            ));
       if (contextScopedCdpMethods.has(command.method) && !pageCookieRead) {
         if (!state.standard.wholeContext)
           throw new SessionCdpRouterError(
@@ -866,7 +867,9 @@ export class SessionCdpRouter {
       )
         throw new SessionCdpRouterError(
           "forbidden",
-          `${command.method} cannot be scoped to this CDP attachment.`,
+          state.connection
+            ? connectionMethodRefusal(command.method)
+            : `${command.method} cannot be scoped to this CDP attachment.`,
         );
     } else {
       if (command.method === "Browser.setDownloadBehavior")
@@ -1481,6 +1484,23 @@ export class SessionCdpRouter {
     this.#appendEvent(state, method, parameters, attached.virtualSessionId);
   }
 
+  /** History traversal follows the navigation rule: the entry's address passes `Page.navigate`'s. */
+  async #assertSafeHistoryEntry(
+    state: ConnectionState,
+    attached: AttachedChannel,
+    parameters: CdpParameters | undefined,
+  ): Promise<void> {
+    const entryId = parameters?.entryId;
+    const { entries } = asRecord(await attached.channel.send("Page.getNavigationHistory", {})) as {
+      entries?: unknown;
+    };
+    const entry = Array.isArray(entries)
+      ? entries.find((candidate: unknown) => asRecord(candidate).id === entryId)
+      : undefined;
+    if (!entry) throw new SessionCdpRouterError("not_found", "No such navigation history entry.");
+    assertSafeNavigationUrl(asRecord(entry).url, false, Boolean(state.standard || state.script));
+  }
+
   /** Refused before any effect: see `cdp-command-refusals.ts`. */
   #assertAllowed(state: ConnectionState, command: CdpCommand): void {
     const refusal = cdpCommandRefusal(command.method, command.parameters, state.connection);
@@ -1574,7 +1594,13 @@ export class SessionCdpRouter {
     if (command.method === "Page.enable") attached.pageEnabled = true;
     if (command.method === "Page.disable") attached.pageEnabled = false;
     let parameters = command.parameters;
-    if (command.method === "Target.setAutoAttach") parameters = { ...parameters, flatten: false };
+    if (command.method === "Target.setAutoAttach")
+      parameters = {
+        ...(state.connection ? connectionAutoAttachParameters(parameters) : parameters),
+        flatten: false,
+      };
+    if (command.method === "Page.navigateToHistoryEntry")
+      await this.#assertSafeHistoryEntry(state, attached, parameters);
     if (
       command.method === "Target.sendMessageToTarget" ||
       command.method === "Target.detachFromTarget"

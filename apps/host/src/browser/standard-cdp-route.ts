@@ -10,7 +10,12 @@ import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 import { unversionedRoute } from "../server/unversioned-route.js";
 import { OpensteerError } from "@opensteer/core";
-import { cdpCommandRefusal } from "@opensteer/browser-runtime-core";
+import {
+  cdpCommandRefusal,
+  connectionAutoAttachParameters,
+  connectionNestedAutoAttachRefusal,
+  nestsAutoAttach,
+} from "@opensteer/browser-runtime-core";
 import { BrowserCdpConnectionEnded, type BrowserService } from "./browser-service.js";
 import type { ChromeSharedTabs } from "./chrome-shared-tabs.js";
 import {
@@ -300,7 +305,14 @@ function relayStandardCdp(
           return;
         }
         // Refused here for every runtime, before anything reaches the browser.
-        const refusal = cdpCommandRefusal(request.method, request.params, connectionWork);
+        // The method list itself is the runtime router's, whose standard client also admits the
+        // whole-context branch; a connection's page auto-attach is limited here as well, so a
+        // runtime of any version receives it limited.
+        const refusal =
+          cdpCommandRefusal(request.method, request.params, connectionWork) ??
+          (connectionWork && nestsAutoAttach(request.method, request.params)
+            ? connectionNestedAutoAttachRefusal
+            : undefined);
         if (refusal) {
           await send(
             Buffer.from(
@@ -318,7 +330,17 @@ function relayStandardCdp(
           return;
         }
         await authorize(attached.reauthorize);
-        if (!stopping.signal.aborted) await attached.send(frame);
+        const sent =
+          connectionWork && request.method === "Target.setAutoAttach" && request.sessionId
+            ? Buffer.from(
+                JSON.stringify({
+                  ...request,
+                  params: connectionAutoAttachParameters(request.params),
+                }),
+                "utf8",
+              )
+            : frame;
+        if (!stopping.signal.aborted) await attached.send(sent);
       })
       .catch(() => end(1008, "Browser authority or runtime ended"));
   });

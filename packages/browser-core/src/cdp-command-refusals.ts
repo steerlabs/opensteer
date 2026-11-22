@@ -1,3 +1,8 @@
+import {
+  standardCdpPageMethods,
+  standardCdpRootTargetMethods,
+} from "./standard-cdp-page-methods.js";
+
 /**
  * CDP commands refused before any effect, by who sends them.
  *
@@ -157,4 +162,120 @@ export function cdpCommandRefusal(
         depth + 1,
       )
     : undefined;
+}
+
+/**
+ * The domains a connected agent's CDP acts through on its own pages, for the sentence that
+ * refuses anything else.
+ */
+const pageDomains = [...new Set([...standardCdpPageMethods].map((method) => method.split(".")[0]!))]
+  .sort((left, right) => left.localeCompare(right))
+  .join(", ");
+
+/** The sentence that refuses a method outside the standard lists to a connection's work. */
+export function connectionMethodRefusal(method: string): string {
+  return `${method} is not available to a connected agent. Its CDP acts on its own pages through the ${pageDomains} domains, and at the browser root only through Target and Browser.getVersion.`;
+}
+
+export const connectionNestedAutoAttachRefusal =
+  "A connected agent sends Target.setAutoAttach to the page itself, not inside Target.sendMessageToTarget.";
+
+/**
+ * Work under a connection's authority may send only what a standard `browser_connect` client may:
+ * the standard root list and the standard page list. Opensteer's own methods (`Opensteer.*`) are
+ * not Chromium's and keep their own admission. A nested `Target.sendMessageToTarget` message is
+ * read as the page command it carries; a nested auto-attach is refused, since its children could
+ * not be limited before they attach.
+ */
+export function connectionCdpRefusal(
+  method: string,
+  parameters: Parameters | undefined,
+  onPage: boolean,
+  depth = 0,
+): string | undefined {
+  if (method.startsWith("Opensteer.")) return undefined;
+  const listed = onPage
+    ? standardCdpPageMethods.has(method)
+    : method === "Browser.getVersion" || standardCdpRootTargetMethods.has(method);
+  if (!listed) return connectionMethodRefusal(method);
+  if (method === "Target.setAutoAttach" && depth > 0) return connectionNestedAutoAttachRefusal;
+  const message = parameters?.message;
+  if (method !== "Target.sendMessageToTarget" || typeof message !== "string") return undefined;
+  if (depth >= maximumNesting) return connectionMethodRefusal(method);
+  let nested: unknown;
+  try {
+    nested = JSON.parse(message);
+  } catch {
+    // The router refuses a message it cannot read.
+    return undefined;
+  }
+  if (typeof nested !== "object" || nested === null) return undefined;
+  const { method: nestedMethod, params } = nested as { method?: unknown; params?: unknown };
+  if (typeof nestedMethod !== "string") return undefined;
+  return connectionCdpRefusal(
+    nestedMethod,
+    typeof params === "object" && params !== null ? (params as Parameters) : undefined,
+    true,
+    depth + 1,
+  );
+}
+
+/** The only children a connection's auto-attach reaches: frames in other processes and workers. */
+const connectionChildTypes = ["iframe", "worker"] as const;
+
+/** Whether a CDP target filter (first matching entry decides) admits a target type. */
+function filterAdmits(filter: unknown, type: string): boolean {
+  if (!Array.isArray(filter)) return true;
+  for (const entry of filter) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { type: entryType, exclude } = entry as { type?: unknown; exclude?: unknown };
+    if (entryType === undefined || entryType === type) return exclude !== true;
+  }
+  return false;
+}
+
+/**
+ * A connection's page auto-attach as the browser receives it: limited at the physical attachment
+ * to the iframes and dedicated workers the request asked for, and never paused at start.
+ */
+export function connectionAutoAttachParameters(parameters: Parameters | undefined): Parameters {
+  const requested = parameters?.filter;
+  return {
+    ...parameters,
+    waitForDebuggerOnStart: false,
+    filter: [
+      ...connectionChildTypes
+        .filter((type) => filterAdmits(requested, type))
+        .map((type) => ({ type })),
+      { exclude: true },
+    ],
+  };
+}
+
+/** Whether a `Target.sendMessageToTarget` carries an auto-attach at any depth. */
+export function nestsAutoAttach(
+  method: string,
+  parameters: Parameters | undefined,
+  depth = 0,
+): boolean {
+  if (method === "Target.setAutoAttach") return depth > 0;
+  const message = parameters?.message;
+  if (method !== "Target.sendMessageToTarget" || typeof message !== "string") return false;
+  if (depth >= maximumNesting) return true;
+  let nested: unknown;
+  try {
+    nested = JSON.parse(message);
+  } catch {
+    return false;
+  }
+  if (typeof nested !== "object" || nested === null) return false;
+  const { method: nestedMethod, params } = nested as { method?: unknown; params?: unknown };
+  return (
+    typeof nestedMethod === "string" &&
+    nestsAutoAttach(
+      nestedMethod,
+      typeof params === "object" && params !== null ? (params as Parameters) : undefined,
+      depth + 1,
+    )
+  );
 }
