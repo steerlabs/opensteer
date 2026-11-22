@@ -39,7 +39,6 @@ import {
   type ReactNode,
 } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
-import { receiveDesktopTeamLinks, teamLinkPath } from "../desktop/team-links.js";
 import {
   DesktopNotificationTargetSchema,
   DesktopUseComputerViewInputSchema,
@@ -145,7 +144,6 @@ import {
   type AddHarnessAccount,
 } from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
-import { useTeams } from "../team/team-attachments.js";
 import { presentFailure } from "./use-action.js";
 
 interface TaskStartDraft {
@@ -231,7 +229,7 @@ export function useShell(): ShellContext {
   return shell;
 }
 
-/** The personal shell, where there is one: a team's own web app has none. */
+/** The personal shell. */
 export function useOptionalShell(): ShellContext | null {
   return useContext(ShellContext);
 }
@@ -338,14 +336,7 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  // Team pages the desktop opened (an invite, a channel, a message) land on Join, which resolves them.
   const navigateTo = useNavigate();
-  useEffect(() => {
-    if (!suppliedDesktopBridge) return;
-    return receiveDesktopTeamLinks(suppliedDesktopBridge, (url) => {
-      void navigateTo(teamLinkPath(url));
-    });
-  }, [navigateTo, suppliedDesktopBridge]);
   // The remembered place reopens once per viewer for the shell's life: Settings
   // unmounts the workspace's keys, and coming back from it is not a launch.
   const placeRestored = useRef<string | null>(null);
@@ -1223,11 +1214,7 @@ export function AppShell({
   );
 }
 
-/**
- * The one pill, for the connection the screen in view is about: a team's own
- * on that team's pages, the person's computer everywhere else. Other
- * connections with trouble are listed in its details.
- */
+/** The one pill, for the connection to this Opensteer. */
 function ShellPill({
   desktopBridge,
   hostClient,
@@ -1237,8 +1224,6 @@ function ShellPill({
   readonly hostClient: HostClient;
   readonly onThisComputer: boolean;
 }) {
-  const { pathname } = useLocation();
-  const { teams } = useTeams();
   const personal = useMemo<ShellConnectionSource>(
     () => ({
       key: "personal",
@@ -1252,25 +1237,7 @@ function ShellPill({
     }),
     [desktopBridge, hostClient, onThisComputer],
   );
-  const teamSources = useMemo(
-    () =>
-      teams.flatMap((team): ShellConnectionSource[] =>
-        team.client
-          ? [{ key: `team:${team.teamId}`, connection: team.client.connection, mark: "users" }]
-          : [],
-      ),
-    [teams],
-  );
-  // A team route is about that team even before its connection exists; its gate explains then.
-  const teamId = /^\/teams\/([^/]+)/.exec(pathname)?.[1];
-  const current = teamId
-    ? (teamSources.find((source) => source.key === `team:${decodeURIComponent(teamId)}`) ?? null)
-    : personal;
-  const others = useMemo(
-    () => [personal, ...teamSources].filter((source) => source !== current),
-    [current, personal, teamSources],
-  );
-  return current ? <ShellConnectionPill current={current} others={others} /> : null;
+  return <ShellConnectionPill current={personal} others={[]} />;
 }
 
 function failureWords(error: unknown, label = "complete this action"): string {
@@ -1329,7 +1296,7 @@ function WorkspaceKeys({
     if (restored.current === viewer) return;
     restored.current = viewer;
     const opened = address.current;
-    // A remembered place belongs to Tasks; a team or full-window page keeps its own address.
+    // A remembered place belongs to Tasks; a full-window page keeps its own address.
     if (
       workspaceSide(opened.pathname) !== "tasks" ||
       new URLSearchParams(opened.search).has("panel")

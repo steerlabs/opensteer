@@ -279,8 +279,8 @@ it("opens this computer's Host only once main has attached it", async () => {
   const listeners = new Set<(next: DeploymentAccessSnapshot) => void>();
   const retry = vi.fn(async () => undefined);
   const cancel = vi.fn(async () => undefined);
-  // The place list's own badge reads (attention, team links) are not the window's connection.
-  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
+  // The place list's own badge read (attention) is not the window's connection.
+  const placeListReads = ["/v1/rpc/attention.get"];
   // The window opens its Host by attaching its socket, then reading over HTTP: both count.
   const hostRequests: string[] = [];
   const bridge = {
@@ -370,7 +370,7 @@ it("keeps a verified local owner client connecting while the browser reports off
   const remoteId = createId("deployment");
   const otherId = createId("deployment");
   const otherPlace = { ...accessDeployment("idle"), id: otherId, name: "Studio" };
-  const placeListReads = ["/v1/rpc/attention.get", "/v1/rpc/teams.links.list"];
+  const placeListReads = ["/v1/rpc/attention.get"];
   const hostRequests: string[] = [];
   const makeBridge = (access: DeploymentAccessSnapshot) =>
     ({
@@ -491,7 +491,7 @@ it.each([
   [
     "listed but unavailable",
     () => ({
-      deployments: [{ ...accessDeployment("idle"), kind: "team" as const, name: "Lab" }],
+      deployments: [],
       unavailable: [
         {
           accountAccess: "owner" as const,

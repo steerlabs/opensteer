@@ -2,7 +2,7 @@ import { fileDeviceUpdateMessage } from "@opensteer/client/host";
 import { useContext, useMemo, useRef } from "react";
 import { TranscriptImageContext, useAssetImage } from "@opensteer/client/react";
 import { transcriptImageRead, useImageActions } from "./image-actions.js";
-import { isPersonalScope, useReferenceScope } from "./references/reference-scope.js";
+import { useReferenceScope } from "./references/reference-scope.js";
 import { useNearViewport } from "./use-near-viewport.js";
 
 /**
@@ -48,7 +48,7 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
   );
   return (
     <span className="asset-image" ref={frame}>
-      {isPersonalScope(scope) ? (
+      {scope ? (
         <button
           type="button"
           className="message-attachment message-attachment--image"

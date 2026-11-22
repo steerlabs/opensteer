@@ -7,11 +7,7 @@ import {
 } from "./portable-session-cdp-router.js";
 export * from "./portable-session-cdp-router.js";
 export class SessionCdpRouter extends PortableSessionCdpRouter {
-  constructor(
-    backend: BrowserCdpBackend,
-    limits: Partial<SessionCdpRouterLimits> = {},
-    machineClipboardShared = true,
-  ) {
+  constructor(backend: BrowserCdpBackend, limits: Partial<SessionCdpRouterLimits> = {}) {
     super(
       backend,
       {
@@ -21,7 +17,6 @@ export class SessionCdpRouter extends PortableSessionCdpRouter {
         containsFile: (root, value) => value.startsWith(`${root}${path.sep}`),
       },
       limits,
-      machineClipboardShared,
     );
   }
 }

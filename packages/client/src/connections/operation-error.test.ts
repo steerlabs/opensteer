@@ -9,7 +9,6 @@ import {
 } from "./operation-error.js";
 import { HostTransportError } from "./host-transport-error.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
-import { teamRpcResult } from "../team/rpc-result.js";
 
 describe("observed client failures", () => {
   it("keeps an RPC failure's provenance and retryability through both unwrap paths", () => {
@@ -34,7 +33,7 @@ describe("observed client failures", () => {
           retryable: sample.retryable,
         },
       } as const;
-      for (const unwrap of [unwrapRpcResult, teamRpcResult]) {
+      for (const unwrap of [unwrapRpcResult]) {
         let failure: unknown;
         try {
           unwrap(result);

@@ -218,7 +218,6 @@ it("offers every expected call and uses production-shaped control fixtures", asy
       toolsFor({
         kind: c.caller,
         accessMode: "full-access",
-        teamsAvailable: c.teamBound || c.knowledge,
       }).map(({ name }) => name),
     );
     for (const call of c.expect.calls)

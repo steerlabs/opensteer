@@ -8,46 +8,32 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { classifyHref, teamPageUrl, type TabId, type TeamPageLink } from "@opensteer/core";
+import { classifyHref, type TabId } from "@opensteer/core";
 import type { FileLinkTarget } from "@opensteer/shared/fileHref";
 import { useReference, useTabReference } from "@opensteer/client/react";
 import {
   fileIcon,
-  localTeamReference,
   referenceIcon,
   refTarget,
-  teamPageIcon,
   type IdReference as Reference,
 } from "@opensteer/client/references";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
-import { useTeams, useTeamSessionValue } from "../../team/team-attachments.js";
 import { ExternalLink } from "../external-link.js";
 import { Icon, type IconName } from "../icon.js";
 import { useToast } from "../toast.js";
 import { useNearViewport } from "../use-near-viewport.js";
 import { useOptionalWorkspace } from "../workspace/workspace-context.js";
 import { referenceGlyphs } from "./reference-glyphs.js";
-import {
-  attachedTeam,
-  isPersonalScope,
-  useReferenceScope,
-  type PersonalReferenceScope,
-  type ReferenceScope,
-} from "./reference-scope.js";
+import { useReferenceScope, type ReferenceScope } from "./reference-scope.js";
 
 /**
  * Every link in rendered Markdown, on every surface: what its destination is
  * decides what it becomes. A reference to something in Opensteer is a chip
- * that opens it here; a web page opens as it always has for those words (a
- * workspace tab for a transcript, the reader's browser for a team message);
- * anything else keeps its words.
+ * that opens it here; a web page opens as a workspace tab; anything else
+ * keeps its words.
  */
 export function ReferenceLink(props: LinkProps) {
-  return <Link {...props} web="workspace" />;
-}
-
-export function TeamMessageLink(props: LinkProps) {
-  return <Link {...props} web="external" />;
+  return <Link {...props} />;
 }
 
 type LinkProps = ComponentProps<"a"> & {
@@ -55,12 +41,7 @@ type LinkProps = ComponentProps<"a"> & {
   readonly "data-trailing"?: string;
 };
 
-function Link({
-  children,
-  href,
-  web,
-  "data-trailing": trailing,
-}: LinkProps & { readonly web: "workspace" | "external" }) {
+function Link({ children, href, "data-trailing": trailing }: LinkProps) {
   const scope = useReferenceScope();
   const target = useMemo(() => classifyHref(href ?? ""), [href]);
   // A chip keeps the punctuation after it on its line; words wrap as words do.
@@ -81,32 +62,20 @@ function Link({
   );
   switch (target.kind) {
     case "reference":
-      return !isPersonalScope(scope)
+      return !scope
         ? words(<span>{children}</span>)
         : target.reference.kind === "tab"
           ? chip(<TabChip label={textOf(children)} scope={scope} tabId={target.reference.id} />)
           : chip(
               <PersonalChip label={textOf(children)} reference={target.reference} scope={scope} />,
             );
-    case "team-page":
-      return target.page.target.kind === "invite"
-        ? words(
-            <WebLink href={teamPageUrl(target.page)} web={web}>
-              {children}
-            </WebLink>,
-          )
-        : chip(<TeamPageChip label={textOf(children)} page={target.page} scope={scope} />);
     case "file":
-      return isPersonalScope(scope)
+      return scope
         ? chip(<FileChip file={target.file} scope={scope} />)
         : words(<span>{children}</span>);
     case "web":
     case "mail":
-      return words(
-        <WebLink href={target.url} web={web}>
-          {children}
-        </WebLink>,
-      );
+      return words(<WebLink href={target.url}>{children}</WebLink>);
     case "none":
       return words(<span>{children}</span>);
   }
@@ -177,7 +146,7 @@ function PersonalChip({
 }: {
   readonly label: string;
   readonly reference: Reference;
-  readonly scope: PersonalReferenceScope;
+  readonly scope: ReferenceScope;
 }) {
   const element = useRef<HTMLElement | null>(null);
   // Only a chip near the screen, and not folded away, asks the Host what it names.
@@ -236,7 +205,7 @@ function TabChip({
   tabId,
 }: {
   readonly label: string;
-  readonly scope: PersonalReferenceScope;
+  readonly scope: ReferenceScope;
   readonly tabId: string;
 }) {
   const state = useTabReference(scope.context.client, tabId);
@@ -264,53 +233,6 @@ function TabChip({
   );
 }
 
-function TeamPageChip({
-  label,
-  page,
-  scope,
-}: {
-  readonly label: string;
-  readonly page: TeamPageLink;
-  readonly scope: ReferenceScope | null;
-}) {
-  const { teams } = useTeams();
-  const team = attachedTeam(teams, page);
-  // A team page names itself by what the session already holds; it is never looked up.
-  const held = useTeamSessionValue(team?.client ?? null, (snapshot) =>
-    snapshot
-      ? (localTeamReference(page, {
-          origin: page.origin,
-          ...(snapshot.sidebar ? { sidebar: snapshot.sidebar } : {}),
-          ...(snapshot.channel ? { channel: snapshot.channel } : {}),
-          ...(snapshot.thread ? { thread: snapshot.thread } : {}),
-        })?.title ?? null)
-      : null,
-  );
-  const title = held ?? (label.trim() || "Team page");
-  const url = teamPageUrl(page);
-  const glyph = referenceGlyphs[teamPageIcon(page.target.kind)];
-  const open = (event: MouseEvent<HTMLAnchorElement>) => {
-    const desktop = desktopBridge() !== null;
-    const gesture = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
-    // In a browser without that team's session, the anchor opens the team's own address.
-    if (!scope || (!desktop && (gesture || !team))) return;
-    event.preventDefault();
-    void scope.navigation.openTeamPage(page);
-  };
-  return (
-    <a
-      className="ref-chip"
-      href={url}
-      onClick={open}
-      rel="noopener noreferrer"
-      target="_blank"
-      title={title}
-    >
-      <ChipFace glyph={glyph} title={title} />
-    </a>
-  );
-}
-
 function basename(path: string): string {
   return path.split(/[\\/]/u).filter(Boolean).at(-1) ?? path;
 }
@@ -327,7 +249,7 @@ function FileChip({
   scope,
 }: {
   readonly file: FileLinkTarget;
-  readonly scope: PersonalReferenceScope;
+  readonly scope: ReferenceScope;
 }) {
   const name = basename(file.path);
   const position = filePosition(file);
@@ -356,22 +278,11 @@ function FileChip({
  * typed on the start page: the agent's computer can reach its own localhost
  * and network, and its profiles hold its sign-ins, where the reader's device
  * may not. A browser keeps its own gestures for a link; the desktop window has
- * none, so there a middle click opens it too. A team message's web pages open
- * in the reader's own browser, as they always have.
+ * none, so there a middle click opens it too.
  */
-function WebLink({
-  children,
-  href,
-  web,
-}: {
-  readonly children: ReactNode;
-  readonly href: string;
-  readonly web: "workspace" | "external";
-}) {
+function WebLink({ children, href }: { readonly children: ReactNode; readonly href: string }) {
   const workspace = useOptionalWorkspace();
   const mail = href.startsWith("mailto:");
-  if (web === "external")
-    return mail ? <span>{children}</span> : <ExternalLink href={href}>{children}</ExternalLink>;
   if (mail)
     return desktopBridge() ? (
       <span>{children}</span>

@@ -2,7 +2,6 @@ import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { assertRequestRevision, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
-import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { failNodeStop } from "./node-control.js";
 import {
@@ -1616,7 +1615,6 @@ export async function loadSteerDispatchInput(
   const runRow = await database
     .selectFrom("runs")
     .selectAll()
-    .select(runDeliverySelection)
     .where("id", "=", row.targetRunId)
     .executeTakeFirstOrThrow();
   return {

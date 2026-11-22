@@ -45,7 +45,7 @@ export class OwnerProfileStore {
     this.#database = database;
   }
 
-  /** Null on a team Host, which has no personal owner. */
+  /** Null before the Home has an owner. */
   async read(): Promise<OwnerProfile | null> {
     return ownerProfile(this.#database);
   }

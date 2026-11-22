@@ -17,10 +17,7 @@ type Page =
   | { readonly ok: false; readonly error: { readonly message: string } };
 
 /** Kinds whose revision is the whole news: a consumer rereads its own view when it moves. */
-const signalKinds: ReadonlySet<PersonalResourceKind> = new Set([
-  ...pluginChangeResources,
-  "team-replies",
-]);
+const signalKinds: ReadonlySet<PersonalResourceKind> = new Set(pluginChangeResources);
 /**
  * A safety net only: the most one read of an inventory may accumulate, as its pages arrive, before
  * it is taken for a runaway. Past it the read installs nothing, the last complete inventory stays,

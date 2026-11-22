@@ -1,4 +1,3 @@
-import { teamApiVersion, teamOAuthVersionParameter } from "@opensteer/deployment-authority";
 import type {
   HostApiCommandInput,
   HostApiCommandOutput,
@@ -311,44 +310,6 @@ function failingSelectionWrites(privateFiles: MemoryPrivateFilesystem) {
   };
 }
 
-function blockedSelectionWrites(privateFiles: MemoryPrivateFilesystem) {
-  let blocked:
-    | {
-        readonly release: ReturnType<typeof deferred<void>>;
-        readonly started: ReturnType<typeof deferred<void>>;
-      }
-    | undefined;
-  const filesystem: PrivateFilesystem = {
-    root: privateFiles.root,
-    directoryEmpty: (path) => privateFiles.directoryEmpty(path),
-    ensureDirectory: (path) => privateFiles.ensureDirectory(path),
-    fileExists: (path) => privateFiles.fileExists(path),
-    readFile: (path, maxBytes) => privateFiles.readFile(path, maxBytes),
-    removeFile: (path) => privateFiles.removeFile(path),
-    writeFileAtomic: async (path, content) => {
-      const pending = blocked;
-      if (pending !== undefined && path.endsWith("selection.json")) {
-        blocked = undefined;
-        pending.started.resolve();
-        await pending.release.promise;
-      }
-      await privateFiles.writeFileAtomic(path, content);
-    },
-    writeFileExclusive: (path, content) => privateFiles.writeFileExclusive(path, content),
-  };
-  return {
-    blockNext: () => {
-      const pending = { release: deferred<void>(), started: deferred<void>() };
-      blocked = pending;
-      return {
-        release: () => pending.release.resolve(),
-        started: pending.started.promise,
-      };
-    },
-    filesystem,
-  };
-}
-
 function blockedSignedOutWrites(privateFiles: MemoryPrivateFilesystem) {
   let blocked:
     | {
@@ -429,19 +390,6 @@ function open(
         );
         const proof = home && testHomeProofAnswer(url.href, home, options.replacedHome?.());
         if (proof) return proof;
-        const connection = (await client.catalog.load()).deployments.find(
-          (connection) =>
-            connection.authority.document.canonicalOrigin === url.origin &&
-            connection.kind === "team",
-        );
-        if (connection)
-          return Response.json({
-            kind: "team",
-            apiVersion: teamApiVersion,
-            authority: connection.authority,
-            bootstrapMethods: connection.bootstrapMethods,
-            capabilities: [...(connection.capabilities ?? []), "team-native-browser-return-v1"],
-          });
       }
       return (options.fetch ?? testFetch)(input, init);
     },
@@ -2438,53 +2386,6 @@ describe("MobileClient sign-in", () => {
     client.dispose();
   });
 
-  it("keeps the selected computer attached while a team signs in or cancels sign-in", async () => {
-    const port = testPort({ held: true });
-    const deleted: string[] = [];
-    const { client, opened } = open(port.factory, undefined, {
-      savedViewStore: {
-        load: async () => null,
-        write: async () => undefined,
-        invalidate: async (id) => {
-          deleted.push(id);
-        },
-      },
-    });
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
-    );
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-    );
-    await client.initialize();
-    await client.select(otherId);
-    const computer = client.getSnapshot().selection.hostClient;
-    const signIn = async () => {
-      const signingIn = client.signIn(serverId);
-      await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
-      const state = new URL(opened.at(-1)!).searchParams.get("state")!;
-      await client.oauth.handleCallback(
-        `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-      );
-      await signingIn;
-      await settle();
-    };
-    await signIn();
-    const team = client.getSnapshot().teams[0]!.connection;
-    expect(client.oauth.hostCredentialState(team).status).toBe("signed-in");
-    const login = client.oauth.hostViewLoginId(team);
-    await client.signIn(serverId);
-    client.oauth.abandonHostSignIn(DeploymentIdSchema.parse(serverId));
-    await settle();
-    expect(client.oauth.hostViewLoginId(team)).toBe(login);
-    expect(client.getSnapshot().selection.hostClient).toBe(computer);
-    expect(client.getSnapshot().selection.deploymentId).toBe(otherId);
-    expect(deleted).toContain(serverId);
-    expect(deleted).not.toContain(otherId);
-    expect(port.disposed).toEqual([]);
-    client.dispose();
-  });
-
   it("signs in to a Home at its own address with its native OAuth, and signs out of it", async () => {
     const port = testPort({ held: true });
     const { client, opened } = open(port.factory);
@@ -2497,7 +2398,7 @@ describe("MobileClient sign-in", () => {
     const authorize = new URL(opened[0]!);
     expect(authorize.origin).toBe("https://home.example.com");
     expect(authorize.pathname).toBe("/v1/auth/native/oauth2/authorize");
-    expect(authorize.searchParams.has(teamOAuthVersionParameter)).toBe(false);
+    expect(authorize.searchParams.has("opensteer_team_api_version")).toBe(false);
     await client.oauth.handleCallback(
       `${opensteerMobileHostOAuthCallback}?code=home-code&iss=https%3A%2F%2Fhome.example.com&state=${authorize.searchParams.get("state")}`,
     );
@@ -2570,49 +2471,6 @@ describe("MobileClient sign-in", () => {
     later.client.dispose();
   });
 
-  it("clears a team's cached authority before revocation and retries a failed cleanup", async () => {
-    const port = testPort({ held: true });
-    const events: string[] = [];
-    let fail = false;
-    const { client, opened } = open(port.factory, undefined, {
-      savedViewStore: {
-        load: async () => null,
-        write: async () => undefined,
-        invalidate: async () => {
-          events.push("delete-key");
-          if (fail) throw new Error("locked");
-        },
-      },
-      fetch: async (input) => {
-        if (String(input).includes("/revoke")) events.push("revoke");
-        return testFetch(input);
-      },
-    });
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-    );
-    await client.initialize();
-    const signingIn = client.signIn(serverId);
-    await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
-    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
-    await signingIn;
-    await settle();
-    events.length = 0;
-    fail = true;
-    await client.signOut(serverId);
-    expect(events[0]).toBe("delete-key");
-    expect(events).toContain("revoke");
-    expect(client.getSnapshot().savedViewFailure).toMatch(/cleanup could not be completed/u);
-    expect(port.attached).toEqual([]);
-    fail = false;
-    await client.foregrounded();
-    expect(client.getSnapshot().savedViewFailure).toBeNull();
-    client.dispose();
-  });
-
   it("establishes a missing Connect session while selecting and lands connected", async () => {
     const port = testPort({ held: false, realCredentials: true });
     const { client } = open(port.factory);
@@ -2660,75 +2518,6 @@ describe("MobileClient sign-in", () => {
     expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).toBeNull();
     expect(port.attached).toEqual([]);
     client.dispose();
-  });
-
-  it("refuses to select or open a team as a computer before and after sign-in", async () => {
-    const port = testPort({ held: true });
-    const { client, opened, privateFiles } = open(port.factory);
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
-    );
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-    );
-    await client.initialize();
-    await client.select(otherId);
-    const computer = client.getSnapshot().selection.hostClient;
-    for (const action of ["select", "openDeployment"] as const) {
-      await expect(client[action](serverId)).rejects.toThrow(
-        /team cannot be opened as a computer/u,
-      );
-    }
-    expect(opened).toEqual([]);
-    const signingIn = client.signIn(serverId);
-    await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
-    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
-    await signingIn;
-    await settle();
-    await client.catalog.upsert({
-      ...asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-      kind: "personal",
-    });
-    for (const action of ["select", "openDeployment"] as const) {
-      await expect(client[action](serverId)).rejects.toThrow(
-        /team cannot be opened as a computer/u,
-      );
-    }
-    expect(client.getSnapshot().selection.hostClient).toBe(computer);
-    expect(client.getSnapshot().rows.map(({ deploymentId }) => deploymentId)).toEqual([otherId]);
-    expect(await client.catalog.load()).toMatchObject({ selectedDeploymentId: otherId });
-    expect(
-      new TextDecoder().decode((await privateFiles.readFile("/private/selection.json", 1024))!),
-    ).toContain(otherId);
-    expect(port.attached.every(({ deploymentId }) => deploymentId === otherId)).toBe(true);
-    client.dispose();
-  });
-
-  it("leaves a team-only catalog unselected on a fresh phone or stale remembered selection", async () => {
-    for (const remembered of [false, true]) {
-      const port = testPort({ held: true });
-      const files = new MemoryPrivateFilesystem();
-      if (remembered)
-        await files.writeFileAtomic(
-          "/private/selection.json",
-          JSON.stringify({ schemaVersion: 1, selectedDeploymentId: serverId }),
-        );
-      const { client, opened } = open(port.factory, files);
-      await client.catalog.upsertAndSelect(
-        asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-      );
-      await client.initialize();
-      await settle();
-      expect(client.getSnapshot().selection.deploymentId).toBeNull();
-      expect(client.getSnapshot().rows).toEqual([]);
-      expect(client.getSnapshot().teams).toHaveLength(1);
-      expect(port.attached).toEqual([]);
-      expect(opened).toEqual([]);
-      client.dispose();
-    }
   });
 
   it("does not open Host OAuth when opening discovers an identity mismatch", async () => {
@@ -2839,28 +2628,6 @@ describe("MobileClient sign-in", () => {
     client.dispose();
   });
 
-  it("opens a team's authorization server without selecting it", async () => {
-    const port = testPort({ held: false });
-    const { client, opened } = open(port.factory);
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-    );
-    await client.initialize();
-    const signingIn = client.signIn(serverId);
-    await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
-    expect(opened).toHaveLength(1);
-    expect(opened[0]).toContain("https://host.example.com");
-    expect(client.getSnapshot().selection.deploymentId).toBeNull();
-    expect(port.attached).toEqual([]);
-    expect(port.credentialRequests).toEqual([]);
-    const state = new URL(opened[0]!).searchParams.get("state")!;
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
-    await signingIn;
-    client.dispose();
-  });
-
   it("leaves a Connect computer offline when no Account service can issue its grant", async () => {
     // No Account service in this build, so there is nobody to sign the grant
     // the route needs. The row has to say so rather than attach without one.
@@ -2923,37 +2690,6 @@ describe("MobileClient sign-in", () => {
         ).toBe("connected"),
       { timeout: 2_000 },
     );
-    client.dispose();
-  });
-
-  it("keeps a newer computer selection when a team's OAuth callback arrives", async () => {
-    const port = testPort({ held: true });
-    const files = blockedSelectionWrites(new MemoryPrivateFilesystem());
-    const { client, opened } = open(port.factory, files.filesystem);
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-    );
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
-    );
-    await client.initialize();
-    await client.deselect();
-    const signingIn = client.signIn(serverId);
-    await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
-    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
-    const blocked = files.blockNext();
-    const switching = client.select(otherId);
-    await blocked.started;
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
-    await signingIn;
-    blocked.release();
-    await switching;
-    await settle();
-    expect(client.getSnapshot().selection.deploymentId).toBe(otherId);
-    expect(port.attached.at(-1)?.deploymentId).toBe(otherId);
-    expect(client.getSnapshot().rows.some((row) => row.deploymentId === serverId)).toBe(false);
     client.dispose();
   });
 });
@@ -3081,32 +2817,6 @@ describe("MobileClient version verification", () => {
 });
 
 describe("MobileClient per-deployment sign out", () => {
-  it("revokes a team's OAuth credential while retaining its independent team listing", async () => {
-    const port = testPort({ held: false, realCredentials: true });
-    const { client, opened } = open(port.factory);
-    await client.catalog.upsert(
-      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
-    );
-    await client.initialize();
-    const signingIn = client.signIn(serverId);
-    await vi.waitFor(() => expect(opened).toHaveLength(1), { timeout: 1000 });
-    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
-    await signingIn;
-    await settle();
-    expect(client.getSnapshot().teams[0]?.signedIn).toBe(true);
-    await client.signOut(serverId);
-    await settle();
-    expect(client.getSnapshot().teams[0]?.signedIn).toBe(false);
-    expect(client.getSnapshot().selection.deploymentId).toBeNull();
-    expect(client.getSnapshot().rows).toEqual([]);
-    expect(client.getSnapshot().catalog.deployments).toHaveLength(1);
-    expect(port.attached).toEqual([]);
-    client.dispose();
-  });
-
   it("revokes a Personal computer's own session before discarding it", async () => {
     const port = testPort({ held: false, realCredentials: true });
     const { client } = open(port.factory);

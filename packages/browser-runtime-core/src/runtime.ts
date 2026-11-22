@@ -117,6 +117,7 @@ export interface BrowserRuntimeHealth {
   wireVersion: 2;
   standardCdp: 1;
   standardCdpLineage: 1;
+  connectionCommands: 1;
   wholeContextCdp?: 1;
   standardCdpLeaseRecovery: 1;
   standardCdpAttemptRecovery: 1;
@@ -413,6 +414,7 @@ export class BrowserRuntime implements NativePresentationSource {
       wireVersion: 2,
       standardCdp: 1,
       standardCdpLineage: 1,
+      connectionCommands: 1,
       standardCdpLeaseRecovery: 1,
       standardCdpAttemptRecovery: 1,
       ...(this.launcher.hostCost === "process" && this.localProfileStorage?.engine === "chromium"
@@ -1687,11 +1689,7 @@ export class BrowserRuntime implements NativePresentationSource {
         assertCurrent();
         const generation = ++this.generation;
         const stateImports = new AsyncMutex();
-        const router = new SessionCdpRouter(
-          browser.cdp,
-          {},
-          browser.clipboard?.machineClipboardShared !== false,
-        );
+        const router = new SessionCdpRouter(browser.cdp);
         const onBrowserClose = () => {
           // Signal controllers before waiting for this profile's lifecycle
           // lane: detach may already be waiting on dead Chromium CDP.

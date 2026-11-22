@@ -18,7 +18,7 @@ export interface ConnectionDetailsSession {
  * second pills. Its words change in place; it never shows a "Connected" screen.
  */
 export const ConnectionDetails = memo(function ConnectionDetails(props: {
-  /** The Deployment's or team's mark, drawn beside its name. */
+  /** The Deployment's mark, drawn beside its name. */
   readonly mark: ReactNode;
   readonly name: string;
   readonly state: string;

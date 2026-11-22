@@ -4,7 +4,6 @@ import {
   type DeploymentCatalogStore,
   type VerifiedHostEndpoint,
 } from "./deployment-catalog.js";
-import { isPersonalHost } from "@opensteer/deployment-authority";
 
 /**
  * Preserve the zero-terminal configured-Host experience while the Account
@@ -37,12 +36,11 @@ export async function ensureConfiguredDeployment(options: {
     hostname === "localhost" ||
     hostname === "::1" ||
     /^127\.(?:[0-9]{1,3}\.){2}[0-9]{1,3}$/u.test(hostname);
-  const personal = isPersonalHost(verified.discovery);
   await options.catalog.upsert(
     deploymentConnectionFromVerifiedEndpoints({
       accountAccess: null,
       endpoints: [verified],
-      kind: personal ? "personal" : "team",
+      kind: "personal",
       name: local ? options.personalDeploymentName : options.hostUrl.host,
       source: { kind: "manual" },
     }),

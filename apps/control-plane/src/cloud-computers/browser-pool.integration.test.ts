@@ -56,7 +56,7 @@ import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { ControlPlaneStore } from "../database/store.js";
-import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { createControlPlaneServer } from "../server/server.js";
 import { testBackupVault } from "./backup-erasure.test-support.js";
 import { loadCloudComputerConfig } from "./config.js";
@@ -244,7 +244,7 @@ integration("Browser pool Account service", () => {
 
   let now = new Date("2026-11-21T00:00:00.000Z");
   let leaseHolder = randomUUID();
-  const cipher = new HostedTeamSetupTokenCipher(Buffer.alloc(32, 7).toString("base64url"));
+  const cipher = new CloudComputerSecretCipher(Buffer.alloc(32, 7).toString("base64url"));
 
   beforeAll(async () => {
     await migrateControlPlaneToLatest(database);

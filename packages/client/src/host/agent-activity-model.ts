@@ -98,7 +98,6 @@ export type ActivityFeedEntry = Exclude<
       | "assignment"
       | "assignment-return"
       | "delivery"
-      | "run-delivery"
       | "message"
       | "place"
       | "request-wait"
@@ -280,12 +279,7 @@ export function groupTranscriptEntries(
     // A withdrawn message left nothing to read, and an outcome whose message
     // is not loaded has nothing to sit on; their markers, and an open wait's,
     // only serve a page merge.
-    if (
-      entry.kind === "withdrawn" ||
-      entry.kind === "delivery" ||
-      entry.kind === "run-delivery" ||
-      entry.kind === "request-wait"
-    )
+    if (entry.kind === "withdrawn" || entry.kind === "delivery" || entry.kind === "request-wait")
       continue;
     if (entry.kind === "run" && entry.runId === null) continue;
     if (open === null || open.runId !== entry.runId) {
@@ -727,7 +721,6 @@ function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRow
       : hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1);
   return (
     reply !== null ||
-    (!turn.continued && turn.run?.delivery != null) ||
     turn.assignments.length > 0 ||
     ended ||
     (live && (composing || startHold !== null || atComputer(turn)))
@@ -2165,28 +2158,6 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     ),
   ],
 
-  ["opensteer_team_read", said(["Reading team context", "Read team context"], "list")],
-  [
-    "opensteer_team_file_download",
-    said(["Downloading a team file", "Downloaded a team file"], "folder"),
-  ],
-  ["opensteer_team_search", said(["Searching team messages", "Searched team messages"], "search")],
-  ["opensteer_team_post", said(["Replying to the team", "Replied to the team"], "share")],
-  [
-    "opensteer_knowledge_topic_list",
-    said(["Looking up team topics", "Looked up team topics"], "list"),
-  ],
-  ["opensteer_knowledge_search", said(["Searching team notes", "Searched team notes"], "search")],
-  ["opensteer_knowledge_read", said(["Reading team notes", "Read team notes"], "list")],
-  [
-    "opensteer_knowledge_save",
-    (tool, args) =>
-      (stringField(args, "noteId") !== null
-        ? said(["Updating a team note", "Updated a team note"], "pencil")
-        : said(["Saving a team note", "Saved a team note"], "pencil"))(tool, args),
-  ],
-  ["opensteer_knowledge_remove", said(["Deleting a team note", "Deleted a team note"], "pencil")],
-
   ["opensteer_ai_account_list", said(["Looking up AI accounts", "Looked up AI accounts"], "list")],
   [
     "opensteer_ai_account_update",
@@ -3164,14 +3135,4 @@ export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeed
     label: head.label,
     marker: head.tone,
   };
-}
-
-export function teamDeliveryLabel(
-  delivery: NonNullable<RunEntry["delivery"]>,
-  channelName: string,
-): string {
-  if (delivery.state === "sent")
-    return `${delivery.via === "tool" ? "Replied in" : "Sent to"} #${channelName}`;
-  if (delivery.state === "sending") return "Sending…";
-  return `Not sent: ${delivery.reason ?? "Unavailable"}`;
 }

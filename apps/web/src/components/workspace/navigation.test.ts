@@ -48,11 +48,9 @@ it("remembers a tab and refuses a forged memory of one", () => {
   expect(rememberedPlace(scope)).toBeNull();
 });
 
-it("classifies only workspace addresses, including a bare team link", () => {
+it("classifies only workspace addresses", () => {
   for (const path of ["/", "/tasks/t", "/automations", "/automations/a/edit", "/voice"])
     expect(workspaceSide(path)).toBe("tasks");
-  for (const path of ["/teams/acme", "/teams/acme/", "/teams/acme/knowledge"])
-    expect(workspaceSide(path)).toBe("acme");
   for (const path of [
     "/settings",
     "/settings/teams/acme/profile",

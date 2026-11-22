@@ -8,7 +8,6 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import { deviceOwnershipIn } from "./machine-ownership.js";
 import {
   DeviceIdSchema,
-  deploymentPolicy,
   OpensteerError,
   sameStringSet,
   type DeviceId,
@@ -225,7 +224,6 @@ export async function upsertSelfDeviceInTransaction(
     .select(["id", "deploymentShape"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirstOrThrow();
-  if (!deploymentPolicy(deployment.deploymentShape).services.personal) return;
   const runner = await transaction
     .selectFrom("runners")
     .selectAll()

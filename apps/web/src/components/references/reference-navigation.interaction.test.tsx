@@ -9,18 +9,11 @@ import type { ReferenceResolveInput, ReferenceResolveResult } from "@opensteer/p
 import { TranscriptFileController, type HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { ReferenceStore } from "@opensteer/client/references";
-import {
-  MockTeamHost,
-  TeamSessionClient,
-  createMemoryTeamPersistence,
-} from "@opensteer/client/team";
-import { TeamsProvider } from "../../team/team-attachments.js";
 import { Markdown } from "../markdown.js";
-import { MessageBody } from "../team/message-body.js";
 import { ToastProvider } from "../toast.js";
 import type { WorkspaceNavigation } from "../workspace/navigation.js";
 import { WorkspaceProvider } from "../workspace/workspace-context.js";
-import { PersonalReferences, TeamReferences } from "./reference-scope.js";
+import { PersonalReferences } from "./reference-scope.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -217,75 +210,6 @@ it("opens unloaded targets at their parent, keeps the gone visibly gone, and ret
   expect(chip(container, "Deploy preview")).toBeTruthy();
   // Nothing internal ever became a browsing tab.
   expect(showLauncher).not.toHaveBeenCalled();
-});
-
-it("opens a team page in the matching team session, and another team's at its own address", async () => {
-  const host = new MockTeamHost();
-  const session = new TeamSessionClient({
-    scope: { teamDeploymentId: host.teamId, userId: host.userId },
-    rpc: host.rpc,
-    connect: host.connect,
-    persistence: createMemoryTeamPersistence(),
-  });
-  clients.push(session, host);
-  const attachment = {
-    teamId: host.teamId,
-    name: "Team",
-    origin: host.origin,
-    client: session,
-    link: null,
-  };
-  const channelId = createId("teamChannel");
-  const elsewhere = `https://other.example/c/${createId("teamChannel")}`;
-  const router = createMemoryRouter(
-    [
-      {
-        path: "*",
-        element: (
-          <TeamsProvider surface={{ kind: "team-web", attachment }}>
-            <TeamReferences team={attachment}>
-              <MessageBody
-                mentions={[]}
-                text={`[#launch](${host.origin}/c/${channelId}) [#ops](${elsewhere}) [my task](opensteer:${createId("thread")})`}
-              />
-            </TeamReferences>
-            <Where />
-          </TeamsProvider>
-        ),
-      },
-    ],
-    { initialEntries: ["/teams/start"] },
-  );
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  roots.push(root);
-  await act(async () => root.render(<RouterProvider router={router} />));
-
-  // A personal reference quoted in a team reads as its words only.
-  expect(container.textContent).toContain("my task");
-  expect([...container.querySelectorAll("a")].some((a) => a.textContent === "my task")).toBe(false);
-
-  const other = chip(container, "#ops") as HTMLAnchorElement;
-  expect(other.href).toBe(elsewhere);
-  expect(other.target).toBe("_blank");
-  expect(other.rel).toContain("noopener");
-  const outward = new MouseEvent("click", { bubbles: true, cancelable: true });
-  let kept = false;
-  document.addEventListener(
-    "click",
-    (event) => {
-      kept = !event.defaultPrevented;
-      event.preventDefault();
-    },
-    { once: true },
-  );
-  act(() => void other.dispatchEvent(outward));
-  expect(kept).toBe(true);
-  expect(where(container)).toBe("/teams/start");
-
-  await act(async () => chip(container, "#launch").click());
-  expect(where(container)).toBe(`/teams/${host.teamId}/c/${channelId}`);
 });
 
 it("opens a file at its line, and says when a file isn't available", async () => {

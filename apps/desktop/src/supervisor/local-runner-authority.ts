@@ -64,8 +64,6 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
         "The local Runner Deployment is no longer available.",
       );
     }
-    if (connection.authority.document.deploymentShape.kind !== "personal")
-      throw new Error("Team servers do not run agents or enroll computers.");
     if ((await this.#supervisedDeploymentId()) === expected)
       throw new Error("This Mac hosts this Deployment, so it already runs its agent.");
     const resolved = resolveConnection(connection, null, { authorization: null });

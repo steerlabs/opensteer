@@ -5114,7 +5114,6 @@ describe("RunnerRuntime", () => {
       await runtime.handleCommand(execute, sink);
       await waitUntil(() => session.turns.length === 1 && runtime.activeRunIds().length === 0);
       expect(session.turns[0]?.context).toEqual({
-        teamTurnContext: null,
         assignment: null,
         threadState: { previousAssignment: null, previousRun: null },
         startedAt: expect.any(String),

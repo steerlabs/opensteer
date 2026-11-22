@@ -1,20 +1,11 @@
 import {
   fileIcon,
-  localTeamReference,
   referenceIcon,
-  teamPageIcon,
   type IdReference as Reference,
 } from "@opensteer/client/references";
 import { useReference, useTabReference } from "@opensteer/client/react";
-import type { TeamSessionClient } from "@opensteer/client/team";
-import { classifyHref, type ClassifiedHref, type TeamPageLink } from "@opensteer/core";
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { classifyHref, type ClassifiedHref } from "@opensteer/core";
+import { createContext, useContext, type ReactNode } from "react";
 import {
   Alert,
   Linking,
@@ -71,8 +62,7 @@ export function ReferenceLink(props: {
   );
   switch (link.kind) {
     case "reference":
-      // Another person's Opensteer means nothing to a team reader: its words stay.
-      return navigation?.context.kind !== "personal"
+      return navigation === null
         ? words(props.children)
         : link.reference.kind === "tab"
           ? chip(
@@ -92,22 +82,11 @@ export function ReferenceLink(props: {
               />,
             );
     case "file":
-      return navigation?.context.kind === "personal"
+      return navigation !== null
         ? chip(
             <FileChip file={link} href={props.href} label={props.label} navigation={navigation} />,
           )
         : words(props.children);
-    case "team-page":
-      return navigation === null
-        ? words(props.children)
-        : chip(
-            <TeamPageChip
-              href={props.href}
-              label={props.label}
-              navigation={navigation}
-              page={link.page}
-            />,
-          );
     case "web":
     case "mail":
       return words(<WebLink url={link.url}>{props.children}</WebLink>);
@@ -224,54 +203,6 @@ function FileChip(props: {
       title={name}
     />
   );
-}
-
-function TeamPageChip(props: {
-  readonly href: string;
-  readonly label: string;
-  readonly navigation: ReferenceNavigation;
-  readonly page: TeamPageLink;
-}): ReactNode {
-  const { context } = props.navigation;
-  const held = useHeldTeamTitle(
-    context.kind === "team" ? context.client : null,
-    context.kind === "team" ? context.origin : null,
-    props.page,
-  );
-  return (
-    <Chip
-      glyph={referenceSymbols[teamPageIcon(props.page.target.kind)]}
-      href={props.href}
-      label={props.label}
-      onPress={() => void props.navigation.open(props.href)}
-      title={held ?? props.label}
-    />
-  );
-}
-
-/** A team page's current name from what the team's session already holds; no read on mount. */
-function useHeldTeamTitle(
-  session: TeamSessionClient | null,
-  origin: string | null,
-  page: TeamPageLink,
-): string | null {
-  const subscribe = useCallback(
-    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
-    [session],
-  );
-  const read = useCallback(() => {
-    if (session === null || origin === null) return null;
-    const snapshot = session.getSnapshot();
-    return (
-      localTeamReference(page, {
-        origin,
-        sidebar: snapshot.sidebar,
-        channel: snapshot.channel,
-        thread: snapshot.thread,
-      })?.title ?? null
-    );
-  }, [origin, page, session]);
-  return useSyncExternalStore(subscribe, read, read);
 }
 
 /**

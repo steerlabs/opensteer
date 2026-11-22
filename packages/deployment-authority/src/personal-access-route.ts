@@ -1,4 +1,3 @@
-import { deploymentPolicy } from "@opensteer/core";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { CanonicalOriginSchema } from "@opensteer/core";
 import { encodeBase64Url } from "@opensteer/shared/base64url";
@@ -6,12 +5,6 @@ import { z } from "zod";
 import { HostDiscoveryDocumentSchema } from "./authority.js";
 
 export const maximumPersonalHostAccessRouteSigningBytes = 8 * 1_024;
-
-export function isPersonalHost(
-  discovery: Pick<z.infer<typeof HostDiscoveryDocumentSchema>, "deploymentShape">,
-): boolean {
-  return deploymentPolicy({ kind: discovery.deploymentShape.kind }).services.personal;
-}
 
 export const PersonalAccessRouteGenerationSchema = z
   .number()
@@ -51,13 +44,6 @@ export const PersonalHostAccessAuthoritySchema = HostDiscoveryDocumentSchema.sup
         path: ["canonicalOrigin"],
       });
     }
-    if (!isPersonalHost(authority)) {
-      context.addIssue({
-        code: "custom",
-        message: "Expected a Personal deployment",
-        path: ["deploymentShape"],
-      });
-    }
   },
 );
 export type PersonalHostAccessAuthority = z.infer<typeof PersonalHostAccessAuthoritySchema>;
@@ -78,13 +64,6 @@ export const PersonalHostAccountAuthoritySchema = HostDiscoveryDocumentSchema.su
         path: ["canonicalOrigin"],
       });
     }
-    if (!isPersonalHost(authority)) {
-      context.addIssue({
-        code: "custom",
-        message: "Expected a Personal deployment",
-        path: ["deploymentShape"],
-      });
-    }
   },
 );
 export type PersonalHostAccountAuthority = z.infer<typeof PersonalHostAccountAuthoritySchema>;
@@ -97,11 +76,7 @@ export function isNetworkedPersonalAuthority(
   >,
 ): boolean {
   const canonical = new URL(authority.canonicalOrigin);
-  return (
-    isPersonalHost(authority) &&
-    canonical.protocol === "https:" &&
-    !isLoopbackHostname(canonical.hostname)
-  );
+  return canonical.protocol === "https:" && !isLoopbackHostname(canonical.hostname);
 }
 
 function isLoopbackPersonalAuthority(

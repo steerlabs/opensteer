@@ -19,7 +19,6 @@ import { Refusal, useAction } from "./use-action.js";
 import { TranscriptImageContext, useClientConnectionName } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
-import { TeamInputSource } from "../team/task-source-chip.js";
 import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
@@ -65,7 +64,6 @@ import {
   groupTranscriptEntries,
   hasRunOutcome,
   silentRunLabel,
-  teamDeliveryLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
   justSent,
@@ -258,7 +256,6 @@ const TranscriptBrowsers = createContext<TranscriptTabSource>(noTabs);
 /** Whose transcript this is and the reader's Workspaces, which say who speaks in it. */
 const Speakers = createContext<{
   readonly threadId: string | null;
-  readonly teamChannelName?: string;
 }>({ threadId: null });
 
 /**
@@ -375,7 +372,6 @@ export function AgentTranscript({
   revealMessage = null,
   startHold = null,
   threadId = null,
-  teamChannelName = null,
   inputQueuePaused = false,
   queued = null,
   afterQueue = noLocalMessages,
@@ -422,7 +418,6 @@ export function AgentTranscript({
   revealMessage?: { readonly id: string } | null;
   /** Why the Thread's queued work has not started, from `threadStartHold`. */
   startHold?: string | null;
-  teamChannelName?: string | null;
   /** The Thread this transcript is, whose mark its own replies wear. */
   threadId?: string | null;
   inputQueuePaused?: boolean;
@@ -529,15 +524,7 @@ export function AgentTranscript({
     live && !(requestShown && activity === "waiting_for_you")
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
       : null;
-  const teamInput = entries.find((entry) => entry.kind === "message" && entry.teamSource);
-  const deliveryChannelName =
-    teamInput?.kind === "message"
-      ? (teamInput.teamSource?.audience.channelName ?? teamChannelName ?? "channel")
-      : (teamChannelName ?? "channel");
-  const speakers = useMemo(
-    () => ({ threadId, teamChannelName: deliveryChannelName }),
-    [threadId, deliveryChannelName],
-  );
+  const speakers = useMemo(() => ({ threadId }), [threadId]);
   const agents = useAgentSource(subagentReader, entries, threadId, live);
   const passwordsOffer = useMemo(
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
@@ -807,7 +794,6 @@ function TurnView({
         reveal={reveal?.id ?? null}
         live={live}
       />
-      {!turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {placesShown && !placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
       {renderTask?.(turn.assignments)}
       {turn.run && outcome ? <RunOutcome run={turn.run} /> : null}
@@ -1144,7 +1130,6 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     !startHold &&
     !view.reply &&
     !outcome &&
-    !(!turn.continued && turn.run?.delivery) &&
     tasks.length === 0 &&
     !helpers?.length
   )
@@ -1177,7 +1162,6 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ) : startHold !== null ? (
         <WorkingIndicator label={startHold} />
       ) : null}
-      {!turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {view.reply && settled && !placesUnderOutcome ? (
         <ReplySurfaces turn={turn} turnKey={turnKey} />
       ) : null}
@@ -2686,7 +2670,6 @@ function OwnMessage({
             </div>
           </div>
         ) : null}
-        {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
         {note ? (
           <ActionLine line={{ key: sendKey, tone: "danger", text: note }} />
         ) : takeBack.line ? (
@@ -2872,7 +2855,6 @@ function updateSource(author: UpdateAuthor): {
     case "watch":
       return { glyph: "bolt", href: automationPath(author.triggerId), name };
     case "connection":
-    case "team-member":
     case "platform":
       return { glyph: "message", href: null, name };
   }
@@ -2943,23 +2925,7 @@ function InputMessage({
           ) : (
             <span className="input-card__sender">{sender}</span>
           )}
-          {action ? (
-            <span className="input-card__action">{action}</span>
-          ) : message.edit?.ownerEdited ? (
-            // An ask its owner reworded before approving is no longer only its sender's words.
-            <span className="input-card__action">
-              ·{" "}
-              {queued ? (
-                "edited by you"
-              ) : (
-                <TranscriptEditMark
-                  label="edited by you"
-                  message={{ ...message, edit: message.edit }}
-                  viewerUserId={viewerUserId}
-                />
-              )}
-            </span>
-          ) : null}
+          {action ? <span className="input-card__action">{action}</span> : null}
           {message.body && !queued ? (
             <CopyMark className="input-card__copy" label="Copy message" text={message.body} />
           ) : null}
@@ -2996,7 +2962,6 @@ function InputMessage({
           </button>
         ) : null}
       </article>
-      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.delivery ? (
         <p className="form-actions__error" role="alert">
           {message.delivery.reason}
@@ -3040,7 +3005,6 @@ function inputSource(message: MessageEntry): {
         name,
       };
     case "connection":
-    case "team-member":
       return { glyph: null, href: null, markdown: "assistant", name };
     case "human":
       return {
@@ -3178,13 +3142,6 @@ function WorkingIndicator({ label }: { label: string }) {
       <span className="working__label">{label}</span>
     </div>
   );
-}
-
-function TeamDelivery({ run }: { readonly run: RunEntry }) {
-  const channelName = useContext(Speakers).teamChannelName ?? "channel";
-  const delivery = run.delivery;
-  if (!delivery) return null;
-  return <small className="team-run-delivery">{teamDeliveryLabel(delivery, channelName)}</small>;
 }
 
 function CompactionDivider({ run }: { run: RunEntry }) {

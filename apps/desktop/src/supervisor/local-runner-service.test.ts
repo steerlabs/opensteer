@@ -3078,11 +3078,7 @@ function fixture(
 }
 
 function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
-  add(
-    hostUrl: string,
-    kind?: "personal" | "team",
-    mayRunAgents?: boolean,
-  ): DesktopLocalRunnerTarget;
+  add(hostUrl: string, kind?: "personal", mayRunAgents?: boolean): DesktopLocalRunnerTarget;
   changeRoute(deploymentId: DeploymentId, hostUrl: string): void;
   notify(): void;
   restore(target: DesktopLocalRunnerTarget): void;
@@ -3105,18 +3101,15 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
         },
         keys,
       );
-      const accessRoute =
-        kind === "personal"
-          ? signTestPersonalAccessRoute(
-              {
-                authority: { ...authority.document, deploymentShape: { kind: "personal" } },
-                documentVersion: 2,
-                purpose: "opensteer-personal-access-route",
-                route: { generation: 1, kind: "private", origin: hostUrl },
-              },
-              keys,
-            )
-          : null;
+      const accessRoute = signTestPersonalAccessRoute(
+        {
+          authority: { ...authority.document, deploymentShape: { kind: "personal" } },
+          documentVersion: 2,
+          purpose: "opensteer-personal-access-route",
+          route: { generation: 1, kind: "private", origin: hostUrl },
+        },
+        keys,
+      );
       const target: DesktopLocalRunnerTarget = {
         devicesAvailable: true,
         authority,

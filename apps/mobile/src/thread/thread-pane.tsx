@@ -52,12 +52,10 @@ import {
   type TranscriptGroup,
   type TranscriptVoice,
   type ThreadSummary,
-  type WaitingAsk,
   type WaitingInput,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import type { BrowserPageContentPart } from "@opensteer/core";
-import { useTeamsSnapshot } from "../team/team-context.js";
 import { useHostSnapshot, useWaitingInputs } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
@@ -67,15 +65,7 @@ import {
   useIsFocused,
   useNavigation,
 } from "@react-navigation/native";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -132,7 +122,7 @@ import { RunningNowCapsule } from "./running-now.js";
 import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useWaitingEdit } from "./waiting-edit.js";
-import { useAskDecisions, WaitingAskDock, WaitingEditBar } from "./waiting-dock.js";
+import { WaitingEditBar } from "./waiting-dock.js";
 import { AnswerPill } from "./answer-pill.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { pillRowClearance } from "../ui/pill-metrics.js";
@@ -192,8 +182,6 @@ type TranscriptItem =
 export interface ThreadHeaderState {
   readonly connectionLabel: string | null;
   readonly title: string;
-  /** The team channel that asked, "#support"; null for the person's own task. */
-  readonly placeName: string | null;
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
   readonly isVoice: boolean;
@@ -209,7 +197,6 @@ export function sameThreadHeader(
     left !== null &&
     left.connectionLabel === right.connectionLabel &&
     left.title === right.title &&
-    left.placeName === right.placeName &&
     left.icon === right.icon &&
     left.color === right.color &&
     left.isVoice === right.isVoice &&
@@ -494,7 +481,6 @@ function ThreadPaneForUser(
     waiting,
     navigationFocused && inView && appForeground,
   );
-  const askDecisions = useAskDecisions(hostClient);
   const [focusDraft, setFocusDraft] = useState(0);
   const [replyEditMessage, setReplyEditMessage] = useState<string | null>(null);
   const waitingEdit = editing.edit;
@@ -884,9 +870,6 @@ function ThreadPaneForUser(
   // and it is fed primitives rather than the Thread: a title that has not
   // changed must not rebuild a header while the transcript streams under it.
   const headerTitle = thread?.title ?? null;
-  const teamOrigin = thread?.teamOrigin ?? null;
-  const channelName = useChannelName(teamOrigin?.teamId ?? null, teamOrigin?.channelId ?? null);
-  const placeName = teamOrigin === null ? null : `#${channelName ?? "channel"}`;
   const icon = thread?.icon ?? null;
   const markColor = thread?.color ?? null;
   // The split heading's own width, which the title's menu is sized to.
@@ -913,12 +896,11 @@ function ThreadPaneForUser(
       connectionLabel,
       task,
       title: headerTitle ?? "Thread",
-      placeName,
       icon,
       color: markColor,
       isVoice: voiceThread,
     });
-  }, [connectionLabel, headerTitle, onHeader, task, placeName, icon, markColor, voiceThread]);
+  }, [connectionLabel, headerTitle, onHeader, task, icon, markColor, voiceThread]);
 
   // The reader's choices survive rows leaving the list's mounted window.
   const [openRows, setOpenRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -1114,7 +1096,6 @@ function ThreadPaneForUser(
           {/* Rows open the files messages carry through this Thread's own client. */}
           <TranscriptHostClientContext value={hostClient}>
             <TranscriptGroupRow
-              deliveryChannelName={channelName ?? "channel"}
               activityKey={item.activityKey}
               continued={item.continued}
               conversation={conversational}
@@ -1287,17 +1268,6 @@ function ThreadPaneForUser(
       viewerUserId,
     ],
   );
-  // The first ask still waiting for its answer, decided from the dock. What
-  // the reader may do with it is the Host's to say, archived or not.
-  const dockedAsk =
-    conversational || !canRespond
-      ? null
-      : (waiting?.find((item): item is WaitingAsk => item.kind === "ask" && !item.approving) ??
-        null);
-  const editedItem =
-    editing.edit === null
-      ? null
-      : (waiting?.find((item) => item.messageId === editing.edit?.messageId) ?? null);
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const loadMoreActivity = (kind: "tools" | "nodes") => {
     void hostClient.loadMoreOverlays(threadId, kind).catch(() =>
@@ -1725,22 +1695,11 @@ function ThreadPaneForUser(
                 editingReply ? null : (
                   <WaitingEditBar
                     canRespond={canRespond}
-                    decisions={askDecisions}
                     editing={editing}
-                    item={editedItem}
                     onSendAsNew={sendAsNew}
                   />
                 )
-              ) : dockedAsk === null ? null : (
-                <Animated.View entering={enter} exiting={exit} key={dockedAsk.messageId}>
-                  <WaitingAskDock
-                    ask={dockedAsk}
-                    canRespond={canRespond}
-                    decisions={askDecisions}
-                    hostClient={hostClient}
-                  />
-                </Animated.View>
-              )}
+              ) : null}
               {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
               <View style={editingInPlace && !editingReply ? styles.hidden : undefined}>
                 <Composer
@@ -1787,11 +1746,7 @@ function ThreadPaneForUser(
                   conversationActions={actionsBesidePage}
                   page={companion?.page ?? null}
                   onChangeModel={openSettings}
-                  placeholder={
-                    teamOrigin !== null
-                      ? "Message your agent privately"
-                      : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
-                  }
+                  placeholder={threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)}
                   requests={editingReply ? [] : dockableRequests}
                   {...(threadDetail.moreRequests
                     ? {
@@ -2104,23 +2059,6 @@ const styles = StyleSheet.create({
   passwords: { marginTop: space[10] },
   hidden: { display: "none" },
 });
-
-/** A team channel's name, as the team this phone holds says it; null until it has. */
-function useChannelName(teamId: string | null, channelId: string | null): string | null {
-  const team = useTeamsSnapshot().teams.find((candidate) => candidate.teamId === teamId) ?? null;
-  const session = team?.session ?? null;
-  const read = useCallback(
-    () =>
-      session?.getSnapshot().sidebar?.channels.find((row) => row.channel.id === channelId)?.channel
-        .name ?? null,
-    [channelId, session],
-  );
-  const subscribe = useCallback(
-    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
-    [session],
-  );
-  return useSyncExternalStore(subscribe, read, read);
-}
 
 /** The item a transcript row stands for: its first, which is what an anchor names. */
 function rowItemId(row: TranscriptItem): string | undefined {

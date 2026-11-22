@@ -1,9 +1,6 @@
 import { isLoopbackHostname } from "@opensteer/core";
 import type { HostDiscoveryDocument } from "@opensteer/deployment-authority";
-import {
-  isNetworkedPersonalAuthority,
-  isPersonalHost,
-} from "@opensteer/deployment-authority/personal-access-route";
+import { isNetworkedPersonalAuthority } from "@opensteer/deployment-authority/personal-access-route";
 import { createHttpHostApiClient } from "../host/host-api-client.js";
 import { describeConnectionAccess } from "./connection-resolver.js";
 import {
@@ -26,24 +23,22 @@ export function isNetworkedHome(
 
 /**
  * Whether this Deployment signs people in with its own native OAuth at its
- * canonical origin: a team server, or a networked Home listed by that origin.
+ * canonical origin: a networked Home listed by that origin.
  */
 export function usesHostNativeOAuth(connection: AttachmentConnection): boolean {
   return (
-    !isPersonalHost(connection.authority.document) ||
-    (describeConnectionAccess(connection, null).access === "native" &&
-      isNetworkedHome(connection.authority.document))
+    describeConnectionAccess(connection, null).access === "native" &&
+    isNetworkedHome(connection.authority.document)
   );
 }
 
 export interface VerifiedDeploymentAddress extends VerifiedHostEndpoint {
-  readonly kind: "personal" | "team";
+  readonly kind: "personal";
 }
 
 /**
- * Step one of adding a Deployment by its address: a team server, or a Home.
- * Verifies the signed discovery at the canonical origin, exactly as a team is
- * pinned, and sends no credential. A Mac Home reached by Remote access is the
+ * Step one of adding a Home by its address. Verifies the signed discovery at
+ * the canonical origin and sends no credential. A Mac Home reached by Remote access is the
  * pairing door instead, so its loopback authority is refused here.
  */
 export async function verifyDeploymentAddress(options: {
@@ -60,7 +55,6 @@ export async function verifyDeploymentAddress(options: {
     origin: address.origin,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  if (!isPersonalHost(verified.discovery)) return { ...verified, kind: "team" };
   if (!isNetworkedHome(verified.discovery)) throw deploymentAddressRefusal("address-needs-pairing");
   if (await homeNeedsOwner(verified.discovery.canonicalOrigin, options))
     throw deploymentAddressRefusal("address-needs-owner");
@@ -74,7 +68,6 @@ async function homeNeedsOwner(
 ): Promise<boolean> {
   const client = createHttpHostApiClient({
     baseUrl: new URL(origin),
-    kind: "personal",
     fetch: (url, init) =>
       options.fetch(url, {
         ...init,

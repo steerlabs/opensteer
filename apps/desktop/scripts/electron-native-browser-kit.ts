@@ -1007,6 +1007,43 @@ popup.onclick=()=>open('/q','_blank');fullscreen.onclick=()=>document.documentEl
         }),
     };
   }
+  /**
+   * A connected agent's attachment, opened exactly as the runtime opens one for a lineage
+   * ticket: the Home issues a lineage only for a connected agent's own direct work.
+   */
+  async function connectedAgentCdp(surface = activeSurface()) {
+    const client = runtimeState(surface.sessionId).controller.openStandardCdp(
+      false,
+      () => undefined,
+      {
+        attachmentId: randomUUID(),
+        seedSurfaceId: BrowserSurfaceIdSchema.parse(surface.surfaceId),
+      },
+    );
+    cleanup.push(async function closeConnectedAgentChannel() {
+      client.close();
+      await client.settled;
+    });
+    const attached = z.object({ sessionId: z.string() }).parse(
+      await client.send({
+        method: "Target.attachToTarget",
+        parameters: { targetId: await surface.page.targetId(), flatten: true },
+      }),
+    );
+    artifacts.event("agent.channel", {
+      surfaceId: surface.surfaceId,
+      route: "connected-agent-lineage",
+      hostRouted: false,
+    });
+    return {
+      send: (method: string, parameters?: CdpParameters, root = false) =>
+        client.send({
+          method,
+          ...(parameters ? { parameters } : {}),
+          ...(root ? {} : { sessionId: attached.sessionId }),
+        }),
+    };
+  }
   // Runtime internals are discovered once here because production deliberately
   // exposes no IPC that grants a test an agent attachment or controller.
   function runtimeControllers() {
@@ -1138,6 +1175,7 @@ popup.onclick=()=>open('/q','_blank');fullscreen.onclick=()=>document.documentEl
     resizeStage,
     /** Open the real runtime hub agent channel; trace labels it non-Host-routed. */
     agentCdp,
+    connectedAgentCdp,
     /** Existing live controller/ledger; read-only discovery never creates authority. */
     runtimeState,
     /** Actual runtime controllers, including the independent remote viewers. */

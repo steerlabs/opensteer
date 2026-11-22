@@ -32,22 +32,16 @@ const scenarios = [
   "open-subagent",
   "busy-subagents",
   "idle",
-  "team-cold-attach",
-  "team-open-channel",
-  "team-open-thread",
-  "team-reconnect",
-  "team-network-change",
 ];
 if (!(values.profile === "all" || Object.hasOwn(linkProfiles, values.profile!)))
   throw new Error("Unknown --profile");
-if (!["all", "heavy", "light", "busy-subagents", "team", "team-media"].includes(values.seed!))
+if (!["all", "heavy", "light", "busy-subagents"].includes(values.seed!))
   throw new Error("Unknown --seed");
 const requested = values.scenario!.split(",");
 if (
   values.scenario !== "all" &&
   (requested.some((scenario) => !scenarios.includes(scenario)) ||
-    (requested.length > 1 &&
-      requested.some((scenario) => scenario.startsWith("team-") || scenario === "busy-subagents")))
+    (requested.length > 1 && requested.some((scenario) => scenario === "busy-subagents")))
 )
   throw new Error("Unknown --scenario or unsupported combination");
 for (const [name, value] of [
@@ -58,13 +52,6 @@ for (const [name, value] of [
   if (value !== undefined && (!Number.isInteger(Number(value)) || Number(value) < 1))
     throw new Error(`--${name} must be a positive integer`);
 }
-if (values.scenario?.startsWith("team-") && values.seed === "all") values.seed = "team";
-if (
-  values.seed?.startsWith("team") &&
-  values.scenario !== "all" &&
-  !values.scenario?.startsWith("team-")
-)
-  throw new Error("Team seeds require a team-* scenario or all");
 const environment = { ...process.env, OPENSTEER_MOBILE_BENCH_OPTIONS: JSON.stringify(values) };
 // The shared launcher provisions both templates, even though this benchmark only clones Host.
 if (

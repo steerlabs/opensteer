@@ -4290,3 +4290,56 @@ it("routes root and attached cookie commands to the admitted native profile cont
     await browser.close();
   }
 });
+
+it("answers a connection's browser_connect the one sentence for a command outside the list, before the Mac's own check", async () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  const browser = await new ElectronBrowserLauncher({
+    downloads: { accept: () => undefined },
+    pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
+  }).launch({
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    partitionKey: "session:bsn_00000000-0000-4000-8000-000000000307",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000307"),
+    storage: { kind: "guest" },
+  });
+  const { SessionCdpRouter } = await import("@opensteer/browser-core");
+  const router = new SessionCdpRouter(browser.cdp);
+  const targetId = await browser.context.pages()[0]!.targetId();
+  router.registerSession("agent", targetId, async () => true, "/files");
+  try {
+    const refusal = async (connection: boolean, method: string, parameters = {}) => {
+      const client = router.openStandardClient("agent", {
+        wholeContext: false,
+        ...(connection
+          ? { connection: true, lineage: { attachmentId: "mac-agent", seedTargetId: targetId } }
+          : {}),
+      });
+      try {
+        return await client.send({ method, parameters }).then(
+          () => "sent",
+          (error: unknown) => (error as Error).message,
+        );
+      } finally {
+        client.close();
+      }
+    };
+    for (const method of [
+      "SystemInfo.getProcessInfo",
+      "SystemInfo.getInfo",
+      "Browser.getBrowserCommandLine",
+    ]) {
+      expect(await refusal(true, method), method).toBe(sentence(method));
+      expect(await refusal(false, method), method).toBe(
+        `${method} describes the Opensteer process, outside browser page ownership.`,
+      );
+    }
+    // A listed command still meets the Mac's own check.
+    expect(await refusal(true, "Target.createTarget", { url: "about:blank", windowId: 1 })).toBe(
+      "Opensteer windows are outside the browser page context.",
+    );
+  } finally {
+    await router.close();
+    await browser.close();
+  }
+});

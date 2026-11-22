@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { expect, it, vi } from "vitest";
 import { standardCdpEndpoint } from "../apps/host/src/browser/standard-cdp-endpoint.test-support.js";
 import { AgentSessionService } from "../apps/host/src/agent-sessions/agent-session-service.js";
@@ -798,5 +802,375 @@ it("issues browser_connect for a parked browser after access checks and one wake
   } finally {
     await endpoint?.close();
     await j.close();
+  }
+});
+
+it("keeps a connected agent's paste, copy and cut off the browser's clipboard in its own page, through browser_use and browser_connect", async () => {
+  const sentence =
+    "The clipboard is not available to a connected agent. Use Input.insertText to enter text.";
+  const permissionSentence = "Browser permissions cannot be changed by a connected agent.";
+  const sentinel = `opensteer-clipboard-sentinel-${randomUUID()}`;
+  /** What a script returned, encoded so that no transcript escaping can change it. */
+  const outcomeOf = (result: Parameters<typeof text>[0]): unknown =>
+    JSON.parse(decodeURIComponent(/outcome:([^:"\\]*):end/u.exec(text(result))![1]!));
+  // A secure origin, so that the page's own clipboard API exists in the agent's page.
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Form</title><input id=field>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const form = `http://127.0.0.1:${(site.address() as AddressInfo).port}/form`;
+  const j = await journey("direct-clipboard", { profile: true });
+  let endpoint: Awaited<ReturnType<typeof standardCdpEndpoint>> | undefined;
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      profileId: j.profile!.id,
+    });
+    const [tab] = await home.service.savedPages(j.task.userId, session.id);
+    if (!tab?.pageBinding) throw new Error("The saved profile has no durable tab.");
+    // The agent's own page loads the form before the agent binds it: a pooled script is bound to
+    // one document.
+    const own = await j.launched()!.context.pages().at(-1)!.cdp();
+    const previous = home.service.pageInventory(session.id)?.records.get(tab.id)?.documentId;
+    await own.send("Page.navigate", { url: form });
+    await vi.waitFor(async () => {
+      expect(home.service.pageInventory(session.id)?.records.get(tab.id)?.documentId).not.toBe(
+        previous,
+      );
+      const state = await own.send<{ result: { value: string } }>("Runtime.evaluate", {
+        expression: "document.readyState",
+        returnByValue: true,
+      });
+      expect(state.result.value).toBe("complete");
+    });
+    // A page in the same browser that the connection does not hold: the sentinel is copied there
+    // with the browser's own copy command, outside any agent's CDP.
+    const other = await j.launched()!.context.createPage();
+    const person = await other.cdp();
+    const key = (commands: string[], code: string) =>
+      ["rawKeyDown", "keyUp"].map((type) =>
+        person.send("Input.dispatchKeyEvent", {
+          type,
+          modifiers: 4,
+          key: code.slice(3).toLowerCase(),
+          code,
+          ...(type === "keyUp" ? {} : { commands }),
+        }),
+      );
+    const value = async (id: string) =>
+      (
+        await person.send<{ result: { value: string } }>("Runtime.evaluate", {
+          expression: `document.getElementById(${JSON.stringify(id)}).value`,
+          returnByValue: true,
+        })
+      ).result.value;
+    const focus = (id: string) =>
+      person.send("Runtime.evaluate", {
+        expression: `(document.getElementById(${JSON.stringify(id)}).focus(), document.getElementById(${JSON.stringify(id)}).select())`,
+      });
+    await person.send("Runtime.evaluate", {
+      expression: `document.body.innerHTML = '<input id="secret" value=${JSON.stringify(sentinel)}><input id="probe"><input id="after">'`,
+    });
+    await focus("secret");
+    await Promise.all(key(["copy"], "KeyC"));
+    /** What the browser's clipboard holds, read by pasting into a field of the person's page. */
+    const clipboard = async (id: string) => {
+      await focus(id);
+      await Promise.all(key(["paste"], "KeyV"));
+      return value(id);
+    };
+    expect(await clipboard("probe")).toBe(sentinel);
+
+    const work = await directWork(j, () => home);
+    const pasted = await work.use(`
+      const page = await openPage(${JSON.stringify(tab.id)});
+      await page.js("document.getElementById('field').focus(); location.origin");
+      const refused = [];
+      const attempt = async (name, run) => {
+        try { await run(); refused.push([name, "performed"]); }
+        catch (error) { refused.push([name, String(error && error.message)]); }
+      };
+      await attempt("Meta+V", () => page.keyboard.press("Meta+V"));
+      await attempt("Control+V", () => page.keyboard.press("Control+V"));
+      await attempt("Shift+Insert", () => page.keyboard.press("Shift+Insert"));
+      await attempt("stated", () => page.pressKey("v", { modifiers: 4, commands: ["paste"] }));
+      await attempt("pasteAndMatchStyle", () => page.pressKey("v", { modifiers: 12, commands: ["pasteAndMatchStyle"] }));
+      for (const permission of ["clipboardReadWrite", "audioCapture", "videoCapture", "geolocation"])
+        await attempt(permission, () => page.cdp("Browser.grantPermissions", { permissions: [permission] }));
+      await attempt("setPermission", () => page.cdp("Browser.setPermission", { permission: { name: "camera" }, setting: "granted" }));
+      await attempt("resetPermissions", () => page.cdp("Browser.resetPermissions", {}));
+      const read = await page.cdp("Runtime.evaluate", {
+        expression: "navigator.clipboard.readText().then(t => 'read:' + t, e => 'denied:' + e.name)",
+        awaitPromise: true,
+        userGesture: true,
+        returnByValue: true,
+      });
+      const execPaste = await page.js("document.execCommand('paste')");
+      return "outcome:" + encodeURIComponent(JSON.stringify({
+        refused,
+        read: read.result.value,
+        execPaste,
+        value: await page.js("document.getElementById('field').value"),
+        html: await page.js("document.documentElement.outerHTML"),
+      })) + ":end";
+    `);
+    expect(pasted.isError, text(pasted)).not.toBe(true);
+    const outcome = outcomeOf(pasted) as {
+      refused: [string, string][];
+      read: string;
+      execPaste: boolean;
+      value: string;
+      html: string;
+    };
+    const { html: _html, ...seen } = outcome;
+    expect(outcome.refused, JSON.stringify(seen)).toEqual([
+      ...["Meta+V", "Control+V", "Shift+Insert", "stated", "pasteAndMatchStyle"].map((name) => [
+        name,
+        expect.stringContaining(sentence),
+      ]),
+      ...[
+        "clipboardReadWrite",
+        "audioCapture",
+        "videoCapture",
+        "geolocation",
+        "setPermission",
+        "resetPermissions",
+      ].map((name) => [name, expect.stringContaining(permissionSentence)]),
+    ]);
+    expect(outcome.read).toMatch(/^denied:/u);
+    expect(outcome.execPaste).toBe(false);
+    expect(outcome.value).toBe("");
+    expect(text(pasted)).not.toContain(sentinel);
+
+    // The reverse: the agent's copy and cut leave the clipboard holding what it held.
+    const copied = await work.use(`
+      const page = await openPage(${JSON.stringify(tab.id)});
+      await page.js("const field = document.getElementById('field'); field.value = 'agent-text'; field.focus(); field.select(); true");
+      const refused = [];
+      for (const chord of ["Meta+C", "Meta+X", "Control+C", "Control+X", "Control+Insert", "Shift+Delete"]) {
+        try { await page.keyboard.press(chord); refused.push(chord + ": performed"); }
+        catch (error) { refused.push(chord + ": " + String(error && error.message)); }
+      }
+      return "outcome:" + encodeURIComponent(JSON.stringify({
+        refused,
+        value: await page.js("document.getElementById('field').value"),
+      })) + ":end";
+    `);
+    expect(copied.isError, text(copied)).not.toBe(true);
+    const copy = outcomeOf(copied) as { refused: string[]; value: string };
+    expect(copy.refused).toEqual(
+      ["Meta+C", "Meta+X", "Control+C", "Control+X", "Control+Insert", "Shift+Delete"].map(
+        (chord) =>
+          expect.stringMatching(new RegExp(`^${chord.replace("+", "\\+")}: .*${sentence}`, "u")),
+      ),
+    );
+    // Cut left the agent's text where it was.
+    expect(copy.value).toBe("agent-text");
+    expect(await clipboard("after")).toBe(sentinel);
+
+    // The same through a standard CDP connection, before anything reaches the page.
+    endpoint = await standardCdpEndpoint(() => home.service);
+    const issued = await work.connect();
+    expect(issued.isError, text(issued)).not.toBe(true);
+    const { endpoint: url } = issued.structuredContent as { endpoint: string };
+    const cdp = await endpoint.open(url);
+    const targets = (await cdp.send("Target.getTargets")) as {
+      result: { targetInfos: { targetId: string; type: string }[] };
+    };
+    const page = targets.result.targetInfos.find(({ type }) => type === "page")!;
+    const attached = (await cdp.send("Target.attachToTarget", {
+      targetId: page.targetId,
+      flatten: true,
+    })) as { result: { sessionId: string } };
+    const pageSession = attached.result.sessionId;
+    await cdp.send(
+      "Runtime.evaluate",
+      {
+        expression:
+          "document.body.innerHTML = '<input id=field>'; document.getElementById('field').focus()",
+      },
+      pageSession,
+    );
+    const cmdV = {
+      type: "rawKeyDown",
+      modifiers: 4,
+      key: "v",
+      code: "KeyV",
+      windowsVirtualKeyCode: 86,
+    };
+    for (const [method, params, scope] of [
+      ["Input.dispatchKeyEvent", cmdV, pageSession],
+      ["Input.dispatchKeyEvent", { ...cmdV, commands: ["paste"] }, pageSession],
+      ["Input.dispatchKeyEvent", { ...cmdV, modifiers: 2 }, pageSession],
+      [
+        "Input.dispatchKeyEvent",
+        { ...cmdV, key: "c", code: "KeyC", windowsVirtualKeyCode: 67 },
+        pageSession,
+      ],
+    ] as const)
+      expect(await cdp.send(method, params, scope), method).toMatchObject({
+        error: { message: sentence },
+      });
+    // No permission changes at all, on the root or on its page.
+    for (const scope of [undefined, pageSession])
+      for (const [method, params] of [
+        ["Browser.grantPermissions", { permissions: ["clipboardReadWrite"] }],
+        ["Browser.grantPermissions", { permissions: ["audioCapture"] }],
+        ["Browser.grantPermissions", { permissions: ["videoCapture"] }],
+        ["Browser.grantPermissions", { permissions: ["geolocation"] }],
+        ["Browser.setPermission", { permission: { name: "clipboard-read" }, setting: "granted" }],
+        ["Browser.resetPermissions", {}],
+      ] as const)
+        expect(await cdp.send(method, params, scope), `${method} ${String(scope)}`).toMatchObject({
+          error: { message: permissionSentence },
+        });
+    const field = (await cdp.send(
+      "Runtime.evaluate",
+      {
+        expression: "[document.getElementById('field').value, document.documentElement.outerHTML]",
+        returnByValue: true,
+      },
+      pageSession,
+    )) as { result: { result: { value: [string, string] } } };
+    expect(field.result.result.value[0]).toBe("");
+    expect(field.result.result.value[1]).not.toContain(sentinel);
+    expect(await clipboard("probe")).toBe(sentinel);
+  } finally {
+    await endpoint?.close();
+    await j.close();
+    site.close();
+  }
+});
+
+it("keeps a person's own Run's paste chord as before, and refuses its clipboard grant, in real Chromium", async () => {
+  const clipboardGrantSentence =
+    "Clipboard permissions cannot be granted to a page. Paste with a key chord, or use Input.insertText to enter text.";
+  const sentinel = `opensteer-clipboard-sentinel-${randomUUID()}`;
+  // A secure origin, so that the page's own clipboard API exists.
+  const site = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<!doctype html><title>Form</title><input id=field>");
+  });
+  site.listen(0, "127.0.0.1");
+  await once(site, "listening");
+  const form = `http://127.0.0.1:${(site.address() as AddressInfo).port}/form`;
+  const j = await journey("own-clipboard");
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("own-clipboard"),
+    );
+    const own = await j.launched()!.context.pages().at(-1)!.cdp();
+    const previous = home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId;
+    await own.send("Page.navigate", { url: form });
+    await vi.waitFor(async () => {
+      expect(home.service.pageInventory(sessionId)?.records.get(tabId)?.documentId).not.toBe(
+        previous,
+      );
+      const state = await own.send<{ result: { value: string } }>("Runtime.evaluate", {
+        expression: "document.readyState",
+        returnByValue: true,
+      });
+      expect(state.result.value).toBe("complete");
+    });
+    // The sentinel is copied in another page of the same browser, outside any agent's CDP.
+    const other = await (await j.launched()!.context.createPage()).cdp();
+    await other.send("Runtime.evaluate", {
+      expression: `document.body.innerHTML = '<input id="secret" value=${JSON.stringify(sentinel)}>'; document.getElementById('secret').focus(); document.getElementById('secret').select()`,
+    });
+    for (const type of ["rawKeyDown", "keyUp"])
+      await other.send("Input.dispatchKeyEvent", {
+        type,
+        modifiers: 4,
+        key: "c",
+        code: "KeyC",
+        ...(type === "keyUp" ? {} : { commands: ["copy"] }),
+      });
+
+    const run = {
+      agentBindingId: `run:${j.task.runId}`,
+      ownerId: j.task.userId,
+      environmentId: j.task.environmentId,
+      threadId: j.task.threadId,
+    };
+    const scope = await j.store.runCapabilityScope(j.task.runId);
+    if (!scope) throw new Error("The test Run has no browser authority.");
+    const bound = await home.service.bindPage(
+      {
+        ...scope,
+        aud: "opensteer-run-tools",
+        iss: "opensteer-host",
+        jti: randomUUID(),
+        iat: 1,
+        exp: 2,
+      },
+      (await j.tabs.get(j.task.userId, tabId))!,
+    );
+    const cdp = await home.service.attachCdpForAgent(
+      { ...run, sessionId: bound.sessionId },
+      () => {},
+    );
+    try {
+      const { targetInfos } = (await cdp.request({ method: "Target.getTargets" })) as {
+        targetInfos: { targetId: string; url: string }[];
+      };
+      const target = targetInfos.find(({ url }) => url === form)!;
+      const { sessionId: page } = (await cdp.request({
+        method: "Target.attachToTarget",
+        parameters: { targetId: target.targetId, flatten: true },
+      })) as { sessionId: string };
+      const evaluate = async (expression: string, userGesture = false) =>
+        (
+          (await cdp.request({
+            method: "Runtime.evaluate",
+            parameters: { expression, awaitPromise: true, returnByValue: true, userGesture },
+            sessionId: page,
+          })) as { result: { value: unknown } }
+        ).result.value;
+      await evaluate("document.getElementById('field').focus()");
+      // The person's own Run keeps what #638 gave it: paste by chord.
+      for (const type of ["rawKeyDown", "keyUp"])
+        await cdp.request({
+          method: "Input.dispatchKeyEvent",
+          parameters: {
+            type,
+            modifiers: 4,
+            key: "v",
+            code: "KeyV",
+            ...(type === "keyUp" ? {} : { commands: ["paste"] }),
+          },
+          sessionId: page,
+        });
+      expect(await evaluate("document.getElementById('field').value")).toBe(sentinel);
+      // A clipboard grant would outlast the Run and serve a connected agent's page script.
+      for (const scope of [undefined, page])
+        for (const parameters of [
+          { permissions: ["clipboardReadWrite"] },
+          { permissions: ["clipboardSanitizedWrite"] },
+        ])
+          await expect(
+            cdp.request({
+              method: "Browser.grantPermissions",
+              parameters,
+              ...(scope ? { sessionId: scope } : {}),
+            }),
+          ).rejects.toThrow(clipboardGrantSentence);
+      expect(
+        await evaluate(
+          "navigator.clipboard.readText().then(t => 'read:' + t, e => 'denied:' + e.name)",
+          true,
+        ),
+      ).toMatch(/^denied:/u);
+    } finally {
+      if (cdp.pooledClose) await cdp.pooledClose();
+      else cdp.close();
+    }
+  } finally {
+    await j.close();
+    site.close();
   }
 });

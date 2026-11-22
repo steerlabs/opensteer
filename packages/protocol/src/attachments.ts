@@ -3,8 +3,7 @@ import { z } from "zod";
 
 /**
  * How long a client waits for a file transfer's response headers: an upload's
- * bytes go out before its answer can come back, and a team Host fetches and
- * verifies a partner team's file before it answers.
+ * bytes go out before its answer can come back.
  */
 export const fileTransferHeadersTimeoutMs = 120_000;
 

@@ -1,5 +1,10 @@
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
-import type { BrowserRuntime } from "@opensteer/browser-runtime-core";
+import {
+  cdpCommandRefusal,
+  connectionAutoAttachParameters,
+  connectionCdpRefusal,
+  type BrowserRuntime,
+} from "@opensteer/browser-runtime-core";
 import type {
   StandardCdpAttemptReconciliation,
   StandardCdpLeaseReconciliation,
@@ -591,6 +596,8 @@ export interface BrowserRuntimeTarget {
   connect(ticket: string, reconnect?: PersonBrowserReconnect): BrowserRuntimeConnection;
   readonly wholeContextCdp?: boolean;
   readonly standardCdpLineage?: boolean;
+  /** The runtime holds a connected agent's CDP rules itself for a command marked as one's. */
+  readonly connectionCommands?: boolean;
   readonly standardCdpRecovery?: {
     readonly relayId: string;
     boot(): Promise<string>;
@@ -4613,6 +4620,8 @@ export class BrowserService {
     requested?: "cdp" | "actions",
     hold = false,
     captureAuthority?: (facts: StandardCdpAuthority) => void,
+    /** Hears the same facts as `captureAuthority` without changing how the admission answers. */
+    noteAuthority?: (facts: StandardCdpAuthority) => void,
   ) {
     const record = input.sessionId
       ? await this.#usableAgentSession(input, input.sessionId, captureAuthority === undefined)
@@ -4648,7 +4657,7 @@ export class BrowserService {
       this.#repository,
       !hold && !captureAuthority,
       undefined,
-      captureAuthority,
+      captureAuthority ?? noteAuthority,
     );
     if (hold && input.sessionId) await this.#holdForAgent(input, record);
     return { record, broker, backend };
@@ -5518,7 +5527,22 @@ export class BrowserService {
     ): Promise<{ readonly result: Promise<unknown> }>;
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
-    const { record, broker } = await this.#admitAgentBackend(input, "cdp", !input.browserSend);
+    // Work under a connection's authority, as the one authority rule resolved this attachment's
+    // binding: settled here, once, and never read again per command.
+    let connectionWork = connectedAgentBinding(input.agentBindingId);
+    const { record, broker } = await this.#admitAgentBackend(
+      input,
+      "cdp",
+      !input.browserSend,
+      undefined,
+      (facts) => {
+        if (facts.agentConnectionId !== null) connectionWork = true;
+      },
+    );
+    // A runtime that says it can hold the rules itself is told the work is a connection's, so a
+    // command it unpacks is checked where it is unpacked; the Home's gate stays for any other.
+    const runtimeHoldsConnection =
+      connectionWork && this.#resolveTarget(placementOf(record))?.connectionCommands === true;
     const pool = input.browserSend && this.#pool(record.runnerId);
     const pageWitness = (tabId: TabId) =>
       this.pooledScriptPageWitness(input.ownerId, record.id, tabId);
@@ -5618,9 +5642,27 @@ export class BrowserService {
     // Admission is everything before the command is handed to the browser; its
     // fences apply until then. The answer arrives on `result`.
     const dispatch = async (
-      command: BrowserCdpRequest["command"],
+      requested: BrowserCdpRequest["command"],
       confirmed?: ConfirmedCdpDispatch,
     ): Promise<{ readonly result: Promise<unknown> }> => {
+      // Refused before any effect, whatever runtime the browser runs: neither the clipboard nor
+      // a browser permission is in any grant. The runtime's router refuses the same commands.
+      // A connection's work sends only what a standard browser_connect client may, and its
+      // page auto-attach reaches iframes and workers only, never paused at start.
+      const refusal =
+        cdpCommandRefusal(requested.method, requested.parameters, connectionWork) ??
+        (connectionWork
+          ? connectionCdpRefusal(
+              requested.method,
+              requested.parameters,
+              requested.sessionId !== undefined,
+            )
+          : undefined);
+      if (refusal) throw new OpensteerError({ code: "forbidden", message: refusal });
+      const command =
+        connectionWork && requested.method === "Target.setAutoAttach" && requested.sessionId
+          ? { ...requested, parameters: connectionAutoAttachParameters(requested.parameters) }
+          : requested;
       return this.withRunnerAdmission(record.runnerId, async () => {
         confirmed?.signal?.throwIfAborted();
         if (confirmed && input.expiresAt !== undefined && input.expiresAt <= Date.now())
@@ -5774,6 +5816,7 @@ export class BrowserService {
             command,
             ...(actorToken ? { actorToken } : {}),
             ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
+            ...(runtimeHoldsConnection ? { connection: true as const } : {}),
             requestId: globalThis.crypto.randomUUID(),
             type: "cdp.command",
           },

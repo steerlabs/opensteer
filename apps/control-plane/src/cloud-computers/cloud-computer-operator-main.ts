@@ -1,7 +1,7 @@
 import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { loadControlPlaneConfig } from "../config.js";
 import { createControlPlaneDatabase } from "../database/database.js";
-import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { OrganizationStore } from "../organizations/store.js";
 import { ControlPlaneError } from "../server/errors.js";
 import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
@@ -30,7 +30,7 @@ async function main(args: readonly string[]): Promise<void> {
   const store = new CloudComputerStore(db, {
     config: cloud,
     accountOrigin: config.publicOrigin,
-    cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
+    cipher: new CloudComputerSecretCipher(config.adoptionOperationKey),
     stripe,
     organizations,
   });

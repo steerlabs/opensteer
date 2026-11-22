@@ -6,7 +6,6 @@ export default defineConfig(
     entry: [
       "src/main.ts",
       "src/migrate-main.ts",
-      "src/hosted-team-operator-main.ts",
       "src/cloud-computers/cloud-computer-operator-main.ts",
       "src/agent-directory/agent-directory-operator-main.ts",
     ],

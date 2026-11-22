@@ -86,17 +86,6 @@ describe("DesktopLocalRunnerTargetResolver", () => {
       "no live remote access route",
     );
   });
-
-  it("refuses team Hosts as local Runner targets", async () => {
-    const connection = teamConnection();
-    const resolver = new DesktopLocalRunnerTargetResolver({
-      catalog: catalogStore([connection]),
-      supervisedDeploymentId: async () => null,
-    });
-    await expect(resolver.resolve(connection.authority.document.deploymentId)).rejects.toThrow(
-      "Team servers do not run agents or enroll computers.",
-    );
-  });
 });
 
 /**
@@ -149,28 +138,6 @@ function homeConnection() {
     kind: "personal",
     lastUsedAt: null,
     name: "Home",
-    reachability: "canonical",
-    source: { kind: "manual" },
-    updatedAt: now,
-  });
-}
-
-function teamConnection() {
-  const canonicalOrigin = "https://cloud.opensteer.test";
-  return DeploymentConnectionSchema.parse({
-    authority: envelope({
-      canonicalOrigin,
-      deploymentId: createId("deployment"),
-      deploymentShape: { kind: "team" },
-      hostInstanceId: createId("hostInstance"),
-      hostKey: { algorithm: "Ed25519" },
-    }),
-    bootstrapMethods: ["password"],
-    createdAt: now,
-    endpoints: [{ kind: "canonical", origin: canonicalOrigin, verifiedAt: now }],
-    kind: "team",
-    lastUsedAt: null,
-    name: "Cloud",
     reachability: "canonical",
     source: { kind: "manual" },
     updatedAt: now,

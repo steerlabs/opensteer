@@ -99,9 +99,8 @@ vi.mock("../ui/symbol.js", () => ({
 import type { HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { RequestIdSchema, tabReferenceHref } from "@opensteer/core";
-import type { TeamSessionClient } from "@opensteer/client/team";
 import { Markdown } from "./markdown.js";
-import { PersonalReferenceProvider, TeamReferenceProvider } from "./reference-navigation.js";
+import { PersonalReferenceProvider } from "./reference-navigation.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -428,34 +427,5 @@ describe("References on a phone", () => {
       ),
     );
     expect(resolveOther).not.toHaveBeenCalled();
-  });
-
-  it("opens team pages through the team, and leaves a personal Opensteer's links as words", () => {
-    const origin = "https://team.example.test";
-    const channelId = "tch_00000000-0000-4000-8000-000000000001";
-    const session = {
-      getSnapshot: () => ({
-        channel: null,
-        sidebar: { channels: [{ channel: { id: channelId, name: "launch-room" } }] },
-        thread: null,
-      }),
-      subscribe: () => () => undefined,
-    } as unknown as TeamSessionClient;
-    const container = draw(
-      <TeamReferenceProvider client={session} origin={origin} teamId="dep_team">
-        <Markdown
-          text={`Ask in [the room](${origin}/c/${channelId}) about [my task](opensteer:${storage}) and [notes](/Users/me/Opensteer/notes.md).`}
-        />
-        <Destination />
-      </TeamReferenceProvider>,
-    );
-    // The team's own session names its channel; no read is made for the chip.
-    act(() => chip(container, "launch-room").click());
-    expect(shown(container)).toBe(
-      `JoinTeam ${JSON.stringify({ link: `${origin}/c/${channelId}` })}`,
-    );
-    expect(container.querySelectorAll('[data-role="link"]')).toHaveLength(1);
-    expect(container.textContent).toContain("my task and notes.");
-    expect(linking.openURL).not.toHaveBeenCalled();
   });
 });

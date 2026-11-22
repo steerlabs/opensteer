@@ -1,4 +1,3 @@
-import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
 import {
   createId,
   opensteerHostNativeOAuthClients,
@@ -10,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  deriveHostExposure,
   assertHostConfigInvariants,
   hostTrustedProxy,
   parseHostConfig,
@@ -27,17 +27,18 @@ const localHostEnvironment = {
 } as const;
 
 const hostEnvironment = {
-  OPENSTEER_AUTH_SECRET: "identity-secret-that-is-at-least-thirty-two-bytes",
-  OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
-  OPENSTEER_CANONICAL_ORIGIN: "http://localhost:4310",
-  OPENSTEER_DEPLOYMENT_KIND: "team",
+  ...localHostEnvironment,
+  OPENSTEER_DEPLOYMENT_KIND: "personal",
 } as const;
 
-/** The axes a Host that anything on the network can reach has to declare. */
+/** The axes a Home that anything on the network can reach has to declare. */
 const networkedHostEnvironment = {
-  ...hostEnvironment,
+  OPENSTEER_AUTH_SECRET: "identity-secret-that-is-at-least-thirty-two-bytes",
+  OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
+  OPENSTEER_DEPLOYMENT_KIND: "personal",
   OPENSTEER_BIND_ADDRESS: "0.0.0.0",
   OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
+  OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: "home-setup-code".padEnd(40, "x"),
 } as const;
 
 const temporaryDirectories: string[] = [];
@@ -68,7 +69,6 @@ describe("configuration", () => {
   it("uses explicit local defaults without weakening production keys", () => {
     const config = parseHostConfig(localHostEnvironment);
     expect(config.bindAddress).toBe("127.0.0.1");
-    expect(config.account).toBeUndefined();
     expect(config.canonicalOrigin).toEqual(new URL("http://localhost:4310"));
     expect(config.deploymentShape).toEqual({ kind: "personal" });
     expect(config.personal).toMatchObject({
@@ -186,7 +186,7 @@ describe("configuration", () => {
     ).toHaveLength(32);
     expect(() =>
       parseHostConfig({
-        ...hostEnvironment,
+        ...networkedHostEnvironment,
         OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: "misplaced-owner-claim".padEnd(32, "x"),
       }),
     ).toThrow(/allowed only for an unmanaged loopback Personal Host/u);
@@ -202,29 +202,28 @@ describe("configuration", () => {
     ).toThrow(/requires OPENSTEER_DEPLOYMENT_KIND/u);
 
     const productionConfig = parseHostConfig({
-      ...hostEnvironment,
+      ...networkedHostEnvironment,
       OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-      OPENSTEER_DEPLOYMENT_KIND: "team",
       OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
       OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
+      OPENSTEER_HOST_RELEASE_VERSION: "1.2.3",
       OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       OPENSTEER_MODE: "production",
-      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
+      OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: "/release/web",
+      OPENSTEER_WEB_DISTRIBUTION_MANIFEST: "/release/web/opensteer-web.json",
     });
     expect(productionConfig.deploymentShape).toEqual({
-      kind: "team" as const,
+      kind: "personal" as const,
     });
     expect(
       parseHostConfig({
-        ...hostEnvironment,
+        ...networkedHostEnvironment,
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-        OPENSTEER_DEPLOYMENT_KIND: "team",
         OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
         OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
         OPENSTEER_HOST_RELEASE_VERSION: "1.2.3",
         OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
         OPENSTEER_MODE: "production",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
         OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: "/release/web",
         OPENSTEER_WEB_DISTRIBUTION_MANIFEST: "/release/web/opensteer-web.json",
       }).webDistribution,
@@ -246,7 +245,7 @@ describe("configuration", () => {
   it("always registers the closed first-party native OAuth allowlist", () => {
     expect(
       parseHostConfig({
-        ...hostEnvironment,
+        ...networkedHostEnvironment,
         OPENSTEER_NATIVE_OAUTH_CLIENTS: JSON.stringify([
           {
             application: "mobile",
@@ -274,43 +273,9 @@ describe("configuration", () => {
       parseHostConfig({ ...personalEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }),
     ).toThrow(/loopback Personal Host cannot serve native OAuth/u);
     expect(
-      parseHostConfig({ ...hostEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }).identity
-        .nativeOAuth?.clients,
+      parseHostConfig({ ...networkedHostEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" })
+        .identity.nativeOAuth?.clients,
     ).toEqual(opensteerHostNativeOAuthClients);
-  });
-
-  it("rejects partial, noncanonical, and insecure production Account bundles", () => {
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_FD: "3",
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: "/private/account-bundle.json",
-      }),
-    ).toThrow(/exactly one/u);
-    const invalidPath = writeAccountAdoptionBundle({ invalid: true });
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: invalidPath,
-      }),
-    ).toThrow(/provisioning bundle/iu);
-    const productionBundle = accountAdoptionBundle({
-      canonicalOrigin: "https://opensteer.example.com",
-      controlApiOrigin: "http://127.0.0.1:4142",
-    });
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_DEPLOYMENT_KIND: "team",
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeAccountAdoptionBundle(productionBundle),
-        OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-        OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
-        OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
-        OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
-        OPENSTEER_MODE: "production",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      }),
-    ).toThrow(/control API must use HTTPS/);
   });
 
   it("rejects undersized identity and setup secrets", () => {
@@ -343,11 +308,10 @@ describe("configuration", () => {
   it("requires an asymmetric host key pair in production", () => {
     expect(() =>
       parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_DEPLOYMENT_KIND: "team",
+        ...networkedHostEnvironment,
         OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
         OPENSTEER_MODE: "production",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
       }),
     ).toThrow(/requires OPENSTEER_HOST_PRIVATE_KEY_PATH/);
   });
@@ -563,21 +527,21 @@ describe("configuration", () => {
 
   it("accepts self-host production axes with the private HTTPS gateway origin", () => {
     const config = parseHostConfig({
-      ...hostEnvironment,
-      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
+      ...networkedHostEnvironment,
       OPENSTEER_CREDENTIAL_KEY_PATH: "/run/secrets/credential.key",
-      OPENSTEER_DEPLOYMENT_KIND: "team",
       OPENSTEER_HOST_PRIVATE_KEY_PATH: "/var/lib/opensteer/keys/host-private.pem",
       OPENSTEER_HOST_PUBLIC_KEY_PATH: "/var/lib/opensteer-public/host-public.pem",
+      OPENSTEER_HOST_RELEASE_VERSION: "1.2.3",
       OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       OPENSTEER_MODE: "production",
       OPENSTEER_RUNTIME_ORIGIN: "https://gateway:8443",
+      OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: "/release/web",
+      OPENSTEER_WEB_DISTRIBUTION_MANIFEST: "/release/web/opensteer-web.json",
     });
 
     expect(config.runtimeOrigin).toEqual(new URL("https://gateway:8443"));
     expect(config.deploymentShape).toEqual({
-      kind: "team" as const,
+      kind: "personal" as const,
     });
   });
 
@@ -593,14 +557,11 @@ describe("configuration", () => {
     expect(personal.exposure).toBe("loopback");
 
     const server = parseHostConfig({
-      ...hostEnvironment,
-      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      OPENSTEER_DEPLOYMENT_KIND: "team",
+      ...networkedHostEnvironment,
       OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
     });
     expect(server.deploymentShape).toEqual({
-      kind: "team",
+      kind: "personal",
     });
     expect(server.exposure).toBe("networked");
 
@@ -618,34 +579,22 @@ describe("configuration", () => {
         OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       }),
     ).toThrow(/local owner claim token is allowed only for an unmanaged loopback Personal Host/u);
-
-    const accountBundle = accountAdoptionBundle();
-    expect(() =>
-      parseHostConfig({
-        ...networkedHostEnvironment,
-        OPENSTEER_ACCOUNT_BUNDLE_PATH: writeAccountAdoptionBundle(accountBundle),
-        OPENSTEER_CANONICAL_ORIGIN: accountBundle.deployment.canonicalOrigin,
-        OPENSTEER_DEPLOYMENT_KIND: "personal",
-      }),
-    ).toThrow();
   });
 
   it("accepts an operator-held first-owner code only where enrollment establishes the owner", () => {
-    const team = {
-      ...hostEnvironment,
-      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
+    const home = {
+      ...networkedHostEnvironment,
+      OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: undefined,
       OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
-      OPENSTEER_DEPLOYMENT_KIND: "team",
     };
     const expected = { lifetimeSeconds: 24 * 60 * 60, tokenDigest: digestSecret(token) };
     expect(
-      parseHostConfig({ ...team, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token }).identity
+      parseHostConfig({ ...home, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token }).identity
         .initialOwnerEnrollment,
     ).toEqual(expected);
     expect(
       parseHostConfig({
-        ...team,
+        ...home,
         OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: digestSecret(token),
       }).identity.initialOwnerEnrollment,
     ).toEqual(expected);
@@ -654,19 +603,19 @@ describe("configuration", () => {
     const digestFile = join(directory, "digest");
     writeFileSync(digestFile, `${digestSecret(token)}\n`, { mode: 0o600 });
     expect(
-      parseHostConfig({ ...team, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: digestFile })
+      parseHostConfig({ ...home, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: digestFile })
         .identity.initialOwnerEnrollment,
     ).toEqual(expected);
     expect(() =>
       parseHostConfig({
-        ...team,
+        ...home,
         OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token,
         OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: digestFile,
       }),
     ).toThrow(/exactly one/u);
     for (const digest of [token, digestSecret(token).toUpperCase()])
       expect(() =>
-        parseHostConfig({ ...team, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: digest }),
+        parseHostConfig({ ...home, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: digest }),
       ).toThrow();
     expect(() =>
       parseHostConfig({
@@ -674,28 +623,6 @@ describe("configuration", () => {
         OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token,
       }),
     ).toThrow(/Personal Host uses the app-held local owner claim/u);
-  });
-
-  it("bounds team file storage only on a team Host", () => {
-    const team = {
-      ...hostEnvironment,
-      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
-      OPENSTEER_DEPLOYMENT_KIND: "team",
-    };
-    expect(
-      parseHostConfig({ ...team, OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: "1073741824" })
-        .teamStorageLimitBytes,
-    ).toBe(1_073_741_824);
-    expect(parseHostConfig(team).teamStorageLimitBytes).toBeUndefined();
-    for (const limit of ["0", "-1", "1.5", "lots"])
-      expect(() =>
-        parseHostConfig({ ...team, OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: limit }),
-      ).toThrow();
-    expect(() =>
-      parseHostConfig({ ...localHostEnvironment, OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: "1024" }),
-    ).toThrow(/only to a team Host/u);
   });
 
   it("rejects a portal origin that is not a bare, secure origin", () => {
@@ -744,10 +671,10 @@ describe("Host exposure", () => {
 
   it("treats a reachable origin as networked", () => {
     expect(
-      parseHostConfig({
-        ...networkedHostEnvironment,
-        OPENSTEER_CANONICAL_ORIGIN: "http://opensteer.example.com",
-      }).exposure,
+      deriveHostExposure({
+        bindAddress: "0.0.0.0",
+        canonicalOrigin: new URL("http://opensteer.example.com"),
+      }),
     ).toBe("networked");
   });
 
@@ -756,11 +683,10 @@ describe("Host exposure", () => {
     // the network can still reach directly.
     for (const bindAddress of ["0.0.0.0", "::", "0:0:0:0:0:0:0:0", "192.168.1.10"]) {
       expect(
-        parseHostConfig({
-          ...networkedHostEnvironment,
-          OPENSTEER_BIND_ADDRESS: bindAddress,
-          OPENSTEER_CANONICAL_ORIGIN: "http://localhost:43100",
-        }).exposure,
+        deriveHostExposure({
+          bindAddress,
+          canonicalOrigin: new URL("http://localhost:43100"),
+        }),
       ).toBe("networked");
     }
   });
@@ -821,45 +747,6 @@ describe("Runner enrollment token delivery", () => {
     ).toThrow(/could not be read/);
   });
 });
-
-function accountAdoptionBundle(
-  input: {
-    readonly canonicalOrigin?: string;
-    readonly controlApiOrigin?: string;
-  } = {},
-) {
-  const canonicalOrigin = input.canonicalOrigin ?? "https://deployment.connect.opensteer.test";
-  const controlApiOrigin = input.controlApiOrigin ?? "https://accounts.opensteer.test";
-  return HostAccountAdoptionBundleSchema.parse({
-    provisioningMode: "adoption",
-    controlApiOrigin,
-    deployment: {
-      canonicalOrigin,
-      deploymentId: createId("deployment"),
-      hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
-      hostInstanceId: createId("hostInstance"),
-      reachability: "canonical",
-    },
-    hostCredential: `osc_${"a".repeat(43)}`,
-    oidc: {
-      clientId: "opensteer-host-deployment",
-      issuer: controlApiOrigin,
-      redirectUri: `${canonicalOrigin}/v1/auth/oidc/callback`,
-      requirePkce: true,
-      scopes: ["openid", "profile", "email"],
-      tokenEndpointAuthMethod: "client_secret_basic",
-    },
-    oidcClientSecret: `ocs_${"b".repeat(43)}`,
-  });
-}
-
-function writeAccountAdoptionBundle(value: unknown): string {
-  const directory = mkdtempSync(join(tmpdir(), "opensteer-config-account-bundle-"));
-  temporaryDirectories.push(directory);
-  const path = join(directory, "account-bundle.json");
-  writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-  return path;
-}
 
 it.each([undefined, "0", "1", "false", "true"])(
   "validates the default-off passkey flag %s",
@@ -1034,12 +921,6 @@ describe("networked Personal Home", () => {
         OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: main,
       }),
     ).toThrow(/only for a networked Personal Host/u);
-    expect(() =>
-      parseHostConfig({
-        ...networkedHostEnvironment,
-        OPENSTEER_INITIAL_MAIN_RUNNER_ENROLLMENT_TOKEN: main,
-      }),
-    ).toThrow(/only for a networked Personal Host/u);
   });
 
   it("lets the operator turn native OAuth off, and links a Personal Account", () => {
@@ -1059,12 +940,6 @@ describe("networked Personal Home", () => {
         OPENSTEER_PERSONAL_ACCOUNT_ISSUER: "https://accounts.example.com",
       }).personalAccountIssuer,
     ).toEqual(new URL("https://accounts.example.com"));
-    expect(() =>
-      parseHostConfig({
-        ...networkedHostEnvironment,
-        OPENSTEER_PERSONAL_ACCOUNT_ISSUER: "https://accounts.example.com",
-      }),
-    ).toThrow(/only for an unmanaged Personal Host/u);
   });
 
   it("boots a managed Home that is claimed and signed in to by its Account alone", () => {

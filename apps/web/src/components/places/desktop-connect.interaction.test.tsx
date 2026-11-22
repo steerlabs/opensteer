@@ -56,7 +56,7 @@ async function submitAddress(origin: string): Promise<DesktopConnectPrivateDeplo
   return onConnect.mock.calls[0]![0];
 }
 
-function discoveryAt(canonicalOrigin: string, kind: "personal" | "team") {
+function discoveryAt(canonicalOrigin: string, kind: "personal") {
   return signTestDiscoveryEnvelope(
     {
       canonicalOrigin,
@@ -70,33 +70,35 @@ function discoveryAt(canonicalOrigin: string, kind: "personal" | "team") {
 }
 
 describe("Add a Home by address", () => {
-  it.each([
-    ["a Home on its own server", "https://home.example.com", "personal"],
-    ["a team server", "https://team.example.com", "team"],
-  ] as const)("adds %s through the bridge's own schema", async (_name, origin, kind) => {
-    const sent = await submitAddress(origin);
-    // The bridge and the service parse exactly what the form sent.
-    const bridged = DesktopConnectPrivateDeploymentInputSchema.parse(sent);
-    const discovery = discoveryAt(origin, kind);
-    const catalog = new DeploymentCatalogStore({
-      filePath: "/private/deployment-catalog.json",
-      privateFiles: new MemoryPrivateFilesystem(),
-    });
-    const service = new PrivateDeploymentConnectionService({
-      catalog,
-      fetch: async (request) =>
-        String(request).includes("/v1/rpc/auth.config")
-          ? Response.json({ ok: true, data: { setupState: "complete" } })
-          : Response.json(testHostDescriptor(discovery)),
-      sessions: {
-        establish: vi.fn(async () => {
-          throw new Error("An address is never paired");
-        }),
-        probe: vi.fn(async () => "unauthenticated" as const),
-      },
-    });
-    await service.connect(bridged);
-    const listed = (await catalog.load()).deployments;
-    expect(listed).toMatchObject([{ kind, authority: { document: { canonicalOrigin: origin } } }]);
-  });
+  it.each([["a Home on its own server", "https://home.example.com", "personal"]] as const)(
+    "adds %s through the bridge's own schema",
+    async (_name, origin, kind) => {
+      const sent = await submitAddress(origin);
+      // The bridge and the service parse exactly what the form sent.
+      const bridged = DesktopConnectPrivateDeploymentInputSchema.parse(sent);
+      const discovery = discoveryAt(origin, kind);
+      const catalog = new DeploymentCatalogStore({
+        filePath: "/private/deployment-catalog.json",
+        privateFiles: new MemoryPrivateFilesystem(),
+      });
+      const service = new PrivateDeploymentConnectionService({
+        catalog,
+        fetch: async (request) =>
+          String(request).includes("/v1/rpc/auth.config")
+            ? Response.json({ ok: true, data: { setupState: "complete" } })
+            : Response.json(testHostDescriptor(discovery)),
+        sessions: {
+          establish: vi.fn(async () => {
+            throw new Error("An address is never paired");
+          }),
+          probe: vi.fn(async () => "unauthenticated" as const),
+        },
+      });
+      await service.connect(bridged);
+      const listed = (await catalog.load()).deployments;
+      expect(listed).toMatchObject([
+        { kind, authority: { document: { canonicalOrigin: origin } } },
+      ]);
+    },
+  );
 });

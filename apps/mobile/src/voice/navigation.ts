@@ -1,7 +1,6 @@
 import type { TabId } from "@opensteer/core";
 import { CommonActions, StackActions } from "@react-navigation/native";
-import { enterSide, navigationRef } from "../navigation-ref.js";
-import { routeSide } from "../side-memory.js";
+import { navigationRef } from "../navigation-ref.js";
 import { paramsTabId, tabRoute } from "../browser/surface-route.js";
 
 /** What a Run's show or the voice call brings into view: a task, or exactly one tab. */
@@ -44,10 +43,7 @@ export function show(deploymentId: string | null, target: ShowTarget): boolean {
     Object.entries(params).every(([key, value]) => current[key] === value)
   )
     return false;
-  // Within Tasks the shown screen goes over the task, so Back returns to it.
-  if (routeSide(navigationRef.getRootState()?.routes[1]) === "tasks") {
-    navigationRef.dispatch(StackActions.push(name, params));
-    return true;
-  }
-  return enterSide({ name, params });
+  // The shown screen goes over the task, so Back returns to it.
+  navigationRef.dispatch(StackActions.push(name, params));
+  return true;
 }

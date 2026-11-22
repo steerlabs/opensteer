@@ -35,7 +35,7 @@ import { HostDiscoveryEnvelopeSchema, hostKeyFingerprint } from "@opensteer/depl
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
-import type { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import type { CloudComputerSecretCipher } from "./secret-cipher.js";
 import { ControlPlaneError } from "../server/errors.js";
 import type { CloudComputerConfig } from "./config.js";
 import { normalizeEgressEndpoint } from "./egress-validation.js";
@@ -68,7 +68,7 @@ const clearBootToken = {
 interface BrowserPoolStoreDeps {
   readonly db: Database;
   readonly config: CloudComputerConfig;
-  readonly cipher: HostedTeamSetupTokenCipher;
+  readonly cipher: CloudComputerSecretCipher;
   readonly now: () => Date;
   readonly assignEgress: (
     tx: TransactionDb,
@@ -86,7 +86,7 @@ interface BrowserPoolStoreDeps {
 export class BrowserPoolStore {
   readonly #db: Database;
   readonly #config: CloudComputerConfig;
-  readonly #cipher: HostedTeamSetupTokenCipher;
+  readonly #cipher: CloudComputerSecretCipher;
   readonly #now: () => Date;
   readonly #assignEgress: BrowserPoolStoreDeps["assignEgress"];
   readonly #egressCredentials: BrowserPoolStoreDeps["egressCredentials"];

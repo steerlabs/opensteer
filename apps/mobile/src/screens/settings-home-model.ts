@@ -16,9 +16,3 @@ export interface SettingsHomeWork {
   readonly title: string;
   readonly onPress: () => void;
 }
-
-/** Settings' Teams group: the person's teams, and Join a team. */
-export interface SettingsHomeTeam {
-  readonly name: string;
-  readonly rows: readonly { readonly title: string; readonly onPress: () => void }[];
-}

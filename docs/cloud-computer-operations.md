@@ -57,7 +57,7 @@ To enable organization seats, set `OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID` to a 
 
 When an organization admin creates an invitation, the website shows a link for the admin to share with the invitee. Sending the link is manual. The invitee accepts while signed in with the invited, verified email address.
 
-Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, at rest). `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` must differ from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
+Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, at rest).
 
 | Env var                                                   | Meaning                                                                                         | Required | Default | Secret source          |
 | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
@@ -463,7 +463,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **What the operator does**:
   1. Check that the `home-provisioner` Kubernetes ServiceAccount is bound to the Google service account email configured in `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL`.
   2. Check that `OPENSTEER_ACCOUNT_URL` in `home-provisioner` exactly matches `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` in Account (the workload identity JWT audience must match).
-  3. Confirm `OPENSTEER_CLOUD_COMPUTER_*` is still enabled in Account and that `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` is distinct from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
+  3. Confirm `OPENSTEER_CLOUD_COMPUTER_*` is still enabled in Account.
 
 ### DNS or identity mismatch
 

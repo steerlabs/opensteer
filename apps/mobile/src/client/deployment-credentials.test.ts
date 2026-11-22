@@ -18,7 +18,7 @@ const credentials = (hostStatus: "signed-in" | "signed-out") => {
       oauth: {
         authorizationHeader: async () => (hostStatus === "signed-in" ? "Bearer host" : null),
         hostCredentialState: () => ({
-          connection: testDeploymentConnection({ kind: "team" }),
+          connection: testDeploymentConnection({ home: true }),
           detail: null,
           key: "key",
           status: hostStatus,
@@ -31,17 +31,17 @@ const credentials = (hostStatus: "signed-in" | "signed-out") => {
 };
 
 describe("createDeploymentCredentials", () => {
-  it("presents a team Host its own OAuth bearer", async () => {
+  it("presents a Home at its own address its own OAuth bearer", async () => {
     const { credentials: held } = credentials("signed-in");
-    const connection = testDeploymentConnection({ kind: "team" });
+    const connection = testDeploymentConnection({ home: true });
 
     expect(await held.authorization(connection)).toBe("Bearer host");
     expect(await held.held(connection)).toBe(true);
   });
 
-  it("holds nothing for a team Host this phone is signed out of", async () => {
+  it("holds nothing for a Home at its own address this phone is signed out of", async () => {
     const { credentials: held } = credentials("signed-out");
-    const connection = testDeploymentConnection({ kind: "team" });
+    const connection = testDeploymentConnection({ home: true });
 
     expect(await held.authorization(connection)).toBeNull();
     expect(await held.held(connection)).toBe(false);

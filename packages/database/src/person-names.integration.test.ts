@@ -4,9 +4,6 @@ import { afterEach, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import { OwnerProfileStore } from "./owner-profile-store.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
-import { TeamAccessStore } from "./team-access-store.js";
-import { createTeamFixture } from "./team-fixture.test-support.js";
-import { TeamMembersStore } from "./team-members-store.js";
 import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
 
 const drops: (() => Promise<void>)[] = [];
@@ -137,41 +134,4 @@ it("follows the live link's Account forward only, and keeps the last name when i
   expect((await store.read())?.name).toBe("Bea Local");
   // An adopted name counts as chosen: the computer's name never replaces it.
   expect(await store.seed("Someone Else")).toBe(false);
-});
-
-it("applies a member's Account name only to that Account's user, only forward, without an access change", async () => {
-  const fixture = await createTeamFixture();
-  drops.push(fixture.close);
-  const { database, userId } = fixture;
-  const issuer = "https://accounts.example.invalid";
-  await sql`insert into account_directory_provider(singleton_key,provider_id,issuer) values('opensteer-account','oidc.account',${issuer})`.execute(
-    database,
-  );
-  await sql`insert into auth_accounts(id,account_id,provider_id,user_id) values(${createId("authAccount")},'acct_maya','oidc.account',${userId})`.execute(
-    database,
-  );
-  const access = new TeamAccessStore(database);
-  const members = new TeamMembersStore(access);
-  const accessRevision = async () =>
-    await database
-      .selectFrom("teamAccessState")
-      .select(["revision", "directoryRevision"])
-      .executeTakeFirstOrThrow();
-  const before = await accessRevision();
-
-  const apply = (subject: string, revision: number, value: string, iss = issuer) =>
-    members.applyAccountName({ userId, issuer: iss, subject, name: name(value), revision });
-  expect(await apply("acct_someone_else", 5, "Mallory")).toBeNull();
-  expect(await apply("acct_maya", 5, "Mallory", "https://evil.example.invalid")).toBeNull();
-  expect(await apply("acct_maya", 2, "Maya Chen")).toMatchObject({
-    member: { userId, displayName: "Maya Chen", handle: "maya", nameRevision: 2 },
-  });
-  expect(await apply("acct_maya", 2, "Again")).toBeNull();
-  expect(await apply("acct_maya", 1, "Maya")).toBeNull();
-  expect(await members.get({ kind: "human", userId })).toMatchObject({
-    displayName: "Maya Chen",
-    handle: "maya",
-    nameRevision: 2,
-  });
-  expect(await accessRevision()).toEqual(before);
 });

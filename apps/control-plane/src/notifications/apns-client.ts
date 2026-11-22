@@ -92,7 +92,7 @@ export class ApnsClient {
         aps: {
           alert: { body: input.message.body, title: input.message.title },
           sound: "default",
-          "thread-id": `${data.deploymentId}:${data.threadId ?? data.channelId ?? data.noticeId ?? ""}`,
+          "thread-id": `${data.deploymentId}:${data.threadId ?? ""}`,
           ...(data.preview ? { "mutable-content": 1 } : {}),
         },
       });

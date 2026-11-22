@@ -425,7 +425,6 @@ function thread(): Thread {
     doneReason: null,
     icon: null,
     purpose: "task",
-    teamOrigin: null,
     createdAt: now,
     createdBy: ownerId,
     environmentId,
@@ -449,7 +448,6 @@ function run(value: Thread): Run {
     accessMode: value.accessMode,
     activationInputId: seedInputId,
     assignmentId: null,
-    delivery: null,
     causalChainId: createId("causalChain"),
     completedAt: null,
     createdAt: now,
@@ -494,12 +492,10 @@ function message(anchorThreadId: Thread["id"], runId: Run["id"]): Message {
 function inboxInput(value: Message, run: Run, policy: "report" | "queue" | "steer"): ThreadInput {
   return {
     assignmentId: null,
-    teamRequestId: null,
     cancelReason: null,
     causalChainId: run.causalChainId,
     createdAt: now,
     deliveredAt: now,
-    teamSource: null,
     messageId: value.id,
     policy,
     replyTarget: null,

@@ -55,10 +55,6 @@ Open it, connect Chrome and sign in to an agent. Your phone pairs in one scan.
 **On a Linux server.** Run your own Home on one HTTPS hostname. See
 [Opensteer Home on Linux](deploy/home/README.md).
 
-**For your team.** Run a team server on a spare Mac or your own Linux server for shared channels,
-threads and knowledge. Everyone's agents keep running on their own computers. See
-[Run a team](deploy/team/README.md).
-
 **From source.** Install the Node and pnpm versions in [package.json](package.json), Go and
 Docker, then run
 

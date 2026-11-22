@@ -8,8 +8,6 @@ import {
   hostApiVersion,
   hostApiVersionHeader,
   minimumHostApiVersion,
-  teamApiVersion,
-  teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
 import {
   cloneTestDatabase,
@@ -94,148 +92,104 @@ vi.mock("../browser/password-sign-in-service.js", async (importOriginal) => {
   };
 });
 
-it.each(["personal", "team"] as const)(
-  "cold starts and shuts down a fresh %s Host with independent version admission",
-  async (kind) => {
-    const database = await cloneTestDatabase("host");
-    const directory = await mkdtemp(join(tmpdir(), "opensteer-deployment-start-"));
-    let runtime: HostRuntime | undefined;
-    constructions.length = 0;
-    try {
-      const config = parseHostConfig({
-        OPENSTEER_MODE: "development",
-        OPENSTEER_DEPLOYMENT_KIND: kind,
-        ...(kind === "personal"
-          ? { OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: "m".repeat(48) }
-          : {}),
-        OPENSTEER_DATABASE_URL: database.url,
-        OPENSTEER_AUTH_SECRET: "s".repeat(48),
-        OPENSTEER_HOST_DATA_DIR: directory,
-        OPENSTEER_CANONICAL_ORIGIN:
-          kind === "personal" ? "http://127.0.0.1:4310" : "https://team.example.invalid",
-        OPENSTEER_BIND_ADDRESS: "127.0.0.1",
-        OPENSTEER_PORT: "4310",
-        ...(kind === "personal"
-          ? {
-              OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: "c".repeat(48),
-              OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
-              OPENSTEER_AGENT_HOME: join(directory, "agent-home"),
-              OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
-            }
-          : { OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: "t".repeat(48) }),
-      });
-      const owned = await ownTestDatabaseProducer(database.url, async () => {
-        const host = await createHostRuntime(config);
-        return { host, close: () => host.close() };
-      });
-      runtime = owned.host;
-      expect(runtime.kind).toBe(kind);
-      const descriptor = await runtime.app.inject({ method: "GET", url: "/.well-known/opensteer" });
-      expect(descriptor.statusCode).toBe(200);
-      expect(descriptor.json()).toMatchObject({
-        kind,
-        apiVersion: kind === "team" ? teamApiVersion : minimumHostApiVersion,
-        authority: { document: { deploymentShape: { kind } } },
-      });
-      for (const version of [kind === "team" ? "0" : "999", "1&opensteer_api_version=1"]) {
-        const refused = await runtime.app.inject({
-          method: "GET",
-          url: `/v1/realtime?opensteer_api_version=${version}`,
-          headers: { upgrade: "websocket", connection: "Upgrade" },
-        });
-        expect(refused.statusCode).toBe(kind === "team" ? 409 : 400);
-      }
-      const admitted = await runtime.app.inject({
+it("cold starts and shuts down a fresh personal Host with independent version admission", async () => {
+  const kind = "personal" as const;
+  const database = await cloneTestDatabase("host");
+  const directory = await mkdtemp(join(tmpdir(), "opensteer-deployment-start-"));
+  let runtime: HostRuntime | undefined;
+  constructions.length = 0;
+  try {
+    const config = parseHostConfig({
+      OPENSTEER_MODE: "development",
+      OPENSTEER_DEPLOYMENT_KIND: kind,
+      OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: "m".repeat(48),
+      OPENSTEER_DATABASE_URL: database.url,
+      OPENSTEER_AUTH_SECRET: "s".repeat(48),
+      OPENSTEER_HOST_DATA_DIR: directory,
+      OPENSTEER_CANONICAL_ORIGIN: "http://127.0.0.1:4310",
+      OPENSTEER_BIND_ADDRESS: "127.0.0.1",
+      OPENSTEER_PORT: "4310",
+      OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: "c".repeat(48),
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
+      OPENSTEER_AGENT_HOME: join(directory, "agent-home"),
+      OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
+    });
+    const owned = await ownTestDatabaseProducer(database.url, async () => {
+      const host = await createHostRuntime(config);
+      return { host, close: () => host.close() };
+    });
+    runtime = owned.host;
+    expect(runtime.kind).toBe(kind);
+    const descriptor = await runtime.app.inject({ method: "GET", url: "/.well-known/opensteer" });
+    expect(descriptor.statusCode).toBe(200);
+    expect(descriptor.json()).toMatchObject({
+      kind,
+      apiVersion: minimumHostApiVersion,
+      authority: { document: { deploymentShape: { kind } } },
+    });
+    for (const version of ["999", "1&opensteer_api_version=1"]) {
+      const refused = await runtime.app.inject({
         method: "GET",
-        url: `/v1/realtime?opensteer_api_version=${kind === "team" ? teamApiVersion : hostApiVersion}`,
-        headers: {
-          upgrade: "websocket",
-          connection: "Upgrade",
-          origin: config.canonicalOrigin.origin,
-        },
+        url: `/v1/realtime?opensteer_api_version=${version}`,
+        headers: { upgrade: "websocket", connection: "Upgrade" },
       });
-      expect(admitted.statusCode).toBe(401);
-      if (kind === "team") {
-        for (const url of [
-          "/v1/auth/oidc/callback?state=ost-team-api-0.fake",
-          "/v1/auth/native/oauth2/authorize?opensteer_team_api_version=0",
-        ]) {
-          const refused = await runtime.app.inject({ method: "GET", url });
-          expect(refused.statusCode).toBe(409);
-        }
-
-        expect(constructions).toEqual([]);
-        for (const url of [
-          "/v1/rpc/team.bootstrap.get",
-          "/v1/rpc/commands.dispatch",
-          "/v1/team/setup/exchange",
-          "/v1/team/files/upload/not-a-channel",
-          "/internal/v1/team/link/redeem",
-        ]) {
-          const refused = await runtime.app.inject({
-            method: "POST",
-            url,
-            headers: {
-              "content-type": "application/json",
-              [hostApiVersionHeader]: String(hostApiVersion),
-            },
-            payload: "{invalid",
-          });
-          expect(refused.statusCode).toBe(url.startsWith("/internal/") ? 426 : 409);
-          expect(refused.body).toContain("version");
-        }
-        const personal = await runtime.app.inject({
-          method: "GET",
-          url: "/v1/rpc/personal.shell.get?input=%7B%7D",
-          headers: { [teamApiVersionHeader]: String(teamApiVersion) },
-        });
-        expect(personal.statusCode).toBe(404);
-      } else {
-        expect(constructions).toEqual(
-          expect.arrayContaining(["RunnerRegistry", "BrowserService", "DeviceService"]),
-        );
-        const refused = await runtime.app.inject({
-          method: "POST",
-          url: "/v1/rpc/commands.dispatch",
-          headers: {
-            "content-type": "application/json",
-            [hostApiVersionHeader]: String(minimumHostApiVersion - 1),
-          },
-          payload: "{invalid",
-        });
-        expect(refused.statusCode).toBe(400);
-        expect(refused.json()).toMatchObject({
-          ok: false,
-          error: { reason: "unsupported-version" },
-        });
-        expect(runtime.kind).toBe("personal");
-        if (runtime.kind === "personal") {
-          const tables = await runtime.store.database.introspection.getTables();
-          const names = new Set(tables.map((table) => table.name));
-          for (const removed of [
-            "workspaces",
-            "workspace_memberships",
-            "workspace_tabs",
-            "projects",
-            "channel_conversation_contexts",
-            "deployment_event_state",
-            "deployment_events",
-          ])
-            expect(names.has(removed)).toBe(false);
-          for (const required of [
-            "personal_settings",
-            "client_sync_state",
-            "client_changes",
-            "team_access_state",
-            "team_channels",
-          ])
-            expect(names.has(required)).toBe(true);
-        }
-      }
-    } finally {
-      await runtime?.close();
-      await database.drop();
-      await rm(directory, { recursive: true, force: true });
+      expect(refused.statusCode).toBe(400);
     }
-  },
-);
+    const admitted = await runtime.app.inject({
+      method: "GET",
+      url: `/v1/realtime?opensteer_api_version=${hostApiVersion}`,
+      headers: {
+        upgrade: "websocket",
+        connection: "Upgrade",
+        origin: config.canonicalOrigin.origin,
+      },
+    });
+    expect(admitted.statusCode).toBe(401);
+    {
+      expect(constructions).toEqual(
+        expect.arrayContaining(["RunnerRegistry", "BrowserService", "DeviceService"]),
+      );
+      const refused = await runtime.app.inject({
+        method: "POST",
+        url: "/v1/rpc/commands.dispatch",
+        headers: {
+          "content-type": "application/json",
+          [hostApiVersionHeader]: String(minimumHostApiVersion - 1),
+        },
+        payload: "{invalid",
+      });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json()).toMatchObject({
+        ok: false,
+        error: { reason: "unsupported-version" },
+      });
+      expect(runtime.kind).toBe("personal");
+      if (runtime.kind === "personal") {
+        const tables = await runtime.store.database.introspection.getTables();
+        const names = new Set(tables.map((table) => table.name));
+        for (const removed of [
+          "workspaces",
+          "workspace_memberships",
+          "workspace_tabs",
+          "projects",
+          "channel_conversation_contexts",
+          "deployment_event_state",
+          "deployment_events",
+        ])
+          expect(names.has(removed)).toBe(false);
+        for (const required of [
+          "personal_settings",
+          "client_sync_state",
+          "client_changes",
+          "team_access_state",
+          "team_channels",
+        ])
+          expect(names.has(required)).toBe(true);
+      }
+    }
+  } finally {
+    await runtime?.close();
+    await database.drop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

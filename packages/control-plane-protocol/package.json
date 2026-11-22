@@ -7,8 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./cloud-computer-copy": "./src/cloud-computer-copy.ts",
-    "./broker-sealing": "./src/broker-sealing.ts",
-    "./hosted-teams": "./src/hosted-teams.ts"
+    "./broker-sealing": "./src/broker-sealing.ts"
   },
   "scripts": {
     "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",

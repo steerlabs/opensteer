@@ -61,7 +61,6 @@ describe("Request protocol", () => {
       pendingRequests: 1,
       providerSessionId: null,
       purpose: "task",
-      teamOrigin: null,
       status: "waiting",
       title: "Request test",
       updatedAt: now,

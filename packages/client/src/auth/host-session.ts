@@ -1,7 +1,5 @@
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
 import { presentActionFailure } from "../feedback/client-issue.js";
-import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
-import { teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { HostSignInOutcomeError } from "./host-sign-in-outcome.js";
 import { DeploymentIdSchema } from "@opensteer/core";
 import type { HostBootstrapMethod } from "@opensteer/deployment-authority";
 import { AccountRequestError } from "../connections/account-deployment-directory.js";
@@ -20,11 +18,7 @@ import {
   HostSessionExchangeError,
   type HostSessionExchange,
 } from "./host-session-exchange.js";
-import {
-  TeamEntryRefusedError,
-  type HostOAuthState,
-  type NativeOAuthManager,
-} from "./native-oauth.js";
+import { type HostOAuthState, type NativeOAuthManager } from "./native-oauth.js";
 
 const defaultRecoveryCooldownMs = 30_000;
 
@@ -117,8 +111,7 @@ export type HostSessionRecoveryOutcome =
   | "recovered"
   | "unavailable"
   | "unsupported"
-  | TeamEntryRefusedError
-  | TeamEntryOutcomeError;
+  | HostSignInOutcomeError;
 
 export interface HostSessionRecovery {
   assertSessionAllowed?(deploymentId: string): Promise<void>;
@@ -146,7 +139,6 @@ type HostOAuth = Pick<
   NativeOAuthManager,
   | "abandonHostSignIn"
   | "signInHome"
-  | "signInTeam"
   | "hostCredentialState"
   | "recoverHostAuthorization"
   | "signOutHost"
@@ -499,22 +491,13 @@ export class HostSession implements HostSessionRecovery {
         );
       }
       try {
-        return oauthObservation(
-          !isPersonalHost(connection.authority.document)
-            ? await this.#oauth.signInTeam(connection, undefined, interactive)
-            : await this.#oauth.signInHome(connection, interactive),
-        );
+        return oauthObservation(await this.#oauth.signInHome(connection, interactive));
       } catch (error) {
-        if (error instanceof TeamEntryOutcomeError) {
+        if (error instanceof HostSignInOutcomeError) {
           if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
             return observation(resolved, "needs-sign-in", error.message);
           if (error.outcome.status === "update-required")
             return observation(resolved, "blocked", error.message);
-        }
-        if (error instanceof TeamEntryRefusedError) {
-          if (teamEntryRefusalOutcome(error.reason) === "membership")
-            return observation(resolved, "blocked", error.message);
-          throw new HostSessionError("unavailable", error.message, { cause: error });
         }
         throw error;
       }
@@ -662,13 +645,8 @@ function observationFromRecovery(
   resolved: ResolvedConnection,
   outcome: HostSessionRecoveryOutcome,
 ): HostSessionObservation {
-  if (outcome instanceof TeamEntryOutcomeError)
+  if (outcome instanceof HostSignInOutcomeError)
     return observation(resolved, "blocked", outcome.message);
-  if (outcome instanceof TeamEntryRefusedError) {
-    if (teamEntryRefusalOutcome(outcome.reason) === "membership")
-      return observation(resolved, "blocked", outcome.message);
-    throw new HostSessionError("unavailable", outcome.message, { cause: outcome });
-  }
   if (outcome === "recovered") return observation(resolved, "ready");
   if (outcome === "blocked") {
     return observation(resolved, "blocked", "This connection was refused.");
@@ -728,9 +706,8 @@ function recoveryFromObservation(
 }
 
 function recoveryFailure(error: unknown): HostSessionRecoveryOutcome {
-  if (error instanceof TeamEntryOutcomeError && error.outcome.status === "update-required")
+  if (error instanceof HostSignInOutcomeError && error.outcome.status === "update-required")
     return error;
-  if (error instanceof TeamEntryRefusedError) return error;
   if (error instanceof HostSessionExchangeError) return error.outcome;
   if (error instanceof AccountRequestError) {
     if (error.status === 401) return "account-required";

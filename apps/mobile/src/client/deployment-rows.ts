@@ -1,5 +1,5 @@
 import { deviceWords } from "@opensteer/client/computers";
-import { isPersonalHost } from "@opensteer/deployment-authority/personal-access-route";
+import { placeStatus } from "@opensteer/protocol/deployment-status";
 import {
   describeConnectionAccess,
   isNetworkedHome,
@@ -49,8 +49,8 @@ export type DeploymentStatus =
 /**
  * The door a Deployment that needs a credential opens.
  *
- * A team Host runs its own authorization server, so the person signs in
- * through the system browser. A Personal computer reached over Opensteer
+ * A Home at its own address runs its own authorization server, so the person
+ * signs in through the system browser. A Personal computer reached over Opensteer
  * Connect needs nobody: the Account signs a grant for the route and the Host
  * exchanges it. A Personal computer on its own private route needs the one-use
  * pairing code the operator carries off it, which only the Add door can take.
@@ -148,13 +148,11 @@ export function deploymentSignInLabel(signIn: DeploymentSignIn): string {
  * The kind, in the words the product uses for it — and only the words its own
  * data supports. A Deployment listed by the Account directory is one somebody
  * gave that Account access to; the directory entry says who may reach it, never
- * who runs it, so nothing here may call it Cloud. `personal` and `team`
- * are facts the Host itself declares in its descriptor, and are used as such.
+ * who runs it, so nothing here may call it Cloud.
  */
 export function deploymentKindLabel(connection: DeploymentConnection): string {
   if (isNetworkedHome(connection.authority.document)) return "Home";
-  if (isPersonalHost(connection.authority.document)) return personalComputerKind;
-  return "Team";
+  return personalComputerKind;
 }
 const personalComputerKind = "Personal computer";
 
@@ -237,8 +235,9 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
     case "unverified":
       return "The address this phone uses answers as a different deployment.";
     case "update-required":
+      // The Home by name needs the update, in the Mac's words.
       return row.verification === "host-too-old"
-        ? "This deployment speaks an older Opensteer protocol than this app. Update the deployment."
+        ? (placeStatus.unavailable("host-too-old", row.name).reason ?? null)
         : "This deployment speaks a newer Opensteer protocol than this app. Update this app.";
   }
 }

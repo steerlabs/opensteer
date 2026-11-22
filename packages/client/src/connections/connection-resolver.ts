@@ -1,4 +1,3 @@
-import type { TeamRuntimeOwner } from "../team/team-runtime-owner.js";
 import type { DeploymentId } from "@opensteer/core";
 import {
   hostKeyFingerprint,
@@ -48,7 +47,6 @@ export interface ConnectionAccess {
 }
 
 export interface ResolvedConnection {
-  readonly teamRuntime?: TeamRuntimeOwner;
   readonly access: DesktopAccess;
   readonly authorization: string | null;
   readonly bootstrapMethods: readonly HostBootstrapMethod[];

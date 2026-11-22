@@ -29,7 +29,7 @@ export function openOutside(url: string): void {
 /** A link that names something in Opensteer: it opens here, never in a browser or the system. */
 export function isInternalHref(href: string): boolean {
   const kind = classifyHref(href).kind;
-  return kind === "reference" || kind === "team-page" || kind === "file";
+  return kind === "reference" || kind === "file";
 }
 
 /** This phone, as its menu names it beside the computers. */

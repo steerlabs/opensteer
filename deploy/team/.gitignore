@@ -1,4 +1,0 @@
-config.env
-secrets/
-state/
-*.log

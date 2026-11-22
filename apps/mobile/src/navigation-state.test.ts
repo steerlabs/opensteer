@@ -96,8 +96,7 @@ describe("mobile root navigation", () => {
   });
 
   it("defers a selection change while modal work is open", () => {
-    // Joining a team from another computer selects that computer under the sheet.
-    for (const activeRouteName of ["Settings", "JoinTeam"])
+    for (const activeRouteName of ["Settings"])
       expect(
         selectionRootTransition({
           activeRouteName,
@@ -106,18 +105,6 @@ describe("mobile root navigation", () => {
           deploymentId: "dep_two",
         }),
       ).toBe("defer");
-  });
-
-  it("settles on the joining computer's Home with the team's channel over it", () => {
-    // What the join sheet resets to once it has switched computers.
-    expect(
-      selectionRootTransition({
-        activeRouteName: "TeamChannel",
-        baseDeploymentId: "dep_two",
-        baseRouteName: "Home",
-        deploymentId: "dep_two",
-      }),
-    ).toBeNull();
   });
 
   it("replaces the root beneath a thread-bound sheet rather than deferring", () => {
@@ -154,15 +141,13 @@ describe("mobile root navigation", () => {
   });
 });
 
-describe("warm mobile sides on the native stack router", () => {
+describe("warm mobile navigation on the native stack router", () => {
   const pageTabId = TabIdSchema.parse("tab_page");
   const task = { name: "Thread", params: { deploymentId: "d", threadId: "task" } };
   const page = {
     name: "WorkspaceBrowser",
     params: { deploymentId: "d", threadId: "task", tabId: pageTabId },
   };
-  const channel = { name: "TeamChannel", params: { teamId: "a", channelId: "general" } };
-  const reply = { name: "TeamThread", params: { ...channel.params, rootId: "root" } };
   function fixture() {
     const memory = new SideMemory();
     memory.account("account");
@@ -173,12 +158,7 @@ describe("warm mobile sides on the native stack router", () => {
         "Deployments",
         "Thread",
         "WorkspaceBrowser",
-        "TeamChannel",
-        "TeamChannels",
-        "TeamThread",
         "Settings",
-        "TeamSettings",
-        "JoinTeam",
         "NeedsYou",
         "Subagent",
       ],
@@ -204,44 +184,16 @@ describe("warm mobile sides on the native stack router", () => {
       memory,
       apply,
       state: () => state,
-      back: () => apply((state.index === 1 ? memory.back(state) : null) ?? CommonActions.goBack()),
       enter: (target: { name: string; params: object }) => apply(memory.enter(state, target)),
-      resume: (side: string) => apply(memory.resume(state, side)),
       push: (target: { name: string; params: object }) =>
         apply(StackActions.push(target.name, target.params)),
     };
   }
 
-  it("restores task + exact place and each team's channel/thread, retaining Home and router keys", () => {
+  it("an explicit notification replaces the remembered address and carries its landing params", () => {
     const f = fixture();
     f.enter(task);
     f.push(page);
-    const tasks = f.state().routes;
-    f.enter(channel);
-    f.push(reply);
-    const teamA = f.state().routes;
-    expect(teamA.map((route) => route.name)).toEqual(["Home", "TeamChannel", "TeamThread"]);
-    expect(f.memory.resume(f.state(), "b")).toBeNull();
-    f.resume("tasks");
-    expect(f.state().routes).toEqual(tasks);
-    f.resume("a");
-    expect(f.state().routes).toEqual(teamA);
-    expect(f.memory.resume(f.state(), "a")).toBeNull();
-    f.back();
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamChannel"]);
-    f.back();
-    expect(f.state().routes).toEqual(tasks);
-    f.resume("a");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamChannel"]);
-  });
-
-  it("an explicit notification or team link replaces only its side and spends its landing params", () => {
-    const f = fixture();
-    f.enter(task);
-    f.push(page);
-    f.enter(channel);
-    f.push(reply);
-    const teamA = f.state().routes;
     f.enter({
       ...task,
       params: {
@@ -251,92 +203,17 @@ describe("warm mobile sides on the native stack router", () => {
         requestId: "request",
       },
     });
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
     expect(f.state().routes.at(-1)?.params).toMatchObject({
       messageId: "message",
       requestId: "request",
     });
-    f.resume("a");
-    expect(f.state().routes).toEqual(teamA);
-    f.resume("tasks");
-    expect(f.state().routes.at(-1)?.params).toEqual({ deploymentId: "d", threadId: "notified" });
-    f.enter({
-      ...reply,
-      params: { teamId: "b", channelId: "b-channel", rootId: "b-root", replyId: "landing" },
-    });
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamThread"]);
-    f.resume("a");
-    expect(f.state().routes).toEqual(teamA);
-    f.resume("b");
-    expect(f.state().routes.at(-1)?.params).toEqual({
-      teamId: "b",
-      channelId: "b-channel",
-      rootId: "b-root",
-    });
   });
 
-  it("records only through the active index, excludes presented flows, and keeps all unspent params", () => {
-    const f = fixture();
-    f.enter(task);
-    f.push({
-      ...page,
-      params: { ...page.params, futureParam: { selection: [1, 2] }, editAddress: true },
-    });
-    f.push({ name: "Settings", params: { token: "secret" } });
-    f.push({ name: "TeamSettings", params: { teamId: "unrelated" } });
-    f.enter(channel);
-    f.resume("tasks");
-    expect(f.state().routes.map(({ name, params }) => ({ name, params }))).toEqual([
-      { name: "Home", params: { deploymentId: "d" } },
-      task,
-      {
-        ...page,
-        params: { ...page.params, futureParam: { selection: [1, 2] }, editAddress: true },
-      },
-    ]);
-    f.memory.record({ ...f.state(), index: 1 });
-    const action = f.memory.resume({ ...f.state(), index: 1 }, "a");
-    f.apply(action);
-    f.resume("tasks");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
-    f.push({ name: "Settings", params: {} });
-    f.push({ name: "JoinTeam", params: { link: "old sheet" } });
-    f.apply(f.memory.enter(f.state(), reply));
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamThread"]);
-    f.back();
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
-    f.enter(reply);
-    f.resume("tasks");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
-  });
-
-  it("clears sides on account and Deployment changes", () => {
+  it("trims only confirmed deletion/closure", () => {
     const f = fixture();
     f.enter(task);
     f.push(page);
-    f.enter(channel);
-    expect(f.memory.account("other")).toBe(true);
-    f.apply(CommonActions.reset(deploymentRoot("d")));
-    expect(f.memory.resume(f.state(), "a")).toBeNull();
-    f.resume("tasks");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home"]);
-    f.enter(task);
-    f.enter(channel);
-    f.apply(CommonActions.reset(deploymentRoot("other-deployment")));
-    f.resume("a");
-    f.resume("tasks");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home"]);
-    f.enter(channel);
-    f.apply(CommonActions.reset({ index: 0, routes: [{ name: "Deployments" }] }));
-    f.apply(CommonActions.reset(deploymentRoot("other-deployment")));
-    f.resume("a");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home"]);
-  });
-
-  it("trims only confirmed deletion/closure, and forgets a team back to remembered Tasks", () => {
-    const f = fixture();
-    f.enter(task);
-    f.push(page);
-    f.enter(channel);
     const unavailable = {
       deploymentId: "d",
       connection: "offline",
@@ -346,7 +223,6 @@ describe("warm mobile sides on the native stack router", () => {
     expect(
       f.memory.trim(f.state(), (route) => personalRouteInvalid(route, unavailable)),
     ).toBeNull();
-    f.resume("tasks");
     expect(f.state().routes.map((route) => route.name)).toEqual([
       "Home",
       "Thread",
@@ -378,34 +254,9 @@ describe("warm mobile sides on the native stack router", () => {
     );
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
     f.push(page);
-    f.resume("a");
     const deleted = { ...unavailable, threadLookups: { task: "missing" } } as HostSnapshot;
     f.apply(f.memory.trim(f.state(), (route) => personalRouteInvalid(route, deleted)));
-    f.resume("tasks");
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home"]);
-    f.enter(task);
-    f.push(page);
-    const tasks = f.state().routes;
-    f.enter({ name: "TeamChannels", params: { teamId: "a" } });
-    f.push(channel);
-    f.push(reply);
-    f.apply(f.memory.trim(f.state(), (route) => "channelId" in (route.params ?? {})));
-    expect(f.state().routes).toEqual(tasks);
-    f.resume("a");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamChannels"]);
-    f.apply(f.memory.forget(f.state(), "a"));
-    expect(f.state().routes).toEqual(tasks);
-    f.resume("a");
-    expect(f.state().routes).toEqual(tasks);
-  });
-
-  it("keeps a tab route by its tabId alone, never a viewing lease", () => {
-    const f = fixture();
-    f.enter(task);
-    f.push(page);
-    f.enter(channel);
-    f.resume("tasks");
-    expect(f.state().routes.at(-1)?.params).toEqual(page.params);
   });
 });
 
@@ -675,19 +526,6 @@ describe("pending external destinations", () => {
 });
 
 describe("external link stacks", () => {
-  const teamId = "dep_team";
-  const team = {
-    teamId,
-    origin: "https://team.example",
-    name: "Team",
-    onPhone: true,
-    state: "offline" as const,
-    detail: null,
-    session: null,
-    userId: null,
-  };
-  const teams = { team: () => team, teamAt: () => team, computersIn: () => ["personal-in-team"] };
-
   it.each([null, "personal"])(
     "offers pairing over the hydrated startup root (%s)",
     (selectedDeploymentId) => {
@@ -695,7 +533,7 @@ describe("external link stacks", () => {
       const select = vi.fn(async () => undefined);
       const state = applicationLinkState(
         { kind: "pairing", offer },
-        { externalIntent: 1, selectedDeploymentId, select, teams },
+        { selectedDeploymentId, select },
       );
       expect(state).toEqual({
         index: 1,
@@ -710,47 +548,11 @@ describe("external link stacks", () => {
     },
   );
 
-  it("opens a member's channel/thread without a JoinTeam sheet or waiting for personal selection", () => {
-    const connection = Promise.withResolvers<void>();
-    const select = vi.fn(() => connection.promise);
-    const state = applicationLinkState(
-      {
-        kind: "team",
-        origin: team.origin,
-        page: "unused",
-        target: { kind: "message", channelId: "channel", messageId: "42" },
-      } as never,
-      { externalIntent: 1, selectedDeploymentId: "unrelated", select, teams },
-    );
-    expect(state).toEqual({
-      index: 1,
-      routes: [
-        { name: "Home", params: { deploymentId: "personal-in-team" } },
-        { name: "TeamChannel", params: { teamId, channelId: "channel", messageId: "42" } },
-      ],
-    });
-    expect(select).toHaveBeenCalledWith("personal-in-team");
-    connection.resolve();
-  });
-
-  it("opens the notice's team even when origin lookup would return another team", () => {
-    const state = applicationLinkState(
-      { kind: "team-notice", origin: team.origin, teamId, noticeId: "notice" },
-      {
-        externalIntent: 1,
-        selectedDeploymentId: "personal-in-team",
-        select: async () => undefined,
-        teams: { ...teams, teamAt: () => ({ ...team, teamId: "wrong-team" }) },
-      },
-    );
-    expect(state.routes.at(-1)).toEqual({ name: "TeamNotices", params: { teamId } });
-  });
-
   it("replaces the old Deployment and leaves a useful Back destination", () => {
     const select = vi.fn(async () => undefined);
     const state = applicationLinkState(
       { kind: "open", deploymentId: "new", threadId: "task", requestId: null },
-      { externalIntent: 1, selectedDeploymentId: "old", select, teams },
+      { selectedDeploymentId: "old", select },
     );
     const router = StackRouter({ initialRouteName: "Home" });
     const options = {

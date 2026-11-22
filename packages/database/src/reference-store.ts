@@ -109,7 +109,7 @@ export async function resolvePersonalReferences(
         .where((eb) =>
           eb.or([
             publishedMessagePredicate("input"),
-            eb("input.state", "in", ["awaiting-approval", "pending", "claimed", "unknown"]),
+            eb("input.state", "in", ["pending", "claimed", "unknown"]),
           ]),
         )
         .execute())

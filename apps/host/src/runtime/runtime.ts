@@ -73,24 +73,13 @@ import { admitIdleCompaction, idleCompactionCandidates } from "@opensteer/databa
 import { DeviceAccessService } from "../administration/device-access-service.js";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
-import { runAllowsPersonalContext } from "@opensteer/database";
-import { resolveTeamTaskExecution } from "./team-task-execution.js";
 import { DeadlineDrain } from "./deadline-drain.js";
 import { assignmentReturnPass } from "./assignment-return-pass.js";
 import { executionLeaseDrain } from "./execution-leases.js";
-import { TeamRunEvents } from "./team-run-events.js";
-import { teamPublicationPass } from "./team-publication-pass.js";
 import { initializePersonalState } from "./personal-state.js";
 import { OwnerProfileService } from "../administration/owner-profile.js";
-import { createTeamHostRuntime } from "./team-runtime.js";
 import { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { HostOutputImageStore } from "../threads/host-output-images.js";
-import { createPersonalTeamLinkServices } from "../team-links/index.js";
-import {
-  personalTeamRunPort,
-  PersonalTeamAttachments,
-} from "../attachments/personal-team-ports.js";
-import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import {
   findPersonalSettings,
   personalSettings,
@@ -98,7 +87,7 @@ import {
   reportAgentHomeSkills,
   ensureDeployment,
 } from "@opensteer/database";
-import { deploymentPolicy, hostExposurePolicy, localMachineOwnerEmail } from "@opensteer/core";
+import { hostExposurePolicy, localMachineOwnerEmail } from "@opensteer/core";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
@@ -113,11 +102,7 @@ import { createHmac } from "node:crypto";
 import { personalHomeKindOption } from "./home-kind.js";
 import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
-import {
-  AesGcmSecretVault,
-  AesGcmCredentialVault,
-  StaticEncryptionKeyProvider,
-} from "@opensteer/access/host";
+import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import {
   assertHostConfigInvariants,
   HostConfigurationIssue,
@@ -141,7 +126,6 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
-  AccountDirectoryStore,
   acquireDeploymentAuthorityLease,
   AttachmentStore,
   AutomationFailureStore,
@@ -190,12 +174,10 @@ import {
 import type { FastifyInstance } from "fastify";
 import { sign, verify } from "node:crypto";
 import { resolve } from "node:path";
-import { AccountAdoptionControlClient } from "../access/account-adoption-control-client.js";
 
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
 import { WorkHomeService } from "../organizations/work-home.js";
 import { WorkHomeStore } from "@opensteer/database";
-import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
 import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
@@ -246,9 +228,8 @@ import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { HostAuthenticator } from "../identity/auth.js";
 import { CredentialService, loadOrCreateCredentialKey } from "../identity/credential-service.js";
 import { HarnessAuthenticationCoordinator } from "../identity/harness-authentication-coordinator.js";
-import { loadHostInstance, loadOrCreateHostInstance } from "../identity/host-instance.js";
+import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import {
-  loadHostKeys,
   loadOrCreateHostKeys,
   SignedTokenService,
   signHostDiscovery,
@@ -452,18 +433,7 @@ export interface PersonalHostRuntime {
   listen(): Promise<string>;
 }
 
-export type HostRuntime = PersonalHostRuntime | TeamHostRuntime;
-export interface TeamHostRuntime {
-  readonly kind: "team";
-  readonly app: FastifyInstance;
-  readonly deployment: Deployment;
-  readonly team: Awaited<ReturnType<typeof import("../team/services.js").startTeamServices>>;
-  /** Turns unready and retires keep-alive connections while load balancers drop this process. */
-  drain(): Promise<void>;
-  close(): Promise<void>;
-  closingStep(): string | undefined;
-  listen(): Promise<string>;
-}
+export type HostRuntime = PersonalHostRuntime;
 export interface HostRuntimeOptions {
   readonly onPersonalUpgradeHeartbeat?: () => void;
   readonly onPersonalUpgradeBatch?: NonNullable<
@@ -474,11 +444,6 @@ export interface HostRuntimeOptions {
     import("../plugins/plugin-service.js").PluginServiceOptions,
     "npmRegistry" | "catalogUrl" | "selfOrigin" | "limits" | "processEntry" | "bridge"
   >;
-  readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
-  /** How long a stopping team Host stays reachable while load balancers drop it; tests shorten it. */
-  readonly teamDrainDelayMs?: number;
-  /** How long a stopping team Host waits for in-flight requests and transfers before cutting them. */
-  readonly teamDrainDeadlineMs?: number;
   readonly onPersonalScopeCut?: (
     scope: import("@opensteer/protocol/personal-sync").PersonalScope,
   ) => Promise<void>;
@@ -502,7 +467,6 @@ export interface HostRuntimeOptions {
   readonly phoneUpdateRelease?: () => AgentPhoneUpdateRelease | null;
   readonly accountControlFetch?: typeof globalThis.fetch;
   readonly accountDirectoryFetch?: typeof globalThis.fetch;
-  readonly accountDirectoryIntervalMs?: number;
   /**
    * Where integrations reach providers and proposal sources; public HTTPS
    * only by default. A journey points it at an upstream of its own.
@@ -523,18 +487,11 @@ export async function createHostRuntime(
   const executionNow = options.executionClock?.now ?? (() => Date.now());
   assertHostConfigInvariants(config);
   const dataDirectory = resolve(config.dataDirectory);
-  // A strict installation was provisioned outside this process and is read, never created.
-  const keys =
-    config.strictInstallation && config.privateKeyPath && config.publicKeyPath
-      ? await loadHostKeys({
-          privateKeyPath: config.privateKeyPath,
-          publicKeyPath: config.publicKeyPath,
-        })
-      : await loadOrCreateHostKeys({
-          dataDirectory,
-          ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
-          ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
-        });
+  const keys = await loadOrCreateHostKeys({
+    dataDirectory,
+    ...(config.privateKeyPath ? { privateKeyPath: config.privateKeyPath } : {}),
+    ...(config.publicKeyPath ? { publicKeyPath: config.publicKeyPath } : {}),
+  });
   const hostKeyFingerprint = fingerprintForSpki(
     keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url"),
   );
@@ -547,14 +504,14 @@ export async function createHostRuntime(
   // HostInstanceId belongs to this installation, not to the portable database.
   // Materialize it before any database work so startup never creates a
   // Deployment row without first having a durable local identity.
-  const hostInstance =
-    config.strictInstallation && config.hostInstancePath
-      ? await loadHostInstance(config.hostInstancePath, config.deploymentIdentity?.hostInstanceId)
-      : await loadOrCreateHostInstance(dataDirectory, config.deploymentIdentity?.hostInstanceId);
+  const hostInstance = await loadOrCreateHostInstance(
+    dataDirectory,
+    config.deploymentIdentity?.hostInstanceId,
+  );
   const database = createDatabase({
     applicationName: "opensteer-host",
     connectionString: config.databaseUrl,
-    // The authority lock or Team LISTEN session occupies one pool slot.
+    // The authority lock occupies one pool slot.
     minConnections: 2,
     idleTimeoutMs: 5 * 60_000,
   });
@@ -577,13 +534,12 @@ export async function createHostRuntime(
   let localProviders: LocalProviders | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   try {
-    // A team database is served by several Host processes at once; a personal one by exactly one.
-    if (!deploymentPolicy(config.deploymentShape).services.team)
-      authorityLease = await acquireDeploymentAuthorityLease(database);
+    // One Host process owns a Home's database.
+    authorityLease = await acquireDeploymentAuthorityLease(database);
     // Conversion must finish before startup reads or creates a Deployment.
     await withUpgradeHeartbeat(
       () => migrateToLatest(database, undefined, { afterBatch: options.onPersonalUpgradeBatch }),
-      authorityLease ? options.onPersonalUpgradeHeartbeat : undefined,
+      options.onPersonalUpgradeHeartbeat,
     ).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
@@ -595,16 +551,6 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.deploymentShape,
     });
-    if (!authorityLease) {
-      return await createTeamHostRuntime({
-        config,
-        options,
-        database,
-        deployment,
-        keys,
-        hostKeyFingerprint,
-      });
-    }
     const claimedWork = config.managedHome ? new WorkHomeStore(database) : undefined;
     const storedMarker = await claimedWork?.claimedMarker();
     const configuredMarker = config.managedHome?.work;
@@ -620,10 +566,6 @@ export async function createHostRuntime(
     if (workStore && workMarker) await workStore.initialize(workMarker, deployment.id);
     let workHome: WorkHomeService | undefined;
     const personalConfig = config.personal!;
-    let teamRunEvents: TeamRunEvents | undefined;
-    let teamPublications: DeadlineDrain | undefined;
-    let linkServices: ReturnType<typeof createPersonalTeamLinkServices> | undefined;
-    let linkStarting: Promise<ReturnType<typeof createPersonalTeamLinkServices>> | undefined;
     let initializedPersonal: Awaited<ReturnType<typeof initializePersonalState>> = null;
     let initializingPersonal:
       Promise<Awaited<ReturnType<typeof initializePersonalState>>> | undefined;
@@ -797,7 +739,7 @@ export async function createHostRuntime(
     pluginChangeNotices = notices;
     const connectionStore = new AgentConnectionStore(database);
     const directory = agentDirectoryFor(
-      config.personalAccountIssuer ?? config.account?.issuer ?? config.managedHome?.accountOrigin,
+      config.personalAccountIssuer ?? config.managedHome?.accountOrigin,
       connectionStore,
     );
     const connections = new ConnectionOAuth({
@@ -809,8 +751,7 @@ export async function createHostRuntime(
       ...(directory ? { directory } : {}),
     });
     const triggerStore = new TriggerStore(database);
-    const accountDirectoryStore = new AccountDirectoryStore(database);
-    const exposurePolicy = hostExposurePolicy(config.deploymentShape, config.exposure);
+    const exposurePolicy = hostExposurePolicy(config.exposure);
     // The desktop's own claim on a loopback Host; an operator's setup link on a networked Home.
     const localSetupToken = config.identity.localOwnerClaimToken;
     const operatorSetup = config.identity.initialOwnerEnrollment;
@@ -1000,6 +941,9 @@ export async function createHostRuntime(
     await deviceDrivers.refresh();
     const computerApps = new ComputerAppHub({
       drivers: deviceDrivers,
+      recordRunnerOutdated: async (runner) => {
+        await store.recordRunnerUpdateRequired({ ...runner, reason: "runner-outdated" });
+      },
       requireDeviceAgentAccess: async (deviceId) => {
         const binding = deviceDrivers.binding(deviceId);
         await requireDeviceAccess(
@@ -1320,10 +1264,7 @@ export async function createHostRuntime(
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,
-      passkeyOwnOrigins: () => [
-        config.canonicalOrigin.origin,
-        ...(config.account ? [config.account.issuer.origin] : []),
-      ],
+      passkeyOwnOrigins: () => [config.canonicalOrigin.origin],
       ...(options.browserActivityClock ? { activityClock: options.browserActivityClock } : {}),
       onHistoryChanged: (ownerId, profileId) =>
         realtime.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
@@ -1481,8 +1422,6 @@ export async function createHostRuntime(
       dataDirectory,
       ...(config.credentialKeyPath ? { keyPath: config.credentialKeyPath } : {}),
     });
-    const integrationKeys = new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1);
-    const teamLinkVault = new AesGcmCredentialVault(integrationKeys);
     const integrationVault = new AesGcmSecretVault(
       new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1),
     );
@@ -1592,13 +1531,12 @@ export async function createHostRuntime(
       store: new IntegrationAuthAttemptStore(database),
       vault: integrationVault,
     });
-    const hostedOAuthBrokerIssuer = config.personalAccountIssuer ?? config.account?.issuer;
+    const hostedOAuthBrokerIssuer = config.personalAccountIssuer;
     const hostedOAuthBroker = hostedOAuthBrokerIssuer
       ? {
           broker: new HostedOAuthBrokerClient({
             ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
             hostCredential: async () => {
-              if (config.account) return config.account.hostCredential;
               return (
                 (
                   await database
@@ -1611,7 +1549,6 @@ export async function createHostRuntime(
               );
             },
             issuer: hostedOAuthBrokerIssuer,
-            ...(config.account ? { serviceOrigin: config.account.controlApiOrigin } : {}),
           }),
           deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest({
             activeHostInstanceId: deployment.activeHostInstanceId,
@@ -1843,41 +1780,33 @@ export async function createHostRuntime(
     let shellHub: ShellHub | undefined;
     // Every Host decides its notifications and sends them to its people's open
     // clients. Push to phones exists only where there is an Account to publish
-    // through: an attached server Host, or a Personal Host whose owner has
-    // linked one.
-    const accountAttachment = config.account;
+    // through: a Home whose owner has linked one.
     const personalAccountIssuer = config.personalAccountIssuer;
     const notificationTarget: (() => Promise<NotificationPublicationTarget | null>) | undefined =
-      accountAttachment
-        ? () =>
-            Promise.resolve({
-              controlApiOrigin: accountAttachment.controlApiOrigin,
-              hostCredential: accountAttachment.hostCredential,
-            })
-        : personalAccount && personalAccountIssuer
-          ? async () => {
-              const link = await database
-                .selectFrom("personalRemoteAccountLink")
-                .select(["hostCredential", "issuer"])
-                .where("singletonKey", "=", "opensteer-account")
-                .where("state", "=", "active")
-                .where("issuer", "=", personalAccountIssuer.origin)
-                .executeTakeFirst();
-              return link
-                ? {
-                    controlApiOrigin: new URL(link.issuer),
-                    hostCredential: link.hostCredential,
-                  }
-                : null;
-            }
-          : undefined;
+      personalAccount && personalAccountIssuer
+        ? async () => {
+            const link = await database
+              .selectFrom("personalRemoteAccountLink")
+              .select(["hostCredential", "issuer"])
+              .where("singletonKey", "=", "opensteer-account")
+              .where("state", "=", "active")
+              .where("issuer", "=", personalAccountIssuer.origin)
+              .executeTakeFirst();
+            return link
+              ? {
+                  controlApiOrigin: new URL(link.issuer),
+                  hostCredential: link.hostCredential,
+                }
+              : null;
+          }
+        : undefined;
     // Removing a computer app can revoke the channels that were a use of it.
     let channelService: ChannelService | undefined;
     const notifications = new NotificationStore(
       database,
       options.notificationTiming?.now ? { now: options.notificationTiming.now } : {},
     );
-    const notificationIssuer = accountAttachment?.issuer ?? personalAccountIssuer;
+    const notificationIssuer = personalAccountIssuer;
     const notificationPreviews =
       notificationTarget && notificationIssuer
         ? new NotificationPreviewService({
@@ -1989,7 +1918,6 @@ export async function createHostRuntime(
           passwordSignIns.requestChanged(reaction);
           if (reaction.status !== "pending") onSessionRequestClosed?.(reaction.requestId);
           pluginExecutions?.observe(reaction);
-          teamRunEvents?.observe(reaction);
           notificationDispatcher?.dispatch(reaction);
           notices.notify({ requestId: reaction.requestId });
           void store.requests
@@ -2002,7 +1930,6 @@ export async function createHostRuntime(
           break;
         case "runChanged":
           pluginExecutions?.observe(reaction);
-          teamRunEvents?.observe(reaction);
           if (reaction.transition === "restarted") wakeExecutionCoordinator();
           if (reaction.transition === "background") notifyIntegrationContinuations();
           if (
@@ -2037,9 +1964,6 @@ export async function createHostRuntime(
           realtime.wake(syncHead, new Set(["authority"]));
           if (reaction.attemptOnly) break;
           reconcileMemoryPasses?.();
-          // Owed from the rows, whatever the live publication below does.
-          teamPublications?.wake();
-          teamRunEvents?.observe(reaction);
           notificationDispatcher?.dispatch(reaction);
           void toolActivity
             .finalize(reaction.runId)
@@ -2059,9 +1983,6 @@ export async function createHostRuntime(
           if (reaction.outcome === "completed")
             void idleCompactionService?.arm(reaction.threadId).catch(reportMutationFailure);
           notifyIntegrationContinuations();
-          break;
-        case "teamStep":
-          teamRunEvents?.observe(reaction);
           break;
         case "nodeProgressPlacement":
           liveText.placeNode(reaction, syncHead);
@@ -2256,7 +2177,6 @@ export async function createHostRuntime(
     });
     await localServers.upgradePackages();
     await localServers.requestLocalServerApprovals();
-    await store.recoverRemovedAskTasks();
     await store.recoverThreadWorkQueues();
     await store.restartExecutionLeases(new Date(executionNow() + config.executionLeaseMs));
     finishLoop.start();
@@ -2492,7 +2412,7 @@ export async function createHostRuntime(
           reportedAgentHome = { computerId: identity.runnerId, path: report.path, signal };
           try {
             await initializingPersonal;
-            if (await initializePersonal()) await ensureLinks();
+            await initializePersonal();
             return !signal.aborted;
           } catch (error) {
             if (reportedAgentHome?.signal === signal) reportedAgentHome = undefined;
@@ -2694,7 +2614,7 @@ export async function createHostRuntime(
             // so there is nothing to announce and nothing to reconcile.
             if (!(await confirmRunnerRegistration(store, runners, identity))) return;
             pluginWorkMode(identity);
-            if (await initializePersonal()) await ensureLinks();
+            await initializePersonal();
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
             runnerChanged();
@@ -2934,25 +2854,6 @@ export async function createHostRuntime(
         const identity = runners.identityForEnvironment(environmentId);
         return identity !== undefined && registeringRunners.has(identity.connectionId);
       },
-      teamRequestContext: async ({ runId, requestId }, signal) => {
-        signal.throwIfAborted();
-        const context = await (await ensureLinks()).teamContext(runId);
-        signal.throwIfAborted();
-        if (context.request.id !== requestId)
-          throw new OpensteerError({ code: "forbidden", message: "Team request changed" });
-        return {
-          asker: context.asker,
-          instructionsMarkdown: context.instructionsMarkdown,
-          instructionsRevision: context.instructionsRevision,
-          source: context.source,
-        };
-      },
-      teamsAvailable: async () =>
-        (await database
-          .selectFrom("personalTeamLinks")
-          .select("id")
-          .where("state", "in", ["active", "unreachable"])
-          .executeTakeFirst()) !== undefined,
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
       },
@@ -3221,15 +3122,6 @@ export async function createHostRuntime(
         kind: deployment.deploymentShape.kind,
       },
     });
-    const accountDirectoryClient = config.account
-      ? new AccountDirectoryClient({
-          authorityEnvelope: discoveryEnvelope,
-          controlApiOrigin: config.account.controlApiOrigin,
-          deployment,
-          ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
-          hostCredential: config.account.hostCredential,
-        })
-      : undefined;
     harnessAuthenticationCoordinator = new HarnessAuthenticationCoordinator({
       harnesses: store,
       runners,
@@ -3246,19 +3138,11 @@ export async function createHostRuntime(
     const authenticator = new HostAuthenticator({
       identity,
       onAuthenticatedSession: async () => {
-        if (await initializePersonal()) await ensureLinks();
+        await initializePersonal();
       },
       ...(personalRemoteAccess ? { personalRemote: personalRemoteAccess } : {}),
       publicUrl: config.canonicalOrigin,
     });
-    const accountAdoptionControlClient =
-      config.account?.provisioningMode === "adoption"
-        ? new AccountAdoptionControlClient({
-            controlApiOrigin: config.account.controlApiOrigin,
-            ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
-            hostCredential: config.account.hostCredential,
-          })
-        : undefined;
     administrationCatalogs = new HarnessCatalogReconciliationOwner({
       catalogs: harnessCatalogs,
       runners,
@@ -3388,12 +3272,6 @@ export async function createHostRuntime(
       },
       savedLogins,
       pluginExecutions,
-      teamsAvailable: async () =>
-        (await database
-          .selectFrom("personalTeamLinks")
-          .select("id")
-          .where("state", "in", ["active", "unreachable"])
-          .executeTakeFirst()) !== undefined,
       requestHold: new RequestHold({
         store,
         continuations,
@@ -3461,116 +3339,8 @@ export async function createHostRuntime(
           sessions: agentSessions,
         }),
         triggers: new TriggerToolHandlers(triggers, store),
-        teamRequestForRun: async (runId, threadId) => {
-          const run = await database
-            .selectFrom("runs")
-            .select("replyTarget")
-            .where("id", "=", runId)
-            .where("threadId", "=", threadId)
-            .executeTakeFirst();
-          return run?.replyTarget?.kind === "team-thread" ? run.replyTarget.requestId : null;
-        },
-        team: {
-          read: async (...args) => (await ensureLinks()).teamTools.read(...args),
-          search: async (...args) => (await ensureLinks()).teamTools.search(...args),
-          post: async (...args) => (await ensureLinks()).teamTools.post(...args),
-        },
-        knowledge: {
-          topics: async (...args) => (await ensureLinks()).knowledge.topics(...args),
-          read: async (...args) => (await ensureLinks()).knowledge.read(...args),
-          write: async (...args) => (await ensureLinks()).knowledge.write(...args),
-        },
-        personalContextForRun: (runId) => runAllowsPersonalContext(database, runId),
       }),
     });
-    const taskAdmission = new TaskAdmissionService({
-      database,
-      execution: async () => {
-        const settings = await personalSettings(database);
-        const preferences = await store.getExecutionPreferences(settings.ownerId);
-        return resolveTeamTaskExecution(
-          { store, runners },
-          {
-            ownerId: settings.ownerId,
-            environmentId: personalConfig.environmentId,
-            preferences,
-          },
-        );
-      },
-      onExecutionQueued: wakeExecutionCoordinator,
-      revokeGrants: (grants) => store.announceRevokedGrants(grants),
-    });
-    async function ensureLinks() {
-      if (linkServices) return linkServices;
-      if (linkStarting) return linkStarting;
-      linkStarting = (async () => {
-        const service = await personalExecution();
-        const links = createPersonalTeamLinkServices({
-          database,
-          ownerId: service.options.ownerId,
-          deploymentId: deployment.id,
-          installationLabel: config.deploymentName ?? "My computer",
-          credentialVault: teamLinkVault,
-          admission: taskAdmission,
-          runs: personalTeamRunPort(database),
-
-          onPublished: async () => undefined,
-          onLinkReady: () => teamPublications?.wake(),
-          onConsentChanged: async (teamId, requestId, opened) => {
-            if (opened) notificationDispatcher?.dispatchTeamAsk(teamId, requestId);
-          },
-          attachments: new PersonalTeamAttachments({
-            store,
-            attachments,
-            attachmentStore,
-            tokens: attachmentRunTokens,
-            runners,
-            relay: runFileRelay,
-          }),
-        });
-        await links.links.start();
-        linkServices = links;
-        teamPublications = new DeadlineDrain({
-          ...(options.executionClock ? { clock: options.executionClock } : {}),
-          onError: reportMutationFailure,
-          drain: () =>
-            teamPublicationPass({
-              readyTeams: () => links.links.readyTeams(),
-              owed: (input) => links.requests.options.requests.owedTerminalPublications(input),
-              reconcile: (request) => links.requests.reconcileOne(request),
-              report: (error) =>
-                app.log.warn(
-                  { err: error },
-                  "A finished team Run's answer is still owed; retrying",
-                ),
-            }),
-        });
-        teamPublications.start();
-        teamRunEvents = new TeamRunEvents({
-          publish: async (runId, steps) => {
-            const request = await links.requests.options.requests.forRun(runId);
-            if (!request) return;
-            const outcome = await links.requests.options.runs.outcome(request);
-            const live = outcome.state === "working" || outcome.state === "needs_you";
-            try {
-              await links.requests.runChanged(
-                runId,
-                live ? { state: outcome.state, steps } : undefined,
-              );
-            } finally {
-              // A finished Run's answer is owed until its request records it.
-              if (!live) teamPublications?.wake();
-            }
-          },
-          onError: () =>
-            app.log.warn("Team Run publication failed; the durable reply remains pending"),
-        });
-        return links;
-      })().finally(() => {
-        linkStarting = undefined;
-      });
-      return linkStarting;
-    }
     const transcriptFileServices = createTranscriptFileServices({
       authSecret: config.authSecret,
       dataDirectory,
@@ -3746,13 +3516,6 @@ export async function createHostRuntime(
         agentOperations: agentSessions,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
-        ...(accountAdoptionControlClient
-          ? {
-              accountAdoption: {
-                acknowledge: (proofId: string) => accountAdoptionControlClient.acknowledge(proofId),
-              },
-            }
-          : {}),
         attachments,
         assets: transcriptFileServices.assets,
         transcriptFiles: transcriptFileServices.files,
@@ -3761,7 +3524,7 @@ export async function createHostRuntime(
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")
           .digest(),
-        appRealOrigins: hostAppRealOrigins(config.deploymentShape, config.exposure),
+        appRealOrigins: hostAppRealOrigins(config.exposure),
         trustedProxy: hostTrustedProxy(config),
         liveText,
         resourceRevisions,
@@ -3797,7 +3560,6 @@ export async function createHostRuntime(
         signHostProof: (bytes) => sign(null, bytes, keys.privateKey).toString("base64url"),
         egress,
         execution,
-        teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
         pluginRequests: pluginExecutions,
         pluginAgentWorkStoppedSince: (runnerId) =>
@@ -3953,33 +3715,17 @@ export async function createHostRuntime(
     // client verifies before it will route here, and only the Host can refresh
     // it. Re-assert it on every start, whichever way this Host reaches its
     // Account.
-    const publishHostAuthority = accountDirectoryClient
-      ? () => accountDirectoryClient.publishAuthority()
-      : personalAccount
-        ? async () => {
-            await personalAccount.publishAccountAuthority();
-          }
-        : undefined;
+    const publishHostAuthority = personalAccount
+      ? async () => {
+          await personalAccount.publishAccountAuthority();
+        }
+      : undefined;
     const hostAuthorityPublisher = publishHostAuthority
       ? new HostAuthorityPublisher({
           onError: (error) => app.log.error({ err: error }, "Host authority publication failed"),
           publish: publishHostAuthority,
         })
       : undefined;
-    let accountDirectoryPublisher: AccountDirectoryPublisher | undefined;
-    if (accountDirectoryClient && accountDirectoryStore) {
-      accountDirectoryPublisher = new AccountDirectoryPublisher({
-        ...(options.accountDirectoryIntervalMs
-          ? { intervalMs: options.accountDirectoryIntervalMs }
-          : {}),
-        onError: (error) =>
-          app.log.error({ err: error }, "Opensteer Account directory publication failed"),
-        publish: async (projection) => {
-          await accountDirectoryClient.publish(projection);
-        },
-        store: accountDirectoryStore,
-      });
-    }
     memoryPasses.wake();
     await memoryPasses.idle();
     reconcileMemoryPasses = () => {
@@ -3997,15 +3743,6 @@ export async function createHostRuntime(
     if (hostAuthorityPublisher)
       void hostAuthorityPublisher.ready().then(resolveNotificationAuthority);
     else resolveNotificationAuthority();
-    // Membership is only listable against a published identity, so the
-    // directory publisher waits for the Account to accept this Host's identity
-    // instead of racing it and spending its first attempt on a certain refusal.
-    if (accountDirectoryPublisher && hostAuthorityPublisher) {
-      const directoryPublisher = accountDirectoryPublisher;
-      void hostAuthorityPublisher.ready().then(() => {
-        if (!closed) directoryPublisher.start();
-      });
-    }
     idleCompactionService = new IdleCompactionService({
       list: (threadId) => idleCompactionCandidates(store.database, threadId),
       admit: async (candidate) => {
@@ -4042,7 +3779,7 @@ export async function createHostRuntime(
     triggerScheduleLoop.start();
     watchService.start();
     channels.start();
-    if (await initializePersonal()) await ensureLinks();
+    await initializePersonal();
     assignmentReturns.start();
     await assignmentReturns.settled();
     const executionLeases = executionLeaseDrain(
@@ -4067,7 +3804,6 @@ export async function createHostRuntime(
         settleEach([
           () => passwordSignIns.settleDeadlines(),
           () => store.requests.expirePasswordSignIns(now),
-          async () => (await linkServices?.requests.expireUndecidedAsks()) ?? 0,
           async () => (await store.expireThreadInputLeases()).settled,
           () => devices.computerAppApprovals.expireComputerAppSetupRequests(),
           () => localServers.requestLocalServerApprovals(),
@@ -4123,7 +3859,6 @@ export async function createHostRuntime(
         await step("continuations", () => continuations.close());
         await step("automation failures", () => automationFailures.close());
         await step("host authority publisher", () => hostAuthorityPublisher?.close());
-        await step("account directory publisher", () => accountDirectoryPublisher?.close());
         await step("notifications", () => notificationsClosed);
         await step("channels", () => channels.close());
         messagingRelay.close();
@@ -4136,12 +3871,6 @@ export async function createHostRuntime(
         deviceDrivers.close();
         tabs?.dispose();
         await step("agent tools", () => agentTools.close());
-        await step("team Run publication", () => teamRunEvents?.close());
-        await step("team Run answers", () => teamPublications?.close());
-        await step("team links", async () => {
-          await linkStarting;
-          await linkServices?.links.stop();
-        });
         await step("administration catalogs", () => administrationCatalogs?.close());
         await step("device services", async () => {
           await devices.close();
@@ -4286,11 +4015,8 @@ export async function ensureDefaultHarnesses(
  * or a Remote access route's app hosts. A networked Home has no app address,
  * so its apps report themselves unavailable rather than open on its origin.
  */
-export function hostAppRealOrigins(
-  shape: import("@opensteer/core").DeploymentShape,
-  exposure: import("@opensteer/core").HostExposure,
-): boolean {
-  return hostExposurePolicy(shape, exposure).personalRemoteAccess;
+export function hostAppRealOrigins(exposure: import("@opensteer/core").HostExposure): boolean {
+  return hostExposurePolicy(exposure).personalRemoteAccess;
 }
 
 /**

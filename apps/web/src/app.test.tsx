@@ -88,7 +88,7 @@ import { App, startHostOidcSignIn } from "./app.js";
 import { MockHostClient } from "@opensteer/client/mock";
 
 const identityConfig = {
-  deployment: { kind: "team" as const, name: null },
+  deployment: { kind: "personal" as const, name: null },
   emailDeliveryAvailable: false,
   localPasswordEnabled: false,
   machineOwner: false,

@@ -485,28 +485,14 @@ it("validates subagent read and stop cases with the production tool schemas", as
   }
 });
 
-it("discovers changed tasks from message times and reads own handoffs and team audiences", async () => {
+it("discovers changed tasks from message times and reads own handoffs", async () => {
   const taskId = "thr_00000000-0000-4000-8000-000000000021";
   const workerId = "thr_00000000-0000-4000-8000-000000000011";
-  const teamSource = {
-    teamId: "dep_00000000-0000-4000-8000-000000000001",
-    channelId: "tch_00000000-0000-4000-8000-000000000001",
-    threadRootId: "1",
-    messageId: "2",
-    audience: {
-      teamName: "Eval team",
-      channelName: "leadership",
-      channelKind: "private",
-      memberCount: 3,
-      peopleOnly: false,
-    },
-  };
   const task = (id: string, title: string) => ({
     id,
     title,
     status: "idle",
     purpose: "task",
-    teamOrigin: null,
     aiAccountId: "hin_00000000-0000-4000-8000-000000000001",
     modelSelection: { providerId: "openai", modelId: "eval", options: {} },
     accessMode: "full-access",
@@ -548,7 +534,7 @@ it("discovers changed tasks from message times and reads own handoffs and team a
           items: [
             item("Old", "2026-11-16T14:00:00Z"),
             item("Boundary", "2026-11-16T15:30:00Z"),
-            { ...item("New", "2026-11-16T15:45:00Z"), teamSource },
+            item("New", "2026-11-16T15:45:00Z"),
             item("Newest", "2026-11-16T15:50:00Z"),
           ],
         },
@@ -582,7 +568,7 @@ it("discovers changed tasks from message times and reads own handoffs and team a
       items: [{ text: "Handoff: Gmail through msg-X" }],
     });
     expect(await call("opensteer_task_read", { taskId, limit: 2 })).toMatchObject({
-      items: [{ text: "Newest" }, { text: "New", teamSource }],
+      items: [{ text: "Newest" }, { text: "New" }],
       hasMore: true,
       nextCursor: "2",
     });

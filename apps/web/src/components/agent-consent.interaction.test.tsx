@@ -168,7 +168,7 @@ describe("agent consent with grants", () => {
     expect(detail(container, "Shopping")).toBe("MacBook Pro · Online");
     // A filled password is readable in the page, so the footer never says the agent "can't see" it.
     expect(container.textContent).toContain(
-      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
+      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it. A page it works in can replace what is on the clipboard.",
     );
     const keepOn = container.querySelector('[aria-label="Keep it on"]')!;
     expect([...keepOn.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
@@ -292,6 +292,10 @@ describe("agent consent with grants", () => {
     const { container, openExternalUrl } = await mount(host);
     await act(async () => buttonNamed(container, "Choose Apps and phone screens").click());
     await vi.waitFor(() => expect(container.textContent).toContain("Notes"));
+    // The consent says what an app or a phone screen gives the agent, the clipboard included.
+    expect(container.textContent).toContain(
+      "sees and controls each one you turn on as you would, so it can paste what’s on that device’s clipboard.",
+    );
     await act(async () => row(container, "Notes").querySelector("input")!.click());
     await act(async () => buttonNamed(container, "Choose Plugins and data").click());
     await vi.waitFor(() => expect(container.textContent).toContain("Calendar"));
@@ -479,6 +483,11 @@ describe("agent consent with grants", () => {
     });
     const { container, openExternalUrl } = await mount(host);
     expect(container.querySelector("h1")?.textContent).toBe("Claude");
+    // A shared tab is one tab, with what the person already allowed its site in Chrome.
+    expect(container.textContent).toContain("read that tab’s own cookies.");
+    expect(container.textContent).toContain(
+      "In this tab it can use what you already allowed the site in Chrome, such as the camera, microphone, location and notifications.",
+    );
     const name = container.querySelector<HTMLInputElement>('input[placeholder="Connection name"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "Mine");

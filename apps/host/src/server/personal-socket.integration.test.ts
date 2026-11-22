@@ -55,7 +55,7 @@ async function connect(origin: URL, cookie: string) {
   const url = new URL("/v1/realtime", origin);
   url.protocol = "ws:";
   const socket = new WebSocket(url, {
-    headers: { ...apiVersionHeaders("personal"), cookie, origin: origin.origin },
+    headers: { ...apiVersionHeaders(), cookie, origin: origin.origin },
   });
   const frames: ScopedHostMessage[] = [];
   let terminal: Error | undefined;
@@ -694,103 +694,6 @@ it("retries a failed Host-owned finish without blocking another intent or bypass
         .execute(),
     ).toEqual([]);
   } finally {
-    await host?.close();
-    await database.drop();
-  }
-});
-
-it("publishes count-only approval changes to the subscribed task and shell", async () => {
-  const database = await cloneTestDatabase("host");
-  let host: PrivateMachineHost | undefined;
-  let socket: WebSocket | undefined;
-  try {
-    host = await startPrivateMachineHost(database.url, { logger: false });
-    const tasks = createPersonalRunFixturePort(host.store);
-    const { threadId } = await tasks.createTask({
-      ownerId: host.ownerId,
-      suffix: "approval-count",
-    });
-    await tasks.startTask(threadId, "Keep the task running");
-    const input = await host.store.enqueueThreadInput({
-      requestedBy: host.ownerId,
-      threadId,
-      content: [{ type: "text", text: "Approval-gated follow-up" }],
-      source: { kind: "human" },
-      policy: "queue",
-      idempotencyKey: "approval-follow-up",
-    });
-    const db = host.store.database;
-    const changeApproval = (state: "awaiting-approval" | "cancelled") =>
-      commitPersonalMutation(db, async (tx, mutation) => {
-        await tx
-          .selectFrom("threads")
-          .select("id")
-          .where("id", "=", input.message.threadId)
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
-        mutation.touchThread(input.message.threadId);
-        await tx
-          .updateTable("threadInputs")
-          .set({
-            state,
-            ...(state === "cancelled" ? { cancelReason: "team-request-cancelled" } : {}),
-          })
-          .where("messageId", "=", input.message.id)
-          .execute();
-      });
-    await changeApproval("awaiting-approval");
-    const reader = await connect(host.origin, host.ownerHeaders.cookie!);
-    socket = reader.socket;
-    reader.send({
-      type: "client.attach",
-      apiVersion: hostApiVersion,
-      generation: 1,
-      interests: [],
-      installed: {},
-      selected: { subscriptionId: "detail:0", generation: 1, scope: { kind: "thread", threadId } },
-    });
-    for (const scope of ["shell", "thread"])
-      await reader.read(
-        (frame) => frame.type === "host.synchronized" && frame.scope.kind === scope,
-        `The ${scope} did not synchronize`,
-      );
-    expect(await host.store.getThreadForOwner(threadId, host.ownerId)).toMatchObject({
-      pendingRequests: 1,
-      status: "running",
-    });
-    await changeApproval("cancelled");
-    const current = await host.store.getThreadForOwner(threadId, host.ownerId);
-    expect(current).toMatchObject({
-      pendingRequests: 0,
-      status: "running",
-    });
-    const { revision } = await db
-      .selectFrom("threads")
-      .select("revision")
-      .where("id", "=", threadId)
-      .executeTakeFirstOrThrow();
-    for (const entityKind of ["thread", "task"] as const) {
-      const frame = await reader.read(
-        (frame) =>
-          frame.type === "host.changes" &&
-          frame.changes.some(
-            (change) => change.entityKind === entityKind && change.entityId === threadId,
-          ),
-        `The ${entityKind} retained its old approval count`,
-      );
-      expect(frame).toMatchObject({
-        throughSequence: revision,
-        changes: expect.arrayContaining([
-          expect.objectContaining({
-            entityKind,
-            entityId: threadId,
-            value: expect.objectContaining({ pendingRequestCount: 0, status: "running" }),
-          }),
-        ]),
-      });
-    }
-  } finally {
-    socket?.terminate();
     await host?.close();
     await database.drop();
   }

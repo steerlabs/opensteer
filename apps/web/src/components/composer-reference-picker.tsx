@@ -43,11 +43,6 @@ export function referenceGroup(candidate: ComposerLinkCandidate): {
       default:
         return { group: "References", glyph };
     }
-  if (target.kind === "team-page")
-    return {
-      group: target.page.target.kind.startsWith("knowledge") ? "Knowledge" : "Channels",
-      glyph,
-    };
   return { group: "References", glyph };
 }
 

@@ -742,7 +742,6 @@ export function FirstMessageComposer(props: {
                   paddingVertical={space[6]}
                   placeholder={page === null ? props.placeholder : "Ask about this page…"}
                   ref={props.inputRef}
-                  scope="personal"
                   value={props.text}
                 />
               </Pressable>
