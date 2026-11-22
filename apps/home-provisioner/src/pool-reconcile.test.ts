@@ -101,8 +101,8 @@ class FakePoolAgent {
       slotId: string;
       term: number;
       homeKey: string;
-      relayKey?: string;
-      ticketKey?: { readonly keyId: string; readonly spki: string };
+      relayKey?: string | undefined;
+      ticketKey?: { readonly keyId: string; readonly spki: string } | undefined;
       controlKey: string;
       profileMib: number;
     }
@@ -144,13 +144,13 @@ class FakePoolAgent {
   static #sameKeys(
     existing: {
       homeKey: string;
-      relayKey?: string;
-      ticketKey?: { readonly keyId: string; readonly spki: string };
+      relayKey?: string | undefined;
+      ticketKey?: { readonly keyId: string; readonly spki: string } | undefined;
     },
     incoming: {
       homeKey: string;
-      relayKey?: string;
-      ticketKey?: { readonly keyId: string; readonly spki: string };
+      relayKey?: string | undefined;
+      ticketKey?: { readonly keyId: string; readonly spki: string } | undefined;
     },
   ): boolean {
     return (
@@ -1839,7 +1839,10 @@ describe("PoolReconciler — slots", () => {
     fake.requireEgressUpstream = false;
     const unknownDelete = await client.delete(
       target,
-      { slotId: "bps_99999999-9999-4999-8999-999999999999", eraseProfile: true },
+      {
+        slotId: BrowserPoolSlotIdSchema.parse("bps_99999999-9999-4999-8999-999999999999"),
+        eraseProfile: true,
+      },
       signal,
     );
     expect(unknownDelete.erased).toBe(true);
