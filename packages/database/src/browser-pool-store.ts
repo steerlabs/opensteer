@@ -716,7 +716,6 @@ export async function listBrowserPoolClosingSessions(
     .where("runnerId", "=", runnerId)
     .where("runtimeId", "=", runtimeId)
     .where("state", "=", "closing")
-    .where("origin", "in", ["person", "agent"])
     .orderBy("id")
     .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);

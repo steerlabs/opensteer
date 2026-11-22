@@ -1292,7 +1292,8 @@ export class BrowserService {
     if (
       !record ||
       record.state !== (ending ? "closing" : "ready") ||
-      record.origin === "trigger" ||
+      // Adoption does not rebuild a Trigger's session yet; a stopped one is still closed by it.
+      (!ending && record.origin === "trigger") ||
       record.runnerId !== runnerId ||
       record.runtimeId !== target.runtimeId ||
       record.placementKey !== target.placementKey
@@ -7665,18 +7666,15 @@ export class BrowserService {
 
   async #stopRecord(record: BrowserSessionRecord): Promise<void> {
     const broker = this.#brokers.get(record.id);
+    const pool = this.#pool(record.runnerId);
     if (broker) {
       await broker.stop();
+      // A pooled close the runtime did not answer left the row closing: the loop ends it.
+      if (broker.pooled) pool?.stopped();
       return;
     }
     if (isTerminal(record.state)) return;
-    const pool = this.#pool(record.runnerId);
-    if (
-      pool &&
-      record.runtimeId === pool.runtimeId &&
-      (record.origin === "person" || record.origin === "agent") &&
-      pool.stopWaitsForRuntime()
-    ) {
+    if (pool && record.runtimeId === pool.runtimeId && pool.stopWaitsForRuntime()) {
       // An awake guest may still hold this session with no channel here: the row is closing
       // (nothing is admitted for it from now) until the runtime answers that it is gone.
       if (record.state !== "closing")
@@ -8978,6 +8976,15 @@ export class HostedBrowserBroker {
 
   async stop(): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
+    if (this.#poolAdmission) {
+      // A pooled session says closed only on the runtime's answer, its own 1000 close of the
+      // channel; nothing heard leaves the row closing for the pool's end step.
+      this.#stopping = true;
+      this.#runtimeReady = false;
+      await this.#onState("closing").catch(() => undefined);
+      await this.stopWithReceipt(5_000);
+      return;
+    }
     this.#stopping = true;
     this.#runtimeReady = false;
     await this.#onState("closing").catch(() => undefined);
@@ -8995,9 +9002,18 @@ export class HostedBrowserBroker {
    * abort) is an answer; the session's row is the caller's to write.
    */
   async stopWithReceipt(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
-    if (this.#finishPromise || this.#socket.readyState !== WebSocket.OPEN) return false;
+    if (this.#finishPromise) {
+      await this.#finishPromise.catch(() => undefined);
+      return false;
+    }
     this.#stopping = true;
     this.#runtimeReady = false;
+    if (this.#socket.readyState !== WebSocket.OPEN) {
+      this.#socket.terminate();
+      await this.#runtimeFrameTail;
+      await this.#finish("pooled", 1000, "Browser session closed");
+      return false;
+    }
     const answered = new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => resolve(false), timeoutMs);
       timeout.unref();
@@ -9013,7 +9029,7 @@ export class HostedBrowserBroker {
     const receipt = await answered;
     if (!receipt) this.#socket.terminate();
     await this.#runtimeFrameTail;
-    await this.#finish("pooled", 1000, "Browser session closed");
+    await this.#finish(receipt ? "closed" : "pooled", 1000, "Browser session closed");
     return receipt;
   }
 
@@ -9113,9 +9129,14 @@ export class HostedBrowserBroker {
             this.#finish(
               retired || channelLost
                 ? "pooled"
-                : this.#stopping || code === 1000
-                  ? "closed"
-                  : "failed",
+                : this.#stopping
+                  ? // A pooled Stop is closed only by the runtime's own 1000 close.
+                    this.#poolAdmission && code !== 1000
+                    ? "pooled"
+                    : "closed"
+                  : code === 1000
+                    ? "closed"
+                    : "failed",
               this.#stopping ? 1000 : 1011,
               this.#stopping ? "Browser session closed" : "Browser Runtime disconnected",
             ),

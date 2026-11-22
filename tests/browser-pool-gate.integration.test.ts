@@ -1051,6 +1051,74 @@ it("lets a Stop during a reconnect end that session's wait at once, and say clos
   }
 });
 
+it("keeps a pooled Stop with a viewer attached closing while the runtime is silent, and closed once it answers", async () => {
+  const j = await journey("stop-viewer-silent");
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("stop-viewer"));
+    const page = await j.draft();
+    const watching = j.viewer(home, sessionId);
+    const attached = await watching.attaching;
+    // The Runner goes as the Stop's close leaves: the runtime never receives it.
+    const silent = vi
+      .spyOn(TestRuntimeConnection.prototype, "close")
+      .mockImplementationOnce(() => j.runnerDown());
+    try {
+      await home.service.stop(j.task.userId, sessionId);
+    } finally {
+      silent.mockRestore();
+    }
+    attached.close();
+    // Nothing heard: the row is closing, never closed, and nothing new is admitted for it.
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    expect(page.page.isClosed()).toBe(false);
+    await expect(
+      home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        sessionId: BrowserSessionIdSchema.parse(sessionId),
+        idempotencyKey: "after-silent-stop",
+      }),
+    ).rejects.toThrow("The browser has ended.");
+    // The runtime is reached again: the end step closes it, and its answer is the receipt.
+    j.runnerUp();
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+    await until(() => expect(page.page.isClosed()).toBe(true));
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
+it("keeps a pooled Trigger's stopped session closing while the runtime is silent, and closed once it answers", async () => {
+  const j = await journey("stop-trigger-silent");
+  try {
+    const home = await j.startHome();
+    const { session } = await home.service.start({
+      ownerId: j.task.userId,
+      origin: "trigger",
+      placement: { kind: "runner", runnerId: j.task.runnerId },
+    });
+    expect((await j.row(session.id))?.origin).toBe("trigger");
+    // The Runner is away: the session has no channel here, and the runtime hears nothing.
+    j.runnerDown();
+    await vi.waitFor(() => expect(home.service.pageInventory(session.id)).toBeUndefined());
+    await home.service.stop(j.task.userId, session.id);
+    expect((await j.row(session.id))?.state).toBe("closing");
+    await expect(
+      home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        sessionId: session.id,
+        idempotencyKey: "after-trigger-stop",
+      }),
+    ).rejects.toThrow("The browser has ended.");
+    j.runnerUp();
+    await until(async () => expect((await j.row(session.id))?.state).toBe("closed"));
+  } finally {
+    j.runnerUp();
+    await j.close();
+  }
+});
+
 it("keeps a stopped session closing while its guest cannot be reached, across a Home restart", async () => {
   const j = await journey("stop-unreachable", { channelDeadlineMs: 1_500 });
   try {

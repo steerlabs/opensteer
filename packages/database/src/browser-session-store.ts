@@ -1745,8 +1745,11 @@ export async function failActiveBrowserSessions(
             where slot.runner_id = ${pooledRunner!}
               and slot.runner_id = browser_sessions.runner_id
               and slot.runtime_id = browser_sessions.runtime_id
-              and browser_sessions.origin in ('person', 'agent')
-              and browser_sessions.state in ('ready', 'closing')
+              and (
+                browser_sessions.state = 'closing'
+                or (browser_sessions.origin in ('person', 'agent')
+                  and browser_sessions.state = 'ready')
+              )
           )
         `),
         )
