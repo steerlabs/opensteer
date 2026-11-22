@@ -31,6 +31,14 @@ the account and the phone step's helper sentence, never "Couldn't add …" or "A
 access operation is already running"; `first-run/<trial>/verdict.json` records the count of
 `initialize-failed`. A real tunnel a phone outside can reach stays unverified.
 
+**Fixture keychain.** Before every guest job's suite the runner puts a keychain of the job's own
+in place ([fixture-keychain.sh](../../../../scripts/test-vm/fixture-keychain.sh)): a constant test
+password, unlocked, no auto-lock, the user's default and first in the search list, so Electron's
+protected storage works over SSH where the login keychain is locked; cleanup restores the previous
+default and list and deletes it. It refuses unless macOS reports a hypervisor and the clone's
+`~/opensteer-job/guest-job` marker (written at staging) names the job's VM, and it never touches
+the login keychain. `pnpm exec tsx scripts/test-vm/guest-contract-journey.ts` holds it to that.
+
 **Run records.** Inspect the printed `~/.local/state/opensteer/vm-runs/<run-id>` record, phase logs
 and guest artifacts, and confirm the selected cases passed and the clone was deleted. After an
 uncatchable crash, stop or delete only the Tart clone `job.json` records. Read retention receipts

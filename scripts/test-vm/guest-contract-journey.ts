@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -186,6 +187,118 @@ for (const name of [
     results.push({ name, passed: false, error: String(e) });
   }
 }
+
+/*
+ * The fixture keychain step changes a user's default keychain, so it must refuse anywhere but
+ * the job's own guest, and there change only what it puts back. Its `security` is a recording
+ * stand-in here, so the contract can never touch a real keychain; off the guest, `sysctl` is the
+ * real one, which on this Mac says there is no hypervisor.
+ */
+const securityStandIn = String.raw`#!/usr/bin/env node
+const fs=require('node:fs'),a=process.argv.slice(2),home=process.env.HOME;
+fs.appendFileSync(home+'/security-calls.jsonl',JSON.stringify(a)+'\n');
+const st=home+'/security-state.json';
+const s=fs.existsSync(st)?JSON.parse(fs.readFileSync(st,'utf8')):{default:home+'/Library/Keychains/login.keychain-db',list:[home+'/Library/Keychains/login.keychain-db',home+'/Library/Keychains/other.keychain-db']};
+const save=()=>fs.writeFileSync(st,JSON.stringify(s));
+if(a[0]==='list-keychains'){if(a.includes('-s')){s.list=a.slice(a.indexOf('-s')+1);save()}else s.list.forEach(k=>console.log('    "'+k+'"'));process.exit(0)}
+if(a[0]==='default-keychain'){if(a.includes('-s')){s.default=a[a.indexOf('-s')+1];save()}else console.log('    "'+s.default+'"');process.exit(0)}
+process.exit(0);
+`;
+const sysctlGuest = '#!/bin/sh\n[ "$2" = kern.hv_vmm_present ] && echo 1\n';
+function keychainCase(
+  name: string,
+  setup: { readonly guest: boolean; readonly marker: string | null },
+  run: (step: (action: string) => number | null, root: string) => void,
+) {
+  try {
+    const root = path.join(out, name);
+    const tools = path.join(root, "tools");
+    mkdirSync(path.join(root, "opensteer-job"), { recursive: true });
+    mkdirSync(path.join(root, "Library/Keychains"), { recursive: true });
+    mkdirSync(tools, { recursive: true });
+    writeFileSync(path.join(tools, "security"), securityStandIn, { mode: 0o700 });
+    if (setup.guest) writeFileSync(path.join(tools, "sysctl"), sysctlGuest, { mode: 0o700 });
+    if (setup.marker !== null)
+      writeFileSync(path.join(root, "opensteer-job/guest-job"), setup.marker);
+    const step = (action: string) => {
+      const r = spawnSync(
+        "/bin/bash",
+        ["scripts/test-vm/fixture-keychain.sh", action, "opensteer-gui-job-contract"],
+        {
+          env: {
+            HOME: root,
+            // The stand-ins first; Node for the security stand-in; the system's own tools after.
+            PATH: `${tools}:${path.dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          },
+          encoding: "utf8",
+          timeout: 15_000,
+        },
+      );
+      writeFileSync(path.join(root, `${action}.log`), r.stdout + r.stderr);
+      assert.equal(r.error, undefined);
+      return r.status;
+    };
+    run(step, root);
+    results.push({ name, passed: true });
+  } catch (e) {
+    results.push({ name, passed: false, error: String(e) });
+  }
+}
+const calls = (root: string) =>
+  existsSync(path.join(root, "security-calls.jsonl"))
+    ? readFileSync(path.join(root, "security-calls.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[])
+    : [];
+for (const [name, setup] of [
+  // This Mac, as it is: the real sysctl, even with the marker in place.
+  ["keychain-refuses-off-guest", { guest: false, marker: "opensteer-gui-job-contract" }],
+  ["keychain-refuses-without-marker", { guest: true, marker: null }],
+  ["keychain-refuses-another-job", { guest: true, marker: "opensteer-gui-job-other" }],
+] as const)
+  keychainCase(name, setup, (step, root) => {
+    for (const action of ["begin", "end"]) {
+      assert.equal(step(action), 77, `${action} must refuse`);
+      assert.deepEqual(calls(root), [], `${action} touched a keychain`);
+      assert.equal(existsSync(path.join(root, "opensteer-job/fixture-keychain.state")), false);
+    }
+  });
+keychainCase(
+  "keychain-in-the-guest-and-back",
+  { guest: true, marker: "opensteer-gui-job-contract" },
+  (step, root) => {
+    const fixture = path.join(root, "Library/Keychains/opensteer-journey-fixture.keychain-db");
+    const login = path.join(root, "Library/Keychains/login.keychain-db");
+    const other = path.join(root, "Library/Keychains/other.keychain-db");
+    assert.equal(step("begin"), 0);
+    const state = () =>
+      JSON.parse(readFileSync(path.join(root, "security-state.json"), "utf8")) as {
+        default: string;
+        list: string[];
+      };
+    assert.deepEqual(state(), { default: fixture, list: [fixture, login, other] });
+    const begun = calls(root);
+    // Its own keychain, its own password; the login keychain is never unlocked or changed.
+    assert.ok(
+      begun.some((c) => c.join(" ") === `create-keychain -p opensteer-journey-fixture ${fixture}`),
+    );
+    assert.ok(
+      begun.some((c) => c.join(" ") === `unlock-keychain -p opensteer-journey-fixture ${fixture}`),
+    );
+    assert.ok(begun.some((c) => c.join(" ") === `set-keychain-settings ${fixture}`));
+    for (const call of begun)
+      assert.ok(
+        !call.includes(login) || call[0] === "list-keychains",
+        `touched the login keychain: ${call.join(" ")}`,
+      );
+    assert.notEqual(step("begin"), 0, "a second begin must refuse");
+    assert.equal(step("end"), 0);
+    assert.deepEqual(state(), { default: login, list: [login, other] });
+    assert.ok(calls(root).some((c) => c.join(" ") === `delete-keychain ${fixture}`));
+    assert.equal(existsSync(path.join(root, "opensteer-job/fixture-keychain.state")), false);
+  },
+);
 writeFileSync(path.join(out, "results.json"), JSON.stringify(results, null, 2));
 console.log(out, JSON.stringify(results, null, 2));
 if (results.some((r) => !r.passed)) process.exitCode = 1;

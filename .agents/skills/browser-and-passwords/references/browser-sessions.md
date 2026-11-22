@@ -53,7 +53,9 @@ pnpm test:integration -- packages/database/src/operation-budget.integration.test
 ## Real Electron qualification
 
 Only in a disposable VM, on request or after merge, from the integrated committed revision; unlock
-only the golden's fixture keychain.
+only the job's fixture keychain, never the login keychain. Every guest job gets one
+([fixture-keychain.sh](../../../../scripts/test-vm/fixture-keychain.sh)): its own keychain and
+constant password, the default and first in the search list for the job, restored after.
 
 ```sh
 pnpm test:vm -- pnpm test:electron-profile-restore

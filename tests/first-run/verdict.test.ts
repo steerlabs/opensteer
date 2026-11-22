@@ -102,6 +102,15 @@ describe("a trial that stops before the phone step", () => {
         "(desktop.protected-storage.verification-failed in its log), so its sign-in and this Mac's Home cannot keep their secrets in this guest",
     );
     expect(noAccountReason("")).toBe("the Mac app's first screen has no account to sign in to");
+    expect(
+      noAccountReason(
+        refused,
+        "/Users/admin/Library/Keychains/opensteer-journey-fixture.keychain-db",
+      ),
+    ).toMatch(/; the job's fixture keychain was the default$/u);
+    expect(noAccountReason("", "/Users/admin/Library/Keychains/login.keychain-db")).toBe(
+      "the Mac app's first screen has no account to sign in to; the default keychain was /Users/admin/Library/Keychains/login.keychain-db, not the job's fixture keychain",
+    );
   });
 
   it("fails with its reason first and keeps what its log shows, never a pass", () => {

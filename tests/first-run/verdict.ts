@@ -76,12 +76,21 @@ export const protectedStorageRefused = "desktop.protected-storage.verification-f
  * Why a trial found no account to sign in to: the Mac app keeps its sign-in in protected storage,
  * and when that refuses it the first screen is the welcome of a build without an account.
  */
-export function noAccountReason(log: string): string {
+export function noAccountReason(log: string, defaultKeychain: string | null = null): string {
+  const keychain =
+    defaultKeychain === null
+      ? ""
+      : defaultKeychain.includes(fixtureKeychainName)
+        ? "; the job's fixture keychain was the default"
+        : `; the default keychain was ${defaultKeychain}, not the job's fixture keychain`;
   return log.includes(protectedStorageRefused)
     ? "the Mac app's first screen has no account to sign in to: macOS protected storage refused it " +
-        `(${protectedStorageRefused} in its log), so its sign-in and this Mac's Home cannot keep their secrets in this guest`
-    : "the Mac app's first screen has no account to sign in to";
+        `(${protectedStorageRefused} in its log), so its sign-in and this Mac's Home cannot keep their secrets in this guest${keychain}`
+    : `the Mac app's first screen has no account to sign in to${keychain}`;
 }
+
+/** The keychain the VM runner's fixture step puts in place as the default (fixture-keychain.sh). */
+export const fixtureKeychainName = "opensteer-journey-fixture.keychain-db";
 
 /** A trial that stopped before the phone step: failed, with the reason and what its log shows. */
 export function stoppedTrial(reason: string, log: string): FirstRunTrialVerdict {

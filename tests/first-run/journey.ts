@@ -20,6 +20,7 @@
  * being set up, as it did on the walk that found "Another deployment access operation is already
  * running".
  */
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -107,7 +108,7 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
     app.process().stderr?.on("data", (chunk: Buffer) => log.push(chunk.toString("utf8")));
     const page = await app.firstWindow();
     // The first screen decides whether there is an account to sign in to at all.
-    await firstScreen(page, log);
+    await firstScreen(page, log, directory);
     await signIn(app, page, account.origin);
     await screen(page, "Where should your Opensteer live?");
     await page.getByRole("button", { name: /^On this Mac/u }).click();
@@ -166,12 +167,35 @@ async function runTrial(trial: Trial): Promise<FirstRunTrialVerdict> {
   }
 }
 
-/** The Mac app's first screen: Sign in, or the welcome of a build with no account here. */
-async function firstScreen(page: Page, log: readonly string[]): Promise<void> {
+/**
+ * The Mac app's first screen: Sign in, or a screen with no account to sign in to (this Mac's
+ * keychain refusing Opensteer, or the welcome of a build without an account).
+ */
+async function firstScreen(page: Page, log: readonly string[], directory: string): Promise<void> {
   const signIn = page.getByRole("button", { name: "Sign in", exact: true });
-  const noAccount = page.getByText("Welcome to Opensteer", { exact: true });
+  const noAccount = page
+    .getByText("Opensteer can’t use this Mac’s keychain", { exact: true })
+    .or(page.getByText("Welcome to Opensteer", { exact: true }));
   await signIn.or(noAccount).first().waitFor({ timeout: settleMs });
-  if (await noAccount.isVisible()) throw new Error(noAccountReason(log.join("")));
+  if (await noAccount.first().isVisible()) {
+    // Which keychain the guest's session used: the evidence for why, read only.
+    const keychain = defaultKeychain();
+    await writeFile(path.join(directory, "default-keychain.txt"), `${keychain ?? "unknown"}\n`);
+    throw new Error(noAccountReason(log.join(""), keychain));
+  }
+}
+
+/** The user's default keychain, as `security` names it; null where it can't say. */
+function defaultKeychain(): string | null {
+  try {
+    return execFileSync("/usr/bin/security", ["default-keychain", "-d", "user"], {
+      encoding: "utf8",
+    })
+      .trim()
+      .replace(/^"|"$/gu, "");
+  } catch {
+    return null;
+  }
 }
 
 /** Sign in, through the account service's own pages, and hand the app its callback. */
