@@ -32,6 +32,7 @@ import Fastify from "fastify";
 import { registerWorkHomeRoutes, WorkHomeService } from "./work-home.js";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
 import { agentToolFailure } from "../mcp/agent-tool-failure.js";
+import { readableTabTasks } from "../tabs/tab-authority.js";
 import { ConnectionOAuth } from "../mcp/connections/connection-oauth.js";
 
 const marker = {
@@ -367,6 +368,31 @@ describeStore("work Home", (it) => {
     expect(await delegatingConnectionStanding(observed, f.task.userId, connection.id)).toBe("live");
     expect(statements.length).toBeGreaterThan(0);
     expect(statements.some((statement) => statement.includes("work_home_policy"))).toBe(false);
+  });
+
+  it("lists for a connection only its lineage's tasks once the Work policy no longer allows its grant", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const connection = await f.connect({ scope: "everything" });
+    const theirs = await f.createRunFixture("work-tabs-lineage");
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id })
+      .where("id", "=", theirs.threadId)
+      .execute();
+    const actor = {
+      kind: "connection",
+      caller: { connectionId: connection.id, userId: f.task.userId },
+    } as never;
+    const ids = [f.task.threadId, theirs.threadId];
+    // Everything, allowed: the person's own task too.
+    expect(await readableTabTasks(actor, ids, f.database)).toEqual(new Set(ids));
+    // The policy no longer allows Everything, while the grant row still says it: filtered.
+    await f.database
+      .updateTable("workHomePolicy")
+      .set({ policy: JSON.stringify({ ...permissive, allowEverything: false }) as never })
+      .execute();
+    expect(await readableTabTasks(actor, ids, f.database)).toEqual(new Set([theirs.threadId]));
   });
 
   it("hides a target removed after resolution even when Work policy refuses admission", async () => {

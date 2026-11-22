@@ -302,6 +302,20 @@ export async function delegatingConnectionStanding(
   return agentGrantAllowsTasks(AgentGrantSchema.parse(read!.connection.grant)) ? "live" : "ended";
 }
 
+/**
+ * A connection's grant as its standing allows it, from the one statement: the grant while the
+ * connection is live (on a work Home, only one the policy allows), and null otherwise. What a
+ * connection may see is decided from this, never from the grant row alone.
+ */
+export async function standingGrant(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  agentConnectionId: string,
+): Promise<AgentGrant | null> {
+  const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, false);
+  return standingOf(read) === "live" ? AgentGrantSchema.parse(read!.connection.grant) : null;
+}
+
 /** The connection delegated work may still run for: live, and still granted Tasks. */
 export async function liveDelegatingConnection(
   database: Kysely<DatabaseSchema>,

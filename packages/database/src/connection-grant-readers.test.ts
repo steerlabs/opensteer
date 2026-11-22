@@ -22,11 +22,6 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
     count: 1,
     reason: "The policy writer itself: it reads every grant to narrow or revoke it.",
   },
-  "apps/host/src/tabs/tab-authority.ts": {
-    count: 1,
-    reason:
-      "Whether an agent's tab list is filtered to its granted tabs. It does not join the policy: an open question for the lead, not a decided exception.",
-  },
 };
 
 it("reads a connection's grant for its standing in one statement only", () => {
