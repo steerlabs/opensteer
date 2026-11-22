@@ -1,6 +1,6 @@
 import { sql, type Kysely } from "kysely";
 
-export const bridgeConnectionsMigrationName = "0051_bridge_connections";
+export const bridgeConnectionsMigrationName = "0052_bridge_connections";
 
 /**
  * A messaging bridge is a connection: one `agent_connections` row reached through a chat instead

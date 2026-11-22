@@ -1,12 +1,6 @@
 /** Why signing in to a Host at its own address ended without a usable credential. */
 export interface HostSignInFailure {
-  readonly status:
-    | "join-required"
-    | "retryable"
-    | "update-required"
-    | "sign-in-required"
-    | "suppressed"
-    | "superseded";
+  readonly status: "update-required" | "sign-in-required" | "suppressed";
   readonly error?: unknown;
 }
 

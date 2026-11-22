@@ -1181,6 +1181,8 @@ export const runnerRestartingCloseCode = 4012;
  * and when they resume. Sent only to a Home whose welcome accepts it.
  */
 export const runnerAgentStopCapability = "runner-agent-stop-v1" as const;
+/** A Runner that parses a connected agent session's `alwaysAsk` and `noLaunch` fields. */
+export const agentSessionGuardsCapability = "agent-session-guards-v1" as const;
 
 /** The person stopped agents on this computer; nothing new starts until they resume. */
 export const RunnerAgentsStoppedSchema = z.strictObject({

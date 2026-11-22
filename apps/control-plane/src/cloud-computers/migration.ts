@@ -11,6 +11,26 @@ export const cloudComputerGoogleServerRefMigration: Migration = {
 };
 import type { Migration } from "kysely/migration";
 
+/**
+ * When the billing pass finished settling a deleted Cloud Computer with Stripe (its subscription
+ * cancelled, its Stripe customer deleted), and when cancelling it first failed. Add-only: a
+ * previous release never reads them. A computer deleted before this release was settled the way
+ * that release did it, and is marked so the pass never revisits it.
+ */
+export const cloudComputerBillingSettledMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.cloud_computers
+        add column billing_settled_at timestamptz,
+        add column cancel_failed_at timestamptz
+    `.execute(database);
+    await sql`
+      update public.cloud_computers set billing_settled_at = coalesce(deleted_at, now())
+      where state = 'deleted'
+    `.execute(database);
+  },
+};
+
 export const cloudComputersMigration: Migration = {
   async up(database) {
     await sql`

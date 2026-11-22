@@ -18,17 +18,18 @@ describe("Host runtime configuration", () => {
     expect(hostAppRealOrigins("loopback")).toBe(true);
     expect(hostAppRealOrigins("networked")).toBe(false);
   });
-  it("rejects an unpinned Account-adopted Host before creating local state", async () => {
+  it("rejects an invalid configuration before creating local state", async () => {
     const parent = mkdtempSync(join(tmpdir(), "opensteer-invalid-runtime-"));
     temporaryDirectories.push(parent);
     const dataDirectory = join(parent, "must-not-be-created");
 
     await expect(
       createHostRuntime({
-        account: {},
+        canonicalOrigin: new URL("http://127.0.0.1:4310"),
         dataDirectory,
+        exposure: "networked",
       } as unknown as HostConfig),
-    ).rejects.toThrow(/requires a pinned deployment and Host instance identity/u);
+    ).rejects.toThrow(/A networked Personal Host requires its public canonical origin/u);
     expect(existsSync(dataDirectory)).toBe(false);
   });
 });

@@ -1558,7 +1558,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "run",
       "connection",
     ],
-    "description": "Sign in with a login and password saved in Opensteer Passwords, with the person's approval. When loginRef is returned, fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first. For a connected agent, pass taskId and a tab in a shared profile, then call page.cdp with Opensteer.fillLogin and {loginRef, field} in that tab.",
+    "description": "Sign in with a login and password saved in Opensteer Passwords, with the person's approval. When loginRef is returned, fill by reference: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first. For a connected agent, pass taskId and a tab in a shared profile, then call page.cdp with Opensteer.fillLogin and {loginRef, field} in that tab.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1610,7 +1610,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "callers": [
       "run",
     ],
-    "description": "Sign in by copying the person's Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a login to the original browser and refuse copied cookies; saved_login_request signs in fresh instead. When cookiesStatus is "copied", reload and check the account. Fulfilled alone does not mean cookies arrived. You never see cookie values.",
+    "description": "Sign in by copying the person's Chrome cookies for a site into a browser tab, with their approval. No typing or codes, but some sites (often banks) tie a login to the original browser and refuse copied cookies; saved_login_request signs in fresh instead. When cookiesStatus is "copied", reload and check the account. Fulfilled alone does not mean cookies arrived. Results omit cookie values.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

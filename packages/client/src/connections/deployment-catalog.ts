@@ -714,7 +714,6 @@ export class DeploymentCatalogStore {
   readonly #privateFiles: PrivateFilesystem;
   readonly #mutations = new MutationQueue();
   readonly #listeners = new Set<() => void>();
-  /** Joined teams Account's directory does not list yet, until when they stay anyway. */
 
   constructor(options: DeploymentCatalogStoreOptions) {
     this.#filePath = options.filePath;
@@ -1363,6 +1362,30 @@ function addConnectionRouteIssues(
 }
 
 /**
+ * Whether a saved catalog row or an Account directory row is visibly not a personal Home: a
+ * team server a previous release saved or listed. Its display kind, or the kind its signed
+ * document states, says something other than personal; a row that states neither is judged
+ * by the exact parsers that follow.
+ */
+export function isVisiblyNotPersonal(row: unknown): boolean {
+  if (typeof row !== "object" || row === null) return false;
+  type Signed = { readonly document?: { readonly deploymentShape?: { readonly kind?: unknown } } };
+  const record = row as {
+    readonly kind?: unknown;
+    readonly authority?: Signed;
+    readonly authorityEnvelope?: Signed;
+  };
+  const shapes = [
+    record.authority?.document?.deploymentShape?.kind,
+    record.authorityEnvelope?.document?.deploymentShape?.kind,
+  ];
+  return (
+    (record.kind !== undefined && record.kind !== "personal") ||
+    shapes.some((shape) => shape !== undefined && shape !== "personal")
+  );
+}
+
+/**
  * A catalog saved by a release that also served team servers may hold one; such
  * a row is left out, its selection moves to the first Home left, and the rest of
  * the catalog reads as before. The next write keeps the catalog without it.
@@ -1372,21 +1395,7 @@ function withoutRetiredDeployments(decoded: unknown): unknown {
     return decoded;
   const { deployments } = decoded;
   if (!Array.isArray(deployments)) return decoded;
-  const retired = (row: unknown): boolean => {
-    if (typeof row !== "object" || row === null) return false;
-    const record = row as {
-      readonly kind?: unknown;
-      readonly authority?: {
-        readonly document?: { readonly deploymentShape?: { readonly kind?: unknown } };
-      };
-    };
-    const shape = record.authority?.document?.deploymentShape?.kind;
-    return (
-      (record.kind !== undefined && record.kind !== "personal") ||
-      (shape !== undefined && shape !== "personal")
-    );
-  };
-  const kept = deployments.filter((row) => !retired(row));
+  const kept = deployments.filter((row) => !isVisiblyNotPersonal(row));
   if (kept.length === deployments.length) return decoded;
   const selected = "selectedDeploymentId" in decoded ? decoded.selectedDeploymentId : null;
   const stillSelected = kept.some(

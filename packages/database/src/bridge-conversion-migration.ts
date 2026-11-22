@@ -1,6 +1,6 @@
 import { sql, type Kysely } from "kysely";
 
-export const bridgeConversionMigrationName = "0052_bridge_conversion";
+export const bridgeConversionMigrationName = "0053_bridge_conversion";
 
 /**
  * Each Messaging route the person had becomes bridges that can only do less than it did:

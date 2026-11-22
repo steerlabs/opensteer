@@ -28,6 +28,7 @@ import {
   type RunnerConnectionFence,
   type RunnerDescriptor,
   type RunnerProof,
+  agentSessionGuardsCapability,
 } from "@opensteer/protocol";
 import {
   createRunnerAuthenticationSignature,
@@ -432,6 +433,8 @@ export async function connectCallerMachine(
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [
+      // This release's Runner, which reads a connected agent session's guarded fields.
+      agentSessionGuardsCapability,
       "filesystem",
       "network-egress",
       "native-session-continuation-v1",

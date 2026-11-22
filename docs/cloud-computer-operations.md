@@ -57,7 +57,7 @@ To enable organization seats, set `OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID` to a 
 
 When an organization admin creates an invitation, the website shows a link for the admin to share with the invitee. Sending the link is manual. The invitee accepts while signed in with the invited, verified email address.
 
-Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, at rest). `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` must differ from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
+Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, at rest).
 
 | Env var                                                   | Meaning                                                                                         | Required | Default | Secret source          |
 | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | -------- | ------- | ---------------------- |
@@ -361,11 +361,40 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   - Reconciler powers on the existing VM and restores DNS; customer sees `status: "preparing"`, then `status: "ready"`.
 - **Delete**:
   - Owner calls `DELETE /v1/account/cloud-computers/:id` with `{"confirmation":"DELETE:<id>"}`, or operator runs `node dist/cloud-computer-operator-main.js delete <id>`.
+  - Account marks `deletionRequestedAt` and cancels the Stripe subscription at once, whether or not a checkout for that computer or person is open: a checkout keeps its own path (expired, and a payment on it cancelled and refunded). Once Stripe confirms cancellation, Account transitions `state: "deleted"`, `phase: "deleting"`, removes the Home from `deployments` and deletes its OIDC client.
+  - Reconciler removes the Cloudflare DNS record, requests a graceful Hetzner shutdown (waits up to 30 seconds or `OPENSTEER_HOME_ACTION_TIMEOUT_MS`, whichever is shorter), forces `poweroff` if still running, and reports `phase: "suspended"`. Data and disks stay intact.
+  - Customer sees `status: "suspended"` with the reason (`"You paused this Cloud Computer."`, `"Your subscription ended."`, `"Your subscription needs attention."`, or the operator's reason text).
+- **Resume**:
+  - Owner calls `POST /v1/account/cloud-computers/:id/resume` (clears `ownerSuspended`), operator runs `node dist/cloud-computer-operator-main.js unsuspend <id>` (clears `operatorSuspension`), or Stripe reports `active` billing again.
+  - Only when all three conditions are clear (no owner pause, no operator suspension, active billing) does Account move `state` back to `active`.
+  - Reconciler powers on the existing Hetzner VM, restores the Cloudflare DNS record, verifies the pinned Home identity, and reports `phase: "ready"`.
+  - Customer sees `status: "preparing"` while it boots, then `status: "ready"`.
+- **Cancel**:
+  - Customer cancels in the Stripe Billing Portal (`POST /v1/account/cloud-computers/billing-portal`).
+  - When Stripe sends `customer.subscription.deleted` (or the 60-second billing reconciler sees `canceled`), Account sets `billingStatus: "canceled"` and suspends the VM. Billing never deletes the VM or backups.
+  - Customer sees `status: "suspended"` with reason `"Your subscription ended."`.
+- **Resubscribe**:
+  - While the canceled Home is still suspended (not deleted), the customer starts a new checkout (`POST /v1/account/cloud-computers/checkout`).
+  - Account does not reserve a second backup target; when the new subscription completes, Account attaches the new Stripe subscription to the existing Cloud Computer and sets `state: "active"`.
+  - Reconciler powers on the existing VM and restores DNS; customer sees `status: "preparing"`, then `status: "ready"`.
+- **Delete**:
+  - Owner calls `DELETE /v1/account/cloud-computers/:id` with `{"confirmation":"DELETE:<id>"}`, or operator runs `node dist/cloud-computer-operator-main.js delete <id>`.
   - Account marks `deletionRequestedAt`, cancels the Stripe subscription first, and once Stripe confirms cancellation transitions `state: "deleted"`, `phase: "deleting"`, removes the Home from `deployments` and deletes its OIDC client.
   - Reconciler removes the Cloudflare DNS record, deletes the Hetzner server, waits until it is absent, and reports `phase: "deleted"`.
   - Account records the provider confirmation, then destroys the Home's Secret Manager secret. It records the tombstone and reports `status: "deleted"` only when both facts are confirmed.
   - Account purges stored object versions and delete markers using the corresponding Home's own S3 credential, including retired targets. It confirms removal with a fresh empty listing before releasing the target for rotation. A durable purge reservation holds each target through failures. The provisioner never receives storage credentials.
   - The personal or organization page shows **Computer and disk destroyed**, **Backups made unreadable**, and **Stored backup data removed** with separate dates. An offboarded seat stops counting as assigned after the first two facts are confirmed. A free seat requires an independently reserved usable backup target.
+  - **Settling with Stripe**: this is the same whether the owner deleted the Cloud Computer or deleted their Account. The 60-second billing pass settles each personal row with `deletionRequestedAt` set and `billingSettledAt` empty, in a few Stripe calls, retried every pass:
+    - `cancel`: if the row isn't deleted yet, the pass cancels its subscription (`invoice_now=false`, `prorate=false`). It won't renew, and the rest of the period already paid isn't refunded. A failed attempt sets `cancelFailedAt`. Then Stripe must show the subscription cancelled.
+    - `customer`: the Stripe customer that subscription belongs to is deleted, with the payment details saved on it, unless Stripe lists another subscription on it that is not cancelled. Stripe keeps its own records of past payments.
+    - `record`: `billingSettledAt` is set. Rows deleted before this release were marked settled by the migration and are never revisited.
+    - Nothing is refunded automatically. If the first cancel failed, settling logs `Cloud Computer billing reconciliation failed` with error `CloudComputerCancelledLate`, the `computerId` and `waitedMs` (request to cancellation). Look in Stripe for a renewal charged in that time and refund it by hand.
+    - A row still unsettled an hour after its request is logged the same way with `CloudComputerDeletionUnsettled`, the `computerId` and the `step` that is failing.
+- **Account deletion**:
+  - The account deletion page says the person's Cloud Computer goes with the Account, with the same billing words as the Cloud Computer's own Delete.
+  - `AccountDeletionService.delete` contacts no Cloud Computer before the Account's own transaction. When the Account's row goes, the database records each of its Cloud Computers' deletion requests in that same transaction (the `zz_cloud_computer_revision` trigger). The refusals are the existing ones: a work Home its organization hasn't offboarded, the last organization admin, an open organization checkout. A refused deletion leaves the Cloud Computer as it was.
+  - Right after the deletion commits, the service asks the billing pass to run now (best effort; otherwise it runs within a minute). The pass cancels and settles the row as above, and the reconciler destroys the machine, the backup key and the stored backups.
+  - The page after deletion says the Account is deleted and that the Cloud Computer's deletion is being finished.
 
 ## When something goes wrong
 
@@ -434,7 +463,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 - **What the operator does**:
   1. Check that the `home-provisioner` Kubernetes ServiceAccount is bound to the Google service account email configured in `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL`.
   2. Check that `OPENSTEER_ACCOUNT_URL` in `home-provisioner` exactly matches `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` in Account (the workload identity JWT audience must match).
-  3. Confirm `OPENSTEER_CLOUD_COMPUTER_*` is still enabled in Account and that `OPENSTEER_CLOUD_COMPUTER_PROVISIONER_EMAIL` is distinct from `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL`.
+  3. Confirm `OPENSTEER_CLOUD_COMPUTER_*` is still enabled in Account.
 
 ### DNS or identity mismatch
 
@@ -536,6 +565,6 @@ The automated test suite and local Colima proof (`scripts/verify-home-deployment
 - **Live Hetzner Cloud**: server creation (`start_after_create: false`), cloud-init execution on an actual Hetzner Ubuntu 24.04 LTS image, firewall `opensteer-cloud-computers`, graceful shutdown + forced `poweroff`, IPv6 `/64` `::1` addressing, and server deletion.
 - **Live Cloudflare DNS**: creating, updating, and deleting unproxied `A` / `AAAA` records with the `Opensteer Cloud Computer` comment, and orphan DNS cleanup.
 - **Live backup erasure**: Secret Manager workload permissions and irreversible key deletion, S3-compatible version listing and deletion with prefix-scoped credentials, and principal rotation after deletion. Real restic backup and restore over the public internet remain unverified.
-- **`linux/amd64` Home images and VMs**: the local Colima proof builds and runs `linux/arm64` images only; `linux/amd64` Home container builds and runtime sandboxing (AppArmor, seccomp, bubblewrap, Chromium) have not been executed on a real amd64 Ubuntu 24.04 VM.
+- **`linux/amd64` Home VMs at a provider**: the verifier has run in local mode on pristine AMD64 Ubuntu 24.04 Compute Engine instances without an external address (2026-11-21): the `linux/amd64` build and all 34 checks passed, including AppArmor, seccomp, bubblewrap, Chromium, and the managed installer with a claim signed by a stand-in for the Opensteer account and OIDC sign-in against it. Nothing has run on Hetzner, and the `linux/arm64` build-only half did not run there.
 - **Production systemd units and timers**: The Colima proof uses `--prepare` and invokes `opensteer-home` directly for bring-your-own installs, but waits for the managed installer and Home systemd services for managed boot and restore. It does not qualify the scheduled timers end-to-end on a production VM.
 - **Production restore from a named snapshot**: `replace <computer-id> <snapshot-id>` driving a fresh Hetzner VM through `managed-restore`, `boot-complete`, DNS cutover, identity verification, old-VM deletion, and re-claim has never been executed end-to-end against real infrastructure.

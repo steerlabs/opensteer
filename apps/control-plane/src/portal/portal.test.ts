@@ -3,6 +3,8 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import {
   AccountDeploymentDirectoryEntrySchema,
   AccountDeploymentSchema,
+  ControlPlaneAccountIdSchema,
+  cloudWords,
   type AccountDeployment,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
@@ -146,12 +148,44 @@ describe("portal Deployment cards", () => {
     for (const present of [true, false]) {
       const card = deploymentCard(directoryDeployment(deployment), present);
       expect(card).not.toContain('class="dot');
-      expect(card).not.toContain('class="place__note');
+      // The one note is its kind: a personal Home at its own address is a server.
+      expect(card.match(/class="place__note/gu)).toHaveLength(1);
+      expect(card).toContain('<span class="place__note">Server</span>');
       expect(card).toContain('class="place__go');
     }
     expect(deploymentCard(directoryDeployment(deployment), false)).toContain(
       'href="https://server.opensteer.test"',
     );
+  });
+
+  it("calls a Cloud Computer a Cloud Computer, and a work Home's organization by name, never Team", () => {
+    // A Cloud Computer is a personal Home at its own address.
+    const deployment = directoryDeployment(personalHomeAtItsAddress());
+    const mine = deploymentCard(deployment, true, { organization: null });
+    expect(mine).toContain("Cloud Computer");
+    expect(mine).not.toContain(">Team<");
+    expect(mine).toContain("M17.5 18.5"); // the cloud, not a server
+    const work = deploymentCard(deployment, true, { organization: "Acme" });
+    expect(work).toContain("Work · Acme · Cloud Computer");
+    // A retired team server's row, still in the directory until removed, says no kind.
+    const retired = deploymentCard(retiredTeamServerEntry(), true, "not-cloud");
+    for (const word of ["Team", "Server", "Cloud Computer"])
+      expect(retired).not.toContain(`>${word}<`);
+    expect(retired).not.toContain('<span class="place__note">');
+  });
+
+  it("calls a personal Home on a server a Server, with the server icon, never a team", () => {
+    const deployment = directoryDeployment(personalHomeAtItsAddress());
+    const card = deploymentCard(deployment, true, "not-cloud");
+    expect(card).toContain(">Server<");
+    expect(card).not.toContain("Team");
+    expect(card).toContain('<rect x="4" y="4" width="16" height="7"'); // the server icon
+  });
+
+  it("names no kind it cannot know when the Account's Cloud Computers couldn't be read", () => {
+    const card = deploymentCard(directoryDeployment(personalHomeAtItsAddress()), true, "unknown");
+    for (const word of ["Team", "Server", "Cloud Computer"]) expect(card).not.toContain(word);
+    expect(card).not.toMatch(/<span class="device"><svg/u);
   });
 
   it("keeps removed member access unavailable even without a Host health observation", () => {
@@ -161,6 +195,60 @@ describe("portal Deployment cards", () => {
     expect(card).toContain("You no longer have access to this deployment.");
     expect(card).not.toContain('href="https://server.opensteer.test"');
     expect(card).not.toContain('class="place__go');
+  });
+
+  it("labels each Home on Your Opensteers by what the Account knows of it", async () => {
+    const cloud = directoryDeployment(personalHomeAtItsAddress());
+    const server = directoryDeployment({
+      ...personalHomeAtItsAddress(),
+      name: "Basement server",
+    });
+    const retired = retiredTeamServerEntry();
+    const accountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+    const page = async (cloudComputers: { listForAccount: () => Promise<unknown> }) => {
+      const router = createPortalRouter({
+        accountDeletion: {} as never,
+        auth: {} as never,
+        cloudComputers: cloudComputers as never,
+        portalOrigin: new URL("https://portal.test"),
+        portalSessions: {
+          read: async () => ({
+            accountId,
+            accountSessionId: "session-1",
+            displayName: "Portal Owner",
+            email: "owner@example.test",
+            expiresAt: new Date("2099-08-21T12:00:00.000Z"),
+          }),
+        } as never,
+        publicOrigin: new URL("https://accounts.portal.test"),
+        store: {
+          isDeploymentPresentForAccount: async () => true,
+          listDeployments: async () => [cloud, server, retired],
+        } as never,
+      });
+      const app = Fastify();
+      router.register(app);
+      app.get("/", (request, reply) => router.home(request, reply));
+      const response = await app.inject({
+        headers: { cookie: "__Host-opensteer.portal=fixture", host: "portal.test" },
+        url: "/",
+      });
+      expect(response.statusCode).toBe(200);
+      return response.body;
+    };
+    const notes = (body: string) =>
+      [...body.matchAll(/<span class="place__note">([^<]*)<\/span>/gu)].map(([, note]) => note);
+
+    // Trusted membership names the Cloud Computer; the other Home at its own address is a server;
+    // a retired team server's row says no kind.
+    const known = await page({
+      listForAccount: async () => [{ deploymentId: cloud.id, status: "ready", work: null }],
+    });
+    expect(notes(known)).toEqual([cloudWords("cloud.shortTitle"), "Server"]);
+    expect(known).not.toContain(">Team<");
+    // When the Account cannot say which are Cloud Computers, it names no kind at all.
+    const unknown = await page({ listForAccount: async () => Promise.reject(new Error("down")) });
+    expect(notes(unknown)).toEqual([]);
   });
 
   it("mints the browser grant only after the portal card is posted", async () => {
@@ -296,6 +384,21 @@ function selfHostedDeployment(
   });
 }
 
+/** A personal Home listed at its own address: a server of the person's, or a Cloud Computer. */
+function personalHomeAtItsAddress(): AccountDeployment {
+  const deploymentId = createId("deployment");
+  const authority = authorityEnvelope(deploymentId, "personal");
+  return AccountDeploymentSchema.parse({
+    ...selfHostedDeployment(deploymentId),
+    authorityEnvelope: {
+      ...authority,
+      document: { ...authority.document, canonicalOrigin: "https://home.opensteer.test" },
+    },
+    canonicalOrigin: "https://home.opensteer.test",
+    name: "Home server",
+  });
+}
+
 function personalDeployment(state: "ready" | "offline" | "off"): AccountDeployment {
   const deploymentId = createId("deployment");
   const authority = authorityEnvelope(deploymentId, "personal");
@@ -353,6 +456,21 @@ function authorityEnvelope(deploymentId: ReturnType<typeof createId>, kind: "per
     publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
     signature: "A".repeat(86),
   } as const;
+}
+
+/** A team server's row a previous release listed: its signed shape still says "team". */
+function retiredTeamServerEntry(): AccountDeploymentDirectoryEntry {
+  const entry = directoryDeployment(selfHostedDeployment());
+  const envelope = entry.authorityEnvelope as {
+    readonly document: Record<string, unknown>;
+  };
+  return AccountDeploymentDirectoryEntrySchema.parse({
+    ...entry,
+    authorityEnvelope: {
+      ...envelope,
+      document: { ...envelope.document, deploymentShape: { kind: "team" } },
+    },
+  });
 }
 
 function directoryDeployment(deployment: AccountDeployment): AccountDeploymentDirectoryEntry {

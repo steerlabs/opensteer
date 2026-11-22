@@ -69,8 +69,9 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0048_shared_chrome_grants",
     "0049_work_home",
     "0050_browser_pool",
-    "0051_bridge_connections",
-    "0052_bridge_conversion",
+    "0051_needs_you_counts_requests",
+    "0052_bridge_connections",
+    "0053_bridge_conversion",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

@@ -55,7 +55,6 @@ import type {
   ConsumedAccountAdoptionProof,
   IdentityServiceOptions,
   IssuedAccountAdoptionProof,
-  VerifiedAccountAdoptionGrant,
 } from "./types.js";
 
 const internalAuthPath = "/internal/better-auth";
@@ -1118,10 +1117,6 @@ export class IdentityService {
     });
   }
 
-  accountAdoptionCompletionEnabled(): boolean {
-    return this.#options.accountAdoption !== undefined;
-  }
-
   /**
    * Records an administrator's explicit approval and returns the raw
    * proof credential once, pinned to the Account identity the administrator
@@ -1351,167 +1346,6 @@ export class IdentityService {
         proofId,
       };
     });
-  }
-
-  /**
-   * Binds the verified Account subject to the existing local administrator.
-   * The verifier must authenticate the control-plane grant before this method
-   * starts its database transaction.
-   */
-  async completeAccountAdoption(
-    grant: unknown,
-    session: AuthenticatedSession,
-  ): Promise<{
-    readonly account: AccountAdoptionAccount;
-    readonly proofId: string;
-    readonly providerId: string;
-    readonly userId: UserId;
-  }> {
-    const adoption = this.#options.accountAdoption;
-    if (!adoption) {
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Account attachment completion is not configured",
-      });
-    }
-    const verified = parseVerifiedAccountAdoptionGrant(await adoption.grantVerifier.verify(grant));
-    if (!("userId" in verified.authorizedBy)) throw invalidAccountAdoptionGrant();
-    const authorizedBy = verified.authorizedBy;
-    const logicalProviderId = parseLogicalProviderId(adoption.logicalProviderId);
-    const providerId = oidcIdentityProviderIdForIssuer(logicalProviderId, verified.account.issuer);
-    const now = new Date();
-    await this.#database.transaction().execute(async (transaction) => {
-      await sqlAdvisoryLock(transaction, "account-adoption-completion");
-      const liveDeployment = await activeDeploymentAuthority(
-        transaction,
-        true,
-        requiredHostKeyFingerprint(this.#options.hostKeyFingerprint),
-      );
-      if (!sameAccountAdoptionAuthority(liveDeployment, verified.deployment)) {
-        throw invalidAccountAdoptionGrant();
-      }
-      await requireLiveAdministratorSession(transaction, session, now);
-      if (authorizedBy.userId !== session.user.id || authorizedBy.sessionId !== session.id) {
-        throw invalidAccountAdoptionGrant();
-      }
-      const proof = await transaction
-        .selectFrom("hostAccountAdoptionProofs")
-        .selectAll()
-        .where("id", "=", verified.proofId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (
-        !proof?.consumedAt ||
-        proof.consumedAt.getTime() !== verified.consumedAt.getTime() ||
-        proof.expectedIssuer !== verified.account.issuer ||
-        proof.expectedSubject !== verified.account.subject ||
-        proof.authorizedByUserId !== session.user.id ||
-        proof.authorizedBySessionId !== session.id ||
-        !sameAccountAdoptionAuthority(accountAdoptionAuthorityFromRow(proof), liveDeployment)
-      ) {
-        throw invalidAccountAdoptionGrant();
-      }
-
-      const configuredProvider = await transaction
-        .selectFrom("accountDirectoryProvider")
-        .select(["issuer", "providerId"])
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (
-        configuredProvider &&
-        (configuredProvider.issuer !== verified.account.issuer ||
-          configuredProvider.providerId !== providerId)
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "This Deployment is attached to a different Opensteer Account issuer",
-        });
-      }
-      const accountBindings = await transaction
-        .selectFrom("authAccounts")
-        .select(["accountId", "providerId", "userId"])
-        .where("providerId", "like", `oidc.${logicalProviderId}.%`)
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute();
-      if (proof.completedAt) {
-        if (
-          configuredProvider?.issuer === verified.account.issuer &&
-          configuredProvider.providerId === providerId &&
-          accountBindings.length === 1 &&
-          accountBindings[0]?.accountId === verified.account.subject &&
-          accountBindings[0].providerId === providerId &&
-          accountBindings[0].userId === session.user.id
-        ) {
-          return;
-        }
-        throw invalidAccountAdoptionGrant();
-      }
-      if (accountBindings.length > 0) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "This Deployment already has an Opensteer Account binding",
-        });
-      }
-
-      if (!configuredProvider) {
-        await transaction
-          .insertInto("accountDirectoryProvider")
-          .values({
-            issuer: verified.account.issuer,
-            providerId,
-            singletonKey: "opensteer-account",
-          })
-          .executeTakeFirstOrThrow();
-      }
-      await transaction
-        .insertInto("authAccounts")
-        .values({
-          accessToken: null,
-          accessTokenExpiresAt: null,
-          accountId: verified.account.subject,
-          id: createId("authAccount"),
-          idToken: null,
-          password: null,
-          providerId,
-          refreshToken: null,
-          refreshTokenExpiresAt: null,
-          scope: null,
-          userId: session.user.id,
-        })
-        .executeTakeFirstOrThrow();
-      const completion = await transaction
-        .updateTable("hostAccountAdoptionProofs")
-        .set({ completedAt: now })
-        .where("id", "=", verified.proofId)
-        .where("completedAt", "is", null)
-        .executeTakeFirst();
-      if (completion.numUpdatedRows !== 1n) throw invalidAccountAdoptionGrant();
-      await transaction
-        .insertInto("securityAudit")
-        .values({
-          action: "instance.account-adopted",
-          actorSessionId: session.id,
-          actorUserId: session.user.id,
-          id: createId("securityAudit"),
-          metadata: sqlJson({
-            grantId: verified.grantId,
-            issuer: verified.account.issuer,
-            proofId: verified.proofId,
-            providerId,
-          }),
-          requestId: null,
-          targetId: liveDeployment.deploymentId,
-          targetType: "deployment",
-        })
-        .executeTakeFirstOrThrow();
-    });
-    return {
-      account: verified.account,
-      proofId: verified.proofId,
-      providerId,
-      userId: session.user.id,
-    };
   }
 
   async signInPassword(
@@ -2820,52 +2654,6 @@ function parseAccountAdoptionAuthority(input: AccountAdoptionAuthority): Account
   };
 }
 
-function parseVerifiedAccountAdoptionGrant(
-  input: VerifiedAccountAdoptionGrant,
-): VerifiedAccountAdoptionGrant {
-  const proofId = parseAccountAdoptionProofId(input?.proofId);
-  const account = parseAccountAdoptionAccount(input?.account);
-  const deployment = parseAccountAdoptionAuthority(input?.deployment);
-  const by = input?.authorizedBy;
-  const userId = UserIdSchema.safeParse(by && "userId" in by ? by.userId : null);
-  const sessionId = AuthSessionIdSchema.safeParse(by && "sessionId" in by ? by.sessionId : null);
-  const consumedAt = input?.consumedAt instanceof Date ? input.consumedAt : null;
-  const issuedAt = input?.issuedAt instanceof Date ? input.issuedAt : null;
-  const expiresAt = input?.expiresAt instanceof Date ? input.expiresAt : null;
-  const grantId =
-    typeof input?.grantId === "string" &&
-    /^hag_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
-      input.grantId,
-    )
-      ? input.grantId
-      : null;
-  if (
-    !userId.success ||
-    !sessionId.success ||
-    !consumedAt ||
-    !Number.isFinite(consumedAt.getTime()) ||
-    !issuedAt ||
-    !Number.isFinite(issuedAt.getTime()) ||
-    !expiresAt ||
-    !Number.isFinite(expiresAt.getTime()) ||
-    expiresAt <= issuedAt ||
-    expiresAt <= new Date() ||
-    !grantId
-  ) {
-    throw invalidAccountAdoptionGrant();
-  }
-  return {
-    account,
-    authorizedBy: { sessionId: sessionId.data, userId: userId.data },
-    consumedAt,
-    deployment,
-    expiresAt,
-    grantId,
-    issuedAt,
-    proofId,
-  };
-}
-
 function accountAdoptionAuthorityFromRow(input: {
   readonly canonicalOrigin: string;
   readonly deploymentId: string;
@@ -2971,13 +2759,6 @@ function invalidOperatorRecoveryLink(): OpensteerError {
   return new OpensteerError({
     code: "unauthorized",
     message: "This password recovery link is invalid, expired, or already used",
-  });
-}
-
-function invalidAccountAdoptionGrant(): OpensteerError {
-  return new OpensteerError({
-    code: "forbidden",
-    message: "Account attachment grant does not match this Deployment",
   });
 }
 

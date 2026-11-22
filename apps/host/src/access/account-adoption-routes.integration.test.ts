@@ -1,7 +1,5 @@
 import {
-  CompleteHostAccountAdoptionResponseSchema,
   ConsumeHostAccountAdoptionProofResponseSchema,
-  HostAccountAdoptionCompletionGrantClaimsSchema,
   IssueHostAccountAdoptionProofResponseSchema,
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
@@ -13,12 +11,10 @@ import {
 } from "@opensteer/database";
 import { IdentityService } from "@opensteer/identity";
 import Fastify from "fastify";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { sql } from "kysely";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { HostAuthenticator } from "../identity/auth.js";
 import { registerIdentityRoutes } from "../identity/identity-routes.js";
-import { RemoteAccountAdoptionGrantVerifier } from "./account-adoption-grant-verifier.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -58,27 +54,8 @@ integration("Host Account adoption routes", () => {
         kind: "personal" as const,
       },
     });
-    const { privateKey, publicKey } = await generateKeyPair("EdDSA", { crv: "Ed25519" });
-    const publicJwk = {
-      ...(await exportJWK(publicKey)),
-      alg: "EdDSA",
-      kid: "account-adoption-test-v1",
-      use: "sig",
-    };
     const identity = new IdentityService(database, {
       deployment: { kind: "personal", name: null },
-      accountAdoption: {
-        grantVerifier: new RemoteAccountAdoptionGrantVerifier({
-          audience: origin,
-          fetch: async () =>
-            Response.json(
-              { keys: [publicJwk] },
-              { headers: { "content-type": "application/json" } },
-            ),
-          issuer: new URL("https://account.opensteer.example"),
-        }),
-        logicalProviderId: "opensteer-account",
-      },
       hostKeyFingerprint,
       localPasswordEnabled: true,
       oidcProviders: [],
@@ -104,9 +81,7 @@ integration("Host Account adoption routes", () => {
     });
 
     const app = Fastify();
-    const acknowledgeAccountAdoption = vi.fn(async () => undefined);
     registerIdentityRoutes(app, new HostAuthenticator({ identity, publicUrl: new URL(origin) }), {
-      acknowledgeAccountAdoption,
       assertOwner: (id) => requirePersonalOwner(database, id),
     });
     try {
@@ -185,71 +160,14 @@ integration("Host Account adoption routes", () => {
         url: `/v1/auth/account-adoption/proofs/${issued.proofId}/consume`,
       });
       expect(alteredReplay.statusCode).not.toBe(200);
-
-      const now = Math.floor(Date.now() / 1_000);
-      const grantClaims = HostAccountAdoptionCompletionGrantClaimsSchema.parse({
-        account,
-        aud: origin,
-        authority: issued.authority,
-        exp: now + 300,
-        iat: now,
-        iss: account.issuer,
-        jti: `hag_${crypto.randomUUID()}`,
-        proof: {
-          authorizedBy: consumed.authorizedBy,
-          consumedAt: consumed.consumedAt,
-          id: consumed.proofId,
-        },
-        sub: account.subject,
-        tokenUse: "opensteer-host-account-adoption",
-      });
-      const completionGrant = await new SignJWT(grantClaims)
-        .setProtectedHeader({ alg: "EdDSA", kid: publicJwk.kid, typ: "JWT" })
-        .sign(privateKey);
-      const rejectedOrigin = await app.inject({
-        headers: { cookie: cookieHeader(signup.headers), origin: "https://evil.example" },
-        method: "POST",
-        payload: { completionGrant },
-        url: "/v1/auth/account-adoption/complete",
-      });
-      expect(rejectedOrigin.statusCode).not.toBe(200);
-
-      const completeRequest = {
+      // Nothing on a Home completes an attachment of the whole Home to an Account.
+      const complete = await app.inject({
         headers: { cookie: cookieHeader(signup.headers), origin },
-        method: "POST" as const,
-        payload: { completionGrant },
+        method: "POST",
+        payload: { completionGrant: "unused" },
         url: "/v1/auth/account-adoption/complete",
-      };
-      const completed = await app.inject(completeRequest);
-      expect(completed.statusCode, completed.body).toBe(200);
-      expect(CompleteHostAccountAdoptionResponseSchema.parse(completed.json())).toMatchObject({
-        account,
-        proofId: issued.proofId,
-        userId: signup.data.session.user.id,
       });
-      expect(acknowledgeAccountAdoption).toHaveBeenLastCalledWith(issued.proofId);
-      const exactRetry = await app.inject(completeRequest);
-      expect(exactRetry.statusCode, exactRetry.body).toBe(200);
-      expect(exactRetry.json()).toEqual(completed.json());
-      expect(acknowledgeAccountAdoption).toHaveBeenCalledTimes(2);
-
-      const alteredClaims = HostAccountAdoptionCompletionGrantClaimsSchema.parse({
-        ...grantClaims,
-        account: {
-          ...account,
-          subject: "acct_00000000-0000-4000-8000-000000000002",
-        },
-        jti: `hag_${crypto.randomUUID()}`,
-        sub: "acct_00000000-0000-4000-8000-000000000002",
-      });
-      const alteredGrant = await new SignJWT(alteredClaims)
-        .setProtectedHeader({ alg: "EdDSA", kid: publicJwk.kid, typ: "JWT" })
-        .sign(privateKey);
-      const alteredCompletion = await app.inject({
-        ...completeRequest,
-        payload: { completionGrant: alteredGrant },
-      });
-      expect(alteredCompletion.statusCode).not.toBe(200);
+      expect(complete.statusCode).toBe(404);
     } finally {
       await app.close();
     }

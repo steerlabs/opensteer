@@ -89,6 +89,8 @@ import { createControlPlaneServer } from "../server/server.js";
 import { CloudComputerClaimer, HttpManagedHomeClient } from "./claim.js";
 import { loadCloudComputerConfig } from "./config.js";
 import { CloudComputerStore } from "./store.js";
+import { billingErrorDetails } from "./billing-error.js";
+import { cloudComputerBillingSettledMigration } from "./migration.js";
 import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
 import type { CloudComputerStripe, StripeBilling, StripeSubscription } from "./stripe.js";
 import { OrganizationStore } from "../organizations/store.js";
@@ -200,6 +202,7 @@ integration("Cloud Computer Account service", () => {
       payment: undefined,
     })),
     refundCheckout: vi.fn<StripeBilling["refundCheckout"]>(async () => true),
+    deleteIdleCustomer: vi.fn<StripeBilling["deleteIdleCustomer"]>(async () => {}),
     findCheckout: vi.fn<StripeBilling["findCheckout"]>(async () => undefined),
     cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
       subscriptions.set(id, { ...subscriptions.get(id)!, status: "canceled" });
@@ -267,6 +270,7 @@ integration("Cloud Computer Account service", () => {
     now: () => now,
   });
   const kickBootstrap = vi.fn();
+  const kickBilling = vi.fn();
   const claimErrors: unknown[] = [];
   const workHomeFetch = vi.fn<typeof globalThis.fetch>();
   const directory = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
@@ -461,6 +465,7 @@ integration("Cloud Computer Account service", () => {
         cloudComputers: {
           store: cloud,
           kickBootstrap,
+          kickBilling,
           stripeWebhookSecret: webhookSecret,
           verifyProvisioner: googleServiceAccountVerifier({
             audience: publicOrigin.origin,
@@ -490,10 +495,12 @@ integration("Cloud Computer Account service", () => {
     stripe.validatePortal.mockReset().mockResolvedValue(undefined);
     stripe.expireCheckout.mockClear();
     stripe.refundCheckout.mockReset().mockResolvedValue(true);
+    stripe.deleteIdleCustomer.mockReset().mockResolvedValue(undefined);
     billingAttention.mockClear();
     stripe.findCheckout.mockReset().mockResolvedValue(undefined);
     stripe.validateOffer.mockReset().mockResolvedValue(undefined);
     kickBootstrap.mockClear();
+    kickBilling.mockClear();
     logs.length = 0;
     now = new Date();
     stripe.updateSeatQuantity
@@ -1309,6 +1316,21 @@ integration("Cloud Computer Account service", () => {
       audit: { lastSequence: 4 },
     });
     expect(ended.seats.free).toBe(1);
+    // The billing pass never settles a work Home with Stripe: its billing is the organization's.
+    stripe.deleteIdleCustomer.mockClear();
+    stripe.cancel.mockClear();
+    await cloud.reconcileBilling(() => undefined);
+    expect(stripe.deleteIdleCustomer).not.toHaveBeenCalled();
+    expect(stripe.cancel).not.toHaveBeenCalled();
+    expect(
+      (
+        await database
+          .selectFrom("cloudComputers")
+          .select(["deletionRequestedAt", "billingSettledAt"])
+          .where("id", "=", assignment.computerId)
+          .executeTakeFirstOrThrow()
+      ).billingSettledAt,
+    ).toBeNull();
     const successor = await assign({ requestId: randomUUID(), accountId: other.id });
     expect(successor.statusCode, successor.body).toBe(200);
     expect(successor.json().computerId).not.toBe(assignment.computerId);
@@ -2821,11 +2843,12 @@ integration("Cloud Computer Account service", () => {
           .executeTakeFirstOrThrow()
       ).deletionRequestedAt,
     ).toBeInstanceOf(Date);
-    await cloud.reconcileBilling(() => {
-      throw new Error("unexpected periodic billing failure");
-    });
+    const errors: unknown[] = [];
+    await cloud.reconcileBilling((error) => errors.push(error));
     expect(stripe.cancel).toHaveBeenLastCalledWith(order.subscription);
     expect((await getDesired(id))?.state).toBe("deleted");
+    // The first attempt failed: the pass says so once it is cancelled, and refunds nothing.
+    expect(errors).toEqual([expect.objectContaining({ name: "CloudComputerCancelledLate" })]);
   });
 
   it("reuses the same suspended Home after a final subscription cancellation", async () => {
@@ -3014,7 +3037,7 @@ integration("Cloud Computer Account service", () => {
     expect(await cloud.show(computer!.id)).toMatchObject({ status: "preparing" });
   });
 
-  it("holds deletion pending while a completion wins the Stripe expiry race, then refunds", async () => {
+  it("cancels at once while a completion wins the Stripe expiry race, and refunds that payment", async () => {
     const { id, account, order } = await buy();
     subscriptions.set(order.subscription, { ...order.details, status: "canceled" });
     await cloud.reconcileBilling(() => {
@@ -3052,16 +3075,14 @@ integration("Cloud Computer Account service", () => {
     await expiryStarted.promise;
     const racingEvent = webhook("checkout.session.completed", payment, "evt_race_completed");
     completePayment.resolve();
-    const pending = await deletion;
-    expect(pending.json()).toMatchObject({
-      status: "needs_attention",
-      reasonCode: "cloud-computer-deletion-pending",
-    });
+    expect((await deletion).statusCode).toBe(200);
     expect((await racingEvent).statusCode).toBe(200);
+    // The computer's own subscription is cancelled at once: the checkout no longer holds it.
+    expect((await getDesired(id))?.state).toBe("deleted");
+    // The checkout keeps its own path: expired, and the payment that won cancelled and refunded.
     expect(stripe.expireCheckout).toHaveBeenCalledWith(second.session.id);
     expect(stripe.cancel).toHaveBeenCalledWith(second.subscription);
     expect(stripe.refundCheckout).toHaveBeenCalledWith(payment);
-    expect((await getDesired(id))?.state).not.toBe("deleted");
 
     stripe.refundCheckout.mockResolvedValue(true);
     await cloud.reconcileBilling(() => {
@@ -4016,6 +4037,320 @@ integration("Cloud Computer Account service", () => {
     });
     expect(logs.join("")).toContain("Could not interpret a paid Stripe Checkout Session");
     expect(logs.join("")).not.toContain("private-input");
+  });
+
+  describe("deleting a Cloud Computer, alone or with its Account", () => {
+    const deleteAccount = (account: Awaited<ReturnType<typeof createAccount>>) =>
+      requestAs(account, "DELETE", "/v1/account");
+    const exists = async (id: ControlPlaneAccountId) =>
+      Boolean(
+        await database.selectFrom("users").select("id").where("id", "=", id).executeTakeFirst(),
+      );
+    const computer = (id: CloudComputerDesired["id"]) =>
+      database
+        .selectFrom("cloudComputers")
+        .select(["accountId", "state", "deletionRequestedAt", "billingSettledAt", "cancelFailedAt"])
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+    // The billing pass the account service runs every minute.
+    const billingPass = async () => {
+      const errors: unknown[] = [];
+      const ran = await cloud.reconcileBilling((error) => errors.push(error));
+      return { ran, errors };
+    };
+    const settled = async (id: CloudComputerDesired["id"]) =>
+      (await computer(id)).billingSettledAt !== null;
+    // Open, for this computer, and unresolved at Stripe: the lookup finds no session.
+    const openCheckout = (accountId: ControlPlaneAccountId, target: CloudComputerDesired["id"]) =>
+      database
+        .insertInto("cloudComputerCheckouts")
+        .values({
+          accountId,
+          requestId: randomUUID(),
+          expiresAt: new Date(now.getTime() + 3_600_000),
+          createdAt: now,
+          lastStripeAttemptAt: now,
+          targetComputerId: target,
+          stripeSessionId: null,
+          url: null,
+          stripePriceId: "price_1",
+          currency: "usd",
+          status: "open",
+        })
+        .execute();
+
+    it("deletes the Account at once, then cancels once, deletes the customer and settles", async () => {
+      const { id, account, order } = await buy();
+      await bootable((await getDesired(id))!);
+      stripe.cancel.mockClear();
+      const deleted = await deleteAccount(account);
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(deleted.json()).toEqual({ deleted: true });
+      expect(await exists(account.id)).toBe(false);
+      // Nothing touched the computer before the Account's own transaction: the database
+      // recorded its deletion request as the Account's row went, and the pass is asked now.
+      expect(stripe.cancel).not.toHaveBeenCalled();
+      expect(kickBilling).toHaveBeenCalledOnce();
+      const row = await computer(id);
+      expect(row).toMatchObject({ accountId: null, billingSettledAt: null });
+      expect(row.state).not.toBe("deleted");
+      expect(row.deletionRequestedAt).toBeInstanceOf(Date);
+      // Two passes at once: the pass's own lock lets one run.
+      const passes = await Promise.all([billingPass(), billingPass()]);
+      expect(passes.map(({ ran }) => ran).sort()).toEqual([false, true]);
+      expect(passes.flatMap(({ errors }) => errors)).toEqual([]);
+      expect(stripe.cancel).toHaveBeenCalledExactlyOnceWith(order.subscription);
+      expect(stripe.deleteIdleCustomer).toHaveBeenCalledExactlyOnceWith(order.customer);
+      expect(await computer(id)).toMatchObject({ state: "deleted", cancelFailedAt: null });
+      expect(await settled(id)).toBe(true);
+      // Settled once: later passes leave it alone, and the machine still goes as before.
+      await billingPass();
+      expect(stripe.deleteIdleCustomer).toHaveBeenCalledTimes(1);
+      expect(stripe.cancel).toHaveBeenCalledTimes(1);
+      const deleting = (await getDesired(id))!;
+      expect(deleting.state).toBe("deleted");
+      expect(
+        (
+          await report(deleting, {
+            phase: "deleted",
+            providerServerId: null,
+            ipv4: null,
+            observedIdentity: null,
+          })
+        ).json(),
+      ).toEqual({ recorded: true });
+    });
+
+    it("keeps cancelling while Stripe fails, then reports how long it took and refunds nothing", async () => {
+      const { id, account, order } = await buy();
+      await bootable((await getDesired(id))!);
+      stripe.cancel.mockClear();
+      stripe.cancel.mockRejectedValueOnce(new Error("Stripe unavailable"));
+      // The Cloud Computer's own Delete: the first attempt fails.
+      const deleted = await requestAs(account, "DELETE", accountCloudComputerPath(id), {
+        confirmation: `DELETE:${id}`,
+      });
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect((await computer(id)).cancelFailedAt).toBeInstanceOf(Date);
+      stripe.cancel.mockRejectedValueOnce(new Error("Stripe unavailable"));
+      // Retried by the pass, which reports Stripe's failure as any billing failure.
+      expect((await billingPass()).errors).toHaveLength(1);
+      expect((await computer(id)).state).not.toBe("deleted");
+      expect(stripe.deleteIdleCustomer).not.toHaveBeenCalled();
+      // Ten minutes on, Stripe answers.
+      now = new Date(now.getTime() + 10 * 60_000);
+      const { errors } = await billingPass();
+      expect(stripe.cancel).toHaveBeenCalledTimes(3);
+      expect(stripe.cancel).toHaveBeenLastCalledWith(order.subscription);
+      expect(errors).toEqual([
+        expect.objectContaining({ name: "CloudComputerCancelledLate", computerId: id }),
+      ]);
+      const details = billingErrorDetails(errors[0]);
+      expect(details).toMatchObject({ computerId: id });
+      expect(details["waitedMs"]).toBeGreaterThanOrEqual(10 * 60_000);
+      // Nothing is refunded on its own: a person looks for a renewal in that time.
+      expect(stripe.refundCheckout).not.toHaveBeenCalled();
+      expect(await settled(id)).toBe(true);
+      expect(stripe.deleteIdleCustomer).toHaveBeenCalledExactlyOnceWith(order.customer);
+    });
+
+    it("cancels at once although a checkout for the same computer is open and unresolved", async () => {
+      const { id, account, order } = await buy();
+      await bootable((await getDesired(id))!);
+      await openCheckout(account.id, id);
+      stripe.cancel.mockClear();
+      const deleted = await requestAs(account, "DELETE", accountCloudComputerPath(id), {
+        confirmation: `DELETE:${id}`,
+      });
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(stripe.cancel).toHaveBeenCalledExactlyOnceWith(order.subscription);
+      expect((await computer(id)).state).toBe("deleted");
+      // The checkout keeps its own path (here Stripe has no session for it, so it stays open);
+      // the computer's billing settles meanwhile.
+      const { errors } = await billingPass();
+      expect(errors).not.toContainEqual(
+        expect.objectContaining({ name: "CloudComputerDeletionUnsettled" }),
+      );
+      expect(await settled(id)).toBe(true);
+    });
+
+    it("cancels a deleted Account's computer on the pass although its checkout is unresolved", async () => {
+      const { id, account, order } = await buy();
+      await bootable((await getDesired(id))!);
+      await openCheckout(account.id, id);
+      stripe.cancel.mockClear();
+      expect((await deleteAccount(account)).statusCode).toBe(200);
+      await billingPass();
+      expect(stripe.cancel).toHaveBeenCalledExactlyOnceWith(order.subscription);
+      expect((await computer(id)).state).toBe("deleted");
+    });
+
+    it("compensates a checkout paid after the Account went, as before, and never fulfils it", async () => {
+      const account = await createAccount();
+      const order = purchase(account.id);
+      const started = await requestAs(account, "POST", accountCloudComputerCheckoutPath, {
+        requestId: order.requestId,
+      });
+      expect(started.statusCode, started.body).toBe(200);
+      expect((await deleteAccount(account)).statusCode).toBe(200);
+      // The pass closes a gone Account's open checkout.
+      stripe.findCheckout.mockResolvedValue({
+        id: order.session.id,
+        status: "open",
+        url: checkoutUrl,
+        payment: undefined,
+      });
+      stripe.expireCheckout.mockClear();
+      await billingPass();
+      expect(stripe.expireCheckout).toHaveBeenCalledWith(order.session.id);
+      stripe.findCheckout.mockResolvedValue(undefined);
+      // A payment that still lands is cancelled and refunded, and makes no computer.
+      expect((await webhook("checkout.session.completed", order.session)).statusCode).toBe(200);
+      expect(stripe.refundCheckout).toHaveBeenCalledWith(order.session);
+      expect(
+        await database
+          .selectFrom("cloudComputers")
+          .select("id")
+          .where("stripeSubscriptionId", "=", order.subscription)
+          .execute(),
+      ).toEqual([]);
+    });
+
+    it("cancels once when Stripe cancelled but the reply was lost, and says so", async () => {
+      const { id, account } = await buy();
+      await bootable((await getDesired(id))!);
+      stripe.cancel.mockClear();
+      // Stripe cancels, then the answer never arrives: the row can't say so yet.
+      stripe.cancel.mockImplementationOnce(async (subscription) => {
+        subscriptions.set(subscription, {
+          ...subscriptions.get(subscription)!,
+          status: "canceled",
+        });
+        throw new Error("reply lost");
+      });
+      const deleted = await requestAs(account, "DELETE", accountCloudComputerPath(id), {
+        confirmation: `DELETE:${id}`,
+      });
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect((await computer(id)).state).not.toBe("deleted");
+      const { errors } = await billingPass();
+      // Stripe already says cancelled: the pass marks the row and never cancels again.
+      expect(stripe.cancel).toHaveBeenCalledTimes(1);
+      expect((await computer(id)).state).toBe("deleted");
+      expect(errors).toEqual([expect.objectContaining({ name: "CloudComputerCancelledLate" })]);
+      expect(await settled(id)).toBe(true);
+    });
+
+    it("reports a row unsettled an hour after its request, naming the step that blocks", async () => {
+      const { id, account } = await buy();
+      await bootable((await getDesired(id))!);
+      expect((await deleteAccount(account)).statusCode).toBe(200);
+      stripe.cancel.mockRejectedValue(new Error("Stripe unavailable"));
+      try {
+        expect((await billingPass()).errors).toHaveLength(1);
+        now = new Date(now.getTime() + 61 * 60_000);
+        const { errors } = await billingPass();
+        expect(errors).toEqual([
+          expect.objectContaining({
+            name: "CloudComputerDeletionUnsettled",
+            computerId: id,
+            step: "cancel",
+          }),
+        ]);
+        expect(billingErrorDetails(errors[0])).toMatchObject({ computerId: id, step: "cancel" });
+      } finally {
+        stripe.cancel.mockReset().mockImplementation(async (subscription) => {
+          subscriptions.set(subscription, {
+            ...subscriptions.get(subscription)!,
+            status: "canceled",
+          });
+        });
+      }
+      // Cancelled at last; then the customer step blocks.
+      stripe.deleteIdleCustomer.mockRejectedValueOnce(new Error("Stripe unavailable"));
+      const later = await billingPass();
+      expect(later.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "CloudComputerDeletionUnsettled", step: "customer" }),
+        ]),
+      );
+      expect(await settled(id)).toBe(false);
+    });
+
+    it("never touches a computer deleted before this release", async () => {
+      const { id, account } = await buy();
+      await bootable((await getDesired(id))!);
+      expect(
+        (
+          await requestAs(account, "DELETE", accountCloudComputerPath(id), {
+            confirmation: `DELETE:${id}`,
+          })
+        ).statusCode,
+      ).toBe(200);
+      const live = await buy();
+      // As the previous release left them: no settlement columns yet.
+      await sql`alter table public.cloud_computers drop column billing_settled_at, drop column cancel_failed_at`.execute(
+        database,
+      );
+      await cloudComputerBillingSettledMigration.up(database);
+      expect(await settled(id)).toBe(true);
+      expect(await settled(live.id)).toBe(false);
+      stripe.deleteIdleCustomer.mockClear();
+      stripe.subscription.mockClear();
+      await billingPass();
+      expect(stripe.deleteIdleCustomer).not.toHaveBeenCalled();
+      expect(stripe.subscription).not.toHaveBeenCalledWith(
+        (
+          await database
+            .selectFrom("cloudComputers")
+            .select("stripeSubscriptionId")
+            .where("id", "=", id)
+            .executeTakeFirstOrThrow()
+        ).stripeSubscriptionId,
+      );
+    });
+
+    it("leaves the Cloud Computer exactly as it was when the Account's Delete is refused", async () => {
+      const admin = await createAccount();
+      const org = await buyOrganization(admin, 1);
+      const { id, account } = await buy();
+      await bootable((await getDesired(id))!);
+      await invite(org.path, admin, account);
+      const assigned = await requestAs(admin, "POST", `${org.path}/assignments`, {
+        requestId: randomUUID(),
+        accountId: account.id,
+      });
+      expect(assigned.statusCode, assigned.body).toBe(200);
+      const before = await database
+        .selectFrom("cloudComputers")
+        .selectAll()
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+      stripe.cancel.mockClear();
+      const refused = await deleteAccount(account);
+      expect(refused.statusCode).toBe(409);
+      expect(refused.body).toContain("offboard your work Cloud Computer");
+      expect(await exists(account.id)).toBe(true);
+      expect(stripe.cancel).not.toHaveBeenCalled();
+      expect(kickBilling).not.toHaveBeenCalled();
+      expect(
+        await database
+          .selectFrom("cloudComputers")
+          .selectAll()
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual(before);
+    });
+
+    it("deletes an Account with no Cloud Computer at once, as before", async () => {
+      const account = await createAccount();
+      stripe.cancel.mockClear();
+      const deleted = await deleteAccount(account);
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(deleted.json()).toEqual({ deleted: true });
+      expect(await exists(account.id)).toBe(false);
+      expect(stripe.cancel).not.toHaveBeenCalled();
+    });
   });
 
   it("rate limits boot attempts and admits only signed Stripe webhooks", async () => {

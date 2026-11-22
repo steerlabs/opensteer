@@ -55,34 +55,10 @@ export interface ConsumedAccountAdoptionProof {
   readonly proofId: string;
 }
 
-/**
- * Claims returned only after the implementation has authenticated a grant as
- * issued by the configured Opensteer Account control plane. Parsing an
- * untrusted JSON object into this shape is not verification.
- */
-export interface VerifiedAccountAdoptionGrant extends ConsumedAccountAdoptionProof {
-  readonly expiresAt: Date;
-  readonly grantId: string;
-  readonly issuedAt: Date;
-}
-
-export interface AccountAdoptionGrantVerifier {
-  verify(grant: unknown): Promise<VerifiedAccountAdoptionGrant>;
-}
-
 export interface IdentityServiceOptions {
   readonly deployment: DeploymentPresentation;
   /** Actual fingerprint of the Host key loaded by the composition root. */
   readonly hostKeyFingerprint?: HostKeyFingerprint;
-  /**
-   * Enables completion of an existing self-hosted Deployment attachment.
-   * Omitting the verifier leaves proof issuance available but does not expose
-   * or execute completion; the Host cannot trust unsigned control-plane data.
-   */
-  readonly accountAdoption?: {
-    readonly grantVerifier: AccountAdoptionGrantVerifier;
-    readonly logicalProviderId: string;
-  };
   readonly emailDeliveryAvailable?: boolean;
   readonly initialOwnerEnrollment?: {
     readonly expiresAt: Date;

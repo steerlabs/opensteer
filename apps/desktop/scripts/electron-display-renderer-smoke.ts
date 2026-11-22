@@ -358,10 +358,17 @@ async function mockPreview(acceleration: HardwareAcceleration): Promise<DisplayS
     button: sample(canvas, 100, 538),
     line: sample(canvas, 150, 371),
   };
-  const view = run.streams.retain(run.target);
-  await until(() => view.getSnapshot().input === "available");
-  const sent = view.input(1, [{ kind: "nav", to: "home" }]);
-  view.release();
+  // Two views join the open stream at once: the first asks for a keyframe, as
+  // a still screen sends a joiner no frames, and the second rides that request.
+  const navigator = run.streams.retain(run.target);
+  const presser = run.streams.retain(run.target);
+  await until(() => navigator.getSnapshot().input === "available");
+  const navigated = navigator.input(1, [{ kind: "nav", to: "home" }]);
+  // A Home press holds nothing, so its view leaves with nothing to reset; a
+  // finger still down when its view leaves is reset for the Host and the phone.
+  navigator.release();
+  const pressed = presser.input(1, [{ kind: "pointer", phase: "down", x: 0.5, y: 0.5, t: 1 }]);
+  presser.release();
   return run.finish(null, {
     samples,
     checks: {
@@ -374,7 +381,7 @@ async function mockPreview(acceleration: HardwareAcceleration): Promise<DisplayS
         button: near(samples.button, [0xe4, 0xaf, 0x77]),
         line: near(samples.line, [0xb6, 0xbe, 0xc8]),
       },
-      sharedInputSent: sent,
+      sharedInputSent: navigated && pressed,
     },
   });
 }

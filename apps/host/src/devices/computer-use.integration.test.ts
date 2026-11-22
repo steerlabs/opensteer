@@ -131,6 +131,8 @@ integration.sequential("Host computer-use approval transactions", () => {
       ),
       computerApps: {
         deviceStatus: () => null,
+        agentSessionGuardsSupported: () => true,
+        refuseOutdatedForAgentSession: async () => "",
         withDeviceAdmission: async (_id, action) => {
           const next = admission.next;
           admission.next = undefined;

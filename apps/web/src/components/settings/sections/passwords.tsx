@@ -34,6 +34,7 @@ import { LoadingRows } from "../../loading-rows.js";
 import { useDesktopPasswordsStatus } from "../../use-desktop-passwords-status.js";
 import { SettingsError, SettingsRow, type SettingsView } from "../primitives.js";
 import { useHomeComputer } from "../../devices/use-home-computer.js";
+import { useHomeKind } from "../../devices/home-facts.js";
 
 type PasswordsBridge = Pick<
   OpensteerDesktopBridge,
@@ -49,6 +50,7 @@ type PasswordsBridge = Pick<
 export function PasswordsSection({ view }: { readonly view: SettingsView }) {
   const { desktopBridge, hostClient, snapshot } = useShell();
   const home = useHomeComputer();
+  const kind = useHomeKind().kind;
   const onThisMac = desktopBridge !== null && view.facts.onThisComputer;
   return (
     <>
@@ -62,7 +64,11 @@ export function PasswordsSection({ view }: { readonly view: SettingsView }) {
       ) : (
         <div className="card">
           <SettingsRow
-            detail={passwordsElsewhere({ homeName: home.name ?? view.name, personal: true })}
+            detail={passwordsElsewhere({
+              homeName: home.name ?? view.name,
+              personal: true,
+              onMac: kind === "this-mac" || kind === "mac",
+            })}
             title={home.name ?? view.name}
           />
         </div>

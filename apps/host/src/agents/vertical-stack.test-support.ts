@@ -1,7 +1,6 @@
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import type { Kysely, Selectable } from "kysely";
 import type { DatabaseSchema } from "@opensteer/database";
-import type { HostConfig } from "@opensteer/config";
 import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
 import type {
   AgentHomeAccess,
@@ -148,7 +147,6 @@ export interface VerticalStackOptions {
   readonly agentHome?: ComputerFolder;
   readonly startPersonal?: (options: VerticalStackOptions) => Promise<VerticalStack>;
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
-  readonly account?: HostConfig["account"];
   readonly accountDirectoryFetch?: typeof globalThis.fetch;
   readonly personalAccountIssuer?: URL;
   readonly runnerWire?: RunnerWireOptions;

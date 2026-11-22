@@ -164,6 +164,7 @@ function SignInOnIt({ homeName }: { readonly homeName: string }) {
   const { hostClient, snapshot } = useShell();
   // A networked Home is reached at its own address; pairing codes ride a loopback Home's route.
   const networked = snapshot.identityConfig?.exposure === "networked";
+  const cloud = snapshot.identityConfig?.homeKind === "cloud-computer";
   const remote = usePersonalRemoteAccess(networked ? null : hostClient);
   const portal = snapshot.identityConfig?.portalOrigin ?? null;
   const link = portal && snapshot.deploymentId ? phoneOpenUrl(portal, snapshot.deploymentId) : null;
@@ -177,7 +178,7 @@ function SignInOnIt({ homeName }: { readonly homeName: string }) {
       </p>
       {off ? (
         <p className="notice" role="status">
-          Turn on Use from anywhere on {homeName} first, so the new device can reach it.
+          Turn on Remote access on {homeName} first, so the new device can reach it.
         </p>
       ) : null}
       {link ? (
@@ -204,7 +205,13 @@ function SignInOnIt({ homeName }: { readonly homeName: string }) {
           </div>
         </div>
       ) : null}
-      {networked ? (
+      {networked && cloud ? (
+        // A Cloud Computer has no password of its own: the Opensteer account is how in.
+        <p>
+          Or open <code>{snapshot.identityConfig?.publicOrigin}</code> on it and sign in with your
+          Opensteer account.
+        </p>
+      ) : networked ? (
         <p>
           No account on it? Open <code>{snapshot.identityConfig?.publicOrigin}</code> on it and sign
           in with your password.

@@ -4,7 +4,11 @@ import {
   ComputerUseWindowResolveResultSchema,
   type RunnerIntegrationsWindowResolved,
 } from "@opensteer/protocol";
-import { type DisplaySource, type MacWindowTarget } from "@opensteer/protocol";
+import {
+  agentSessionGuardsCapability,
+  type DisplaySource,
+  type MacWindowTarget,
+} from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import {
   DeviceIdSchema,
@@ -264,6 +268,11 @@ export interface PhoneDisplayCapabilityDiagnostic {
 
 export interface ComputerAppHubOptions {
   readonly drivers?: DeviceDriverResolver;
+  /** Records a computer whose Runner is too old for an operation, as a refused admission does. */
+  readonly recordRunnerOutdated?: (runner: {
+    readonly runnerId: RunnerId;
+    readonly connectionGeneration: number;
+  }) => Promise<void>;
   readonly requireDeviceAgentAccess?: (deviceId: DeviceId) => Promise<void>;
   readonly onDeviceInvalidated?: (binding: DeviceDriverIdentity) => void;
   readonly onDeviceInputWithdrawn?: (deviceId: DeviceId) => void;
@@ -1040,6 +1049,30 @@ export class ComputerAppHub {
       entry?.stream.identity.modules.integrations?.cardUse === 1 &&
       entry.stream.identity.modules.browser?.cardFill === 1
     );
+  }
+
+  /**
+   * Whether this computer's Runner parses what a connected agent's session adds to a frame
+   * (`alwaysAsk`, `noLaunch`). One that does not is refused such an operation before any frame,
+   * named, and recorded as needing an update; the rest of what it does keeps working.
+   */
+  agentSessionGuardsSupported(target: ComputerTargetId): boolean {
+    return (
+      this.#targetEntry(target)?.stream.identity.capabilities?.includes(
+        agentSessionGuardsCapability,
+      ) === true
+    );
+  }
+
+  /** The refusal for an operation `agentSessionGuardsSupported` turns away, once recorded. */
+  async refuseOutdatedForAgentSession(target: ComputerTargetId, doing: string): Promise<string> {
+    const identity = this.#targetEntry(target)?.stream.identity;
+    if (identity)
+      await this.#options.recordRunnerOutdated?.({
+        runnerId: identity.runnerId,
+        connectionGeneration: identity.connectionGeneration,
+      });
+    return `Update Opensteer on ${identity?.name ?? "this computer"} to ${doing}.`;
   }
 
   passwordSignInSupported(runnerId: RunnerId): boolean {

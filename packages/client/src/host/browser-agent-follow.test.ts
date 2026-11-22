@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrowserAgentFollow,
+  requestPageTab,
   transitionBrowserAgentFollow,
   initialBrowserAgentFollowState,
   type BrowserAgentFollowTimers,
@@ -203,5 +204,37 @@ describe("browser agent following", () => {
       1000,
     );
     expect(removed).toEqual({ state: initialBrowserAgentFollowState(), follow: null });
+  });
+});
+
+describe("the page a Request is about", () => {
+  const tab = (tabId: string, taskId: string, kind: "page" | "window" = "page") => ({
+    tabId: TabIdSchema.parse(tabId),
+    kind,
+    usedBy: [{ taskId }],
+  });
+  const source = (...tabs: ReturnType<typeof tab>[]) => {
+    const rows = new Map(tabs.map((row) => [row.tabId, row]));
+    return { tabs: { rows, get: (id: string) => rows.get(TabIdSchema.parse(id)) } } as never;
+  };
+  const question = { originatingThreadId: "task", payload: { kind: "person.question" } };
+  const signIn = (tabId: string) => ({
+    originatingThreadId: "task",
+    payload: { kind: "browser.sign-in", tabId },
+  });
+
+  it("opens the task's page while it holds exactly one, and nothing while it holds several", () => {
+    expect(requestPageTab(source(tab("a", "task"), tab("w", "task", "window")), question)).toEqual(
+      a,
+    );
+    // Never the most recent of several: they may be different sites.
+    expect(requestPageTab(source(tab("a", "task"), tab("b", "task")), question)).toBeNull();
+    expect(requestPageTab(source(tab("a", "other")), question)).toBeNull();
+  });
+
+  it("opens the tab a Request names, and nothing once that tab is gone", () => {
+    expect(requestPageTab(source(tab("a", "task"), tab("b", "task")), signIn("b"))).toEqual(b);
+    // Its own tab closed: never another page the task still holds.
+    expect(requestPageTab(source(tab("a", "task")), signIn("b"))).toBeNull();
   });
 });

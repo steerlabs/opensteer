@@ -21,6 +21,8 @@ import {
   CloudComputerIdSchema,
   CloudComputerEgressResponseSchema,
   CloudComputerListResponseSchema,
+  CloudComputerOfferResponseSchema,
+  cloudComputerOfferPath,
   CloudComputerReportResponseSchema,
   CloudComputerReportSchema,
   cloudComputerStripeWebhookPath,
@@ -40,6 +42,10 @@ export interface CloudComputerRouteOptions {
   readonly verifyProvisioner: (authorization: string | undefined) => Promise<void>;
   readonly stripeWebhookSecret: string;
   readonly kickBootstrap?: () => void;
+  /** Asks the billing pass to run now rather than at its next turn, best effort. */
+  readonly kickBilling?: () => void;
+  /** The Opensteer website, the one origin allowed to read the public offer from a page. */
+  readonly websiteOrigin?: URL;
 }
 
 const params = z.object({ id: CloudComputerIdSchema });
@@ -78,6 +84,17 @@ export function registerCloudComputerRoutes(
       throw new ControlPlaneError("forbidden", "Cloud Computer provisioner lease is not held");
     }
   }
+
+  // Public and read-only: the same answer for everyone, read without cookies or credentials,
+  // so a cache may keep it. A page may read it only from the Opensteer website.
+  app.get(cloudComputerOfferPath, async (request, reply) => {
+    void reply.header("cache-control", "public, max-age=300");
+    void reply.header("vary", "Origin");
+    const website = options.websiteOrigin?.origin;
+    if (website !== undefined && request.headers.origin === website)
+      void reply.header("access-control-allow-origin", website);
+    return CloudComputerOfferResponseSchema.parse({ plan: store.offer });
+  });
 
   app.post(cloudComputerLeasePath, async (request, reply) => {
     privateResponse(reply);

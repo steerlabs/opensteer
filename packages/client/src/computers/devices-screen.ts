@@ -41,6 +41,39 @@ export interface HomeAccountFacts {
   readonly work: readonly DesktopWorkHome[];
 }
 
+/**
+ * The Homes the Account itself says are Opensteer Cloud Computers, a person's own or a work
+ * Home an organization assigned: what a list of Homes marks "Cloud Computer". Empty until the
+ * Account was read.
+ */
+export function cloudComputerDeployments(
+  account: HomeAccountFacts | null | undefined,
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const view of account?.computers ?? []) if (view.deploymentId) ids.add(view.deploymentId);
+  for (const { computer } of account?.work ?? [])
+    if (computer?.deploymentId) ids.add(computer.deploymentId);
+  return ids;
+}
+
+/**
+ * What the Opensteer Cloud Computer row in Settings says under its name: on a Cloud Computer
+ * or a work Home it is about the Home already open, and only on a Mac does it offer to keep
+ * agents working while the Mac sleeps.
+ */
+export function cloudComputerEntryDetail(kind: HomeKind): string {
+  return cloudWords(cloudEntryDetails[kind]);
+}
+
+/** A Mac sleeps; a server and a Cloud Computer don't, so their rows never say it does. */
+const cloudEntryDetails = {
+  "this-mac": "cloud.entry.detail",
+  mac: "cloud.entry.detail",
+  server: "cloud.lead",
+  cloud: "cloud.entry.here",
+  work: "cloud.entry.here",
+} as const satisfies Record<HomeKind, Parameters<typeof cloudWords>[0]>;
+
 export function homeKind(input: {
   readonly exposure: "loopback" | "networked" | undefined;
   /** What the Home's own configuration says it is; absent from older Homes. */

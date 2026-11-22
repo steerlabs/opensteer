@@ -2,6 +2,7 @@ import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { describe, expect, it } from "vitest";
 import { testDeploymentConnection } from "../../test-support/deployment-fixtures.js";
 import {
+  listedKind,
   deploymentSignInLabel,
   deploymentStatusDetail,
   describeDeploymentRow,
@@ -85,7 +86,7 @@ describe("deployment status wording", () => {
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "host-too-old" }),
       ),
-    ).toMatch(/Update the deployment\.$/u);
+    ).toBe(`${connection.name} needs an Opensteer update to work with this app.`);
     expect(
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "client-too-old" }),
@@ -170,5 +171,16 @@ describe("the door a row that needs a credential opens", () => {
     expect(
       describeDeploymentRow(connection, { ...signedOut, sessionFailure: "unavailable" }),
     ).toMatchObject({ signIn: null, status: "offline" });
+  });
+});
+
+describe("what the list of Homes calls a Home", () => {
+  it("calls a Home the Account says is a Cloud Computer one, and leaves any other its kind", () => {
+    expect(listedKind({ kindLabel: "Home" }, true)).toEqual({
+      label: "Cloud Computer",
+      cloud: true,
+    });
+    expect(listedKind({ kindLabel: "Home" }, false)).toEqual({ label: "Home", cloud: false });
+    expect(listedKind({ kindLabel: "Personal computer" }, false).label).toBe("Personal computer");
   });
 });

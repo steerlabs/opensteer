@@ -126,7 +126,6 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
-  AccountDirectoryStore,
   acquireDeploymentAuthorityLease,
   AttachmentStore,
   AutomationFailureStore,
@@ -175,12 +174,10 @@ import {
 import type { FastifyInstance } from "fastify";
 import { sign, verify } from "node:crypto";
 import { resolve } from "node:path";
-import { AccountAdoptionControlClient } from "../access/account-adoption-control-client.js";
 
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
 import { WorkHomeService } from "../organizations/work-home.js";
 import { WorkHomeStore } from "@opensteer/database";
-import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
 import { HostedOAuthBrokerClient } from "../access/hosted-oauth-broker-client.js";
 import { RemotePersonalAccountGrantVerifier } from "../access/personal-account-grant-verifier.js";
@@ -470,7 +467,6 @@ export interface HostRuntimeOptions {
   readonly phoneUpdateRelease?: () => AgentPhoneUpdateRelease | null;
   readonly accountControlFetch?: typeof globalThis.fetch;
   readonly accountDirectoryFetch?: typeof globalThis.fetch;
-  readonly accountDirectoryIntervalMs?: number;
   /**
    * Where integrations reach providers and proposal sources; public HTTPS
    * only by default. A journey points it at an upstream of its own.
@@ -743,7 +739,7 @@ export async function createHostRuntime(
     pluginChangeNotices = notices;
     const connectionStore = new AgentConnectionStore(database);
     const directory = agentDirectoryFor(
-      config.personalAccountIssuer ?? config.account?.issuer ?? config.managedHome?.accountOrigin,
+      config.personalAccountIssuer ?? config.managedHome?.accountOrigin,
       connectionStore,
     );
     const connections = new ConnectionOAuth({
@@ -755,7 +751,6 @@ export async function createHostRuntime(
       ...(directory ? { directory } : {}),
     });
     const triggerStore = new TriggerStore(database);
-    const accountDirectoryStore = new AccountDirectoryStore(database);
     const exposurePolicy = hostExposurePolicy(config.exposure);
     // The desktop's own claim on a loopback Host; an operator's setup link on a networked Home.
     const localSetupToken = config.identity.localOwnerClaimToken;
@@ -946,6 +941,9 @@ export async function createHostRuntime(
     await deviceDrivers.refresh();
     const computerApps = new ComputerAppHub({
       drivers: deviceDrivers,
+      recordRunnerOutdated: async (runner) => {
+        await store.recordRunnerUpdateRequired({ ...runner, reason: "runner-outdated" });
+      },
       requireDeviceAgentAccess: async (deviceId) => {
         const binding = deviceDrivers.binding(deviceId);
         await requireDeviceAccess(
@@ -1266,10 +1264,7 @@ export async function createHostRuntime(
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,
-      passkeyOwnOrigins: () => [
-        config.canonicalOrigin.origin,
-        ...(config.account ? [config.account.issuer.origin] : []),
-      ],
+      passkeyOwnOrigins: () => [config.canonicalOrigin.origin],
       ...(options.browserActivityClock ? { activityClock: options.browserActivityClock } : {}),
       onHistoryChanged: (ownerId, profileId) =>
         realtime.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
@@ -1536,13 +1531,12 @@ export async function createHostRuntime(
       store: new IntegrationAuthAttemptStore(database),
       vault: integrationVault,
     });
-    const hostedOAuthBrokerIssuer = config.personalAccountIssuer ?? config.account?.issuer;
+    const hostedOAuthBrokerIssuer = config.personalAccountIssuer;
     const hostedOAuthBroker = hostedOAuthBrokerIssuer
       ? {
           broker: new HostedOAuthBrokerClient({
             ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
             hostCredential: async () => {
-              if (config.account) return config.account.hostCredential;
               return (
                 (
                   await database
@@ -1555,7 +1549,6 @@ export async function createHostRuntime(
               );
             },
             issuer: hostedOAuthBrokerIssuer,
-            ...(config.account ? { serviceOrigin: config.account.controlApiOrigin } : {}),
           }),
           deploymentAuthorityDigest: hostedOAuthDeploymentAuthorityDigest({
             activeHostInstanceId: deployment.activeHostInstanceId,
@@ -1787,41 +1780,33 @@ export async function createHostRuntime(
     let shellHub: ShellHub | undefined;
     // Every Host decides its notifications and sends them to its people's open
     // clients. Push to phones exists only where there is an Account to publish
-    // through: an attached server Host, or a Personal Host whose owner has
-    // linked one.
-    const accountAttachment = config.account;
+    // through: a Home whose owner has linked one.
     const personalAccountIssuer = config.personalAccountIssuer;
     const notificationTarget: (() => Promise<NotificationPublicationTarget | null>) | undefined =
-      accountAttachment
-        ? () =>
-            Promise.resolve({
-              controlApiOrigin: accountAttachment.controlApiOrigin,
-              hostCredential: accountAttachment.hostCredential,
-            })
-        : personalAccount && personalAccountIssuer
-          ? async () => {
-              const link = await database
-                .selectFrom("personalRemoteAccountLink")
-                .select(["hostCredential", "issuer"])
-                .where("singletonKey", "=", "opensteer-account")
-                .where("state", "=", "active")
-                .where("issuer", "=", personalAccountIssuer.origin)
-                .executeTakeFirst();
-              return link
-                ? {
-                    controlApiOrigin: new URL(link.issuer),
-                    hostCredential: link.hostCredential,
-                  }
-                : null;
-            }
-          : undefined;
+      personalAccount && personalAccountIssuer
+        ? async () => {
+            const link = await database
+              .selectFrom("personalRemoteAccountLink")
+              .select(["hostCredential", "issuer"])
+              .where("singletonKey", "=", "opensteer-account")
+              .where("state", "=", "active")
+              .where("issuer", "=", personalAccountIssuer.origin)
+              .executeTakeFirst();
+            return link
+              ? {
+                  controlApiOrigin: new URL(link.issuer),
+                  hostCredential: link.hostCredential,
+                }
+              : null;
+          }
+        : undefined;
     // Removing a computer app can revoke the channels that were a use of it.
     let channelService: ChannelService | undefined;
     const notifications = new NotificationStore(
       database,
       options.notificationTiming?.now ? { now: options.notificationTiming.now } : {},
     );
-    const notificationIssuer = accountAttachment?.issuer ?? personalAccountIssuer;
+    const notificationIssuer = personalAccountIssuer;
     const notificationPreviews =
       notificationTarget && notificationIssuer
         ? new NotificationPreviewService({
@@ -3141,15 +3126,6 @@ export async function createHostRuntime(
         kind: deployment.deploymentShape.kind,
       },
     });
-    const accountDirectoryClient = config.account
-      ? new AccountDirectoryClient({
-          authorityEnvelope: discoveryEnvelope,
-          controlApiOrigin: config.account.controlApiOrigin,
-          deployment,
-          ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
-          hostCredential: config.account.hostCredential,
-        })
-      : undefined;
     harnessAuthenticationCoordinator = new HarnessAuthenticationCoordinator({
       harnesses: store,
       runners,
@@ -3171,14 +3147,6 @@ export async function createHostRuntime(
       ...(personalRemoteAccess ? { personalRemote: personalRemoteAccess } : {}),
       publicUrl: config.canonicalOrigin,
     });
-    const accountAdoptionControlClient =
-      config.account?.provisioningMode === "adoption"
-        ? new AccountAdoptionControlClient({
-            controlApiOrigin: config.account.controlApiOrigin,
-            ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
-            hostCredential: config.account.hostCredential,
-          })
-        : undefined;
     administrationCatalogs = new HarnessCatalogReconciliationOwner({
       catalogs: harnessCatalogs,
       runners,
@@ -3552,13 +3520,6 @@ export async function createHostRuntime(
         agentOperations: agentSessions,
         passkeys: config.passkeys === true,
         ...(notificationPreviews ? { notificationPreviews } : {}),
-        ...(accountAdoptionControlClient
-          ? {
-              accountAdoption: {
-                acknowledge: (proofId: string) => accountAdoptionControlClient.acknowledge(proofId),
-              },
-            }
-          : {}),
         attachments,
         assets: transcriptFileServices.assets,
         transcriptFiles: transcriptFileServices.files,
@@ -3758,33 +3719,17 @@ export async function createHostRuntime(
     // client verifies before it will route here, and only the Host can refresh
     // it. Re-assert it on every start, whichever way this Host reaches its
     // Account.
-    const publishHostAuthority = accountDirectoryClient
-      ? () => accountDirectoryClient.publishAuthority()
-      : personalAccount
-        ? async () => {
-            await personalAccount.publishAccountAuthority();
-          }
-        : undefined;
+    const publishHostAuthority = personalAccount
+      ? async () => {
+          await personalAccount.publishAccountAuthority();
+        }
+      : undefined;
     const hostAuthorityPublisher = publishHostAuthority
       ? new HostAuthorityPublisher({
           onError: (error) => app.log.error({ err: error }, "Host authority publication failed"),
           publish: publishHostAuthority,
         })
       : undefined;
-    let accountDirectoryPublisher: AccountDirectoryPublisher | undefined;
-    if (accountDirectoryClient && accountDirectoryStore) {
-      accountDirectoryPublisher = new AccountDirectoryPublisher({
-        ...(options.accountDirectoryIntervalMs
-          ? { intervalMs: options.accountDirectoryIntervalMs }
-          : {}),
-        onError: (error) =>
-          app.log.error({ err: error }, "Opensteer Account directory publication failed"),
-        publish: async (projection) => {
-          await accountDirectoryClient.publish(projection);
-        },
-        store: accountDirectoryStore,
-      });
-    }
     memoryPasses.wake();
     await memoryPasses.idle();
     reconcileMemoryPasses = () => {
@@ -3802,15 +3747,6 @@ export async function createHostRuntime(
     if (hostAuthorityPublisher)
       void hostAuthorityPublisher.ready().then(resolveNotificationAuthority);
     else resolveNotificationAuthority();
-    // Membership is only listable against a published identity, so the
-    // directory publisher waits for the Account to accept this Host's identity
-    // instead of racing it and spending its first attempt on a certain refusal.
-    if (accountDirectoryPublisher && hostAuthorityPublisher) {
-      const directoryPublisher = accountDirectoryPublisher;
-      void hostAuthorityPublisher.ready().then(() => {
-        if (!closed) directoryPublisher.start();
-      });
-    }
     idleCompactionService = new IdleCompactionService({
       list: (threadId) => idleCompactionCandidates(store.database, threadId),
       admit: async (candidate) => {
@@ -3927,7 +3863,6 @@ export async function createHostRuntime(
         await step("continuations", () => continuations.close());
         await step("automation failures", () => automationFailures.close());
         await step("host authority publisher", () => hostAuthorityPublisher?.close());
-        await step("account directory publisher", () => accountDirectoryPublisher?.close());
         await step("notifications", () => notificationsClosed);
         await step("channels", () => channels.close());
         messagingRelay.close();

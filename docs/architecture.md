@@ -483,13 +483,14 @@ each provider write, and reports back. See [cloud-computer-operations.md](cloud-
   Computer" is what the computer reported.
 
 **What the verifier proves.** `scripts/verify-home-deployment.mjs` builds the images and runs 34
-checks against a real Linux Home in a local VM: the seven services, HTTPS, no local bootstrap,
+checks against a real Linux Home in a local VM, or on the Linux server it runs on with
+`OPENSTEER_HOME_VERIFIER_TARGET=local`: the seven services, HTTPS, no local bootstrap,
 single-use setup and claim, Runner enrollment, sandboxed Codex that cannot read another profile or
 the Runner's credentials, CDP through the gateway with a one-use ticket, egress through the
 pinned proxy failing closed, no PostgreSQL listener, firewall rules, a Host restart keeping the
 claim, backup, restore, refusal without `--replace`, image-only rollback and the managed install.
-It does not prove AMD64 (it builds arm64), public certificates, real IPv6, a pristine Ubuntu
-install or a VM reboot.
+On Colima it runs arm64; locally it runs the server's own architecture. It does not prove
+public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
 
 ## What was measured
 
@@ -546,8 +547,9 @@ install or a VM reboot.
   proved.
 - **A work Cloud Computer cannot be replaced by an operator**; recovery is an in-place restore, or
   ending the assignment and assigning a new one. Organization invitations are not emailed.
-- **The Linux Home verifier does not prove** AMD64 images, public certificates, real IPv6, a
-  pristine Ubuntu install, or a VM reboot during boot or restore.
+- **The Linux Home verifier does not prove** public certificates, real IPv6, a pristine
+  Ubuntu install, or a VM reboot during boot or restore. It proves AMD64 only when run on an
+  AMD64 server in local mode.
 
 ## Not built, on purpose
 

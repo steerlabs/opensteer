@@ -1,4 +1,6 @@
 import { registerCloudComputerPortal } from "../cloud-computers/portal-routes.js";
+import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
+import { organizationsPortalPath } from "../organizations/portal-pages.js";
 import { registerOrganizationPortal } from "../organizations/portal-routes.js";
 import type { OrganizationStore } from "../organizations/store.js";
 import type { CloudComputerStore } from "../cloud-computers/store.js";
@@ -9,6 +11,9 @@ import {
   AccountDeploymentSchema,
   ControlPlaneAccountIdSchema,
   IssueAccountHostSessionGrantResponseSchema,
+  cloudWords,
+  isCanonicalPersonalHome,
+  orgWords,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -190,7 +195,19 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     session: PortalSession,
   ): Promise<string | FastifyReply> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const deployments = await store.listDeployments(accountId);
+    const [deployments, computers] = await Promise.all([
+      store.listDeployments(accountId),
+      // Only to name each Home's kind: the list still draws when this read fails, and then
+      // names no kind it cannot know. A service with no Cloud Computers has none to list.
+      dependencies.cloudComputers?.listForAccount(accountId).catch(() => null) ?? [],
+    ]);
+    const cloud = new Map(
+      (computers ?? []).flatMap((computer) =>
+        computer.deploymentId
+          ? [[computer.deploymentId, { organization: computer.work?.organizationName ?? null }]]
+          : [],
+      ),
+    );
     const presence = await Promise.all(
       deployments.map((deployment) =>
         store.isDeploymentPresentForAccount(accountId, deployment.id),
@@ -202,9 +219,15 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         deleteAccountHref: portalDeleteAccountPath,
         desktopDownloadUrl: dependencies.desktopDownloadUrl ?? null,
         rows: deployments.map((deployment, index) =>
-          deploymentCard(deployment, presence[index] === true),
+          deploymentCard(
+            deployment,
+            presence[index] === true,
+            cloud.get(deployment.id) ?? (computers === null ? "unknown" : "not-cloud"),
+          ),
         ),
         signOutAction: portalSignOutPath,
+        cloudComputerHref: dependencies.cloudComputers ? cloudComputerPortalPath : null,
+        organizationsHref: dependencies.organizations ? organizationsPortalPath : null,
       }),
       fonts,
       layout: "app",
@@ -243,7 +266,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     failed: boolean,
   ): Promise<string> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const owned = await dependencies.store.ownedDeployments(accountId);
+    const [owned, computers] = await Promise.all([
+      dependencies.store.ownedDeployments(accountId),
+      dependencies.cloudComputers?.listForAccount(accountId) ?? [],
+    ]);
+    const live = computers.filter((computer) => computer.status !== "deleted");
+    const cloudDeployments = new Set(computers.flatMap(({ deploymentId }) => deploymentId ?? []));
     return sendBrowserPage(reply, {
       body: deleteAccountBody({
         action: portalDeleteAccountPath,
@@ -252,7 +280,13 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           .map((deployment) => deployment.name),
         email: session.email,
         failed,
-        servers: owned.filter((deployment) => deployment.reachability !== "routed"),
+        // A Cloud Computer is said for itself, never as a server that stops signing people in.
+        servers: owned.filter(
+          (deployment) =>
+            deployment.reachability !== "routed" && !cloudDeployments.has(deployment.id),
+        ),
+        cloudComputer: live.some((computer) => !computer.work),
+        workHomes: [...new Set(live.flatMap((computer) => computer.work?.organizationName ?? []))],
       }),
       fonts,
       layout: "card",
@@ -565,10 +599,13 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         requireExactOrigin(request, origin.origin);
         const session = await provenSessionOrRedirect(request, reply);
         if (!session) return reply;
+        const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
+        // Said on the page that follows: its cancellation and removal finish after the Account.
+        const cloudComputer = (
+          (await dependencies.cloudComputers?.listForAccount(accountId)) ?? []
+        ).some((computer) => !computer.work && computer.status !== "deleted");
         try {
-          await dependencies.accountDeletion.delete(
-            ControlPlaneAccountIdSchema.parse(session.accountId),
-          );
+          await dependencies.accountDeletion.delete(accountId);
         } catch (error) {
           if (!(error instanceof ControlPlaneError)) throw error;
           return renderDeleteAccount(reply.code(error.status), session, true);
@@ -577,7 +614,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         void reply.removeHeader("set-cookie");
         appendSetCookie(reply, clearSessionCookie());
         return sendBrowserPage(reply, {
-          body: accountDeletedBody(),
+          body: accountDeletedBody({ cloudComputer }),
           fonts,
           layout: "plain",
           title: "Account deleted · Opensteer",
@@ -699,6 +736,12 @@ function normalizedApexDomain(value: string): string {
 export function deploymentCard(
   deployment: AccountDeploymentDirectoryEntry,
   present: boolean,
+  /**
+   * What the Account's own read of Cloud Computers says of this Home: one of them (a work
+   * Home names its organization), none of them, or nothing known because the read failed.
+   * How a Home is reached never says what it is.
+   */
+  cloud: { readonly organization: string | null } | "not-cloud" | "unknown" = "not-cloud",
 ): string {
   const current = currentAccountDeployment(deployment);
   const statusInfo = accountDeploymentStatus(deployment, present, current !== null);
@@ -716,9 +759,7 @@ export function deploymentCard(
           : { kind: "none" }
         : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
     id: deployment.id,
-    kind: personal ? "personal" : "server",
-    // A Home at its own address that is not a Cloud Computer is a server.
-    kindLabel: personal ? deploymentKindLabel("personal") : "Server",
+    ...placeKind(deployment, cloud),
     name: deployment.name,
     remove:
       deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,
@@ -730,6 +771,36 @@ export function deploymentCard(
         }
       : null,
   });
+}
+
+/**
+ * A Home's kind on its row. A Home reached through its Mac is the person's Mac; one at its own
+ * address that its signed record calls personal is a Cloud Computer when the Account lists it
+ * as one, and a server of theirs otherwise. Anything else at its own address (a retired team
+ * server's row the person has not removed yet), and any Home when the Account's read of its
+ * Cloud Computers failed, shows no kind rather than a wrong one.
+ */
+function placeKind(
+  deployment: AccountDeploymentDirectoryEntry,
+  cloud: { readonly organization: string | null } | "not-cloud" | "unknown",
+): {
+  readonly kind: "personal" | "cloud" | "server" | "unknown";
+  readonly kindLabel: string;
+  readonly badge: string | null;
+} {
+  if (typeof cloud === "object")
+    return {
+      kind: "cloud",
+      kindLabel: cloudWords("cloud.shortTitle"),
+      badge: cloud.organization
+        ? orgWords("org.work.badge", { organization: cloud.organization })
+        : null,
+    };
+  if (deployment.reachability === "routed")
+    return { kind: "personal", kindLabel: deploymentKindLabel("personal"), badge: null };
+  return cloud === "unknown" || !isCanonicalPersonalHome(deployment)
+    ? { kind: "unknown", kindLabel: "", badge: null }
+    : { kind: "server", kindLabel: "Server", badge: null };
 }
 
 function currentAccountDeployment(deployment: AccountDeploymentDirectoryEntry) {

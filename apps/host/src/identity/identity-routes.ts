@@ -10,8 +10,6 @@ import {
   type HostApiServerContext,
 } from "@opensteer/protocol";
 import {
-  CompleteHostAccountAdoptionRequestSchema,
-  CompleteHostAccountAdoptionResponseSchema,
   ConsumeHostAccountAdoptionProofRequestSchema,
   ConsumeHostAccountAdoptionProofResponseSchema,
   HostAccountAdoptionProofIdSchema,
@@ -139,7 +137,6 @@ export function registerIdentityRoutes(
   authenticator: HostAuthenticator,
   options: {
     readonly assertOwner: (userId: import("@opensteer/core").UserId) => Promise<void>;
-    readonly acknowledgeAccountAdoption?: ((proofId: string) => Promise<void>) | undefined;
   },
 ): void {
   const identity = authenticator.identity;
@@ -190,27 +187,6 @@ export function registerIdentityRoutes(
       }),
     );
   });
-  if (identity?.accountAdoptionCompletionEnabled?.()) {
-    if (!options.acknowledgeAccountAdoption) {
-      throw new Error(
-        "Account adoption completion requires a control-plane acknowledgement client",
-      );
-    }
-    app.post("/v1/auth/account-adoption/complete", async (request, reply) => {
-      const session = await authenticator.authenticateSession(request.headers, {
-        mutation: true,
-      });
-      await options.assertOwner(session.user.id);
-      const body = CompleteHostAccountAdoptionRequestSchema.parse(request.body);
-      const completed = await identity.completeAccountAdoption(body.completionGrant, session);
-      await options.acknowledgeAccountAdoption!(completed.proofId);
-      return reply.header("cache-control", "no-store").send(
-        CompleteHostAccountAdoptionResponseSchema.parse({
-          ...completed,
-        }),
-      );
-    });
-  }
   // The identity provider sends the browser here; a navigation states no API version.
   app.get("/v1/auth/oidc/callback", { config: unversionedRoute }, async (request, reply) => {
     const incoming = new Request(

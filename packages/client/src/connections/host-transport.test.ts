@@ -267,3 +267,30 @@ describe("Host transport handling of a 401 response", () => {
     }
   });
 });
+
+it("disposes only the session a retired transport made for itself", () => {
+  const base = {
+    catalog: {
+      load: async () =>
+        DeploymentCatalogSchema.parse({
+          deployments: [],
+          selectedDeploymentId: null,
+          revision: 1,
+          schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
+          updatedAt: new Date(0).toISOString(),
+        }),
+      subscribe: () => () => {},
+    },
+    localRuntime: { current: async () => null },
+    network: {
+      request: async () => new Response("ok"),
+      openWebSocket: () => ({ close() {}, send() {} }),
+    },
+  };
+  const owned = { recoverUnauthorized: async () => "unavailable" as const, dispose: vi.fn() };
+  const shared = { recoverUnauthorized: async () => "unavailable" as const, dispose: vi.fn() };
+  new HostTransport({ ...base, sessions: () => owned }).retire();
+  new HostTransport({ ...base, sessions: shared }).retire();
+  expect(owned.dispose).toHaveBeenCalledOnce();
+  expect(shared.dispose).not.toHaveBeenCalled();
+});

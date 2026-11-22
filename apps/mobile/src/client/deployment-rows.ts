@@ -1,3 +1,5 @@
+import { deviceWords } from "@opensteer/client/computers";
+import { placeStatus } from "@opensteer/protocol/deployment-status";
 import {
   describeConnectionAccess,
   isNetworkedHome,
@@ -155,6 +157,20 @@ export function deploymentKindLabel(connection: DeploymentConnection): string {
 const personalComputerKind = "Personal computer";
 
 /**
+ * What a row in the list of Homes calls its kind: "Cloud Computer" when the Account says it
+ * is one (a work Home too), whatever its record alone would make of it; its record's kind
+ * otherwise. The cloud symbol goes with the first.
+ */
+export function listedKind(
+  row: Pick<DeploymentRow, "kindLabel">,
+  cloud: boolean,
+): { readonly label: string; readonly cloud: boolean } {
+  return cloud
+    ? { label: deviceWords("place.kind.cloud"), cloud: true }
+    : { label: row.kindLabel, cloud: false };
+}
+
+/**
  * A Home on a person's own Mac: a personal deployment reached through it, never a networked
  * server, Cloud Computer or work Home (those are "Home").
  */
@@ -219,8 +235,9 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
     case "unverified":
       return "The address this phone uses answers as a different deployment.";
     case "update-required":
+      // The Home by name needs the update, in the Mac's words.
       return row.verification === "host-too-old"
-        ? "This deployment speaks an older Opensteer protocol than this app. Update the deployment."
+        ? (placeStatus.unavailable("host-too-old", row.name).reason ?? null)
         : "This deployment speaks a newer Opensteer protocol than this app. Update this app.";
   }
 }

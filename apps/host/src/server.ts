@@ -417,9 +417,6 @@ export interface HostServerDependencies {
   /** Which forwarding headers to believe; absent keeps the loopback tunnel connector's. */
   readonly trustedProxy?: import("@opensteer/config").TrustedProxy;
   readonly requestResponseVault: RequestResponseVault;
-  /** Present when account attachment uses adoption. */
-  readonly accountAdoption?:
-    { readonly acknowledge: (proofId: string) => Promise<void> } | undefined;
   readonly runToolTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
@@ -671,9 +668,6 @@ export async function createHostServer(
         ),
     });
   registerIdentityRoutes(app, dependencies.authenticator, {
-    ...(dependencies.accountAdoption
-      ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
-      : {}),
     assertOwner: (userId) => requirePersonalOwner(dependencies.store.database, userId),
   });
   const connectionRoutes = dependencies.connections
@@ -2758,32 +2752,38 @@ export async function createHostServer(
         .send(RunnerLeaveResponseSchema.parse({ outcome: "removed" }));
     },
   );
-  app.get("/v1/runner/attachments", async (request, reply) => {
+  // A Runner's own file routes: its run token authenticates them and its admission by
+  // capabilities decides compatibility, so a Runner of another API epoch is served too.
+  app.get("/v1/runner/attachments", { config: unversionedRoute }, async (request, reply) => {
     const token = requireBearerToken(request);
     const query = z.strictObject({ after: AttachmentIdSchema.optional() }).parse(request.query);
     const page = await dependencies.attachments.listForRun(token, query.after ?? null);
     return reply.header("cache-control", "no-store").send(page);
   });
 
-  app.get("/v1/runner/attachments/:attachmentId/content", async (request, reply) => {
-    const token = requireBearerToken(request);
-    const { attachmentId } = z
-      .strictObject({ attachmentId: AttachmentIdSchema })
-      .parse(request.params);
-    const content = await dependencies.attachments.contentForRun(token, attachmentId);
-    return reply
-      .header("cache-control", "no-store")
-      .header("content-disposition", "attachment")
-      .header("content-security-policy", "default-src 'none'; sandbox")
-      .header("x-content-type-options", "nosniff")
-      .header("etag", content.metadata.etag)
-      .type(content.metadata.contentType)
-      .send(Buffer.from(content.bytes));
-  });
+  app.get(
+    "/v1/runner/attachments/:attachmentId/content",
+    { config: unversionedRoute },
+    async (request, reply) => {
+      const token = requireBearerToken(request);
+      const { attachmentId } = z
+        .strictObject({ attachmentId: AttachmentIdSchema })
+        .parse(request.params);
+      const content = await dependencies.attachments.contentForRun(token, attachmentId);
+      return reply
+        .header("cache-control", "no-store")
+        .header("content-disposition", "attachment")
+        .header("content-security-policy", "default-src 'none'; sandbox")
+        .header("x-content-type-options", "nosniff")
+        .header("etag", content.metadata.etag)
+        .type(content.metadata.contentType)
+        .send(Buffer.from(content.bytes));
+    },
+  );
 
   app.put(
     "/v1/runner/file-transfers/:id",
-    { bodyLimit: runFileMaxBytes },
+    { config: unversionedRoute, bodyLimit: runFileMaxBytes },
     async (request, reply) => {
       const token = requireBearerToken(request);
       const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
@@ -2812,7 +2812,7 @@ export async function createHostServer(
     },
   );
 
-  app.get("/v1/runner/file-transfers/:id", async (request, reply) => {
+  app.get("/v1/runner/file-transfers/:id", { config: unversionedRoute }, async (request, reply) => {
     const token = requireBearerToken(request);
     const { id } = z.strictObject({ id: z.uuid() }).parse(request.params);
     const peer = new AbortController();

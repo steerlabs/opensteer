@@ -680,6 +680,8 @@ function Focused(
       : route.threadId;
   const status = usePlaceStatusRow({
     agents,
+    // Opened from Tabs, the agent using the place has its Stop here, unless it is beside it.
+    fromTabs: route.threadId === undefined && appId === null && !(paired && companionShown),
     hostClient,
     onAnswer: openThread,
     tabId: tab.tabId,

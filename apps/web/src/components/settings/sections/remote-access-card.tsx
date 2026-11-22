@@ -10,7 +10,7 @@ import type {
 import { useWebRemoteAccess } from "../../../account/remote-access-port.js";
 
 /**
- * "Use from anywhere": one status, one sentence, one action. Everything the
+ * "Remote access": one status, one sentence, one action. Everything the
  * card shows comes from `RemoteAccessCardModel`; `useRemoteAccessCardModel`
  * is the only place that reads remote-access state.
  */
@@ -64,7 +64,7 @@ export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCa
   return (
     <section aria-labelledby="settings-remote-access" className="settings-group">
       <h2 className="settings-group__title" id="settings-remote-access">
-        Use from anywhere
+        Remote access
       </h2>
       <div className="card">
         <div className="card__row settings-remote">

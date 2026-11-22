@@ -12,7 +12,11 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { executionNodeFromRow, messageViewFromRow } from "./thread-row-mappers.js";
+import {
+  executionNodeFromRow,
+  isRetiredMessageRow,
+  messageViewFromRow,
+} from "./thread-row-mappers.js";
 import {
   clientSendKeyWireReserve,
   fitsInlineTranscriptText,
@@ -941,11 +945,21 @@ export function readTranscriptItem(
         .where("id", "=", item.messageId)
         .where("threadId", "=", item.threadId)
         .executeTakeFirstOrThrow();
-      try {
-        body = { kind: "message", message: messageViewFromRow(message) };
-      } catch {
-        return tooLarge();
-      }
+      if (isRetiredMessageRow(message)) {
+        // A teammate's message has no Message without its author: its text, without the author.
+        const text = (
+          message.content as readonly { readonly type: string; readonly text?: string }[]
+        )
+          .flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : []))
+          .join("\n\n");
+        if (!fitsInlineTranscriptText(text)) return tooLarge();
+        body = { kind: "text", text };
+      } else
+        try {
+          body = { kind: "message", message: messageViewFromRow(message) };
+        } catch {
+          return tooLarge();
+        }
     } else if (item.toolCallId) {
       const toolScope = tx
         .selectFrom("toolCalls")

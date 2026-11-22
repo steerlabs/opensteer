@@ -101,6 +101,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0048_shared_chrome_grants",
         workHomeMigrationName,
         browserPoolMigrationName,
+        "0051_needs_you_counts_requests",
         bridgeConnectionsMigrationName,
         bridgeConversionMigrationName,
       ]);

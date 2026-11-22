@@ -56,10 +56,10 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: { "machine.kind": 1 },
     reason: "Device presentation kind labels headless hardware, not a Deployment.",
   },
-  "apps/control-plane/src/database/store.ts": {
-    counts: { "shape.data.document.deploymentShape.kind": 1 },
+  "packages/database/src/migrations.ts": {
+    counts: { kind: 1 },
     reason:
-      "A team server a previous release listed is left out of the Account's places; the signed shape decides it.",
+      "A team server's database is refused by its stored shape before any migration touches it.",
   },
   "packages/browser-source-wire/src/frozen/personal-access-route.ts": {
     counts: {
@@ -67,12 +67,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason:
       "A frozen copy of what shipped extensions verify; it cannot call the evolving policy and must never change.",
-  },
-  "apps/control-plane/src/portal/pages.ts": {
-    counts: {
-      "input.kind": 1,
-    },
-    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/desktop/src/bridge/methods/web-links.ts": {
     counts: {
@@ -155,12 +149,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
-  "apps/web/src/desktop/places.ts": {
-    counts: {
-      "deployment.kind": 3,
-    },
-    reason: "The comparison reads a resource's own kind, not Deployment policy.",
-  },
   "packages/client/src/connections/connection-resolver.ts": {
     counts: {
       "connection.kind": 1,
@@ -170,7 +158,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "packages/client/src/connections/deployment-catalog.ts": {
     counts: { "record.kind": 1, shape: 1 },
     reason:
-      "A catalog row a previous release saved for a team server is left out by its retired kind before the catalog parses.",
+      "A saved catalog row or an Account directory row for a team server a previous release kept is left out by its retired kind before either parses.",
   },
   "packages/client/src/integrations/computer-app-approval.ts": {
     counts: {

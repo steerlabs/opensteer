@@ -29,7 +29,7 @@ export const passwordsAppName = "Opensteer Passwords";
 
 /** The promise every sign-in card makes, word for word the same everywhere. */
 export function passwordSignInPrivacy(site: string): string {
-  return `Your agents can type your saved login on ${browserSiteLabel(site)} and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.`;
+  return `Opensteer fills your saved login on ${browserSiteLabel(site)}, and in apps on your devices, like your phone, for your own agents and connected agents you allow. It isn't handed to the agent, but an agent working in that page can read it, and a tricked agent could reveal it.`;
 }
 export function passwordSignInConsent(site: string, account: string): string {
   return `Let your agents sign in to ${browserSiteLabel(site)} as ${account}. ${passwordSignInPrivacy(site)}`;
@@ -545,16 +545,28 @@ export function passwordsSettingsState(status: DesktopPasswordsStatus): Password
 export function passwordsElsewhere(input: {
   readonly homeName: string;
   readonly personal: boolean;
+  /**
+   * The Home is on the person's Mac. False for a Cloud Computer, a work Home or a server:
+   * there is no Passwords there, and a site is signed in to in that Home's own browser.
+   */
+  readonly onMac?: boolean;
 }): string {
+  if (input.personal && input.onMac === false) return passwordsNotOnMac;
   return input.personal
     ? `Passwords are kept in the Opensteer app on ${input.homeName}. Set them up and manage them there.`
     : "Saved-password sign-ins are available on a Personal Opensteer for now.";
 }
 
+/** What Passwords says on a Home that isn't on the person's Mac. */
+export const passwordsNotOnMac =
+  "Saved logins and cards work only when your Home is on your Mac. On this Home, sign in to a site in its own browser.";
+
 /** The line under Passwords in a list of settings. */
 export function passwordsSettingsSubtitle(input: {
   readonly homeName: string;
   readonly personal: boolean;
+  readonly onMac?: boolean;
 }): string {
+  if (input.personal && input.onMac === false) return "Only on a Home on your Mac";
   return input.personal ? `Kept on ${input.homeName}` : "Not available on this Opensteer";
 }

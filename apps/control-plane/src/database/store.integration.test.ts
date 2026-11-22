@@ -712,6 +712,48 @@ integration("control-plane PostgreSQL boundary", () => {
     ).rejects.toMatchObject({ code: "stale_projection" });
   });
 
+  it("treats a team server a previous release registered as a deployment that does not exist", async ({
+    storeFixture,
+  }) => {
+    const { database, ownerId, store, memberId } = storeFixture;
+    const home = await registerFixture(database, ownerId);
+    const team = await registerFixture(database, ownerId);
+    for (const fixture of [home, team]) {
+      const authority = await store.authenticateHostCredential(
+        `Bearer ${fixture.registration.hostCredential}`,
+      );
+      await store.projectDirectoryEntry(authority, memberId, {
+        hostInstanceId: fixture.hostInstanceId,
+        generation: 2,
+        present: true,
+        observedAt: new Date().toISOString(),
+      });
+    }
+    // As the previous release stored a team server: its signed shape says "team".
+    await sql`update deployments
+      set authority_envelope=jsonb_set(authority_envelope,'{document,deploymentShape,kind}','"team"')
+      where id=${team.deploymentId}`.execute(database);
+
+    for (const [account, access] of [
+      [ownerId, "owner"],
+      [memberId, "member"],
+    ] as const) {
+      expect((await store.listDeployments(account)).map(({ id, access }) => [id, access])).toEqual([
+        [home.deploymentId, access],
+      ]);
+      await expect(store.deploymentForAccount(account, team.deploymentId)).resolves.toBeNull();
+      await expect(store.deploymentForAccount(account, home.deploymentId)).resolves.toMatchObject({
+        access,
+      });
+    }
+    await expect(
+      store.authenticateHostCredential(`Bearer ${team.registration.hostCredential}`),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    await expect(
+      store.authenticateHostCredential(`Bearer ${home.registration.hostCredential}`),
+    ).resolves.toMatchObject({ deploymentId: home.deploymentId });
+  });
+
   it("keeps per-Account listing removal across projections without changing authority", async ({
     storeFixture,
   }) => {
@@ -1087,6 +1129,121 @@ integration("control-plane PostgreSQL boundary", () => {
     expect(revocations[0]?.body.get("token_type_hint")).toBe("refresh_token");
 
     await expect(deletion.delete(ownerId)).resolves.toBeUndefined();
+  });
+
+  /** Moves the Account's deletion fence `minutes` closer to lapsing, as time passing would. */
+  const elapse = async (
+    database: StoreFixture["database"],
+    accountId: ControlPlaneAccountId,
+    minutes: number,
+  ) => {
+    await database
+      .updateTable("users")
+      .set({
+        deletionFencedUntil: sql<Date>`deletion_fenced_until - make_interval(mins => ${minutes})`,
+      })
+      .where("id", "=", accountId)
+      .execute();
+  };
+
+  it("keeps a slow deletion fenced from start to finish, and refuses a second one meanwhile", async ({
+    storeFixture,
+  }) => {
+    const { database, connectLifecycle, ownerId, store } = storeFixture;
+    const computers = [
+      await registerFixture(database, ownerId),
+      await registerFixture(database, ownerId),
+    ];
+    for (const [index, computer] of computers.entries()) {
+      await liveConnectResource(
+        database,
+        computer.deploymentId,
+        new URL(computer.registration.deployment.canonicalOrigin).hostname,
+      );
+      // Each computer has its own tunnel and DNS record.
+      await database
+        .updateTable("deploymentConnectResources")
+        .set({
+          dnsRecordId: String(index).repeat(32),
+          tunnelId: `${index}1111111-1111-4111-8111-111111111111`,
+        })
+        .where("deploymentId", "=", computer.deploymentId)
+        .execute();
+    }
+    const deletion = new AccountDeletionService({
+      auth: createControlPlaneAuth(database, config),
+      connectLifecycle,
+      store,
+    });
+    const refusals: unknown[] = [];
+    const revoked: DeploymentId[] = [];
+    let turningOff = false;
+    // Turning off each of the two computers takes six minutes, longer together than a fence lasts.
+    vi.spyOn(connectLifecycle, "revoke").mockImplementation(async (_owner, deploymentId) => {
+      if (!turningOff) {
+        turningOff = true;
+        await elapse(database, ownerId, 6);
+        refusals.push(await deletion.delete(ownerId).catch((error: unknown) => error));
+        turningOff = false;
+      }
+      revoked.push(deploymentId);
+      await database
+        .updateTable("deploymentConnectResources")
+        .set({ dnsRecordId: null, state: "revoked", tunnelId: null })
+        .where("deploymentId", "=", deploymentId)
+        .execute();
+      return {} as never;
+    });
+
+    await deletion.delete(ownerId);
+    expect(revoked.toSorted()).toEqual(
+      computers.map(({ deploymentId }) => deploymentId).toSorted(),
+    );
+    expect(refusals).toEqual([
+      expect.objectContaining({
+        message: "Account deletion already in progress.",
+        reason: "account-deletion-in-progress",
+      }),
+      expect.objectContaining({
+        message: "Account deletion already in progress.",
+        reason: "account-deletion-in-progress",
+      }),
+    ]);
+    expect(await accountExists(database, ownerId)).toBe(false);
+  });
+
+  it("lets a dead deletion's fence lapse, and an attempt clear only its own fence", async ({
+    storeFixture,
+  }) => {
+    const { database, ownerId, store } = storeFixture;
+    const inProgress = { reason: "account-deletion-in-progress" };
+    // An attempt whose replica dies keeps the Account fenced for a while, then lets go.
+    const dead = await store.beginAccountDeletion(ownerId);
+    await expect(store.beginAccountDeletion(ownerId)).rejects.toMatchObject(inProgress);
+    await elapse(database, ownerId, 11);
+    const live = await store.beginAccountDeletion(ownerId);
+    // The dead attempt wakes: it can't carry on, and its cleanup leaves the live fence alone.
+    await expect(store.renewAccountDeletion(ownerId, dead)).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    await store.abandonAccountDeletion(ownerId, dead);
+    await expect(store.beginAccountDeletion(ownerId)).rejects.toMatchObject(inProgress);
+    // A stalled attempt that wakes after another took over can't finish the deletion either.
+    await expect(store.deleteAccount(ownerId, dead)).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    expect(await accountExists(database, ownerId)).toBe(true);
+    // A live attempt that falls behind can't pick its lapsed fence back up either.
+    await elapse(database, ownerId, 11);
+    await expect(store.deleteAccount(ownerId, live)).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    await expect(store.renewAccountDeletion(ownerId, live)).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    await store.abandonAccountDeletion(ownerId, live);
+    expect(await accountExists(database, ownerId)).toBe(true);
+    await expect(store.beginAccountDeletion(ownerId)).resolves.toEqual(expect.any(String));
   });
 
   it("requires a recent Account sign-in for the unrecoverable Account deletion", async ({

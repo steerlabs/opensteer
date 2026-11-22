@@ -129,7 +129,7 @@ export const placeStatus = {
   /** Listed, but the computer that runs it does not let other devices in. */
   remoteAccessOff: (name: string): DeploymentStatusInfo => ({
     label: "Can’t be opened from here",
-    reason: `${name} can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.`,
+    reason: `${name} can only be used on that computer. Turn on Remote access there, in Settings › Account.`,
     status: "offline",
   }),
   /** The sign-in it waits on is open in the browser. */

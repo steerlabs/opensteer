@@ -340,7 +340,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       this.#storageError?.message ??
       this.#hostDetails.get(key) ??
       (this.#accountChangedHosts.has(connection.authority.document.deploymentId)
-        ? "Changing your Account signed this device out of the team."
+        ? "Changing your Account signed this device out of this Home."
         : null) ??
       (credential && !credentialMatchesConnection(credential, connection)
         ? "Saved authorization no longer matches this Host identity."

@@ -4,6 +4,8 @@ import {
   mutationIdempotencyKey,
   operationRequestView,
   requestDecision,
+  requestsWaitingOn,
+  sessionAgent,
   sessionTaskRow,
   sessionTaskView,
   tabAgentLine,
@@ -23,6 +25,7 @@ import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
 import { AgentMark } from "./settings/agent-mark.js";
+import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { requestAnswer, useAction } from "./use-action.js";
 
 /** The view for a connected agent's own task, or null for any other task. */
@@ -266,7 +269,10 @@ export function OperationRequestPanel({
   );
 }
 
-/** On a tab a connected agent's own task uses: who, for which task, and Stop. */
+/**
+ * On a tab a connected agent's own task uses: who, for which task, and Stop. While the task
+ * waits on the person, Answer back to the Request in the task stands beside that Stop.
+ */
 export function TabAgentStatus({
   tabId,
   occupant,
@@ -275,6 +281,7 @@ export function TabAgentStatus({
   readonly occupant: { readonly threadId: string; readonly title: string } | null;
 }) {
   const { snapshot } = useShell();
+  const workspace = useOptionalWorkspace();
   const slot = occupant ? agentSessionSlot(snapshot, occupant.threadId) : null;
   const line = tabAgentLine({
     occupant,
@@ -283,9 +290,29 @@ export function TabAgentStatus({
   });
   const stop = useStopSession(occupant?.threadId ?? "", line?.stop?.sessionId ?? null);
   if (!line) return null;
+  const waiting =
+    occupant && line.stop ? requestsWaitingOn(snapshot.waitingRequests, occupant.threadId) : [];
+  const asked = waiting[0]?.request ?? null;
+  const needsYou = workWords("tab.needsYou", { agent: sessionAgent(slot?.connection).name });
   return (
-    <div className="tab-agent-status" role="status">
+    <div className={`tab-agent-status${asked ? " tab-agent-status--needs-you" : ""}`} role="status">
       <span>{line.line}</span>
+      {asked && occupant && workspace ? (
+        <button
+          aria-label={`${needsYou}. ${workWords("tab.answer")}`}
+          className="btn btn--small btn--primary"
+          onClick={() =>
+            workspace.nav.openConversation(workspace.nav.threadPath(occupant.threadId), {
+              focusRequest: asked.id,
+            })
+          }
+          title={needsYou}
+          type="button"
+        >
+          {workWords("tab.answer")}
+        </button>
+      ) : null}
+      {/* A question waiting takes nothing from the row: Stop stays beside Answer. */}
       {line.stop ? (
         <button
           className="btn btn--small"

@@ -14,7 +14,7 @@ import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
 import { OptionRow } from "../option-row.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceAccountFooter, SignOutDialog } from "./place-account.js";
-import { usePlaceWorkBadges } from "../settings/sections/work-home.js";
+import { usePlaceCloudComputers, usePlaceWorkBadges } from "../settings/sections/work-home.js";
 
 export type ConnectKind = "pairing" | "address";
 
@@ -339,7 +339,8 @@ export function DesktopChooser({
   usePlaceChecks(bridge, true);
   const facts = useComputerFacts(places.facts, snapshot.deployments);
   const work = usePlaceWorkBadges(bridge);
-  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts, work });
+  const cloud = usePlaceCloudComputers(bridge);
+  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts, work, cloud });
   const thisMac = thisComputerLabel().replace(/^This /u, "this ");
   // Opensteers elsewhere this person could mean instead of a new one here. An
   // Account listing that can't be opened right now still counts: its kind is

@@ -113,6 +113,13 @@ interface ControlPlaneStoreOptions {
   readonly adoptionOperationCipher?: AdoptionOperationCipher;
 }
 
+/**
+ * A deployment that is not a personal Home does not exist for this service: a team server a
+ * previous release registered is neither listed, looked up nor admitted by its credential.
+ * Every Home signs the personal shape; a row with no signed shape yet is a Home being set up.
+ */
+const isPersonalHome = sql<boolean>`coalesce(deployments.authority_envelope->'document'->'deploymentShape'->>'kind','personal')='personal'`;
+
 export class ControlPlaneStore {
   readonly #database: Kysely<ControlPlaneDatabaseSchema>;
   readonly #issuer: string;
@@ -871,9 +878,7 @@ export class ControlPlaneStore {
           )
           .select(deploymentSelection)
           .where("deployments.ownerAccountId", "=", accountId)
-          .where(
-            sql<boolean>`(coalesce(deployments.authority_envelope->'document'->'deploymentShape'->>'kind','personal')<>'team' or exists(select 1 from deployment_directory_entries e where e.deployment_id=deployments.id and e.account_id=${accountId} and e.present))`,
-          )
+          .where(isPersonalHome)
           .where(({ not, exists, selectFrom }) =>
             not(
               exists(
@@ -899,6 +904,7 @@ export class ControlPlaneStore {
           .where("deploymentDirectoryEntries.accountId", "=", accountId)
           .where("deploymentDirectoryEntries.present", "=", true)
           .where("deployments.ownerAccountId", "!=", accountId)
+          .where(isPersonalHome)
           .where("deployments.authorityEnvelope", "is not", null)
           .where(({ not, exists, selectFrom }) =>
             not(
@@ -982,13 +988,9 @@ export class ControlPlaneStore {
             "deploymentDirectoryEntries.present as memberPresent",
           ])
           .where("deployments.id", "=", deploymentId)
+          .where(isPersonalHome)
           .executeTakeFirst();
         if (!deployment || deployment.authorityEnvelope === null) return null;
-        // A team server a previous release listed is no longer one of the person's places.
-        const shape = z
-          .object({ document: z.object({ deploymentShape: z.object({ kind: z.string() }) }) })
-          .safeParse(deployment.authorityEnvelope);
-        if (shape.success && shape.data.document.deploymentShape.kind !== "personal") return null;
         const access =
           deployment.ownerAccountId === accountId
             ? "owner"
@@ -1085,6 +1087,7 @@ export class ControlPlaneStore {
         "deployments.lifecycle as lifecycle",
       ])
       .where("deploymentCredentials.tokenHash", "=", hashCredential(raw))
+      .where(isPersonalHome)
       .executeTakeFirst();
     if (!row) throw new ControlPlaneError("unauthorized", "Host credential is invalid");
     return { ...row, credentialHash: hashCredential(raw) };

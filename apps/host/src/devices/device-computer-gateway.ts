@@ -136,6 +136,8 @@ export interface DeviceComputerAppsPort {
   ): Promise<ReturnType<ComputerAppHub["reportsApp"]>>;
   compatibilityReason(deviceId: DeviceId): Promise<string | null>;
   requireAgentAccess(deviceId: DeviceId): Promise<void>;
+  agentSessionGuardsSupported(deviceId: DeviceId): Promise<boolean>;
+  refuseOutdatedForAgentSession(deviceId: DeviceId, doing: string): Promise<string>;
 }
 export type ComputerUseGateway = Pick<
   ComputerUseService,
@@ -165,6 +167,8 @@ export function deviceComputerApps(
     | "compatibilityReason"
     | "requireDeviceAgentAccess"
     | "deviceStatus"
+    | "agentSessionGuardsSupported"
+    | "refuseOutdatedForAgentSession"
   >,
 ): DeviceComputerAppsPort {
   return {
@@ -176,6 +180,8 @@ export function deviceComputerApps(
     reportsApp: async (id, definition) => hub.reportsApp(id, definition),
     compatibilityReason: async (id) => hub.compatibilityReason(id),
     requireAgentAccess: async (id) => hub.requireDeviceAgentAccess(id),
+    agentSessionGuardsSupported: async (id) => hub.agentSessionGuardsSupported(id),
+    refuseOutdatedForAgentSession: (id, doing) => hub.refuseOutdatedForAgentSession(id, doing),
   };
 }
 

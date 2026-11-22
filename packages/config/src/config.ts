@@ -1,8 +1,4 @@
-import {
-  HostAccountAdoptionBundleSchema,
-  WorkHomeMarkerSchema,
-  type WorkHomeMarker,
-} from "@opensteer/control-plane-protocol";
+import { WorkHomeMarkerSchema, type WorkHomeMarker } from "@opensteer/control-plane-protocol";
 import { hostExposurePolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
@@ -31,10 +27,8 @@ import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
   closeSync,
-  existsSync,
   constants as fsConstants,
   fstatSync,
-  lstatSync,
   openSync,
   readFileSync,
   readSync,
@@ -168,11 +162,6 @@ const optionalRunnerEnrollmentToken = z.preprocess(
 export const TrustedProxySchema = z.enum(["none", "loopback", "loopback-cloudflared"]);
 export type TrustedProxy = z.infer<typeof TrustedProxySchema>;
 
-const optionalFileDescriptor = z.preprocess(
-  (value) => (value === undefined || value === "" ? undefined : Number(value)),
-  z.number().int().min(3).max(1_024).optional(),
-);
-
 const configuredSecret = (maximumLength: number) =>
   z
     .string()
@@ -186,8 +175,6 @@ const bindAddress = z.union([z.ipv4(), z.ipv6(), z.literal("localhost")]);
 const HostEnvironmentSchema = z.object({
   OPENSTEER_AUTH_SECRET: configuredSecret(8_192),
   OPENSTEER_AGENT_REVIEW_MODEL: optionalPath,
-  OPENSTEER_ACCOUNT_BUNDLE_FD: optionalFileDescriptor,
-  OPENSTEER_ACCOUNT_BUNDLE_PATH: optionalPath,
   OPENSTEER_BIND_ADDRESS: bindAddress.default("127.0.0.1"),
   OPENSTEER_BROWSER_ATTACH_KEY_ID: z
     .string()
@@ -268,17 +255,6 @@ const HostEnvironmentSchema = z.object({
 });
 
 export interface HostConfig {
-  readonly account?:
-    | {
-        readonly provisioningMode: "adoption";
-        readonly controlApiOrigin: URL;
-        readonly hostCredential: string;
-        readonly reachability: "canonical";
-        readonly issuer: URL;
-        readonly oidcClientId: string;
-        readonly oidcClientSecret: string;
-      }
-    | undefined;
   readonly deploymentShape: DeploymentShape;
   readonly personal?: {
     readonly environmentId: EnvironmentId;
@@ -286,7 +262,6 @@ export interface HostConfig {
     /** The unpacked extension folder the desktop app keeps current on this computer. */
     readonly browserExtensionDirectory?: string;
   };
-  readonly accountBundlePath: string;
   readonly authSecret: string;
   readonly agentReviewModel?: BackgroundModelChoice;
   readonly bindAddress: string;
@@ -389,26 +364,12 @@ export class HostConfigurationIssue extends Error {
   }
 }
 
-const PinnedDeploymentIdentitySchema = z.strictObject({
-  deploymentId: DeploymentIdSchema,
-  hostKeyFingerprint: HostKeyFingerprintSchema,
-  hostInstanceId: HostInstanceIdSchema,
-});
-
 /**
  * Checks relationships that TypeScript cannot express for callers that build
  * HostConfig directly. Keep this free of I/O so Host startup can call it before
  * creating an installation identity or opening PostgreSQL.
  */
 export function assertHostConfigInvariants(config: HostConfig): void {
-  if (
-    config.account !== undefined &&
-    !PinnedDeploymentIdentitySchema.safeParse(config.deploymentIdentity).success
-  ) {
-    throw new Error(
-      "An Opensteer Account Host requires a pinned deployment and Host instance identity",
-    );
-  }
   const exposure = hostExposurePolicy(config.exposure);
   const networkedPersonal = config.exposure === "networked";
   if (networkedPersonal && isLoopbackHostname(config.canonicalOrigin.hostname)) {
@@ -447,8 +408,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
       throw new Error("A networked Personal Host does not support OIDC sign-in");
   }
   if (config.managedHome) {
-    if (!networkedPersonal || config.account !== undefined)
-      throw new Error("A managed Home is a networked Personal Host");
+    if (!networkedPersonal) throw new Error("A managed Home is a networked Personal Host");
     if (config.identity.localPasswordEnabled || config.identity.oidcConfigPath !== undefined)
       throw new Error("A managed Home signs its owner in with the Opensteer Account only");
     assertPublicHttpsOrigin(config.managedHome.accountOrigin, "Managed Home Account origin");
@@ -476,21 +436,15 @@ export function assertHostConfigInvariants(config: HostConfig): void {
     );
   }
   if (config.personalAccountIssuer) {
-    if (config.account !== undefined) {
-      throw new Error("A Personal Account issuer is valid only for an unmanaged Personal Host");
-    }
     assertPublicHttpsOrigin(config.personalAccountIssuer, "Personal Account issuer");
   }
-  const requiresLocalOwnerClaim = exposure.localOwnerClaim && config.account === undefined;
+  const requiresLocalOwnerClaim = exposure.localOwnerClaim;
   if (requiresLocalOwnerClaim !== (config.identity.localOwnerClaimToken !== undefined)) {
     throw new Error(
       requiresLocalOwnerClaim
         ? "An unmanaged Personal Host requires an app-held local owner claim token"
         : "A local owner claim token is allowed only for an unmanaged loopback Personal Host",
     );
-  }
-  if (config.account) {
-    throw new Error("A Home is never attached to an Opensteer Account as a whole");
   }
 }
 
@@ -569,20 +523,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   const deploymentShape = DeploymentShapeSchema.parse({
     kind: parsed.OPENSTEER_DEPLOYMENT_KIND ?? "personal",
   });
-  const accountBundle = readAccountAdoptionBundle({
-    ...parsed,
-    ...(parsed.OPENSTEER_ACCOUNT_BUNDLE_FD === undefined &&
-    parsed.OPENSTEER_ACCOUNT_BUNDLE_PATH === undefined &&
-    existsSync(join(resolve(parsed.OPENSTEER_HOST_DATA_DIR), "account-bundle.json"))
-      ? {
-          OPENSTEER_ACCOUNT_BUNDLE_PATH: join(
-            resolve(parsed.OPENSTEER_HOST_DATA_DIR),
-            "account-bundle.json",
-          ),
-        }
-      : {}),
-  });
-  const account = accountConfig(accountBundle, parsed.OPENSTEER_MODE);
   const browserRuntime = { attachKeyId: parsed.OPENSTEER_BROWSER_ATTACH_KEY_ID };
   requireProductionKeyPair(parsed.OPENSTEER_MODE, parsed);
   requireSecureServiceUrl(
@@ -597,9 +537,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     parsed.OPENSTEER_CANONICAL_ORIGIN,
     "OPENSTEER_CANONICAL_ORIGIN",
   );
-  if (accountBundle && accountBundle.deployment.canonicalOrigin !== canonicalOrigin.origin) {
-    throw new Error("OPENSTEER_CANONICAL_ORIGIN must match the Account adoption bundle");
-  }
   const runtimeOrigin = originUrl(
     parsed.OPENSTEER_RUNTIME_ORIGIN ?? parsed.OPENSTEER_CANONICAL_ORIGIN,
     "OPENSTEER_RUNTIME_ORIGIN",
@@ -634,8 +571,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   }
   const managedHome = parseManagedHome(parsed);
   const dataDirectory = resolve(parsed.OPENSTEER_HOST_DATA_DIR);
-  const accountBundlePath =
-    parsed.OPENSTEER_ACCOUNT_BUNDLE_PATH ?? join(dataDirectory, "account-bundle.json");
   const environmentId =
     parsed.OPENSTEER_HOSTING_ENVIRONMENT_ID ??
     (parsed.OPENSTEER_MODE === "development"
@@ -655,11 +590,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
       "OPENSTEER_DEPLOYMENT_ID, OPENSTEER_HOST_INSTANCE_ID, and OPENSTEER_HOST_KEY_FINGERPRINT must be configured together",
     );
   }
-  if (accountBundle && configuredPersonalIdentityValues !== 0) {
-    throw new Error(
-      "An Account adoption bundle cannot be combined with an explicit Personal Deployment identity",
-    );
-  }
   const explicitPersonalIdentity =
     configuredPersonalIdentityValues === 3
       ? {
@@ -669,9 +599,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
         }
       : undefined;
   const config: HostConfig = {
-    account,
     deploymentShape,
-    accountBundlePath,
     personal: {
       environmentId,
       ...(parsed.OPENSTEER_BROWSER_EXTENSION_DIRECTORY
@@ -698,15 +626,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     databaseUrl: parsed.OPENSTEER_DATABASE_URL,
     credentialKeyPath: parsed.OPENSTEER_CREDENTIAL_KEY_PATH,
     dataDirectory,
-    deploymentIdentity:
-      explicitPersonalIdentity ??
-      (accountBundle
-        ? {
-            deploymentId: accountBundle.deployment.deploymentId,
-            hostKeyFingerprint: accountBundle.deployment.hostKeyFingerprint,
-            hostInstanceId: accountBundle.deployment.hostInstanceId,
-          }
-        : undefined),
+    deploymentIdentity: explicitPersonalIdentity,
     identity: {
       initialOwnerEnrollment: initialOwnerTokenDigest
         ? {
@@ -817,70 +737,6 @@ export function hostTrustedProxy(
   return (
     config.trustedProxy ?? (config.exposure === "loopback" ? "loopback-cloudflared" : "loopback")
   );
-}
-
-function accountConfig(
-  bundle: z.infer<typeof HostAccountAdoptionBundleSchema> | undefined,
-  mode: RuntimeMode,
-): HostConfig["account"] {
-  if (!bundle) return undefined;
-  const controlApiOrigin = new URL(bundle.controlApiOrigin);
-  const issuer = new URL(bundle.oidc.issuer);
-  requireSecureServiceUrl(mode, controlApiOrigin.toString(), "Opensteer Account control API");
-  requireSecureServiceUrl(mode, issuer.toString(), "Opensteer Account issuer");
-  return {
-    provisioningMode: bundle.provisioningMode,
-    controlApiOrigin,
-    hostCredential: bundle.hostCredential,
-    reachability: bundle.deployment.reachability,
-    issuer,
-    oidcClientId: bundle.oidc.clientId,
-    oidcClientSecret: bundle.oidcClientSecret,
-  };
-}
-
-const maximumAccountAdoptionBundleBytes = 64 * 1_024;
-
-export function readAccountAdoptionBundle(parsed: {
-  readonly OPENSTEER_ACCOUNT_BUNDLE_FD?: number | undefined;
-  readonly OPENSTEER_ACCOUNT_BUNDLE_PATH?: string | undefined;
-}): z.infer<typeof HostAccountAdoptionBundleSchema> | undefined {
-  const descriptor = parsed.OPENSTEER_ACCOUNT_BUNDLE_FD;
-  const path = parsed.OPENSTEER_ACCOUNT_BUNDLE_PATH;
-  if (descriptor !== undefined && path !== undefined) {
-    throw new Error(
-      "Configure exactly one of OPENSTEER_ACCOUNT_BUNDLE_FD or OPENSTEER_ACCOUNT_BUNDLE_PATH",
-    );
-  }
-  if (descriptor === undefined && path === undefined) return undefined;
-
-  let handle = descriptor;
-  try {
-    if (path !== undefined) {
-      const before = lstatSync(path);
-      if (!before.isFile() || before.isSymbolicLink()) {
-        throw new Error("Opensteer Account bundle must be a regular file");
-      }
-      if (process.platform !== "win32" && (before.mode & 0o077) !== 0) {
-        throw new Error("Opensteer Account bundle must not be readable by group or other users");
-      }
-      handle = openSync(path, fsConstants.O_RDONLY | noFollowFlag() | fsConstants.O_NONBLOCK);
-      const after = fstatSync(handle);
-      if (!after.isFile() || before.dev !== after.dev || before.ino !== after.ino) {
-        throw new Error("Opensteer Account bundle changed while it was opened");
-      }
-      if (process.platform !== "win32" && (after.mode & 0o077) !== 0) {
-        throw new Error("Opensteer Account bundle must not be readable by group or other users");
-      }
-    }
-    if (handle === undefined) throw new Error("Opensteer Account bundle is unavailable");
-    const serialized = readBoundedDescriptor(handle, maximumAccountAdoptionBundleBytes);
-    return HostAccountAdoptionBundleSchema.parse(JSON.parse(serialized));
-  } catch (error) {
-    throw new Error("Unable to load the Opensteer Account provisioning bundle", { cause: error });
-  } finally {
-    if (handle !== undefined) closeSync(handle);
-  }
 }
 
 function readBoundedDescriptor(

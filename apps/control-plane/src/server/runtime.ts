@@ -47,6 +47,8 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
   assertNativeOAuthConfig(config);
   const database = createControlPlaneDatabase({ connectionString: config.databaseUrl });
   let cloudComputerClaimer: CloudComputerClaimer | undefined;
+  // Does nothing until the billing pass is set up below; its minute timer covers that.
+  let runBilling = (): void => undefined;
   try {
     await migrateControlPlaneToLatest(database);
     const appleSignIn = config.appleSignIn;
@@ -150,7 +152,9 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
               cloudComputers: {
                 store: cloudComputers,
                 kickBootstrap: () => cloudComputerClaimer?.kick(),
+                kickBilling: () => runBilling(),
                 stripeWebhookSecret: cloud.stripeWebhookSecret,
+                ...(config.websiteOrigin ? { websiteOrigin: config.websiteOrigin } : {}),
                 verifyProvisioner: googleServiceAccountVerifier({
                   audience: config.publicOrigin.origin,
                   email: cloud.provisionerEmail,
@@ -227,7 +231,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
     cloudComputerClaimer?.start();
 
     let billingPass: Promise<boolean | void> | undefined;
-    const runBilling = () => {
+    runBilling = () => {
       if (!billingPass && cloudComputers) {
         billingPass = cloudComputers
           .reconcileBilling(billingError)
