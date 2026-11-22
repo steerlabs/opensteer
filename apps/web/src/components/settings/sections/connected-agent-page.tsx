@@ -297,7 +297,12 @@ export function ConnectedAgentPage({
           <button
             className="btn"
             disabled={busy}
-            onClick={() => void agents.remove?.(connection.id).then(() => navigate(".."))}
+            onClick={() =>
+              // Leaves the page only once it is gone; otherwise the page says why it is not.
+              void agents.remove?.(connection.id).then((removed) => {
+                if (removed) void navigate("..");
+              })
+            }
             type="button"
           >
             {pending === "remove"

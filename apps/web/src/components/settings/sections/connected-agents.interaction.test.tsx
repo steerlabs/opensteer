@@ -356,6 +356,19 @@ describe("one connected agent", () => {
     expect(buttonNamed(page, "Remove from list")).toBeTruthy();
   });
 
+  it("stays on the page, saying why, when Remove from list was not confirmed", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${oldNotes}`);
+    await vi.waitFor(() => expect(status(page)).toContain("Disconnected"));
+    vi.spyOn(host, "dispatch").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await act(async () => buttonNamed(page, "Remove from list").click());
+    await vi.waitFor(() => expect(page.querySelector('[role="alert"]')).not.toBeNull());
+    expect(path).toBe(`${base}/${oldNotes}`);
+    expect(buttonNamed(page, "Remove from list")).toBeTruthy();
+  });
+
   it("says when an agent isn't connected anymore", async () => {
     host = seeded([]);
     const page = await mount(host, `${base}/${grok}`);

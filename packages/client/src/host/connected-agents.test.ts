@@ -368,7 +368,7 @@ describe("Connected agents with grants", () => {
       );
       expect(resource.getSnapshot().revoked.size).toBe(0);
       const dispatch = vi.spyOn(host, "dispatch");
-      await resource.remove(row.id);
+      expect(await resource.remove(row.id)).toBe(true);
       expect(dispatch).toHaveBeenCalledWith(
         expect.objectContaining({ type: "connection.remove", connectionId: row.id }),
       );

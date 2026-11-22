@@ -278,7 +278,7 @@ describe("one connected agent on the phone", () => {
     });
     await press(row("mode", "auto"));
     await vi.waitFor(() =>
-      expect(section("status")?.footer?.text).toBe(
+      expect(section("conflict")?.footer?.text).toBe(
         "This changed on another device. Showing what’s set now.",
       ),
     );
@@ -391,6 +391,16 @@ describe("one connected agent on the phone", () => {
     expect(row("end", "remove").label).toBe("Remove from list");
   });
 
+  it("stays on the page, saying why, when Remove from list was not confirmed", async () => {
+    const client = await open(oldNotes);
+    vi.spyOn(client, "dispatch").mockRejectedValue(
+      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
+    );
+    await press(row("end", "remove"));
+    await vi.waitFor(() => expect(section("error")?.footer?.tone).toBe("danger"));
+    expect(state.goBack).not.toHaveBeenCalled();
+  });
+
   it("says when an agent isn't connected anymore", async () => {
     host = new MockHostClient({ latencyMs: 0 });
     root = createRoot(document.body.appendChild(document.createElement("div")));
@@ -442,6 +452,40 @@ describe("a chat on the phone", () => {
     await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
     expect(stop).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
     expect(row("end", "disconnect").label).toBe("Disconnect Slack");
+  });
+
+  it("shows a Stop in flight as Stopping and sends no second one", async () => {
+    const client = await open(chat(1), chats());
+    let finish = () => {};
+    const stop = vi
+      .spyOn(client, "stopRun")
+      .mockImplementation(() => new Promise<void>((done) => (finish = done)));
+    const key = "thr_00000000-0000-4000-8000-0000000000c1-stop";
+    await press(row("chat-tasks", key));
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
+    await press(row("chat-tasks", key));
+    expect(stop).toHaveBeenCalledOnce();
+    await act(async () => finish());
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stop", disabled: false });
+  });
+
+  it("keeps what a paused chat holds on screen when an edit met a newer one", async () => {
+    const client = await open(chat(3), chats());
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type === "connection.update")
+        throw new HostClientRequestError({ code: "conflict", message: "changed", status: 409 });
+      return real(command);
+    });
+    await press(row("mode", "auto"));
+    await vi.waitFor(() =>
+      expect(section("conflict")?.footer?.text).toBe(
+        "This changed on another device. Showing what’s set now.",
+      ),
+    );
+    expect(section("status")?.footer?.text).toContain(
+      "Messages sent while this is paused arrive when it’s back;",
+    );
   });
 
   it.each([

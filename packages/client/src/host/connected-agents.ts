@@ -268,15 +268,17 @@ export class ConnectedAgentsClient {
     if (result.kind !== "failed") this.read.invalidate();
     return result;
   };
-  /** Takes an ended connection off the list. */
-  remove = async (connectionId: string): Promise<void> => {
+  /** Takes an ended connection off the list: true only once the Home confirms it is gone. */
+  remove = async (connectionId: string): Promise<boolean> => {
     const outcome = await this.#run(
       this.#removes.for(connectionId),
       "remove",
       connectionId,
       connectionId,
     );
-    if (outcome.kind === "confirmed") this.read.invalidate();
+    if (outcome.kind !== "confirmed") return false;
+    this.read.invalidate();
+    return true;
   };
   dismiss = (): void => {
     this.#action?.dismiss();
