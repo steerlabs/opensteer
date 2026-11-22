@@ -207,8 +207,10 @@ export type BrowserPoolAgentAdminReply =
       /** Round G: present, and true, only when asked for and the profile is seen gone. */
       readonly profileErased?: true;
       /**
-       * Round G, B: present, and true, when the slot named upstream credential files and every
-       * one was seen gone (a file another live slot also names is kept, and this is absent).
+       * Round G, B and H: present, and true, whenever every upstream credential file the slot
+       * has is seen gone, including when it has none (W10), and on a host that pulls egress for
+       * a slot the agent no longer knows (its derived paths). A file another live slot also
+       * names is kept, and this is absent. A file that cannot be removed fails the delete.
        */
       readonly credentialsErased?: true;
     }

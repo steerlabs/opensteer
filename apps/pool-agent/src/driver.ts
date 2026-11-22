@@ -7,6 +7,7 @@
 
 import type { BrowserPoolAgentGuestSpec } from "@opensteer/browser-runtime-core/browser-pool-agent-wire";
 import type { HostCapacity } from "./capacity.js";
+import type { SlotEgressAnswer } from "./slot-egress-fetch.js";
 
 export interface GuestBoot {
   readonly slotId: string;
@@ -87,6 +88,17 @@ export interface HypervisorDriver {
   eraseProfile(path: string): Promise<void>;
   /** Round G, B: removes a slot's upstream credential files (under the credentials root). */
   eraseCredentials(files: readonly string[]): Promise<void>;
+  /**
+   * Round H: this host pulls each slot's upstream credentials (driver.requireEgressUpstream):
+   * every proxy requires an upstream, and a slot's credentials live at paths derived from its id.
+   */
+  readonly pullsEgress: boolean;
+  /** Round H: all of the slot's pulled credentials are on this host. */
+  hasPulledEgress(slotId: string): Promise<boolean>;
+  /** Round H: writes them (temporary names renamed into place; root-owned, 0600, root-only dir). */
+  writePulledEgress(slotId: string, egress: SlotEgressAnswer): Promise<void>;
+  /** Round H: the paths a slot's pulled credentials have on this host. */
+  pulledEgressFiles(slotId: string): readonly string[];
   /** Re-applies the host's own rules if they are gone; true if it had to. */
   ensureHost(): Promise<boolean>;
   /** Refuses a guest whose host paths are not inside the roots configured for them. */

@@ -52,7 +52,35 @@ export const agentConfigSchema = z
         // Measured on run 5: one Chromium held at most 7 (9 while flooding); Chromium itself opens
         // at most 32 to one proxy. Twice that.
         maxConnections: z.number().int().min(16).max(1024).default(64),
+        /**
+         * Round H: where a host that pulls its slots' credentials asks for them. https only,
+         * with no user info, path, query or fragment.
+         */
+        accountOrigin: z
+          .string()
+          .max(255)
+          .refine((value) => {
+            try {
+              const url = new URL(value);
+              return (
+                url.protocol === "https:" &&
+                !url.username &&
+                !url.password &&
+                (url.pathname === "/" || url.pathname === "") &&
+                !url.search &&
+                !url.hash
+              );
+            } catch {
+              return false;
+            }
+          }, "The account origin must be an https origin.")
+          .optional(),
       }),
+      /**
+       * Round H: no upstream, no start. Every slot's proxy requires an upstream; a create names
+       * no egress; each slot's credentials are pulled from the account service at its start.
+       */
+      requireEgressUpstream: z.boolean().default(false),
       /**
        * The slot proxies' slice (setup-host.sh makes it with this MemoryMax): counted inside the
        * host's budget, so the guests' ceiling leaves it room (round D, D1).
@@ -80,6 +108,10 @@ export const agentConfigSchema = z
       egressLog: z.boolean().default(false),
     }),
   })
+  .refine(
+    (config) => !config.driver.requireEgressUpstream || !!config.driver.egress.accountOrigin,
+    "A host that requires an egress upstream names its account origin (driver.egress.accountOrigin).",
+  )
   .refine(
     // Review G10: a slot's VMM uid and any slot's proxy uid are never the same.
     (config) =>
