@@ -196,6 +196,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
   readonly #scheduleExpiry: (callback: () => void, delayMilliseconds: number) => () => void;
   readonly #store: ProtectedAuthStore;
   #accountDetail: string | null = null;
+  /** The last account sign-in's failure to save what the account answered, as it was thrown. */
+  #accountStorageFailure: ClientOperationError | null = null;
   #accountFlowGeneration = 0;
   #accountSession: AccountSession | null = null;
   #accountRuntime = new AccountRuntimeOwner(null);
@@ -378,6 +380,14 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.#storageError;
   }
 
+  /**
+   * Why the last account sign-in didn't end signed in, when the account answered and only
+   * saving its answer on this device failed; null for any other outcome.
+   */
+  accountSignInStorageFailure(): ClientOperationError | null {
+    return this.#accountStorageFailure;
+  }
+
   async beginAccountSignIn(): Promise<DesktopAccountAuthState> {
     return this.#beginAccountAuthorization(null);
   }
@@ -407,6 +417,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       throw new Error("Opensteer account sign-in isn't available yet.");
     }
     this.#accountDetail = null;
+    this.#accountStorageFailure = null;
     this.#removePending((flow) => flow.kind === "account");
     const flow: NativeOAuthFlow = {
       callback: this.#oauth.accountCallback,
@@ -741,8 +752,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
         this.#replaceAccountSession(null);
       const detail = publicError(error, "Authorization could not be completed.");
       if (this.#isFlowCurrent(flow)) {
-        if (flow.kind === "account") this.#accountDetail = detail;
-        else this.#hostDetails.set(hostAttachmentKey(flow.connection), detail);
+        if (flow.kind === "account") {
+          this.#accountDetail = detail;
+          this.#accountStorageFailure = credentialStorageFailureOf(error);
+        } else this.#hostDetails.set(hostAttachmentKey(flow.connection), detail);
       }
     }
     if (flow.kind === "account") await this.#emitAccount();
@@ -1993,6 +2006,14 @@ function nextAuthGeneration(current: number): number {
 function publicError(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : fallback;
   return message.replace(/[\r\n]/gu, " ").slice(0, 1_000) || fallback;
+}
+
+/** A failure of this device's credential storage itself, as its store reported it. */
+function credentialStorageFailureOf(error: unknown): ClientOperationError | null {
+  return error instanceof ClientOperationError &&
+    error.failure.reason === "login-storage-unavailable"
+    ? error
+    : null;
 }
 
 function nativeCredentialStorageError(error: unknown): ClientOperationError {

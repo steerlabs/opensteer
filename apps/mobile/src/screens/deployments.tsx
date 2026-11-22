@@ -72,6 +72,7 @@ import { Symbol } from "../ui/symbol.js";
 import { AccountIdentityRow } from "./add-deployment.js";
 import {
   accountDirectoryUnavailablePresentation,
+  accountSignInFailureText,
   accountIdentityLabel,
   accountFlowCanContinue,
   deploymentCanOpen,
@@ -150,8 +151,9 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
         <View style={styles.copy}>
           {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
           <AppText role="title">{row.name}</AppText>
+          {/* Every line under the name is a sentence or a name a person reads whole: none is cut. */}
           {props.work ? (
-            <AppText numberOfLines={1} role="caption" tone="muted">
+            <AppText role="caption" tone="muted">
               {props.work}
             </AppText>
           ) : null}
@@ -181,7 +183,7 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
             )}
           </View>
           {detail === null ? null : (
-            <AppText numberOfLines={2} role="caption" tone="muted">
+            <AppText role="caption" tone="muted">
               {detail}
             </AppText>
           )}
@@ -277,9 +279,10 @@ function ShownKind(props: {
   return <KindText text={homeLine(shown, props.name) ?? props.kindLabel} />;
 }
 
+/** The Home's kind, or the Mac it lives on: wraps, and moves to its own line when it must. */
 function KindText(props: { readonly text: string }): ReactNode {
   return (
-    <AppText numberOfLines={1} role="caption" style={styles.kind} tone="muted">
+    <AppText role="caption" style={styles.kind} tone="muted">
       {props.text}
     </AppText>
   );
@@ -527,7 +530,7 @@ export function DeploymentsScreen(): ReactNode {
     })()
       .catch((error: unknown) => {
         if (!accountFlowIsCurrent(generation, expectedSelection)) return;
-        setFailure(failedLine(error, "Couldn't sign in to your Opensteer account."));
+        setFailure(failedLine(error, accountSignInFailureText(error)));
       })
       .finally(() => {
         if (mounted.current && accountFlowGeneration.current === generation) {

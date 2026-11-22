@@ -194,3 +194,63 @@ describe("a Home's status in the list", () => {
         expect(frames.shown(name), "the Home's name is cut").toBe("Studio Mac");
       });
 });
+
+describe("what a Home's row says", () => {
+  const remoteAccessOff = "Remote access is off. Turn it on in Opensteer on that Mac.";
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`reads whole, never cut short, on ${phone.name} at text size ${fontScale}`, async () => {
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        const none = () => undefined;
+        await act(async () =>
+          root.render(
+            <View
+              style={{
+                paddingLeft: 16 + phone.insets.left,
+                paddingRight: 16 + phone.insets.right,
+                width: phone.window.width,
+              }}
+            >
+              <DeploymentListRow
+                // The Mac this Home lives on, by its own name, as the list's one read says.
+                attention={{ homeName: "Mac mini in the studio", needsYou: 0, unread: false }}
+                current={false}
+                onDetails={none}
+                onOpen={none}
+                onPair={none}
+                onRemove={none}
+                onSignOut={none}
+                row={{
+                  ...row({ id: homes[0]!.id, name: "Studio Mac" }),
+                  accountManaged: true,
+                  remoteAccessOff: true,
+                  status: "unavailable",
+                }}
+                work="Work · Northwind Traders"
+              />
+            </View>,
+          ),
+        );
+        const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
+        for (const words of [
+          remoteAccessOff,
+          "Home: Mac mini in the studio",
+          "Work · Northwind Traders",
+        ]) {
+          const text = [...container.querySelectorAll('[data-rn="Text"]')].find(
+            (candidate) => candidate.textContent === words,
+          );
+          if (!text) throw new Error(`No "${words}" in ${container.textContent ?? ""}`);
+          expect(frames.shown(text), `"${words}" is cut`).toBe(words);
+          expect(
+            frames.frame(text).x + frames.frame(text).width,
+            `"${words}" runs past the row`,
+          ).toBeLessThanOrEqual(phone.window.width - phone.insets.right - 16 + 0.5);
+        }
+      });
+});

@@ -1,4 +1,7 @@
-import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
+import {
+  ClientOperationError,
+  type AccountDeploymentDirectoryUnavailable,
+} from "@opensteer/client/connections";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentUnavailableReasonExplanation } from "@opensteer/protocol/deployment-status";
 import type { DeploymentRow } from "../client/deployment-rows.js";
@@ -39,6 +42,17 @@ export function accountDoorPresentation(
     // Retrying is only something to offer when signing in is possible at all.
     title: account.available && account.status === "error" ? "Try signing in again" : "Sign in",
   };
+}
+
+/**
+ * What the first screen says when signing in to the Opensteer account didn't end signed in. The
+ * account may have answered and only this phone's storage refused to keep it: then its sentence
+ * (written by `signInStorage`), since signing in again elsewhere would change nothing.
+ */
+export function accountSignInFailureText(error: unknown): string {
+  if (error instanceof ClientOperationError && error.failure.reason === "login-storage-unavailable")
+    return error.message;
+  return "Couldn't sign in to your Opensteer account.";
 }
 
 export type DeploymentsPresentation = "list" | "signed-in-empty" | "welcome";

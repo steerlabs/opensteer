@@ -9,6 +9,7 @@ import {
   layoutWindow,
   overlaps,
   textElement,
+  type Frames,
 } from "../../test-support/yoga-frames.js";
 
 /*
@@ -201,5 +202,63 @@ describe("the Tasks screen's heading and its composer", () => {
           coveringOf(container, frames, heading).filter((element) => !element.contains(dock)),
           "something covers the heading",
         ).toEqual([]);
+      });
+});
+
+/**
+ * Whether a person can read an element to its last line above the composer: scrolled as far as
+ * its scroll view goes (or as it stands, when nothing scrolls it), its bottom is above the dock.
+ */
+function readableAboveDock(frames: Frames, element: Element, dock: Element): boolean {
+  const frame = frames.frame(element);
+  const dockTop = frames.frame(dock).y;
+  const content = element.closest('[data-rn="ScrollContent"]');
+  if (!content?.parentElement) return frame.y + frame.height <= dockTop + 0.5;
+  const box = frames.frame(content);
+  const view = frames.frame(content.parentElement);
+  const furthest = Math.max(0, box.y + box.height - (view.y + view.height));
+  return frame.y + frame.height - furthest <= dockTop + 0.5;
+}
+
+describe("the Tasks screen's empty state", () => {
+  for (const phone of layoutPhones)
+    for (const fontScale of layoutTextSizes)
+      it(`can be read to its end above the composer on ${phone.name} at text size ${fontScale}`, async () => {
+        geometry.header = phone.header;
+        geometry.insets = phone.insets;
+        Object.assign(layoutWindow, phone.window, { fontScale });
+        const container = document.createElement("div");
+        document.body.append(container);
+        const root = createRoot(container);
+        roots.push(root);
+        await act(async () =>
+          root.render(
+            <View style={{ height: phone.window.height, width: phone.window.width }}>
+              <HeldNewTaskPane
+                connection={null}
+                deploymentId="dep_mock"
+                name="Studio Mac"
+                underHeader
+                userId={"usr_mock" as never}
+              />
+            </View>,
+          ),
+        );
+        const frames = await layout(container, phone.window);
+        expect(frames.settled, "the layout never comes to rest").toBe(true);
+        const dock = container.querySelector('[data-testid="composer-dock-stack"]');
+        if (!dock) throw new Error("No composer");
+        const paragraph = textElement(container, "Your agent works on this computer.");
+        expect(frames.cut(paragraph), "the paragraph is cut").toBe(false);
+        expect(
+          readableAboveDock(frames, paragraph, dock),
+          "the paragraph can't be brought out from behind the composer",
+        ).toBe(true);
+        // The last way to begin, too: the whole empty state is there to be read.
+        const last = textElement(container, "Plan before changing anything");
+        expect(
+          readableAboveDock(frames, last, dock),
+          "the last way to begin can't be brought out from behind the composer",
+        ).toBe(true);
       });
 });
