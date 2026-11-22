@@ -1,11 +1,9 @@
-import {
-  ClientOperationError,
-  type AccountDeploymentDirectoryUnavailable,
-} from "@opensteer/client/connections";
+import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import { deploymentUnavailableReasonExplanation } from "@opensteer/protocol/deployment-status";
 import type { DeploymentRow } from "../client/deployment-rows.js";
 import { signInStorageSentence } from "../platform/sign-in-storage.js";
+import { signInStorageWords } from "../ui/client-feedback.js";
 
 type AccountState = DesktopAccountAuthState["account"];
 
@@ -50,9 +48,7 @@ export function accountDoorPresentation(
  * (written by `signInStorage`), since signing in again elsewhere would change nothing.
  */
 export function accountSignInFailureText(error: unknown): string {
-  if (error instanceof ClientOperationError && error.failure.reason === "login-storage-unavailable")
-    return error.message;
-  return "Couldn't sign in to your Opensteer account.";
+  return signInStorageWords(error) ?? "Couldn't sign in to your Opensteer account.";
 }
 
 export type DeploymentsPresentation = "list" | "signed-in-empty" | "welcome";
