@@ -836,12 +836,30 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     }
     case "paste": {
       prevent();
-      interrupt();
       // Clipboard items are representations of one copy; a text target keeps its plain text.
       const text = event.items.find(
         (item) => item.type === "text/plain" && item.name === undefined,
       );
       const items = state.abilities.clipboard === "full" ? event.items : text ? [text] : [];
+      // A paste over a selection replaces it, as typing over it does. The far field has no
+      // selection: the selection is deleted first, and the paste goes in where it was.
+      const { value, selectionStart: start, selectionEnd: end } = state.proxy;
+      if (items.length && !state.composition && start < end && state.context) {
+        const removed = {
+          value: value.slice(0, start) + value.slice(end),
+          selectionStart: start,
+          selectionEnd: start,
+        };
+        const edit = textEdit(state.proxy, removed, state.caret, state.context.contextId, null);
+        if (
+          edit &&
+          edit !== "unverified" &&
+          (state.abilities.rangeEdits || (!edit.before && !edit.after)) &&
+          emit({ kind: "edit", edit })
+        )
+          move(state.caret - edit.before.length + edit.text.length, start, removed.value);
+      }
+      interrupt();
       if (items.length) emit({ kind: "paste", items });
       else if (event.items.length) refusal = "clipboard";
       break;

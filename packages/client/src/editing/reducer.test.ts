@@ -254,6 +254,22 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       { kind: "edit", edit: { contextId: context.contextId, text: "", before: "a", after: "" } },
     ]);
   });
+  // Found by the person oracle (third generator, seed 697): a paste over a selection replaces it,
+  // as typing over it does; the far field has no selection, so the selection is deleted first.
+  it("pastes over a selection by deleting it first", () => {
+    const bytes = new TextEncoder().encode("pasted");
+    const result = replay([
+      { type: "beforeinput", inputType: "insertText", data: "abc" },
+      input("abc"),
+      { type: "selection", proxy: proxy("abc", 0, 2) },
+      { type: "paste", items: [{ type: "text/plain", bytes }] },
+    ]);
+    expect(result.operations.slice(1)).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "c", before: "abc", after: "" } },
+      { kind: "command", command: "moveBackward" },
+      { kind: "paste", items: [{ type: "text/plain", bytes }] },
+    ]);
+  });
   // CR6: an input that arrives alone ends Enter's suppression too. No recorded trace puts an
   // input that is not a composition's between an Enter key and its own line break (the inputs
   // there are IME commits, which never reach the suppression), so a later line break that
