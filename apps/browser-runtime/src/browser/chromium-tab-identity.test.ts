@@ -566,11 +566,18 @@ it("leaves the name with the opener, told by its own page, and with no tab when 
     const child = await childPromise;
     await child.waitForLoadState();
     const childTarget = await targetOf(child);
-    // Long enough for every group event of the opener's close to have run.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const rows = await running.lifecycle.inventory();
-    outcomes.push(rows.find((t) => t.targetId === childTarget)?.identity ?? null);
-    expect(rows.filter((t) => t.identity === name)).toHaveLength(0);
+    // The opener's close reaches the helper: no tab carries its name, the new tab included.
+    const outcome = await vi
+      .waitFor(
+        async () => {
+          const rows = await running.lifecycle.inventory();
+          expect(rows.filter((t) => t.identity === name)).toHaveLength(0);
+          return rows.find((t) => t.targetId === childTarget)?.identity ?? null;
+        },
+        { timeout: 5_000, interval: 50 },
+      )
+      .catch(() => name);
+    outcomes.push(outcome);
   }
   process.stdout.write(`${JSON.stringify({ event: "k5.popup-owner", outcomes })}\n`);
   expect(outcomes).toEqual(Array.from({ length: 10 }, () => null));

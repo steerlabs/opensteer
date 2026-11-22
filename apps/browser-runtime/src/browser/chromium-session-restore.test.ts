@@ -1298,7 +1298,8 @@ it("holds a saved page's first name write while it is claimed, reconciled, unsav
   const releaseFirst = gate;
   gate = null;
   releaseFirst.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  // The name task finishes (an orderly close waits for it the same way).
+  await restore1.flush!();
   expect(named).not.toHaveBeenCalled();
 
   // A second saved page is killed with its write held: it comes back with no name, so it is
