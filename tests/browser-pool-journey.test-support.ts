@@ -320,6 +320,8 @@ export async function journey(
         connect,
         // Standard CDP straight into the in-process runtime, with its recovery probe.
         standardCdpLineage: true,
+        // As a current runtime advertises: it holds a connection's rules itself.
+        connectionCommands: true,
         standardRuntime: guest,
         standardCdpRecovery: {
           relayId: "pool-loopback",
@@ -472,6 +474,8 @@ export async function journey(
     restartHome,
     crashHome,
     command,
+    /** The real browser the guest launched, for a page no session's agent holds. */
+    launched: () => launched,
     draft,
     viewer,
     slot: () => readBrowserPoolSlot(database, task.runnerId),

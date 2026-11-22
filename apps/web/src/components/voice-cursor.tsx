@@ -16,7 +16,7 @@ interface Point {
   readonly y: number;
 }
 
-/** The soft glide of a teammate's hand, slower than the agents working in a page. */
+/** The soft glide of a person's hand, slower than the agents working in a page. */
 const glideStiffness = 9;
 /** How long the cursor stays on what it clicked before it fades. */
 const lingerMs = 420;

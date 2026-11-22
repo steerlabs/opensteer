@@ -162,9 +162,15 @@ export class CdpProductIsolation {
       );
   }
   #internalContext(id: unknown): boolean {
+    // A numeric id names a context's id and a string its unique id; nothing else
+    // names one, so a context reported without a unique id never matches `null`.
     const context = this.#contexts
       .entries()
-      .find((entry) => entry.id === id || entry.uniqueId === id);
+      .find(
+        (entry) =>
+          (typeof id === "number" && entry.id === id) ||
+          (typeof id === "string" && entry.uniqueId === id),
+      );
     return context ? internalName(context.description.name) : true;
   }
   #referencesInternal(value: unknown, message: boolean, pageFrames?: ReadonlySet<object>): boolean {

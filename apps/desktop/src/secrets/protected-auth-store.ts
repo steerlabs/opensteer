@@ -56,8 +56,8 @@ export class DesktopProtectedAuthStore implements ProtectedAuthStore {
       maxFileBytes: maxProtectedAuthFileBytes,
       maxPlaintextBytes: maxProtectedAuthPlaintextBytes,
       messages: {
-        protectedState: "The team authorization metadata",
-        protectedStore: "The protected team authorization store",
+        protectedState: "The Home sign-in metadata",
+        protectedStore: "The protected Home sign-in store",
       },
       ...(options.platform === undefined ? {} : { platform: options.platform }),
       ...(options.privateFiles === undefined ? {} : { privateFiles: options.privateFiles }),
@@ -87,7 +87,7 @@ export class DesktopProtectedAuthStore implements ProtectedAuthStore {
     return this.#mutate((current) => ({ ...current, account: null }));
   }
 
-  setTeamSignOutSuppression(
+  setHostSignOutSuppression(
     deploymentId: DeploymentId,
     suppressed: boolean,
   ): Promise<ProtectedAuthState> {

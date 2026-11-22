@@ -1,4 +1,3 @@
-import { deploymentPolicy } from "@opensteer/core";
 import {
   createContext,
   useCallback,
@@ -74,7 +73,7 @@ export interface ThisDevice {
 const ThisDeviceContext = createContext<ThisDevice | null>(null);
 export const ThisDeviceProvider = ThisDeviceContext.Provider;
 
-/** This Mac as a device of the Opensteer on screen; null in a browser and on team servers. */
+/** This Mac as a device of the Opensteer on screen; null in a browser. */
 export function useThisDevice(): ThisDevice | null {
   return useContext(ThisDeviceContext);
 }
@@ -108,7 +107,6 @@ export function useThisDeviceLifecycle(input: {
   const applicable =
     bridge !== null &&
     deployment !== null &&
-    deploymentPolicy({ kind: deployment.kind }).services.personal &&
     (hosting || (localStatus !== null && localStatus.platform !== "windows"));
   const devicesAvailable = snapshot.devicesAvailable === true;
   const record = membershipRecord(localStatus);

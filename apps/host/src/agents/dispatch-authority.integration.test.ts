@@ -83,9 +83,6 @@ function dispatcher(
       },
     } as never,
     triggerControlTokens: { issue: () => "control" } as never,
-    teamRequestContext: async () => {
-      throw new Error("Unexpected team request");
-    },
     runners: {
       identityForEnvironment: (environmentId: string) => ({ ...identity, environmentId }),
       canRunHarness: () => true,

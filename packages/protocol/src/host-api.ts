@@ -53,7 +53,6 @@ import {
   TranscriptFileContentInputSchema,
   TranscriptFileContentSchema,
 } from "./transcript-files.js";
-import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
 import {
   CompactionSendChoiceSchema,
@@ -61,7 +60,6 @@ import {
   IdleCompactionPolicyViewSchema,
 } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
-import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
 import {
   AgentConnectionSchema,
   AgentConnectionIdSchema,
@@ -328,12 +326,7 @@ const oidcReturnPathSchema = z
  * Phones, Runners and open windows update apart from their Host, so it serves
  * every caller whose window overlaps its own.
  */
-export {
-  hostApiCurrentHeader,
-  hostApiVersionHeader,
-  teamApiVersion,
-  teamApiVersionHeader,
-} from "@opensteer/deployment-authority";
+export { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/deployment-authority";
 
 export const HostApiErrorSchema = z.object({
   provenance: z.enum(["transport", "host", "proxy", "protocol", "local"]).optional(),
@@ -1219,7 +1212,6 @@ const commandInputSchema = z.union([
   DeviceMachineAccessUpdateCommandSchema,
   ...TabCommandSchema.options,
   ...AppCommandSchema.options,
-  ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
   ...PluginCommandSchema.options,
   ...otherCommandInputSchema.options,
@@ -1230,7 +1222,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   IphoneScreenDetachResultSchema,
   ...TabCommandResultSchema.options,
   ...AppCommandResultSchema.options,
-  ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
   ...PluginCommandResultSchema.options,
   ComputerViewCloseResultSchema,
@@ -1549,204 +1540,9 @@ const hostApiGroup1 = defineRpc({
     }),
     NeedsYouPageSchema,
   ),
-  "team.bootstrap.get": declaration(
-    "POST",
-    teamReadSchemas["team.bootstrap.get"].input,
-    teamReadViews["team.bootstrap.get"],
-  ),
-  "team.sidebar.get": declaration(
-    "POST",
-    teamReadSchemas["team.sidebar.get"].input,
-    teamReadViews["team.sidebar.get"],
-  ),
-  "team.channels.list": declaration(
-    "POST",
-    teamReadSchemas["team.channels.list"].input,
-    teamReadViews["team.channels.list"],
-  ),
-  "team.channel.get": declaration(
-    "POST",
-    teamReadSchemas["team.channel.get"].input,
-    teamReadViews["team.channel.get"],
-  ),
-  "team.channel.access.get": declaration(
-    "POST",
-    teamReadSchemas["team.channel.access.get"].input,
-    teamReadViews["team.channel.access.get"],
-  ),
-  "team.channel.instructions.get": declaration(
-    "POST",
-    teamReadSchemas["team.channel.instructions.get"].input,
-    teamReadViews["team.channel.instructions.get"],
-  ),
-  "team.messages.page": declaration(
-    "POST",
-    teamReadSchemas["team.messages.page"].input,
-    teamReadViews["team.messages.page"],
-  ),
-  "team.thread.page": declaration(
-    "POST",
-    teamReadSchemas["team.thread.page"].input,
-    teamReadViews["team.thread.page"],
-  ),
-  "team.message.get": declaration(
-    "POST",
-    teamReadSchemas["team.message.get"].input,
-    teamReadViews["team.message.get"],
-  ),
-  "team.messages.check": declaration(
-    "POST",
-    teamReadSchemas["team.messages.check"].input,
-    teamReadViews["team.messages.check"],
-  ),
-  "team.search": declaration(
-    "POST",
-    teamReadSchemas["team.search"].input,
-    teamReadViews["team.search"],
-  ),
-  "team.members.list": declaration(
-    "POST",
-    teamReadSchemas["team.members.list"].input,
-    teamReadViews["team.members.list"],
-  ),
-  "team.groups.list": declaration(
-    "POST",
-    teamReadSchemas["team.groups.list"].input,
-    teamReadViews["team.groups.list"],
-  ),
-  "team.group.get": declaration(
-    "POST",
-    teamReadSchemas["team.group.get"].input,
-    teamReadViews["team.group.get"],
-  ),
-  "team.invites.list": declaration(
-    "POST",
-    teamReadSchemas["team.invites.list"].input,
-    teamReadViews["team.invites.list"],
-  ),
-  "team.invite.current.get": declaration(
-    "POST",
-    teamReadSchemas["team.invite.current.get"].input,
-    teamReadViews["team.invite.current.get"],
-  ),
-  "team.audit.page": declaration(
-    "POST",
-    teamReadSchemas["team.audit.page"].input,
-    teamReadViews["team.audit.page"],
-  ),
-  "team.notices.page": declaration(
-    "POST",
-    teamReadSchemas["team.notices.page"].input,
-    teamReadViews["team.notices.page"],
-  ),
-  "team.knowledge.topics.list": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.topics.list"].input,
-    teamReadViews["team.knowledge.topics.list"],
-  ),
-  "team.knowledge.topic.get": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.topic.get"].input,
-    teamReadViews["team.knowledge.topic.get"],
-  ),
-  "team.knowledge.topic.access.get": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.topic.access.get"].input,
-    teamReadViews["team.knowledge.topic.access.get"],
-  ),
-  "team.agent.recipient.get": declaration(
-    "POST",
-    teamReadSchemas["team.agent.recipient.get"].input,
-    teamReadViews["team.agent.recipient.get"],
-  ),
-  "team.agent.requests.get": declaration(
-    "POST",
-    teamReadSchemas["team.agent.requests.get"].input,
-    teamReadViews["team.agent.requests.get"],
-  ),
-  "team.share.participants.get": declaration(
-    "GET",
-    teamReadSchemas["team.share.participants.get"].input,
-    teamReadViews["team.share.participants.get"],
-  ),
-  "team.shares.list": declaration(
-    "GET",
-    teamReadSchemas["team.shares.list"].input,
-    teamReadViews["team.shares.list"],
-  ),
-  "team.partners.list": declaration(
-    "POST",
-    teamReadSchemas["team.partners.list"].input,
-    teamReadViews["team.partners.list"],
-  ),
-  "team.partner.invite.preview": declaration(
-    "POST",
-    teamReadSchemas["team.partner.invite.preview"].input,
-    teamReadViews["team.partner.invite.preview"],
-  ),
-  "team.partner.invites.list": declaration(
-    "POST",
-    teamReadSchemas["team.partner.invites.list"].input,
-    teamReadViews["team.partner.invites.list"],
-  ),
-  "team.sharing.policy.get": declaration(
-    "POST",
-    teamReadSchemas["team.sharing.policy.get"].input,
-    teamReadViews["team.sharing.policy.get"],
-  ),
 } as const);
 
 const hostApiGroup2 = defineRpc({
-  "team.links.list": declaration(
-    "POST",
-    teamReadSchemas["team.links.list"].input,
-    teamReadViews["team.links.list"],
-  ),
-  "teams.links.list": declaration(
-    "POST",
-    teamReadSchemas["teams.links.list"].input,
-    teamReadViews["teams.links.list"],
-  ),
-  "teams.threadTask.get": declaration(
-    "POST",
-    teamReadSchemas["teams.threadTask.get"].input,
-    teamReadViews["teams.threadTask.get"],
-  ),
-  "teams.replyTask.get": declaration(
-    "POST",
-    teamReadSchemas["teams.replyTask.get"].input,
-    teamReadViews["teams.replyTask.get"],
-  ),
-  "team.mentions.page": declaration(
-    "POST",
-    teamReadSchemas["team.mentions.page"].input,
-    teamReadViews["team.mentions.page"],
-  ),
-  "team.pins.page": declaration(
-    "POST",
-    teamReadSchemas["team.pins.page"].input,
-    teamReadViews["team.pins.page"],
-  ),
-  "team.files.page": declaration(
-    "POST",
-    teamReadSchemas["team.files.page"].input,
-    teamReadViews["team.files.page"],
-  ),
-  "team.knowledge.notes.page": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.notes.page"].input,
-    teamReadViews["team.knowledge.notes.page"],
-  ),
-  "team.knowledge.note.get": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.note.get"].input,
-    teamReadViews["team.knowledge.note.get"],
-  ),
-  "team.knowledge.note.history": declaration(
-    "POST",
-    teamReadSchemas["team.knowledge.note.history"].input,
-    teamReadViews["team.knowledge.note.history"],
-  ),
   "browser.searchSuggestions.get": declaration(
     "GET",
     z.strictObject({ query: z.string().trim().min(1).max(200) }),

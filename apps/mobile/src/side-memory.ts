@@ -3,7 +3,6 @@ import { isRecord } from "@opensteer/shared/isRecord";
 import { presentedFrom } from "./navigation-presentations.js";
 import type { StackView, TopLevelTarget } from "./top-level.js";
 
-export type SideId = "tasks" | (string & {});
 type SideRoute = {
   readonly name: string;
   readonly key?: string;
@@ -11,11 +10,6 @@ type SideRoute = {
 };
 
 const landingParams = new Set(["messageId", "requestId", "replyId", "pendingBrowserTab"]);
-
-export function routeSide(route: SideRoute | undefined): SideId {
-  const teamId = isRecord(route?.params) ? route.params["teamId"] : undefined;
-  return typeof teamId === "string" ? teamId : "tasks";
-}
 
 function remember(route: SideRoute): SideRoute {
   const params = isRecord(route.params)
@@ -28,21 +22,11 @@ function remember(route: SideRoute): SideRoute {
   };
 }
 
-export function isTeamSideRoot(state: StackView, key: string): boolean {
-  return (
-    state.routes[0]?.name === "Home" &&
-    state.routes[1]?.key === key &&
-    routeSide(state.routes[1]) !== "tasks" &&
-    presentedFrom(state) !== 1
-  );
-}
-
-/** One account/Deployment's warm navigation addresses, never persisted. */
+/** One account/Deployment's warm navigation address above Home, never persisted. */
 export class SideMemory {
   #account: string | null | undefined;
   #deployment: string | null = null;
-  #chains = new Map<SideId, readonly SideRoute[]>();
-  #active: SideId = "tasks";
+  #chain: readonly SideRoute[] = [];
 
   account(subject: string | null): boolean {
     if (this.#account === subject) return false;
@@ -53,8 +37,7 @@ export class SideMemory {
   }
 
   clear(): void {
-    this.#chains.clear();
-    this.#active = "tasks";
+    this.#chain = [];
     this.#deployment = null;
   }
 
@@ -72,34 +55,15 @@ export class SideMemory {
     }
     const presented = presentedFrom(state);
     const end = presented < 0 ? state.index + 1 : presented;
-    const chain = state.routes.slice(1, end).map(remember);
-    this.#active = routeSide(chain[0]);
-    this.#chains.set(this.#active, chain);
+    this.#chain = state.routes.slice(1, end).map(remember);
   }
 
-  resume(state: StackView, side: SideId): NavigationAction | null {
-    this.record(state);
-    if (this.#active === side) return null;
-    const chain = this.#chains.get(side);
-    if (chain === undefined && side !== "tasks") return null;
-    this.#active = side;
-    return this.#reset(state, chain ?? []);
-  }
-
-  back(state: StackView): NavigationAction | null {
-    const root = state.routes[1];
-    return root && isTeamSideRoot(state, root.key) ? this.resume(state, "tasks") : null;
-  }
-
-  /** Explicit entries replace only their destination side. */
+  /** An explicit entry replaces the remembered address. */
   enter(state: StackView, target: TopLevelTarget): NavigationAction | null {
     this.record(state);
     if (state.routes[0]?.name !== "Home") return null;
-    const side = routeSide(target);
-    if (presentedFrom({ index: 0, routes: [target] }) === 0) {
-      const base = this.#chains.get(this.#active) ?? [];
-      return this.#reset(state, [...base, target]);
-    }
+    if (presentedFrom({ index: 0, routes: [target] }) === 0)
+      return this.#reset(state, [...this.#chain, target]);
     const presented = presentedFrom(state);
     const routes = state.routes.slice(1, presented < 0 ? state.index + 1 : presented);
     const current = routes[0];
@@ -112,36 +76,19 @@ export class SideMemory {
     )
       return state.index === 1 ? null : StackActions.pop(state.index - 1);
     if (target.name === "Home" && state.index === 0) return null;
-    const previous = this.#active;
-    this.#active = side;
     const chain = target.name === "Home" ? [] : [target];
-    this.#chains.set(side, chain.map(remember));
-    if (target.name === "Home" && previous === "tasks") return StackActions.popToTop();
+    this.#chain = chain.map(remember);
+    if (target.name === "Home") return StackActions.popToTop();
     return this.#reset(state, chain);
   }
 
   /** Only confirmed removal trims history; list absence is not invalidity. */
   trim(state: StackView, invalid: (route: SideRoute) => boolean): NavigationAction | null {
     this.record(state);
-    let activeChanged = false;
-    for (const [side, chain] of this.#chains) {
-      const index = chain.findIndex(invalid);
-      if (index < 0) continue;
-      if (index === 0 && side !== "tasks") this.#chains.delete(side);
-      else this.#chains.set(side, chain.slice(0, index));
-      if (side === this.#active) activeChanged = true;
-    }
-    if (!activeChanged) return null;
-    this.#active = "tasks";
-    return this.#reset(state, this.#chains.get(this.#active) ?? []);
-  }
-
-  forget(state: StackView, teamId: string): NavigationAction | null {
-    this.record(state);
-    this.#chains.delete(teamId);
-    if (this.#active !== teamId && routeSide(state.routes[state.index]) !== teamId) return null;
-    this.#active = "tasks";
-    return this.#reset(state, this.#chains.get("tasks") ?? []);
+    const index = this.#chain.findIndex(invalid);
+    if (index < 0) return null;
+    this.#chain = this.#chain.slice(0, index);
+    return this.#reset(state, this.#chain);
   }
 
   #reset(state: StackView, chain: readonly SideRoute[]): NavigationAction | null {

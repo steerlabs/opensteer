@@ -81,9 +81,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     parentThreadId: null,
     pendingRequests: 0,
     purpose: testCase.purpose,
-    teamOrigin: testCase.teamBound
-      ? { teamId: createId("deployment"), channelId: createId("teamChannel"), threadRootId: "1" }
-      : null,
     status: "idle",
     title: "Eval",
     updatedAt: new Date().toISOString(),
@@ -175,18 +172,8 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     opensteer_automation_update: (call) => triggers.write(call),
     opensteer_automation_control: (call) => triggers.write(call),
     app_access_request: async () => unavailable(),
-    opensteer_team_read: async () => unavailable(),
-    opensteer_team_file_download: async () => unavailable(),
-    opensteer_team_search: async () => unavailable(),
-    opensteer_team_post: async () => unavailable(),
-    opensteer_knowledge_topic_list: async () => unavailable(),
-    opensteer_knowledge_search: async () => unavailable(),
-    opensteer_knowledge_read: async () => unavailable(),
-    opensteer_knowledge_save: async () => unavailable(),
-    opensteer_knowledge_remove: async () => unavailable(),
   };
   const agent = new OpensteerMcpService({
-    teamsAvailable: async () => testCase.teamBound || testCase.knowledge,
     publicUrl: url,
     handlers,
     callers: {

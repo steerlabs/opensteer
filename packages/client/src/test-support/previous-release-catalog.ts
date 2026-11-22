@@ -50,3 +50,29 @@ export const previousReleaseDeploymentCatalog = {
     },
   ],
 } as const;
+
+/**
+ * A team server's row as the previous release saved it beside a Home: the same
+ * fields, with the retired kind in both the row and its signed document.
+ */
+export function previousReleaseTeamRow<Row extends { readonly authority: object }>(
+  home: Row,
+  deploymentId: string,
+): unknown {
+  const authority = home.authority as {
+    readonly document: Record<string, unknown>;
+  };
+  return {
+    ...home,
+    kind: "team",
+    name: "Acme",
+    authority: {
+      ...authority,
+      document: {
+        ...authority.document,
+        deploymentId,
+        deploymentShape: { kind: "team" },
+      },
+    },
+  };
+}

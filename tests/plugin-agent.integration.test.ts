@@ -30,7 +30,6 @@ import {
   requestOperationCallsMaxLength,
   ThreadIdSchema,
   type AgentGrant,
-  TeamMessageIdSchema,
   type ThreadAccessMode,
   type RequestId,
 } from "../packages/core/src/index.js";
@@ -1612,7 +1611,7 @@ test.each(["Stop", "Disconnect"] as const)(
   },
 );
 
-test.each(["background", "voice", "team"] as const)(
+test.each(["background", "voice"] as const)(
   "%s Runs retain plugin call authority, with non-foreground waits pending immediately",
   async (kind) => {
     const caller = await run();
@@ -1628,26 +1627,6 @@ test.each(["background", "voice", "team"] as const)(
         .set({ voiceSessionId: randomUUID() })
         .where("id", "=", caller.claims.runId)
         .execute();
-    if (kind === "team") {
-      await database
-        .updateTable("threads")
-        .set({ teamAskOrigin: true })
-        .where("id", "=", caller.thread.id)
-        .execute();
-      await database
-        .updateTable("runs")
-        .set({
-          replyTarget: {
-            kind: "team-thread",
-            teamId: createId("deployment"),
-            channelId: createId("teamChannel"),
-            threadRootId: TeamMessageIdSchema.parse("1"),
-            requestId: createId("teamAgentRequest"),
-          },
-        })
-        .where("id", "=", caller.claims.runId)
-        .execute();
-    }
     expect(
       await call(
         caller,
@@ -1656,15 +1635,14 @@ test.each(["background", "voice", "team"] as const)(
         true,
       ),
     ).toMatchObject({ status: "completed" });
-    if (kind !== "team")
-      expect(
-        await call(
-          caller,
-          "plugin_call",
-          { calls: { path: "tools.fixture.reviewed", input: { amount: 2 } } },
-          true,
-        ),
-      ).toMatchObject({ status: "pending" });
+    expect(
+      await call(
+        caller,
+        "plugin_call",
+        { calls: { path: "tools.fixture.reviewed", input: { amount: 2 } } },
+        true,
+      ),
+    ).toMatchObject({ status: "pending" });
   },
 );
 

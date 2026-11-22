@@ -77,7 +77,7 @@ function verifyHostEnvelope(
  * Where clients reach a linked Personal Host: a Mac Home by its signed Remote
  * access route, a Home on its own server at its canonical origin. Anything
  * that is not a Personal authority answers `routed`, so it never matches a
- * team's canonical row.
+ * canonical row.
  */
 export function personalReachability(authority: unknown): "canonical" | "routed" {
   const envelope = HostDiscoveryEnvelopeSchema.safeParse(authority);

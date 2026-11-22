@@ -1832,9 +1832,6 @@ export class ChannelStore {
             const threadRow = await insertThread({
               accessMode: thread?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
               purpose: "task",
-              teamId: null,
-              channelId: null,
-              threadRootId: null,
               createdByPrincipalId: identity.principalId,
               id: threadId,
               lineageRootThreadId: threadId,

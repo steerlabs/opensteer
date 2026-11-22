@@ -9,10 +9,7 @@ import { useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode } fr
 import { Linking } from "react-native";
 import type { MobileClient } from "../client/mobile-client.js";
 import { navigationRef } from "../navigation-ref.js";
-import { routeSide, type SideId } from "../side-memory.js";
 import { runDeploymentRecovery } from "../screens/deployment-recovery.js";
-import type { MobileTeams } from "../team/mobile-teams.js";
-import { useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
 import { deploymentMark, type DeploymentMark } from "../threads/deployment-identity.js";
 import { ConnectionPillView, type ConnectionPillNotice } from "./connection-pill.js";
 import { useMobileClient, useMobileState } from "./mobile-client-context.js";
@@ -30,22 +27,19 @@ import { gated, subscribeGates } from "./shell-gate.js";
  * nowhere else, and only ask it to recover. Screens never do.
  */
 
-/** One connection the shell can speak for: the open computer, or a team on this phone. */
+/** The connection the shell speaks for: the open computer. */
 export interface ShellSession {
-  /** "tasks" for the open computer, else the team's id: the side its screens are on. */
-  readonly key: SideId;
+  readonly key: "tasks";
   readonly name: string;
   readonly mark: DeploymentMark;
   readonly connection: ClientConnection;
   readonly signIn: () => Promise<void>;
 }
 
-/** The open computer's session, then each team this phone holds a session for. */
+/** The open computer's session, when there is one. */
 export function useShellSessions(): readonly ShellSession[] {
   const client = useMobileClient();
-  const teams = useMobileTeams();
   const { selection } = useMobileState();
-  const teamsSnapshot = useTeamsSnapshot();
   const personal = selection.session?.connection ?? null;
   const row = selection.row;
   return useMemo(() => {
@@ -58,17 +52,8 @@ export function useShellSessions(): readonly ShellSession[] {
         name: row.name,
         signIn: () => signInPersonal(client, row.deploymentId),
       });
-    for (const team of [...teamsSnapshot.teams, ...teamsSnapshot.unlinked])
-      if (team.session !== null && !sessions.some(({ key }) => key === team.teamId))
-        sessions.push({
-          connection: team.session.connection,
-          key: team.teamId,
-          mark: deploymentMark({ deploymentId: team.teamId, name: team.name }),
-          name: team.name,
-          signIn: () => signInTeam(teams, team.teamId),
-        });
     return sessions;
-  }, [client, personal, row, teams, teamsSnapshot]);
+  }, [client, personal, row]);
 }
 
 async function signInPersonal(client: MobileClient, deploymentId: string): Promise<void> {
@@ -79,11 +64,6 @@ async function signInPersonal(client: MobileClient, deploymentId: string): Promi
 
 function navigateTo(route: "AddPersonal"): void {
   if (navigationRef.isReady()) navigationRef.navigate(route);
-}
-
-async function signInTeam(teams: MobileTeams, teamId: string): Promise<void> {
-  await teams.addToPhone(teamId);
-  await teams.select(teamId);
 }
 
 /** What the person can do from the pill or the sheet about one issue. */
@@ -107,33 +87,10 @@ const amberCodes = new Set<ClientIssue["code"]>([
   "access-lost",
 ]);
 
-/** The side the person is looking at, from the focused route: the open computer or a team. */
-function useFocusedSide(): SideId {
-  const subscribe = useCallback((listener: () => void) => {
-    const remove = navigationRef.addListener("state", listener);
-    // The container may not be ready when the pill first renders.
-    const ready = navigationRef.addListener("ready", listener);
-    return () => {
-      remove();
-      ready();
-    };
-  }, []);
-  const read = useCallback(
-    () => (navigationRef.isReady() ? routeSide(navigationRef.getCurrentRoute()) : "tasks"),
-    [],
-  );
-  return useSyncExternalStore(subscribe, read, read);
-}
-
-/**
- * The pill for the session the focused screen belongs to: a team's screens
- * speak for that team, every other screen for the open computer. Other
- * sessions' trouble is listed in the details sheet, never as a second pill.
- */
+/** The pill for the open computer's session. */
 export function ConnectionPill(): ReactNode {
   const sessions = useShellSessions();
-  const side = useFocusedSide();
-  const session = sessions.find(({ key }) => key === side) ?? sessions[0] ?? null;
+  const session = sessions[0] ?? null;
   const isGated = useSyncExternalStore(subscribeGates, gated, gated);
   if (session === null) return null;
   return <SessionPill gated={isGated} key={session.key} session={session} />;

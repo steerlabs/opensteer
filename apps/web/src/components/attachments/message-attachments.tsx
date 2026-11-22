@@ -6,7 +6,7 @@ import { saveFile } from "../file-actions.js";
 import { Icon } from "../icon.js";
 import { attachmentDetail, isInlineImage } from "./attachment-parts.js";
 import { useImageActions } from "../image-actions.js";
-import { isPersonalScope, useReferenceScope } from "../references/reference-scope.js";
+import { useReferenceScope } from "../references/reference-scope.js";
 import { useNearViewport } from "../use-near-viewport.js";
 
 /**
@@ -67,7 +67,7 @@ function ImageAttachment({
         aria-label={`Open ${part.name}`}
         className="message-attachment message-attachment--image"
         onClick={() => {
-          if (isPersonalScope(scope) && attachmentId.success)
+          if (scope && attachmentId.success)
             void scope.navigation.openReference({
               kind: "attachment",
               attachmentId: attachmentId.data,

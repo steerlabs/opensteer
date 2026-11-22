@@ -10,28 +10,7 @@ import {
 } from "./deployment-policy.test-support.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
-const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {
-  "apps/web/src/components/devices/this-device.tsx": {
-    count: 1,
-    reason:
-      "The native membership controller selects device setup from the signed catalog before a Host is attached.",
-  },
-  "apps/web/src/components/places/desktop-entry.tsx": {
-    count: 1,
-    reason:
-      "The native entry chooser selects personal catalog destinations before a Host is attached.",
-  },
-  "apps/web/src/desktop/desktop-app.tsx": {
-    count: 1,
-    reason:
-      "The native app observes membership only for a personal destination from its signed catalog.",
-  },
-  "apps/desktop/src/main.ts": {
-    count: 2,
-    reason:
-      "Desktop main owns device membership and fences ended personal sessions using signed authority.",
-  },
-};
+const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {};
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
   "packages/client/src/computers/devices-screen.ts": {
     counts: { "input.homeKind": 1, "fact.kind": 1 },
@@ -57,27 +36,9 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
       "The app content kind selects server deletion copy and lifecycle controls, not Deployment policy.",
   },
   "apps/mobile/src/markdown/reference-link.tsx": {
-    counts: { "navigation?.context.kind": 2, "navigation.context.kind": 2, "context.kind": 2 },
+    counts: { "navigation.context.kind": 2 },
     reason:
-      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
-  },
-  "apps/web/src/components/composer-editor-document.ts": {
-    counts: { "attrs.kind": 1 },
-    reason: "A composer token's kind says which link form it holds, not a Deployment kind.",
-  },
-  "apps/web/src/components/references/reference-scope.tsx": {
-    counts: { "scope?.context.kind": 1 },
-    reason:
-      "A reference's render scope says whether words sit in personal or team text, not Deployment policy.",
-  },
-  "apps/web/src/references-visual.tsx": {
-    counts: { scenario: 1 },
-    reason: "A visual fixture scenario chooses which captured surface to draw.",
-  },
-  "packages/client/src/references/composer.ts": {
-    counts: { "options?.scope": 1, kind: 1 },
-    reason:
-      "A composer's scope and token kind decide which links become chips, not Deployment policy.",
+      "A reference's render scope says whether its words have a Home to open them in, not Deployment policy.",
   },
   "apps/host/src/runtime/machines.ts": {
     counts: { "runner.device?.form": 1 },
@@ -95,11 +56,10 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: { "machine.kind": 1 },
     reason: "Device presentation kind labels headless hardware, not a Deployment.",
   },
-  "apps/control-plane/src/database/store.ts": {
-    counts: {
-      "team.data.document.deploymentShape.kind": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+  "packages/database/src/migrations.ts": {
+    counts: { kind: 1 },
+    reason:
+      "A team server's database is refused by its stored shape before any migration touches it.",
   },
   "packages/browser-source-wire/src/frozen/personal-access-route.ts": {
     counts: {
@@ -112,97 +72,29 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: {
       "selected.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/desktop/src/connections/deployment-access-service.ts": {
-    counts: {
-      "deployment.kind": 2,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/desktop/src/connections/host-transport.ts": {
-    counts: {
-      "connection.authority.document.deploymentShape.kind": 1,
-    },
-    reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
-  },
-  "apps/desktop/src/supervisor/local-runner-authority.ts": {
-    counts: {
-      "connection.authority.document.deploymentShape.kind": 1,
-    },
-    reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/host/src/browser/saved-logins.ts": {
     counts: {
       "prior.payload.scope": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/host/src/browser/password-sign-in-service.ts": {
     counts: {
       "request.payload.scope": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/host/src/devices/computer-app-approval-service.ts": {
     counts: {
       "request.kind": 3,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
 
-  "apps/host/src/server/host-api-registration.ts": {
-    counts: {
-      "options.kind": 2,
-      kind: 3,
-    },
-    reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
-  },
-  "apps/host/src/team-links/discovery.ts": {
-    counts: {
-      behind: 1,
-      "descriptor.kind": 1,
-      "document.deploymentShape.kind": 1,
-    },
-    reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
-  },
-  "apps/host/src/team-partners/identity.ts": {
-    counts: {
-      "document.deploymentShape.kind": 1,
-      "descriptor.kind": 1,
-    },
-    reason:
-      "Partner links pin the peer's signed identity as a team before any partner frame is accepted.",
-  },
-  "apps/host/src/team-links/service.ts": {
-    counts: {
-      "error?.details?.behind": 2,
-    },
-    reason: "The service validates its durable Personal or team authority before acting.",
-  },
-  "apps/host/src/team/services.ts": {
-    counts: {
-      "options.kind": 1,
-      "durable.deploymentShape.kind": 1,
-    },
-    reason: "The service validates its durable Personal or team authority before acting.",
-  },
-  "apps/mobile/src/navigation-state.ts": {
-    counts: {
-      "outcome.kind": 1,
-    },
-    reason: "Navigation selects a verified team deep-link destination rather than a Personal task.",
-  },
-  "apps/mobile/src/client/mock-mode.ts": {
-    counts: { "input.kind": 1 },
-    reason: "Mock catalog bootstrap methods follow the declared Personal or team identity.",
-  },
   "apps/web/src/main.tsx": {
-    counts: { mockHome: 1, remembered: 3, awaitasked: 1 },
+    counts: { mockHome: 1 },
     reason:
       "The web entry chooses its app from signed discovery and cached kind. The mock Home comparison only selects a local visual fixture.",
   },
@@ -210,13 +102,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     counts: {
       "props.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/mobile/src/team/mobile-teams.ts": {
-    counts: {
-      "verified.discovery.deploymentShape.kind": 1,
-    },
-    reason: "Team-link admission verifies the signed discovery kind before accepting the team.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/mobile/src/thread/integration-connect-sheet.tsx": {
     counts: {
@@ -224,170 +110,92 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
       "card.primary?.kind": 1,
       step: 2,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/components/add-deployment.tsx": {
-    counts: {
-      choice: 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/web/src/components/computers/device-art.tsx": {
     counts: {
       glyph: 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/web/src/components/first-run/setup-page.tsx": {
     counts: {
       "desktopDeployment?.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/components/home/needs-you.tsx": {
-    counts: {
-      "item.where.kind": 2,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/components/onboarding.tsx": {
-    counts: {
-      "config.deployment.kind": 1,
-      kind: 2,
-    },
-    reason:
-      "The sign-in door names and describes a team server or this computer; it grants nothing.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/web/src/components/places/place-menu.tsx": {
     counts: {
       "row.kind": 1,
     },
-    reason:
-      "The computer switcher lists personal Deployments; a team server is the team switch, not a computer.",
+    reason: "The computer switcher reads each row's own kind, not Deployment policy.",
   },
   "apps/web/src/components/settings/copy.ts": {
     counts: {
       "input.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/web/src/components/thread-integration-action.tsx": {
     counts: {
       "card.primary.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "apps/web/src/desktop/desktop-app.tsx": {
     counts: {
       presentation: 1,
       "selected.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/desktop/places.ts": {
-    counts: {
-      "deployment.kind": 3,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "packages/client/src/team/native-team-entry.ts": {
-    counts: {
-      "verified.discovery.deploymentShape.kind": 1,
-    },
-    reason:
-      "An Account identity assertion is exchanged only at a Host whose signed discovery says it is a team.",
-  },
-  "apps/control-plane/src/account/team-identity-grants.ts": {
-    counts: {
-      "verifyHostDiscoveryEnvelope(envelope.data).deploymentShape.kind": 1,
-    },
-    reason:
-      "Account vouches identity only to a team Host; the kind is part of the signed authority it names.",
-  },
-  "apps/control-plane/src/hosted-teams/hosted-team-host.ts": {
-    counts: {
-      "descriptor.data.kind": 1,
-      "document.deploymentShape.kind": 1,
-    },
-    reason: "Hosted setup adopts only a Host whose discovery at the team origin says it is a team.",
-  },
-  "apps/web/src/app.tsx": {
-    counts: {
-      "deployment.kind": 1,
-    },
-    reason:
-      "The team list shows the Account catalog's team Deployments; the kind is Account's record, not a client rule.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/client/src/connections/connection-resolver.ts": {
     counts: {
       "connection.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/client/src/connections/deployment-catalog.ts": {
-    counts: {
-      "deployment.kind": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "packages/client/src/connections/host-transport.ts": {
-    counts: {
-      "options.expectedKind": 1,
-      "this.#expectedKind": 1,
-      deploymentKind: 1,
-    },
+    counts: { "record.kind": 1, shape: 1 },
     reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; only team requests belong to an Account's team runtime.",
-  },
-  "packages/client/src/connections/host-attachment-fence.ts": {
-    counts: {
-      "connection.kind": 1,
-    },
-    reason:
-      "Only a team credential is bound to the Account's team runtime, so only it is fenced by an Account change.",
+      "A saved catalog row or an Account directory row for a team server a previous release kept is left out by its retired kind before either parses.",
   },
   "packages/client/src/integrations/computer-app-approval.ts": {
     counts: {
       "review.request.kind": 1,
       "request.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/client/src/mock/mock-host-client.ts": {
     counts: {
       "request.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/client/src/react/use-thread-server-approvals.ts": {
     counts: {
       "request.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/database/src/deployment-store.ts": {
     counts: {
       "input.deploymentShape.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/database/src/machine-ownership.ts": {
     counts: {
       "deployment.deploymentShape.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "packages/database/src/personal-team-links-store.ts": {
-    counts: {
-      "String(link.authorityEnvelope.updateRequiredBy)": 1,
-    },
-    reason: "The service validates its durable Personal or team authority before acting.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/database/src/private-resource-owner.ts": {
     counts: {
       "owner.deploymentShape.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/database/src/device-inventory-store.ts": {
     counts: { "device?.form": 1 },
@@ -398,78 +206,22 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
       "deployment.deploymentShape.kind": 1,
       "deployment?.deploymentShape.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "packages/deployment-authority/src/authority.ts": {
-    counts: {
-      kind: 5,
-      "parsed.data.kind": 1,
-    },
-    reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; personal and team peers each negotiate their own version window.",
-  },
-  "packages/control-plane-protocol/src/hosted-teams.ts": {
-    counts: {
-      slug: 1,
-    },
-    reason:
-      "Reserved hosted-team addresses include words like team and personal; the check reads an address, not a Deployment kind.",
-  },
-  "packages/harness/src/types.ts": {
-    counts: {
-      "runner.deploymentKind": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "packages/identity/src/identity-service.ts": {
-    counts: {
-      "deployment.deploymentShape.kind": 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "packages/integration-core/src/computer-app-setup.ts": {
     counts: {
       "request.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "packages/protocol/src/deployment-status.ts": {
-    counts: {
-      kind: 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "scripts/bench-mobile-network.ts": {
-    counts: { "values.seed!": 1 },
-    reason: "Benchmark seed labels include team; this is not a Deployment authority decision.",
-  },
-  "scripts/dev.ts": {
-    counts: {
-      kind: 3,
-      deploymentShape: 2,
-      "environment.OPENSTEER_DEPLOYMENT_KIND": 2,
-      "arguments_[0]": 1,
-    },
-    reason:
-      "Configuration admits only the supported deployment kind, `pnpm dev:team` selects it by argument, and the services that can start follow.",
+    reason: "The comparison reads a resource's own kind, not Deployment policy.",
   },
   "scripts/setup-local.ts": {
-    counts: {
-      value: 2,
-    },
+    counts: { value: 1 },
     reason:
       "Configuration admits only the supported deployment kind and selects the services that can start.",
   },
   "scripts/smoke-desktop-release-profile.ts": {
     counts: {
       "entry.kind": 1,
-    },
-    reason:
-      "Configuration admits only the supported deployment kind and selects the services that can start.",
-  },
-  "scripts/verify-team-deployment.mjs": {
-    counts: {
-      "host.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
     },
     reason:
       "Configuration admits only the supported deployment kind and selects the services that can start.",
@@ -482,7 +234,7 @@ const sqlExceptions: Record<
 > = {
   "packages/database/src/baseline-schema.ts": {
     reason:
-      "Fresh schema validates exactly the two supported deployment shapes, and the Account directory lists who signs in: the personal owner or active team members. Services are composed by deploymentPolicy.",
+      "Fresh schema keeps the shapes earlier releases wrote (migrations are expand-only), and the Account directory lists who signs in: the personal owner, or members of a shape no release serves any more.",
     decisions: {
       "baseline/deployments_shape": {
         'deployment_shape in (\'{"kind":"personal"}\'::jsonb, \'{"kind":"team"}\'::jsonb))': 1,
@@ -494,8 +246,7 @@ const sqlExceptions: Record<
     },
   },
   "packages/database/src/migrations.ts": {
-    reason:
-      "The sole lineage is shared by personal and team; the migrator makes no kind decisions.",
+    reason: "The sole lineage carries every Home; the migrator makes no kind decisions.",
     decisions: {},
   },
 };

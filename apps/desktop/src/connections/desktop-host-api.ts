@@ -54,7 +54,6 @@ export function createDesktopHostApi(options: {
   const origin = new URL(options.origin).origin;
   return createHttpHostApiClient({
     baseUrl: new URL(origin),
-    kind: "personal",
     personalVersion: scopedPersonalApiVersion,
     fetch: (input, init) =>
       options.fetch(input, {
@@ -84,7 +83,6 @@ export function createForwardedHostApi(
 ): HostApiClient {
   return createHttpHostApiClient({
     baseUrl: new URL("https://selected-home.invalid"),
-    kind: "personal",
     personalVersion: scopedPersonalApiVersion,
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);

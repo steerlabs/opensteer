@@ -4,7 +4,7 @@ import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
-import { type TaskPurpose, type TeamTaskOrigin } from "@opensteer/core";
+import { type TaskPurpose } from "@opensteer/core";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
@@ -152,7 +152,6 @@ export interface CreateThreadInput {
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly purpose?: TaskPurpose;
-  readonly teamOrigin?: TeamTaskOrigin;
   readonly generateTitle?: true;
   readonly id?: ThreadId;
   readonly idempotencyKey: string;
@@ -178,12 +177,6 @@ export interface ThreadUpdateResult {
  * a value the sending model supplied.
  */
 export type ThreadInputSource =
-  | {
-      readonly kind: "team-member";
-      readonly teamId: import("@opensteer/core").DeploymentId;
-      readonly requestId: import("@opensteer/core").TeamAgentRequestId;
-      readonly resumeRunId?: RunId;
-    }
   | {
       readonly kind: "human";
       readonly clientSessionId?: string;
@@ -236,11 +229,6 @@ export interface EnqueueThreadInputRequest {
   readonly maintenance?: import("@opensteer/core").RunMaintenance;
   readonly maintenanceNowMs?: number;
   readonly freshContext?: boolean;
-  readonly teamRequest?: {
-    readonly id: import("@opensteer/core").TeamAgentRequestId;
-    readonly triggerMessageId: import("@opensteer/core").TeamMessageId;
-    readonly source: import("@opensteer/core").TeamSource;
-  };
   readonly requireUnassigned?: true;
   readonly authority?: ThreadCallerAuthority;
   readonly quotedMessageId?: MessageId;
@@ -498,7 +486,6 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
       : {}),
     title: input.title,
     purpose: input.purpose ?? "task",
-    teamOrigin: input.teamOrigin ?? null,
   };
 }
 async function resolveCreateThreadAccessMode(
@@ -1165,9 +1152,6 @@ export async function createThreadInTransaction(
     modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
     parentThreadId: input.parentThreadId ?? null,
     purpose,
-    teamId: input.teamOrigin?.teamId ?? null,
-    channelId: input.teamOrigin?.channelId ?? null,
-    threadRootId: input.teamOrigin?.threadRootId ?? null,
     status: "idle",
     title: input.title,
     titleSource: input.generateTitle ? "provisional" : "chosen",

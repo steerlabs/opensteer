@@ -72,7 +72,7 @@ it("orders executor delivery so a delayed older intent cannot overtake Off", asy
   try {
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     socket = new WebSocket(`${address.replace("http:", "ws:")}/v1/desktop-supervisor`, {
-      headers: { ...apiVersionHeaders("personal"), authorization: `Bearer ${capability}` },
+      headers: { ...apiVersionHeaders(), authorization: `Bearer ${capability}` },
     });
     await withTimeout(once(socket, "open"), 1000, {
       timeoutError: () => new Error("Executor never opened"),
@@ -140,7 +140,7 @@ it.each(["PersonalRemote stolen-owner-session", `Bearer ${"owner-session".padEnd
     try {
       const address = await app.listen({ host: "127.0.0.1", port: 0 });
       socket = new WebSocket(`${address.replace("http:", "ws:")}/v1/desktop-supervisor`, {
-        headers: { ...apiVersionHeaders("personal"), authorization },
+        headers: { ...apiVersionHeaders(), authorization },
       });
       const closed = withTimeout(once(socket, "close"), 1000, {
         timeoutError: () =>

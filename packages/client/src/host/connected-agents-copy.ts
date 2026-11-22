@@ -63,13 +63,13 @@ export const connectedAgentsCopy = {
   "consent.browser.shareWarning":
     "{agent} can use every site you’re signed in to in {profile}, as you. A new profile starts signed out.",
   "consent.browser.pickerFooter":
-    "{agent} gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
+    "{agent} gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it. A page it works in can replace what is on the clipboard.",
   "consent.browser.device.online": "{device} · Online",
   "consent.browser.device.offline": "{device} · Offline",
   "consent.browser.device.unknown": "Not opened on a device yet",
   "consent.chromeTabs.label": "Tabs you share from Chrome on {device}",
   "consent.chromeTabs.detail":
-    "It can act in a tab only while you share it from Chrome’s toolbar. In that tab it can navigate anywhere and use sites that Chrome is signed in to.",
+    "It can act in a tab only while you share it from Chrome’s toolbar. In that tab it can navigate anywhere, use sites that Chrome is signed in to and read that tab’s own cookies. In this tab it can use what you already allowed the site in Chrome, such as the camera, microphone, location and notifications.",
   "consent.chromeTabs.repair": "To share tabs with a connected agent, pair Chrome again.",
   "consent.chromeTabs.repairOn": "To share tabs from Chrome on {device}, pair it again.",
   "consent.chromeTabs.repairOnMultiple":
@@ -79,7 +79,7 @@ export const connectedAgentsCopy = {
   "consent.apps.none": "None",
   "consent.apps.phoneThrough": "through {device}",
   "consent.apps.footer":
-    "Only apps you’ve already approved on a device are listed. {agent} can see and control each one you turn on.",
+    "Only apps you’ve already approved on a device are listed. {agent} sees and controls each one you turn on as you would, so it can paste what’s on that device’s clipboard.",
   "consent.plugins.title": "Plugins and data",
   "consent.plugins.none": "None",
   "consent.plugins.off": "Off",

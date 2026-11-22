@@ -1082,7 +1082,6 @@ export class DeploymentAccessService {
         ({ deploymentId }) => deploymentId === deployment.id,
       );
       if (unavailable) return placeStatus.unavailable(unavailable.reason, name);
-      if (deployment.kind !== "personal") return placeStatus.ready();
       if (!deployment.hasAccountConnectRoute) return placeStatus.remoteAccessOff(name);
       const lease = deployment.hasVerifiedAccountRoute ? deployment.accountLivenessExpiresAt : null;
       return lease !== null && Date.parse(lease) > now
@@ -1092,9 +1091,7 @@ export class DeploymentAccessService {
     if (deployment.key === null) {
       // Known only by the loopback origin of the computer that runs it, which
       // this app is not: the repair lives over there, so the sentence says so.
-      return deployment.kind === "personal"
-        ? placeStatus.remoteAccessOff(name)
-        : placeStatus.unavailable("host-unavailable", name);
+      return placeStatus.remoteAccessOff(name);
     }
     const probe = this.#probes.get(deployment.id);
     if (!probe || this.#now() - probe.at >= checkedAnswerLifetimeMilliseconds) {

@@ -14,8 +14,6 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   try {
     config = parseHostConfig(environment);
   } finally {
-    delete environment.OPENSTEER_ACCOUNT_BUNDLE_FD;
-    delete environment.OPENSTEER_ACCOUNT_BUNDLE_PATH;
     delete environment.OPENSTEER_AUTH_SECRET;
     delete environment.OPENSTEER_AUTH_SECRET_FILE;
     delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN;

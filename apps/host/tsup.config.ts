@@ -24,7 +24,6 @@ export default defineConfig((options) => {
       main: hostProcessEntries.main,
       ...hostProcessEntries.workers,
       ...hostProcessEntries.processes,
-      "stage-managed-secrets-main": "src/stage-managed-secrets-main.ts",
     },
     external: [
       // Native image decoder selects platform binaries at runtime.

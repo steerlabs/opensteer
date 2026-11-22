@@ -15,7 +15,7 @@ export interface ComposerToken {
   readonly source: string;
   readonly label: string;
   readonly href: string;
-  readonly kind: "personal" | "team" | "file";
+  readonly kind: "personal" | "file";
 }
 export interface ComposerSnapshot {
   readonly text: string;
@@ -46,7 +46,6 @@ export function collectComposerTokens(
   options?: {
     readonly commitTrailing?: boolean;
     readonly previous?: readonly ComposerToken[];
-    readonly scope?: "personal" | "team";
   },
 ): readonly ComposerToken[] {
   const tokens: ComposerToken[] = [];
@@ -66,14 +65,8 @@ export function collectComposerTokens(
       const source = text.slice(start, end);
       const classified = classifyHref(node.url);
       const kind =
-        classified.kind === "reference"
-          ? "personal"
-          : classified.kind === "team-page"
-            ? "team"
-            : classified.kind === "file"
-              ? "file"
-              : null;
-      if (kind === null || (options?.scope === "team" && kind !== "team")) return false;
+        classified.kind === "reference" ? "personal" : classified.kind === "file" ? "file" : null;
+      if (kind === null) return false;
       if (
         end === text.length &&
         !options?.commitTrailing &&

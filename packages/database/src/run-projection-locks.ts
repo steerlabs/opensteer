@@ -34,7 +34,7 @@ function projectionInputs(transaction: Transaction<DatabaseSchema>, input: Proje
     .$if(!input.forRemoval, (q) =>
       q.where((eb) =>
         eb.or([
-          eb("state", "in", ["awaiting-approval", "pending", "claimed", "unknown"]),
+          eb("state", "in", ["pending", "claimed", "unknown"]),
           eb("editLeaseId", "is not", null),
           ...(input.inputMessageIds?.length
             ? [eb("messageId", "in", [...input.inputMessageIds])]
@@ -234,15 +234,6 @@ export async function lockRunProjectionRows(
     .orderBy("id", "asc")
     // FOR UPDATE: Removing an ask task deletes its messages with the thread.
     .$call((query) => (input.forRemoval ? query.forUpdate() : query.forNoKeyUpdate()))
-    .execute();
-  await transaction
-    .selectFrom("personalTeamRequests")
-    .select("requestId")
-    .where("localTaskId", "in", [...input.threadIds])
-    .where("localInputId", "in", projectionInputs(transaction, input).select("messageId"))
-    .orderBy("teamDeploymentId")
-    .orderBy("requestId")
-    .forNoKeyUpdate()
     .execute();
 }
 

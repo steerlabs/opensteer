@@ -12,11 +12,6 @@ export interface ComputerFacts {
   readonly homeName: string | null;
   readonly needsYou: number;
   readonly unread: boolean;
-  readonly teams: readonly {
-    readonly id: string;
-    readonly name: string;
-    readonly mentions: number | null;
-  }[];
 }
 
 export async function readComputerFacts(
@@ -32,47 +27,12 @@ export async function readComputerFacts(
       DeploymentIdSchema.parse(computer.id),
       fetch,
     ),
-    kind: "personal",
     onAuthenticationRequired: () => undefined,
   });
-  const [attention, linked] = await Promise.all([
-    rpc["attention.get"](includeDeviceAccessRequests).then(unwrapRpcResult),
-    rpc["teams.links.list"]({}).then(unwrapRpcResult),
-  ]);
-  const teams = await Promise.all(
-    linked.links
-      .filter((link) => link.state !== "revoked" && link.state !== "leaving")
-      .map(async (link) => {
-        const team = createHttpHostApiClient({
-          baseUrl: new URL(link.origin),
-          fetch: createDesktopHostFetch(
-            bridge,
-            link.origin,
-            DeploymentIdSchema.parse(link.teamId),
-            fetch,
-          ),
-          kind: "team",
-          onAuthenticationRequired: () => undefined,
-        });
-        try {
-          const bootstrap = await team["team.bootstrap.get"]({}).then(unwrapRpcResult);
-          return {
-            id: link.teamId,
-            name: link.teamName,
-            mentions:
-              bootstrap.member.userId === link.ownerUserId
-                ? bootstrap.sidebar.totalMentionCount
-                : null,
-          };
-        } catch {
-          return { id: link.teamId, name: link.teamName, mentions: null };
-        }
-      }),
-  );
+  const attention = await rpc["attention.get"](includeDeviceAccessRequests).then(unwrapRpcResult);
   return {
     homeName: attention.homeName ?? null,
     needsYou: attention.needsYou,
-    teams,
     unread: attention.unread,
   };
 }

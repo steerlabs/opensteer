@@ -1,7 +1,6 @@
 import {
   createId,
   DeviceIdSchema,
-  deploymentPolicy,
   OpensteerError,
   type AuthSessionId,
   type DeviceId,
@@ -67,7 +66,6 @@ async function requirePerson(transaction: Transaction<DatabaseSchema>, input: Ip
     .where("authSessions.id", "=", input.sessionId)
     .executeTakeFirst();
   if (
-    !deploymentPolicy(deployment.deploymentShape).services.personal ||
     !session ||
     session.userId !== input.userId ||
     session.disabledAt !== null ||

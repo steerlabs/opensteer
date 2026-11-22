@@ -282,8 +282,7 @@ routing, and Watch never receives them ([Passwords](passwords.md#filling-for-peo
 
 Profile listing, opening, CDP and tab reach follow the Run resource authority
 rule; driving needs `read-write`. Only people create
-profiles; an agent asks with a browser-access Request. Private profile access is decided for the personal owner and current caller ceiling, never
-by team membership. Consent never limits whether the owner may watch their own profile.
+profiles; an agent asks with a browser-access Request. Private profile access is decided for the personal owner and current caller ceiling. Consent never limits whether the owner may watch their own profile.
 Guest state cannot be promoted, so choose the profile before signing in.
 
 Deletion revokes grants and schedules erasure on the owning computer (`pending-computer` while it is

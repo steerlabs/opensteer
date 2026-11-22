@@ -1,14 +1,6 @@
 import { DeviceIdSchema } from "./devices.js";
 import { CompactionReturnHintSchema } from "./idle-compaction.js";
 import { RunMaintenanceSchema, RunMaintenanceViewSchema } from "./idle-compaction.js";
-import {
-  TeamTaskOriginSchema,
-  TeamSourceSchema,
-  TeamAudienceViewSchema,
-  TeamRunDeliverySchema,
-  TeamRunDeliveryViewSchema,
-} from "./team.js";
-import { TeamAgentRequestIdSchema, TeamChannelIdSchema, TeamMessageIdSchema } from "./ids.js";
 import { z } from "zod";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
 import { IdentityEmailSchema } from "./identity.js";
@@ -92,7 +84,8 @@ export type DeploymentLifecycle = z.infer<typeof DeploymentLifecycleSchema>;
 export const RuntimeModeSchema = z.enum(["development", "production"]);
 export type RuntimeMode = z.infer<typeof RuntimeModeSchema>;
 
-export const DeploymentKindSchema = z.enum(["personal", "team"]);
+/** Every Home is personal; the signed documents keep the word. */
+export const DeploymentKindSchema = z.enum(["personal"]);
 export type DeploymentKind = z.infer<typeof DeploymentKindSchema>;
 export const DeploymentShapeSchema = z.strictObject({ kind: DeploymentKindSchema });
 export const DeploymentShapeViewSchema = z.object(DeploymentShapeSchema.shape);
@@ -194,6 +187,10 @@ export const RunnerCapabilitySchema = z.enum([
   // Accepts `host.shell.probe-full-disk-access`; an older Runner's strict
   // frame parser drops its connection on an unknown Host frame.
   "full-disk-access-probe-v1",
+  // Parses what a connected agent's session adds to an integrations frame: `alwaysAsk` on
+  // `login.authorize` and `noLaunch` on computer-use windows and bind. An older Runner's
+  // strict schemas refuse those frames, so the Home never sends them to one.
+  "agent-session-guards-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 
@@ -368,7 +365,6 @@ export const ThreadSchema = z.object({
   parentThreadId: ThreadIdSchema.nullable(),
   pendingRequests: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   purpose: TaskPurposeSchema,
-  teamOrigin: TeamTaskOriginSchema.nullable(),
   // Older durable Thread events did not record which native session was selected.
   providerSessionId: ProviderSessionIdSchema.nullable().default(null),
   status: ThreadStatusSchema,
@@ -382,7 +378,6 @@ export const ThreadSchema = z.object({
 });
 export const ThreadViewSchema = z.object({
   ...ThreadSchema.shape,
-  teamOrigin: z.object(TeamTaskOriginSchema.shape).nullable(),
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
   doneReason: ThreadDoneReasonSchema.nullable().default(null).catch(null),
@@ -558,13 +553,6 @@ const messageAuthorVariants = [
     kind: z.literal("connection"),
     connectionId: z.string().min(1).max(255),
   }),
-  z.strictObject({
-    kind: z.literal("team-member"),
-    actor: z.enum(["human", "agent"]),
-    teamId: DeploymentIdSchema,
-    teamUserId: UserIdSchema,
-    displayName: z.string().trim().min(1).max(160),
-  }),
 ] as const;
 export const MessageAuthorSchema = z.discriminatedUnion("kind", messageAuthorVariants);
 export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
@@ -574,7 +562,6 @@ export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
   z.object(messageAuthorVariants[3].shape),
   z.object(messageAuthorVariants[4].shape),
   z.object(messageAuthorVariants[5].shape),
-  z.object(messageAuthorVariants[6].shape),
 ]);
 export type MessageAuthor = z.infer<typeof MessageAuthorSchema>;
 
@@ -607,25 +594,11 @@ const replyTargetShape = {
   conversationId: z.string().trim().min(1).max(255),
   kind: z.literal("channel"),
 } as const;
-const teamReplyTargetShape = {
-  kind: z.literal("team-thread"),
-  teamId: DeploymentIdSchema,
-  channelId: TeamChannelIdSchema,
-  threadRootId: TeamMessageIdSchema,
-  requestId: TeamAgentRequestIdSchema,
-} as const;
-export const ReplyTargetSchema = z.discriminatedUnion("kind", [
-  z.strictObject(replyTargetShape),
-  z.strictObject(teamReplyTargetShape),
-]);
-export const ReplyTargetViewSchema = z.discriminatedUnion("kind", [
-  z.object(replyTargetShape),
-  z.object(teamReplyTargetShape),
-]);
+export const ReplyTargetSchema = z.discriminatedUnion("kind", [z.strictObject(replyTargetShape)]);
+export const ReplyTargetViewSchema = z.discriminatedUnion("kind", [z.object(replyTargetShape)]);
 export type ReplyTarget = z.infer<typeof ReplyTargetSchema>;
 
 const messageShape = {
-  ownerEdited: z.literal(true).optional(),
   author: MessageAuthorSchema,
   content: MessageContentSchema,
   createdAt: IsoDateTimeSchema,
@@ -678,21 +651,13 @@ export const MessageViewSchema = z
 export const MessageEditSchema = z.strictObject({
   revision: z.number().int().positive(),
   editedAt: IsoDateTimeSchema,
-  /** The owner edited a teammate's ask, so its words are no longer only the teammate's. */
-  ownerEdited: z.literal(true).optional(),
 });
 export const MessageEditViewSchema = z.object(MessageEditSchema.shape);
 export type MessageEdit = z.infer<typeof MessageEditSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageView = z.infer<typeof MessageViewSchema>;
 
-/**
- * `awaiting-approval` is a teammate's ask waiting for its owner's decision. It
- * sits in the task but not in line: no Run can take it until approval makes it
- * `pending` at the back of the queue.
- */
 export const ThreadInputStateSchema = z.enum([
-  "awaiting-approval",
   "pending",
   "claimed",
   "delivered",
@@ -710,8 +675,6 @@ const threadInputShape = {
   deliveredAt: IsoDateTimeSchema.nullable(),
   messageId: MessageIdSchema,
   policy: ThreadInputPolicySchema,
-  teamRequestId: TeamAgentRequestIdSchema.nullable(),
-  teamSource: TeamSourceSchema.nullable(),
   replyTarget: ReplyTargetSchema.nullable(),
   runId: RunIdSchema.nullable(),
   state: ThreadInputStateSchema,
@@ -721,7 +684,6 @@ const threadInputShape = {
 export const ThreadInputSchema = z.strictObject(threadInputShape);
 export const ThreadInputViewSchema = z.object({
   ...threadInputShape,
-  teamSource: z.object({ ...TeamSourceSchema.shape, audience: TeamAudienceViewSchema }).nullable(),
   replyTarget: ReplyTargetViewSchema.nullable(),
 });
 export type ThreadInput = z.infer<typeof ThreadInputSchema>;
@@ -746,8 +708,7 @@ export const threadInputEditLeaseMs = 2 * 60_000;
 
 /**
  * The messages waiting behind a Thread's current work: queued inputs that no
- * Run has picked up yet, in the order the next Run takes them, followed by
- * teammates' asks awaiting the owner's decision. A message that already seeds
+ * Run has picked up yet, in the order the next Run takes them. A message that already seeds
  * a Run, or that a promotion has handed to one, belongs to the transcript, not
  * here. Every action acts on the same durable message; the Host says per item
  * which it will accept from the reader.
@@ -892,7 +853,6 @@ export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 const runShape = {
   maintenance: RunMaintenanceSchema.nullable().optional(),
-  delivery: TeamRunDeliverySchema.nullable().default(null),
   accessMode: ThreadAccessModeSchema,
   activationInputId: MessageIdSchema,
   assignmentId: AssignmentIdSchema.nullable(),
@@ -918,7 +878,6 @@ export const RunSchema = z.strictObject(runShape);
 export const RunViewSchema = z.object({
   ...runShape,
   maintenance: RunMaintenanceViewSchema.nullable().optional(),
-  delivery: TeamRunDeliveryViewSchema.nullable().default(null),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
   usage: RunUsageViewSchema.optional(),

@@ -7,6 +7,10 @@ export const journeySteps: Record<string, string> = {
   captureStates: "Screenshots of hidden pages, dialogs, races and closing",
   focus: "Agent CDP preserves another app's focus",
   clipboard: "Own-agent CDP allows page paste while menu chords stay out of the Mac app",
+  clipboardConnected:
+    "A connected agent's paste, copy, cut and permission grants never reach the Mac's clipboard or devices",
+  clipboardPage:
+    "No page an agent works in reads the Mac's clipboard; execCommand('copy') still writes it",
   editing: "Person AppKit editing chords",
   find: "Find and Escape",
   fullscreen: "Contained HTML fullscreen and Escape",

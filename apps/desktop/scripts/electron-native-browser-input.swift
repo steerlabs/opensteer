@@ -77,6 +77,8 @@ if captureInventory {
     exit(0)
 }
 if mode == "windows" { emit(["pid": pid, "windows": windows]); exit(0) }
+// Whether anything wrote the pasteboard, without reading what it holds.
+if mode == "clipboard-count" { emit(["changeCount": NSPasteboard.general.changeCount]); exit(0) }
 if mode == "clipboard-save" || mode == "clipboard-restore" {
     guard args.count == 4 else { exit(2) }
     let file = URL(fileURLWithPath: args[3])

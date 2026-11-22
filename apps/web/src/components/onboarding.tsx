@@ -283,26 +283,17 @@ export function HostAccessOnboarding({
 
 /**
  * A Door is titled with the place's name. A place nobody has named yet still
- * has an honest identity: its kind, or for a team server the hostname the
- * visitor can see in their address bar.
+ * has an honest identity: its kind.
  */
 function doorName(config: IdentityConfig): string {
   if (config.deployment.name) return config.deployment.name;
-  if (config.deployment.kind === "team") {
-    return originHostname(config.publicOrigin) ?? "Opensteer";
-  }
   return deploymentKindLabel(config.deployment.kind);
 }
 
 /** One muted line saying what and where this place is. */
 function doorContext(config: IdentityConfig, active: "claim" | "sign-in"): string {
-  const kind = config.deployment.kind;
-  if (active === "claim")
-    return kind === "personal" ? "Set up Opensteer on this computer." : "Set up this team server.";
-  if (kind === "personal") {
-    return reachedThroughRemoteRoute(config) ? "Your computer · opened remotely" : "Your computer";
-  }
-  return "Team server";
+  if (active === "claim") return "Set up Opensteer on this computer.";
+  return reachedThroughRemoteRoute(config) ? "Your computer · opened remotely" : "Your computer";
 }
 
 /**

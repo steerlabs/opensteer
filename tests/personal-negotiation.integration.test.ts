@@ -66,7 +66,7 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
       });
     // Admitted: refused only for the payload, never for the version.
     for (const headers of [
-      apiVersionHeaders("personal"),
+      apiVersionHeaders(),
       { [hostApiVersionHeader]: String(hostApiVersion) },
       {
         [hostApiVersionHeader]: String(minimumHostApiVersion),
@@ -163,13 +163,12 @@ it("serves every Personal caller whose window overlaps, and refuses the rest bef
       const retired = await runtime.host.app.inject({
         method: "GET",
         url,
-        headers: apiVersionHeaders("personal"),
+        headers: apiVersionHeaders(),
       });
       expect(retired.statusCode, url).toBe(404);
     }
     const realtime = setApiVersionQuery(
       new URL("/v1/realtime", runtime.hostOrigin.origin.replace(/^http/u, "ws")),
-      "personal",
     );
     realtime.searchParams.set(apiCurrentQueryParameter, String(hostApiVersion + 3));
     socket = new WebSocket(realtime, {

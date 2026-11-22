@@ -335,7 +335,7 @@ describe("agent consent on the phone", () => {
       menu: true,
     });
     expect(section("profiles", sheetSections()).footer?.text).toBe(
-      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it.",
+      "This connected agent gets full control of each profile you pick, including every site signed in there. It can’t open your saved passwords or cards. When it needs one, it asks you and Opensteer fills it in; once filled, the page and the agent can read it. A page it works in can replace what is on the clipboard.",
     );
     await press(row("profiles", shopping, sheetSections()));
     expect(detail(row("resources", "browser"))).toBe(

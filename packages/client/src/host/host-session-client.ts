@@ -17,7 +17,7 @@ import { nameConnectionFromHost } from "./host-connection.js";
 import type { TranscriptItem } from "@opensteer/protocol/transcript";
 import { MessageIdSchema, utf8ByteLength } from "@opensteer/core";
 import type { PersonalStreamCache } from "./personal-stream-cache.js";
-import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
+import { needsYouEntryKey } from "./needs-you.js";
 import { withThreadState } from "./optimistic-command-patches.js";
 import { ScopedThreadReader, TranscriptBodies, transcriptBodyKey } from "./scoped-thread-reader.js";
 import { nodeTranscriptCard, transcriptCard } from "./transcript-item-view.js";
@@ -73,10 +73,8 @@ import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
-  DeploymentIdSchema,
   ModelSelectionSchema,
   ExecutionNodeIdSchema,
-  TeamAgentRequestIdSchema,
   RequestIdSchema,
   type QuietTaskDays,
   type PersonName,
@@ -133,7 +131,6 @@ import type {
   TaskEntry,
   TaskListState,
   ThreadSummary,
-  TeamAskDecision,
   WaitingMessageEditor,
 } from "./client.js";
 import {
@@ -1160,10 +1157,6 @@ export class HttpHostClient {
         result.asOfSequence,
       );
       this.#update({ ...this.#snapshot, threads: upsertThread(this.#snapshot.threads, thread) });
-    }
-    if (result.type === "teams.ask.decide" && command.type === result.type) {
-      const needsYou = settleTeamAsk(this.#snapshot.needsYou, command.teamId, command.requestId);
-      if (needsYou !== this.#snapshot.needsYou) this.#update({ ...this.#snapshot, needsYou });
     }
     if (result.type === "execution.preferences.remember")
       this.#update({ ...this.#snapshot, executionPreferences: result.preferences });
@@ -3349,16 +3342,6 @@ export class HttpHostClient {
     );
   }
 
-  async decideTeamAsk(input: TeamAskDecision): Promise<void> {
-    await this.dispatch({
-      decision: input.decision,
-      requestId: TeamAgentRequestIdSchema.parse(input.requestId),
-      teamId: DeploymentIdSchema.parse(input.teamId),
-      type: "teams.ask.decide",
-      ...(input.decision === "approve" ? { expectedRevision: input.expectedRevision } : {}),
-    });
-  }
-
   readonly #waitingMessageEditorPort: WaitingMessageEditorPort = {
     dispatch: (command) => this.dispatch(command),
     leases: this.#editLeases,
@@ -5056,7 +5039,6 @@ function compactThread(
     modelLabel: "",
     runnerLabel: "",
     parentThreadId: null,
-    teamOrigin: null,
     icon: null,
     color: null,
   };
@@ -5098,7 +5080,6 @@ function toThreadSummary(
     color: thread.color ?? null,
     unread: false,
     updatedAt: thread.updatedAt,
-    teamOrigin: thread.teamOrigin,
   };
 }
 

@@ -20,7 +20,7 @@ import type { PlaceView } from "./personal-state-schema.js";
 import { authorizedDetail, authorizedSyncState } from "./personal-sync-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
-import { executionNodeFromRow, messageFromRow } from "./thread-row-mappers.js";
+import { executionNodeFromRow, messagesFromRows } from "./thread-row-mappers.js";
 
 type Database = Kysely<DatabaseSchema>;
 type Tx = Transaction<DatabaseSchema>;
@@ -236,7 +236,7 @@ async function activityItems(
         .where(sql<boolean>`published`)
         .execute()
     : [];
-  const byId = new Map(messages.map((row) => [row.id, messageFromRow(row)]));
+  const byId = new Map(messagesFromRows(messages).map((message) => [message.id, message]));
   return rows.flatMap<AgentThreadActivityItem>((row) => {
     if (row.position === null) return [];
     const base = {

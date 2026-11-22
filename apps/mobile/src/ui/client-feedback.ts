@@ -134,8 +134,8 @@ export function settingsFooter(line: ActionLineValue | null): NativeSettingsFoot
 }
 
 /**
- * Known before anything is sent: this session can't reach its computer or
- * team right now, so `done` ("opened") won't happen. Null when it can.
+ * Known before anything is sent: this session can't reach its Home right
+ * now, so `done` ("opened") won't happen. Null when it can.
  */
 export function unreadyIssue(session: ClientSession, done: string): ClientIssue | null {
   const state = session.connection.getSnapshot();

@@ -1,5 +1,4 @@
 import { realtimeIdleProbeDeadlineMs, realtimeIdleProbeMs } from "@opensteer/client/host";
-import { deploymentPolicy } from "@opensteer/core";
 import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -224,12 +223,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // A Mac removed from the Opensteer on screen shows that before anything
   // signs in again, whichever arrived first: the session ending or the 4010.
   const [membership, setMembership] = useState<DesktopLocalExecutionStatus | null>(null);
-  const membershipDeploymentId =
-    selected &&
-    deploymentPolicy({ kind: selected.kind }).services.personal &&
-    !selected.onThisComputer
-      ? selected.id
-      : null;
+  const membershipDeploymentId = selected && !selected.onThisComputer ? selected.id : null;
   useEffect(() => {
     setMembership(null);
     if (!membershipDeploymentId) return;

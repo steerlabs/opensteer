@@ -31,9 +31,6 @@ const editWords = {
 /** One waiting message open in place on this phone. */
 export interface WaitingEdit {
   readonly messageId: string;
-  readonly kind: WaitingInput["kind"];
-  /** Whose ask it is, named over the words; null for the person's own message. */
-  readonly asker: string | null;
   /**
    * The words, bound to the version they were written against and kept true
    * to the version the Host reports: untouched words follow a newer one,
@@ -264,7 +261,6 @@ export function useWaitingEdit(
         return;
       close();
       setKept({
-        asker: item.kind === "ask" ? item.asker : null,
         // The preview shows while the full body is read; it cannot be edited or saved.
         draft: openWaitingDraft({
           content: [{ type: "text", text: item.entry.body }, ...(item.entry.attachments ?? [])],
@@ -272,7 +268,6 @@ export function useWaitingEdit(
         }),
         failure: null,
         gone: false,
-        kind: item.kind,
         messageId: item.messageId,
         phase: activeRef.current ? "opening" : "away",
       });

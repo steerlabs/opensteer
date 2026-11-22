@@ -34,7 +34,6 @@ const keys = testHostAuthorityKeys();
 
 const personalCanonicalOrigin = "http://127.0.0.1:4173";
 const personalRouteOrigin = "https://route.example.com";
-const serverCanonicalOrigin = "https://host.example.com";
 const homeCanonicalOrigin = "https://home.example.com";
 const verifiedAt = "2026-09-01T00:00:00.000Z";
 
@@ -70,18 +69,10 @@ export function testDeploymentConnection(input: {
   readonly route?: { readonly generation?: number; readonly kind?: "connect" | "private" };
   readonly source?: DeploymentConnection["source"];
 }): DeploymentConnection {
-  // A phone attaches to a personal computer; a team is the other kind of row.
-  const kind = input.home === true ? "personal" : (input.kind ?? "personal");
-  const personal = kind === "personal";
+  const kind = "personal";
   const document = testDiscoveryDocument({
-    canonicalOrigin:
-      input.home === true
-        ? homeCanonicalOrigin
-        : personal
-          ? personalCanonicalOrigin
-          : serverCanonicalOrigin,
+    canonicalOrigin: input.home === true ? homeCanonicalOrigin : personalCanonicalOrigin,
     deploymentId: input.deploymentId ?? "dep_0192f4a1-1111-4000-8000-000000000001",
-    personal,
   });
   const authority = signTestDiscoveryEnvelope(document, keys);
   const timestamps = { createdAt: verifiedAt, lastUsedAt: null, updatedAt: verifiedAt };
@@ -90,7 +81,7 @@ export function testDeploymentConnection(input: {
     accountAccess: null,
     authority,
     kind,
-    name: input.name ?? (personal ? "Alex's Mac mini" : "host.example.com"),
+    name: input.name ?? "Alex's Mac mini",
     source: input.source ?? { kind: "manual" },
   };
 
@@ -100,16 +91,6 @@ export function testDeploymentConnection(input: {
       bootstrapMethods: ["password"],
       endpoints: [{ kind: "canonical", origin: homeCanonicalOrigin, verifiedAt }],
       name: input.name ?? "home.example.com",
-      preferredEndpointOrigin: null,
-      reachability: "canonical",
-    });
-  }
-
-  if (!personal) {
-    return DeploymentConnectionSchema.parse({
-      ...common,
-      bootstrapMethods: ["oidc"],
-      endpoints: [{ kind: "canonical", origin: serverCanonicalOrigin, verifiedAt }],
       preferredEndpointOrigin: null,
       reachability: "canonical",
     });
@@ -157,12 +138,11 @@ export function testDeploymentConnection(input: {
 function testDiscoveryDocument(input: {
   readonly canonicalOrigin: string;
   readonly deploymentId: string;
-  readonly personal: boolean;
 }): HostDiscoveryDocument {
   return HostDiscoveryDocumentSchema.parse({
     canonicalOrigin: input.canonicalOrigin,
     deploymentId: DeploymentIdSchema.parse(input.deploymentId),
-    deploymentShape: { kind: input.personal ? "personal" : "team" },
+    deploymentShape: { kind: "personal" },
     hostInstanceId: HostInstanceIdSchema.parse("hst_0192f4a1-2222-4000-8000-000000000002"),
     hostKey: { algorithm: "Ed25519" },
   });

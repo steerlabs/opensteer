@@ -1184,6 +1184,243 @@ it("knows a page script that ran during a profile and was collected before it st
   }
 });
 
+/**
+ * A page whose profiler and private inspection sessions answer as Chromium
+ * does: each attach is a new session, a session with Debugger enabled hears
+ * every script parsed from then on, and a stop with no profile running fails.
+ */
+async function profiledPage(id: string) {
+  const hub = await hubPage(id);
+  const debug = hub.contents.debugger;
+  const answer = debug.sendCommand.getMockImplementation()!;
+  const platformWorld = {
+    context: { ...world(30).context, id: 30, uniqueId: "world-30", name: "opensteer-editing" },
+  };
+  const state = {
+    attached: [] as string[],
+    detached: [] as string[],
+    watching: new Set<string>(),
+    alive: new Map<string, number>([["17", 17]]),
+    parsedDuringProfile: [] as [string, number][],
+    stopped: null as unknown,
+    profiling: false,
+    attachGate: null as Promise<void> | null,
+  };
+  debug.sendCommand.mockImplementation(async (method, parameters, sessionId) => {
+    if (method === "Runtime.getIsolateId") return { id: "page-isolate" };
+    if (method === "Target.attachToTarget") {
+      const session = `inventory-${state.attached.length + 1}`;
+      state.attached.push(session);
+      await state.attachGate;
+      return { sessionId: session };
+    }
+    if (method === "Target.detachFromTarget") {
+      const session = String(parameters?.sessionId);
+      if (session.startsWith("inventory-")) {
+        state.detached.push(session);
+        state.watching.delete(session);
+      }
+      return {};
+    }
+    if (method === "Profiler.start") {
+      state.profiling = true;
+      // The page compiles, runs and drops scripts while it is profiled.
+      for (const [scriptId, executionContextId] of state.parsedDuringProfile)
+        for (const session of state.watching)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, session);
+      return {};
+    }
+    if (method === "Profiler.stop") {
+      if (!state.profiling) throw new Error("No recording profiles found");
+      state.profiling = false;
+      return state.stopped;
+    }
+    if (sessionId?.startsWith("inventory-")) {
+      if (method === "Runtime.enable") {
+        hub.deliver("Runtime.executionContextCreated", world(17), sessionId);
+        hub.deliver("Runtime.executionContextCreated", platformWorld, sessionId);
+      }
+      if (method === "Debugger.enable") {
+        state.watching.add(sessionId);
+        for (const [scriptId, executionContextId] of state.alive)
+          hub.deliver("Debugger.scriptParsed", { scriptId, executionContextId }, sessionId);
+      }
+      return {};
+    }
+    return answer(method, parameters);
+  });
+  const profile = (...ids: string[]) => ({
+    profile: {
+      nodes: ids.map((scriptId, index) => ({
+        id: index + 1,
+        callFrame: {
+          scriptId,
+          functionName: `work${scriptId}`,
+          url: "https://page.test/work.js",
+          lineNumber: 4,
+          columnNumber: 2,
+        },
+      })),
+    },
+  });
+  /** Every private session ever attached has been let go. */
+  const settled = () =>
+    vi.waitFor(() => {
+      expect(state.watching).toEqual(new Set());
+      expect([...state.detached].sort()).toEqual([...state.attached].sort());
+    });
+  return { hub, state, profile, settled };
+}
+
+for (const leaving of ["release", "Profiler.disable"] as const)
+  it(`lets go of a profile inventory whose channel left by ${leaving} while it opened`, async () => {
+    const { hub, state, profile, settled } = await profiledPage(
+      leaving === "release" ? "93" : "94",
+    );
+    const keep = await hub.page.agentCdp();
+    try {
+      const agent = await hub.page.agentCdp();
+      await agent.send("Profiler.enable");
+      const opened = Promise.withResolvers<void>();
+      state.attachGate = opened.promise;
+      const starting = agent.send("Profiler.start").catch((error: unknown) => error);
+      await vi.waitFor(() => expect(state.attached).toHaveLength(1));
+      // A disable follows the start it was sent behind, so it settles after the attach.
+      const left = leaving === "release" ? agent.close() : agent.send("Profiler.disable");
+      if (leaving === "release") await left;
+      state.attachGate = null;
+      opened.resolve();
+      await starting;
+      await left;
+      // A channel that has gone never starts a profile.
+      if (leaving === "release") expect(hub.sent("Profiler.start")).toHaveLength(0);
+      await settled();
+      // The next profile still gets its own inventory.
+      state.profiling = false;
+      const next = await hub.page.agentCdp();
+      await next.send("Profiler.enable");
+      state.parsedDuringProfile = [["23", 17]];
+      state.stopped = profile("17", "23");
+      await next.send("Profiler.start");
+      await expect(next.send("Profiler.stop")).resolves.toEqual(state.stopped);
+      await settled();
+    } finally {
+      await keep.close();
+      await hub.browser.close();
+    }
+  });
+
+it("lets go of a profile inventory when the page navigates, and judges the stop as before", async () => {
+  const { hub, state, profile, settled } = await profiledPage("95");
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    state.parsedDuringProfile = [["23", 17]];
+    await agent.send("Profiler.start");
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    hub.deliver("Runtime.executionContextsCleared", {});
+    await vi.waitFor(() => expect(state.detached).toEqual(["inventory-1"]));
+    // The scripts alive at stop are read on a second session, as before.
+    state.stopped = profile("17");
+    await expect(agent.send("Profiler.stop")).resolves.toEqual(state.stopped);
+    expect(state.attached).toEqual(["inventory-1", "inventory-2"]);
+    await settled();
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("never reads a profile inventory still opening for a stop sent right behind its start", async () => {
+  const { hub, state, profile, settled } = await profiledPage("96");
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    const opened = Promise.withResolvers<void>();
+    state.attachGate = opened.promise;
+    state.parsedDuringProfile = [["23", 17]];
+    state.stopped = profile("17", "23");
+    const started = agent.send("Profiler.start");
+    const stopped = agent.send("Profiler.stop");
+    await vi.waitFor(() => expect(state.attached).toHaveLength(1));
+    state.attachGate = null;
+    opened.resolve();
+    await started;
+    await expect(stopped).resolves.toEqual(state.stopped);
+    expect(
+      hub
+        .sent("Profiler.start")
+        .concat(hub.sent("Profiler.stop"))
+        .map(([method]) => method),
+    ).toEqual(["Profiler.start", "Profiler.stop"]);
+    await settled();
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("never lets a pause on the profile inventory hold the page", async () => {
+  const { hub, state, settled } = await profiledPage("97");
+  const agent = await hub.page.agentCdp();
+  try {
+    await agent.send("Profiler.enable");
+    await agent.send("Profiler.start");
+    const inventory = (method: string) =>
+      hub.contents.debugger.sendCommand.mock.calls
+        .map(([name, , session], index) => ({ name, session, index }))
+        .filter(({ name, session }) => name === method && session === "inventory-1");
+    // Skipping pauses is asked again once Debugger is on.
+    expect(inventory("Debugger.setSkipAllPauses").at(-1)!.index).toBeGreaterThan(
+      inventory("Debugger.enable")[0]!.index,
+    );
+    hub.deliver(
+      "Debugger.paused",
+      { callFrames: [], reason: "other", hitBreakpoints: [] },
+      "inventory-1",
+    );
+    expect(inventory("Debugger.resume")).toHaveLength(1);
+    state.stopped = { profile: { nodes: [] } };
+    await agent.send("Profiler.stop");
+    await settled();
+  } finally {
+    await hub.browser.close();
+  }
+});
+
+it("keeps a profile inventory its own channel's, whatever another channel does", async () => {
+  const { hub, state, profile, settled } = await profiledPage("98");
+  const keep = await hub.page.agentCdp();
+  try {
+    const owner = await hub.page.agentCdp();
+    const other = await hub.page.agentCdp();
+    await owner.send("Profiler.enable");
+    await other.send("Profiler.enable");
+    state.stopped = profile("17");
+    await owner.send("Profiler.start");
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    // Another channel's stop reads the scripts alive then and leaves the owner's inventory.
+    await expect(other.send("Profiler.stop")).resolves.toEqual(state.stopped);
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    expect(state.detached).toEqual(["inventory-2"]);
+    // Its own start finds the owner's inventory and takes the old path too.
+    await other.send("Profiler.start");
+    await other.send("Profiler.disable");
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    await other.close();
+    expect(state.watching).toEqual(new Set(["inventory-1"]));
+    // The owner's disable lets it go; its close lets go of the next one.
+    await owner.send("Profiler.disable");
+    await vi.waitFor(() => expect(state.watching).toEqual(new Set()));
+    await owner.send("Profiler.enable");
+    await owner.send("Profiler.start");
+    expect(state.watching.size).toBe(1);
+    await owner.close();
+    await settled();
+  } finally {
+    await keep.close();
+    await hub.browser.close();
+  }
+});
+
 describe("Electron debugger teardown", () => {
   it("waits for the native page to be destroyed even when no CDP input is pending", async () => {
     const hub = await hubPage("44");
@@ -4048,6 +4285,59 @@ it("routes root and attached cookie commands to the admitted native profile cont
         sessionId,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
+  } finally {
+    await router.close();
+    await browser.close();
+  }
+});
+
+it("answers a connection's browser_connect the one sentence for a command outside the list, before the Mac's own check", async () => {
+  const sentence = (method: string) =>
+    `${method} is not available to a connected agent. Its CDP acts on its own pages through the Accessibility, Console, CSS, Debugger, DOM, DOMSnapshot, Emulation, Fetch, Input, Log, Network, Page, Performance, Runtime, Target domains, and at the browser root only through Target and Browser.getVersion.`;
+  const browser = await new ElectronBrowserLauncher({
+    downloads: { accept: () => undefined },
+    pagePolicyPreloadPath: "/opensteer/browser-page-preload.cjs",
+  }).launch({
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    partitionKey: "session:bsn_00000000-0000-4000-8000-000000000307",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000307"),
+    storage: { kind: "guest" },
+  });
+  const { SessionCdpRouter } = await import("@opensteer/browser-core");
+  const router = new SessionCdpRouter(browser.cdp);
+  const targetId = await browser.context.pages()[0]!.targetId();
+  router.registerSession("agent", targetId, async () => true, "/files");
+  try {
+    const refusal = async (connection: boolean, method: string, parameters = {}) => {
+      const client = router.openStandardClient("agent", {
+        wholeContext: false,
+        ...(connection
+          ? { connection: true, lineage: { attachmentId: "mac-agent", seedTargetId: targetId } }
+          : {}),
+      });
+      try {
+        return await client.send({ method, parameters }).then(
+          () => "sent",
+          (error: unknown) => (error as Error).message,
+        );
+      } finally {
+        client.close();
+      }
+    };
+    for (const method of [
+      "SystemInfo.getProcessInfo",
+      "SystemInfo.getInfo",
+      "Browser.getBrowserCommandLine",
+    ]) {
+      expect(await refusal(true, method), method).toBe(sentence(method));
+      expect(await refusal(false, method), method).toBe(
+        `${method} describes the Opensteer process, outside browser page ownership.`,
+      );
+    }
+    // A listed command still meets the Mac's own check.
+    expect(await refusal(true, "Target.createTarget", { url: "about:blank", windowId: 1 })).toBe(
+      "Opensteer windows are outside the browser page context.",
+    );
   } finally {
     await router.close();
     await browser.close();

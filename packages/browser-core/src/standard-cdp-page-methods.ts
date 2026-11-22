@@ -120,3 +120,22 @@ export const standardCdpPageMethods: ReadonlySet<string> = new Set([
   "Target.sendMessageToTarget",
   "Target.setAutoAttach",
 ]);
+
+/**
+ * Root commands accepted on a standard connection besides `Browser.getVersion`: the router
+ * answers each from the Browser Session's own targets.
+ */
+export const standardCdpRootTargetMethods: ReadonlySet<string> = new Set([
+  "Target.attachToBrowserTarget",
+  "Target.getTargets",
+  "Target.getTargetInfo",
+  "Target.getBrowserContexts",
+  "Target.createTarget",
+  "Target.closeTarget",
+  "Target.activateTarget",
+  "Target.attachToTarget",
+  "Target.detachFromTarget",
+  "Target.setAutoAttach",
+  "Target.setDiscoverTargets",
+  "Target.sendMessageToTarget",
+]);

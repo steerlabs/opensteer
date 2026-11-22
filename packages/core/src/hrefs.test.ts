@@ -1,19 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createId } from "./ids.js";
 import { classifyHref } from "./hrefs.js";
-import { teamPageUrl } from "./team-links.js";
 
 describe("classifyHref", () => {
-  it("routes personal, team and absolute file destinations before external URLs", () => {
+  it("routes personal and absolute file destinations before external URLs", () => {
     expect(classifyHref("opensteer:" + createId("run")).kind).toBe("reference");
-    expect(
-      classifyHref(
-        teamPageUrl({
-          origin: "https://team.example",
-          target: { kind: "knowledge-topic", topicId: createId("knowledgeTopic") },
-        }),
-      ).kind,
-    ).toBe("team-page");
     expect(classifyHref("/Users/person/Downloads/tiger-in-snow.jpg")).toEqual({
       kind: "file",
       file: { path: "/Users/person/Downloads/tiger-in-snow.jpg" },

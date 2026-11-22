@@ -154,41 +154,9 @@ describe("PrivateDeploymentConnectionService", () => {
     expect(sessions.establish).not.toHaveBeenCalled();
   });
 
-  it("stores signed self-hosted canonical discovery without manufacturing a signed-in session", async () => {
+  it("adds a Home on its own server by address, pinned by its signed discovery", async () => {
     const catalog = newCatalog();
-    const discovery = selfHostedDiscovery();
-    const sessions = sessionPort();
-    const fetch = vi.fn(async () => discoveryResponse(discovery));
-    const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
-
-    await service.connect({
-      kind: "address",
-      origin: discovery.document.canonicalOrigin,
-    });
-
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledWith(
-      `${discovery.document.canonicalOrigin}/.well-known/opensteer`,
-      expect.objectContaining({ credentials: "omit", redirect: "error" }),
-    );
-    expect(sessions.probe).not.toHaveBeenCalled();
-    expect(sessions.establish).not.toHaveBeenCalled();
-    await expect(catalog.load()).resolves.toMatchObject({
-      deployments: [
-        {
-          authority: discovery,
-          endpoints: [{ kind: "canonical", origin: discovery.document.canonicalOrigin }],
-          kind: "team",
-          source: { kind: "manual" },
-        },
-      ],
-      selectedDeploymentId: discovery.document.deploymentId,
-    });
-  });
-
-  it("adds a Home on its own server by address, pinned like a team server", async () => {
-    const catalog = newCatalog();
-    const home = selfHostedDiscovery("https://home.example.test", "personal");
+    const home = selfHostedDiscovery("https://home.example.test");
     const sessions = sessionPort();
     const fetch = vi.fn(async (input: string | URL | Request) =>
       String(input).includes("/v1/rpc/auth.config")
@@ -224,7 +192,7 @@ describe("PrivateDeploymentConnectionService", () => {
   it("refuses a Home nobody has claimed yet, and a Mac Home reached only by route", async () => {
     const catalog = newCatalog();
     const sessions = sessionPort();
-    const unclaimed = selfHostedDiscovery("https://new-home.example.test", "personal");
+    const unclaimed = selfHostedDiscovery("https://new-home.example.test");
     const unclaimedService = new PrivateDeploymentConnectionService({
       catalog,
       fetch: vi.fn(async (input: string | URL | Request) =>
@@ -238,7 +206,7 @@ describe("PrivateDeploymentConnectionService", () => {
       unclaimedService.connect({ kind: "address", origin: unclaimed.document.canonicalOrigin }),
     ).rejects.toThrow(/has no owner yet/u);
 
-    const mac = selfHostedDiscovery("http://127.0.0.1:4310", "personal");
+    const mac = selfHostedDiscovery("http://127.0.0.1:4310");
     const macService = new PrivateDeploymentConnectionService({
       catalog,
       fetch: vi.fn(async () => discoveryResponse(mac)),
@@ -365,12 +333,9 @@ function routeResponse(route: PersonalHostAccessRouteEnvelope): Response {
 
 function selfHostedDiscovery(
   canonicalOrigin = "https://self-hosted.example.test",
-  kind: "personal" | "team" = "team",
 ): HostDiscoveryEnvelope {
   const keys = testHostAuthorityKeys();
-  const deploymentShape = {
-    kind: kind === "personal" ? ("personal" as const) : ("team" as const),
-  };
+  const deploymentShape = { kind: "personal" as const };
   const document: HostDiscoveryDocument = {
     canonicalOrigin,
     deploymentId: createId("deployment"),

@@ -138,6 +138,8 @@ function harness() {
     },
     passwordSignInSupported: vi.fn(() => true),
     cardUseSupported: vi.fn(() => true),
+    agentSessionGuardsSupported: vi.fn(() => true),
+    refuseOutdatedForAgentSession: vi.fn(async () => ""),
     sendPasswordSignIn: vi.fn<PasswordSignInServiceOptions["authority"]["sendPasswordSignIn"]>(
       async (_runnerId, command) => {
         if (command.type === "signin.probe")
@@ -413,6 +415,66 @@ describe("connected agent login leases", () => {
       await expect(h.service.replaySessionResult(operationId)).resolves.toBeUndefined();
     },
   );
+});
+
+describe("a connected agent's fill on a released Runner", () => {
+  it("is refused before any frame, while an own agent's fill still goes", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    // The Runner of `v0.1.716-insider` does not advertise `agent-session-guards-v1`.
+    h.hub.agentSessionGuardsSupported.mockReturnValue(false);
+    h.hub.refuseOutdatedForAgentSession.mockResolvedValue(
+      "Update Opensteer on Test Mac to fill a saved login for a connected agent.",
+    );
+    const { runId: _runId, ...call } = h.call;
+    const sessionId = createId("agentSession");
+    const operationId = createId("agentOperation");
+    await expect(
+      h.service.requestForSession({
+        ...call,
+        callId: operationId,
+        scope: operationId,
+        site: h.site,
+        sessionId: h.target.sessionId,
+        surfaceId: createId("tab"),
+        admitStart: () => true,
+        direct: {
+          sessionId,
+          operationId,
+          bindingId: `session:${sessionId}`,
+          grantRevision: 3,
+          profileId: createId("browserProfile"),
+          tabGeneration: 1,
+          authorized: async () => true,
+          signal: new AbortController().signal,
+        },
+      }),
+    ).rejects.toMatchObject({
+      message: "Update Opensteer on Test Mac to fill a saved login for a connected agent.",
+      reason: "runner-outdated",
+    });
+    expect(h.hub.refuseOutdatedForAgentSession).toHaveBeenCalledWith(
+      h.target.computer.runnerId,
+      "fill a saved login for a connected agent",
+    );
+    expect(h.requests.openSessionPasswordSignIn).not.toHaveBeenCalled();
+    expect(h.hub.sendPasswordSignIn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: "login.authorize" }),
+    );
+
+    // An own agent's fill asks by the person's settings, as before, with no new field.
+    void h.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.hub.sendPasswordSignIn).toHaveBeenCalledWith(
+      h.target.computer.runnerId,
+      expect.objectContaining({ type: "login.authorize" }),
+    );
+    expect(h.hub.sendPasswordSignIn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ alwaysAsk: true }),
+    );
+  });
 });
 
 describe("deployment login leases", () => {

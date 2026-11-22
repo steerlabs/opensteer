@@ -26,7 +26,7 @@ export type AddDeploymentFetch = typeof globalThis.fetch;
  */
 
 /**
- * Step one of the address door: prove the address serves a team or a Home,
+ * Step one of the address door: prove the address serves a Home,
  * and show the person its name and key fingerprint before anything is added.
  * No credential is sent.
  */

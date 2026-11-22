@@ -6,7 +6,6 @@ import { homeDraftId } from "../home/home-draft.js";
 import { presentedFrom } from "../navigation-presentations.js";
 import { threadReturn } from "../navigation-state.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-import { routeSide, sideMemory } from "../side-memory.js";
 
 /**
  * Leaving the sheets stacked over a Deployment's work, such as Settings, for
@@ -34,13 +33,6 @@ export function useLeaveSheets(
     (threadId: string) => {
       if (deploymentId === null || hostClient === null) return;
       const destination = { deploymentId, threadId };
-      const state = navigation.getState();
-      // A task opened over a team's screens is Tasks' history, never that team's.
-      if (state !== undefined && routeSide(state.routes[1]) !== "tasks") {
-        const action = sideMemory.enter(state, { name: "Thread", params: destination });
-        if (action !== null) navigation.dispatch(action);
-        return;
-      }
       if (threadReturn(navigation.getState()?.routes ?? [], destination) === "pop-to") {
         navigation.dispatch(StackActions.popTo("Thread", destination));
         return;

@@ -5,7 +5,6 @@ import {
   type MarkColor,
   type WaitingRequest,
 } from "@opensteer/core";
-import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import {
   mainDoneTasks,
   type HostSnapshot,
@@ -37,7 +36,6 @@ export function taskMarkQuiet(row: Pick<TaskRow, "tone" | "unread">, done: boole
 
 export interface TaskRow {
   readonly threadId: string;
-  readonly teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
   readonly title: string;
   readonly icon: IconName | null;
   readonly color: MarkColor | null;
@@ -240,7 +238,6 @@ function arrange(
     ({ thread }) => thread.listed && thread.purpose === "task",
   );
   const asks = attributedRequests(snapshot, entries);
-  const teamAsks = teamAsksByTask(snapshot);
   const working: TaskRow[] = [];
   const ready: TaskRow[] = [];
   const done: TaskRow[] = [];
@@ -249,12 +246,7 @@ function arrange(
     openThreadId != null &&
     previous?.ready.some(({ threadId, done }) => done && threadId === openThreadId) === true;
   for (const entry of entries) {
-    const row = rowOf(
-      snapshot,
-      entry,
-      asks.get(entry.thread.id) ?? [],
-      teamAsks.get(entry.thread.id) ?? [],
-    );
+    const row = rowOf(snapshot, entry, asks.get(entry.thread.id) ?? []);
     if (row.done)
       (row.unread || (holdOpen && row.threadId === openThreadId) ? ready : done).push(row);
     else if (row.stopped) ready.push(row);
@@ -307,21 +299,10 @@ function attributedRequests(
   return byThread;
 }
 
-/** Teammates' asks awaiting the reader, by the task each waits in. */
-function teamAsksByTask(snapshot: TaskListSource): ReadonlyMap<string, NeedsYouTeamAskEntry[]> {
-  const byTask = new Map<string, NeedsYouTeamAskEntry[]>();
-  for (const entry of snapshot.needsYou?.entries ?? []) {
-    if (entry.kind !== "team-ask" || !entry.task) continue;
-    byTask.set(entry.task.threadId, [...(byTask.get(entry.task.threadId) ?? []), entry]);
-  }
-  return byTask;
-}
-
 function rowOf(
   snapshot: TaskListSource,
   entry: TaskEntry,
   asks: readonly WaitingRequest[],
-  teamAsks: readonly NeedsYouTeamAskEntry[],
 ): TaskRow {
   const { thread } = entry;
   const held = snapshot.threads.find(({ id }) => id === thread.id) ?? thread;
@@ -329,7 +310,6 @@ function rowOf(
   const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
-    teamOrigin: thread.teamOrigin,
     title: held.title,
     icon: held.icon,
     color: held.color,
@@ -338,7 +318,7 @@ function rowOf(
       tone === "waiting"
         ? (taskWaitingReason(snapshot, thread.id)?.label ?? "Waiting")
         : tone === "needs-you" && asks.length === 0
-          ? teamAskLine(teamAsks) || "Needs you"
+          ? "Needs you"
           : taskLine(entry, tone, asks, surface),
     place: surface === null ? null : placeName(surface),
     done: thread.doneAt !== null,
@@ -386,16 +366,6 @@ function taskTone(thread: ThreadSummary): Exclude<TaskTone, "needs-you"> {
   if (thread.status === "waiting" || thread.inputQueuePaused) return "waiting";
   if (thread.status === "failed") return "failed";
   return "finished";
-}
-
-/** "Maya: Can you check the ferry times?", the first ask waiting in the task. */
-function teamAskLine(asks: readonly NeedsYouTeamAskEntry[]): string {
-  const [first] = asks;
-  if (!first) return "";
-  const { asker, bodyMarkdown } = first.presentation;
-  const name = asker.actor === "agent" ? `${asker.displayName}'s agent` : asker.displayName;
-  const line = bodyMarkdown.trim().split("\n", 1)[0] ?? "";
-  return asks.length > 1 ? `${name}: ${line} · ${asks.length - 1} more` : `${name}: ${line}`;
 }
 
 function taskLine(
@@ -472,9 +442,6 @@ function stateWord(tone: TaskTone): string | null {
 export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
   return (
     left.threadId === right.threadId &&
-    left.teamOrigin?.teamId === right.teamOrigin?.teamId &&
-    left.teamOrigin?.channelId === right.teamOrigin?.channelId &&
-    left.teamOrigin?.threadRootId === right.teamOrigin?.threadRootId &&
     left.title === right.title &&
     left.icon === right.icon &&
     left.color === right.color &&
@@ -615,7 +582,7 @@ export function doneTaskList(snapshot: TaskListSource, deploymentId?: string): D
   if (!list) return null;
   const rows = list.entries
     .filter(({ thread }) => thread.listed && thread.doneAt !== null)
-    .map((entry) => rowOf(snapshot, entry, [], []))
+    .map((entry) => rowOf(snapshot, entry, []))
     .filter((row) => row.done && !row.unread)
     // Pages merge in asked order; Done reads newest Done first.
     .sort(

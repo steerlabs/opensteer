@@ -3,14 +3,12 @@ import {
   MessageIdSchema,
   ThreadIdSchema,
   requestTitleText,
-  type TeamPageLink,
 } from "@opensteer/core";
-import type { AvailableReference, TeamNote, TeamNotePreview, TeamTopic } from "@opensteer/protocol";
+import type { AvailableReference } from "@opensteer/protocol";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import type { HostSnapshot, TranscriptFixtureSnapshot } from "../host/client.js";
 import type { IdReference as Reference } from "./links.js";
 import { heldThread } from "../host/task-list.js";
-import type { TeamSessionSnapshot } from "../team/team-session-client.js";
 
 export function referenceTitle(title: string, fallback: string): string {
   return plainTextExcerpt(title, 256) || fallback;
@@ -129,51 +127,6 @@ export function localReference(
         }
       }
       return null;
-    }
-  }
-}
-
-export interface HeldTeamReferences {
-  /** The verified origin of the attached session supplying these records. */
-  readonly origin: string;
-  readonly sidebar?: TeamSessionSnapshot["sidebar"];
-  readonly channel?: TeamSessionSnapshot["channel"];
-  readonly thread?: TeamSessionSnapshot["thread"];
-  readonly topics?: readonly Pick<TeamTopic, "id" | "name">[];
-  readonly notes?: readonly (Pick<TeamNotePreview, "id" | "topicId" | "title"> | TeamNote)[];
-}
-
-export function localTeamReference(
-  page: TeamPageLink,
-  snapshot: HeldTeamReferences,
-): { title: string } | null {
-  if (page.origin !== snapshot.origin) return null;
-  const target = page.target;
-  switch (target.kind) {
-    case "invite":
-      return null;
-    case "channel":
-    case "message":
-    case "thread": {
-      const channel =
-        snapshot.sidebar?.channels.find(({ channel }) => channel.id === target.channelId)
-          ?.channel ??
-        [snapshot.channel?.channel, snapshot.thread?.channel].find(
-          (channel) => channel?.id === target.channelId,
-        );
-      return channel ? { title: referenceTitle(channel.name, "Channel") } : null;
-    }
-    case "knowledge-topic": {
-      const topic = snapshot.topics?.find(({ id }) => id === target.topicId);
-      return topic ? { title: referenceTitle(topic.name, "Topic") } : null;
-    }
-    case "knowledge-note": {
-      const note = snapshot.notes?.find(
-        ({ id, topicId }) => id === target.noteId && topicId === target.topicId,
-      );
-      return note && !("deleted" in note && note.deleted)
-        ? { title: referenceTitle(note.title, "Note") }
-        : null;
     }
   }
 }

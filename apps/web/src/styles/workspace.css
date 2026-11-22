@@ -551,8 +551,8 @@
    count) stay in reach at any height. Tabs owns its height: until the
    person sizes it, it fits its rows up to this default; once they do
    (`--side-tabs-height`), it keeps that height whatever it holds. It gives
-   way only to the floor of the pane above. The pane above (Tasks, Done or a
-   team) takes the rest, so switching it never moves Tabs. Neither drops
+   way only to the floor of the pane above. The pane above (Tasks or Done)
+   takes the rest, so switching it never moves Tabs. Neither drops
    below its first three rows. */
 .side-section {
   --side-floor-rows: 0;
@@ -1148,11 +1148,6 @@ button.side-needs:hover {
 
 .side-task.has-ask .task-mark {
   margin-top: 1px;
-}
-
-.side-task__dismiss {
-  flex: none;
-  margin-right: var(--space-6);
 }
 
 .side-task__text {

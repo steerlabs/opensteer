@@ -13,6 +13,8 @@ import {
   type BrowserSourceTabShared,
 } from "@opensteer/browser-source-wire/frames";
 import {
+  decodeNestedCdpMessage,
+  invalidNestedMessageRefusal,
   SessionCdpRouterError,
   type BrowserCdpBackend,
   type CdpChannel,
@@ -268,7 +270,10 @@ export class ChromeTabBackend implements BrowserCdpBackend {
       const child = String(params.sessionId);
       if ((tab.children.get(child)?.parent ?? root) !== session || !tab.children.has(child))
         throw new Error("Chrome debugger child is unavailable.");
-      const request = nestedMessage.parse(JSON.parse(String(params.message)));
+      // The one decoder every guard uses: a message that is not a JSON string is refused.
+      const decoded = decodeNestedCdpMessage(params.message);
+      if (!decoded) throw new SessionCdpRouterError("bad_command", invalidNestedMessageRefusal);
+      const request = nestedMessage.parse(decoded);
       const payload = await this.#command(
         tab,
         logical,

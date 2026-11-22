@@ -37,11 +37,7 @@ import {
   type EnvironmentId,
   type RunnerId,
 } from "@opensteer/core";
-import {
-  hostApiVersionHeader,
-  hostKeyFingerprint,
-  isPersonalHost,
-} from "@opensteer/deployment-authority";
+import { hostApiVersionHeader, hostKeyFingerprint } from "@opensteer/deployment-authority";
 import { z } from "zod";
 import { verifyAccessEndpoint, type VerifiedHostEndpoint } from "@opensteer/client/connections";
 import { createDesktopHostApi } from "../connections/desktop-host-api.js";
@@ -189,11 +185,6 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
           hostKeyFingerprint(verified.discoveryEnvelope.publicKey.spki) !== expectedFingerprint
         ) {
           throw new PersonalHostAuthorityMismatchError();
-        }
-        if (!isPersonalHost(discovery)) {
-          throw new PersonalHostAuthorityMismatchError(
-            "Personal Host advertised an incompatible deployment shape.",
-          );
         }
         return verified;
       } catch (error) {

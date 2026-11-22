@@ -61,8 +61,8 @@ import { createControlPlaneDatabase } from "../apps/control-plane/src/database/d
 import { resetManagedCloudTables } from "../apps/control-plane/src/cloud-computers/reset.test-support.js";
 import { migrateControlPlaneToLatest } from "../apps/control-plane/src/database/migrations.js";
 import { ControlPlaneStore } from "../apps/control-plane/src/database/store.js";
-import { googleServiceAccountVerifier } from "../apps/control-plane/src/hosted-teams/provisioner-routes.js";
-import { HostedTeamSetupTokenCipher } from "../apps/control-plane/src/hosted-teams/setup-token-cipher.js";
+import { googleServiceAccountVerifier } from "../apps/control-plane/src/cloud-computers/provisioner-verifier.js";
+import { CloudComputerSecretCipher } from "../apps/control-plane/src/cloud-computers/secret-cipher.js";
 import { OrganizationStore } from "../apps/control-plane/src/organizations/store.js";
 import { createControlPlaneServer } from "../apps/control-plane/src/server/server.js";
 import { createHostRuntime, type PersonalHostRuntime } from "../apps/host/src/runtime/runtime.js";
@@ -361,7 +361,7 @@ const cloud = new CloudComputerStore(database, {
   onBillingAttention: () => undefined,
   config,
   accountOrigin: publicOrigin,
-  cipher: new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url")),
+  cipher: new CloudComputerSecretCipher(Buffer.alloc(32, 5).toString("base64url")),
   stripe,
 });
 const claimErrors: unknown[] = [];
@@ -726,14 +726,14 @@ async function homeApi(
   const response =
     payload === undefined
       ? await browser.request(`${origin}/v1/rpc/${name}?input=%7B%7D`, {
-          headers: { origin, ...apiVersionHeaders("personal") },
+          headers: { origin, ...apiVersionHeaders() },
         })
       : await browser.request(`${origin}/v1/rpc/${name}`, {
           body: JSON.stringify(payload),
           headers: {
             "content-type": "application/json",
             origin,
-            ...apiVersionHeaders("personal"),
+            ...apiVersionHeaders(),
           },
           method: "POST",
         });
@@ -747,7 +747,7 @@ async function signInToHome(browser: Browser, homeOrigin: string) {
     headers: {
       "content-type": "application/json",
       origin: homeOrigin,
-      ...apiVersionHeaders("personal"),
+      ...apiVersionHeaders(),
     },
     method: "POST",
   });
@@ -755,7 +755,7 @@ async function signInToHome(browser: Browser, homeOrigin: string) {
   const { data } = (await begun.json()) as { data: { redirectUrl: string } };
   const stopped = await browser.navigate(data.redirectUrl);
   const session = await browser.request(`${homeOrigin}/v1/auth/session`, {
-    headers: { origin: homeOrigin, ...apiVersionHeaders("personal") },
+    headers: { origin: homeOrigin, ...apiVersionHeaders() },
   });
   // Where the browser came to rest, for a failure to say why.
   const trail = `${stopped.response.status} ${stopped.url} ${(await stopped.response.text()).slice(0, 300)}`;
