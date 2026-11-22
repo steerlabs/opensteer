@@ -641,6 +641,21 @@ export class PasswordSignInService {
         return unavailable(input.site, "main-browser-required");
       if (input.credential === "card" && !this.#authority.cardUseSupported?.(target.runnerId))
         return unavailable(input.site, "runtime-outdated");
+      // A connected agent's fill always asks the person; a Runner that cannot read `alwaysAsk`
+      // would not, so it is refused here, before any frame.
+      if (
+        input.direct &&
+        input.credential !== "card" &&
+        !this.#authority.agentSessionGuardsSupported(target.runnerId)
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: await this.#authority.refuseOutdatedForAgentSession(
+            target.runnerId,
+            "fill a saved login for a connected agent",
+          ),
+          reason: "runner-outdated",
+        });
       if (!input.admitStart()) return unavailable(input.site, "rate-limited");
       if (!(await this.#hasAuthority(input))) return unavailable(input.site, "stopped");
       const description = await this.#describe({
@@ -1522,7 +1537,11 @@ export class PasswordSignInService {
 export interface PasswordSignInServiceOptions {
   readonly authority: Pick<
     ComputerAppHub,
-    "onPasswordSignIn" | "passwordSignInSupported" | "sendPasswordSignIn"
+    | "onPasswordSignIn"
+    | "passwordSignInSupported"
+    | "sendPasswordSignIn"
+    | "agentSessionGuardsSupported"
+    | "refuseOutdatedForAgentSession"
   > &
     Partial<Pick<ComputerAppHub, "cardUseSupported">>;
   readonly resolveAuthority: (ownerId: UserId) => Promise<PasswordSignInComputer | null>;

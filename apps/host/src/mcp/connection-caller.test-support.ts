@@ -290,8 +290,6 @@ export async function serveMcp(
           return new AppStore(store.database).list(ownerId);
         },
       } as never,
-      teamRequestForRun: async () => null,
-      personalContextForRun: async () => true,
     }),
     store,
     publicUrl: options.runScope || options.runScopes ? url : new URL("http://runtime.invalid"),

@@ -105,7 +105,12 @@ export function usePlatformFixtures(): void {
   });
 }
 
-export type ApprovalHubMember = "reportsApp" | "machinesFor" | "compatibilityReason";
+export type ApprovalHubMember =
+  | "reportsApp"
+  | "machinesFor"
+  | "compatibilityReason"
+  | "agentSessionGuardsSupported"
+  | "refuseOutdatedForAgentSession";
 
 createId("user");
 export function platform(input: {
@@ -149,6 +154,9 @@ export function platform(input: {
       reportsApp: () => "offline",
       compatibilityReason: () => null,
       machinesFor: () => [],
+      // This release's Runner, unless a test stands in an older one.
+      agentSessionGuardsSupported: () => true,
+      refuseOutdatedForAgentSession: async () => "",
       openMcpSession: vi.fn(),
       ...(input.computerApps ??
         ({

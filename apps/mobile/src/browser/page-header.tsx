@@ -11,7 +11,7 @@ import {
   type NativeMenuSection,
 } from "../thread/composer-menu.js";
 import { barItemWidth, useBarTitleWidth } from "../ui/bar-title.js";
-import { AgentOrb } from "../team/team-marks.js";
+import { AgentOrb } from "../ui/agent-orb.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";

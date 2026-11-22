@@ -1,5 +1,3 @@
-import { useTeamSideBack } from "./side-back.js";
-import { TeamScreenLayout } from "./team/team-screen-gate.js";
 import { pushedInPresentation, screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
@@ -84,46 +82,6 @@ import type { OpeningTabRoute } from "./browser/open-tab.js";
 import { OpeningTabScreen, WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { DoneTasksScreen } from "./screens/done-tasks.js";
-import {
-  TeamChannelScreen,
-  TeamThreadScreen,
-  type TeamChannelRoute,
-  type TeamThreadRoute,
-} from "./team/team-channel-screens.js";
-import {
-  TeamDetailsScreen,
-  TeamFilesScreen,
-  TeamInstructionsScreen,
-  TeamMembersScreen,
-  TeamNoticesScreen,
-  TeamPinnedScreen,
-  TeamSearchScreen,
-} from "./team/team-shelf-screens.js";
-import {
-  TeamAuditScreen,
-  TeamGroupScreen,
-  TeamGroupsScreen,
-  TeamPeopleScreen,
-  TeamSettingsScreen,
-} from "./team/team-admin-screens.js";
-import { TeamInvitesScreen } from "./team/invite-people-screen.js";
-import { TeamPartnerSettingsScreen } from "./team/team-partner-settings.js";
-import {
-  CreateTeamScreen,
-  DeleteTeamScreen,
-  TeamSetupScreen,
-  TeamsScreen,
-  TransferTeamScreen,
-} from "./team/team-entry-screens.js";
-import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
-import {
-  TeamChannelsScreen,
-  TeamNewChannelScreen,
-  TeamNewMessageScreen,
-} from "./team/team-directory-screens.js";
-import { TeamNewGroupScreen, TeamRenameChannelScreen } from "./team/team-name-forms.js";
-import { TeamKnowledgeScreen, TeamNoteScreen } from "./team/knowledge-screens.js";
-import { TeamTopicAccessScreen, TeamTopicFormScreen } from "./team/knowledge-forms.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
@@ -139,8 +97,7 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * tap arrive at the same screen by the same path. The header uses the platform
  * face and stays native chrome.
  *
- * Home keeps its unsent draft mounted beneath the active Tasks or team chain.
- * The sidebar resumes each side; explicit entries replace only that side.
+ * Home keeps its unsent draft mounted beneath the screens above it.
  *
  * The drawer is the stack's own `layout` (`SidebarShell`): one navigator, one
  * history, with the drawer or docked column around it.
@@ -156,7 +113,6 @@ function ScreenLayout(props: {
   readonly route: { readonly params?: unknown };
 }) {
   const focused = useIsFocused();
-  useTeamSideBack();
   const content = <RouteReferences route={props.route}>{props.children}</RouteReferences>;
   return (
     <>
@@ -171,7 +127,7 @@ function ScreenLayout(props: {
 /**
  * A personal Deployment's screen reads its links as that Deployment's: the
  * route names the owner, so a link drawn here never asks the selection whose
- * it is. A team's screens get their own context from the team's gate.
+ * it is.
  */
 function RouteReferences(props: {
   readonly children: ReactNode;
@@ -181,7 +137,7 @@ function RouteReferences(props: {
   const deploymentId = typeof params["deploymentId"] === "string" ? params["deploymentId"] : null;
   const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
   const client = useAttachedHostOf(deploymentId);
-  if (deploymentId === null || client === null || "teamId" in params) return props.children;
+  if (deploymentId === null || client === null) return props.children;
   return (
     <PersonalReferenceProvider client={client} deploymentId={deploymentId} threadId={threadId}>
       {props.children}
@@ -204,7 +160,7 @@ const RootStack = createNativeStackNavigator({
       modal={options.presentation !== undefined && options.presentation !== "card"}
       route={route}
     >
-      <TeamScreenLayout route={route}>{children}</TeamScreenLayout>
+      {children}
     </ScreenLayout>
   ),
   // Recomputed as the stack changes, so a top-level screen's transition is in
@@ -461,123 +417,6 @@ const RootStack = createNativeStackNavigator({
       }),
     },
     SettingsGeneral: { screen: SettingsGeneralScreen, options: { title: "General" } },
-    // A team's channel or DM, and a thread under one of its messages. Each is
-    // keyed by the team it belongs to, never by the personal Deployment.
-    TeamChannel: { screen: TeamChannelScreen, options: { title: "" } },
-    TeamThread: { screen: TeamThreadScreen, options: { title: "Thread" } },
-    // On a phone a channel's tabs are rows in its Details.
-    TeamDetails: { screen: TeamDetailsScreen, options: { title: "Details" } },
-    TeamMembers: { screen: TeamMembersScreen, options: { title: "Members" } },
-    TeamRenameChannel: { screen: TeamRenameChannelScreen, options: { title: "Rename channel" } },
-    TeamInstructions: {
-      screen: TeamInstructionsScreen,
-      options: { title: "Instructions for agents" },
-    },
-    TeamFiles: { screen: TeamFilesScreen, options: { title: "Files" } },
-    TeamPinned: { screen: TeamPinnedScreen, options: { title: "Pinned" } },
-    // A team's knowledge: notes by topic, one note with its versions, and the topics' lists.
-    TeamKnowledge: { screen: TeamKnowledgeScreen, options: { title: "Knowledge" } },
-    TeamTopicForm: { screen: TeamTopicFormScreen, options: { title: "New topic" } },
-    TeamTopicAccess: { screen: TeamTopicAccessScreen, options: { title: "Access" } },
-    TeamNote: { screen: TeamNoteScreen, options: { title: "" } },
-    TeamSearch: { screen: TeamSearchScreen, options: { title: "Search" } },
-    TeamNotices: { screen: TeamNoticesScreen, options: { title: "Notices" } },
-    // A team's own settings group, from its section's menu or Settings.
-    TeamSettings: { screen: TeamSettingsScreen, options: { title: "Team" } },
-    TeamPeople: { screen: TeamPeopleScreen, options: { title: "People" } },
-    TeamGroups: { screen: TeamGroupsScreen, options: { title: "Groups" } },
-    TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
-    TeamNewGroup: { screen: TeamNewGroupScreen, options: { title: "New group" } },
-    TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invite people" } },
-    TeamPartners: { screen: TeamPartnerSettingsScreen, options: { title: "Partner teams" } },
-    // Create a team or join with an invite, from the drawer and Settings.
-    Teams: { screen: TeamsScreen, options: { headerLargeTitle: true, title: "Teams" } },
-    CreateTeam: {
-      screen: CreateTeamScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.CreateTeam,
-        sheetAllowedDetents: [0.95],
-        sheetGrabberVisible: true,
-        title: "Create a team",
-      },
-    },
-    // A hosted team being set up; swiping it away is Keep working.
-    TeamSetup: {
-      screen: TeamSetupScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.TeamSetup,
-        sheetAllowedDetents: "fitToContents",
-        sheetGrabberVisible: true,
-        title: "Setting up your team",
-      },
-    },
-    DeleteTeam: {
-      screen: DeleteTeamScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.DeleteTeam,
-        sheetAllowedDetents: [0.95],
-        sheetGrabberVisible: true,
-        title: "Delete team",
-      },
-    },
-    TransferTeam: {
-      screen: TransferTeamScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.TransferTeam,
-        sheetAllowedDetents: "fitToContents",
-        sheetGrabberVisible: true,
-        title: "Transfer team",
-      },
-    },
-    TeamChannels: { screen: TeamChannelsScreen, options: { title: "Channels" } },
-    // Making a channel or starting a message: sheets over the team, their action in the bar.
-    TeamNewChannel: {
-      screen: TeamNewChannelScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.TeamNewChannel,
-        sheetAllowedDetents: [0.95],
-        sheetGrabberVisible: true,
-        title: "New channel",
-      },
-    },
-    TeamNewMessage: {
-      screen: TeamNewMessageScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.TeamNewMessage,
-        sheetAllowedDetents: [0.95],
-        sheetGrabberVisible: true,
-        title: "New message",
-      },
-    },
-    TeamAudit: { screen: TeamAuditScreen, options: { title: "Audit log" } },
-    // Joining from a link, a pasted link or a notification: a sheet over Home.
-    JoinTeam: {
-      screen: JoinTeamScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.JoinTeam,
-        sheetAllowedDetents: [0.6, 0.95],
-        sheetGrabberVisible: true,
-        title: "Join a team",
-      },
-    },
-    // What Ask my agent opens when no Opensteer of the reader's is linked.
-    ConnectOpensteer: {
-      screen: ConnectOpensteerScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.ConnectOpensteer,
-        sheetAllowedDetents: "fitToContents",
-        sheetGrabberVisible: true,
-        title: "Connect your Opensteer",
-      },
-    },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
     YourName: { screen: YourNameScreen, options: { title: "Your name" } },
     SettingsSessionDetail: {
@@ -776,46 +615,9 @@ const RootStack = createNativeStackNavigator({
 });
 
 type OpensteerRootParamList = {
-  readonly TeamChannel: TeamChannelRoute;
-  readonly TeamThread: TeamThreadRoute;
-  readonly TeamDetails: { readonly teamId: string; readonly channelId: string };
-  readonly TeamMembers: { readonly teamId: string; readonly channelId: string };
-  readonly TeamRenameChannel: { readonly teamId: string; readonly channelId: string };
-  readonly TeamInstructions: { readonly teamId: string; readonly channelId: string };
-  readonly TeamFiles: { readonly teamId: string; readonly channelId: string };
-  readonly TeamPinned: { readonly teamId: string; readonly channelId: string };
-  readonly TeamKnowledge: { readonly teamId: string; readonly topicId?: string | undefined };
-  /** A new topic, or the named one's name and description. */
-  readonly TeamTopicForm: { readonly teamId: string; readonly topicId?: string | undefined };
-  readonly TeamTopicAccess: { readonly teamId: string; readonly topicId: string };
-  readonly TeamNote: { readonly teamId: string; readonly topicId: string; readonly noteId: string };
-  readonly TeamSearch: { readonly teamId: string; readonly channelId?: string | undefined };
-  readonly TeamNotices: { readonly teamId: string };
-  readonly TeamSettings: { readonly teamId: string };
-  readonly TeamPeople: { readonly teamId: string };
-  readonly TeamGroups: { readonly teamId: string };
-  readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
-  readonly TeamNewGroup: { readonly teamId: string };
-  readonly TeamInvites: { readonly teamId: string };
-  readonly TeamPartners: { readonly teamId: string };
-  readonly Teams: undefined;
-  readonly CreateTeam: undefined;
-  readonly TeamSetup: { readonly hostedTeamId: string };
-  readonly DeleteTeam: { readonly teamId: string };
-  readonly TransferTeam: { readonly teamId: string };
-  readonly TeamChannels: { readonly teamId: string };
-  /** `name` is what the person searched Browse for and didn't find. */
-  readonly TeamNewChannel: { readonly teamId: string; readonly name?: string | undefined };
-  readonly TeamNewMessage: { readonly teamId: string };
-  readonly TeamAudit: { readonly teamId: string };
-  /** A team page link the person opened or pasted, or none for the paste field. */
-  readonly JoinTeam:
-    | { readonly link?: string | undefined; readonly externalIntent?: number | undefined }
-    | undefined;
-  readonly ConnectOpensteer: { readonly teamId: string };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };
-  /** "tasks" for the open computer, else a team's id. */
+  /** "tasks", the open computer. */
   readonly ConnectionDetails: { readonly session: string };
   readonly AddDeployment: undefined;
   readonly SetUpPhone: { readonly deploymentId: string };

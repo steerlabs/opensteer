@@ -14,9 +14,8 @@ export interface PreviewAttachment {
   ) => Promise<unknown>;
 }
 /**
- * Sealed notification previews, one key per Deployment this phone hears from: the
- * personal Opensteer being shown and every team it is signed in to, so a push from
- * any of them can be read whichever computer is on screen.
+ * Sealed notification previews, one key per Deployment this phone hears from, so a
+ * push from any of them can be read whichever computer is on screen.
  */
 export class NotificationPreviews {
   readonly #attachments = new Map<DeploymentId, PreviewAttachment>();

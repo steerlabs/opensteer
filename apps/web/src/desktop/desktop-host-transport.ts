@@ -85,8 +85,8 @@ export function createDesktopHostFetch(
 /**
  * Uploads this renderer sends at once. Electron reads each one's Blob into main
  * as soon as main's route receives it, so this caps main at three upload
- * payloads (each at most an attachment's 25 MiB, or a team file's 100 MiB and
- * its preview); the rest wait here, where a Blob is only a reference.
+ * payloads (each at most an attachment's 25 MiB); the rest wait here, where a
+ * Blob is only a reference.
  */
 export const desktopHostUploadConcurrency = 3;
 const uploads = { active: 0, waiting: [] as (() => void)[] };

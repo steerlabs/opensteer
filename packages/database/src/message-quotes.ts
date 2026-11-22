@@ -11,7 +11,7 @@ import {
 } from "@opensteer/core";
 import type { Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { messageFromRow } from "./thread-row-mappers.js";
+import { isRetiredMessageRow, messageFromRow } from "./thread-row-mappers.js";
 export async function resolveMessageQuote(
   transaction: Transaction<DatabaseSchema>,
   messageId: MessageId,
@@ -26,7 +26,7 @@ export async function resolveMessageQuote(
     .where("messages.id", "=", messageId)
     .where(publishedMessagePredicate("threadInputs"))
     .executeTakeFirst();
-  if (!row)
+  if (!row || isRetiredMessageRow(row))
     throw new OpensteerError({
       code: "not_found",
       message: "The quoted message is unavailable",

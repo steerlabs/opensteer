@@ -100,15 +100,6 @@ export const agentToolFamilies: Readonly<Record<AgentToolName, ToolFamily>> = {
   opensteer_automation_control: tasks,
   opensteer_automation_list: tasks,
   opensteer_automation_create: tasks,
-  opensteer_team_file_download: "owner-context",
-  opensteer_team_read: "owner-context",
-  opensteer_team_search: "owner-context",
-  opensteer_team_post: "owner-context",
-  opensteer_knowledge_topic_list: "owner-context",
-  opensteer_knowledge_search: "owner-context",
-  opensteer_knowledge_remove: "owner-context",
-  opensteer_knowledge_read: "owner-context",
-  opensteer_knowledge_save: "owner-context",
 };
 
 /**
@@ -169,8 +160,6 @@ export function toolsFor(caller: {
   readonly program?: { readonly kind: "trigger" | "watch" };
   readonly capabilities?: RunToolCapabilities;
   readonly accessMode: ThreadAccessMode;
-  readonly teamsAvailable?: boolean;
-  readonly knowledge?: boolean;
   /** The grant of the connection whose lineage this work is in. */
   readonly grant?: AgentGrant;
 }) {
@@ -182,8 +171,6 @@ export function toolsFor(caller: {
         !caller.capabilities ||
         caller.capabilities[tool.capability] === true) &&
       (tool.access !== "settings" || caller.accessMode === "full-access") &&
-      (!("team" in tool) || (caller.kind === "run" && caller.teamsAvailable === true)) &&
-      (!("knowledge" in tool) || (caller.kind === "run" && caller.knowledge === true)) &&
       (caller.kind === "connection"
         ? offersConnectionTool(caller.grant, tool.name, caller.accessMode)
         : grantOffersTool(caller.grant, tool.name, caller.accessMode)),

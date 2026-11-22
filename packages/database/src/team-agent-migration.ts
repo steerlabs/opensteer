@@ -1,6 +1,30 @@
-import { MessageContentSchema, TeamSourceSchema } from "@opensteer/core";
+import {
+  DeploymentIdSchema,
+  MessageContentSchema,
+  TeamChannelIdSchema,
+  TeamMessageIdSchema,
+} from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { z } from "zod";
+
+/** The team source this migration wrote, frozen here since the code that read it is gone. */
+const TeamSourceSchema = z.strictObject({
+  teamId: DeploymentIdSchema,
+  channelId: TeamChannelIdSchema,
+  threadRootId: TeamMessageIdSchema.nullable(),
+  messageId: TeamMessageIdSchema.nullable(),
+  audience: z.strictObject({
+    externalTeams: z
+      .array(z.strictObject({ teamId: DeploymentIdSchema, name: z.string().min(1).max(160) }))
+      .max(1)
+      .optional(),
+    teamName: z.string().min(1).max(160),
+    channelName: z.string().min(1).max(160),
+    channelKind: z.enum(["public", "private", "dm", "group_dm"]),
+    memberCount: z.number().int().nonnegative(),
+    peopleOnly: z.boolean(),
+  }),
+});
 
 const legacyMessages = z.array(
   z.object({

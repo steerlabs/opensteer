@@ -77,12 +77,6 @@ describeStore("PostgreSQL store", (it) => {
       .execute();
     // A disabled owner is no owner; the next user does not inherit the role.
     await expect(personalDeploymentOwner(database)).resolves.toBeNull();
-    await database.updateTable("users").set({ disabledAt: null }).where("id", "=", owner).execute();
-    await database
-      .updateTable("deployments")
-      .set({ deploymentShape: sql`'{"kind":"team"}'::jsonb` })
-      .execute();
-    await expect(personalDeploymentOwner(database)).resolves.toBeNull();
   });
   it("delivers secret input through ciphertext while redacting durable projections", async ({
     storeFixture,

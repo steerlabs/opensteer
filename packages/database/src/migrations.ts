@@ -635,11 +635,34 @@ export function migrationProvider(options?: {
               },
               [workHomeMigrationName]: { up: applyWorkHome },
               [browserPoolMigrationName]: { up: applyBrowserPool },
+              "0051_needs_you_counts_requests": {
+                /**
+                 * A Home that used teams counted its teammates' asks in Needs you, and those
+                 * rows no longer list: the count is what the list shows, Requests alone. A
+                 * database still converting is left to its conversion, which counts the same.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`update client_sync_state set needs_you_count=listed.count
+                    from (select count(*)::integer as count from personal_attention where kind='request') listed
+                    where ready and needs_you_count is distinct from listed.count`.execute(
+                    database,
+                  );
+                },
+              },
             }
           : {}),
       };
     },
   };
+}
+/** A team server's database, which this release does not open. */
+export class RetiredTeamServerDatabaseError extends Error {
+  constructor() {
+    super(
+      "This database is a team server's. Team servers were removed in this release of Opensteer; the previous release still opens this database.",
+    );
+    this.name = "RetiredTeamServerDatabaseError";
+  }
 }
 export class MigrationLineageError extends Error {
   readonly unknownMigrations: readonly string[];
@@ -686,6 +709,17 @@ async function migrateRegisteredLineage(
     hasAppliedMigrations = applied.rows.length > 0;
     const unknown = applied.rows.map((row) => row.name).filter((name) => !known.has(name));
     if (unknown.length) throw new MigrationLineageError(unknown);
+    // Every migrated lineage has its Deployment row; a team server's is refused before any
+    // migration, schema or data, or the personal conversion touches its database.
+    if (hasAppliedMigrations) {
+      const deployment = await sql<{
+        kind: unknown;
+      }>`select deployment_shape->>'kind' as kind from deployments where singleton_key='primary'`.execute(
+        database,
+      );
+      const kind = deployment.rows[0]?.kind;
+      if (kind !== undefined && kind !== "personal") throw new RetiredTeamServerDatabaseError();
+    }
   }
   if (!hasAppliedMigrations) {
     const existing = await sql<{

@@ -39,7 +39,6 @@ import { TESTED_OPENCODE_VERSION } from "./config.js";
 // time zone is unknown: its thread context is one fixed line, so these turns
 // carry exactly that context and the inputs and reports each test names.
 const noThreadContext = {
-  teamTurnContext: null,
   assignment: null,
   threadState: { previousAssignment: null, previousRun: null },
   startedAt: "2026-08-22T00:00:00.000Z",

@@ -16,10 +16,7 @@ import type {
   RunFailure,
   RunnerId,
   TabId,
-  TeamSource,
-  TeamRunDelivery,
   RunUsage,
-  TeamAgentRequestId,
   ThreadId,
   ToolIdentity,
   ToolOutput,
@@ -132,7 +129,6 @@ export interface TranscriptPreview {
   readonly truncated?: boolean;
   readonly version?: number;
   readonly assignment?: AssignmentSummary;
-  readonly teamSource?: TeamSource;
   readonly completedAt?: string;
   readonly tool?: ToolIdentity | null;
   readonly requestKind?: Request["kind"];
@@ -141,7 +137,6 @@ export interface TranscriptPreview {
   readonly replyMessageId?: MessageId;
   readonly failure?: RunFailure;
   readonly usage?: RunUsage;
-  readonly runDelivery?: TeamRunDelivery;
   readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
   readonly messageAuthor?: MessageAuthor;
   readonly edit?: MessageEdit;
@@ -213,10 +208,8 @@ export interface RunnerEventReceiptTable {
 
 export interface PersonalAttentionTable {
   id: string;
-  kind: "request" | "team-ask" | "failed-ask";
+  kind: "request";
   requestId: RequestId | null;
-  teamDeploymentId: DeploymentId | null;
-  teamRequestId: TeamAgentRequestId | null;
   threadId: ThreadId | null;
   sortAt: Timestamp;
   expiresAt: Date | null;

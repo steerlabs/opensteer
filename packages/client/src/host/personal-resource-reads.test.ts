@@ -98,10 +98,10 @@ test("reads each watched kind until it holds the newest revision, as after a Hos
 test("an unwatched kind stops its read and a signal kind is never read", () => {
   const { reads, pending } = harness();
   const heard = vi.fn();
-  const releaseSignal = reads.watch("team-replies", heard);
-  reads.changed({ "team-replies": "5" });
+  const releaseSignal = reads.watch("plugin", heard);
+  reads.changed({ plugin: "5" });
   expect(heard).toHaveBeenCalledTimes(1);
-  expect(reads.interests().installed).toEqual({ "team-replies": "5" });
+  expect(reads.interests().installed).toEqual({ plugin: "5" });
   expect(pending).toEqual([]);
   const release = reads.watch("machine", () => {});
   expect(pending.map(({ kind }) => kind)).toEqual(["machine"]);

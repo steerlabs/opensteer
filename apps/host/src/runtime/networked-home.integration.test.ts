@@ -67,7 +67,7 @@ const throughProxy = {
   origin: home,
   "x-forwarded-proto": "https",
   "x-forwarded-for": "203.0.113.20",
-  ...apiVersionHeaders("personal"),
+  ...apiVersionHeaders(),
 };
 
 function cookies(response: { readonly cookies: readonly { name: string; value: string }[] }) {
@@ -453,7 +453,7 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
     const shell = await host.app.inject({
       method: "GET",
       url: "/v1/rpc/personal.shell.get?input=%7B%7D",
-      headers: { ...viaProxy, authorization: bearer, ...apiVersionHeaders("personal") },
+      headers: { ...viaProxy, authorization: bearer, ...apiVersionHeaders() },
     });
     expect(shell.statusCode, shell.body).toBe(200);
     // Who is signed in, as the Home's session says it: its owner.
@@ -461,7 +461,7 @@ it("boots unclaimed, is claimed once through its setup link, and enrolls its com
     const bearerSessions = await host.app.inject({
       method: "GET",
       url: "/v1/rpc/sessions.list?input=%7B%7D",
-      headers: { ...viaProxy, authorization: bearer, ...apiVersionHeaders("personal") },
+      headers: { ...viaProxy, authorization: bearer, ...apiVersionHeaders() },
     });
     expect(bearerSessions.json()).toMatchObject({
       data: { sessions: expect.arrayContaining([expect.objectContaining({ current: true })]) },

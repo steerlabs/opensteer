@@ -110,9 +110,8 @@ export function waitingMessageRows(
   });
   const hostPending = (entry: MessageEntry) => entry.queuePending && !entry.localDelivery;
   return [
-    ...rows.filter(({ input }) => input.kind !== "ask"),
+    ...rows,
     ...remaining.filter(({ entry }) => hostPending(entry)),
-    ...rows.filter(({ input }) => input.kind === "ask"),
     ...remaining.filter(({ entry }) => !hostPending(entry)),
   ];
 }

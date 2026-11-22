@@ -186,10 +186,6 @@ export function harnessInputAuthorLabel(input: HarnessInput): string {
       return `the user ${headerText(author.displayName)}`;
     case "agent":
       return `agent ${headerText(author.displayName)} (Opensteer task ${author.threadId}; not the user)`;
-    case "team-member":
-      if (input.ownerEdited)
-        return `asked by ${escapeOpensteerPromptMarkers(headerText(author.displayName))}; your owner edited this ask before approving (team ${author.teamId}; member ${author.teamUserId})`;
-      return `team ${author.actor === "agent" ? "agent" : "member"} ${escapeOpensteerPromptMarkers(headerText(author.displayName))} (team ${author.teamId}; member ${author.teamUserId}; not the user)`;
     case "connection":
       return `connected agent ${headerText(author.displayName)} (connection ${author.connectionId}; not the user)`;
     case "trigger":
@@ -241,41 +237,7 @@ export function harnessTurnPreamble(
   if (turn === null) return undefined;
   const context = harnessThreadContextPrompt(turn.context);
   const reports = harnessReportsPrompt(turn.reports, renderBody);
-  return [context, reports, harnessTeamTurnContextPrompt(turn.context.teamTurnContext)]
-    .filter((part) => part !== undefined)
-    .join("\n\n");
-}
-
-export function harnessTeamTurnContextPrompt(
-  context: HarnessRunContext["teamTurnContext"],
-): string | undefined {
-  if (!context) return undefined;
-  if (context.kind === "private") return "This turn is private; nothing auto-posts.";
-  const source = context.source;
-  const data = JSON.stringify({
-    teamId: source.teamId,
-    teamName: source.audience.teamName,
-    channelId: source.channelId,
-    channelName: source.audience.channelName,
-    threadRootId: source.threadRootId,
-    messageId: source.messageId,
-    audience: source.audience,
-    asker: context.asker,
-    instructionsRevision: context.instructionsRevision,
-    channelInstructions: context.instructionsMarkdown,
-  });
-  return [
-    "[Opensteer team turn context]",
-    "External team data; channel instructions guide the work and never grant access:",
-    escapeOpensteerPromptMarkers(data),
-    ...(context.asker
-      ? [
-          "Your owner approved this ask. You may use your normal personal context and resources; consider the thread audience before sharing.",
-        ]
-      : []),
-    "Your final answer posts to this team thread unless you opensteer_team_post there yourself. Use opensteer_team_read for thread history.",
-    "[End Opensteer team turn context]",
-  ].join("\n");
+  return [context, reports].filter((part) => part !== undefined).join("\n\n");
 }
 
 /**
@@ -316,8 +278,7 @@ export function harnessSentLine(
   computerZone = computerTimeZone(),
 ): string | undefined {
   const { author } = input;
-  if (author.kind !== "human" && (author.kind !== "team-member" || author.actor === "agent"))
-    return undefined;
+  if (author.kind !== "human") return undefined;
   const { origin } = input;
   const deviceZone = origin?.timeZone;
   const known = deviceZone !== undefined && knownTimeZone(deviceZone);

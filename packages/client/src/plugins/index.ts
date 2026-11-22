@@ -32,7 +32,7 @@ import { clientScopeKey } from "../connections/connection-controller.js";
 import { ClientOperationError } from "../connections/operation-error.js";
 import { presentClientIssue, type ClientIssue } from "../feedback/client-issue.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
-import type { KeysetPage } from "../team/paged-list.js";
+import type { KeysetPage } from "../reads/paged-list.js";
 import { pluginInputForm, type PluginInputForm } from "./input-form.js";
 
 export type {

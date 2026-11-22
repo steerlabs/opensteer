@@ -262,7 +262,7 @@ function AccountSettingsContent(props: {
     return <NativeSettingsPage sections={sections} />;
   }
 
-  // The person's name first: what their agent calls them and, signed in, what teammates see.
+  // The person's name first: what their agent calls them.
   const owner = host?.getSnapshot().ownerProfile ?? null;
   if (owner !== null)
     sections.push({
@@ -274,7 +274,7 @@ function AccountSettingsContent(props: {
           kind: "button",
           label: owner.name ?? "Add your name",
           detail: owner.accountBacked
-            ? "Your name · teammates see it"
+            ? "Your name · kept with your Opensteer account"
             : "Your name · stays on your computer",
           opens: true,
           onPress: () => navigation.navigate("YourName", { target: "owner" }),

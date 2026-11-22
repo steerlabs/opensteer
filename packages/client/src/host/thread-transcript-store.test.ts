@@ -1,7 +1,6 @@
-import { createId, TeamMessageIdSchema } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import { expect, test, vi } from "vitest";
 import { ItemTextStore } from "./item-text-store.js";
-import { transcriptCard } from "./transcript-item-view.js";
 import { displayedItemIds, ThreadTranscriptStore } from "./thread-transcript-store.js";
 import { detailThread } from "../test-support/scoped-transcript-fixture.js";
 
@@ -87,107 +86,6 @@ test("applies a whole commit while retaining structural identities on a content 
   store.begin(2, true);
   expect(store.apply({ ...base, type: "host.removed", reason: "unavailable" })).toBe(false);
   expect(store.getSnapshot().items.get(item.id)?.view.preview).toBe("B");
-});
-
-test("keeps sent and blocked Team delivery on the answering Run across status and history updates", () => {
-  const store = new ThreadTranscriptStore();
-  const base = { subscriptionId, generation: 1, scope };
-  const running = {
-    ...item,
-    id: `run:${runId}`,
-    kind: "run" as const,
-    view: { status: "running" },
-  };
-  const sending = {
-    state: "sending" as const,
-    via: "tool" as const,
-    answerMessageId: messageId,
-    teamMessageId: null,
-    reason: null,
-  };
-  const sent = {
-    ...sending,
-    state: "sent" as const,
-    teamMessageId: TeamMessageIdSchema.parse("42"),
-  };
-  const blocked = { ...sending, state: "blocked" as const, reason: "Link revoked" };
-  store.begin(1, false);
-  expect(
-    store.apply({
-      ...base,
-      type: "host.snapshot",
-      throughSequence: "1",
-      snapshot: {
-        thread: detailThread(thread),
-        items: [running],
-        pendingRequests: [],
-        activeItems: [],
-        nextBefore: null,
-      },
-    }),
-  ).toBe(true);
-  expect(store.apply({ ...base, type: "host.synchronized", throughSequence: "1" })).toBe(true);
-  const runCard = () => transcriptCard(store.getSnapshot().items.get(running.id)!);
-  const apply = (value: Parameters<typeof transcriptCard>[0]) => {
-    const through = store.getSnapshot().through!;
-    expect(
-      store.apply({
-        ...base,
-        type: "host.changes",
-        fromSequence: through,
-        throughSequence: value.revision,
-        changes: [
-          {
-            operation: "upsert",
-            entityKind: "item",
-            sequence: value.revision,
-            ordinal: 0,
-            entityId: value.id,
-            value,
-          },
-        ],
-      }),
-    ).toBe(true);
-  };
-
-  apply({ ...running, revision: "2", delivery: sending });
-  apply({ ...running, revision: "3", delivery: sent });
-  const completed = {
-    ...running,
-    revision: "4",
-    replyMessageId: messageId,
-    view: { status: "completed" },
-    delivery: sent,
-  };
-  apply(completed);
-  expect(runCard()).toMatchObject({
-    delivery: sent,
-    status: "completed",
-    replyMessageId: messageId,
-  });
-  expect(
-    store.installPage(
-      {
-        kind: "page",
-        threadId: scope.threadId,
-        nodeId: null,
-        revision: "4",
-        items: [{ ...running, revision: "3" }],
-        nextBefore: null,
-        nextAfter: null,
-        hasMore: false,
-      },
-      1,
-      "earlier",
-    ),
-  ).toBe(true);
-  expect(runCard()).toMatchObject({ delivery: sent, status: "completed" });
-  apply({ ...completed, revision: "5", delivery: blocked });
-  expect(runCard()).toMatchObject({
-    delivery: blocked,
-    status: "completed",
-    replyMessageId: messageId,
-  });
 });
 
 test("notifies only the live item and requests one repair for a UTF-16 offset gap", () => {

@@ -190,7 +190,7 @@ export async function connectionAttempts(
       select 'input', i.message_id, null, i.thread_id, null, null, null, false, null, null, null
       from thread_inputs i
       join floor f on f.id = i.connection_id
-      where i.state in ('pending','awaiting-approval') and i.run_id is null
+      where i.state = 'pending' and i.run_id is null
         and not exists (select 1 from runs r where r.seed_input_id = i.message_id and r.status = 'queued')
         and (f.disconnected or i.thread_id not in (select id from eligible_threads))
       union all

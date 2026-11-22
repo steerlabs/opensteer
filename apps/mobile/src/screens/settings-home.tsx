@@ -2,9 +2,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { workHomeMark } from "@opensteer/client/host";
 import { useWorkPolicy } from "@opensteer/client/react";
 import { useMobileState } from "../ui/mobile-client-context.js";
-import { useTeamsSnapshot } from "../team/team-context.js";
 import { SettingsHomeForm } from "./settings-home-form.js";
-import type { SettingsHomeTeam } from "./settings-home-model.js";
 import { GeneralSettingsController } from "./settings-general-controller.js";
 import { AccountSettingsController } from "./settings-account-controller.js";
 import { DevicesSettingsController } from "./settings-devices-controller.js";
@@ -23,29 +21,11 @@ import { DeploymentGate, useAttachedHost, useAttachedHostOf } from "./deployment
 import type { SettingsPage } from "./settings-form.types.js";
 export function SettingsScreen() {
   const navigation = useNavigation();
-  const { teams } = useTeamsSnapshot();
-  // One row per team the person is in, then a way into another.
-  const group: SettingsHomeTeam = {
-    name: "Teams",
-    rows: [
-      ...teams.map((team) => ({
-        title: team.name,
-        onPress: () => navigation.navigate("TeamSettings", { teamId: team.teamId }),
-      })),
-      { title: "Create or join a team", onPress: () => navigation.navigate("Teams") },
-    ],
-  };
-  return <SettingsHome team={group} />;
-}
-
-function SettingsHome(props: { readonly team: SettingsHomeTeam | null }) {
-  const navigation = useNavigation();
   const { selection } = useMobileState();
   const deploymentId = selection.deploymentId;
   const work = workHomeMark(useWorkPolicy(useAttachedHostOf(deploymentId)));
   return (
     <SettingsHomeForm
-      team={props.team}
       work={
         work && deploymentId
           ? {

@@ -10,14 +10,6 @@ import {
 } from "./iphone/bridge-paths.js";
 import { forwardMedia } from "./app/media-protocol.js";
 import { forwardHostRoute } from "./app/host-route.js";
-import { deploymentPolicy } from "@opensteer/core";
-import { DesktopTeamLinks } from "./app/team-links.js";
-import {
-  HttpAccountTeamsClient,
-  NativeTeamEntry,
-  verifyTeamEndpoint,
-} from "@opensteer/client/team";
-import { DesktopTeamSessions } from "./app/team-sessions.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
 import { resetFileWrites } from "./secrets/reset-file-writes.js";
@@ -246,7 +238,6 @@ const desktopOAuthLinks = {
 const mcpAuthorizationLinks = new McpAuthorizationLinks(
   new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
 );
-const teamLinks = new DesktopTeamLinks();
 const webLinks = new DesktopWebLinks((message) => {
   void app
     .whenReady()
@@ -292,14 +283,13 @@ app.on("open-url", (event, url) => {
     event.preventDefault();
     return;
   }
-  if (!teamLinks.accept(url) && !webLinks.accept(url)) return;
+  if (!webLinks.accept(url)) return;
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
   event.preventDefault();
 });
 app.on("second-instance", (_event, argv) => {
   for (const url of argv)
-    if (!mcpAuthorizationLinks.accept(url))
-      routeDesktopUrl(url, desktopOAuthLinks, webLinks, teamLinks);
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
@@ -353,8 +343,7 @@ async function startDesktop(): Promise<void> {
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
   for (const url of process.argv)
-    if (!mcpAuthorizationLinks.accept(url))
-      routeDesktopUrl(url, desktopOAuthLinks, webLinks, teamLinks);
+    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
   await runDesktop(loaded, privateFiles);
 }
 
@@ -770,19 +759,11 @@ async function runDesktop(
       await deviceLifecycle.assertSessionAllowed(deploymentId);
     },
     onSessionEnded: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
-      if (
-        deploymentPolicy(attachment.connection.authority.document.deploymentShape).services
-          .personal &&
-        attachment.resolved.access !== "owner"
-      )
+      if (attachment.resolved.access !== "owner")
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
     onUnauthorized: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
-      if (
-        deploymentPolicy(attachment.connection.authority.document.deploymentShape).services
-          .personal &&
-        attachment.resolved.access !== "owner"
-      )
+      if (attachment.resolved.access !== "owner")
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
   };
@@ -1369,30 +1350,9 @@ async function runDesktop(
       restart: () => restartToUpdate(),
     },
     webLinks,
-    teamLinks,
-    accountTeams: loaded.config.accountUrl
-      ? new HttpAccountTeamsClient({
-          accountOrigin: loaded.config.accountUrl,
-          authorization: nativeAuth,
-          fetch: serviceNetwork.fetch.bind(serviceNetwork),
-        })
-      : null,
     cloudComputers: new AccountCloudComputerClient({
       transport: loaded.config.accountUrl ? accountDirectory : null,
     }),
-    teamSessions: loaded.config.accountUrl
-      ? new DesktopTeamSessions({
-          entry: new NativeTeamEntry({
-            oauth: nativeAuth,
-            verify: (origin) =>
-              verifyTeamEndpoint(origin, { fetch: serviceNetwork.fetch.bind(serviceNetwork) }),
-            catalog: deploymentCatalog,
-            bootstrap: (connection) =>
-              hostTransport.bootstrapTeam(connection.authority.document.deploymentId),
-          }),
-          fetch: serviceNetwork.fetch.bind(serviceNetwork),
-        })
-      : null,
     personalDataReset: desktopPersonalDataReset({
       personal,
       quiesce: async () => {

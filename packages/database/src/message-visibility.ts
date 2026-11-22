@@ -55,7 +55,7 @@ export async function syncTranscriptMessage(
       .executeTakeFirstOrThrow();
     const input = await tx
       .selectFrom("threadInputs")
-      .select(["policy", "state", "runId", "cancelReason", "teamSource"])
+      .select(["policy", "state", "runId", "cancelReason"])
       .where("messageId", "=", messageId)
       .executeTakeFirst();
     const seed =
@@ -93,7 +93,6 @@ export async function syncTranscriptMessage(
         ? { policy: input.policy, state: input.state, cancelReason: input.cancelReason }
         : {}),
       ...(edit ? { edit } : {}),
-      ...(input?.teamSource ? { teamSource: input.teamSource } : {}),
       edited: message.revision > 0,
       admittedSeed: Boolean(
         seed && nonTerminalRunStatuses.some((status) => status === seed.status),

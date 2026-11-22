@@ -3,14 +3,11 @@ import {
   type ComposerLinkCandidate,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import { useTeamReferenceCandidates } from "@opensteer/client/react";
 import {
   collectComposerTokens,
-  hrefIcon,
   referenceIcon,
   type ComposerEditorHandle,
 } from "@opensteer/client/references";
-import type { TeamSessionClient, TeamSidebar } from "@opensteer/client/team";
 import { classifyHref } from "@opensteer/core";
 import type { ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
@@ -92,36 +89,6 @@ export function personalReferenceSections(
     { title: "Automations", rows: groups.automation },
     { title: "Computers", rows: groups.computer },
   ];
-}
-
-/**
- * Channels from the team the reader already holds, and knowledge read through the
- * team's own authorized lists, only while the picker is open (`query` not null).
- */
-export function useTeamReferenceSections(
-  session: TeamSessionClient | null,
-  origin: string | null,
-  sidebar: TeamSidebar | null,
-  query: string | null,
-): readonly ReferenceSection[] {
-  const candidates = useTeamReferenceCandidates(
-    session,
-    origin === null
-      ? null
-      : { origin, channels: (sidebar?.channels ?? []).map((entry) => entry.channel) },
-    query,
-  );
-  if (candidates.length === 0) return [];
-  const row = (candidate: ComposerLinkCandidate): ReferenceRow => ({
-    icon: referenceSymbols[hrefIcon(candidateHref(candidate))],
-    key: candidate.key,
-    label: candidate.label,
-    markdown: candidate.markdown,
-  });
-  return (["Channels", "Knowledge"] as const).map((title) => ({
-    title,
-    rows: candidates.filter(({ category }) => category === title).map(row),
-  }));
 }
 
 function candidateHref(candidate: ComposerLinkCandidate): string {

@@ -3,7 +3,7 @@ import { IsoDateTimeSchema } from "@opensteer/core";
 
 /**
  * The person's side of plugins on a personal Host. Every read and command here
- * is answered by the Host for its owner; a team server exposes none of it.
+ * is answered by the Host for its owner.
  * A read sends what its first screen shows and pages the rest by cursor, so a
  * phone on a weak link never waits for a whole list; the catalog is never part
  * of attach.

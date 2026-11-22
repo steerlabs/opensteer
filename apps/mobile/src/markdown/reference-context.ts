@@ -1,19 +1,18 @@
 import type {
   PersonalReferenceNavigationPorts,
-  ReferenceNavigationPorts,
   ReferenceRenderContext,
 } from "@opensteer/client/references";
 import { createContext, useContext } from "react";
 
 /**
- * How the links in what is on screen open: the Deployment or team that owns
+ * How the links in what is on screen open: the Deployment that owns
  * those words, captured where they are drawn. A tap never asks which
  * Deployment is selected now; the words name their owner and only that owner
  * may answer for them.
  */
 export interface ReferenceNavigation {
   readonly context: ReferenceRenderContext;
-  readonly ports: ReferenceNavigationPorts | PersonalReferenceNavigationPorts;
+  readonly ports: PersonalReferenceNavigationPorts;
   /** Opens what an internal link names. A failure is told to the person, never thrown. */
   readonly open: (href: string) => Promise<void>;
 }

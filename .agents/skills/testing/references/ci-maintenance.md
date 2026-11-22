@@ -16,7 +16,7 @@ pnpm exec tsx scripts/ci-native-inputs.ts
   Check re-verifies it ([ci-reuse.mjs](../../../../.github/scripts/ci-reuse.mjs)). The scheduled
   full run backs it up.
 - Lint still runs on an unchanged scheduled main to enforce quarantine expiry and the published
-  Stable team API floor. The latter reads `desktop-v*` tags; fetch tags before running
+  Stable personal API floor. The latter reads `desktop-v*` tags; fetch tags before running
   `node .github/scripts/ci-stable-api.mjs` locally.
 - Regenerate shard weights from one green run's downloaded artifacts with `ci-durations.ts`.
 - `ci-timeouts.ts` records each job's p95 over its last 30 successful runs in

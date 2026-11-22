@@ -6,7 +6,7 @@ import type { HostApiCommand } from "@opensteer/protocol";
 import { controlledClientSession } from "../test-support/client-connection.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
-import { PagedList, type PagedListState } from "../team/paged-list.js";
+import { PagedList, type PagedListState } from "../reads/paged-list.js";
 import {
   readPluginWebhookSetup,
   removePluginWebhook,

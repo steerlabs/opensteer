@@ -1,4 +1,3 @@
-import { TeamRuntimeOwner } from "@opensteer/client/team";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import {
   createDesktopHostFetch,
@@ -14,11 +13,7 @@ import {
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
 import { hostApiCurrentHeader, hostApiVersionHeader } from "@opensteer/protocol";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
-import {
-  minimumHostApiVersion,
-  teamApiVersion,
-  teamApiVersionHeader,
-} from "@opensteer/deployment-authority";
+import { minimumHostApiVersion } from "@opensteer/deployment-authority";
 import { expectedMutationSessionHeader } from "@opensteer/protocol";
 import { responseChunkReader } from "@opensteer/shared/boundedJson";
 import { describe, expect, it, vi } from "vitest";
@@ -132,7 +127,6 @@ describe("DesktopHostTransport", () => {
                     status: "idle",
                     title: "Task",
                     purpose: "task",
-                    teamOrigin: null,
                   },
                 }
               : {
@@ -150,8 +144,6 @@ describe("DesktopHostTransport", () => {
                     replyTarget: null,
                     runId: null,
                     state: "pending",
-                    teamRequestId: null,
-                    teamSource: null,
                     threadId,
                     updatedAt: at,
                   },
@@ -315,218 +307,6 @@ describe("DesktopHostTransport", () => {
     }
   });
 
-  it("ends a team response mid-body when its Account owner retires", async () => {
-    const team = deployment("Team", "https://team.example");
-    const id = team.authority.document.deploymentId;
-    const owner = new TeamRuntimeOwner(null);
-    let body!: ReadableStreamDefaultController<Uint8Array>;
-    const transport = desktopHostTransport({
-      catalog: catalogStore([team], id),
-      credentials: { teamRuntime: () => owner, authorizationHeader: async () => "Bearer team" },
-      network: {
-        openWebSocket: () => socket(),
-        request: async () =>
-          new Response(
-            new ReadableStream<Uint8Array>({
-              start: (controller) => {
-                body = controller;
-              },
-            }),
-          ),
-      },
-    });
-    try {
-      const response = await hostFetch(transport, id)(`${routeOrigin}/v1/team/files/test/original`);
-      const reader = response.body!.getReader();
-      body.enqueue(new TextEncoder().encode("first"));
-      expect(new TextDecoder().decode((await reader.read()).value)).toBe("first");
-      owner.retire();
-      body.enqueue(new TextEncoder().encode("private"));
-      await expect(reader.read()).rejects.toThrow("The Account identity changed.");
-    } finally {
-      transport.dispose();
-    }
-  });
-
-  it("sends an upload under the Account it arrived with, never one that replaced it mid-body", async () => {
-    const team = deployment("Team", "https://team.example");
-    const id = team.authority.document.deploymentId;
-    let owner = new TeamRuntimeOwner(null);
-    let account = "Bearer original";
-    const request = vi.fn(async () => Response.json({}));
-    const transport = desktopHostTransport({
-      catalog: catalogStore([team], id),
-      credentials: { teamRuntime: () => owner, authorizationHeader: async () => account },
-      network: { openWebSocket: () => socket(), request },
-    });
-    let upload!: ReadableStreamDefaultController<Uint8Array>;
-    const reading = Promise.withResolvers<void>();
-    // Pulled only once main is reading the body, so the Account changes mid-upload.
-    const body = new ReadableStream<Uint8Array>(
-      {
-        start: (controller) => {
-          upload = controller;
-        },
-        pull: () => reading.resolve(),
-      },
-      { highWaterMark: 0 },
-    );
-    try {
-      const pending = forwardHostRoute(
-        Object.assign(
-          new Request(`app://opensteer/host/${id}/v1/team/files/upload/channel_1`, {
-            body,
-            duplex: "half",
-            headers: {
-              "content-type": "application/octet-stream",
-              [desktopHostRequestIdHeader]: crypto.randomUUID(),
-            },
-            method: "POST",
-          } as RequestInit),
-          { initiatorOrigin: "app://opensteer" },
-        ),
-        transport,
-      );
-      await reading.promise;
-      upload.enqueue(new TextEncoder().encode("first part"));
-      owner.retire();
-      owner = new TeamRuntimeOwner(null);
-      account = "Bearer replacement";
-      upload.enqueue(new TextEncoder().encode("rest"));
-      upload.close();
-      const response = await pending;
-      expect(response.headers.get(desktopHostTransportErrorHeader)).toBe("deployment-changed");
-      expect(request).not.toHaveBeenCalled();
-    } finally {
-      transport.dispose();
-    }
-  });
-
-  it.each([
-    ["desktop", "credential"],
-    ["shared", "credential"],
-    ["desktop", "response"],
-    ["shared", "response"],
-  ])("fences initial %s resolution at %s", async (surface, stage) => {
-    const team = deployment("Team", "https://team.example");
-    const catalog = catalogStore([team], team.authority.document.deploymentId);
-    const gate = Promise.withResolvers<void>();
-    const read = vi.fn();
-    const owner = new TeamRuntimeOwner(null);
-    const credentials = {
-      teamRuntime: () => owner,
-      authorizationHeader: async () => {
-        read();
-        if (stage === "credential") await gate.promise;
-        return "Bearer outgoing";
-      },
-    };
-    const request = vi.fn(async () => {
-      if (stage === "response") await gate.promise;
-      return Response.json({});
-    });
-    const network = { request, openWebSocket: () => socket() };
-    const transport =
-      surface === "desktop"
-        ? desktopHostTransport({ catalog, credentials, network })
-        : new SharedHostTransport({
-            catalog,
-            credentials,
-            network,
-            localRuntime: { current: async () => null },
-          });
-    try {
-      const pending = transport.exchange(
-        { headers: {}, method: "GET", path: "/v1/bootstrap" },
-        async (r) => r.text(),
-      );
-      const rejected = expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
-      await vi.waitFor(
-        () => expect(stage === "credential" ? read : request).toHaveBeenCalledOnce(),
-        { timeout: 1000 },
-      );
-      owner.retire();
-      gate.resolve();
-      await rejected;
-      expect(request).toHaveBeenCalledTimes(stage === "credential" ? 0 : 1);
-    } finally {
-      gate.resolve();
-      transport.closeAllSockets();
-      if (transport instanceof DesktopHostTransport) transport.dispose();
-    }
-  });
-
-  it.each([false, true])(
-    "isolates personal transports during team invalidation (team: %s)",
-    async (withTeam) => {
-      const personal = deployment("Home", "https://home.example", "personal");
-      const manual = deployment("Work", "https://work.example", "personal");
-      const team = deployment("Team", "https://team.example");
-      const catalog = catalogStore(
-        [personal, manual, ...(withTeam ? [team] : [])],
-        personal.authority.document.deploymentId,
-      );
-      const gate = Promise.withResolvers<Response>();
-      const started: HostNetworkRequest[] = [];
-      const closes = new Map<DeploymentId, ReturnType<typeof vi.fn>>();
-      const owner = new TeamRuntimeOwner(null);
-      const transport = desktopHostTransport({
-        catalog,
-        credentials: { teamRuntime: () => owner, authorizationHeader: async () => null },
-        network: {
-          request: async (input) => {
-            started.push(input);
-            return gate.promise.then((response) => response.clone());
-          },
-          openWebSocket: (input) => {
-            const close = vi.fn();
-            closes.set(input.deploymentId, close);
-            return { ...socket(), close };
-          },
-        },
-      });
-      try {
-        await transport.openWebSocket(
-          1,
-          { expectedDeploymentId: personal.authority.document.deploymentId, path: "/v1/realtime" },
-          () => {},
-        );
-        if (withTeam)
-          await transport.openWebSocket(
-            2,
-            { expectedDeploymentId: team.authority.document.deploymentId, path: "/v1/realtime" },
-            () => {},
-          );
-        const request = (id: DeploymentId) =>
-          send(transport, id, "/v1/rpc/attention.get", { method: "POST", body: "{}" });
-        const selected = expect(
-          request(personal.authority.document.deploymentId),
-        ).resolves.toBeDefined();
-        const summary = expect(
-          request(manual.authority.document.deploymentId),
-        ).resolves.toBeDefined();
-        void selected.catch(() => {});
-        void summary.catch(() => {});
-        const teamRequest = withTeam ? request(team.authority.document.deploymentId) : null;
-        const rejected = teamRequest
-          ? expect(teamRequest).rejects.toMatchObject({ code: "deployment-changed" })
-          : null;
-        await vi.waitFor(() => expect(started).toHaveLength(withTeam ? 3 : 2), { timeout: 1000 });
-        owner.retire();
-        expect(closes.get(personal.authority.document.deploymentId)).not.toHaveBeenCalled();
-        if (withTeam)
-          expect(closes.get(team.authority.document.deploymentId)).toHaveBeenCalledOnce();
-        gate.resolve(Response.json({ ok: true, data: {} }));
-        await selected;
-        await summary;
-        await rejected;
-      } finally {
-        gate.resolve(Response.json({}));
-        transport.dispose();
-      }
-    },
-  );
-
   it("records an issued enrollment before the renderer can read it, using the request's exact Deployment", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
     const id = selected.authority.document.deploymentId;
@@ -657,42 +437,13 @@ describe("DesktopHostTransport", () => {
     }
   });
 
-  it("reads a team's bootstrap as strict UTF-8, refusing a byte a lenient decode would repair", async () => {
-    const team = deployment("Team", "https://team.example");
-    const id = team.authority.document.deploymentId;
-    const transport = desktopHostTransport({
-      catalog: catalogStore([team], id),
-      network: {
-        openWebSocket: () => socket(),
-        request: async () =>
-          new Response(
-            Uint8Array.from([
-              ...new TextEncoder().encode(
-                '{"ok":false,"error":{"code":"conflict","retryable":false,"message":"Ada',
-              ),
-              0xff,
-              ...new TextEncoder().encode('"}}'),
-            ]),
-          ),
-      },
-    });
-    try {
-      await expect(transport.bootstrapTeam(id)).rejects.toBeInstanceOf(TypeError);
-    } finally {
-      transport.dispose();
-    }
-  });
-
-  it("holds an upload to its attachment through a token refresh, not a selection that left and came back", async () => {
+  it("holds an upload to its attachment, not a selection that left and came back", async () => {
     const home = deployment("Home", "https://home.connect.opensteer.test", "personal");
     const work = deployment("Work", "https://work.connect.opensteer.test", "personal");
-    const team = deployment("Team", "https://team.example");
-    const owner = new TeamRuntimeOwner(null);
-    let token = "Bearer first";
     const request = vi.fn(async (_input: HostNetworkRequest) => Response.json({}));
     const transport = desktopHostTransport({
-      catalog: catalogStore([home, work, team], home.authority.document.deploymentId),
-      credentials: { teamRuntime: () => owner, authorizationHeader: async () => token },
+      catalog: catalogStore([home, work], home.authority.document.deploymentId),
+      credentials: { authorizationHeader: async () => "Bearer first" },
       network: { openWebSocket: () => socket(), request },
     });
     // An upload main is reading, finished only when told.
@@ -741,16 +492,6 @@ describe("DesktopHostTransport", () => {
       const returned = await away.finish();
       expect(returned.headers.get(desktopHostTransportErrorHeader)).toBe("deployment-changed");
       expect(request).not.toHaveBeenCalled();
-
-      const teamId = team.authority.document.deploymentId;
-      const refreshed = paused(teamId, "/v1/team/files/upload/channel_1");
-      await refreshed.reading;
-      token = "Bearer second";
-      // Another read meanwhile resolves the team's attachment again with the new token.
-      await send(transport, teamId, "/v1/rpc/team.bootstrap.get", { method: "POST", body: "{}" });
-      const sent = await refreshed.finish();
-      expect(sent.status).toBe(200);
-      expect(request.mock.calls.at(-1)![0]).toMatchObject({ authorization: "Bearer second" });
     } finally {
       transport.dispose();
     }
@@ -2476,10 +2217,7 @@ describe("DesktopHostTransport", () => {
   });
 
   it("does not treat an ambiguous WebSocket failure as authentication evidence", async () => {
-    const selected = DeploymentConnectionSchema.parse({
-      ...deployment("Cloud", "https://cloud.opensteer.test"),
-      kind: "team",
-    });
+    const selected = deployment("Cloud", "https://cloud.opensteer.test");
     let events: HostNetworkSocketEvents | null = null;
     const recoverUnauthorized = vi.fn(async () => "recovered" as const);
     const transport = desktopHostTransport({
@@ -2511,31 +2249,20 @@ describe("DesktopHostTransport", () => {
     events!.close(1_000, "");
     expect(recoverUnauthorized).not.toHaveBeenCalled();
   });
-
-  it("never spends an Account grant for a Deployment that owns its authorization", async () => {
-    const fixture = cloudFixture({ kind: "team" });
-
-    await expect(get(fixture.transport, "/v1/bootstrap")).resolves.toMatchObject({ status: 401 });
-
-    expect(fixture.recoverUnauthorized).toHaveBeenCalledOnce();
-    expect(fixture.hostRequests).toEqual(["/v1/bootstrap"]);
-  });
 });
 
 function cloudFixture(
   options: {
-    readonly kind?: "personal" | "team";
     readonly redemptionStatus?: number;
   } = {},
 ) {
   const canonicalOrigin = "https://cloud.opensteer.test";
   const selected = DeploymentConnectionSchema.parse({
-    ...deployment("Cloud", canonicalOrigin, options.kind ?? "personal"),
+    ...deployment("Cloud", canonicalOrigin),
   });
   const hostRequests: string[] = [];
   let sessionActive = false;
   const recoverUnauthorized = vi.fn(async () => {
-    if (options.kind === "team") return "unsupported" as const;
     if (options.redemptionStatus !== undefined) return "blocked" as const;
     sessionActive = true;
     return "recovered" as const;
@@ -2634,7 +2361,7 @@ function get(transport: SharedHostTransport, path: string) {
   }));
 }
 
-function deployment(name: string, canonicalOrigin: string, kind: "personal" | "team" = "team") {
+function deployment(name: string, canonicalOrigin: string, kind: "personal" = "personal") {
   const now = "2026-08-11T10:00:00.000Z";
   return DeploymentConnectionSchema.parse({
     authority: testDiscoveryEnvelope({
@@ -3537,106 +3264,7 @@ describe("Desktop Host route admission", () => {
   });
 });
 
-describe("joined team routing", () => {
-  it("pins RPC, sockets and file bytes to each team while Personal selection changes", async () => {
-    const personal = deployment("Personal", "http://127.0.0.1:4310", "personal");
-    const other = deployment("Other Personal", "http://127.0.0.1:4311", "personal");
-    const teams = [
-      deployment("Acme", "https://acme.example"),
-      deployment("Family", "https://family.example"),
-    ];
-    const catalog = catalogStore(
-      [personal, other, ...teams],
-      personal.authority.document.deploymentId,
-    );
-    const requests: HostNetworkRequest[] = [];
-    const sockets: {
-      input: Omit<HostNetworkRequest, "request" | "signal">;
-      network: ReturnType<typeof socket>;
-    }[] = [];
-    const transport = desktopHostTransport({
-      catalog,
-      credentials: {
-        authorizationHeader: async (connection) =>
-          `Bearer credential-${connection.authority.document.deploymentId}`,
-      },
-      network: {
-        request: async (input) => {
-          requests.push(input);
-          return new Response(
-            input.request.body instanceof Uint8Array ? input.request.body : "team-file",
-          );
-        },
-        openWebSocket: (input) => {
-          const network = socket();
-          sockets.push({ input, network });
-          return network;
-        },
-      },
-    });
-    try {
-      for (const team of teams) {
-        const expectedDeploymentId = team.authority.document.deploymentId;
-        const origin = team.authority.document.canonicalOrigin;
-        const fetch = hostFetch(transport, expectedDeploymentId);
-        const version = { [teamApiVersionHeader]: "999" };
-        await fetch(`${routeOrigin}/v1/rpc/team.bootstrap`, { headers: version });
-        await transport.openWebSocket(7, { expectedDeploymentId, path: "/v1/realtime" }, vi.fn());
-        const download = await fetch(`${routeOrigin}/v1/team/files/file_1/original`, {
-          headers: version,
-        });
-        expect(await download.text()).toBe("team-file");
-        const metadata = '{"filename":"example.txt"}';
-        const upload = await fetch(`${routeOrigin}/v1/team/files/upload/channel_1`, {
-          body: new Blob(["uploaded-file"]),
-          headers: {
-            ...version,
-            "content-type": "application/octet-stream",
-            "x-opensteer-team-upload": metadata,
-          },
-          method: "POST",
-        });
-        expect(upload.status).toBe(200);
-        expect(await upload.text()).toBe("uploaded-file");
-        const routed = requests.filter((input) => input.deploymentId === expectedDeploymentId);
-        expect(routed).toHaveLength(3);
-        for (const input of routed) {
-          expect(input.url).toBe(origin + input.request.path);
-          expect(input.authorization).toBe(`Bearer credential-${expectedDeploymentId}`);
-          expect(input.request.headers).toMatchObject({
-            additional: { [teamApiVersionHeader]: String(teamApiVersion) },
-          });
-          expect(input.request.headers.apiVersion).toBeUndefined();
-        }
-        expect(routed[2]!.request.headers.additional).toMatchObject({
-          "x-opensteer-team-upload": metadata,
-        });
-        // A team Host fetches a partner's file before it answers; other reads keep the usual wait.
-        expect(routed.map(({ request }) => request.timeoutMs)).toEqual([
-          undefined,
-          120_000,
-          120_000,
-        ]);
-        expect(sockets.at(-1)!.input).toMatchObject({
-          deploymentId: expectedDeploymentId,
-          authorization: `Bearer credential-${expectedDeploymentId}`,
-          url: `${origin.replace("https:", "wss:")}/v1/realtime?opensteer_api_version=${teamApiVersion}`,
-          headers: { [teamApiVersionHeader]: String(teamApiVersion) },
-        });
-      }
-      await transport.select({ deploymentId: other.authority.document.deploymentId });
-      expect(sockets.every(({ network }) => network.close.mock.calls.length === 0)).toBe(true);
-      await send(transport, other.authority.document.deploymentId, "/v1/rpc/bootstrap.get");
-      expect(requests.at(-1)!.deploymentId).toBe(other.authority.document.deploymentId);
-      for (const team of teams)
-        await send(transport, team.authority.document.deploymentId, "/v1/rpc/team.bootstrap");
-      expect(sockets.every(({ network }) => network.close.mock.calls.length === 0)).toBe(true);
-    } finally {
-      transport.dispose();
-    }
-    expect(sockets.every(({ network }) => network.close.mock.calls.length === 1)).toBe(true);
-  });
-
+describe("routing to a Home that is not selected", () => {
   it("reads only pinned summary RPCs from another personal computer without selecting it or opening a socket", async () => {
     const first = deployment("Home", "https://home.example.test", "personal");
     const second = deployment("Work", "https://work.example.test", "personal");
@@ -3647,9 +3275,7 @@ describe("joined team routing", () => {
         requested.push(String(url));
         return Response.json({
           ok: true,
-          data: new URL(url).pathname.endsWith("attention.get")
-            ? { needsYou: 3, unread: true }
-            : { links: [] },
+          data: { needsYou: 3, unread: true },
         });
       }),
       openWebSocket: vi.fn(() => socket()),
@@ -3666,15 +3292,11 @@ describe("joined team routing", () => {
           } as DeploymentAccessDeployment,
           routeFetch(transport),
         ),
-      ).resolves.toEqual({ homeName: null, needsYou: 3, unread: true, teams: [] });
+      ).resolves.toEqual({ homeName: null, needsYou: 3, unread: true });
       expect(network.request.mock.calls.map(([request]) => request.request.method)).toEqual([
         "POST",
-        "POST",
       ]);
-      expect(requested).toEqual([
-        "https://work.example.test/v1/rpc/attention.get",
-        "https://work.example.test/v1/rpc/teams.links.list",
-      ]);
+      expect(requested).toEqual(["https://work.example.test/v1/rpc/attention.get"]);
       expect((await catalog.load()).selectedDeploymentId).toBe(
         first.authority.document.deploymentId,
       );
@@ -3685,7 +3307,7 @@ describe("joined team routing", () => {
       await expect(
         send(transport, expectedDeploymentId, "/v1/rpc/attention.get"),
       ).rejects.toMatchObject({ code: "deployment-changed" });
-      expect(network.request).toHaveBeenCalledTimes(2);
+      expect(network.request).toHaveBeenCalledTimes(1);
     } finally {
       transport.dispose();
     }
@@ -3726,7 +3348,7 @@ describe("joined team routing", () => {
     }
   });
 
-  it("refuses missing team pins and Personal deployment mismatches before opening any network traffic", async () => {
+  it("refuses missing pins and Personal deployment mismatches before opening any network traffic", async () => {
     const first = deployment("Personal A", "http://127.0.0.1:4310", "personal");
     const second = deployment("Personal B", "http://127.0.0.1:4311", "personal");
     const network = {
@@ -3782,41 +3404,6 @@ it("refuses a pinned Personal socket if selection changes during the final crede
       ),
     ).rejects.toMatchObject({ code: "deployment-changed" });
     expect(openWebSocket).not.toHaveBeenCalled();
-  } finally {
-    transport.dispose();
-  }
-});
-
-it("closes only the removed team's live sockets after its catalog attachment disappears", async () => {
-  const personal = deployment("Personal", "http://127.0.0.1:4310", "personal");
-  const first = deployment("Acme", "https://acme.example");
-  const second = deployment("Family", "https://family.example");
-  const catalog = catalogStore([personal, first, second], personal.authority.document.deploymentId);
-  const sockets = new Map<string, ReturnType<typeof socket>>();
-  const transport = desktopHostTransport({
-    catalog,
-    network: {
-      request: async () => new Response("{}"),
-      openWebSocket: (input) => {
-        const network = socket();
-        sockets.set(input.deploymentId, network);
-        return network;
-      },
-    },
-  });
-  try {
-    for (const team of [first, second])
-      await transport.openWebSocket(
-        7,
-        { expectedDeploymentId: team.authority.document.deploymentId, path: "/v1/realtime" },
-        vi.fn(),
-      );
-    catalog.replace([personal, second], personal.authority.document.deploymentId);
-    await vi.waitFor(
-      () => expect(sockets.get(first.authority.document.deploymentId)!.close).toHaveBeenCalled(),
-      { timeout: 1_000 },
-    );
-    expect(sockets.get(second.authority.document.deploymentId)!.close).not.toHaveBeenCalled();
   } finally {
     transport.dispose();
   }

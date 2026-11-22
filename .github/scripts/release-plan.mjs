@@ -10,7 +10,7 @@ const { deriveReleaseVersion } = createRequire(import.meta.url)(
   "../../scripts/release-version.cjs",
 );
 const repo = "steerlabs/opensteer";
-/** Changes that never reach a desktop, APK, Account or team image: documentation and CI only. */
+/** Changes that never reach a desktop, APK or Account image: documentation and CI only. */
 export const unreleasedPaths = [
   "docs/**",
   "README.md",

@@ -106,27 +106,4 @@ describe("a task opened from Settings", () => {
       ],
     ]);
   });
-
-  it("leaves a team's history alone when the task opens over its screens", async () => {
-    const home = { name: "Home", params: { deploymentId: "deployment-a" } };
-    const channel = { name: "TeamChannel", params: { teamId: "team-a", channelId: "general" } };
-    state.routes = [home, channel, { name: "Settings" }, { name: "SettingsDevices" }];
-    let leave: ReturnType<typeof useLeaveSheets> | null = null;
-    function Probe(): ReactNode {
-      leave = useLeaveSheets("deployment-a", host);
-      return null;
-    }
-    root = createRoot(document.body.appendChild(document.createElement("div")));
-    await act(async () => root!.render(<Probe />));
-
-    act(() => leave!.openThread("thread-b"));
-
-    const thread = {
-      name: "Thread",
-      params: { deploymentId: "deployment-a", threadId: "thread-b" },
-    };
-    expect(state.dispatch.mock.calls).toEqual([
-      [{ payload: { index: 1, routes: [home, thread] }, type: "RESET" }],
-    ]);
-  });
 });

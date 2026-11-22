@@ -29,7 +29,7 @@ import type {
 import { createControlPlaneDatabase } from "../database/database.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import { ControlPlaneStore } from "../database/store.js";
-import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
+import { CloudComputerSecretCipher } from "../cloud-computers/secret-cipher.js";
 import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { ControlPlaneError } from "../server/errors.js";
 import { createControlPlaneServer } from "../server/server.js";
@@ -167,7 +167,7 @@ integration("Organization website pages", () => {
       organizations,
       config,
       accountOrigin: publicOrigin,
-      cipher: new HostedTeamSetupTokenCipher(Buffer.alloc(32, 5).toString("base64url")),
+      cipher: new CloudComputerSecretCipher(Buffer.alloc(32, 5).toString("base64url")),
       stripe,
       returnUrl: new URL("/cloud-computer", portalOrigin),
     });

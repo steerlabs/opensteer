@@ -593,14 +593,8 @@ export class ProductToolHandlers {
     const messages = [...(await this.#readableMessages(caller, page.messages))].sort((a, b) =>
       compareSequence(b.sequence, a.sequence),
     );
-    const teamSources = await this.#store.messageTeamSources(
-      thread.id,
-      messages.map((m) => m.id),
-    );
     const items = boundedThreadItems(
-      messages.map((m) =>
-        messageItem(m, input.maxCharsPerItem, input.textOffset, teamSources.get(m.id)),
-      ),
+      messages.map((m) => messageItem(m, input.maxCharsPerItem, input.textOffset)),
     );
     if (input.itemId && !items.length) throw forbidden("Item is unavailable in this task");
     const hasMore = items.length < messages.length || page.window.hasMore;
@@ -690,10 +684,6 @@ export class ProductToolHandlers {
         : undefined;
     const readablePlaces = new Set(places.map((place) => place.id));
     const readableMessages = new Map(messages.map((message) => [message.id, message]));
-    const teamSources = await this.#store.messageTeamSources(
-      threadId,
-      messages.map((message) => message.id),
-    );
     const mapped = page.items.flatMap<{
       item: (typeof page.items)[number];
       view: ReturnType<typeof activityItem>;
@@ -704,12 +694,7 @@ export class ProductToolHandlers {
           ? [
               {
                 item,
-                view: messageItem(
-                  message,
-                  input.maxCharsPerItem,
-                  input.textOffset,
-                  teamSources.get(message.id),
-                ),
+                view: messageItem(message, input.maxCharsPerItem, input.textOffset),
               },
             ]
           : [];

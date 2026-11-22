@@ -24,8 +24,7 @@ export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
     );
   if (!owner || !preview.available) return <Text>{alt || path}</Text>;
   const image = preview.image;
-  const viewer =
-    navigation?.ports !== undefined && "openFile" in navigation.ports ? navigation.ports : null;
+  const viewer = navigation?.ports ?? null;
   return (
     <View>
       <ImageHold

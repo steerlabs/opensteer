@@ -32,9 +32,8 @@ export type MessageHistoryScreenProps = StaticScreenProps<{
 }>;
 
 /**
- * Every version of a message a person edited while it waited, newest first:
- * for a teammate's ask, their words, then each of the person's edits. The
- * version a Run took is final, so this is the whole record of what was asked.
+ * Every version of a message a person edited while it waited, newest first.
+ * The version a Run took is final, so this is the whole record of what was asked.
  */
 export function MessageHistoryScreen(props: MessageHistoryScreenProps): ReactNode {
   const { deploymentId, messageId, threadId } = props.route.params;

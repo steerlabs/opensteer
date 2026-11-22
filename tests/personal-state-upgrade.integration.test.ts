@@ -1,11 +1,6 @@
 import { sql } from "kysely";
 import { expect, test } from "vitest";
-import {
-  createId,
-  RequestSchema,
-  TeamMessageIdSchema,
-  TeamSourceSchema,
-} from "../packages/core/src/index.js";
+import { createId, RequestSchema, TeamMessageIdSchema } from "../packages/core/src/index.js";
 import { TranscriptItemBodySchema } from "../packages/protocol/src/transcript.js";
 import {
   createDatabase,
@@ -34,7 +29,7 @@ import { AgentConnectionStore } from "../packages/database/src/agent-connection-
 import { TabStore } from "../packages/database/src/tab-store.js";
 import { runFromRow } from "../packages/database/src/thread-row-mappers.js";
 
-test("preserves message bodies, Request outcomes and Team delivery from a real 0029 database", async () => {
+test("preserves message bodies and Request outcomes from a real 0029 database, and leaves its team delivery out", async () => {
   const fixture = await cloneTestDatabase("host");
   const database = createDatabase({ connectionString: fixture.url });
   try {
@@ -67,7 +62,8 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
     const uncertainId = createId("message");
     const requestId = createId("request");
     const teamRequestId = createId("teamAgentRequest");
-    const teamSource = TeamSourceSchema.parse({
+    // A team ask's source and delivery, as a Home that served teams stored them.
+    const teamSource = {
       teamId: createId("deployment"),
       channelId: createId("teamChannel"),
       threadRootId: TeamMessageIdSchema.parse("42"),
@@ -79,7 +75,7 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
         memberCount: 3,
         peopleOnly: false,
       },
-    });
+    };
     const replyTarget = {
       kind: "team-thread",
       teamId: teamSource.teamId,
@@ -216,14 +212,15 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
       body: long,
       previewTruncated: false,
       delivery: { status: "unconfirmed" },
-      teamSource,
     });
-    expect(await hydrate(uncertainId)).toMatchObject({
+    expect(card(uncertainId)).not.toHaveProperty("teamSource");
+    const hydrated = await hydrate(uncertainId);
+    expect(hydrated).toMatchObject({
       body: long,
       delivery: { status: "unconfirmed" },
-      teamSource,
       runId,
     });
+    expect(hydrated).not.toHaveProperty("teamSource");
     expect(card(`request:${requestId}`)).toMatchObject({
       requestKind: "harness.input",
       outcome: "Fulfilled · Go ahead",
@@ -233,13 +230,8 @@ test("preserves message bodies, Request outcomes and Team delivery from a real 0
       replyMessageId: answerId,
       endedAt: request.resolvedAt,
       usage: { inputTokens: 15, outputTokens: 25 },
-      delivery: {
-        state: "blocked",
-        via: "final",
-        reason: "Link revoked",
-        answerMessageId: answerId,
-      },
     });
+    expect(card(`run:${runId}`)).not.toHaveProperty("delivery");
   } finally {
     await database.destroy();
     await fixture.drop();
@@ -263,6 +255,7 @@ test("carries a person's work from a database the released Home last migrated th
       "0048_shared_chrome_grants",
       workHomeMigrationName,
       browserPoolMigrationName,
+      "0051_needs_you_counts_requests",
     ]);
     await migrateToLatest(database, {
       async getMigrations() {

@@ -17,7 +17,7 @@ export async function runnerFileRequest(
   return await new Promise<IncomingMessage>((resolve, reject) => {
     const options = {
       ca,
-      headers: { ...headers, ...apiVersionHeaders("personal") },
+      headers: { ...headers, ...apiVersionHeaders() },
       signal,
       method: upload ? "PUT" : "GET",
     };

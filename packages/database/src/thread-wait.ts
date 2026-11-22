@@ -13,7 +13,7 @@ import type { Kysely } from "kysely";
 import "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
-import { messageFromRow } from "./thread-row-mappers.js";
+import { messagesFromRows } from "./thread-row-mappers.js";
 import { readPendingConnectionRequest } from "./request-agent-response.js";
 import type { ThreadCallerAuthority } from "./thread-caller.js";
 import { boundedSerializedPrefix } from "./message-window.js";
@@ -76,7 +76,7 @@ export function readThreadWaitSnapshot(
               .orderBy("messages.sequence", "asc")
               .limit(101)
               .execute();
-      const kept = boundedSerializedPrefix(messages.map(messageFromRow), 100, 400 * 1024).items;
+      const kept = boundedSerializedPrefix(messagesFromRows(messages), 100, 400 * 1024).items;
       let runQuery = tx
         .selectFrom("runs")
         .select(["id", "status"])

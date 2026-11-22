@@ -4,7 +4,7 @@ import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { Dialog } from "./dialog.js";
 import { NeedsYouRow } from "./needs-you-row.js";
-import { act, failureWords, presentFailure } from "./use-action.js";
+import { presentFailure } from "./use-action.js";
 
 export function NeedsYouList({
   client,
@@ -24,28 +24,6 @@ export function NeedsYouList({
   }, [client, count, page, ready, summaries]);
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const [dismissing, setDismissing] = useState<string | null>(null);
-  // A failed ask is answered nowhere; dismissing declines it.
-  const dismiss = async (entry: Extract<NeedsYouEntry, { kind: "team-ask" }>) => {
-    setDismissing(needsYouEntryKey(entry));
-    setFailure(null);
-    try {
-      await act(
-        client,
-        { label: "dismiss this", done: "dismissed", happened: "this was dismissed" },
-        () =>
-          client.decideTeamAsk({
-            decision: "decline",
-            requestId: entry.requestId,
-            teamId: entry.teamId,
-          }),
-      );
-    } catch (error) {
-      setFailure(failureWords(error) ?? "Could not dismiss it.");
-    } finally {
-      setDismissing(null);
-    }
-  };
   const loadMore = async () => {
     setLoading(true);
     setFailure(null);
@@ -69,15 +47,7 @@ export function NeedsYouList({
             </li>
           ))}
         {page?.entries.map((entry) => (
-          <NeedsYouRow
-            dismissing={dismissing === needsYouEntryKey(entry)}
-            entry={entry}
-            key={needsYouEntryKey(entry)}
-            onDismiss={() => {
-              if (entry.kind === "team-ask") void dismiss(entry);
-            }}
-            onOpen={() => onOpen(entry)}
-          />
+          <NeedsYouRow entry={entry} key={needsYouEntryKey(entry)} onOpen={() => onOpen(entry)} />
         ))}
       </ul>
       {failure ? <p role="alert">{failure}</p> : null}

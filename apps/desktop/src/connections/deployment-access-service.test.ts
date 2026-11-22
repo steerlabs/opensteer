@@ -173,7 +173,7 @@ describe("DeploymentAccessService", () => {
     await service.checkDeployments();
 
     // Nothing is attached, and every row still says what its own authority
-    // knows — a team Host that was never opened is not "Starting…".
+    // knows — a Home at its own address that was never opened is not "Starting…".
     expect(service.snapshot().deployments.map(({ statusInfo }) => statusInfo)).toEqual([
       { reason: null, status: "ready" },
       {
@@ -1781,7 +1781,7 @@ describe("DeploymentAccessService", () => {
     const liveLease = "2026-10-20T20:01:30.000Z";
 
     it("hides Account places while signed out, and shows them again on sign-in without re-adding them", async () => {
-      const server = deployment({ name: "Team server", source: "account" });
+      const server = deployment({ name: "Studio server", source: "account" });
       const added = deployment({ name: "Lab server" });
       const fixture = fakePorts({ deployments: [server, added] });
       const service = new DeploymentAccessService(fixture.ports, fixture.options);
@@ -1791,7 +1791,7 @@ describe("DeploymentAccessService", () => {
       fixture.emitAccount(signedInAccount());
       await settle();
       expect(service.snapshot().deployments.map(({ name }) => name)).toEqual([
-        "Team server",
+        "Studio server",
         "Lab server",
       ]);
       fixture.emitAccount(expiredAccount());
@@ -1802,7 +1802,7 @@ describe("DeploymentAccessService", () => {
 
     it("keeps an Account place this Mac joined listed and openable after the sign-in ends, until the Mac leaves it", async () => {
       const mac = otherMac({ livenessExpiresAt: liveLease });
-      const other = deployment({ name: "Team server", source: "account" });
+      const other = deployment({ name: "Studio server", source: "account" });
       const fixture = fakePorts({ deployments: [mac, other], joined: [mac.id] });
       fixture.currentState.mockResolvedValueOnce(expiredAccount());
       const service = new DeploymentAccessService(fixture.ports, fixture.options);
@@ -1857,7 +1857,7 @@ describe("DeploymentAccessService", () => {
     });
 
     it("refuses to open an Account place it is not showing", async () => {
-      const server = deployment({ name: "Team server", source: "account" });
+      const server = deployment({ name: "Studio server", source: "account" });
       const fixture = fakePorts({ deployments: [server] });
       const service = new DeploymentAccessService(fixture.ports, fixture.options);
       await service.initialize();
@@ -2051,12 +2051,12 @@ describe("DeploymentAccessService", () => {
     });
 
     it("lets an old unreachable verdict lapse, so a recovered place is never stuck behind it", async () => {
-      const server = deployment({ name: "Team server", source: "account" });
+      const server = deployment({ name: "Studio server", source: "account" });
       const unreachable = [
         {
           accountAccess: "member" as const,
           deploymentId: server.id,
-          name: "Team server",
+          name: "Studio server",
           reason: "host-unavailable" as const,
         },
       ];
@@ -2132,12 +2132,12 @@ describe("DeploymentAccessService", () => {
     });
 
     it("reads a place the Account listed but could not reach as unreachable, not ready", async () => {
-      const server = deployment({ name: "Team server", source: "account" });
+      const server = deployment({ name: "Studio server", source: "account" });
       const unreachable = [
         {
           accountAccess: "member" as const,
           deploymentId: server.id,
-          name: "Team server",
+          name: "Studio server",
           reason: "host-unavailable" as const,
         },
       ];
@@ -2147,7 +2147,7 @@ describe("DeploymentAccessService", () => {
       await service.initialize();
 
       expect(service.snapshot().deployments[0]?.statusInfo).toEqual({
-        reason: "Team server can’t be reached right now.",
+        reason: "Studio server can’t be reached right now.",
         status: "offline",
       });
       service.dispose();
@@ -2525,7 +2525,7 @@ function deployment(
     readonly accountAccess?: "owner" | "member" | null;
     readonly attachmentKey?: string | null;
     readonly id?: string;
-    readonly kind?: "personal" | "team";
+    readonly kind?: "personal";
     readonly lastUsedAt?: string | null;
     readonly name?: string;
     readonly onThisComputer?: boolean;
@@ -2542,7 +2542,7 @@ function deployment(
     activeOrigin: origin,
     canonicalOrigin: origin,
     id: overrides.id ?? createId("deployment"),
-    kind: overrides.kind ?? "team",
+    kind: overrides.kind ?? "personal",
     lastUsedAt: overrides.lastUsedAt ?? null,
     name: overrides.name ?? "Host",
     onThisComputer: overrides.onThisComputer ?? false,

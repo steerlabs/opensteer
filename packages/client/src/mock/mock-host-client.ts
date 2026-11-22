@@ -75,12 +75,7 @@ import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment } from "../computers/computers.js";
 import { heldThread, listedRowThreadId } from "../host/task-list.js";
 import { familyAutomations } from "../host/task-family.js";
-import {
-  DeploymentSnapshotSchema,
-  parseTeamLinkOffer,
-  PersonalTeamLinkSchema,
-  type PersonalTeamLink,
-} from "@opensteer/protocol";
+import { DeploymentSnapshotSchema } from "@opensteer/protocol";
 import { firstTriggerFireAt } from "@opensteer/triggers/schedule";
 import { mockPersonalFolder } from "./personal-fixtures.js";
 import type {
@@ -181,7 +176,6 @@ import {
   DEFAULT_THREAD_ACCESS_MODE,
   DeploymentIdSchema,
   MessageIdSchema,
-  TeamAgentRequestIdSchema,
   MessageAuthorSchema,
   MessageSchema,
   ModelSelectionSchema,
@@ -334,7 +328,6 @@ import type {
   TranscriptEntry,
   UpdateThreadAccessModeInput,
   UpdateThreadExecutionInput,
-  TeamAskDecision,
   WaitingMessageEditor,
 } from "../host/client.js";
 import {
@@ -369,7 +362,6 @@ import {
   isTerminalRunEntryStatus,
   requestReceipt,
   threadInputDelivery,
-  toMessageEntry,
   withEditedMessage,
 } from "../host/transcript.js";
 import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
@@ -1549,13 +1541,9 @@ function mockBadRequest(message: string): HostClientRequestError {
   return new HostClientRequestError({ code: "bad_request", message, status: 400 });
 }
 
-/** Only a person's own words and a teammate's ask are theirs to edit; generated work never is. */
+/** Only a person's own words are theirs to edit; generated work never is. */
 function mockEditable(item: PendingMockInput): boolean {
-  return (
-    item.input.policy === "queue" &&
-    (item.message.author.kind === "human" ||
-      (item.message.author.kind === "team-member" && item.input.teamRequestId !== null))
-  );
+  return item.input.policy === "queue" && item.message.author.kind === "human";
 }
 
 /**
@@ -1841,7 +1829,6 @@ export interface MockHostClientOptions {
   readonly clientScope?: () => ClientScope | null;
   /** Fail the first metadata batch containing this ID, then resolve normally. */
   referenceResolveFailureId?: ReferenceId;
-  teamAsks?: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[];
   /** `seeded`, or one task holding a single scene of the subagent design. */
   subagents?: "seeded" | "absent" | MockSubagentScene;
   desktopUpdates?: MockDesktopUpdateScenario;
@@ -1867,7 +1854,6 @@ export interface MockHostClientOptions {
   places?: "seeded" | "absent";
 
   world?: "seeded" | "first-run" | "busy" | "stress";
-  /** The team this Host plays; `absent`, today's Hosts, by default. */
   latencyMs?: number;
   /** What a Run does before its reply: the scripted reasoning, tools and streamed text, or only the reply. */
   replies?: "scripted" | "brief";
@@ -1990,7 +1976,6 @@ function mockNeedsYou(
   >,
   before?: string,
   limit = 50,
-  teamAsks: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [],
 ) {
   const requestRows = snapshot.waitingRequests.flatMap(({ request }) => {
     const thread = snapshot.threads.find(({ id }) => id === request.originatingThreadId);
@@ -2007,7 +1992,7 @@ function mockNeedsYou(
         ]
       : [];
   });
-  const rows = [...requestRows, ...teamAsks];
+  const rows = requestRows;
   const start = before ? Number(before) : 0;
   if (!Number.isSafeInteger(start) || start < 0 || start > rows.length)
     throw new Error("Invalid Needs-you cursor.");
@@ -2142,7 +2127,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       const snapshot = client.getSnapshot();
       return rpcSuccess({
         homeName: snapshot.machines.find(hostsDeployment)?.name ?? null,
-        needsYou: mockNeedsYou(snapshot, undefined, 50, client.teamAsks).count,
+        needsYou: mockNeedsYou(snapshot, undefined, 50).count,
         unread: snapshot.threads.some(
           (thread) =>
             thread.listed &&
@@ -2153,23 +2138,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       });
     },
     "needsYou.get": async (input) =>
-      rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit, client.teamAsks)),
-    "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
-    "teams.replyTask.get": async () => rpcSuccess({ taskId: null, completedAt: null }),
-    "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
-      rpcSuccess(
-        hostApi["teams.threadTask.get"].success.parse({
-          taskId:
-            client
-              .getSnapshot()
-              .threads.find(
-                ({ teamOrigin }) =>
-                  teamOrigin?.teamId === teamId &&
-                  teamOrigin.channelId === channelId &&
-                  teamOrigin.threadRootId === threadRootId,
-              )?.id ?? null,
-        }),
-      ),
+      rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "connections.activity": async (input) =>
       rpcSuccess(client.agentActivity({ connectionId: input.connectionId })),
     "threads.activity": async (input) =>
@@ -3043,29 +3012,6 @@ async function executeMockCommand(
   if (isMockSignInCommand(command))
     return rpcSuccess(await client.enginePlugins.signInCommand(command));
   switch (command.type) {
-    case "teams.link.join": {
-      const offer = parseTeamLinkOffer(command.link);
-      if (!offer) throw new Error("Invalid team link.");
-      const link = PersonalTeamLinkSchema.parse({
-        teamId: offer.teamId,
-        hostInstanceId: createId("hostInstance"),
-        origin: offer.origin,
-        teamName: "Acme",
-        remoteLinkId: createId("teamLink"),
-        ownerUserId: mockUserId,
-        state: "active",
-        lastContactAt: new Date().toISOString(),
-      });
-      client.teamLinks.set(link.teamId, link);
-      return rpcSuccess({ type: command.type, link });
-    }
-    case "teams.ask.decide":
-      client.decideTeamAsk(command);
-      return rpcSuccess({ type: command.type });
-    case "teams.link.leave":
-      client.teamLinks.delete(command.teamId);
-      return rpcSuccess({ type: command.type });
-
     case "settings.plugin.enabled.set":
       return rpcSuccess(
         client.settings.mutate(
@@ -3784,7 +3730,6 @@ function mockThread(thread: ThreadSummary): Thread {
     icon: thread.icon,
     ...(thread.color === null ? {} : { color: thread.color }),
     updatedAt: thread.updatedAt,
-    teamOrigin: thread.teamOrigin,
   });
 }
 
@@ -4044,7 +3989,7 @@ export class MockHostClient implements HostClient {
         active: page(snapshot.activeTasks),
         done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
       },
-      needsYou: mockNeedsYou(snapshot, undefined, undefined, this.#state.teamAsks),
+      needsYou: mockNeedsYou(snapshot, undefined, undefined),
       resources: (({ tabs, browser }) => ({ tabs, browser }))(this.#state.bootstrap()),
     });
     const serializedBytes = new TextEncoder().encode(JSON.stringify(cut)).byteLength;
@@ -5130,24 +5075,9 @@ export class MockHostClient implements HostClient {
     );
   }
 
-  async decideTeamAsk(input: TeamAskDecision): Promise<void> {
-    await this.dispatch({
-      decision: input.decision,
-      requestId: TeamAgentRequestIdSchema.parse(input.requestId),
-      teamId: DeploymentIdSchema.parse(input.teamId),
-      type: "teams.ask.decide",
-      ...(input.decision === "approve" ? { expectedRevision: input.expectedRevision } : {}),
-    });
-  }
-
   /** Scripted: a task's next Run waits while its AI account is still getting ready. */
   mockAccountPreparing(threadId: string): void {
     this.#state.queueBehindPreparingAccount(threadId);
-  }
-
-  /** Scripted: a teammate mentions the person's agent, and the Host admits the ask into a task. */
-  mockTeamAsk(entry: import("@opensteer/protocol").NeedsYouTeamAskEntry): void {
-    this.#state.receiveTeamAsk(entry);
   }
 
   /** Scripted: another of the person's devices opens a waiting message to edit it. */
@@ -5725,8 +5655,6 @@ interface MockPlugin {
 }
 class MockHostState {
   onReferenceEvent: ((event: AgentEvent) => void) | undefined;
-  teamAsks: import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [];
-  readonly teamLinks = new Map<string, PersonalTeamLink>();
   nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
   /** The mock Host's tab commands, over its tab catalog and browser world. */
   /** The person's own tabs and apps answer only their signed-in owner, as the Host's scope does. */
@@ -6432,7 +6360,6 @@ class MockHostState {
     const thread = this.snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Task not found.");
     if (thread.purpose !== "task") throw new Error("Only tasks can be Done.");
-    this.askTasks.delete(threadId);
     const affected = new Set([threadId]);
     if (done) {
       // Discover descendants before cancellation ends their assignments.
@@ -6488,9 +6415,7 @@ class MockHostState {
           doneAt: done ? this.now().toISOString() : null,
           doneReason: null,
           inputQueuePaused: false,
-          ...(done
-            ? { status: "idle", pendingRequests: this.awaitingAsks.get(id)?.length ?? 0 }
-            : {}),
+          ...(done ? { status: "idle", pendingRequests: 0 } : {}),
         },
         {},
       );
@@ -6782,15 +6707,6 @@ class MockHostState {
   /** Queued messages per Thread in send order; a Run's seed is never here. */
   private readonly threadInputQueues = new Map<string, PendingMockInput[]>();
   /**
-   * Teammates' asks waiting in their tasks for the person's answer, per task
-   * in arrival order. No Run takes one before approval puts it in line.
-   */
-  private readonly awaitingAsks = new Map<string, PendingMockInput[]>();
-  /** Asks approved here whose team confirmation the mock is still playing out. */
-  private readonly approvingAsks = new Set<string>();
-  /** Tasks an ask made, which a decline removes while the ask is all they ever held. */
-  private readonly askTasks = new Set<string>();
-  /**
    * Each waiting message's edit lease by message id. `here` marks a lease
    * this client took, as opposed to one a scripted other device holds.
    */
@@ -7022,7 +6938,6 @@ class MockHostState {
           doneAt: null,
           doneReason: null,
           inputQueuePaused: false,
-          teamOrigin: null,
         };
         this.snapshot = { ...this.snapshot, threads: [...this.snapshot.threads, worker] };
         const created = this.createTrigger({
@@ -7215,12 +7130,11 @@ class MockHostState {
         ),
       ),
     };
-    for (const ask of options.teamAsks ?? []) this.snapshot = this.withTeamAsk(this.snapshot, ask);
     const tasks = this.taskList(null);
     this.snapshot = { ...this.snapshot, tasks, activeTasks: this.activeTaskEntries(tasks) };
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit, this.teamAsks),
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
     };
     if (!firstRun && options.iphoneScreen !== "absent")
       this.setIphoneScreenState(
@@ -8051,11 +7965,6 @@ class MockHostState {
     this.update(this.withInputQueue(this.snapshot, threadId));
   }
 
-  /**
-   * A teammate's ask arriving as the Host admits it: a waiting message in the
-   * task for that team thread, or in a new task named for the asker, gated
-   * until the person answers. An ask the Host could not admit keeps no task.
-   */
   queueBehindPreparingAccount(threadId: string): void {
     const snapshot = this.snapshot;
     const thread = snapshot.threads.find(({ id }) => id === threadId);
@@ -8106,264 +8015,13 @@ class MockHostState {
     });
   }
 
-  receiveTeamAsk(entry: import("@opensteer/protocol").NeedsYouTeamAskEntry): void {
-    this.update(this.withTeamAsk(this.snapshot, entry));
-  }
-
-  private withTeamAsk(
-    snapshot: HostSnapshot,
-    entry: import("@opensteer/protocol").NeedsYouTeamAskEntry,
-  ): HostSnapshot {
-    if (entry.failureReason) {
-      this.teamAsks = [...this.teamAsks, entry];
-      return snapshot;
-    }
-    const { asker, audience, bodyMarkdown, destination } = entry.presentation;
-    const timestamp = entry.createdAt;
-    let thread = snapshot.threads.find(
-      ({ teamOrigin }) =>
-        teamOrigin?.teamId === destination.teamId &&
-        teamOrigin.channelId === destination.channelId &&
-        teamOrigin.threadRootId === destination.threadRootId,
-    );
-    if (!thread) {
-      const placement = resolveThreadPlacement(snapshot.environments, snapshot.harnesses, {});
-      thread = {
-        lastVisitedAt: null,
-        latestRunCompletedAt: null,
-        id: this.nextId("thread"),
-        askedAt: timestamp,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        doneAt: null,
-        doneReason: null,
-        accessMode: "approval-required",
-        continuationIdentity: null,
-        providerSessionId: createId("providerSession"),
-        environmentId: placement.environmentId,
-        harnessInstanceId: placement.harnessInstanceId,
-        harnessLabel: placement.accountName,
-        modelLabel: placement.modelSelection.modelId,
-        modelSelection: placement.modelSelection,
-        listed: true,
-        parentThreadId: null,
-        inputQueuePaused: false,
-        pendingRequests: 0,
-        purpose: "task",
-        teamOrigin: { ...destination },
-        status: "idle",
-        // No model names a task before the person consents to the ask.
-        title:
-          audience.channelKind === "dm" || audience.channelKind === "group_dm"
-            ? asker.displayName
-            : `${asker.displayName} · #${audience.channelName}`,
-        icon: null,
-        color: this.allocateMarkColor("thread"),
-        unread: true,
-        runnerLabel: placement.whereLabel,
-      };
-      this.askTasks.add(thread.id);
-      snapshot = {
-        ...snapshot,
-        threads: [thread, ...snapshot.threads],
-        requests: { ...snapshot.requests, [thread.id]: [] },
-        transcripts: { ...snapshot.transcripts, [thread.id]: [] },
-      };
-    }
-    const message = MessageSchema.parse({
-      author: {
-        actor: asker.actor,
-        displayName: asker.displayName,
-        kind: "team-member",
-        teamId: entry.teamId,
-        teamUserId: asker.teamUserId,
-      },
-      content: [{ text: bodyMarkdown, type: "text" }],
-      createdAt: timestamp,
-      id: this.nextId("message"),
-      kind: "input",
-      runId: null,
-      sequence: String(++this.sequence),
-      threadId: thread.id,
-    });
-    const input = ThreadInputSchema.parse({
-      assignmentId: null,
-      cancelReason: null,
-      causalChainId: createId("causalChain"),
-      createdAt: timestamp,
-      deliveredAt: null,
-      messageId: message.id,
-      policy: "queue",
-      replyTarget: null,
-      runId: null,
-      state: "awaiting-approval",
-      teamRequestId: entry.requestId,
-      teamSource: { ...destination, messageId: null, audience },
-      threadId: thread.id,
-      updatedAt: timestamp,
-    });
-    this.awaitingAsks.set(thread.id, [
-      ...(this.awaitingAsks.get(thread.id) ?? []),
-      { body: bodyMarkdown, input, message },
-    ]);
-    this.teamAsks = [
-      ...this.teamAsks,
-      {
-        ...entry,
-        task: { threadId: ThreadIdSchema.parse(thread.id), messageId: message.id, revision: 0 },
-      },
-    ];
-    const drawn = toMessageEntry(message, "queue", input);
-    const threadId = thread.id;
-    return this.withInputQueue(
-      {
-        ...snapshot,
-        threads: snapshot.threads.map((item) =>
-          item.id === threadId ? { ...item, askedAt: timestamp, updatedAt: timestamp } : item,
-        ),
-        transcripts: drawn
-          ? {
-              ...snapshot.transcripts,
-              [threadId]: [...(snapshot.transcripts[threadId] ?? []), drawn],
-            }
-          : snapshot.transcripts,
-      },
-      threadId,
-    );
-  }
-
-  /**
-   * The person's answer to an ask, as the Host takes it: approval names the
-   * version they saw and waits for the team before the ask joins the line; a
-   * decline cancels it, and takes along a task the ask made that holds nothing else.
-   */
-  decideTeamAsk(command: Extract<HostApiCommand, { readonly type: "teams.ask.decide" }>): void {
-    const entry = this.teamAsks.find(
-      (ask) => ask.teamId === command.teamId && ask.requestId === command.requestId,
-    );
-    if (!entry) throw mockNotFound("Pending team ask not found.");
-    if (command.decision === "approve" && entry.failureReason)
-      throw mockConflict(entry.failureReason);
-    const task = entry.task;
-    const item = task
-      ? this.awaitingAsks.get(task.threadId)?.find(({ message }) => message.id === task.messageId)
-      : undefined;
-    if (command.decision === "approve" && item && task) {
-      if (command.expectedRevision === undefined)
-        throw mockBadRequest("Approving an ask names the version you saw.");
-      if (command.expectedRevision !== (item.edit?.revision ?? 0))
-        throw mockConflict("This ask changed since you saw it. Review it again.");
-      const lease = this.liveLease(task.messageId);
-      if (lease && !lease.here)
-        throw mockConflict(`This ask is being edited on ${lease.view.deviceLabel}.`);
-      this.editLeases.delete(task.messageId);
-      this.approvingAsks.add(task.messageId);
-      void delay(this.latencyMs).then(() => this.releaseTeamAsk(task.threadId, task.messageId));
-    }
-    this.teamAsks = this.teamAsks.filter((ask) => ask !== entry);
-    if (command.decision === "decline" && item && task) {
-      this.awaitingAsks.set(
-        task.threadId,
-        (this.awaitingAsks.get(task.threadId) ?? []).filter((held) => held !== item),
-      );
-      this.editLeases.delete(task.messageId);
-      if (this.removeAskTask(task.threadId)) return;
-      this.update(
-        this.withInputQueue(
-          {
-            ...this.snapshot,
-            transcripts: {
-              ...this.snapshot.transcripts,
-              [task.threadId]: (this.snapshot.transcripts[task.threadId] ?? []).filter(
-                (drawn) => drawn.id !== task.messageId,
-              ),
-            },
-          },
-          task.threadId,
-        ),
-      );
-      return;
-    }
-    this.update(task ? this.withInputQueue(this.snapshot, task.threadId) : this.snapshot);
-  }
-
-  /** The team confirmed an approval: the ask joins the back of the line and may start a Run. */
-  private releaseTeamAsk(threadId: string, messageId: string): void {
-    if (!this.approvingAsks.delete(messageId)) return;
-    const waiting = this.awaitingAsks.get(threadId) ?? [];
-    const item = waiting.find(({ message }) => message.id === messageId);
-    if (!item || !this.snapshot.threads.some(({ id }) => id === threadId)) return;
-    this.awaitingAsks.set(
-      threadId,
-      waiting.filter((held) => held !== item),
-    );
-    const released: PendingMockInput = {
-      ...item,
-      input: ThreadInputSchema.parse({
-        ...item.input,
-        state: "pending",
-        updatedAt: this.now().toISOString(),
-      }),
-    };
-    this.threadInputQueues.set(threadId, [
-      ...(this.threadInputQueues.get(threadId) ?? []),
-      released,
-    ]);
-    this.update(this.withInputQueue(this.snapshot, threadId));
-    this.admitNextInput(threadId);
-  }
-
-  /**
-   * Removes a task an ask made once the ask ended, while the ask is all it
-   * ever held. A view still open on it reads it as missing.
-   */
-  private removeAskTask(threadId: string): boolean {
-    const asks = new Set(
-      [...(this.awaitingAsks.get(threadId) ?? [])].map(({ message }) => message.id),
-    );
-    const untouched =
-      this.askTasks.has(threadId) &&
-      !this.snapshot.threads.some((thread) => thread.parentThreadId === threadId) &&
-      ![...this.triggers.values()].some(({ trigger }) => trigger.anchorThreadId === threadId) &&
-      ![...this.assignments.values()].some(
-        (assignment) =>
-          assignment.parentThreadId === threadId || assignment.workerThreadId === threadId,
-      ) &&
-      !this.snapshot.requests[threadId]?.length &&
-      this.snapshot.voiceThreadId !== threadId &&
-      asks.size === 0 &&
-      !this.threadInputQueues.has(threadId) &&
-      !this.snapshot.runQueue.some((run) => run.threadId === threadId) &&
-      (this.snapshot.transcripts[threadId] ?? []).every(
-        (entry) => entry.kind === "message" && entry.author.kind === "team-member",
-      );
-    if (!untouched) return false;
-    this.askTasks.delete(threadId);
-    this.awaitingAsks.delete(threadId);
-    const without = <Value>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
-      const { [threadId]: _removed, ...rest } = record;
-      return rest;
-    };
-    this.update({
-      ...this.snapshot,
-      inputQueues: without(this.snapshot.inputQueues),
-      requests: without(this.snapshot.requests),
-      threadLookups: { ...this.snapshot.threadLookups, [threadId]: "missing" },
-      threads: this.snapshot.threads.filter(({ id }) => id !== threadId),
-      transcripts: without(this.snapshot.transcripts),
-    });
-    return true;
-  }
-
-  /** The waiting message, in line or awaiting its owner, that a lease or an edit acts on. */
+  /** The waiting message in line that a lease or an edit acts on. */
   private waitingInput(threadId: string, messageId: string): PendingMockInput {
-    const item = [
-      ...(this.threadInputQueues.get(threadId) ?? []),
-      ...(this.awaitingAsks.get(threadId) ?? []),
-    ].find(({ message }) => message.id === messageId);
+    const item = (this.threadInputQueues.get(threadId) ?? []).find(
+      ({ message }) => message.id === messageId,
+    );
     if (!item) throw mockConflict("This message is no longer waiting.");
     if (!mockEditable(item)) throw mockConflict("This message can’t be edited.");
-    if (this.approvingAsks.has(messageId)) throw mockConflict("Approving…");
     return item;
   }
 
@@ -8506,7 +8164,6 @@ class MockHostState {
     const edit: MessageEdit = {
       editedAt: timestamp,
       revision: revision + 1,
-      ...(item.message.author.kind === "team-member" ? { ownerEdited: true as const } : {}),
     };
     this.messageRevisions.set(command.messageId, [
       ...history,
@@ -8524,11 +8181,6 @@ class MockHostState {
       .flatMap((part) => (part.type === "text" ? [part.text] : []))
       .join("\n");
     item.edit = edit;
-    this.teamAsks = this.teamAsks.map((ask) =>
-      ask.task?.messageId === command.messageId
-        ? { ...ask, task: { ...ask.task, revision: edit.revision } }
-        : ask,
-    );
     this.editLeases.delete(command.messageId);
     const transcript = this.snapshot.transcripts[command.threadId];
     this.update(
@@ -8613,9 +8265,7 @@ class MockHostState {
   /**
    * The queue as the Host would answer it from this snapshot: only the running
    * Run of an unpaused Thread accepts promotions, and every queued message is
-   * the viewer's own, so all of them can be withdrawn, except a teammate's ask,
-   * which only an answer ends. Asks awaiting that answer follow the line.
-   * Null for an unknown Thread.
+   * the viewer's own, so all of them can be withdrawn. Null for an unknown Thread.
    */
   private inputQueueView(snapshot: HostSnapshot, threadId: string): ThreadInputQueue | null {
     const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
@@ -8628,23 +8278,15 @@ class MockHostState {
       threadId,
       paused: thread.inputQueuePaused,
       steerRunId,
-      items: [
-        ...(this.threadInputQueues.get(threadId) ?? []),
-        ...(this.awaitingAsks.get(threadId) ?? []),
-      ]
-        .slice(0, 100)
-        .map((item) => {
-          const ask = item.input.teamRequestId !== null;
-          return {
-            message: item.edit ? { ...item.message, edit: item.edit } : item.message,
-            input: item.input,
-            canCancel: !ask,
-            canEdit: mockEditable(item) && !this.approvingAsks.has(item.message.id),
-            canMove: !ask,
-            canSteer: !ask && steerRunId !== null && !item.input.freshContext,
-            lease: this.liveLease(item.message.id)?.view ?? null,
-          };
-        }),
+      items: (this.threadInputQueues.get(threadId) ?? []).slice(0, 100).map((item) => ({
+        message: item.edit ? { ...item.message, edit: item.edit } : item.message,
+        input: item.input,
+        canCancel: true,
+        canEdit: mockEditable(item),
+        canMove: true,
+        canSteer: steerRunId !== null && !item.input.freshContext,
+        lease: this.liveLease(item.message.id)?.view ?? null,
+      })),
     });
   }
 
@@ -8658,10 +8300,9 @@ class MockHostState {
         thread.id === threadId
           ? {
               ...thread,
-              pendingRequests:
-                (snapshot.requests[threadId] ?? []).filter(
-                  (request) => request.status === "pending",
-                ).length + (this.awaitingAsks.get(threadId)?.length ?? 0),
+              pendingRequests: (snapshot.requests[threadId] ?? []).filter(
+                (request) => request.status === "pending",
+              ).length,
             }
           : thread,
       ),
@@ -11587,7 +11228,6 @@ class MockHostState {
   renameThread(threadId: string, title: string): ThreadSummary {
     const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
     if (!thread) throw new Error("Task not found.");
-    this.askTasks.delete(threadId);
     this.#provisionalTitles.delete(threadId);
     this.publishThreadName(thread, { title: ThreadTitleSchema.parse(title) });
     return this.snapshot.threads.find((thread) => thread.id === threadId)!;
@@ -11770,7 +11410,6 @@ class MockHostState {
       inputQueuePaused: false,
       pendingRequests: 0,
       purpose: "task",
-      teamOrigin: null,
       status: "idle",
       title: input.title?.trim() || "New task",
       icon: null,
@@ -11974,7 +11613,6 @@ class MockHostState {
         },
       });
     }
-    this.askTasks.delete(thread.id);
     const userEntry: TranscriptEntry = {
       author: mockHumanAuthor(),
       attachments: input.content?.filter((part) => part.type === "artifact") ?? [],
@@ -12012,8 +11650,6 @@ class MockHostState {
     if (input.content) this.bindAttachments(input.content, thread.id, message.id);
     const threadInput: ThreadInput = ThreadInputSchema.parse({
       ...(input.freshContext ? { freshContext: true } : {}),
-      teamRequestId: null,
-      teamSource: null,
       assignmentId,
       cancelReason: null,
       causalChainId: createId("causalChain"),
@@ -12422,8 +12058,6 @@ class MockHostState {
     const pending: PendingMockInput = {
       body: "",
       input: ThreadInputSchema.parse({
-        teamRequestId: null,
-        teamSource: null,
         assignmentId: null,
         cancelReason: null,
         causalChainId: createId("causalChain"),
@@ -13449,7 +13083,7 @@ class MockHostState {
     }
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit, this.teamAsks),
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
     };
     this.runPlaces.flush();
     this.emit();
@@ -13473,7 +13107,7 @@ class MockHostState {
     this.needsYouLimit += 50;
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit, this.teamAsks),
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
     };
     this.emit();
   }
@@ -14679,7 +14313,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       {
         lastVisitedAt: null,
         latestRunCompletedAt: null,
-        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14704,7 +14337,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       {
         lastVisitedAt: null,
         latestRunCompletedAt: null,
-        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14729,7 +14361,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       {
         lastVisitedAt: null,
         latestRunCompletedAt: null,
-        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14754,7 +14385,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       {
         lastVisitedAt: null,
         latestRunCompletedAt: null,
-        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14780,7 +14410,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       {
         lastVisitedAt: null,
         latestRunCompletedAt: null,
-        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14810,7 +14439,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       ).map(([id, status, title]) => ({
         lastVisitedAt: null,
         latestRunCompletedAt: null,
-        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14836,7 +14464,6 @@ function createInitialSnapshot(tabs: import("../host/tab-store.js").TabStore): H
       ...mockPluginTasks.map((task) => ({
         lastVisitedAt: null,
         latestRunCompletedAt: null,
-        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),

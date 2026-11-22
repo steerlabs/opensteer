@@ -2,7 +2,7 @@ import { setPrivateDirectoryMode, setPrivateHandleMode } from "@opensteer/shared
 import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { constants as fsConstants } from "node:fs";
-import { mkdir, open, realpath, writeFile } from "node:fs/promises";
+import { mkdir, open, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { HostInstanceIdSchema, createId, type HostInstanceId } from "@opensteer/core";
 import { z } from "zod";
@@ -41,20 +41,16 @@ export async function loadOrCreateHostInstance(
     if (!(isNodeError(error) && error.code === "EEXIST")) throw error;
   }
 
-  return loadHostInstance(path, expectedHostInstanceId, false);
+  return loadHostInstance(path, expectedHostInstanceId);
 }
 
-export async function loadHostInstance(
+async function loadHostInstance(
   path: string,
   expectedHostInstanceId?: HostInstanceId,
-  strict = true,
 ): Promise<HostInstanceIdentity> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    // A strict installation is mounted by its operator, and Kubernetes mounts Secret files as
-    // symlinks; resolve that trusted link, then refuse any link at the file itself.
-    const target = strict ? await realpath(path) : path;
-    handle = await open(target, fsConstants.O_RDONLY | noFollowFlag() | fsConstants.O_NONBLOCK);
+    handle = await open(path, fsConstants.O_RDONLY | noFollowFlag() | fsConstants.O_NONBLOCK);
     const metadata = await handle.stat();
     if (!metadata.isFile() || metadata.size < 1 || metadata.size > maximumHostInstanceFileBytes) {
       throw new Error("Host instance identity file is invalid");
@@ -67,7 +63,7 @@ export async function loadHostInstance(
     ) {
       throw new Error("Host instance identity does not match the configured Host identity");
     }
-    if (!strict) await setPrivateHandleMode(handle, 0o600);
+    await setPrivateHandleMode(handle, 0o600);
     return { hostInstanceId: identity.hostInstanceId, path };
   } catch (error) {
     throw new Error(`Unable to load Host instance identity at ${path}`, { cause: error });

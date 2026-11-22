@@ -26,7 +26,6 @@ export async function compactionIsEligible(
     !thread ||
     !thread.listed ||
     thread.parentThreadId ||
-    thread.teamId ||
     thread.purpose !== "task" ||
     thread.status === "archived" ||
     thread.doneAt ||
@@ -63,12 +62,6 @@ export async function compactionIsEligible(
     return false;
   const owner = await database.selectFrom("personalSettings").select("ownerId").executeTakeFirst();
   if (owner?.ownerId !== thread.createdBy) return false;
-  const origin = await database
-    .selectFrom("personalTeamRequests")
-    .select("requestId")
-    .where("localTaskId", "=", threadId)
-    .executeTakeFirst();
-  if (origin) return false;
   const environment = await database
     .selectFrom("executionEnvironments")
     .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
@@ -187,7 +180,6 @@ export async function compactionReturnHints(
       and length(session.provider_session_reference) > 0
       and session.harness_instance_id = thread.harness_instance_id
       and runner.revoked_at is null and runner.capabilities @> '["claude-compaction-v1"]'::jsonb
-      and not exists (select 1 from personal_team_requests r where r.local_task_id = thread.id limit 1)
       and not exists (select 1 from delegations d where
         (d.parent_thread_id = thread.id or d.child_thread_id = thread.id) and d.status = 'open' limit 1)
       and not exists (select 1 from execution_nodes n join runs r on r.id = n.run_id

@@ -36,7 +36,7 @@ export async function measureMcpContext(
     kind,
     key: "context-budget",
     accessMode: options?.accessMode ?? "full-access",
-    ...(kind === "run" ? { thread: { teamOrigin: null } } : {}),
+    ...(kind === "run" ? { thread: {} } : {}),
     ...(kind === "connection"
       ? { grant: options?.grant ?? { scope: "everything" }, grantRevision: 1 }
       : {}),

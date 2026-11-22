@@ -33,9 +33,6 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: z.string().min(1).max(2_048).optional(),
   EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: z.enum(["development", "preview", "production"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK: z.enum(["0", "1"]).optional(),
-  EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: z
-    .enum(["admin", "admin-stale", "member", "guest", "suspended", "removed"])
-    .optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(mockPhoneScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: z.enum(mockSubagentScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS: z.enum(mockPluginScenarios).optional(),
@@ -55,10 +52,6 @@ export interface MobileConfiguration {
   readonly accountOrigin: string | null;
   /** The development entry that replaces the Host with an in-memory one. */
   readonly mock: boolean;
-  /** The team the in-memory Host plays; null is today's Hosts, with no team. */
-  readonly mockTeam: NonNullable<
-    z.infer<typeof MobileEnvironmentSchema>["EXPO_PUBLIC_OPENSTEER_MOCK_TEAM"]
-  > | null;
   /** What becomes of this phone in mock mode once it is added; null for the ordinary phone. */
   readonly mockPhone: (typeof mockPhoneScenes)[number] | null;
   /** One subagent scene of the design, as the web's `?mock-subagents=` seeds it; null for none. */
@@ -130,7 +123,6 @@ export function readMobileConfiguration(
         ? null
         : bareServiceOrigin(accountOrigin, "Opensteer Account origin"),
     mock: mockEnabled,
-    mockTeam: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM ?? null) : null,
     mockPhone: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE ?? null) : null,
     mockSubagents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS ?? null) : null,
     mockPlugins: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PLUGINS ?? null) : null,

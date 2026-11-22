@@ -1,3 +1,4 @@
+import { AccountProfiles } from "../account/account-profiles.js";
 import { APIError } from "better-auth/api";
 import { resolveSigningKey } from "better-auth/plugins/jwt";
 import { SignJWT } from "jose";
@@ -6,7 +7,6 @@ import {
   CloudComputerIdSchema,
   ControlPlaneAccountIdSchema,
   controlPlaneOAuthScopes,
-  personProfileReceiptClaim,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -22,7 +22,6 @@ import type { Kysely } from "kysely";
 import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { appleOrigin } from "./apple-sign-in.js";
-import { AccountProfiles } from "../account/account-profiles.js";
 import { isOfficialNativeReference } from "../database/store.js";
 import { appReviewSignIn, type AppReviewSignInConfig } from "./app-review-sign-in.js";
 
@@ -72,7 +71,6 @@ export function createControlPlaneAuth(
     transaction: true,
     type: "postgres",
   } as unknown as BetterAuthOptions["database"];
-  let profiles: AccountProfiles | undefined;
   const auth = betterAuth({
     account: {
       // Account records can predate their first Google sign-in, so the trusted
@@ -225,15 +223,6 @@ export function createControlPlaneAuth(
           }
           return scopes.includes("email") ? { email: user.email } : {};
         },
-        // A team Host's browser sign-in applies the same signed, numbered name a native app relays.
-        customUserInfoClaims: async ({ user, scopes }) =>
-          scopes.includes("profile") && profiles
-            ? {
-                [personProfileReceiptClaim]: (
-                  await profiles.read(ControlPlaneAccountIdSchema.parse(user.id))
-                ).receipt,
-              }
-            : {},
       }),
     ],
     rateLimit: {
@@ -283,11 +272,6 @@ export function createControlPlaneAuth(
       modelName: "users",
     },
     verification: { modelName: "authVerifications" },
-  });
-  profiles = new AccountProfiles({
-    database,
-    issuer: config.publicOrigin,
-    sign: async (payload) => (await auth.api.signJWT({ body: { payload } })).token,
   });
   return auth;
 }

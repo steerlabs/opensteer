@@ -2,13 +2,11 @@ import { MenuView, type MenuAction } from "@expo/ui/community/menu";
 import {
   waitingMessageRows,
   type HostClient,
-  type WaitingAsk,
   type MessageEntry,
   type TranscriptEntry,
   type WaitingInput,
 } from "@opensteer/client/host";
 import type { ContentPart } from "@opensteer/core";
-import { useWaitingBody } from "@opensteer/client/react";
 import * as Haptics from "expo-haptics";
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from "react-native";
@@ -26,22 +24,18 @@ import {
 } from "../theme.js";
 import { ComposerEditor } from "../ui/composer-editor.js";
 import { duration, enter, exit } from "../ui/motion.js";
-import { AppText, StatusDot } from "../ui/primitives.js";
+import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { EditedMark } from "./edited-mark.js";
 import type { LinkAction } from "./link-context.js";
 import { Message } from "./transcript.js";
-import { useShowAsk } from "./ask-shown.js";
 import type { WaitingEdit, WaitingEditController } from "./waiting-edit.js";
 import { failureWords } from "../ui/client-feedback.js";
 
 /**
  * Everything waiting to reach the agent, at the foot of a task, in the order it
- * will go: the person's own messages, dashed until a Run takes them, and
- * teammates' asks waiting for their answer. A tap opens one to edit in place;
- * a hold, or its ellipsis, offers the rest. An ask is answered from the dock
- * above the composer, which stays in reach however far this list scrolls, so
- * a long line folds only messages: every ask the dock answers stays drawn.
+ * will go: the person's own messages, dashed until a Run takes them. A tap
+ * opens one to edit in place; a hold, or its ellipsis, offers the rest.
  */
 export const WaitingInputs = memo(function WaitingInputs(props: {
   readonly canRespond: boolean;
@@ -140,7 +134,6 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
         </AppText>
       </Pressable>
     ) : null;
-  const firstAsk = shown.findIndex(({ input }) => input?.kind === "ask");
   return (
     <View accessibilityLabel="Queued messages" style={styles.section}>
       {props.paused ? (
@@ -176,7 +169,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
           </Pressable>
         </View>
       ) : null}
-      {shown.flatMap(({ input: item, entry, key }, at) => {
+      {shown.map(({ input: item, entry, key }) => {
         const index = item ? items.indexOf(item) : -1;
         const actions = item ? menuActions(item, editable(item)) : [];
         const row = (
@@ -192,8 +185,6 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
               <>
                 <WaitingBubble
                   actions={actions}
-                  ask={item?.kind === "ask" ? item : null}
-                  hostClient={hostClient}
                   message={entry}
                   queued={item !== null || entry.queuePending === true}
                   onAction={item ? (id) => choose(item, id) : undefined}
@@ -217,7 +208,7 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
                         onPress={() => release(item)}
                       />
                     ) : null}
-                    {item.kind === "message" && item.canSteer && item.lease.kind !== "other" ? (
+                    {item.canSteer && item.lease.kind !== "other" ? (
                       <TextAction
                         blocked={blocked}
                         label="Steer"
@@ -253,9 +244,9 @@ export const WaitingInputs = memo(function WaitingInputs(props: {
             )}
           </Animated.View>
         );
-        return at === firstAsk && fold !== null ? [fold, row] : [row];
+        return row;
       })}
-      {firstAsk === -1 ? fold : null}
+      {fold}
       {orphan && edit !== null ? (
         <Animated.View entering={enter} exiting={exit}>
           <WaitingEditor edit={edit} editing={editing} />
@@ -278,10 +269,10 @@ type WaitingAction = LinkAction & { readonly image: "pencil" | "arrow.turn.down.
 function menuActions(item: WaitingInput, editable: boolean): WaitingAction[] {
   return [
     ...(editable ? [{ group: 0, id: "edit", image: "pencil" as const, title: "Edit" }] : []),
-    ...(item.kind === "message" && item.canSteer && item.lease.kind !== "other"
+    ...(item.canSteer && item.lease.kind !== "other"
       ? [{ group: 0, id: "steer", image: "arrow.turn.down.right" as const, title: "Steer" }]
       : []),
-    ...(item.kind === "message" && item.canCancel
+    ...(item.canCancel
       ? [{ group: 1, id: "remove", image: "trash" as const, title: "Remove" }]
       : []),
   ];
@@ -289,9 +280,6 @@ function menuActions(item: WaitingInput, editable: boolean): WaitingAction[] {
 
 function WaitingBubble(props: {
   readonly actions: readonly LinkAction[];
-  /** A teammate's ask, whose whole text replaces its clipped preview once read. */
-  readonly ask: WaitingAsk | null;
-  readonly hostClient: HostClient;
   readonly message: MessageEntry;
   readonly queued: boolean;
   readonly onAction: ((id: string) => void) | undefined;
@@ -299,14 +287,7 @@ function WaitingBubble(props: {
   readonly onOpenThread: React.ComponentProps<typeof Message>["onOpenThread"];
   readonly viewerUserId: string | null;
 }): ReactNode {
-  // An ask opens unfolded: the dock's Answer approves only an ask shown whole.
-  const [open, setOpen] = useState(!props.queued || props.ask !== null);
-  const body = useWaitingBody(props.hostClient, props.ask);
-  const message =
-    props.ask && body.status === "complete" && props.message.previewTruncated
-      ? { ...props.message, body: body.text, previewTruncated: false }
-      : props.message;
-  useShowAsk(props.ask?.messageId ?? null, body.status === "complete" && open);
+  const [open, setOpen] = useState(!props.queued);
   return (
     <Message
       queued={props.queued}
@@ -317,7 +298,7 @@ function WaitingBubble(props: {
         onPress: props.onEdit ?? ignoreAction,
       }}
       onReply={undefined}
-      message={message}
+      message={props.message}
       open={open}
       onToggle={() => setOpen(!open)}
       onOpenThread={props.onOpenThread}
@@ -328,7 +309,7 @@ function WaitingBubble(props: {
 
 const ignoreAction = () => {};
 
-/** Where the item stands: next, queued, held on another device, or waiting for an answer. */
+/** Where the item stands: next, queued, or held on another device. */
 function WaitingStatus(props: {
   readonly count: number;
   readonly index: number;
@@ -340,19 +321,6 @@ function WaitingStatus(props: {
       <AppText role="caption" style={styles.status} tone="muted">
         Being edited on {item.lease.deviceLabel}
       </AppText>
-    );
-  if (item.kind === "ask")
-    return (
-      <View style={styles.askStatus}>
-        {item.approving ? (
-          <ActivityIndicator size="small" color={color.muted} />
-        ) : (
-          <StatusDot size={6} tone="amber" />
-        )}
-        <AppText role="caption" style={styles.status} tone="muted">
-          {item.approving ? "Approving…" : "Waiting for your answer"}
-        </AppText>
-      </View>
     );
   return (
     // The message and its files stay reachable on their own; this says which
@@ -392,11 +360,6 @@ function WaitingEditor(props: {
   }, [input]);
   return (
     <View style={styles.editColumn}>
-      {edit.asker === null ? null : (
-        <AppText numberOfLines={1} role="caption" tone="muted">
-          {edit.asker}
-        </AppText>
-      )}
       {draft.parts.length === 0 ? null : (
         <View style={styles.parts}>
           {draft.parts.map((part, index) => (
@@ -412,7 +375,7 @@ function WaitingEditor(props: {
       <View style={[styles.editBubble, locked && styles.editBubbleLocked]}>
         {/* No image paste: a waiting message can lose parts in an edit, never gain them. */}
         <ComposerEditor
-          accessibilityLabel={edit.asker === null ? "Edit message" : `Edit ${edit.asker}’s ask`}
+          accessibilityLabel="Edit message"
           autoFocus={Platform.OS === "ios"}
           editable={!locked}
           maxHeight={editMaxHeight}
@@ -421,7 +384,6 @@ function WaitingEditor(props: {
           style={styles.editInput}
           placeholder={draft.parts.length > 0 ? "No words, just what’s attached" : "Message"}
           ref={input}
-          scope="personal"
           value={draft.text}
         />
       </View>
@@ -460,7 +422,6 @@ function editNotice(edit: WaitingEdit): {
   readonly text: string;
   readonly tone: "danger" | "soft";
 } | null {
-  const ask = edit.kind === "ask";
   if (edit.failure !== null)
     return {
       action:
@@ -471,15 +432,13 @@ function editNotice(edit: WaitingEdit): {
   if (edit.gone)
     return {
       action: null,
-      text: ask
-        ? "This ask was answered or withdrawn before your edit was saved."
-        : "Your agent already took this message, so your edit wasn’t saved.",
+      text: "Your agent already took this message, so your edit wasn’t saved.",
       tone: "soft",
     };
   if (edit.draft.conflict !== null)
     return {
       action: "reload",
-      text: `This ${ask ? "ask" : "message"} changed elsewhere before you saved.`,
+      text: "This message changed elsewhere before you saved.",
       tone: "soft",
     };
   return null;
@@ -580,7 +539,6 @@ const styles = StyleSheet.create({
     gap: space[12],
   },
   action: { minHeight: touchTarget, justifyContent: "center" },
-  askStatus: { alignItems: "center", flexDirection: "row", flexShrink: 1, gap: space[6] },
   menu: {
     minWidth: touchTarget,
     minHeight: touchTarget,

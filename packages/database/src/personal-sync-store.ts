@@ -12,7 +12,11 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { executionNodeFromRow, messageViewFromRow } from "./thread-row-mappers.js";
+import {
+  executionNodeFromRow,
+  isRetiredMessageRow,
+  messageViewFromRow,
+} from "./thread-row-mappers.js";
 import {
   clientSendKeyWireReserve,
   fitsInlineTranscriptText,
@@ -414,15 +418,19 @@ export function itemView(row: Item): TranscriptItem {
     replyMessageId,
     failure,
     usage,
-    runDelivery,
     messageKind,
     messageAuthor,
     edit,
     delivery,
     assignment,
-    teamSource,
-    ...view
+    ...stored
   } = row.view;
+  // An item stored before team removal may still carry a team source or delivery; neither is read.
+  const {
+    teamSource: _teamSource,
+    runDelivery: _runDelivery,
+    ...view
+  } = stored as typeof stored & { readonly teamSource?: unknown; readonly runDelivery?: unknown };
   const base = {
     id: row.id,
     kind: row.kind,
@@ -459,10 +467,13 @@ export function itemView(row: Item): TranscriptItem {
         ...row.refs,
         messageId: row.messageId,
         messageKind,
-        author: messageAuthor,
+        // A teammate's message kept from before team removal shows without an author.
+        author:
+          (messageAuthor as { readonly kind?: string } | undefined)?.kind === "team-member"
+            ? undefined
+            : messageAuthor,
         edit,
         delivery,
-        teamSource,
         ...(inlineText !== undefined ? { text: inlineText } : {}),
       });
     }
@@ -483,7 +494,6 @@ export function itemView(row: Item): TranscriptItem {
         replyMessageId,
         failure,
         usage,
-        delivery: runDelivery,
       });
     case "tool":
       return TranscriptItemSchema.parse({ ...base, toolCallId: row.toolCallId, tool, completedAt });
@@ -935,11 +945,21 @@ export function readTranscriptItem(
         .where("id", "=", item.messageId)
         .where("threadId", "=", item.threadId)
         .executeTakeFirstOrThrow();
-      try {
-        body = { kind: "message", message: messageViewFromRow(message) };
-      } catch {
-        return tooLarge();
-      }
+      if (isRetiredMessageRow(message)) {
+        // A teammate's message has no Message without its author: its text, without the author.
+        const text = (
+          message.content as readonly { readonly type: string; readonly text?: string }[]
+        )
+          .flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : []))
+          .join("\n\n");
+        if (!fitsInlineTranscriptText(text)) return tooLarge();
+        body = { kind: "text", text };
+      } else
+        try {
+          body = { kind: "message", message: messageViewFromRow(message) };
+        } catch {
+          return tooLarge();
+        }
     } else if (item.toolCallId) {
       const toolScope = tx
         .selectFrom("toolCalls")

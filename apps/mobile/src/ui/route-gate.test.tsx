@@ -54,10 +54,6 @@ vi.mock("../navigation-ref.js", () => ({
   },
 }));
 vi.mock("../screens/deployment-recovery.js", () => ({ runDeploymentRecovery: vi.fn() }));
-vi.mock("../team/team-context.js", () => ({
-  useMobileTeams: () => ({}),
-  useTeamsSnapshot: () => ({ teams: [], unlinked: [] }),
-}));
 vi.mock("./mobile-client-context.js", () => ({
   useMobileClient: () => ({}),
   useMobileState: () => ({ selection: { row: null, session: null } }),

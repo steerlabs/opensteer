@@ -53,7 +53,6 @@ function thread(overrides: Partial<ThreadSummary> = {}): ThreadSummary {
     parentThreadId: null,
     pendingRequests: 0,
     purpose: "task",
-    teamOrigin: null,
     runnerLabel: "Main runner",
     status: "failed",
     title: "Ship the fix",

@@ -1,37 +1,5 @@
 /* Personal task and request surfaces. */
 
-/* ---- A task's team source: "A #support" ---- */
-
-.task-source {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  min-width: 0;
-  color: var(--muted);
-  font-size: var(--text-sm);
-  line-height: 1.36;
-  white-space: nowrap;
-}
-
-.task-source__channel {
-  color: var(--text-soft);
-  font-weight: var(--weight-medium);
-}
-
-.task-source__note {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.task-source--gone .team-tile {
-  filter: grayscale(1);
-  opacity: 0.6;
-}
-
-.task-source--gone .task-source__channel {
-  color: var(--muted);
-}
-
 /* ---- Home: new task over your tasks ---- */
 
 .tasks-home {

@@ -56,12 +56,9 @@ Send a build to external TestFlight before submitting for review.
 On the Account sign-in page, reviewers choose “Sign in with email” and use `appreview@opensteer.com`
 with the App Review password. Link the demo personal Opensteer to that same Account.
 
-Reviewers need a dedicated personal Opensteer on a disposable computer for agent tasks; a team
-server runs no agents and cannot replace it. Use a funded test engine account and sample data,
+Reviewers need a dedicated personal Opensteer on a disposable computer for agent tasks. Use a funded test engine account and sample data,
 never a person's real credentials or files. Pair the reviewer through the supported personal
 remote-access flow, and snapshot the disposable stack for restoration after review.
 
-Demonstrate shared chat separately with the [team-server skill](../../team-server/SKILL.md).
-First-owner setup needs public HTTPS and Account adoption; invite the reviewer as a test member.
-Keep the personal computer available for agent demonstrations and show offline team chat
-separately. Do not use removed server-kind/local-password configuration.
+Keep the personal computer available for agent demonstrations. Do not use removed
+server-kind/local-password configuration.
