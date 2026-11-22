@@ -10,8 +10,8 @@
  * so a failed make leaves nothing under the slot's name.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { link, lstat, open, readdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { link, lstat, open, readdir, realpath, rm } from "node:fs/promises";
+import { dirname, join, sep } from "node:path";
 import { syncDirectory } from "@opensteer/shared/privateFiles";
 
 const mib = 1024 * 1024;
@@ -71,6 +71,32 @@ export async function eraseProfile(root: string, path: string): Promise<void> {
   await rm(path, { force: true });
   await syncDirectory(root);
   if (await present(path)) throw new Error(`The profile ${path} is still there.`);
+}
+
+/**
+ * Round G, B: removes files a slot named under `root` (its upstream credentials). Each must be
+ * a plain file whose directory is inside `root`; one already gone counts as gone. Resolves once
+ * every one is seen gone.
+ */
+export async function eraseFilesUnder(root: string, files: readonly string[]): Promise<void> {
+  const base = await realpath(root);
+  for (const file of files) {
+    const info = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!info) continue;
+    const directory = await realpath(dirname(file));
+    if (
+      info.isSymbolicLink() ||
+      !info.isFile() ||
+      !`${directory}${sep}`.startsWith(`${base}${sep}`)
+    )
+      throw new Error(`${file} is not a plain file under ${root}.`);
+    await rm(file, { force: true });
+    await syncDirectory(directory);
+    if (await present(file)) throw new Error(`${file} is still there.`);
+  }
 }
 
 /** Temporary files a make that crashed left behind: never a profile, so always removed. */

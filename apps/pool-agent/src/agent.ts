@@ -757,24 +757,48 @@ export class PoolAgent {
     term?: number,
     options: { readonly eraseProfile?: boolean } = {},
   ): Promise<boolean> {
+    return (await this.deleteSlotWithEvidence(slotId, term, options)).erased;
+  }
+
+  /**
+   * `deleteSlot`, with what was seen gone. Round G, B: a slot's upstream credential files are
+   * removed with it, before its record becomes a tombstone (so a failed removal leaves a slot
+   * that a repeated delete finishes), except a file another live slot also names.
+   * `credentialsErased` is present only when the slot named files and every one is seen gone.
+   */
+  async deleteSlotWithEvidence(
+    slotId: string,
+    term?: number,
+    options: { readonly eraseProfile?: boolean } = {},
+  ): Promise<{
+    readonly erased: boolean;
+    readonly profileErased?: true;
+    readonly credentialsErased?: true;
+  }> {
+    let credentialsErased = false;
     const erase = async (path: string) => {
       if (!options.eraseProfile) return;
       await this.#driver.eraseProfile(path);
       this.#log({ event: "profile.erased", slotId });
     };
+    const evidence = () => ({
+      erased: true,
+      ...(options.eraseProfile ? { profileErased: true as const } : {}),
+      ...(credentialsErased ? { credentialsErased: true as const } : {}),
+    });
     // Re-check finding 5: the administration lane, then the slot's own run wrapper. A create
     // waits for a delete in progress, and a delete that fails leaves the slot with its timers.
     return this.#admin.run(async () => {
       const slot = this.#slots.get(slotId);
       if (!slot || slot.deleted) {
         await erase(this.#driver.profilePath(slotId));
-        return true;
+        return evidence();
       }
       const profilePath = slot.record.guest.profilePath;
       return this.#run(slot, async () => {
         if (slot.deleted) {
           await erase(profilePath);
-          return true;
+          return evidence();
         }
         // Review G2: a delete names the term it deletes; a replay after the slot was recreated
         // at a higher term is refused.
@@ -785,6 +809,23 @@ export class PoolAgent {
         if (slot.record.saved)
           await this.#step("discard", () => this.#driver.discard(slotId, slot.record.saved!.id));
         await this.#step("network", () => this.#driver.removeSlot(slotId));
+        // Round G, B: its proxy is gone; its credential files go before its record does.
+        const egress = slot.record.guest.egress;
+        const files = egress
+          ? [egress.usernameFile, egress.passwordFile, ...(egress.caFile ? [egress.caFile] : [])]
+          : [];
+        const named = new Set(
+          this.#live()
+            .filter((other) => other !== slot)
+            .flatMap((other) => {
+              const theirs = other.record.guest.egress;
+              return theirs ? [theirs.usernameFile, theirs.passwordFile, theirs.caFile ?? ""] : [];
+            }),
+        );
+        const own = files.filter((file) => !named.has(file));
+        if (own.length < files.length) this.#log({ event: "credentials.shared", slotId });
+        await this.#driver.eraseCredentials(own);
+        credentialsErased = files.length > 0 && own.length === files.length;
         // One write: the live record becomes a tombstone that holds nothing secret. From here
         // nothing queued may act, and the slot's control key is gone.
         const tombstone = tombstoneOf(slot.record, this.#iso());
@@ -794,7 +835,7 @@ export class PoolAgent {
         this.#keepTombstone(tombstone);
         this.#log({ event: "slot.deleted", slotId });
         await erase(profilePath);
-        return true;
+        return evidence();
       });
     });
   }

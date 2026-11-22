@@ -85,6 +85,8 @@ export interface HypervisorDriver {
   ): Promise<{ readonly path: string; readonly made: boolean }>;
   /** Round G: removes the profile at `path` (directly under the root); resolves once it is gone. */
   eraseProfile(path: string): Promise<void>;
+  /** Round G, B: removes a slot's upstream credential files (under the credentials root). */
+  eraseCredentials(files: readonly string[]): Promise<void>;
   /** Re-applies the host's own rules if they are gone; true if it had to. */
   ensureHost(): Promise<boolean>;
   /** Refuses a guest whose host paths are not inside the roots configured for them. */

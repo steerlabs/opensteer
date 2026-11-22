@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureProfile, eraseProfile, profilePathFor } from "./profiles.js";
+import { ensureProfile, eraseFilesUnder, eraseProfile, profilePathFor } from "./profiles.js";
 import {
   NoSaveRoom,
   type GuestBoot,
@@ -126,6 +126,11 @@ export class FakeHypervisorDriver implements HypervisorDriver {
    * uses; only `mkfs.ext4` is stood in for (it writes a marker), and it can be made to fail.
    */
   readonly profilesRoot = mkdtempSync(join(tmpdir(), "opensteer-pool-profiles-"));
+  readonly credentialsRoot = mkdtempSync(join(tmpdir(), "opensteer-pool-credentials-"));
+
+  eraseCredentials(files: readonly string[]): Promise<void> {
+    return eraseFilesUnder(this.credentialsRoot, files);
+  }
   formatted = 0;
   formatError: Error | undefined;
   /** The next erase waits for this before it removes anything. */

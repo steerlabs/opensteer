@@ -39,6 +39,7 @@ import { withStepSignal } from "../step-signal.js";
 import { guestCharge, hostCapacity, type HostCapacity } from "../capacity.js";
 import {
   ensureProfile,
+  eraseFilesUnder,
   eraseProfile,
   profilePathFor,
   sweepUnfinishedProfiles,
@@ -190,6 +191,10 @@ export class FirecrackerDriver implements HypervisorDriver {
 
   eraseProfile(path: string): Promise<void> {
     return eraseProfile(this.#config.profilesRoot, path);
+  }
+
+  eraseCredentials(files: readonly string[]): Promise<void> {
+    return eraseFilesUnder(this.#config.credentialsRoot, files);
   }
 
   /** Review G4(a): the host table is re-applied when a flush or a reload removed it. */

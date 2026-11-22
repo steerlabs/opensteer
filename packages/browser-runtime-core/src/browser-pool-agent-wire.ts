@@ -206,6 +206,11 @@ export type BrowserPoolAgentAdminReply =
       readonly erased: boolean;
       /** Round G: present, and true, only when asked for and the profile is seen gone. */
       readonly profileErased?: true;
+      /**
+       * Round G, B: present, and true, when the slot named upstream credential files and every
+       * one was seen gone (a file another live slot also names is kept, and this is absent).
+       */
+      readonly credentialsErased?: true;
     }
   | { readonly op: "list"; readonly slots: readonly BrowserPoolAgentSlotSummary[] }
   | {

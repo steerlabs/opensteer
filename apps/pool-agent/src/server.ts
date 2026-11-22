@@ -287,14 +287,13 @@ async function administer(
       case "replace-key":
         return { op: "replace-key", slot: await agent.replaceKey(request) };
       case "delete":
+        // Round G: what was seen gone. A removal that fails makes the delete fail instead.
         return {
           op: "delete",
           slotId: request.slotId,
-          erased: await agent.deleteSlot(request.slotId, request.term, {
+          ...(await agent.deleteSlotWithEvidence(request.slotId, request.term, {
             eraseProfile: request.eraseProfile === true,
-          }),
-          // Round G: deleteSlot answers only once the profile is seen gone, or it throws.
-          ...(request.eraseProfile === true ? { profileErased: true as const } : {}),
+          })),
         };
       case "list":
         return { op: "list", slots: agent.summaries() };

@@ -167,3 +167,50 @@ describe("a profile make that crashed", () => {
     expect(await readFile(h.profile("cc-person-9"), "utf8")).toMatch(/^fake-ext4/u);
   });
 });
+
+describe("a deleted slot's upstream credentials (round G, B)", () => {
+  const credentials = async (root: string, name: string) => {
+    const files = {
+      usernameFile: `${root}/${name}-username`,
+      passwordFile: `${root}/${name}-password`,
+      caFile: `${root}/${name}-ca.pem`,
+    };
+    for (const file of Object.values(files)) await writeFile(file, "secret\n", { mode: 0o600 });
+    return { upstreamUrl: "https://upstream.example:8443", ...files };
+  };
+
+  it("removes them on delete and says so only once they are gone", async () => {
+    const h = await host();
+    const egress = await credentials(h.agent.driver.credentialsRoot, "cc-person-10");
+    await h.admin({
+      op: "create",
+      slotId: "cc-person-10",
+      term: 1,
+      homeKey: homeKeyPair().spki,
+      guest: { ...guest, egress },
+    } as never);
+    const reply = await h.admin({ op: "delete", slotId: "cc-person-10", term: 1 });
+    expect(reply).toMatchObject({ op: "delete", erased: true, credentialsErased: true });
+    for (const file of [egress.usernameFile, egress.passwordFile, egress.caFile])
+      expect(await exists(file)).toBe(false);
+  });
+
+  it("keeps files another live slot also names, and does not claim them erased", async () => {
+    const h = await host();
+    const egress = await credentials(h.agent.driver.credentialsRoot, "shared");
+    for (const slotId of ["cc-person-11", "cc-person-12"])
+      await h.admin({
+        op: "create",
+        slotId,
+        term: 1,
+        homeKey: homeKeyPair().spki,
+        guest: { ...guest, egress },
+      } as never);
+    const first = await h.admin({ op: "delete", slotId: "cc-person-11", term: 1 });
+    expect(first).not.toHaveProperty("credentialsErased");
+    expect(await exists(egress.passwordFile)).toBe(true);
+    const second = await h.admin({ op: "delete", slotId: "cc-person-12", term: 1 });
+    expect(second).toMatchObject({ credentialsErased: true });
+    expect(await exists(egress.passwordFile)).toBe(false);
+  });
+});
