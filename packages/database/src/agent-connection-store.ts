@@ -4,7 +4,8 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   AgentGrantSchema,
   agentGrantAllowsTasks,
-  chatGrantRefusal,
+  chatAddRefusals,
+  chatConsentRefusal,
   chatGrantShape,
   OpensteerError,
   agentGrantNarrowed,
@@ -174,7 +175,7 @@ export class AgentConnectionStore {
       if (!account || account.status === "revoked")
         throw new OpensteerError({
           code: "not_found",
-          message: "That messaging account is no longer connected.",
+          message: chatAddRefusals.accountGone,
         });
       const accessMode = await connectionPolicyMode(tx, grant, input.accessMode);
       await assertGrantable(tx, input.userId, grant);
@@ -210,7 +211,7 @@ export class AgentConnectionStore {
           )
             throw new OpensteerError({
               code: "conflict",
-              message: "Another chat already answers in this conversation.",
+              message: chatAddRefusals.conversationTaken,
             });
           throw error;
         });
@@ -867,13 +868,9 @@ export function assertBridgeGrant(
   coversOneConversation: boolean,
   grant: AgentGrant,
 ): void {
-  if (senders === "anyone" && !coversOneConversation)
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Direct messages answer only you.",
-    });
-  // The rule lives once, in core, and the screens offer what it allows (`grantShape`).
-  const refusal = chatGrantRefusal(chatGrantShape(senders), grant);
+  // The rule lives once, in core (`chatConsentRefusal`); the screens offer what it allows
+  // (`grantShape`) and the preview Home refuses with it too.
+  const refusal = chatConsentRefusal(senders, coversOneConversation, grant);
   if (refusal) throw new OpensteerError({ code: "bad_request", ...refusal });
 }
 

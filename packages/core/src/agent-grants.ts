@@ -326,3 +326,27 @@ export function chatGrantRefusal(
     };
   return null;
 }
+
+/** The Home's words when a chat can't be added; the Home and its preview say the same. */
+export const chatAddRefusals = {
+  accountGone: "That messaging account is no longer connected.",
+  conversationTaken: "Another chat already answers in this conversation.",
+  directMessagesOwnerOnly: "Direct messages answer only you.",
+} as const;
+
+/**
+ * Why a chat may not be added with these senders and this grant, before anything is read: direct
+ * messages answer only you, and the grant must fit who may speak (`chatGrantRefusal`).
+ */
+export function chatConsentRefusal(
+  senders: "owner" | "anyone",
+  coversOneConversation: boolean,
+  grant: AgentGrant,
+): {
+  readonly reason?: "bridge-needs-tasks" | "bridge-anyone-grant";
+  readonly message: string;
+} | null {
+  if (senders === "anyone" && !coversOneConversation)
+    return { message: chatAddRefusals.directMessagesOwnerOnly };
+  return chatGrantRefusal(chatGrantShape(senders), grant);
+}

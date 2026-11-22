@@ -98,7 +98,7 @@ describe("the chats preview", () => {
     }
   });
 
-  it("reads a resumed account as Connecting once, as the Home does, then Connected", async () => {
+  it("reads a resumed account as Connecting, as the Home does, until its messaging service answers", async () => {
     const client = new MockHostClient({ latencyMs: 0, ...mockConnectedAgents("chats") });
     try {
       const status = async (name: string) => {
@@ -113,8 +113,12 @@ describe("the chats preview", () => {
         status: "connected",
         idempotencyKey: mutationIdempotencyKey("channel-status"),
       });
+      expect(await status("Messages on Studio Mac")).toMatchObject({
+        status: "pending",
+        statusDetail: "Reconnecting to messaging provider",
+      });
+      // Nothing here stands in for the messaging service: it reads so until that answers.
       expect((await status("Messages on Studio Mac")).status).toBe("pending");
-      expect((await status("Messages on Studio Mac")).status).toBe("connected");
     } finally {
       client.dispose();
     }

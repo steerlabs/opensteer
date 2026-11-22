@@ -50,6 +50,8 @@ import {
   type MockIphoneScreenState,
 } from "./mock-screen-devices.js";
 import {
+  chatAddRefusals,
+  chatConsentRefusal,
   chatGrantRefusal,
   chatGrantShape,
   DeviceIdSchema,
@@ -5588,6 +5590,8 @@ export class MockHostClient implements HostClient {
     const snapshot = this.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
     const run = thread ? threadStopTarget({ runQueue: snapshot.runQueue, thread }) : null;
+    // A chat's task the Home lists as at work is stopped there (`MockHostState.stopRun`).
+    if (!run && !expectedRunId) return this.#state.stopRun(threadId);
     if (!run || (expectedRunId && run.id !== expectedRunId))
       throw new Error("This Thread has nothing to stop.");
     await this.dispatch({
@@ -10938,24 +10942,25 @@ class MockHostState {
   }
 
   async loadChannels() {
-    const read = this.channels ?? {
+    // As the Home lists them: a removed account and its connection are not listed.
+    const channels = this.channels ?? {
       accounts: [],
       connections: [],
       deliveriesNeedingAttention: 0,
       providers: [...channelProviderCatalog],
     };
-    // A resumed account reads Connecting once; by the next read its transport is connected.
-    if (this.channels?.connections.some(({ status }) => status === "pending"))
-      this.channels = {
-        ...this.channels,
-        connections: this.channels.connections.map((connection) =>
-          connection.status === "pending" ? { ...connection, status: "connected" } : connection,
-        ),
-      };
-    return read;
+    return {
+      ...channels,
+      accounts: channels.accounts.filter(({ status }) => status !== "revoked"),
+      connections: channels.connections.filter(({ status }) => status !== "revoked"),
+    };
   }
 
-  /** A chat added on a mock account: a connection with a grant, live at once. */
+  /**
+   * A chat added on a mock account, refused and placed as the Home does: who may speak and the
+   * grant by core's rule (`chatConsentRefusal`), a removed account and a conversation another
+   * chat answers in by the Home's words (`chatAddRefusals`), and its state by its account's.
+   */
   createChat(input: {
     readonly accountId: string;
     readonly conversation: { readonly id: string; readonly name: string } | null;
@@ -10963,28 +10968,52 @@ class MockHostState {
     readonly accessMode: import("@opensteer/core").ThreadAccessMode;
     readonly grant: import("@opensteer/core").AgentGrant;
   }): import("@opensteer/protocol").AgentConnection {
+    const refusal = chatConsentRefusal(input.senders, input.conversation !== null, input.grant);
+    if (refusal)
+      throw new HostClientRequestError({
+        code: "bad_request",
+        ...(refusal.reason ? { reason: refusal.reason } : {}),
+        message: refusal.message,
+        status: 400,
+      });
     const account = this.channels?.accounts.find(({ id }) => id === input.accountId);
-    if (!account) throw new Error("Messaging account not found.");
+    if (!account || account.status === "revoked")
+      throw new HostClientRequestError({
+        code: "not_found",
+        message: chatAddRefusals.accountGone,
+        status: 404,
+      });
+    if (
+      this.connections.some(
+        (row) =>
+          row.bridge?.accountId === account.id &&
+          !row.revokedAt &&
+          (row.bridge.conversationId ?? "") === (input.conversation?.id ?? ""),
+      )
+    )
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: chatAddRefusals.conversationTaken,
+        status: 409,
+      });
     const provider =
       channelProviderCatalog.find((entry) => entry.provider === account.provider)?.label ??
       account.provider;
     const me = this.channels?.me?.find(({ accountId }) => accountId === account.id) ?? null;
     const now = this.now().toISOString();
-    // As on the Home: a chat on an account that is not connected starts paused, saying why and
-    // what becomes of what is sent to it meanwhile.
+    // As on the Home: a chat is live while its account is connected and its channel is on
+    // (connecting counts), and waits, saying why, while its account is paused or needs attention.
     const connection = this.channels?.connections.find(({ id }) => id === account.connectionId);
-    const live = (connection?.status ?? account.status) === "connected";
+    const live =
+      account.status === "connected" &&
+      ["pending", "connected", "needs-attention"].includes(connection?.status ?? "");
     const paused = live
       ? {}
       : {
           pausedBy:
-            (connection?.status ?? account.status) === "paused"
-              ? ("you" as const)
-              : ("needs-attention" as const),
+            account.status === "needs-attention" ? ("needs-attention" as const) : ("you" as const),
           pauseDetail:
-            (connection?.status ?? account.status) === "paused"
-              ? null
-              : (connection?.statusDetail ?? null),
+            account.status === "needs-attention" ? (connection?.statusDetail ?? null) : null,
           pausedMessages:
             channelProviderCatalog.find((entry) => entry.provider === account.provider)
               ?.pausedMessages ?? ("lost" as const),
@@ -11160,7 +11189,8 @@ class MockHostState {
               ...connection,
               // As on the Home: a resumed account connects again, and says so first.
               status: status === "connected" ? "pending" : status,
-              statusDetail: null,
+              statusDetail: status === "connected" ? "Reconnecting to messaging provider" : null,
+              statusReason: null,
             }
           : connection,
       ),
@@ -11168,19 +11198,20 @@ class MockHostState {
     const ended = new Date().toISOString();
     this.connections = this.connections.map((row) => {
       if (row.bridge?.channelConnectionId !== connectionId || row.revokedAt) return row;
-      if (status === "revoked")
-        return {
-          ...row,
-          state: "stopped",
-          revokedAt: ended,
-          bridge: { ...row.bridge, endedBy: "account" },
-        };
       const {
         pausedBy: _by,
         pauseDetail: _detail,
         pausedMessages: _messages,
         ...bridge
       } = row.bridge;
+      // Ended with its account: it is no longer paused, so nothing says why it was.
+      if (status === "revoked")
+        return {
+          ...row,
+          state: "stopped",
+          revokedAt: ended,
+          bridge: { ...bridge, endedBy: "account" },
+        };
       return status === "paused"
         ? {
             ...row,
@@ -12459,6 +12490,29 @@ class MockHostState {
     const runId =
       active?.id ??
       (thread ? threadStopTarget({ runQueue: this.snapshot.runQueue, thread })?.id : undefined);
+    // A chat's task at work is stopped as the Home stops it: the stop is taken, and the task
+    // reads as running until its device answers, as it does on a Home.
+    if (
+      runId === undefined &&
+      expectedRunId === undefined &&
+      this.connections.some((row) =>
+        (row.bridge?.tasks ?? []).some(({ id, running }) => id === threadId && running),
+      )
+    ) {
+      // The stop changes the task, so the Home lists it first among its chat's recent work.
+      this.connections = this.connections.map((row) => {
+        const tasks = row.bridge?.tasks;
+        const task = tasks?.find(({ id }) => id === threadId);
+        return task && row.bridge
+          ? {
+              ...row,
+              bridge: { ...row.bridge, tasks: [task, ...tasks!.filter((t) => t !== task)] },
+            }
+          : row;
+      });
+      for (const listener of this.connectionsListeners) listener();
+      return;
+    }
     if (runId === undefined || (expectedRunId && runId !== expectedRunId))
       throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
