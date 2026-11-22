@@ -755,7 +755,7 @@ export interface CommandRuleCaller {
   readonly ownWork: boolean;
   /**
    * For a connection: the governed thing is in its own lineage, so what it starts there is in its
-   * Disconnect set. Undefined where the governed thing has no lineage of its own.
+   * Disconnect set. Undefined where that is not known: a face that runs on then asks.
    */
   readonly ownLineage?: boolean;
 }
@@ -825,8 +825,9 @@ function classRule(
     default:
   }
   if (face.personSession) return { answer: "ask", reason: "session" };
-  // What goes on after the command, recorded as another lineage's, is out of this one's reach.
-  if (connection && face.lineage && caller.ownLineage === false)
+  // What goes on after the command, unless it is in this connection's own lineage, is out of
+  // reach of its Stop and Disconnect: the person is asked.
+  if (connection && face.lineage && caller.ownLineage !== true)
     return { answer: "ask", reason: "lineage" };
   if (effect === "read") return { answer: "now" };
   const selected = connection?.grant === "selected";

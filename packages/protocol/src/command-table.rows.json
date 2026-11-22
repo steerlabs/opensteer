@@ -116,7 +116,7 @@
         }
       ],
       "step": "A",
-      "note": "step C splits by who paused (brief C7)",
+      "note": "step C splits by who paused (brief C7); X11: the inputs it releases run in the task's lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:412 → command-service.ts:229: one store write; what follows from it leaves after the commit, from the committed rows; the wake is in memory"
@@ -139,7 +139,7 @@
         }
       ],
       "step": "A",
-      "note": "",
+      "note": "; X11: the input steers the running Run, in that Run's lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:432 → command-service.ts:178: one store write; what follows from it leaves after the commit, from the committed rows"
@@ -356,7 +356,7 @@
         }
       ],
       "step": "A",
-      "note": "`tsvc:263`",
+      "note": "`tsvc:263`; X11: the task's later Runs use it, in the task's lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:306 → command-service.ts:134: one store write"
@@ -504,7 +504,7 @@
         }
       ],
       "step": "A",
-      "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B",
+      "note": "answer face exists (`h/product.ts:964`); allow face \"asks\" = points at the same Request (no new one); decline face B; X11: the Run that asked goes on, in its lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
         "why": "server.ts:1970: a durable answer runs its kind's continuation (browser access, a plugin approval, a device setup)"
@@ -1962,7 +1962,7 @@
         }
       ],
       "step": "A",
-      "note": "`pauth:390`; (d): a new plugin is outside the grant, ask for more",
+      "note": "`pauth:390`; (d): a new plugin is outside the grant, ask for more; X11: its code runs wherever the plugin is used, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
         "why": "plugin-owner-api.ts:1046: the plugin engine's own work"
@@ -1985,7 +1985,7 @@
         }
       ],
       "step": "A",
-      "note": "(d): a new version is a changed target (architecture: \"A granted thing that changed is not granted\")",
+      "note": "(d): a new version is a changed target (architecture: \"A granted thing that changed is not granted\"); X11: what the plugin's schedules and workflows run from now on, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
         "why": "plugin-owner-api.ts:1079: the plugin engine's own work"
@@ -2238,7 +2238,7 @@
         }
       ],
       "step": "A",
-      "note": "(d): read-write grant; lineage B (`pauth:331`)",
+      "note": "(d): read-write grant; lineage B (`pauth:331`); X11: the workflow run goes on in the plugin engine as the person's, so a connection asks unless that lineage is its own",
       "stepFor": {
         "c": "B",
         "d": "B"
@@ -2653,7 +2653,7 @@
         }
       ],
       "step": "B",
-      "note": "owner-only `browser.start` (`server.ts:2504`); `tab_open` is the actor path",
+      "note": "owner-only `browser.start` (`server.ts:2504`); `tab_open` is the actor path; X11: the session goes on for the task it was started for, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
         "why": "server.ts:2535: the browser runtime"
@@ -3234,7 +3234,7 @@
         }
       ],
       "step": "A",
-      "note": "`AppActor` (`app-service.ts:51-53`)",
+      "note": "`AppActor` (`app-service.ts:51-53`); X11: an app server runs on, in no connection's Disconnect set, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "outside",
         "why": "app-routes.ts:61: the app's process"
@@ -3303,7 +3303,7 @@
         }
       ],
       "step": "A",
-      "note": "`TriggerService.manage` (`trigger-service.ts:272`); review D1: Full access, as today's tool (`packages/agent-tools/src/tools/triggers.ts:47`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+      "note": "`TriggerService.manage` (`trigger-service.ts:272`); review D1: Full access, as today's tool (`packages/agent-tools/src/tools/triggers.ts:47`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2); X11: the automation takes its anchor task's lineage (trigger-store.ts:2437), so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
         "why": "trigger-service.ts:77: one store write; the notices after it are in memory"
@@ -3379,7 +3379,7 @@
         }
       ],
       "step": "A",
-      "note": "(b): archive needs full access today (`t/triggers.ts:86`)",
+      "note": "(b): archive needs full access today (`t/triggers.ts:86`); X11: resuming starts the automation again in its own lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
         "why": "trigger-service.ts:183: one store write; the notices after it are in memory"

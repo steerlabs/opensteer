@@ -269,7 +269,8 @@ export const commandTable: CommandTable = {
     family: "tasks",
     scope: "task",
     step: "A",
-    faces: one("widen-self"),
+    // The inputs it releases run in the task's lineage, or their own (X11).
+    faces: one("widen-self", { lineage: true }),
     governs: task,
     effect: "database",
   },
@@ -277,7 +278,8 @@ export const commandTable: CommandTable = {
     family: "tasks",
     scope: "task",
     step: "A",
-    faces: one("widen-self"),
+    // A waiting input steers the running Run, in that Run's lineage (X11).
+    faces: one("widen-self", { lineage: true }),
     governs: task,
     effect: "database",
   },
@@ -350,7 +352,8 @@ export const commandTable: CommandTable = {
     family: "tasks",
     scope: "task",
     step: "A",
-    faces: one("preference"),
+    // What engine and model the task's later Runs use, in the task's lineage (X11).
+    faces: one("preference", { lineage: true }),
     governs: task,
     effect: "database",
   },
@@ -393,7 +396,8 @@ export const commandTable: CommandTable = {
     step: "A",
     // An answer to an agent's question; allowing a permission; declining. The Request decides.
     faces: [
-      { class: "widen-self" },
+      // Answering lets the Run that asked go on, in its own lineage (X11).
+      { class: "widen-self", lineage: true },
       { class: "approve", step: "none" },
       { class: "narrow", step: "B" },
     ],
@@ -878,14 +882,16 @@ export const commandTable: CommandTable = {
     family: "plugins",
     scope: "new",
     step: "A",
-    faces: one("widen-self"),
+    // Its code runs later wherever the plugin is used, in no connection's lineage (X11).
+    faces: one("widen-self", { lineage: true }),
     governs: () => resource("plugin"),
   },
   "plugins.version.activate": {
     family: "plugins",
     scope: "new",
     step: "A",
-    faces: one("widen-self"),
+    // What the plugin's schedules and workflows run from now on (X11).
+    faces: one("widen-self", { lineage: true }),
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.remove": {
@@ -967,7 +973,8 @@ export const commandTable: CommandTable = {
     scope: "nameable",
     step: "A",
     stepFor: { connections: "B" },
-    faces: one("widen-self"),
+    // The workflow run goes on in the plugin engine, as the person's (X11).
+    faces: one("widen-self", { lineage: true }),
     governs: (c) => resource("plugin", c.pluginId),
   },
   "plugins.workflow.stop": {
@@ -1102,7 +1109,8 @@ export const commandTable: CommandTable = {
     family: "browser",
     scope: "task",
     step: "B",
-    faces: one("widen-self"),
+    // A browser session goes on after it starts, for the task it was started for (X11).
+    faces: one("widen-self", { lineage: true }),
     governs: (c) => ({
       ...resource("browser-profile", "profileId" in c.input ? (c.input.profileId ?? null) : null),
       ...(c.input.threadId ? { task: c.input.threadId } : {}),
@@ -1285,7 +1293,8 @@ export const commandTable: CommandTable = {
     family: "tabs-apps",
     scope: "home",
     step: "A",
-    faces: one("widen-self"),
+    // An app server runs on, in no connection's Disconnect set (X11).
+    faces: one("widen-self", { lineage: true }),
     governs: (c) => resource("app", c.appId),
   },
   "app.stop": {
@@ -1309,7 +1318,8 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     // Today's tool requires Full access to create an automation (agent-tools triggers.ts:47).
-    faces: one("widen-self", { fullAccess: true }),
+    // It takes its anchor task's lineage (`trigger-store.ts:2437`), and runs on there (X11).
+    faces: one("widen-self", { fullAccess: true, lineage: true }),
     governs: (c) => resource("task", c.input.anchorThreadId),
     effect: "database",
   },
@@ -1332,7 +1342,12 @@ export const commandTable: CommandTable = {
     scope: "task",
     step: "A",
     // Pausing narrows; archiving narrows but needs Full access today; resuming widens.
-    faces: [{ class: "narrow" }, { class: "narrow", fullAccess: true }, { class: "widen-self" }],
+    // Resuming starts the automation again, in its own lineage (X11).
+    faces: [
+      { class: "narrow" },
+      { class: "narrow", fullAccess: true },
+      { class: "widen-self", lineage: true },
+    ],
     face: (c) => (c.status === "paused" ? 0 : c.status === "archived" ? 1 : 2),
     governs: (c) => resource("automation", c.triggerId),
     effect: "database",

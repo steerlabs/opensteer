@@ -20,7 +20,7 @@ const belowFullAccess = ThreadAccessModeSchema.options.filter(
   (mode): mode is Exclude<ThreadAccessMode, "full-access"> => mode !== "full-access",
 );
 
-/** The four callers of the data file; each covers the resource the command governs. */
+/** The four callers of the data file; each covers the resource the command governs, as its own. */
 const callers: Readonly<Record<Column, (mode?: ThreadAccessMode) => CommandRuleCaller>> = {
   a: () => ({ connection: null, mode: "full-access", reach: true, ownWork: true }),
   b: (mode = "auto") => ({ connection: null, mode, reach: true, ownWork: true }),
@@ -29,12 +29,14 @@ const callers: Readonly<Record<Column, (mode?: ThreadAccessMode) => CommandRuleC
     mode,
     reach: true,
     ownWork: true,
+    ownLineage: true,
   }),
   d: (mode = "full-access") => ({
     connection: { grant: "selected" },
     mode,
     reach: true,
     ownWork: true,
+    ownLineage: true,
   }),
 };
 const row = (type: string) => commandTable[type as CommandType] as CommandRow;
@@ -186,6 +188,35 @@ describe("the command rule, generated from the table", () => {
         at({ type: "trigger.run", triggerId: "trg_1" }, { ...outside(grant), ownLineage: true })
           .answer,
       ).toBe("now");
+    }
+  });
+
+  it("asks a connection before anything that runs on where its lineage is not proven its own (X11)", () => {
+    const at = (command: Record<string, unknown>, ownLineage: boolean | undefined) =>
+      commandRule(row(command.type as string), commandFace(command as never), {
+        connection: { grant: "everything" },
+        mode: "full-access",
+        reach: true,
+        ownWork: true,
+        ...(ownLineage === undefined ? {} : { ownLineage }),
+      }).answer;
+    const program = { toolContractVersion: 5, language: "javascript", source: "x" };
+    for (const command of [
+      { type: "trigger.status.set", triggerId: "trg_1", status: "active" },
+      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", program } },
+      { type: "thread.inputQueue.resume", threadId: "thr_1" },
+      { type: "thread.input.steer", threadId: "thr_1", messageId: "msg_1" },
+      { type: "thread.execution.update", threadId: "thr_1" },
+      { type: "request.respond", requestId: "req_1", response: { kind: "external" } },
+      { type: "browser.session.start", input: { threadId: "thr_1" } },
+      { type: "app.start", appId: "app_1" },
+      { type: "plugins.install", source: { kind: "mcp" } },
+      { type: "plugins.version.activate", pluginId: "p", versionId: "v" },
+      { type: "plugins.workflow.start", pluginId: "p" },
+    ]) {
+      for (const lineage of [false, undefined])
+        expect(at(command, lineage), `${command.type} ${lineage}`).toBe("ask");
+      expect(at(command, true), command.type).not.toBe("not_found");
     }
   });
 
