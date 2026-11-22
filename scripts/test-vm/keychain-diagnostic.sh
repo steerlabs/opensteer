@@ -4,6 +4,12 @@
 #
 #   pnpm test:vm -- bash ../../scripts/test-vm/keychain-diagnostic.sh
 #
+# Three conditions, each quick: as the suite runs (after its own unlock), after locking the fixture
+# keychain in this session, and after unlocking it again. It settled the cause: an unlock does not
+# carry between SSH connections, and Electron in a session where the fixture keychain is locked
+# gets errSecInteractionNotAllowed (-25308). (A fourth, under `launchctl asuser`, left an Electron
+# behind that held the suite's connection open; it is gone.)
+#
 # The same guard as fixture-keychain.sh, by calling it: a hypervisor, and the clone's marker
 # naming the VM the runner exported to the suite (OPENSTEER_TEST_GUEST_JOB). Every keychain
 # change goes through fixture-keychain.sh and touches only the fixture keychain; the Electron
@@ -14,16 +20,28 @@ here="$(cd "$(dirname "$0")" && pwd)"
 fixture() { /bin/bash "$here/fixture-keychain.sh" "$1" "${OPENSTEER_TEST_GUEST_JOB:-}"; }
 fixture guard || exit "$?"
 
-# A command that is killed after $1 seconds.
+# A command in a process group of its own, killed after $1 seconds; when it ends, for any reason,
+# whatever it left in its group (Electron's helpers) is killed too, so nothing outlives it to hold
+# the suite's SSH connection open.
 bounded() {
   local seconds="$1"
   shift
-  perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
+  perl -e '
+    my $seconds = shift;
+    my $pid = fork() // exit 126;
+    if ($pid == 0) { setpgrp(0, 0); exec(@ARGV) or exit 127 }
+    setpgrp($pid, $pid);
+    local $SIG{ALRM} = sub { kill("KILL", -$pid); waitpid($pid, 0); exit 137 };
+    alarm($seconds);
+    waitpid($pid, 0);
+    my $status = $?;
+    alarm(0);
+    kill("KILL", -$pid);
+    exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+  ' "$seconds" "$@"
 }
 say() { printf '%s: %s\n' "$1" "$2"; }
 
-uid="$(id -u)"
-user="$(id -un)"
 say "session manager" "$(bounded 10 launchctl managername 2>&1)"
 say "console user" "$(stat -f '%Su %u' /dev/console)"
 say "ssh connection" "${SSH_CONNECTION:+yes}${SSH_CONNECTION:-no}"
@@ -75,18 +93,4 @@ electron_probe "electron after locking the fixture keychain in this session" env
 fixture unlock
 electron_probe "electron after unlocking it again in this session" env
 
-# The user's GUI (Aqua) session, if a command can reach it from here.
-asuser=()
-if bounded 10 launchctl asuser "$uid" /usr/bin/true 2>/dev/null; then
-  asuser=(launchctl asuser "$uid")
-elif bounded 10 sudo -n launchctl asuser "$uid" sudo -n -u "$user" /usr/bin/true 2>/dev/null; then
-  asuser=(sudo -n launchctl asuser "$uid" sudo -n -u "$user")
-fi
-if [ "${#asuser[@]}" -eq 0 ]; then
-  say "electron under launchctl asuser" "skipped: launchctl asuser $uid is not allowed here"
-else
-  say "asuser command" "${asuser[*]}"
-  say "asuser session manager" "$(bounded 10 "${asuser[@]}" launchctl managername 2>&1)"
-  electron_probe "electron under launchctl asuser" "${asuser[@]}" env HOME="$HOME"
-fi
 exit 0
