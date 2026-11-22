@@ -52,3 +52,10 @@ test("a Messaging account row never cuts its sentences", () => {
   // `anywhere` lets a row shrink to its narrowest part and split an address inside a word.
   expect(rule).not.toMatch(/overflow-wrap:\s*anywhere/);
 });
+
+/** The link code's sentence is never squeezed beside its controls on a narrow screen. */
+test("the code that links me keeps its sentence's measure and puts its controls under it", () => {
+  const css = readFileSync(fileURLToPath(new URL("settings.css", import.meta.url)), "utf8");
+  expect(css).toMatch(/\.card__row\.messaging-me \{[^}]*flex-wrap:\s*wrap/u);
+  expect(css).toMatch(/\.messaging-me > \.card__row-body \{[^}]*flex:\s*1 1 18rem/u);
+});

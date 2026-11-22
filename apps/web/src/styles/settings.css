@@ -1578,3 +1578,13 @@ a.connected-agents__row:focus-visible {
   min-width: 0;
   padding: 0;
 }
+/*
+ * Who "me" is and the code that links it: the sentence keeps a readable measure, and on a narrow
+ * screen Copy and Link go under it instead of squeezing it to a few words a line.
+ */
+.card__row.messaging-me {
+  flex-wrap: wrap;
+}
+.messaging-me > .card__row-body {
+  flex: 1 1 18rem;
+}
