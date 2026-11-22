@@ -3,6 +3,8 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import {
   AccountDeploymentDirectoryEntrySchema,
   AccountDeploymentSchema,
+  ControlPlaneAccountIdSchema,
+  cloudWords,
   type AccountDeployment,
   type AccountDeploymentDirectoryEntry,
 } from "@opensteer/control-plane-protocol";
@@ -193,6 +195,60 @@ describe("portal Deployment cards", () => {
     expect(card).toContain("You no longer have access to this deployment.");
     expect(card).not.toContain('href="https://server.opensteer.test"');
     expect(card).not.toContain('class="place__go');
+  });
+
+  it("labels each Home on Your Opensteers by what the Account knows of it", async () => {
+    const cloud = directoryDeployment(personalHomeAtItsAddress());
+    const server = directoryDeployment({
+      ...personalHomeAtItsAddress(),
+      name: "Basement server",
+    });
+    const retired = retiredTeamServerEntry();
+    const accountId = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+    const page = async (cloudComputers: { listForAccount: () => Promise<unknown> }) => {
+      const router = createPortalRouter({
+        accountDeletion: {} as never,
+        auth: {} as never,
+        cloudComputers: cloudComputers as never,
+        portalOrigin: new URL("https://portal.test"),
+        portalSessions: {
+          read: async () => ({
+            accountId,
+            accountSessionId: "session-1",
+            displayName: "Portal Owner",
+            email: "owner@example.test",
+            expiresAt: new Date("2099-08-21T12:00:00.000Z"),
+          }),
+        } as never,
+        publicOrigin: new URL("https://accounts.portal.test"),
+        store: {
+          isDeploymentPresentForAccount: async () => true,
+          listDeployments: async () => [cloud, server, retired],
+        } as never,
+      });
+      const app = Fastify();
+      router.register(app);
+      app.get("/", (request, reply) => router.home(request, reply));
+      const response = await app.inject({
+        headers: { cookie: "__Host-opensteer.portal=fixture", host: "portal.test" },
+        url: "/",
+      });
+      expect(response.statusCode).toBe(200);
+      return response.body;
+    };
+    const notes = (body: string) =>
+      [...body.matchAll(/<span class="place__note">([^<]*)<\/span>/gu)].map(([, note]) => note);
+
+    // Trusted membership names the Cloud Computer; the other Home at its own address is a server;
+    // a retired team server's row says no kind.
+    const known = await page({
+      listForAccount: async () => [{ deploymentId: cloud.id, status: "ready", work: null }],
+    });
+    expect(notes(known)).toEqual([cloudWords("cloud.shortTitle"), "Server"]);
+    expect(known).not.toContain(">Team<");
+    // When the Account cannot say which are Cloud Computers, it names no kind at all.
+    const unknown = await page({ listForAccount: async () => Promise.reject(new Error("down")) });
+    expect(notes(unknown)).toEqual([]);
   });
 
   it("mints the browser grant only after the portal card is posted", async () => {
