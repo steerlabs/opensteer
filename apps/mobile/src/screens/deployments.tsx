@@ -1,4 +1,7 @@
-import { homesListTitle } from "@opensteer/client/computers";
+import { cloudComputerWebsite, homesListTitle } from "@opensteer/client/computers";
+import { useCloudComputer } from "@opensteer/client/react";
+import { useCopy } from "../ui/copy-mark.js";
+import { phoneShowsCloudComputerPrice } from "./cloud-computer-entry.js";
 import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { hostsDeployment } from "@opensteer/client/computers";
@@ -123,8 +126,8 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
       <Pressable
         accessibilityHint={
           openable
-            ? "Opens this deployment and signs in when needed"
-            : "Explains what must be fixed before this deployment can open"
+            ? "Opens this Opensteer and signs in when needed"
+            : "Explains what must be fixed before this Opensteer can open"
         }
         accessibilityLabel={deploymentOpenLabel(row)}
         accessibilityRole="button"
@@ -405,7 +408,7 @@ export function DeploymentsScreen(): ReactNode {
   const open = useCallback(
     (row: DeploymentRow) => {
       if (!deploymentCanOpen(row)) {
-        Alert.alert(row.name, deploymentStatusDetail(row) ?? "This deployment cannot open yet.", [
+        Alert.alert(row.name, deploymentStatusDetail(row) ?? "This Opensteer cannot open yet.", [
           ...(row.verification === "host-too-old"
             ? [{ text: "Update", onPress: () => resetToDeployment(row.deploymentId) }]
             : []),
@@ -591,7 +594,7 @@ export function DeploymentsScreen(): ReactNode {
       row.name,
       `${row.kindLabel}\n${row.origin}${
         row.accountManaged
-          ? "\n\nThis deployment is managed by your Opensteer account. Remove it from the Account to stop it appearing here."
+          ? "\n\nThis Opensteer is in your Opensteer account. Remove it there to stop it appearing here."
           : ""
       }`,
       [{ text: "Done" }],
@@ -616,6 +619,9 @@ export function DeploymentsScreen(): ReactNode {
     navigation.setOptions({ headerLargeTitle: !welcome, title: welcome ? "" : homesListTitle });
   }, [navigation, switching, welcome]);
 
+  // A price is read only where the phone may show one (phoneShowsCloudComputerPrice).
+  const cloud = useCloudComputer(phoneShowsCloudComputerPrice ? client.cloudComputers : null);
+  const { copied, copy } = useCopy();
   const enterAddress = useCallback(() => {
     accountFlowGeneration.current += 1;
     setStartingAccountSignIn(false);
@@ -642,6 +648,7 @@ export function DeploymentsScreen(): ReactNode {
   }
 
   if (presentation === "signed-in-empty") {
+    const cloudScreen = cloud.screen;
     const listed = signedInDirectoryPresentation({
       detail: directory.detail,
       status: directory.status,
@@ -658,6 +665,12 @@ export function DeploymentsScreen(): ReactNode {
           portalOrigin={client.portalOrigin}
           signedInAs={accountIdentityLabel(identity!)}
           signingIn={false}
+          cloudAddress={
+            client.portalOrigin ? cloudComputerWebsite(client.portalOrigin, "checkout") : null
+          }
+          cloudCopied={copied}
+          cloudPrice={cloudScreen.kind === "offer" ? (cloudScreen.plan?.line ?? null) : null}
+          onCopyCloudAddress={(address) => void copy(address)}
         />
       </SignedInWaiting>
     );
@@ -737,7 +750,7 @@ function UnavailableAccountDeployments(props: {
   if (props.entries.length === 0) return null;
   return (
     <View style={styles.unavailable}>
-      <AppText role="secondaryMedium">Some Account deployments need attention</AppText>
+      <AppText role="secondaryMedium">Some Opensteers in your account need attention</AppText>
       {props.hasAvailableRows ? (
         <AppText role="secondary" tone="muted">
           Deployments this phone could verify are still shown above.

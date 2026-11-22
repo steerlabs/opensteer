@@ -1,3 +1,4 @@
+import { phoneShowsCloudComputerPrice } from "./cloud-computer-entry.js";
 import {
   cloudComputerDeleteInput,
   cloudComputerWebsite,
@@ -20,8 +21,8 @@ import { workHomeSections } from "./work-home.js";
 
 /**
  * Opensteer Cloud Computer on the phone. Checkout and billing happen on the Opensteer
- * website, never from inside this app: it shows the price and the website's address to
- * open in a browser, and no purchase button.
+ * website, never from inside this app: it shows the website's address to open in a browser,
+ * no purchase button, and no price while `phoneShowsCloudComputerPrice` is false.
  */
 export function CloudComputerScreen(): ReactNode {
   const client = useMobileClient();
@@ -265,20 +266,25 @@ function personalSections(
         ? [{ key: "deleted", title: "", rows: [], footer: { text: cloudWords("cloud.deleted") } }]
         : []),
       whatItIs(),
-      {
-        key: "price",
-        title: "",
-        rows: [
-          {
-            key: "price",
-            kind: "text",
-            label: screen.plan?.line ?? cloudWords("cloud.notForSale"),
-            detail: screen.plan
-              ? cloudWords("cloud.priceDetail")
-              : cloudWords("cloud.notForSaleDetail"),
-          },
-        ],
-      },
+      // A price only where the stores' rules allow it; "Not available yet" is not a price.
+      ...(screen.plan && !phoneShowsCloudComputerPrice
+        ? []
+        : [
+            {
+              key: "price",
+              title: "",
+              rows: [
+                {
+                  key: "price",
+                  kind: "text" as const,
+                  label: screen.plan?.line ?? cloudWords("cloud.notForSale"),
+                  detail: screen.plan
+                    ? cloudWords("cloud.priceDetail")
+                    : cloudWords("cloud.notForSaleDetail"),
+                },
+              ],
+            },
+          ]),
       changes(),
       ...(screen.plan ? [website("checkout", cloudWords("cloud.checkoutWebDetail"))] : []),
     ];
@@ -408,7 +414,7 @@ function personalSections(
       {
         key: "plan",
         kind: "text",
-        label: screen.plan.line,
+        label: phoneShowsCloudComputerPrice ? screen.plan.line : screen.plan.name,
         ...(computer.renews ? { detail: computer.renews } : {}),
       },
     ],

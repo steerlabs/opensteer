@@ -66,86 +66,126 @@ const signedOut = {
 };
 
 describe("first-run welcome", () => {
-  it("leads with the Opensteer account, which finds a Mac or a Cloud Computer, then the Mac link, the scan and an address", async () => {
-    const container = document.createElement("div");
+  const container = document.createElement("div");
+  const signIn = vi.fn();
+  const scan = vi.fn();
+  const address = vi.fn();
+  const copy = vi.fn();
+  const render = (props: {
+    readonly account?:
+      | typeof signedOut
+      | (Omit<typeof signedOut, "available" | "detail"> & {
+          readonly available: false;
+          readonly detail: string;
+        });
+    readonly portalOrigin: string | null;
+    readonly signedInAs?: string;
+    readonly signingIn?: boolean;
+  }) => (
+    <Welcome
+      account={props.account ?? signedOut}
+      cloudAddress={props.portalOrigin ? `${props.portalOrigin}/cloud-computer/checkout` : null}
+      cloudPrice="$20.00 a month"
+      failure={null}
+      onAccount={signIn}
+      onAddress={address}
+      onCopyCloudAddress={copy}
+      onScan={scan}
+      portalOrigin={props.portalOrigin}
+      signedInAs={props.signedInAs ?? null}
+      signingIn={props.signingIn ?? false}
+    />
+  );
+  const button = (text: string) =>
+    [...container.querySelectorAll("button")].find((item) => item.textContent?.startsWith(text));
+  const click = async (text: string) => {
+    expect(button(text), `Missing ${text}`).toBeDefined();
+    await act(async () => button(text)!.click());
+  };
+
+  it("leads with the Opensteer account, with a code and an address behind Other ways in", async () => {
     const root = createRoot(container);
-    const signIn = vi.fn();
-    const scan = vi.fn();
-    const render = (props: {
-      readonly account?:
-        | typeof signedOut
-        | (Omit<typeof signedOut, "available" | "detail"> & {
-            readonly available: false;
-            readonly detail: string;
-          });
-      readonly portalOrigin: string | null;
-      readonly signedInAs?: string;
-      readonly signingIn?: boolean;
-    }) => (
-      <Welcome
-        account={props.account ?? signedOut}
-        failure={null}
-        onAccount={signIn}
-        onAddress={() => undefined}
-        onScan={scan}
-        portalOrigin={props.portalOrigin}
-        signedInAs={props.signedInAs ?? null}
-        signingIn={props.signingIn ?? false}
-      />
-    );
-    const button = (text: string) =>
-      [...container.querySelectorAll("button")].find((item) => item.textContent === text);
-    const click = async (text: string) => {
-      expect(button(text), `Missing ${text}`).toBeDefined();
-      await act(async () => button(text)!.click());
-    };
     try {
-      await act(async () => root.render(render({ portalOrigin: null })));
-      // Someone whose Home is a Cloud Computer is never told they need a Mac.
-      expect(container.textContent).not.toContain("Opensteer runs on your Mac");
-      expect(container.textContent).toContain(
-        "It runs on your Mac or on a Cloud Computer. Sign in with your Opensteer account",
+      await act(async () => root.render(render({ portalOrigin: "https://portal.example.com" })));
+      expect(container.textContent).toMatch(
+        /Sign in with your Opensteer account, and this \w+ will find your Opensteer, on your Mac or on a Cloud Computer\./u,
       );
       expect(container.querySelector("button")?.textContent).toBe("Sign in");
-      // Nothing here buys anything.
-      expect(container.textContent).not.toMatch(/buy|checkout|price|subscribe/iu);
-      expect(container.textContent).toContain("Enter address");
-      expect(container.textContent).not.toContain("Send me the Mac link");
-      await click("Scan QR Code");
+      // The other ways in are one small link, not doors beside the account.
+      expect(button("Scan")).toBeUndefined();
+      expect(button("Enter")).toBeUndefined();
+      expect(button("Send me the Mac link")).toBeUndefined();
+      expect(container.textContent).not.toMatch(/buy|checkout|price|subscribe|\$/iu);
+      await click("Other ways in");
+      expect(container.textContent).toContain("From Opensteer on your Mac, for a private network.");
+      await click("Scan a code");
       expect(scan).toHaveBeenCalledOnce();
+      await click("Enter an address");
+      expect(address).toHaveBeenCalledOnce();
       await click("Sign in");
       expect(signIn).toHaveBeenCalledOnce();
 
       // While the browser is open, the Account row says so and cannot start a second sign-in.
       await act(async () => root.render(render({ portalOrigin: null, signingIn: true })));
       expect(button("Finish signing in in your browser")?.disabled).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 
-      // A build with no Account offers only the address.
+  it("keeps a build with no Opensteer account as it always was", async () => {
+    const root = createRoot(container);
+    try {
       await act(async () =>
         root.render(
           render({
             account: { ...signedOut, available: false, detail: "No Account service." },
-            portalOrigin: null,
+            portalOrigin: "https://portal.example.com",
           }),
         ),
       );
       expect(button("Sign in")).toBeUndefined();
       expect(container.textContent).toContain("Install it on your Mac");
-      expect(container.textContent).toContain("Enter address");
-
-      await act(async () => root.render(render({ portalOrigin: "https://portal.example.com" })));
+      expect(button("Scan QR Code")).toBeDefined();
+      expect(button("Enter address")).toBeDefined();
+      expect(container.textContent).toContain("Use an address for Tailscale or your own server.");
       await click("Send me the Mac link");
       expect(share).toHaveBeenCalledWith({
         message: "https://portal.example.com/mac",
         url: "https://portal.example.com/mac",
       });
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 
-      // Signed in with no Opensteer yet: who, and no second sign-in.
+  it("asks where a signed-in account with no Opensteer should have it, with no price and nothing to buy", async () => {
+    const root = createRoot(container);
+    try {
       await act(async () =>
-        root.render(render({ portalOrigin: null, signedInAs: "alex@example.com" })),
+        root.render(
+          render({ portalOrigin: "https://portal.example.com", signedInAs: "alex@example.com" }),
+        ),
       );
+      expect(container.textContent).toContain("Where should your Opensteer live?");
       expect(container.textContent).toContain("alex@example.com");
       expect(button("Sign in")).toBeUndefined();
+      expect(container.textContent).toContain("On your Mac");
+      expect(container.textContent).toContain("Free. Works while your Mac is awake.");
+      expect(container.textContent).toContain("On an Opensteer Cloud Computer");
+      expect(container.textContent).toContain(
+        "Always on. Set it up on the Opensteer website, then come back here.",
+      );
+      // The website's address is text to copy, never a link or a purchase, and no price shows.
+      expect(container.textContent).toContain("https://portal.example.com/cloud-computer/checkout");
+      expect(container.querySelector("a")).toBeNull();
+      expect(container.textContent).not.toContain("$20.00");
+      expect(container.textContent).not.toMatch(/buy|price|subscribe|continue to checkout/iu);
+      await click("Copy");
+      expect(copy).toHaveBeenCalledWith("https://portal.example.com/cloud-computer/checkout");
+      share.mockClear();
+      await click("Send me the Mac link");
+      expect(share).toHaveBeenCalledOnce();
       expect(container.textContent).toContain("Your Opensteer appears here as soon as it’s ready.");
     } finally {
       await act(async () => root.unmount());

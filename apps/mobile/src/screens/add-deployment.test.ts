@@ -67,7 +67,7 @@ describe("signed-in Account presentation", () => {
     "does not claim the directory is empty while it is %s",
     (status) => {
       expect(signedInDirectoryPresentation({ detail: null, status, unavailableCount: 0 })).toEqual({
-        detail: "Checking your Account for deployments…",
+        detail: "Checking your Opensteer account…",
         refreshDisabled: true,
         refreshLabel: "Refreshing…",
         title: "Signed in to your Account",

@@ -243,7 +243,7 @@ export function TailscalePanel({
         onRenew={privately.renew}
         steps={[
           "Turn on Tailscale on your phone.",
-          "In the Opensteer app, tap Scan QR Code and scan this code.",
+          "In the Opensteer app, choose Scan a code, under Other ways in, and scan this code.",
         ]}
         value={link}
       />
@@ -321,7 +321,9 @@ export function AddressPanel({
           label="Code that pairs your phone at your address"
           manual={manualEntry(privately)}
           onRenew={privately.renew}
-          steps={["In the Opensteer app, tap Scan QR Code and scan this code."]}
+          steps={[
+            "In the Opensteer app, choose Scan a code, under Other ways in, and scan this code.",
+          ]}
           value={link}
         />
         <p className="setup-frame__note">

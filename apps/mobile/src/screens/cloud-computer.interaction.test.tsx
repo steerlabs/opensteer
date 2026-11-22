@@ -131,7 +131,7 @@ async function press(target: NativeSettingsRow) {
 }
 
 describe("Opensteer Cloud Computer on the phone", () => {
-  it("says what it is, its price from the plan, what changes, and the website to set it up on, with no purchase button", async () => {
+  it("says what it is, what changes, and the website to set it up on, with no price and no purchase button", async () => {
     await open("none");
     expect(section("points")?.rows.map((candidate) => candidate.label)).toEqual([
       "Works while your Mac sleeps",
@@ -139,7 +139,13 @@ describe("Opensteer Cloud Computer on the phone", () => {
       "Encrypted backups",
       "Your Mac can join it",
     ]);
-    expect(row("price", "price")).toMatchObject({ label: "$20.00 a month" });
+    // The stores' rules decide whether a phone may show a price; until then it shows none.
+    expect(section("price")).toBeUndefined();
+    const shown = state.page!.sections.flatMap((candidate) => [
+      ...candidate.rows.flatMap((r) => [r.label, "detail" in r ? r.detail : undefined]),
+      candidate.footer?.text,
+    ]);
+    expect(shown.join(" ")).not.toContain("$");
     // Before buying: a new Home, agents connect again, sites are signed in to again, the
     // Mac can be added. Nothing moves across.
     expect(section("changes")?.rows[0]?.label).toBe(
@@ -229,8 +235,9 @@ describe("Opensteer Cloud Computer on the phone", () => {
     expect(row("status", "ip").label).toBe("Browser IP · Assigned");
     expect(row("status", "browser-address")).toMatchObject({ detail: "203.0.113.24" });
     expect(row("status", "region")).toMatchObject({ detail: "Ashburn, Virginia" });
+    // The plan by its name, never its price.
     expect(row("plan", "plan")).toMatchObject({
-      label: "$20.00 a month",
+      label: "Opensteer Cloud Computer",
       detail: "Renews Dec 20, 2026",
     });
     expect(row("website-billing", "address")).toMatchObject({
@@ -345,8 +352,9 @@ describe("work Homes on the phone", () => {
     for (const key of [workKey, "work-policy-was_00000000-0000-4000-8000-0000000000a1"])
       for (const word of ["Manage billing", "Suspend", "Delete Cloud Computer"])
         expect(labels(key)).not.toContain(word);
-    // No personal one: the offer still shows, after the work Home.
-    expect(row("price", "price").label).toBe("$20.00 a month");
+    // No personal one: the offer still shows, after the work Home, with no price.
+    expect(section("website-checkout")).toBeDefined();
+    expect(section("price")).toBeUndefined();
   });
 
   it("opens a work Home by the Home the Account pinned, and goes to what its organization can see", async () => {
@@ -364,7 +372,7 @@ describe("work Homes on the phone", () => {
   it("shows both, or only the personal one when there is no work Home", async () => {
     await open("both");
     expect(section(workKey)).toBeDefined();
-    expect(row("plan", "plan").label).toBe("$20.00 a month");
+    expect(row("plan", "plan").label).toBe("Opensteer Cloud Computer");
     act(() => root?.unmount());
     await open("ready");
     expect(section(workKey)).toBeUndefined();

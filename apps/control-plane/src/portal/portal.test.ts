@@ -192,7 +192,7 @@ describe("portal Deployment cards", () => {
     const deployment = directoryDeployment({ ...selfHostedDeployment(), access: "member" });
     const card = deploymentCard(deployment, false);
     expect(card).toContain("Offline");
-    expect(card).toContain("You no longer have access to this deployment.");
+    expect(card).toContain("You no longer have access to this Opensteer.");
     expect(card).not.toContain('href="https://server.opensteer.test"');
     expect(card).not.toContain('class="place__go');
   });
@@ -348,9 +348,7 @@ describe("portal Deployment cards", () => {
     });
     const card = deploymentCard(obsolete, true);
     expect(card).toContain("Needs attention");
-    expect(card).toContain(
-      "Update Opensteer to use this deployment’s published connection details.",
-    );
+    expect(card).toContain("Update Opensteer to reach this Opensteer at its published address.");
     expect(card).not.toContain("href=");
     expect(card).not.toContain("place__go");
   });

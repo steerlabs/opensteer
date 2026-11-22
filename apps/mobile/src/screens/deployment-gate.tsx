@@ -124,7 +124,7 @@ export function DeploymentGate(props: {
           <AppText role="secondary" tone="muted">
             It is no longer in this phone&apos;s list. Add it again from Deployments.
           </AppText>
-          <SecondaryButton label="Choose a deployment" onPress={resetToDeployments} />
+          <SecondaryButton label="Choose an Opensteer" onPress={resetToDeployments} />
         </View>
       </Screen>
     );

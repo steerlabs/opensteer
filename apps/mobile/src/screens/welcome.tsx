@@ -1,5 +1,5 @@
 import { useHeaderHeight } from "@react-navigation/elements";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
 import {
@@ -13,6 +13,7 @@ import { Screen, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import {
+  keylessWelcomeCopy,
   shareMacLink,
   welcomeCopy,
   welcomePresentation,
@@ -27,6 +28,25 @@ export function Welcome(props: WelcomeProps): ReactNode {
   const view = welcomePresentation(props);
   const column = useReadingColumn();
   const headerHeight = useHeaderHeight();
+  // On the door and on "where", the other ways in wait behind one small link.
+  const [otherWays, setOtherWays] = useState(false);
+  const keyless = view.mode === "keyless";
+  const otherRows = keyless
+    ? [<WelcomeRow key="address" label={keylessWelcomeCopy.address} onPress={props.onAddress} />]
+    : [
+        <WelcomeRow
+          detail={welcomeCopy.scanDetail}
+          key="scan"
+          label={welcomeCopy.scan}
+          onPress={props.onScan}
+        />,
+        <WelcomeRow
+          detail={welcomeCopy.addressDetail}
+          key="address"
+          label={welcomeCopy.address}
+          onPress={props.onAddress}
+        />,
+      ];
   return (
     <Screen>
       <ScrollView
@@ -36,7 +56,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
         <View style={styles.intro}>
           <Symbol name="laptopcomputer.and.iphone" size={40} tint={color.ember} />
           <AppText role="displayLarge" style={styles.centred}>
-            {welcomeCopy.title}
+            {view.title}
           </AppText>
           <AppText role="body" style={styles.centred} tone="soft">
             {view.sentence(thisPhoneNoun)}
@@ -57,37 +77,91 @@ export function Welcome(props: WelcomeProps): ReactNode {
             prominent
           />
         )}
-        {view.macLink === null ? null : view.account === null ? (
-          <PrimaryButton
-            label={welcomeCopy.mac}
-            onPress={() => shareMacLink(view.macLink!)}
-            prominent
-          />
-        ) : (
-          <SecondaryButton label={welcomeCopy.mac} onPress={() => shareMacLink(view.macLink!)} />
-        )}
-        {view.macLink === null && view.account === null ? (
-          <PrimaryButton label={welcomeCopy.scan} onPress={props.onScan} prominent />
-        ) : (
-          <SecondaryButton label={welcomeCopy.scan} onPress={props.onScan} />
-        )}
+        {keyless ? (
+          <>
+            {view.macLink === null ? null : (
+              <PrimaryButton
+                label={welcomeCopy.mac}
+                onPress={() => shareMacLink(view.macLink!)}
+                prominent
+              />
+            )}
+            {view.macLink === null ? (
+              <PrimaryButton label={keylessWelcomeCopy.scan} onPress={props.onScan} prominent />
+            ) : (
+              <SecondaryButton label={keylessWelcomeCopy.scan} onPress={props.onScan} />
+            )}
+          </>
+        ) : null}
+        {view.mode === "where" ? (
+          <>
+            {view.signedInAs === null ? null : (
+              <AppText role="secondary" style={styles.centred} tone="muted">
+                {view.signedInAs}
+              </AppText>
+            )}
+            <View style={styles.section}>
+              <SectionLabel>{welcomeCopy.onMac}</SectionLabel>
+              <AppText role="secondary" tone="soft">
+                {welcomeCopy.onMacDetail}
+              </AppText>
+              {view.macLink === null ? null : (
+                <SecondaryButton
+                  label={welcomeCopy.mac}
+                  onPress={() => shareMacLink(view.macLink!)}
+                />
+              )}
+            </View>
+            {view.cloud === null ? null : (
+              <View style={styles.section}>
+                <SectionLabel>{welcomeCopy.onCloud}</SectionLabel>
+                <AppText role="secondary" tone="soft">
+                  {view.cloud.price === null
+                    ? view.cloud.detail
+                    : `${view.cloud.price}. ${view.cloud.detail}`}
+                </AppText>
+                {view.cloud.address === null ? null : (
+                  <RowGroup>
+                    {[
+                      <View key="address" style={styles.row}>
+                        <AppText role="body" style={styles.rowLabel}>
+                          {view.cloud.address}
+                        </AppText>
+                      </View>,
+                      <WelcomeRow
+                        key="copy"
+                        label={props.cloudCopied ? welcomeCopy.copied : welcomeCopy.copy}
+                        onPress={() => props.onCopyCloudAddress?.(view.cloud!.address!)}
+                      />,
+                    ]}
+                  </RowGroup>
+                )}
+              </View>
+            )}
+          </>
+        ) : null}
         <View style={styles.section}>
-          <SectionLabel>{welcomeCopy.otherWays}</SectionLabel>
-          <RowGroup>
-            {[
-              view.signedInAs === null ? null : (
-                <View key="identity" style={styles.row}>
-                  <AppText role="body" style={styles.rowLabel}>
-                    {view.signedInAs}
-                  </AppText>
-                </View>
-              ),
-              <WelcomeRow key="address" label={welcomeCopy.address} onPress={props.onAddress} />,
-            ]}
-          </RowGroup>
-          <AppText role="caption" tone="muted">
-            {view.footer}
-          </AppText>
+          {keyless || otherWays ? (
+            <>
+              <SectionLabel>{welcomeCopy.otherWays}</SectionLabel>
+              <RowGroup>{otherRows}</RowGroup>
+            </>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setOtherWays(true)}
+              style={styles.link}
+            >
+              <AppText role="secondaryMedium" tone="soft">
+                {welcomeCopy.otherWays}
+              </AppText>
+            </Pressable>
+          )}
+          {view.footer === null ? null : (
+            <AppText role="caption" tone="muted">
+              {view.footer}
+            </AppText>
+          )}
         </View>
       </ScrollView>
     </Screen>
@@ -96,6 +170,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
 
 function WelcomeRow(props: {
   readonly busy?: boolean;
+  readonly detail?: string;
   readonly disabled?: boolean;
   readonly label: string;
   readonly onPress: () => void;
@@ -108,9 +183,16 @@ function WelcomeRow(props: {
       onPress={props.onPress}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
-      <AppText role="body" style={styles.rowLabel} tone={props.disabled ? "muted" : "default"}>
-        {props.label}
-      </AppText>
+      <View style={styles.rowLabel}>
+        <AppText role="body" tone={props.disabled ? "muted" : "default"}>
+          {props.label}
+        </AppText>
+        {props.detail === undefined ? null : (
+          <AppText role="caption" tone="muted">
+            {props.detail}
+          </AppText>
+        )}
+      </View>
       {props.busy === true ? (
         <ActivityIndicator color={color.muted} />
       ) : (
@@ -124,6 +206,7 @@ const styles = StyleSheet.create({
   centred: { textAlign: "center" },
   content: { flexGrow: 1, gap: space[24], justifyContent: "center", paddingBottom: space[24] },
   intro: { alignItems: "center", gap: space[8] },
+  link: { alignSelf: "center", paddingVertical: space[8] },
   pressed: { backgroundColor: color.surfacePressed },
   row: {
     alignItems: "center",
