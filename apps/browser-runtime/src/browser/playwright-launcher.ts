@@ -1499,7 +1499,15 @@ class PlaywrightContextHandle implements BrowserContext {
     const rows = await this.read(deadline);
     const named = rows ? findOwn(rows, record) : null;
     if (this.sleeping.get(tokenId) !== record || this.wakes.has(record.title)) return;
-    if (named?.kind !== "one" || named.row.discarded || named.row.status === "unloaded") return;
+    if (named?.kind === "one" && named.row.discarded) {
+      // Asleep already (a wake abandoned after it moved the tab): back among the sleeping tabs.
+      await this.placeAsleep(record, named.row.index);
+      return;
+    }
+    if (named?.kind !== "one" || named.row.status === "unloaded") return;
+    // S1: never discarded while it is the active tab (Chromium would then hold it active and
+    // discarded, and activating it again would not load it).
+    if (named.row.active) await this.activatePrivateAnchor();
     const discardedId = await this.lifecycle?.discardByTabId(named.row.tabId).catch(() => null);
     const after = await this.read(deadline);
     if (discardedId != null) record.tabId = discardedId;
@@ -1507,6 +1515,7 @@ class PlaywrightContextHandle implements BrowserContext {
     if (again?.kind === "one" && again.row.discarded) {
       record.tabId = again.row.tabId;
       record.targetId = again.row.targetId;
+      await this.placeAsleep(record, again.row.index);
       return;
     }
     if (discardedId != null) record.tabId = discardedId;
@@ -1725,6 +1734,23 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
+   * S2: a sleeping tab is kept at the left end of the window, left of the private anchor, and every
+   * live tab right of it. Chromium activates the tab to the right of a closed active tab and puts
+   * a tab a page opens right of the active tab, in its group: neither then reaches a sleeping tab.
+   * The order is only a placement; a move that fails leaves the tab where it was.
+   */
+  private async placeAsleep(record: SleepingTab, index: number): Promise<void> {
+    if (index === 0 || !this.lifecycle) return;
+    const moved = await this.lifecycle.moveTab(record.tabId, 0).catch(() => null);
+    if (moved) record.tabId = moved.tabId;
+  }
+
+  /** S2: a tab that wakes goes to the right end, among the live tabs, before it is activated. */
+  private async placeAwake(tabId: number): Promise<void> {
+    await this.lifecycle?.moveTab(tabId, -1).catch(() => null);
+  }
+
+  /**
    * Puts a page's tab to sleep by discard, on that sleep's own lane (L2): Chromium discards the
    * tab first, then the helper names the tab Chromium returns with the token's name. A discarded
    * tab runs no script, so nothing it opens can inherit the name. A tab that cannot be put to
@@ -1796,11 +1822,15 @@ class PlaywrightContextHandle implements BrowserContext {
         let named = await asleep();
         if (named?.kind === "one" && !named.row.discarded && !page.isClosed()) {
           // Named and still awake (the helper stopped between the two): the discard is asked
-          // once more of that one tab.
+          // once more of that one tab, never while it is the active tab (S1).
+          if (named.row.active) await this.activatePrivateAnchor();
           await lifecycle.discardByTabId(named.row.tabId).catch(() => null);
           named = await asleep();
         }
-        if (named?.kind === "one" && named.row.discarded) return;
+        if (named?.kind === "one" && named.row.discarded) {
+          await this.placeAsleep(record, named.row.index);
+          return;
+        }
         // Not asleep under its name: closed and removed with evidence, it wakes by address. Its
         // page still open proves the tab was not discarded, so closing it closes the tab.
         if (!page.isClosed() && (await this.closePageWithEvidence(page, deadline)))
@@ -1888,8 +1918,14 @@ class PlaywrightContextHandle implements BrowserContext {
             )
         : undefined;
       if (candidate) wake.arrive(candidate, row);
+      await withTimeout(this.placeAwake(row.tabId), remainingMs(deadline), {
+        timeoutError: () => new Error("Placing the waking tab timed out."),
+      }).catch(() => undefined);
       if (abandoned() || !current()) throw notWanted();
       if (!candidate || row.discarded || row.status === "unloaded") {
+        // S1: a tab Chromium holds active and discarded loads only once another tab was active
+        // (activating it again answers it still discarded: seen on real Chromium).
+        if (row.active) await this.activatePrivateAnchor();
         const reply = await withTimeout(
           lifecycle.activateByTabId(row.tabId),
           remainingMs(deadline),

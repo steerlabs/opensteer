@@ -28,7 +28,10 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
       tabs: {
         onCreated: { addListener: (listener: never) => created.push(listener) },
         onReplaced: { addListener: (listener: never) => replaced.push(listener) },
-        query: async () => tabs.map((tab) => ({ ...tab })),
+        query: async (filter: { groupId?: number } = {}) =>
+          tabs
+            .filter((tab) => filter.groupId === undefined || tab.groupId === filter.groupId)
+            .map((tab) => ({ ...tab })),
         get: async (tabId: number) => ({ ...tabs.find((tab) => tab.id === tabId)! }),
         // A discard gives the tab a new id, as Chromium does.
         discard: async (tabId: number) => {
@@ -49,8 +52,14 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
           for (const tabId of tabIds) tabs.find((tab) => tab.id === tabId)!.groupId = id;
           return id;
         },
-        ungroup: async (tabId: number) => {
-          tabs.find((tab) => tab.id === tabId)!.groupId = -1;
+        ungroup: async (tabIds: number | number[]) => {
+          for (const tabId of [tabIds].flat()) tabs.find((tab) => tab.id === tabId)!.groupId = -1;
+        },
+        move: async (tabId: number, { index }: { index: number }) => {
+          calls.push(`move tab ${tabId} ${index}`);
+          const tab = tabs.find((candidate) => candidate.id === tabId)!;
+          tab.index = index;
+          return { ...tab };
         },
       },
       tabGroups: {
@@ -59,6 +68,10 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
           options.hideGroups ? [] : [...groups.values()].map((group) => ({ ...group })),
         update: async (id: number, change: { title: string }) => {
           groups.get(id)!.title = change.title;
+        },
+        move: async (id: number, { index }: { index: number }) => {
+          calls.push(`move group ${id} ${index}`);
+          for (const tab of tabs) if (tab.groupId === id) tab.index = index;
         },
       },
       debugger: { getTargets: async () => [] },
@@ -74,6 +87,7 @@ function startWorker(tabs: FakeTab[], options: { hideGroups?: boolean } = {}) {
     nameTab(tabId: number, name: string): Promise<boolean>;
     nameAndDiscard(tabId: number, name: string): Promise<{ ok: boolean; newTabId: number | null }>;
     unnameTab(tabId: number): Promise<boolean>;
+    moveTab(tabId: number, index: number): Promise<{ ok: boolean; tabId: number; index: number }>;
   };
   const open = (tab: FakeTab) => {
     tabs.push(tab);
@@ -129,6 +143,24 @@ describe("tab lifecycle helper", () => {
     expect((await api.inventory()).rows).toMatchObject([
       { tabId: 31, discarded: true, identity: "opensteer-sleep:c" },
     ]);
+  });
+
+  it("moves a sleeping tab with its own group, taking out first a tab that only joined it, and moves an ungrouped tab alone (run 11, S2)", async () => {
+    const tabs = [tab(50, { discarded: true, status: "unloaded" }), tab(51)];
+    const { api, calls } = startWorker(tabs);
+    await api.nameTab(50, "opensteer-sleep:s");
+    // A tab opened beside it joined its group.
+    tabs[1]!.groupId = tabs[0]!.groupId;
+    expect(await api.moveTab(50, 0)).toEqual({ ok: true, tabId: 50, index: 0 });
+    expect(calls.filter((call) => call.startsWith("move"))).toEqual(["move group 1 0"]);
+    expect(
+      (await api.inventory()).rows.map((row) => [row.tabId, row.identity, row.discarded]),
+    ).toEqual([
+      [50, "opensteer-sleep:s", true],
+      [51, null, false],
+    ]);
+    expect(await api.moveTab(51, -1)).toMatchObject({ ok: true, tabId: 51 });
+    expect(calls.at(-1)).toBe("move tab 51 -1");
   });
 
   it("marks every tab, at start, as it is created and as it is replaced, as not discardable by Chromium itself (L3)", async () => {

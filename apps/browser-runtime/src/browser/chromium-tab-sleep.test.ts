@@ -45,8 +45,10 @@ const wavBuffer = buildLoopingWavBuffer();
 
 async function startFixtureServer() {
   let postCount = 0;
+  const hits = new Map<string, number>();
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    hits.set(url.pathname + url.search, (hits.get(url.pathname + url.search) ?? 0) + 1);
     if (url.pathname === "/tone.wav") {
       response.writeHead(200, {
         "content-type": "audio/wav",
@@ -179,6 +181,8 @@ async function startFixtureServer() {
   if (!address || typeof address === "string") throw new Error("Fixture server has no address.");
   return {
     originForSite: (index: number) => `http://site-${index}.localhost:${address.port}`,
+    /** Loads of one address (path and query), so a tab that loaded by itself is counted. */
+    hits: (pathAndQuery: string) => hits.get(pathAndQuery) ?? 0,
   };
 }
 
@@ -1366,6 +1370,18 @@ it.each(["no tab asleep", "a tab asleep"] as const)(
       await evalValue(bgLive.cdp, `sessionStorage.setItem("mark", "bg-asleep")`);
       expect(await a.ledger.sleep(bg.id, () => null)).toBe(true);
     }
+    // S2's counts: loads of the sleeping tab Chromium made by itself, and tabs that joined its
+    // group and were un-named as newcomers (run 11: 18 and 17 in 20 rounds).
+    const lifecycle = (
+      launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycle;
+    const loadsAsleep = server.hits("/article?id=bg-asleep");
+    let unnamed = 0;
+    const unname = lifecycle.unnameTab.bind(lifecycle);
+    lifecycle.unnameTab = (tabId: number) => {
+      unnamed++;
+      return unname(tabId);
+    };
     const inA = (part: string) =>
       a.ledger.snapshot().find((s) => a.ledger.binding(s.id)?.page.url().includes(part));
     for (let round = 1; round <= 20; round++) {
@@ -1413,6 +1429,12 @@ it.each(["no tab asleep", "a tab asleep"] as const)(
       await waitLoaded(a.ledger.binding(thirdSurface.id)!.cdp, "/form");
       await a.ledger.closeSurface(thirdSurface.id);
     }
+    const counts = {
+      selfLoads: server.hits("/article?id=bg-asleep") - loadsAsleep,
+      newcomers: unnamed,
+    };
+    process.stdout.write(`${JSON.stringify({ event: "run11.counts", state, ...counts })}\n`);
+    expect(counts).toEqual({ selfLoads: 0, newcomers: 0 });
     if (bgId) {
       // One more popup stays open and carries the sleeping tab's name, as a tab that joined its
       // group does: the wake armed now takes its own tab, with its state, and the newcomer stays.
@@ -1422,9 +1444,6 @@ it.each(["no tab asleep", "a tab asleep"] as const)(
         userGesture: true,
       });
       await vi.waitFor(() => expect(inA("id=last")).toBeDefined(), { timeout: 10_000 });
-      const lifecycle = (
-        launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
-      ).contextHandle.lifecycle;
       const rows = await lifecycle.inventory();
       const name = rows.find((tab) => tab.url.includes("bg-asleep"))!.identity!;
       expect(name).toMatch(/^opensteer-sleep:/);
@@ -1440,3 +1459,185 @@ it.each(["no tab asleep", "a tab asleep"] as const)(
   },
   240_000,
 );
+
+it.each(["Chromium activates it by itself", "it is left active and discarded"] as const)(
+  "wakes a sleeping tab as itself with its state when %s (run 11, S1)",
+  async (how) => {
+    const server = await startFixtureServer();
+    const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-active-discarded-"));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const launcher = new PlaywrightChromiumLauncher({
+      executablePath,
+      chromiumSandbox: false,
+      headless: true,
+    });
+    const launched = await launcher.launch(nativeProfileRequest(directory));
+    cleanup.push(() => launched.close());
+    const lifecycle = (
+      launched as unknown as { contextHandle: { lifecycle: ChromiumTabLifecycleBridge } }
+    ).contextHandle.lifecycle;
+    const ledger = new SurfaceLedger(launched.context);
+    await ledger.start();
+    cleanup.push(() => ledger.close());
+    const live = await ledger.openSurface();
+    await ledger.binding(live.id)!.cdp.send("Page.navigate", {
+      url: `${server.originForSite(1)}/article?id=live`,
+    });
+    await waitLoaded(ledger.binding(live.id)!.cdp, "/article");
+    const bg = await ledger.openSurface();
+    const bgCdp = ledger.binding(bg.id)!.cdp;
+    await bgCdp.send("Page.navigate", { url: `${server.originForSite(2)}/article?id=bg` });
+    await waitLoaded(bgCdp, "/article");
+    await evalValue(bgCdp, `sessionStorage.setItem("mark", "kept")`);
+    expect(await ledger.sleep(bg.id, () => null)).toBe(true);
+    const bgRow = async () =>
+      (await lifecycle.inventory()).find((tab) => tab.url.includes("id=bg"))!;
+    expect(await bgRow()).toMatchObject({ discarded: true });
+    const handle = (
+      launched as unknown as { contextHandle: { activatePrivateAnchor(): Promise<void> } }
+    ).contextHandle;
+    const anchor = handle.activatePrivateAnchor.bind(handle);
+    // As `e731a2dbe` put it back to sleep (no anchor first), or a tab that became active between
+    // the read and the discard: the runtime's own discard leaves it active and discarded.
+    if (how === "it is left active and discarded") handle.activatePrivateAnchor = async () => {};
+    // Chromium activates the sleeping tab, with no wake armed (as when the active tab beside it
+    // closes): it loads, and is put back to sleep.
+    const activated = await lifecycle.activateByTabId((await bgRow()).tabId);
+    expect(activated.ok).toBe(true);
+    await vi.waitFor(async () => expect(await bgRow()).toMatchObject({ discarded: true }), {
+      timeout: 10_000,
+      interval: 50,
+    });
+    handle.activatePrivateAnchor = anchor;
+    const before = await bgRow();
+    process.stdout.write(`${JSON.stringify({ event: "s1.before-wake", how, row: before })}\n`);
+    // S1: the runtime never leaves it active when it put it back to sleep itself.
+    expect(before.active).toBe(how === "it is left active and discarded");
+    const woken = await ledger.wake(bg.id);
+    await waitLoaded(woken.cdp, "/article");
+    expect(woken.page.url()).toContain("id=bg");
+    expect(await evalValue(woken.cdp, `sessionStorage.getItem("mark")`)).toBe("kept");
+  },
+  90_000,
+);
+
+it("keeps sleeping tabs left of the private anchor and live tabs right of it through opens, popups, closes, sleeps and wakes (run 11, S2)", async () => {
+  const server = await startFixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-sleep-order-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const launcher = new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  });
+  const launched = await launcher.launch(nativeProfileRequest(directory));
+  cleanup.push(() => launched.close());
+  const internal = launched as unknown as {
+    contextHandle: {
+      lifecycle: ChromiumTabLifecycleBridge;
+      privatePage: {
+        _connection: { toImpl(page: unknown): { delegate: { _targetId: string } } };
+      };
+    };
+  };
+  const lifecycle = internal.contextHandle.lifecycle;
+  // The private anchor's target, as the launcher knows it (without attaching to it).
+  const privatePage = internal.contextHandle.privatePage;
+  const anchorTarget = privatePage._connection.toImpl(privatePage).delegate._targetId;
+  const ledger = new SurfaceLedger(launched.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const open = async (id: string) => {
+    const surface = await ledger.openSurface();
+    const cdp = ledger.binding(surface.id)!.cdp;
+    await cdp.send("Page.navigate", { url: `${server.originForSite(1)}/article?id=${id}` });
+    await waitLoaded(cdp, "/article");
+    await evalValue(cdp, `sessionStorage.setItem("mark", ${JSON.stringify(id)})`);
+    return surface.id;
+  };
+  const steps: string[] = [];
+  const order = (step: string) =>
+    vi.waitFor(() => orderNow(step), { timeout: 2_000, interval: 50 });
+  const orderNow = async (step: string) => {
+    const rows = (await lifecycle.inventory()).filter(
+      (tab) => !tab.url.startsWith("chrome-extension://"),
+    );
+    const strip = rows
+      .map((tab) =>
+        tab.targetId === anchorTarget
+          ? "A"
+          : `${new URL(tab.url || "about:blank").searchParams.get("id") ?? "blank"}${
+              tab.identity?.startsWith("opensteer-sleep:") && tab.discarded ? "(z)" : ""
+            }`,
+      )
+      .join(" ");
+    if (steps.at(-1) !== `${step}: ${strip}`) steps.push(`${step}: ${strip}`);
+    const anchor = rows.findIndex((tab) => tab.targetId === anchorTarget);
+    const asleep = rows.map((tab) => Boolean(tab.identity?.startsWith("opensteer-sleep:")));
+    expect({ step, strip, ok: asleep.every((named, i) => named === i < anchor) }).toEqual({
+      step,
+      strip,
+      ok: true,
+    });
+  };
+  const p1 = await open("p1");
+  const p2 = await open("p2");
+  const p3 = await open("p3");
+  const p4 = await open("p4");
+  await order("opened 4");
+  expect(await ledger.sleep(p2, () => null)).toBe(true);
+  await order("p2 asleep");
+  expect(await ledger.sleep(p4, () => null)).toBe(true);
+  await order("p4 asleep");
+  // A popup from a live tab, which opens a successor and closes itself; the successor closes.
+  const live1 = ledger.binding(p1)!;
+  await live1.cdp.send("Runtime.evaluate", {
+    expression: `void window.open(${JSON.stringify(`${server.originForSite(2)}/article?id=popup`)}, "_blank")`,
+    userGesture: true,
+  });
+  const popupId = await vi.waitFor(
+    () => {
+      const found = ledger
+        .snapshot()
+        .find((s) => ledger.binding(s.id)?.page.url().includes("id=popup"));
+      expect(found).toBeDefined();
+      return found!.id;
+    },
+    { timeout: 10_000, interval: 25 },
+  );
+  await waitLoaded(ledger.binding(popupId)!.cdp, "/article");
+  await order("popup open");
+  await ledger.binding(popupId)!.cdp.send("Runtime.evaluate", {
+    expression: `window.open(${JSON.stringify(`${server.originForSite(3)}/article?id=successor`)}, "_blank"); window.close();`,
+    userGesture: true,
+  });
+  const successorId = await vi.waitFor(
+    () => {
+      const found = ledger
+        .snapshot()
+        .find((s) => ledger.binding(s.id)?.page.url().includes("id=successor"));
+      expect(found).toBeDefined();
+      return found!.id;
+    },
+    { timeout: 10_000, interval: 25 },
+  );
+  await waitLoaded(ledger.binding(successorId)!.cdp, "/article");
+  await order("popup closed itself");
+  await ledger.closeSurface(successorId);
+  await order("successor closed");
+  const woken = await ledger.wake(p2);
+  await waitLoaded(woken.cdp, "/article");
+  expect(await evalValue(woken.cdp, `sessionStorage.getItem("mark")`)).toBe("p2");
+  await order("p2 woken");
+  expect(await ledger.sleep(p3, () => null)).toBe(true);
+  await order("p3 asleep");
+  await ledger.closeSurface(p1);
+  await order("p1 closed");
+  await open("p5");
+  await order("p5 opened");
+  const p4Woken = await ledger.wake(p4);
+  await waitLoaded(p4Woken.cdp, "/article");
+  expect(await evalValue(p4Woken.cdp, `sessionStorage.getItem("mark")`)).toBe("p4");
+  await order("p4 woken");
+  process.stdout.write(`${JSON.stringify({ event: "s2.order", steps })}\n`);
+}, 120_000);

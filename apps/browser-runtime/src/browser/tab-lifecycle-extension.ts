@@ -119,6 +119,22 @@ globalThis.__opensteer = {
       discarded: Boolean(updated?.discarded),
     };
   },
+  // Moves a tab within its window (S2: sleeping tabs left of the private anchor, live tabs right of
+  // it). A named tab moves with its own group, so its name goes with it; any other tab in that
+  // group only joined it and is taken out first. Chromium keeps a discarded tab discarded, under
+  // its id and name, as it moves (seen on real Chromium).
+  async moveTab(tabId, index) {
+    const tab = await chrome.tabs.get(tabId);
+    if (typeof tab.groupId === "number" && tab.groupId >= 0) {
+      const others = (await chrome.tabs.query({ groupId: tab.groupId }))
+        .map((member) => member.id)
+        .filter((id) => typeof id === "number" && id !== tabId);
+      if (others.length > 0) await chrome.tabs.ungroup(others);
+      await chrome.tabGroups.move(tab.groupId, { index });
+    } else await chrome.tabs.move(tabId, { index });
+    const after = await chrome.tabs.get(tabId);
+    return { ok: true, tabId: after.id, index: after.index };
+  },
   async removeByTabId(tabId) {
     try {
       await chrome.tabs.remove(tabId);
@@ -156,6 +172,11 @@ const inventorySchema = z.object({ consistent: z.boolean(), rows: z.array(tabEnt
 const discardResultSchema = z.object({
   ok: z.boolean(),
   newTabId: z.number().int().nullable(),
+});
+const moveResultSchema = z.object({
+  ok: z.boolean(),
+  tabId: z.number().int(),
+  index: z.number().int(),
 });
 const activateResultSchema = z.object({
   ok: z.boolean(),
@@ -483,6 +504,27 @@ export class ChromiumTabLifecycleBridge {
       "change",
     );
     return raw === true;
+  }
+
+  /** Moves a tab (with its own group, when it is alone in it) to `index`; -1 is the right end. */
+  async moveTab(tabId: number, index: number): Promise<{ tabId: number; index: number } | null> {
+    const raw = await this.callWorker(
+      (worker) =>
+        worker.evaluate(
+          ([id, to]) =>
+            (
+              globalThis as unknown as {
+                __opensteer: { moveTab(tabId: number, index: number): Promise<unknown> };
+              }
+            ).__opensteer.moveTab(id, to),
+          [tabId, index] as const,
+        ),
+      "change",
+    );
+    const parsed = moveResultSchema.safeParse(raw);
+    return parsed.success && parsed.data.ok
+      ? { tabId: parsed.data.tabId, index: parsed.data.index }
+      : null;
   }
 
   async removeByTabId(tabId: number): Promise<boolean> {

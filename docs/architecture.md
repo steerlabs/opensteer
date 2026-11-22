@@ -345,7 +345,8 @@ Guest. Two agents granted the same profile share its signed-in state.
 
 On a Linux Home or a Cloud Computer, tabs nobody is using sleep, and wake with their state while
 the browser keeps running, which makes it unlikely that a Home with many tabs on a small machine
-runs out of memory (not impossible: when every tab is in use, a new tab still opens). A sleeping tab is discarded in Chromium (freeing its renderer while keeping its tab
+runs out of memory (not impossible: when every tab is in use, a new tab still opens, and a storm of
+pages that a page opens can outrun sleeping, so background tabs can then be lost to the system). A sleeping tab is discarded in Chromium (freeing its renderer while keeping its tab
 state, driven by container working set or host memory pressure with 70%/60% hysteresis, also
 checked before each new page opens) and named, only while it sleeps, through a minimal internal
 helper extension that is never visible to tab lists, session CDP or connected agents; it is removed

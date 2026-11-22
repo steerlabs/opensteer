@@ -60,16 +60,25 @@ that failed can leave, is removed with it. Closing a sleeping tab or ending its 
 from Chromium on evidence: when the session's end returns, the tab is out of every session's reach,
 and a removal that is not confirmed is retried in the background a bounded number of times and then
 reported as not removed, still guarded. A page whose tab carries no sleep name is an ordinary
-page, handed to sessions as any page is, also when the page that opened it has already closed. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab
+page, handed to sessions as any page is, also when the page that opened it has already closed. A
+sleeping tab is kept at the left end of the window, left of a private blank tab, with every live tab
+to its right; a tab that wakes moves to the right end first. Chromium activates the tab beside a
+closed one and puts a tab a page opens beside the active tab, in its group, so neither reaches a
+sleeping tab. No tab is discarded while it is the active tab, and a tab that something else made
+active loads by itself and is put back to sleep. A tab that still joins a sleeping tab's group
+carries its name without being that tab: its name is removed and it is an ordinary page. On Linux without an explicit `OPENSTEER_BROWSER_MEMORY_BUDGET_MB` override, the tab
 sleeper reacts to container working set (`memory.current - inactive_file` against `memory.max`, or
 bare-Linux `MemTotal - MemAvailable` against `MemTotal`) — sleeping eligible tabs above 70% and
 stopping below 60%, evaluated on its timer and again before each new page is created: over the
 threshold an open waits, within a bound of about two seconds, while some tab can sleep for it or
 while the last sleeps' memory is still being released, and reads the memory again before it goes —
 while keeping renderer `Pss` for reporting only and falling back to its page estimate when memory
-state cannot be read. Sleeping makes it unlikely that a Home with many tabs on a small machine runs
-out of memory; it does not make it impossible. When every tab is in use, nothing can sleep, and a
-new tab still opens.
+state cannot be read. A page arriving that no open of Opensteer's made (a popup, a new-tab link)
+asks for a pass at once when memory is over the threshold. Sleeping makes it unlikely that a Home
+with many tabs on a small machine runs out of memory; it does not make it impossible. When every tab
+is in use, nothing can sleep, and a new tab still opens. A storm of pages that a page opens (many
+heavy popups in a few seconds) can outrun sleeping, and background tabs can then be lost to the
+system, which ends their renderers.
 
 When the browser itself restarts on a Linux Home or a Cloud Computer (a Home update, a crash, a cold
 start), each tab reopens at its address. What was typed into a page and not sent, its scroll

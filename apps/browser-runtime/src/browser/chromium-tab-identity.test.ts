@@ -392,3 +392,91 @@ it("loads a sleeping tab when the active tab beside it closes, and puts a tab op
     active: true,
   });
 }, 90_000);
+
+it("moves a discarded named tab without loading it or changing its id or name, closes a popup whose moved sleeping opener is away onto a live tab, and loads an active discarded tab only once another tab was active (run 11)", async () => {
+  const url = await fixtureServer();
+  const directory = await mkdtemp(path.join(tmpdir(), "os-tab-identity-run11-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const running = await launch(directory);
+  const rows = async () =>
+    (await running.lifecycle.inventory()).filter((t) => t.url.includes("/page?"));
+  const row = async (query: string) => (await rows()).find((t) => t.url.includes(`?${query}`))!;
+  const gesture = async (page: Page, expression: string) =>
+    (await running.context.newCDPSession(page)).send("Runtime.evaluate", {
+      expression,
+      userGesture: true,
+    });
+
+  // A discarded, named tab moved to the left end: still discarded, same id, same name, not loaded.
+  const a = await running.context.newPage();
+  await a.goto(url(1, "a"));
+  const c = await running.context.newPage();
+  await c.goto(url(2, "c"));
+  await c.evaluate(() => sessionStorage.setItem("mark", "c-kept"));
+  await a.bringToFront();
+  const cId = await running.lifecycle.nameAndDiscard((await row("c")).tabId, "opensteer-sleep:c");
+  expect(await running.lifecycle.moveTab(cId!, 0)).toEqual({ tabId: cId, index: 0 });
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  expect(await row("c")).toMatchObject({
+    tabId: cId,
+    index: 0,
+    discarded: true,
+    status: "unloaded",
+    identity: "opensteer-sleep:c",
+  });
+  // Moved to the right end and activated, it wakes as itself.
+  const moved = await running.lifecycle.moveTab(cId!, -1);
+  expect(moved?.tabId).toBe(cId);
+  const woken = running.context.waitForEvent("page");
+  await running.lifecycle.activateByTabId(cId!);
+  const cPage = await woken;
+  await cPage.waitForLoadState();
+  expect(await cPage.evaluate(() => sessionStorage.getItem("mark"))).toBe("c-kept");
+
+  // A popup whose opener sleeps: moved away, closing the popup activates a live tab; left in
+  // place, it activates the sleeping opener beside it, which loads.
+  const closed: Record<string, unknown> = {};
+  for (const moveIt of [true, false]) {
+    const tag = moveIt ? "moved" : "inplace";
+    const w = await running.context.newPage();
+    await w.goto(url(3, `w-${tag}`));
+    const x = await running.context.newPage();
+    await x.goto(url(4, `x-${tag}`));
+    const popup = running.context.waitForEvent("page");
+    await gesture(x, `void window.open(${JSON.stringify(url(5, `y-${tag}`))}, "_blank")`);
+    const y = await popup;
+    await y.waitForLoadState();
+    const xId = await running.lifecycle.nameAndDiscard(
+      (await row(`x-${tag}`)).tabId,
+      `opensteer-sleep:x-${tag}`,
+    );
+    if (moveIt) await running.lifecycle.moveTab(xId!, 0);
+    await y.close();
+    await vi.waitFor(async () => expect((await rows()).some((t) => t.active)).toBe(true));
+    const active = (await rows()).find((t) => t.active)!;
+    closed[tag] = { active: new URL(active.url).search.slice(1), discarded: active.discarded };
+  }
+  expect(closed).toEqual({
+    moved: { active: "w-moved", discarded: false },
+    inplace: { active: "x-inplace", discarded: false },
+  });
+
+  // A tab discarded while it is the active tab stays active and discarded; activating it again
+  // does not load it; once another tab was active, activating it loads it with its state.
+  const d = await running.context.newPage();
+  await d.goto(url(6, "d"));
+  await d.evaluate(() => sessionStorage.setItem("mark", "d-kept"));
+  const dId = await running.lifecycle.nameAndDiscard((await row("d")).tabId, "opensteer-sleep:d");
+  expect(await row("d")).toMatchObject({ active: true, discarded: true });
+  expect(await running.lifecycle.activateByTabId(dId!)).toEqual({
+    ok: true,
+    tabId: dId,
+    discarded: true,
+  });
+  await a.bringToFront();
+  const dWoken = running.context.waitForEvent("page");
+  expect(await running.lifecycle.activateByTabId(dId!)).toMatchObject({ discarded: false });
+  const dPage = await dWoken;
+  await dPage.waitForLoadState();
+  expect(await dPage.evaluate(() => sessionStorage.getItem("mark"))).toBe("d-kept");
+}, 120_000);

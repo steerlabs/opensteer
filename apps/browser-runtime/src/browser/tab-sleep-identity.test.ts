@@ -171,6 +171,15 @@ async function launchWith(initial: ChromiumTabEntry[] = []) {
     },
   );
   const activate = vi.spyOn(ChromiumTabLifecycleBridge.prototype, "activateByTabId");
+  // S2: a move keeps the tab's id, name and discard; -1 is the right end.
+  const move = vi
+    .spyOn(ChromiumTabLifecycleBridge.prototype, "moveTab")
+    .mockImplementation(async (tabId, index) => {
+      if (!state.tabs.some((t) => t.tabId === tabId)) return null;
+      const at = index < 0 ? 10_000 : index - 1;
+      state.tabs = state.tabs.map((t) => (t.tabId === tabId ? { ...t, index: at } : t));
+      return { tabId, index: at };
+    });
   const launcher = new PlaywrightChromiumLauncher({
     executablePath: process.execPath,
     headless: true,
@@ -212,7 +221,8 @@ async function launchWith(initial: ChromiumTabEntry[] = []) {
     internals,
     sleepOne,
     nextPages,
-    spies: { read, discard, name, unname, remove, activate, newPage: context.newPage },
+    helper,
+    spies: { read, discard, name, unname, remove, activate, move, newPage: context.newPage },
   };
 }
 
@@ -297,6 +307,72 @@ it("takes its own tab, with its state, when Chromium loaded it by itself and the
   expect((page as unknown as { openedFresh?: boolean }).openedFresh).not.toBe(true);
   expect(own.close).not.toHaveBeenCalled();
   expect(f.spies.remove).not.toHaveBeenCalled();
+});
+
+it("puts a tab Chromium loaded by itself back to sleep only after the private anchor is the active tab (run 11, S1)", async () => {
+  const f = await launchWith();
+  const { token } = await f.sleepOne(60);
+  // Chromium activated the sleeping tab by itself: it is loaded and the active tab.
+  f.state.tabs = f.state.tabs.map((t) => ({
+    ...t,
+    discarded: false,
+    status: "complete",
+    active: true,
+  }));
+  f.helper.bringToFront.mockClear();
+  f.spies.discard.mockClear();
+  await f.internals.sleepAgain(tokenOf(token));
+  expect(f.helper.bringToFront).toHaveBeenCalled();
+  expect(f.spies.discard).toHaveBeenCalled();
+  expect(f.helper.bringToFront.mock.invocationCallOrder[0]).toBeLessThan(
+    f.spies.discard.mock.invocationCallOrder[0]!,
+  );
+});
+
+it("wakes a tab Chromium holds active and discarded by activating the private anchor first, as itself (run 11, S1)", async () => {
+  const f = await launchWith();
+  const { token } = await f.sleepOne(70);
+  f.state.tabs = f.state.tabs.map((t) => ({ ...t, active: true }));
+  // As real Chromium: activating the anchor makes it the active tab; activating a tab that is
+  // already active and discarded does nothing.
+  f.helper.bringToFront.mockImplementation(async () => {
+    f.state.tabs = f.state.tabs.map((t) => ({ ...t, active: false }));
+  });
+  const woken = fakePage("target-70", "https://tab-70.test/");
+  f.spies.activate.mockImplementation(async (tabId) => {
+    const tab = f.state.tabs.find((t) => t.tabId === tabId)!;
+    if (tab.active && tab.discarded) return { ok: true, tabId, discarded: true };
+    f.state.tabs = f.state.tabs.map((t) =>
+      t.tabId === tabId ? { ...t, active: true, discarded: false, status: "complete" } : t,
+    );
+    queueMicrotask(() => f.arrive(woken));
+    return { ok: true, tabId, discarded: false };
+  });
+  const page = await f.launched.context.createPage({ restore: token });
+  expect((page as unknown as { rawPage: Page }).rawPage).toBe(woken);
+  expect((page as unknown as { openedFresh?: boolean }).openedFresh).not.toBe(true);
+  expect(f.spies.remove).not.toHaveBeenCalled();
+});
+
+it("moves a tab that sleeps to the left end, after its discard, and a tab that wakes to the right end, before it is activated (run 11, S2)", async () => {
+  const f = await launchWith();
+  const { token } = await f.sleepOne(80);
+  expect(f.spies.move.mock.calls).toEqual([[81, 0]]);
+  expect(f.spies.discard.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+    f.spies.move.mock.invocationCallOrder[0]!,
+  );
+  const woken = fakePage("target-80", "https://tab-80.test/");
+  f.spies.activate.mockImplementation(async (tabId) => {
+    f.state.tabs = f.state.tabs.map((t) => ({ ...t, discarded: false, status: "complete" }));
+    queueMicrotask(() => f.arrive(woken));
+    return { ok: true, tabId, discarded: false };
+  });
+  const page = await f.launched.context.createPage({ restore: token });
+  expect((page as unknown as { rawPage: Page }).rawPage).toBe(woken);
+  expect(f.spies.move.mock.calls.at(-1)).toEqual([81, -1]);
+  expect(f.spies.move.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+    f.spies.activate.mock.invocationCallOrder[0]!,
+  );
 });
 
 it.each(["arrival", "candidate"] as const)(
