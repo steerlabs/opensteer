@@ -518,7 +518,9 @@ async function homeStop(): Promise<void> {
       }
     },
     confirm: (stoppedSince, signal) =>
-      startedHome ? startedHome.supervisor.waitForStopProof(stoppedSince, signal) : Promise.resolve(),
+      startedHome
+        ? startedHome.supervisor.waitForStopProof(stoppedSince, signal)
+        : Promise.resolve(),
     store: localStopFileStore(stopFile),
     log,
   });
@@ -918,14 +920,26 @@ async function homeStop(): Promise<void> {
   await waitFor("Stop everything", async () =>
     (await item.text()).includes(menuBarWords("menubar.stopAll")),
   );
+  const stoppedMenuReady = async () => {
+    const text = await item.text();
+    return (
+      text.includes(menuBarWords("menubar.resume")) &&
+      (text.includes(menuBarWords("menubar.stopped.waiting")) ||
+        text.includes("Stopped everything on this Mac at"))
+    );
+  };
   const restartsBeforeStop = restartCompleted;
   const stopStarted = performance.now();
   await item.click(".menu-bar__stop-all");
+  await waitFor("stopped state with Resume offered", stoppedMenuReady);
+  const firstLocalStopMs = Math.round(performance.now() - stopStarted);
   await waitFor(
-    "stopped",
+    "stopped timestamp confirmed",
     async () => (await item.text()).includes("Stopped everything on this Mac at"),
-    60_000,
+    30_000,
   );
+  const firstConfirmTotalMs = Math.round(performance.now() - stopStarted);
+  const firstHomeConfirmAfterLocalMs = Math.max(0, firstConfirmTotalMs - firstLocalStopMs);
   assert(
     !prematureConfirmedStop,
     "Confirmed Stop time appeared before Runners finished restarting",
@@ -934,9 +948,20 @@ async function homeStop(): Promise<void> {
     restartCompleted > restartsBeforeStop && localStop.stoppedAt !== null,
     "Confirmed Stop time appeared without restart proof",
   );
+  log("test.stop-confirmation-timing", {
+    stage: "first-stop",
+    totalMs: firstConfirmTotalMs,
+    localStopMs: firstLocalStopMs,
+    homeConfirmAfterLocalMs: firstHomeConfirmAfterLocalMs,
+  });
+  process.stdout.write(
+    `home-stop confirmation (first-stop): total=${firstConfirmTotalMs}ms local=${firstLocalStopMs}ms afterLocal=${firstHomeConfirmAfterLocalMs}ms\n`,
+  );
   held("stop-everything-confirmed-after-proof", {
     phase: localStop.phase,
-    elapsedMs: performance.now() - stopStarted,
+    elapsedMs: firstConfirmTotalMs,
+    localStopMs: firstLocalStopMs,
+    homeConfirmAfterLocalMs: firstHomeConfirmAfterLocalMs,
   });
   await waitFor("agent browser tabs cleared after Stop", () => gate.agentTabs === 0, 15_000);
   held("agent-browser-tab-stopped");
@@ -1047,10 +1072,31 @@ async function homeStop(): Promise<void> {
   held("person-tab-watched-after-resume");
 
   // Rapid Stop pressed twice must settle cleanly as stopped with no error.
+  if (!item.window().isVisible()) await item.menuBar.open();
+  const doubleStopStarted = performance.now();
   await Promise.all([localStop.stop(), localStop.stop()]);
   assert.equal(localStop.phase, "stopped", "Double Stop did not settle as stopped");
   assert.equal(localStop.stopped, true);
-  await waitFor("Double Stop Home confirmation", () => localStop.stoppedAt !== null, 30_000);
+  await waitFor("double Stop showing stopped state with Resume offered", stoppedMenuReady);
+  const doubleLocalStopMs = Math.round(performance.now() - doubleStopStarted);
+  await waitFor(
+    "double Stop Home confirmation",
+    async () =>
+      localStop.stoppedAt !== null &&
+      (await item.text()).includes("Stopped everything on this Mac at"),
+    30_000,
+  );
+  const doubleConfirmTotalMs = Math.round(performance.now() - doubleStopStarted);
+  const doubleHomeConfirmAfterLocalMs = Math.max(0, doubleConfirmTotalMs - doubleLocalStopMs);
+  log("test.stop-confirmation-timing", {
+    stage: "double-stop",
+    totalMs: doubleConfirmTotalMs,
+    localStopMs: doubleLocalStopMs,
+    homeConfirmAfterLocalMs: doubleHomeConfirmAfterLocalMs,
+  });
+  process.stdout.write(
+    `home-stop confirmation (double-stop): total=${doubleConfirmTotalMs}ms local=${doubleLocalStopMs}ms afterLocal=${doubleHomeConfirmAfterLocalMs}ms\n`,
+  );
   assert.equal(localStop.problem, null, `Double Stop reported a problem: ${localStop.problem}`);
   await waitFor(
     "Home confirming double Stop",
@@ -1066,7 +1112,11 @@ async function homeStop(): Promise<void> {
     },
     30_000,
   );
-  held("double-stop-idempotent");
+  held("double-stop-idempotent", {
+    elapsedMs: doubleConfirmTotalMs,
+    localStopMs: doubleLocalStopMs,
+    homeConfirmAfterLocalMs: doubleHomeConfirmAfterLocalMs,
+  });
 
   // Resume cleanly, then trigger Stop and Resume quickly without awaiting Stop.
   await localStop.resume();
