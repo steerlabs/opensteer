@@ -904,7 +904,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           threadId: context.anchorThread.id,
           toolContractVersion: program.toolContractVersion,
         });
-        const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
+        const hasBrowser = await this.#browser.hasBrowserProfiles(
+          context.trigger.createdBy,
+          `trigger:${context.occurrence.id}`,
+        );
         signal.throwIfAborted();
         return { capabilityToken, hasBrowser };
       } catch (error) {

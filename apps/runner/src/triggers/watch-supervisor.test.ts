@@ -382,6 +382,35 @@ describe("WatchSupervisor", () => {
       await fixture.close();
     }
   });
+
+  it("terminates orphaned processes between restarts when a watch process exits (Y5)", async () => {
+    const terminated: string[] = [];
+    const fixture = await watchHarness(
+      `export default async () => { process.exit(1); }`,
+      undefined,
+      async (activationId) => {
+        terminated.push(activationId);
+        return "proven";
+      },
+    );
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      await vi.waitFor(() => {
+        expect(
+          fixture.messages.some(
+            (message) =>
+              message.type === "runner.watch-status" &&
+              message.observed === "backoff" &&
+              message.restartCount >= 1,
+          ),
+        ).toBe(true);
+      });
+      // Containment must have run after the first crash, before the supervisor even stops.
+      expect(terminated).toContain(fixture.activationId);
+    } finally {
+      await fixture.close();
+    }
+  });
 });
 
 async function watchHarness(

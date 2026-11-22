@@ -35,6 +35,8 @@ export interface ProgramEndpoints {
 export type ProgramLaunchPlanner = (input: {
   readonly environment: Readonly<Record<string, string>>;
   readonly privateDirectory: string;
+  /** Read-only directories outside the Runner data directory (e.g. shipped CLI bin). */
+  readonly readOnlyDirectories?: readonly string[];
   /** The one file in `privateDirectory` the program writes: its execution result. */
   readonly resultFile?: string;
   readonly workspacePath: string;

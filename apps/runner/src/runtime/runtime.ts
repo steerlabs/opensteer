@@ -120,6 +120,7 @@ import {
 import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
 import { TriggerProgramExecutor, type ProgramLaunchPlanner } from "../agent/program-executor.js";
+import { AutomationScriptExecutor, type AutomationScriptEvent } from "../agent/script-executor.js";
 import { WatchSupervisor } from "../triggers/watch-supervisor.js";
 import {
   isMachineAccessRoutes,
@@ -436,6 +437,7 @@ export class RunnerRuntime {
   readonly #modelServerHome: string | undefined;
   readonly #projectContinuationIdentity: ProviderContinuationIdentityProjector;
   readonly #programExecutor: Pick<TriggerProgramExecutor, "execute">;
+  readonly #scriptExecutor: Pick<AutomationScriptExecutor, "execute"> | undefined;
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
   /** Engines kept running between a Thread's Runs. */
@@ -646,6 +648,14 @@ export class RunnerRuntime {
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
     this.#programExecutor =
       options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
+    this.#scriptExecutor =
+      options.nodeExecutable && options.nativeFsHelperBinary
+        ? new AutomationScriptExecutor({
+            nativeFsHelperBinary: options.nativeFsHelperBinary,
+            nodeExecutable: options.nodeExecutable,
+            privateDirectory: resolve(this.#privateStateDirectory, "automation-scripts"),
+          })
+        : undefined;
     this.#agentHome = options.agentHome;
     this.#watchSupervisor =
       options.watchSupervisor ??
@@ -2627,13 +2637,29 @@ export class RunnerRuntime {
         transport: { mode: this.#mode },
       });
       active.abort.signal.throwIfAborted();
-      output = await this.#programExecutor.execute({
-        context,
-        endpoints: endpoints.endpoints,
-        planLaunch: (launch) => this.#planProgramLaunch(key, launch),
-        signal: active.abort.signal,
-        workspace,
-      });
+      output =
+        context.script && this.#scriptExecutor
+          ? await this.#scriptExecutor.execute({
+              automationId: context.triggerId,
+              endpoints: endpoints.endpoints,
+              event: scriptEventFromTriggerEvent(context),
+              firingId: context.occurrenceId,
+              planLaunch: (launch) => this.#planProgramLaunch(key, launch),
+              script: context.script,
+              ...(context.secrets ? { secrets: context.secrets } : {}),
+              signal: active.abort.signal,
+              ...(context.webhookBodyBase64 !== undefined
+                ? { webhookBody: Buffer.from(context.webhookBodyBase64, "base64") }
+                : {}),
+              workspace,
+            })
+          : await this.#programExecutor.execute({
+              context,
+              endpoints: endpoints.endpoints,
+              planLaunch: (launch) => this.#planProgramLaunch(key, launch),
+              signal: active.abort.signal,
+              workspace,
+            });
     } catch (error) {
       output = {
         completedAt: new Date().toISOString(),
@@ -4056,6 +4082,35 @@ function reject(code: ProtocolError["code"], message: string, retryable: boolean
  * executable and native filesystem helper are resolved before the runtime
  * exists, so their absence here is a composition bug rather than a runtime condition.
  */
+function scriptEventFromTriggerEvent(
+  context: Extract<RunnerCommand, { readonly type: "trigger.execute" }>["context"],
+): AutomationScriptEvent {
+  const { event } = context;
+  const base = {
+    automationId: context.triggerId,
+    firedAt: event.receivedAt,
+    firingId: context.occurrenceId,
+    kind: event.source.kind,
+    ...(event.payload !== undefined ? { payload: event.payload } : {}),
+  } as const;
+  if (event.source.kind === "schedule") {
+    return { ...base, kind: "schedule", scheduledFor: event.source.scheduledFor };
+  }
+  if (event.source.kind === "webhook") {
+    return {
+      ...base,
+      kind: "webhook",
+      request: {
+        headers: event.source.headers,
+        method: event.source.method,
+        path: "/hooks/v1",
+        query: {},
+      },
+    };
+  }
+  return base;
+}
+
 function programExecutorFor(
   options: Pick<RunnerRuntimeOptions, "nativeFsHelperBinary" | "nodeExecutable">,
   privateStateDirectory: string,

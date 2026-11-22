@@ -299,6 +299,70 @@ describe("Watch CDP bridge", () => {
       expect(closeTriggerSessionsForBinding).toHaveBeenCalledWith(`watch:${activationId}`);
     });
   });
+
+  it("refuses trigger and watch CDP upgrades when the caller lineage holds no browser grant (Y5)", async () => {
+    const occurrenceId = createId("triggerOccurrence");
+    const activationId = createId("triggerWatchActivation");
+    const ownerId = createId("user");
+    const environmentId = createId("environment");
+    const openAgentSession = vi.fn();
+    const hasBrowserProfiles = vi.fn(async () => false);
+    const app = Fastify();
+    applications.push(app);
+    await app.register(websocket);
+    const browser = {
+      attachCdpForAgent: vi.fn(),
+      closeTriggerSessionsForBinding: vi.fn(async () => []),
+      hasBrowserProfiles,
+      openAgentSession,
+    } as unknown as BrowserService;
+    registerTriggerCdpBridge(app, browser, {
+      authenticate: vi.fn(async () => ({
+        environmentId,
+        executionGeneration: 1,
+        occurrenceId,
+        requestedBy: ownerId,
+        runnerBootId: "boot-1",
+        runnerId: createId("runner"),
+        threadId: createId("thread"),
+        toolContractVersion: 5,
+      })),
+    } as unknown as TriggerControlTokenService);
+    registerWatchCdpBridge(app, browser, {
+      authenticate: vi.fn(async () => ({
+        activationId,
+        createdBy: ownerId,
+        environmentId,
+        exp: (Date.now() + 60_000) / 1_000,
+      })),
+    } as unknown as WatchCapabilityTokenService<"opensteer-watch-browser-cdp">);
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("Test server did not bind");
+
+    for (const [path, bindingId] of [
+      ["/internal/v1/trigger-cdp", `trigger:${occurrenceId}`],
+      ["/internal/v1/watch-cdp", `watch:${activationId}`],
+    ] as const) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}${path}`, {
+          headers: { authorization: "Bearer valid-token-1234567890" },
+        });
+        socket.once("unexpected-response", (_req, res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        socket.once("open", () => {
+          socket.close();
+          reject(new Error(`Expected 403 refusal for ${path}, but WebSocket opened`));
+        });
+        socket.once("error", () => undefined);
+      });
+      expect(status).toBe(403);
+      expect(hasBrowserProfiles).toHaveBeenCalledWith(ownerId, bindingId);
+    }
+    expect(openAgentSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("Agent CDP bridge", () => {

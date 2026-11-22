@@ -4526,8 +4526,31 @@ export class BrowserService {
     }
   }
 
-  async hasBrowserProfiles(ownerId: UserId): Promise<boolean> {
-    return (await this.#repository.listBrowserProfiles(ownerId)).length > 0;
+  async hasBrowserProfiles(ownerId: UserId, agentBindingId?: string): Promise<boolean> {
+    const profiles = await this.#repository.listBrowserProfiles(ownerId);
+    if (profiles.length === 0) return false;
+    if (!agentBindingId || !this.#repository.resolveResourceAccess) return true;
+    try {
+      const authority = await this.#repository.resolveResourceAccess({
+        agentBindingId,
+        explicitAccess: "read-write",
+        ownerUserId: ownerId,
+      });
+      if (executionAccess(authority.execution, "read-write") !== "read-write") return false;
+      const grant = selectedGrantOf(authority.execution);
+      if (!grant) return true;
+      return profiles.some((profile) =>
+        agentGrantAllows(grant, { kind: "browser-profile", profileId: profile.id }, "read-write"),
+      );
+    } catch (error) {
+      if (
+        error instanceof OpensteerError &&
+        (error.code === "forbidden" || error.code === "not_found")
+      ) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async closeAgentSession(input: {

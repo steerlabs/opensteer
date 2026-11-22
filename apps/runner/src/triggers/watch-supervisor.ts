@@ -337,6 +337,8 @@ export class WatchSupervisor {
           maximumLength: 20_000,
         });
       } finally {
+        // Contain any orphaned grandchildren before cleaning up or spawning the next restart (Y5).
+        await this.#terminate(active.desired.activationId).catch(() => undefined);
         if (materializationRoot) {
           await rm(materializationRoot, { force: true, recursive: true }).catch(() => undefined);
         }

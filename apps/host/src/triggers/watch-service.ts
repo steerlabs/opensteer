@@ -204,7 +204,10 @@ export class WatchService {
         toolContractVersion: context.toolContractVersion,
       };
       const mcp = this.#controlTokens.issue(scope);
-      const hasBrowser = await this.#browser.hasBrowserProfiles(context.activation.createdBy);
+      const hasBrowser = await this.#browser.hasBrowserProfiles(
+        context.activation.createdBy,
+        `watch:${context.activation.id}`,
+      );
       const browserCdp = hasBrowser ? this.#watchBrowserTokens.issue(scope) : null;
       if (context.connectionId) lineage.push(scope);
       desired.push({

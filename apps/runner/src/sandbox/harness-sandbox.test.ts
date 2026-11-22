@@ -171,6 +171,33 @@ describe("harness sandbox mounts", () => {
     ).rejects.toThrow(/outside the Runner data directory/u);
   });
 
+  it("exposes readOnlyDirectories under masked roots for the opensteer CLI while refusing dataDirectory overlap", async () => {
+    const fixture = await createFixture();
+    const programRoot = join(fixture.privateRoot, "trigger-programs", "tocc_cli");
+    const cliBinDir = join(fixture.home, "opensteer-cli-bin");
+    await mkdir(programRoot, { recursive: true });
+    await mkdir(cliBinDir, { recursive: true });
+    const args = await programSandboxMounts(fixture.layout, {
+      environment: fixture.environment,
+      privateDirectory: programRoot,
+      readOnlyDirectories: [cliBinDir],
+      workspacePath: fixture.workspaceA,
+    });
+    expect(segmentIndex(args, readOnlyBind(cliBinDir))).toBeGreaterThanOrEqual(0);
+    expect(segmentIndex(args, bind(cliBinDir))).toBe(-1);
+
+    const leakedDir = join(fixture.dataDirectory, "leaked");
+    await mkdir(leakedDir, { recursive: true });
+    await expect(
+      programSandboxMounts(fixture.layout, {
+        environment: fixture.environment,
+        privateDirectory: programRoot,
+        readOnlyDirectories: [leakedDir],
+        workspacePath: fixture.workspaceA,
+      }),
+    ).rejects.toThrow(/overlaps the Runner data directory/u);
+  });
+
   it("binds a store that is the provider home exactly once", async () => {
     const fixture = await createFixture();
     const args = await mounts(fixture, {

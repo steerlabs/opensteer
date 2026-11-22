@@ -67,7 +67,7 @@ interface CdpRouteOptions<Scope> {
     | "closeTriggerSessionsForBinding"
     | "openAgentSession"
   > &
-    Partial<Pick<BrowserService, "usesPoolAdmission">>;
+    Partial<Pick<BrowserService, "hasBrowserProfiles" | "usesPoolAdmission">>;
   readonly expiresAt?: (scope: Scope) => number;
   /**
    * Rechecks an open connection by what it authenticated as. Without one, each
@@ -351,8 +351,16 @@ function registerCdpRoute<Scope>(app: FastifyInstance, options: CdpRouteOptions<
     {
       preValidation: async (request, reply) => {
         const connection = await authenticateConnection(request, options);
-        if (isDrainingRun(options.browser, options.authority(connection.scope)))
+        const authority = options.authority(connection.scope);
+        if (isDrainingRun(options.browser, authority))
           return reply.code(403).send({ error: endedBrowserAccess });
+        if (
+          options.ownsSession &&
+          options.browser.hasBrowserProfiles &&
+          !(await options.browser.hasBrowserProfiles(authority.ownerId, authority.agentBindingId))
+        ) {
+          return reply.code(403).send({ error: "This automation does not have browser access." });
+        }
         connections.set(request.raw, connection);
       },
       websocket: true,

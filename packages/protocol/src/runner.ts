@@ -324,7 +324,21 @@ export const TriggerExecutionContextSchema = z.strictObject({
   occurrenceId: TriggerOccurrenceIdSchema,
   program: TriggerProgramSchema,
   revisionId: TriggerRevisionIdSchema,
+  script: z
+    .strictObject({
+      interpreter: z.array(z.string().min(1).max(1_024)).min(1).max(16).nullable(),
+      text: z
+        .string()
+        .min(1)
+        .max(256 * 1_024),
+    })
+    .optional(),
+  secrets: z.record(z.string(), z.string()).optional(),
   triggerId: TriggerIdSchema,
+  webhookBodyBase64: z
+    .string()
+    .max(400 * 1_024)
+    .optional(),
 });
 export type TriggerExecutionContext = z.infer<typeof TriggerExecutionContextSchema>;
 
