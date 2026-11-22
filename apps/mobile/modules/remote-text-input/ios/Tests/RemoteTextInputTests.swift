@@ -559,6 +559,41 @@ import UIKit
     XCTAssertEqual(text.utf16.count, (text as NSString).length)
   }
 
+  // CS2: an answer is applied as the edit it is. A paste's answer inserts the pasted text where it
+  // went, so a keystroke and a caret move still waiting are carried over it, not over a cleared
+  // field.
+  func testAPastesAnswerCarriesWhatStillWaits() {
+    let field = Field(settled: "abc")
+    field.view.insertText("y")
+    field.select(NSRange(location: 1, length: 0))
+    field.view.respond(["id": 0, "set": ["value": "abcP", "selectionStart": 4, "selectionEnd": 4]])
+    field.answerAll()
+    field.view.insertText("x")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "axbcPy")
+  }
+  // CS2 and CT1: a caret move named in a mirror cleared before its turn is sent as the distance
+  // the person moved it, never as a place in the new mirror.
+  func testACaretMoveNamedBeforeAResetIsSentAsItsDistance() {
+    let field = Field()
+    field.view.insertText("a")
+    field.answerOne()
+    field.select(NSRange(location: 0, length: 0))
+    field.view.respond(["id": 0, "set": ["value": "", "selectionStart": 0, "selectionEnd": 0]])
+    field.answerAll()
+    let selection = field.packets.compactMap { $0["event"] as? [String: Any] }.last { $0["type"] as? String == "selection" }
+    XCTAssertEqual(selection?["move"] as? Int, -1)
+  }
+  // CS2: a replacement named in a mirror that no longer exists is dropped: it names nothing.
+  func testAReplacementNamedInAClearedMirrorIsDropped() {
+    let field = Field(settled: "teh")
+    let start = field.view.beginningOfDocument
+    field.view.replace(field.view.textRange(from: start, to: field.view.position(from: start, offset: 3)!)!, withText: "the")
+    field.view.respond(["id": 0, "set": ["value": "", "selectionStart": 0, "selectionEnd": 0]])
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "")
+  }
+
   // CS4: undo and redo are the far page's. Whatever asks the hidden field's undo manager (Cmd+Z
   // through the responder chain, the three-finger gestures, shake) sends the far page's own undo
   // or redo chord through the gate; the hidden text never changes outside it.

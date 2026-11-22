@@ -109,6 +109,8 @@ const baseline: EditingTargetAbilities = {
   commands: true,
   clipboard: "text",
 };
+/** The browser targets' abilities, as negotiation picks them (for tests that draw real targets). */
+export const browserEditingAbilities = { full, textClipboard, basic, baseline } as const;
 const empty: BrowserEditingState = {
   input: "none",
   negotiated: false,

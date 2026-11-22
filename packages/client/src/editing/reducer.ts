@@ -818,6 +818,17 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       break;
     }
     case "selection":
+      if (event.move !== undefined) {
+        // The distance the person moved the caret in a mirror that has since been cleared: the
+        // far caret moves by it. A mirror holding text since then no longer sits at the far
+        // caret, so it is cleared.
+        if (state.composition || state.pendingEcho) break;
+        for (let count = 0; count < Math.abs(event.move); count++)
+          emit({ kind: "command", command: event.move < 0 ? "moveBackward" : "moveForward" });
+        if (state.proxy.value) reset();
+        else state.caret = 0;
+        break;
+      }
       if (!state.composition && !state.pendingEcho && event.proxy.value === state.proxy.value) {
         if (event.proxy.selectionStart === event.proxy.selectionEnd) {
           move(state.caret, event.proxy.selectionEnd, state.proxy.value);
@@ -844,6 +855,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       // A paste over a selection replaces it, as typing over it does. The far field has no
       // selection: the selection is deleted first, and the paste goes in where it was.
       const { value, selectionStart: start, selectionEnd: end } = state.proxy;
+      let selected = start === end;
       if (items.length && !state.composition && start < end && state.context) {
         const removed = {
           value: value.slice(0, start) + value.slice(end),
@@ -856,8 +868,39 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           edit !== "unverified" &&
           (state.abilities.rangeEdits || (!edit.before && !edit.after)) &&
           emit({ kind: "edit", edit })
-        )
+        ) {
           move(state.caret - edit.before.length + edit.text.length, start, removed.value);
+          selected = true;
+        }
+      }
+      // The pasted text is known: on a target that verifies range edits the mirror keeps it where
+      // it went, and no place still waiting in the native field is lost to a reset. What the page
+      // makes of it is verified with the next edit, like typed text.
+      const plain = text ? new TextDecoder().decode(text.bytes) : null;
+      if (
+        items.length &&
+        plain !== null &&
+        selected &&
+        !state.composition &&
+        !state.resetPending &&
+        state.context &&
+        state.abilities.rangeEdits &&
+        value.length - (end - start) + plain.length < editingTextMaxLength
+      ) {
+        if (start === end && state.caret !== start) move(state.caret, start, value);
+        emit({ kind: "paste", items });
+        const at = start + plain.length;
+        state.proxy = {
+          value: value.slice(0, start) + plain + value.slice(end),
+          selectionStart: at,
+          selectionEnd: at,
+        };
+        state.caret = at;
+        state.pendingEcho = null;
+        state.replacement = null;
+        state.nativeKey = null;
+        instruction = { ...instruction, set: state.proxy };
+        break;
       }
       interrupt();
       if (items.length) emit({ kind: "paste", items });

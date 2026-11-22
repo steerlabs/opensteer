@@ -66,6 +66,17 @@ export class Person {
     this.selection = { ...selection };
     if (selection.start === selection.end) this.caret = selection.start;
   }
+  /** The page's own Backspace (Blink's): a decomposed letter loses its last mark alone. */
+  backspaceMark(): Change[] {
+    const { start, end } = this.selection;
+    if (end > start || start === 0) return this.backspace();
+    const character = characters(this.text).find((span) => span.end === start);
+    const points = Array.from(this.text.slice(character?.start ?? start - 1, start));
+    const last = points.at(-1)!;
+    if (points.length > 1 && /\p{M}/u.test(last))
+      return this.replace({ start: start - last.length, end: start }, "");
+    return this.backspace();
+  }
   /** Backspace: the selection, or the character before the caret. */
   backspace(): Change[] {
     const { start, end } = this.selection;
@@ -93,6 +104,21 @@ function carry(offset: number, change: Change, before: boolean): number {
   return change.start + change.inserted;
 }
 
+/**
+ * What the native field dropped in a sequence: places named in an older mirror, never applied
+ * to a newer one (RemoteInputEdits' generations). The actions by their index among the
+ * person's actions, the caret moves by theirs among the moves.
+ */
+export interface Dropped {
+  readonly actions: ReadonlySet<number>;
+  readonly moves: ReadonlySet<number>;
+  /**
+   * Deletions the page made as its own Backspace command, which removed a decomposed letter's
+   * last mark alone (Blink's rule) where the person's keyboard removes the letter.
+   */
+  readonly markOnly?: ReadonlySet<number>;
+}
+
 export class Oracle {
   /** The person, every action applied at once. */
   readonly person = new Person();
@@ -103,26 +129,42 @@ export class Oracle {
   private turns = 0;
   /** Where the native mirror's text begins in the delayed person's text. */
   private window = 0;
-  /** The newest caret move, as the person meant it. */
+  /** The newest caret move, as the person meant it, and its index among the moves. */
   private move: Span | null = null;
-  /** Whether that move's report has not run yet. */
-  private moving = false;
+  private moves = 0;
+  /** The first move whose report has not run: a report stands for every move coalesced into it. */
+  private unreported = 0;
+  /** What the native field dropped in this sequence. */
+  readonly dropped = {
+    actions: new Set<number>(),
+    moves: new Set<number>(),
+    markOnly: new Set<number>(),
+  };
+
   /**
-   * Whether the mirror was ever cleared while something the person did waited its turn: places
-   * UIKit named in the text it cleared. A classification for the volume's report.
+   * `without`: a replay of a sequence in which the native field dropped these; the person's
+   * field is then the person's without exactly their effect.
    */
-  acrossReset = false;
+  constructor(private readonly without: Dropped | null = null) {}
 
   /** The person does `act` now; its turn in the native field comes later. */
   act(kind: string, act: Action) {
-    this.actions.push({ kind, act, changes: act(this.person) });
+    const index = this.actions.length;
+    const skip = this.without?.actions.has(index) === true;
+    const effective = skip
+      ? () => []
+      : this.without?.markOnly?.has(index)
+        ? (person: Person) => person.backspaceMark()
+        : act;
+    this.actions.push({ kind, act: effective, changes: effective(this.person) });
   }
   /** The person moves the selection to a place UIKit named in the native text as it stands. */
   select(native: Span) {
+    const index = this.moves++;
+    if (this.without?.moves.has(index)) return;
     const selection = this.toPerson(native);
     this.person.select(selection);
     this.move = selection;
-    this.moving = true;
   }
   /** A place UIKit names in the native field's text now, as the person meant it. */
   toPerson(native: Span): Span {
@@ -143,17 +185,34 @@ export class Oracle {
 
   // The native field's turns, as the port reports them.
   turn() {
-    const next = this.actions[this.turns++];
-    if (next) next.act(this.applied);
+    const index = this.turns++;
+    const next = this.actions[index];
+    if (next && !this.dropped.actions.has(index)) next.act(this.applied);
+  }
+  /** The action about to take its turn was dropped: the native field applied nothing of it. */
+  drop() {
+    this.dropped.actions.add(this.turns);
+  }
+  /** The far field refused, for its old context, the edit of the action that last took its turn. */
+  fenced() {
+    if (this.turns > 0) this.dropped.actions.add(this.turns - 1);
+  }
+  /** The page's Backspace for the action now taking its turn removed a mark alone. */
+  markOnly() {
+    this.dropped.markOnly.add(this.turns);
   }
   /** A selection report ran: the newest move reached the reducer, after everything typed before it. */
   report() {
     if (this.move) this.applied.select(this.move);
-    this.moving = false;
+    this.unreported = this.moves;
+  }
+  /** A report was dropped, named in an older mirror: every move coalesced into it with it. */
+  dropReport() {
+    for (let index = this.unreported; index < this.moves; index++) this.dropped.moves.add(index);
+    this.unreported = this.moves;
   }
   /** The mirror was cleared: it begins again at the delayed person's caret. */
   reset() {
-    if (!this.caughtUp || this.moving) this.acrossReset = true;
     this.window = this.applied.caret;
   }
   /** The app ended the composition in the native field (not one of the person's actions). */

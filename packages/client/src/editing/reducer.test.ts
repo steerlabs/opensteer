@@ -307,6 +307,27 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       });
     },
   );
+  // CS2: a paste does not reset the mirror. The phone knows the text it pastes: the mirror takes it
+  // where it went, and what is typed next is verified around it like typed text.
+  it("keeps the mirror through a paste, with the pasted text in it", () => {
+    const bytes = new TextEncoder().encode("cd");
+    let state = createEditingState("ios", abilities);
+    const run = (event: EditingProxyEvent) => {
+      const step = reduceEditing(state, event);
+      state = step.state;
+      return step;
+    };
+    run({ type: "context", context });
+    run({ type: "beforeinput", inputType: "insertText", data: "ab" });
+    run(input("ab"));
+    const pasted = run({ type: "paste", items: [{ type: "text/plain", bytes }] });
+    expect(pasted.operations).toEqual([{ kind: "paste", items: [{ type: "text/plain", bytes }] }]);
+    expect(pasted.instruction).toEqual({ preventDefault: true, set: proxy("abcd") });
+    run({ type: "beforeinput", inputType: "insertText", data: "x" });
+    expect(run(input("abcdx")).operations).toEqual([
+      { kind: "edit", edit: { contextId: context.contextId, text: "x", before: "", after: "" } },
+    ]);
+  });
   // CR6: an input that arrives alone ends Enter's suppression too. No recorded trace puts an
   // input that is not a composition's between an Enter key and its own line break (the inputs
   // there are IME commits, which never reach the suppression), so a later line break that

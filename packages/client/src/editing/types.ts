@@ -63,7 +63,15 @@ export type EditingProxyEvent =
       readonly proxy: EditingProxyState;
     }
   /** A selection change with no text change, such as a keyboard's cursor gesture. */
-  | { readonly type: "selection"; readonly proxy: EditingProxyState }
+  | {
+      readonly type: "selection";
+      readonly proxy: EditingProxyState;
+      /**
+       * A caret move named in a mirror cleared before its turn: the distance the person moved
+       * it, in graphemes, negative backward. The far caret moves by it.
+       */
+      readonly move?: number | undefined;
+    }
   | { readonly type: "paste"; readonly items: readonly EditingClipboardPayloadItem[] }
   | { readonly type: "copy" | "cut" }
   | { readonly type: "pointerdown" }

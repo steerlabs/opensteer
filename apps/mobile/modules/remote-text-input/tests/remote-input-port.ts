@@ -14,6 +14,8 @@ import type { EditingOperation, EditingProxyInstruction } from "@opensteer/clien
 export interface Place {
   revision: number;
   order: number;
+  /** The mirror it was named in (Edits.generation). */
+  generation: number;
   start: number;
   end: number;
 }
@@ -33,6 +35,11 @@ export function characters(text: string): Span[] {
     ({ index, segment }) => ({ start: index, end: index + segment.length }),
   );
 }
+/** Signed grapheme count from `from` to `to` in `text`. */
+function graphemesBetween(text: string, from: number, to: number): number {
+  const count = characters(text.slice(Math.min(from, to), Math.max(from, to))).length;
+  return to < from ? -count : count;
+}
 /** NSString.rangeOfComposedCharacterSequence(at:). */
 function characterAt(text: string, offset: number): Span {
   return (
@@ -49,18 +56,44 @@ export class Edits {
   private base = 0;
   private named = 0;
   private chosen: Place | null = null;
+  /** The mirror's generation: every clear of the field begins a new one. */
+  private generation = 0;
+  /** The places a new context fenced out: every one named before the call that changed it. */
+  private fence = 0;
+  /** How many places have been named: a fence is drawn at the call that changes the context. */
+  get order() {
+    return this.named;
+  }
   get revision() {
     return this.base + this.edits.length;
   }
   place(start: number, end: number): Place {
     this.named += 1;
-    return { revision: this.revision, order: this.named, start, end };
+    return { revision: this.revision, order: this.named, start, end, generation: this.generation };
+  }
+  /** The field was cleared: a new mirror. */
+  clear() {
+    this.generation += 1;
+  }
+  /** A new context: every place named so far is fenced out, from this call on. */
+  fenceNow() {
+    this.fence = this.named;
+  }
+  /** Named in an older mirror: it names nothing in this one. */
+  stale(place: Place): boolean {
+    return place.generation < this.generation;
+  }
+  /** Named under an older context: dropped with it, whatever it is. */
+  fenced(place: Place): boolean {
+    return place.order <= this.fence;
   }
   choose(selection: Place) {
     this.chosen = selection;
   }
   chosenAfter(place: Place): Place | null {
-    return this.chosen && this.chosen.order > place.order ? this.chosen : null;
+    return this.chosen && this.chosen.order > place.order && !this.stale(this.chosen)
+      ? this.chosen
+      : null;
   }
   record(start: number, removed: number, inserted: number) {
     this.edits.push({
@@ -167,6 +200,8 @@ export class NativeField {
   private running = false;
   private insertion = 0;
   contextId: string | null = null;
+  /** The context the last configure call asked for, ahead of its turn. */
+  private pendingContext: string | null = null;
   // RemoteInputTextView.swift
   readonly edits = new Edits();
   text = "";
@@ -181,12 +216,18 @@ export class NativeField {
    * ends, the person's is here, and what they type meanwhile is named here.
    */
   private held: Place | null = null;
+  /** The caret's moves since the last report ran, in graphemes; none once a range is chosen. */
+  private distance: number | undefined = 0;
   /**
    * For the typing test's oracle: told when a call's job takes its turn ("action", answered or
    * prevented), when a selection report runs ("report"), when an answer clears the field
    * ("reset") and when a new context clears it ("context"). Nothing in the view depends on it.
    */
-  onTurn: ((turn: "action" | "report" | "reset" | "context" | "finish") => void) | null = null;
+  onTurn:
+    | ((
+        turn: "action" | "report" | "reset" | "context" | "finish" | "dropped" | "dropped-report",
+      ) => void)
+    | null = null;
 
   private readonly deliver: (packet: Packet) => void;
   constructor(deliver: (packet: Packet) => void) {
@@ -265,6 +306,9 @@ export class NativeField {
   }
   private select(place: Place): Span {
     if (this.marked) return { ...this.marked };
+    // Typing and deleting backward are relative to the caret: named in an older mirror, they go
+    // where the caret is now.
+    if (this.edits.stale(place)) return { ...this.selection };
     const target = this.range(place);
     this.selection = { ...target };
     return target;
@@ -292,16 +336,50 @@ export class NativeField {
     this.edits.record(target.start, removed, this.text.length - before + removed);
     this.selection = this.range(kept);
   }
+  /**
+   * An answer's text, applied as the edit it is (RemoteInputTextView.apply): a paste is the
+   * pasted text where it went, so the places still waiting are carried over it. An empty answer
+   * clears the mirror: a new generation, in which no place named before names anything.
+   */
   private apply(instruction: Answer) {
     const set = instruction.set;
     if (this.marked || !set) return;
     this.mutating = true;
-    this.replace({ start: 0, end: this.text.length }, set.value);
+    let start = 0;
+    while (
+      start < this.text.length &&
+      start < set.value.length &&
+      this.text[start] === set.value[start]
+    )
+      start++;
+    let end = 0;
+    while (
+      end < this.text.length - start &&
+      end < set.value.length - start &&
+      this.text[this.text.length - 1 - end] === set.value[set.value.length - 1 - end]
+    )
+      end++;
+    this.replace(
+      { start, end: this.text.length - end },
+      set.value.slice(start, set.value.length - end),
+    );
+    const cleared = set.value === "";
+    if (cleared) this.edits.clear();
     this.selection = { start: set.selectionStart, end: set.selectionEnd };
     this.ownSelection = { ...this.selection };
     this.held = null;
     this.mutating = false;
-    this.onTurn?.("reset");
+    if (cleared) this.onTurn?.("reset");
+  }
+  /**
+   * Nothing is applied across a reset. A place named in an older mirror is never applied to a
+   * newer one: a positional place (a caret moved, a range replaced, a mark deleted) is dropped;
+   * typing and deleting backward go where the caret is now, unless a new context fenced them out.
+   */
+  private dropped(place: Place, positional: boolean): boolean {
+    if (!this.edits.fenced(place) && !(positional && this.edits.stale(place))) return false;
+    this.onTurn?.("dropped");
+    return true;
   }
   private keepChosen(typed: Place | null) {
     if (!typed) return;
@@ -317,7 +395,7 @@ export class NativeField {
   }
   /** Where the person's selection is: the one held while a composition hides it, or UIKit's. */
   private personSelection(): Span {
-    return this.held ? this.range(this.held) : this.selection;
+    return this.held && !this.edits.stale(this.held) ? this.range(this.held) : this.selection;
   }
   private change(
     named: string | (() => string),
@@ -359,6 +437,7 @@ export class NativeField {
     const inputType = () =>
       this.marked ? "insertFromComposition" : text === "\n" ? "insertLineBreak" : "insertText";
     this.change(inputType, text, typed, () => {
+      if (this.dropped(typed, false)) return;
       this.replace(this.select(typed), text);
       this.marked = null;
     });
@@ -371,23 +450,39 @@ export class NativeField {
     const selection = this.personSelection();
     if (replacement === "" && Edits.isBackspace(named, uikit, this.text)) {
       const caret = this.place(selection);
-      this.change("deleteContentBackward", replacement, caret, () =>
-        this.replace(this.edits.backspace(caret, this.text), ""),
-      );
+      this.change("deleteContentBackward", replacement, caret, () => {
+        if (this.dropped(caret, false)) return;
+        const at = this.edits.stale(caret) ? this.place(this.selection) : caret;
+        this.replace(this.edits.backspace(at, this.text), "");
+      });
       return;
     }
     if (this.held && named.start === uikit.start && named.end === uikit.end) named = selection;
+    // Typing over the selection, or deleting it, is relative; any other range UIKit names is a
+    // place in the text.
+    const relative = named.start === selection.start && named.end === selection.end;
     const again = replacement === "" && Edits.deletesSelection(named, selection);
     const typed = this.place(named);
     this.change(
       replacement ? "insertReplacementText" : "deleteContentBackward",
       replacement,
       typed,
-      () =>
+      () => {
+        if (this.dropped(typed, !relative)) return;
+        if (this.edits.stale(typed)) {
+          const { start, end } = this.selection;
+          const target =
+            replacement || end > start || start === 0
+              ? { start, end }
+              : { start: characterAt(this.text, start - 1).start, end: start };
+          this.replace(target, replacement);
+          return;
+        }
         this.replace(
           again ? this.edits.deletion(typed, this.text) : this.range(typed),
           replacement,
-        ),
+        );
+      },
     );
   }
   /** A keystroke over the selection, through the delegate. */
@@ -406,13 +501,15 @@ export class NativeField {
   /** replace(_:withText:): never a deletion of a neighbour when what it named is gone. */
   replaceRange(start: number, end: number, replacement: string) {
     const typed = this.place({ start, end });
-    this.change("insertReplacementText", replacement, typed, () =>
-      this.replace(this.range(typed), replacement),
-    );
+    this.change("insertReplacementText", replacement, typed, () => {
+      if (this.dropped(typed, true)) return;
+      this.replace(this.range(typed), replacement);
+    });
   }
   deleteBackward() {
     const typed = this.place(this.personSelection());
     this.change("deleteContentBackward", null, typed, () => {
+      if (this.dropped(typed, false)) return;
       this.select(typed);
       const selection = { ...this.selection };
       const marked = this.marked ? { ...this.marked } : null;
@@ -436,6 +533,7 @@ export class NativeField {
   setMarkedText(text: string) {
     const typed = this.place(this.personSelection());
     this.change("insertCompositionText", text, typed, () => {
+      if (this.dropped(typed, false)) return;
       const target = this.select(typed);
       this.replace(target, text);
       this.marked = text ? { start: target.start, end: target.start + text.length } : null;
@@ -464,6 +562,10 @@ export class NativeField {
    * then the field is cleared for the new one, each in its turn.
    */
   configure(contextId: string | null) {
+    // A new context fences out what was named before this call, from now: no edit typed for the
+    // old context is applied to the new one.
+    if (contextId !== this.pendingContext) this.edits.fenceNow();
+    this.pendingContext = contextId;
     this.enqueue(() => {
       if (contextId === this.contextId) return;
       if (this.marked) {
@@ -475,6 +577,7 @@ export class NativeField {
         this.contextId = contextId;
         this.mutating = true;
         this.replace({ start: 0, end: this.text.length }, "");
+        this.edits.clear();
         this.selection = { start: 0, end: 0 };
         this.ownSelection = { ...this.selection };
         this.held = null;
@@ -485,21 +588,44 @@ export class NativeField {
   }
   paste(text: string) {
     this.enqueue(() => {
-      this.onTurn?.("action");
       const data = Buffer.from(text, "utf8").toString("base64");
-      this.notify({ type: "paste", items: [{ type: "text/plain", data }] });
+      // Its turn, for the oracle, is when its answer brings the pasted text.
+      this.event({ type: "paste", items: [{ type: "text/plain", data }] }, () => undefined, true);
     });
   }
   /** UIKit or the person moves the selection, then UIKit tells the delegate. */
   moveSelection(start: number, end = start) {
+    // UIKit tells the delegate only of a change.
+    if (this.selection.start === start && this.selection.end === end) return;
+    const previous = this.selection;
     this.selection = { start, end };
-    this.held = null;
     const own = this.ownSelection;
     if (this.mutating || (own !== null && own.start === start && own.end === end)) return;
     this.ownSelection = null;
+    this.held = null;
+    // A move is where UIKit put the caret in the text it had: the distance the person moved it
+    // there. While that mirror lives the place is carried; after a reset it is sent as the
+    // distance (summed over the moves one report stands for), never dropped. A range selected in
+    // text that is gone selects nothing.
+    const caret = previous.start === previous.end && start === end;
+    this.distance =
+      this.distance === undefined || !caret
+        ? undefined
+        : this.distance + graphemesBetween(this.text, previous.end, end);
+    const distance = this.distance;
     const moved = this.place(this.selection);
     this.edits.choose(moved);
     this.report(() => {
+      this.distance = 0;
+      if (this.edits.stale(moved)) {
+        if (distance === undefined) {
+          this.onTurn?.("dropped-report");
+          return;
+        }
+        this.onTurn?.("report");
+        this.event({ type: "selection", proxy: this.snapshot(), move: distance });
+        return;
+      }
       this.onTurn?.("report");
       this.event({ type: "selection", proxy: this.snapshot(this.range(moved)) });
     });
@@ -539,6 +665,8 @@ export class FarField {
   mismatched: EditingOperation[] = [];
   /** Every operation the field was sent, in order. */
   sent: EditingOperation[] = [];
+  /** Deletion commands that removed a decomposed letter's last mark alone, as Blink's do. */
+  markOnly = 0;
   /** Compositions another context closed, as each closed them: the record of who composed what. */
   closed: { contextId: string | null; producer: string | undefined; text: string }[] = [];
   private rotations = 0;
@@ -641,8 +769,9 @@ export class FarField {
     const text = this.value.slice(character.start, this.caret);
     const points = [...text];
     const last = points.at(-1)!;
-    const start =
-      points.length > 1 && /\p{M}/u.test(last) ? this.caret - last.length : character.start;
+    const mark = points.length > 1 && /\p{M}/u.test(last);
+    if (mark) this.markOnly += 1;
+    const start = mark ? this.caret - last.length : character.start;
     this.replace(start, this.caret, "");
   }
 }

@@ -10,7 +10,11 @@ import {
   type Packet,
   type Proxy,
 } from "./remote-input-port.js";
-import { Oracle, type Action } from "./typing-oracle.js";
+import { Oracle, type Action, type Dropped } from "./typing-oracle.js";
+import unexplained from "./typing-unexplained.json" with { type: "json" };
+import { browserEditingAbilities } from "../../../../../packages/client/src/host/browser-editing.js";
+import { displayEditingAbilities } from "../../../../../packages/client/src/integrations/display-editing.js";
+import { editingRefusalMessages, type EditingTargetAbilities } from "@opensteer/client/editing";
 
 /*
  * Text typed into a remote page arrives in the order typed, at any speed. The walk typed
@@ -36,19 +40,21 @@ const harness = vi.hoisted(() => ({
   },
   mounted: false,
   answers: [] as (() => void)[],
-  /** Every refusal message the proxy rendered. */
-  refusals: [] as string[],
+  /** Every text the proxy rendered: refusals among them. */
+  texts: [] as string[],
   /** The far field of the open test, for a generator to look at. */
   remote: null as null | { composition: unknown },
+  /** The open sequence's oracle, told what only the far side knows. */
+  oracle: null as null | { markOnly(): void; fenced(): void },
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
   View: ({ children }: { children?: import("react").ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../../../src/ui/primitives.js", () => ({
-  // The proxy renders only its refusal as text.
+  // The proxy renders its refusal, and a preedit the target cannot show, as text.
   AppText: ({ children }: { children?: import("react").ReactNode }) => {
-    harness.refusals.push(String(children));
+    harness.texts.push(String(children));
     return <span>{children}</span>;
   },
 }));
@@ -106,15 +112,22 @@ afterEach(async () => {
   harness.mounted = false;
 });
 
-/** A Mac app or a phone screen: no range edits, so a replacement in the middle is refused. */
-const displayAbilities = {
-  composition: true,
-  rangeEdits: false,
-  commands: true,
-  clipboard: "text",
-} as const;
+/**
+ * The product's targets, as the Host's negotiation and the display integration pick them
+ * (packages/client/src/host/browser-editing.ts, integrations/display-editing.ts): the random
+ * test draws only these.
+ */
+const targets = {
+  full: browserEditingAbilities.full,
+  textClipboard: browserEditingAbilities.textClipboard,
+  basic: browserEditingAbilities.basic,
+  baseline: browserEditingAbilities.baseline,
+  display: displayEditingAbilities,
+} as const satisfies Record<string, EditingTargetAbilities>;
+/** An older Host's browser: no range edits, so a replacement in the middle is refused. */
+const displayAbilities = targets.baseline;
 
-async function open(abilities?: typeof displayAbilities) {
+async function open(abilities?: EditingTargetAbilities) {
   const remote = new RemoteField();
   remote.contextId = context.contextId;
   let native: NativeField | null = null;
@@ -125,7 +138,17 @@ async function open(abilities?: typeof displayAbilities) {
     root.render(
       <NativeEditingProxy
         context={current}
-        sendOperation={(operation) => remote.take(operation)}
+        sendOperation={(operation) => {
+          const marks = remote.markOnly;
+          const refused = remote.refused.length;
+          const mismatched = remote.mismatched.length;
+          const sent = remote.take(operation);
+          // What only the far side knows, told to the open sequence's oracle.
+          if (remote.markOnly > marks) harness.oracle?.markOnly();
+          if (remote.refused.length > refused && remote.mismatched.length === mismatched)
+            harness.oracle?.fenced();
+          return sent;
+        }}
         onDone={() => undefined}
         {...(abilities ? { abilities } : {})}
       />,
@@ -336,7 +359,7 @@ describe("typing into a remote field", () => {
   // moved back before the second character and the second arrived as a rewrite, or was refused.
   it.each([
     ["a page (range edits)", undefined],
-    ["a Mac app or phone screen (no range edits)", displayAbilities],
+    ["an older Host's browser (no range edits)", displayAbilities],
   ] as const)(
     "on %s, delivers two characters typed before a tap, then moves once",
     async (_name, abilities) => {
@@ -508,10 +531,16 @@ describe("a person's caret moves and selections in the native field", () => {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
   /**
-   * Sequences in which the page's field changed with edits in flight (named, counted): the far
-   * field refuses those for their old context, or the reducer drops them at its reset.
+   * Named exceptions, counted, each raised only by the one thing it names, and each replayed with
+   * exactly that thing's effect taken out of (or given to) the person; the replay must then match
+   * in everything: text, caret, no mismatched edit, no refusal.
+   * - Fenced: an action the native field dropped because a new context began before its turn, or
+   *   whose edit the far field refused for the context it had left.
+   * - Dropped: a replacement, or a range selected, in a mirror cleared before its turn.
+   * - Mark only: a deletion the page made as its own Backspace command, which removes a decomposed
+   *   letter's last mark alone (Blink's rule), where the person's keyboard removes the letter.
    */
-  const staleSequences: number[] = [];
+  const droppedSequences: number[] = [];
 
   /*
    * The family's structural test. The person's actions go to the native field (the port, through
@@ -524,20 +553,23 @@ describe("a person's caret moves and selections in the native field", () => {
    * for its old context or the reducer drops it at the reset, and that keystroke is lost by
    * design (the page's fence). Those sequences are counted and their text not compared.
    */
-  async function person(abilities?: typeof displayAbilities) {
+  async function person(abilities?: EditingTargetAbilities, without: Dropped | null = null) {
     const opened = await open(abilities);
+    const target = abilities ?? targets.full;
     const { remote, native, keyboard } = opened;
-    const oracle = new Oracle();
+    const oracle = new Oracle(without);
+    harness.oracle = oracle;
     native.onTurn = (turn) => {
       if (turn === "action") oracle.turn();
       else if (turn === "report") oracle.report();
       else if (turn === "reset") oracle.reset();
       else if (turn === "finish") oracle.finish();
+      else if (turn === "dropped") oracle.drop();
+      else if (turn === "dropped-report") oracle.dropReport();
       else oracle.context();
     };
-    harness.refusals = [];
+    harness.texts = [];
     const steps: string[] = [];
-    let inFlight = false;
     const does = async (
       step: string,
       act: Action,
@@ -628,8 +660,6 @@ describe("a person's caret moves and selections in the native field", () => {
         ),
       rotate: (id: string) => {
         steps.push("rotate()");
-        // Edits still in flight when the page's field changes are fenced out by design.
-        if (!oracle.caughtUp || harness.answers.length > 0) inFlight = true;
         oracle.act("rotate", (p) => {
           p.marked = null;
           return [];
@@ -640,22 +670,45 @@ describe("a person's caret moves and selections in the native field", () => {
         steps.push(`answer(${count})`);
         return opened.answer(count);
       },
-      /** Everything settles; the far field must hold what the person typed. */
-      async check(seed: number | string) {
+      /**
+       * Everything settles; the far field must hold what the person typed. When the native field
+       * dropped places named in an older mirror, it returns them, unchecked: the caller replays
+       * the sequence with them left out of the person, and that replay must match exactly.
+       */
+      async check(seed: number | string): Promise<Dropped | null> {
         await opened.answerAll();
-        const failure = `${oracle.acrossReset ? "[across a reset] " : ""}seed ${seed}: ${steps.join("; ")}`;
+        const failure = `${without ? "[without what was dropped] " : ""}seed ${seed}: ${steps.join("; ")}`;
         expect(remote.mismatched, failure).toEqual([]);
-        expect([...new Set(harness.refusals)], `${failure}: the reducer refused`).toEqual([]);
-        const stale = remote.refused.filter((operation) => !remote.mismatched.includes(operation));
-        if (stale.length === 0 && !inFlight) {
+        const refusals = new Set(Object.values(editingRefusalMessages));
+        expect(
+          [...new Set(harness.texts.filter((text) => refusals.has(text)))],
+          `${failure}: the reducer refused`,
+        ).toEqual([]);
+        const { dropped } = oracle;
+        const any = dropped.actions.size + dropped.moves.size + dropped.markOnly.size > 0;
+        let result: Dropped | null = null;
+        if (any && !without) result = dropped;
+        else {
+          if (without) {
+            expect(dropped.actions, `${failure}: dropped`).toEqual(without.actions);
+            expect(dropped.moves, `${failure}: dropped`).toEqual(without.moves);
+            expect(dropped.markOnly, `${failure}: marks`).toEqual(without.markOnly);
+          }
           const { text, selection, marked } = oracle.person;
-          expect(remote.value, failure).toBe(text);
+          // A target that cannot show a composition live gets it at its commit; one still open
+          // is the viewer's preedit, not the page's.
+          const shown =
+            marked && !target.composition
+              ? text.slice(0, marked.start) + text.slice(marked.end)
+              : text;
+          expect(remote.value, failure).toBe(shown);
           if (selection.start === selection.end && marked === null)
             expect(remote.caret, `${failure}: caret`).toBe(selection.start);
-        } else if (typeof seed === "number") staleSequences.push(seed);
+        }
         await act(async () => root.render(null));
         harness.answers = [];
         harness.mounted = false;
+        return result;
       },
     };
   }
@@ -665,10 +718,10 @@ describe("a person's caret moves and selections in the native field", () => {
    * The first generator, its draws kept as they were so the seeds it found still replay what
    * they found.
    */
-  async function sequence(seed: number) {
+  async function sequence(seed: number, without: Dropped | null = null): Promise<void> {
     const next = random(seed);
     const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
-    const run = await person();
+    const run = await person(undefined, without);
     const length = 1 + Math.floor(next() * 24);
     for (let step = 0; step < length; step++) {
       const boundaries = [0, ...characters(run.native.text).map(({ end }) => end)];
@@ -683,7 +736,11 @@ describe("a person's caret moves and selections in the native field", () => {
         await run.moveSelection(start!, end!);
       } else await run.answer(1 + Math.floor(next() * 3));
     }
-    await run.check(seed);
+    const dropped = await run.check(seed);
+    if (dropped) {
+      droppedSequences.push(seed);
+      await sequence(seed, dropped);
+    }
   }
 
   /*
@@ -695,12 +752,24 @@ describe("a person's caret moves and selections in the native field", () => {
    * deleted), drawing nothing more.
    */
   const letters = ["a", "b", "é", "é", " ", "👩‍💻", "א", "ب"];
-  async function sequence2(seed: number, third = false) {
+  async function sequence2(
+    seed: number,
+    third = false,
+    without: Dropped | null = null,
+  ): Promise<void> {
     const next = random(seed * (third ? 40503 : 2654435761));
     const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
-    const display = next() < 0.2;
-    const run = await person(display ? displayAbilities : undefined);
-    if (display) run.steps.push("display");
+    // The second generator's own draw, kept: its "display" is now a real target without range
+    // edits (baseline). The third draws any of the product's targets.
+    const name: keyof typeof targets = third
+      ? pick(["full", "textClipboard", "basic", "baseline", "display"] as const)
+      : next() < 0.2
+        ? "baseline"
+        : "full";
+    const target = targets[name];
+    const display = !target.rangeEdits;
+    const run = await person(target, without);
+    if (name !== "full") run.steps.push(`target ${name}`);
     let rotations = 0;
     /** The input method is composing from its own setMarkedText on, whatever the field holds yet. */
     let composing = false;
@@ -717,8 +786,11 @@ describe("a person's caret moves and selections in the native field", () => {
       if (choice < 0.22) {
         composing = false;
         await run.insertText(pick(letters));
-      } else if (choice < 0.32) await run.type(pick(letters));
-      else if (choice < 0.4) await run.backspace();
+      } else if (choice < 0.32) {
+        // A replacement through the delegate: the keyboard's, which a target without range
+        // edits turns off.
+        if (!display) await run.type(pick(letters));
+      } else if (choice < 0.4) await run.backspace();
       else if (choice < 0.45 && composing) {
         const marked = run.oracle.person.marked;
         const text = marked ? run.oracle.person.text.slice(marked.start, marked.end) : "";
@@ -744,7 +816,8 @@ describe("a person's caret moves and selections in the native field", () => {
       } else if (choice < 0.62) {
         const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
         const word = pick(["the", "ab", "é"]);
-        if (!display || start === end) await run.replaceRange(start!, end!, word);
+        // No autocorrect on a target without range edits: the keyboard's is turned off there.
+        if (!display) await run.replaceRange(start!, end!, word);
       } else if (choice < 0.65) await run.paste(pick(["pasted", "א b"]));
       else if (choice < 0.7) {
         composing = true;
@@ -756,6 +829,8 @@ describe("a person's caret moves and selections in the native field", () => {
         // Also while the far field's composition is open: the composing context ends, and its
         // composition is closed as its own before the new context's first operation (CS1).
         rotations += 1;
+        // Part of the rotations come with nothing in flight, compared in full.
+        if (third && next() < 0.3) await run.answer(Infinity);
         await run.rotate(
           `00000000-0000-4000-9000-${String(seed * 100 + rotations).padStart(12, "0")}`,
         );
@@ -765,7 +840,11 @@ describe("a person's caret moves and selections in the native field", () => {
           await run.deleteMark([...run.native.text].slice(0, mark).join("").length);
       } else await run.answer(1 + Math.floor(next() * 3));
     }
-    await run.check(third ? `${seed} (third)` : seed);
+    const dropped = await run.check(third ? `${seed} (third)` : seed);
+    if (dropped) {
+      droppedSequences.push(seed);
+      await sequence2(seed, third, dropped);
+    }
   }
 
   // What the random sequences found, kept: seed 32, a prevented Backspace on an empty field whose
@@ -798,7 +877,7 @@ describe("a person's caret moves and selections in the native field", () => {
     await run.insertText("👩‍💻");
     await run.moveSelection(5);
     await run.insertText("א");
-    await run.check(2195);
+    expect(await run.check(2195)).toBeNull();
   });
 
   // What the person oracle found, kept (third generator): seed 750, an autocorrect elsewhere
@@ -809,6 +888,36 @@ describe("a person's caret moves and selections in the native field", () => {
     sequence2(seed, true),
   );
 
+  // The review of b17ce6c8d (F2, F4, F5): a caret move or an autocorrect made before the previous
+  // answer, lost. Each must hold what the person meant.
+  it("F2: a caret moved before the previous answer on a target without range edits", async () => {
+    const run = await person(targets.baseline);
+    await run.insertText("a");
+    await run.answer(1);
+    await run.moveSelection(0);
+    await run.insertText("b");
+    expect(await run.check("F2")).toBeNull();
+    expect(harness.remote).toMatchObject({ value: "ba" });
+  });
+  it("F4: a caret moved while a paste waits", async () => {
+    const run = await person(targets.full);
+    await run.insertText("abc");
+    await run.answer(Infinity);
+    await run.paste("P");
+    await run.moveSelection(1);
+    await run.insertText("x");
+    expect(await run.check("F4")).toBeNull();
+    expect(harness.remote).toMatchObject({ value: "axbcP" });
+  });
+  it("F5: an autocorrect made before the previous answer, on a Mac app or phone screen", async () => {
+    const run = await person(targets.display);
+    await run.insertText("a");
+    await run.answer(1);
+    await run.replaceRange(0, 0, "the");
+    expect(await run.check("F5")).toBeNull();
+    expect(harness.remote).toMatchObject({ value: "thea" });
+  });
+
   // 300 sequences of the third generator a run; OPENSTEER_TYPING_FUZZ_RUNS and _SEED run more,
   // 300 to a test. The third is the second with deletion inside a composition both ways.
   const runs = Number(process.env.OPENSTEER_TYPING_FUZZ_RUNS ?? 300);
@@ -816,42 +925,37 @@ describe("a person's caret moves and selections in the native field", () => {
   for (let chunk = firstSeed; chunk < firstSeed + runs; chunk += 300) {
     const last = Math.min(chunk + 300, firstSeed + runs) - 1;
     it(`keeps the far field equal to the person's over random sequences ${chunk} to ${last}`, async () => {
-      // Every failing seed in the chunk, not just the first.
+      // Every failing seed in the chunk, not just the first. A seed held in the unexplained
+      // fixture must fail exactly as recorded there (a fix or a new failure both show).
       const failures: string[] = [];
-      for (let seed = chunk; seed <= last; seed++)
+      const passedUnexpectedly: number[] = [];
+      for (let seed = chunk; seed <= last; seed++) {
+        const held = (unexplained.failures as Record<string, string>)[String(seed)];
         try {
           await sequence2(seed, true);
+          if (held) passedUnexpectedly.push(seed);
         } catch (error) {
-          failures.push(String(error instanceof Error ? error.message : error));
+          const message = String(error instanceof Error ? error.message : error);
           await act(async () => root.render(null));
           harness.answers = [];
           harness.mounted = false;
+          if (message !== held) failures.push(message);
         }
+      }
+      expect(passedUnexpectedly, "held as unexplained, now passing: take them out").toEqual([]);
       if (process.env.OPENSTEER_TYPING_FUZZ_REPORT)
         for (const failure of failures)
           require("node:fs").appendFileSync(
             process.env.OPENSTEER_TYPING_FUZZ_REPORT,
             `${failure}\n`,
           );
-      // Open, named: the mirror was cleared (a paste, a new context, every edit on a target
-      // without range edits) while places UIKit named in the text it cleared still waited their
-      // turn, and those places then name nothing. Counted, not passed over silently; anything
-      // else fails.
-      const across = failures.filter((failure) => failure.startsWith("[across a reset]"));
-      acrossReset.push(across.length);
-      expect(failures.filter((failure) => !across.includes(failure))).toEqual([]);
+      expect(failures).toEqual([]);
     });
   }
-  /** Per chunk, the sequences in the open class "across a reset". */
-  const acrossReset: number[] = [];
   afterAll(() => {
-    if (acrossReset.length)
+    if (droppedSequences.length)
       process.stdout.write(
-        `typing oracle: ${acrossReset.reduce((sum, count) => sum + count, 0)} of ${runs} sequences in the open class "across a reset"\n`,
-      );
-    if (staleSequences.length)
-      process.stdout.write(
-        `typing oracle: ${staleSequences.length} sequences rotated with edits in flight\n`,
+        `typing oracle: ${droppedSequences.length} sequences raised a named exception (fenced, dropped or mark only), each replayed exactly\n`,
       );
   });
 });

@@ -26,6 +26,8 @@ struct RemoteInputEdits {
     let order: Int
     let start: Int
     let end: Int
+    /// The mirror it was named in (`generation`).
+    var generation = 0
   }
   private struct Edit {
     let start: Int
@@ -40,12 +42,26 @@ struct RemoteInputEdits {
   private var named = 0
   /// The selection UIKit or the person last chose, as named.
   private var chosen: Place?
+  /// The mirror's generation: every clear of the field begins a new one.
+  private var generation = 0
+  /// The places a new context fenced out: every one named before the call that changed it.
+  private var fence = 0
+  /// How many places have been named: a fence is drawn at the call that changes the context.
+  var order: Int { named }
 
   /// A place in the text as it stands now.
   mutating func place(_ start: Int, _ end: Int) -> Place {
     named += 1
-    return Place(revision: revision, order: named, start: start, end: end)
+    return Place(revision: revision, order: named, start: start, end: end, generation: generation)
   }
+  /// The field was cleared: a new mirror.
+  mutating func clear() { generation += 1 }
+  /// A new context: every place named so far is fenced out, from this call on.
+  mutating func fenceNow() { fence = named }
+  /// Named in an older mirror: it names nothing in this one.
+  func stale(_ place: Place) -> Bool { place.generation < generation }
+  /// Named under an older context: dropped with it, whatever it is.
+  func fenced(_ place: Place) -> Bool { place.order <= fence }
 
   /// UIKit or the person chose this selection. The native selection is whatever they last chose:
   /// an edit named before the choice and applied after it must not leave the caret where the edit
@@ -53,7 +69,7 @@ struct RemoteInputEdits {
   mutating func choose(_ selection: Place) { chosen = selection }
   /// The selection chosen after `place` was named, if there is one.
   func chosen(after place: Place) -> Place? {
-    guard let chosen, chosen.order > place.order else { return nil }
+    guard let chosen, chosen.order > place.order, !stale(chosen) else { return nil }
     return chosen
   }
 
