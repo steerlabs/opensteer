@@ -259,8 +259,9 @@ export class PoolAgent {
   async start(): Promise<void> {
     await this.#journal.open();
     // A provisioned host's profile disk is the mount it was told to expect, or the agent does
-    // not serve at all: its unit fails visibly, and systemd starts it again with a growing
-    // delay, so a disk that attaches late is picked up without anyone's help.
+    // not serve at all: its unit fails visibly and the host fails closed. Nothing here waits
+    // for a disk that attaches late; an operator mounts it and restarts the two units
+    // (`systemctl restart opensteer-pool-host opensteer-pool-agent`).
     const unmounted = await this.#driver.profilesMountProblem();
     if (unmounted)
       throw new Error(`The profile disk is not mounted (${unmounted}); the agent does not serve.`);
@@ -825,6 +826,12 @@ export class PoolAgent {
     let credentialsErased = false;
     const erase = async (path: string) => {
       if (!options.eraseProfile) return;
+      // Z2: again immediately before the erase, which may come long after the first check (a
+      // kill, a discard, a network removal). A disk gone by now leaves the slot as it is here:
+      // on the main path its guest, saved state, network and credentials are gone and it is a
+      // tombstone, its profile kept. A repeated delete then takes the tombstone's path and
+      // erases the profile once, at the same derived path.
+      await this.#profilesMounted();
       await this.#driver.eraseProfile(path);
       this.#log({ event: "profile.erased", slotId });
     };

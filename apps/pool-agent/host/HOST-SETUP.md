@@ -139,7 +139,8 @@ egress is what its create names, as before. `driver.profilesRoot` is the durable
 point (`PROVISIONER.md`, section 7). With `driver.profilesMount` set, the agent checks that it is
 that mount, and that filesystem when a label is given (`profiles-mount.ts`, `checkProfilesMount`).
 It does not start without it, and it refuses to make, use or erase a profile when the mount goes
-away later.
+away later. The host then fails closed: a disk that appears after the boot path looked for it, or goes away
+while the agent runs, needs an operator, who mounts it and restarts the two units (`systemctl restart opensteer-pool-host opensteer-pool-agent`).
 
 `/etc/opensteer-pool/agent.json` (mode 0600), for example:
 

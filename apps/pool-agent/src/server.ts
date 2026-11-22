@@ -301,8 +301,12 @@ async function administer(
     }
   } catch (error) {
     // A definite refusal: nothing was made or erased.
-    if (error instanceof SlotConflict || error instanceof ProfilesNotMounted)
+    if (error instanceof SlotConflict)
       return { op: "refused", code: "conflict", message: error.message };
+    // The profile disk is not the mount expected: no profile was made or erased. A delete may
+    // have ended the guest and its credentials first; a repeated delete finishes it.
+    if (error instanceof ProfilesNotMounted)
+      return { op: "refused", code: "profile-disk-missing", message: error.message };
     if (error instanceof SlotNotFound)
       return { op: "refused", code: "unknown-slot", message: error.message };
     return {
