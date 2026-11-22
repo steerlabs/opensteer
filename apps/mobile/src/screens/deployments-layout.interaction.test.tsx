@@ -26,9 +26,15 @@ vi.mock(
   "react-native-reanimated",
   async () => (await import("../../test-support/yoga-frames.js")).layoutReanimated,
 );
+// The phone the list is drawn on: its frame decides the gutter (`deriveLayout`), its insets the
+// list's padding, as the screen's own hooks read them.
+const phoneNow = vi.hoisted(() => ({
+  insets: { bottom: 0, left: 0, right: 0, top: 0 },
+  window: { height: 0, width: 0 },
+}));
 vi.mock("react-native-safe-area-context", () => ({
-  useSafeAreaFrame: () => ({ height: 0, width: 0, x: 0, y: 0 }),
-  useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+  useSafeAreaFrame: () => ({ ...phoneNow.window, x: 0, y: 0 }),
+  useSafeAreaInsets: () => phoneNow.insets,
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("expo-haptics", () => ({ selectionAsync: async () => undefined }));
@@ -75,7 +81,29 @@ vi.mock("../threads/task-row.js", () => ({ UnreadDot: () => null }));
 vi.mock("../ui/action-line.js", () => ({ ActionLine: () => null }));
 
 const { DeploymentListRow } = await import("./deployments.js");
-const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
+const { RowGroup } = await import("../ui/primitives.js");
+const { useListContentInsets, useReadingColumn } = await import("../ui/screen.js");
+const { space } = await import("../theme.js");
+const { ScrollView, View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
+
+/**
+ * The Homes list as its screen draws it (`deployments.tsx`): a scroll view whose content keeps the
+ * list's insets and reading column, the rows in a `RowGroup` (a plate, with its border). Rows
+ * tested anywhere narrower or wider than this fit or break by a point or two that the app does not.
+ */
+function PickerList(props: { readonly children: readonly ReactNode[] }): ReactNode {
+  const listInsets = useListContentInsets(space[32]);
+  const column = useReadingColumn();
+  return (
+    <View style={{ height: phoneNow.window.height, width: phoneNow.window.width }}>
+      <ScrollView
+        contentContainerStyle={[{ gap: space[12], paddingTop: space[12] }, column, listInsets]}
+      >
+        <RowGroup>{props.children}</RowGroup>
+      </ScrollView>
+    </View>
+  );
+}
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -108,6 +136,7 @@ describe("Homes in the list", () => {
     for (const fontScale of layoutTextSizes)
       it(`are told apart on ${phone.name} at text size ${fontScale}`, async () => {
         Object.assign(layoutWindow, phone.window, { fontScale });
+        Object.assign(phoneNow, { insets: phone.insets, window: phone.window });
         const container = document.createElement("div");
         document.body.append(container);
         const root = createRoot(container);
@@ -126,20 +155,8 @@ describe("Homes in the list", () => {
             row={row(home)}
           />
         ));
-        // As the list stands: inside the screen's gutter, clear of the vertical bar.
-        await act(async () =>
-          root.render(
-            <View
-              style={{
-                paddingLeft: 16 + phone.insets.left,
-                paddingRight: 16 + phone.insets.right,
-                width: phone.window.width,
-              }}
-            >
-              {list}
-            </View>,
-          ),
-        );
+        // As the list stands on its screen: in its group, inside the gutter, clear of the bar.
+        await act(async () => root.render(<PickerList>{list}</PickerList>));
         const frames = await layout(container, phone.window);
         expect(frames.settled, "the layout never comes to rest").toBe(true);
         expect(
@@ -165,6 +182,7 @@ describe("a Home's status in the list", () => {
     for (const fontScale of layoutTextSizes)
       it(`never breaks inside its word on ${phone.name} at text size ${fontScale}`, async () => {
         Object.assign(layoutWindow, phone.window, { fontScale });
+        Object.assign(phoneNow, { insets: phone.insets, window: phone.window });
         const container = document.createElement("div");
         document.body.append(container);
         const root = createRoot(container);
@@ -172,24 +190,20 @@ describe("a Home's status in the list", () => {
         const none = () => undefined;
         await act(async () =>
           root.render(
-            <View
-              style={{
-                paddingLeft: 16 + phone.insets.left,
-                paddingRight: 16 + phone.insets.right,
-                width: phone.window.width,
-              }}
-            >
-              <DeploymentListRow
-                attention={null}
-                current={false}
-                onDetails={none}
-                onOpen={none}
-                onPair={none}
-                onRemove={none}
-                onSignOut={none}
-                row={{ ...row({ id: homes[0]!.id, name: "Studio Mac" }), status: "connected" }}
-              />
-            </View>,
+            <PickerList>
+              {[
+                <DeploymentListRow
+                  attention={null}
+                  current={false}
+                  onDetails={none}
+                  onOpen={none}
+                  onPair={none}
+                  onRemove={none}
+                  onSignOut={none}
+                  row={{ ...row({ id: homes[0]!.id, name: "Studio Mac" }), status: "connected" }}
+                />,
+              ]}
+            </PickerList>,
           ),
         );
         const frames = await layout(container, phone.window);
@@ -220,6 +234,7 @@ describe("what a Home's row says", () => {
     for (const fontScale of layoutTextSizes)
       it(`reads whole, never cut short, on ${phone.name} at text size ${fontScale}`, async () => {
         Object.assign(layoutWindow, phone.window, { fontScale });
+        Object.assign(phoneNow, { insets: phone.insets, window: phone.window });
         const container = document.createElement("div");
         document.body.append(container);
         const root = createRoot(container);
@@ -227,31 +242,27 @@ describe("what a Home's row says", () => {
         const none = () => undefined;
         await act(async () =>
           root.render(
-            <View
-              style={{
-                paddingLeft: 16 + phone.insets.left,
-                paddingRight: 16 + phone.insets.right,
-                width: phone.window.width,
-              }}
-            >
-              <DeploymentListRow
-                // The Mac this Home lives on, by its own name, as the list's one read says.
-                attention={{ homeName: "Mac mini in the studio", needsYou: 0, unread: false }}
-                current={false}
-                onDetails={none}
-                onOpen={none}
-                onPair={none}
-                onRemove={none}
-                onSignOut={none}
-                row={{
-                  ...row({ id: homes[0]!.id, name: "Studio Mac" }),
-                  accountManaged: true,
-                  remoteAccessOff: true,
-                  status: "unavailable",
-                }}
-                work="Work · Northwind Traders"
-              />
-            </View>,
+            <PickerList>
+              {[
+                <DeploymentListRow
+                  // The Mac this Home lives on, by its own name, as the list's one read says.
+                  attention={{ homeName: "Mac mini in the studio", needsYou: 0, unread: false }}
+                  current={false}
+                  onDetails={none}
+                  onOpen={none}
+                  onPair={none}
+                  onRemove={none}
+                  onSignOut={none}
+                  row={{
+                    ...row({ id: homes[0]!.id, name: "Studio Mac" }),
+                    accountManaged: true,
+                    remoteAccessOff: true,
+                    status: "unavailable",
+                  }}
+                  work="Work · Northwind Traders"
+                />,
+              ]}
+            </PickerList>,
           ),
         );
         const frames = await layout(container, phone.window);
@@ -287,6 +298,7 @@ describe("a Home that needs signing in to, as the picker showed it", () => {
     for (const fontScale of layoutTextSizes)
       it(`reads whole on ${phone.name} at text size ${fontScale}`, async () => {
         Object.assign(layoutWindow, phone.window, { fontScale });
+        Object.assign(phoneNow, { insets: phone.insets, window: phone.window });
         const container = document.createElement("div");
         document.body.append(container);
         const root = createRoot(container);
@@ -294,28 +306,27 @@ describe("a Home that needs signing in to, as the picker showed it", () => {
         const none = () => undefined;
         await act(async () =>
           root.render(
-            <View
-              style={{
-                paddingLeft: 16 + phone.insets.left,
-                paddingRight: 16 + phone.insets.right,
-                width: phone.window.width,
-              }}
-            >
-              <DeploymentListRow
-                attention={null}
-                current={false}
-                onDetails={none}
-                onOpen={none}
-                onPair={none}
-                onRemove={none}
-                onSignOut={none}
-                row={{
-                  ...row({ id: homes[0]!.id, name: "Messaging computer" }),
-                  kindLabel: "Server",
-                  status: "needs-sign-in",
-                }}
-              />
-            </View>,
+            <PickerList>
+              {[
+                <DeploymentListRow
+                  attention={null}
+                  current={false}
+                  onDetails={none}
+                  onOpen={none}
+                  onPair={none}
+                  onRemove={none}
+                  onSignOut={none}
+                  row={{
+                    ...row({ id: homes[0]!.id, name: "Messaging computer" }),
+                    kindLabel: "Server",
+                    status: "needs-sign-in",
+                  }}
+                  // As the picker shows a Home an organization pays for, on a Cloud Computer.
+                  work="Work · Northwind Traders"
+                  cloud
+                />,
+              ]}
+            </PickerList>,
           ),
         );
         const frames = await layout(container, phone.window);
@@ -324,7 +335,7 @@ describe("a Home that needs signing in to, as the picker showed it", () => {
           textFaults(frames, { column: readingColumn(phone) }),
           "a text a person reads is broken or cut",
         ).toEqual([]);
-        for (const words of ["Messaging computer", sentence]) {
+        for (const words of ["Messaging computer", sentence, "Work · Northwind Traders"]) {
           const text = textElement(container, words);
           expect(frames.shown(text), `"${words}" is cut`).toBe(words);
         }
@@ -337,6 +348,7 @@ describe("a failure line above the Homes list", () => {
     for (const fontScale of layoutTextSizes)
       it(`reads whole on ${phone.name} at text size ${fontScale}`, async () => {
         Object.assign(layoutWindow, phone.window, { fontScale });
+        Object.assign(phoneNow, { insets: phone.insets, window: phone.window });
         // The list's own line, not the stand-in the rest of this file draws nothing for.
         const { ActionLine } =
           await vi.importActual<typeof import("../ui/action-line.js")>("../ui/action-line.js");
