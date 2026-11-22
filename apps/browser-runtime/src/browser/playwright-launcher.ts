@@ -1694,7 +1694,11 @@ class PlaywrightContextHandle implements BrowserContext {
         if (this.removals.get(title) !== tracker) return;
         tracker.attempts++;
         if (await this.removeNamed(title, 1)) {
+          // Proven removed (K6): its guard, and a sleep token a failed release kept, go now.
           this.removals.delete(title);
+          for (const [tokenId, sleeping] of this.sleepingByToken)
+            if (sleeping.title === title) this.sleepingByToken.delete(tokenId);
+          if (this.sleepingTitles.has(title)) this.sleepingTitles.delete(title);
           this.retryDeferredName(title);
         } else if (tracker.attempts >= removalRetryBound) {
           // Rule A: recorded as not removed, never retried silently forever; still guarded.
