@@ -49,6 +49,7 @@ import {
   type RequestFormField,
   type RequestOption,
   type RequestPayload,
+  type TabId,
 } from "@opensteer/core";
 import type { CardChoice, MachineSummary, PasswordSignInCard } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -73,6 +74,7 @@ import {
 import { useComputerAppApproval } from "../computers/computer-app-approval.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { HomeMenu } from "../screens/profile-home-menu.js";
+import { useShowTab } from "../tabs/viewer-open.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Chip, monoFontFamily, Notice, StatusDot } from "../ui/primitives.js";
@@ -107,6 +109,7 @@ import {
   withRequestDraftValues,
   type RequestFormDraft,
 } from "./request-form-model.js";
+import { answeredInAPage, RequestPageLink } from "./request-page-link.js";
 import { updateRequestSession, type RequestSession } from "./request-session.js";
 import { signInAvailability, signInStatus } from "./request-sign-in-status.js";
 import { useThreadMutation } from "./thread-mutation-registry.js";
@@ -361,6 +364,12 @@ function SheetForRequest(props: {
   const { deploymentId, hostClient, surface, userId } = props;
   const navigation = useNavigation();
   const threadId = surface?.request.originatingThreadId ?? "";
+  // The page a Request is answered in, shown over its task once this sheet has closed.
+  const showTab = useShowTab(deploymentId, threadId);
+  const openPage = (tabId: TabId): void => {
+    props.onClose();
+    showTab(tabId);
+  };
   const { drafts } = useMobileClient();
   const { gate, owner } = useThreadMutation({ deploymentId, threadId, userId });
   const archived = useHostSelector(
@@ -373,6 +382,7 @@ function SheetForRequest(props: {
   if (isQuestionRequest(surface.request) && surface.denied === null)
     return (
       <ScrollView contentContainerStyle={styles.questionSheet} keyboardShouldPersistTaps="handled">
+        <RequestPageLink hostClient={hostClient} onOpen={openPage} request={surface.request} />
         <QuestionCard
           canRespond={props.canRespond}
           deploymentId={deploymentId}
@@ -401,6 +411,7 @@ function SheetForRequest(props: {
       hostClient={hostClient}
       machines={props.machines}
       onClose={props.onClose}
+      onOpenPage={openPage}
       reason={props.reason}
       onOpenSubagent={(asker) => {
         props.onClose();
@@ -450,6 +461,8 @@ export function RequestSheetContent(props: {
   readonly reason: boolean;
   /** Opens the asking subagent's own view, where it can be answered too. */
   readonly onOpenSubagent?: (asker: RequestAsker) => void;
+  /** Opens the page a Request is answered in: the sheet closes and the tab is shown. */
+  readonly onOpenPage?: (tabId: TabId) => void;
   readonly surface: SurfaceModel;
 }): ReactNode {
   const { surface } = props;
@@ -574,6 +587,13 @@ export function RequestSheetContent(props: {
         )}
         {detail === null ? null : (
           <RequestDetail mono={request.kind === "harness.approval"} text={detail} />
+        )}
+        {askingWhy || props.onOpenPage === undefined || !answeredInAPage(request) ? null : (
+          <RequestPageLink
+            hostClient={props.hostClient}
+            onOpen={props.onOpenPage}
+            request={request}
+          />
         )}
         {askingWhy ? (
           <>

@@ -469,6 +469,44 @@ describe("a saved login or card that is no longer running", () => {
   });
 });
 
+/*
+ * A Request answered in a page, such as signing in to a site, offers that page one tap away:
+ * the tab the Request names while the tab list still holds it, and nothing once it is gone.
+ */
+describe("Open the page, from a Request that names its tab", () => {
+  const named = "mock-tab-2-0";
+  const tabsWith = (rows: readonly { tabId: string; kind: string }[]) => {
+    const byId = new Map(rows.map((row) => [row.tabId, { usedBy: [], ...row }]));
+    return { get: (id: string) => byId.get(id), rows: byId, subscribe: () => () => undefined };
+  };
+  const namingRequest = (): Request =>
+    ({
+      ...signInRequest(),
+      payload: { ...signInRequest().payload, tabId: named },
+    }) as Request;
+
+  it("opens the Request's own tab while it is there", async () => {
+    const onOpenPage = vi.fn();
+    await render(surface(namingRequest()), vi.fn(), {
+      inspect: vi.fn(async () => inspection([])),
+      onOpenPage,
+      snapshot: { tabs: tabsWith([{ tabId: named, kind: "page" }]) },
+    });
+    await click("Open the page");
+    expect(onOpenPage).toHaveBeenCalledExactlyOnceWith(named);
+  });
+
+  it("offers nothing once that tab is gone, not another page of the task", async () => {
+    await render(surface(namingRequest()), vi.fn(), {
+      inspect: vi.fn(async () => inspection([])),
+      onOpenPage: vi.fn(),
+      snapshot: { tabs: tabsWith([{ tabId: "mock-tab-1-0", kind: "page" }]) },
+    });
+    expect(text()).toContain("Sign in to github.com");
+    expect(text()).not.toContain("Open the page");
+  });
+});
+
 describe("RequestSheetContent saved-password sign-ins", () => {
   it("names the Mac where it waits and declines with its own command", async () => {
     let answer: ((value: unknown) => void) | undefined;
@@ -1021,6 +1059,7 @@ async function render(
     readonly gate?: ThreadMutationGate;
     readonly inspect?: ReturnType<typeof vi.fn>;
     readonly machines?: readonly MachineSummary[];
+    readonly onOpenPage?: (tabId: string) => void;
     readonly passwordRead?: ReturnType<typeof vi.fn>;
     readonly reason?: boolean;
     readonly review?: ReturnType<typeof vi.fn>;
@@ -1077,6 +1116,7 @@ async function render(
         onClose={() => {
           root.render(null);
         }}
+        {...(options.onOpenPage === undefined ? {} : { onOpenPage: options.onOpenPage })}
         reason={options.reason ?? false}
         surface={model}
       />,

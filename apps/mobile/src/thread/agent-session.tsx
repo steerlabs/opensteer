@@ -11,14 +11,9 @@ import {
   type OperationRequestView,
   type SessionTaskView,
 } from "@opensteer/client/host";
-import {
-  useThreadAgentPlace,
-  useRequestPageTab,
-  useThreadTranscript,
-} from "@opensteer/client/react";
+import { useThreadAgentPlace, useThreadTranscript } from "@opensteer/client/react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
-import type { TabId } from "@opensteer/core";
 import { ExternalAgentMark } from "../screens/external-agent-mark.js";
 import { useShowTab } from "../tabs/viewer-open.js";
 import { color, radius, space, touchTarget } from "../theme.js";
@@ -33,6 +28,7 @@ import { useAgentSessionStop, useSessionThread } from "./agent-session-hooks.js"
 
 export { useSessionRow, useSessionTask } from "./agent-session-hooks.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
+import { RequestPageLink } from "./request-page-link.js";
 import { QuestionCard } from "./waiting-questions.js";
 
 const selectUser = (snapshot: HostSnapshot) => snapshot.user;
@@ -97,7 +93,7 @@ export function AgentSessionPane(props: {
                   style={styles.question}
                   testID={`session-question:${request.id}`}
                 >
-                  <RequestPageButton hostClient={hostClient} onOpen={showTab} request={request} />
+                  <RequestPageLink hostClient={hostClient} onOpen={showTab} request={request} />
                   <QuestionCard
                     canRespond={canRespond}
                     deploymentId={props.deploymentId}
@@ -324,40 +320,6 @@ function PlaceLink(props: {
         </AppText>
       </View>
       <Symbol name="chevron.right" size={13} tint={color.textSoft} />
-    </Pressable>
-  );
-}
-
-/**
- * The page a question is about, one tap away, so the person signs in there, then answers:
- * the Request's own tab, or its task's only page. Nothing when that is not one page.
- */
-function RequestPageButton(props: {
-  readonly hostClient: HostClient;
-  readonly onOpen: (tabId: TabId) => void;
-  readonly request: Parameters<typeof useRequestPageTab>[1] & {};
-}): ReactNode {
-  const page = useRequestPageTab(props.hostClient, props.request);
-  return page === null ? null : (
-    <OpenPageButton label={workWords("ask.openPage")} onPress={() => props.onOpen(page.tabId)} />
-  );
-}
-
-/** The page a question is about, one tap away: the person signs in there, then answers. */
-function OpenPageButton(props: {
-  readonly label: string;
-  readonly onPress: () => void;
-}): ReactNode {
-  return (
-    <Pressable
-      accessibilityLabel={props.label}
-      accessibilityRole="link"
-      onPress={props.onPress}
-      style={styles.link}
-    >
-      <AppText role="secondaryMedium" tone="ember">
-        {props.label}
-      </AppText>
     </Pressable>
   );
 }
