@@ -67,7 +67,8 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
     const pending: [Buffer, boolean][] = [];
     const frame = (data: Buffer, binary: boolean) => {
       if (this.readyState === 0) pending.push([data, binary]);
-      else if (this.readyState === 1) this.emit("message", data, binary);
+      // As a WebSocket does, frames that arrive while its close is under way are still received.
+      else if (this.readyState === 1 || this.readyState === 2) this.emit("message", data, binary);
     };
     void bridge
       .attach(this.channel, ticket, {

@@ -23,6 +23,7 @@ import {
   decodeBrowserFrameEnvelope,
 } from "../packages/protocol/src/browser.js";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
@@ -1176,6 +1177,119 @@ it("writes closed only for the runtime's ended, from a running runtime under the
     // Each answer before the runtime's own left the row closing, and the page in the guest.
     expect(rows).toEqual(Array.from({ length: 5 }, () => "closing open"));
     expect(page.page.isClosed()).toBe(true);
+  } finally {
+    await j.close();
+  }
+});
+
+it("keeps a pooled row closing when the runtime said closing and its channel closed cleanly before it said closed", async () => {
+  const j = await journey("closing-status");
+  try {
+    let reachable = false;
+    let asked = 0;
+    const home = await j.startHome({
+      ...loopbackPoolChannel(j.guest),
+      endSession: (ticket) => {
+        asked++;
+        return reachable
+          ? j.guest.endPoolSession(ticket)
+          : Promise.reject(new Error("The guest cannot be reached."));
+      },
+    });
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("closing-status"));
+    await j.draft();
+    // The runtime's closing status reaches the Home; then its channel closes with 1000, before
+    // the runtime said closed.
+    const emit = EventEmitter.prototype.emit;
+    let dropping: TestRuntimeConnection | undefined;
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      if (event === "message" && dropping) return true;
+      const sent = emit.call(this, event, ...args);
+      const [data, binary] = args as [Buffer, boolean];
+      if (event === "message" && !binary && /"state":"closing"/u.test(data.toString()))
+        dropping = this;
+      return sent;
+    });
+    try {
+      // The runtime ends the session on its own (here, an end request the Home did not send).
+      const fence = j.guest.poolState()!.fence!;
+      const ending = j.guest.endPoolSession(
+        j.signer.issue({
+          access: "read-write",
+          creationOrigin: "person",
+          actor: "person",
+          identity: { kind: "fresh" },
+          pool: { ...fence, end: true },
+          runtimeId: "pool-runtime",
+          sessionId,
+          subject: j.task.userId,
+        }),
+      );
+      await until(() => expect(dropping).toBeDefined());
+      // The Home took the closing status; then the channel closes cleanly.
+      await until(async () => expect((await j.row(sessionId))?.state).toBe("closing"));
+      dropping!.lose(1000, "closed");
+      await ending;
+      // Closing is not closed: nothing the channel did is the runtime's word that it ended; the
+      // end step asks the runtime, which cannot be reached yet.
+      await until(() => expect(asked).toBeGreaterThan(0));
+    } finally {
+      frames.mockRestore();
+    }
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    reachable = true;
+    await until(async () => expect((await j.row(sessionId))?.state).toBe("closed"));
+  } finally {
+    await j.close();
+  }
+});
+
+it("never reads a pooled session closed when its channel closes cleanly before it is ready", async () => {
+  const j = await journey("ready-1000");
+  try {
+    const home = await j.startHome();
+    // The first channel is refused by the runtime and closed with 1000, as a clean close.
+    const prototype = TestRuntimeConnection.prototype as unknown as {
+      end(code: number, reason: string): void;
+    };
+    const end = prototype.end;
+    let cleanly = 0;
+    const clean = vi.spyOn(prototype, "end").mockImplementationOnce(function (
+      this: unknown,
+      _code: number,
+      reason: string,
+    ) {
+      cleanly++;
+      end.call(this, 1000, reason);
+    });
+    j.withholdNextTicket();
+    let sessionId: string | undefined;
+    try {
+      await home.service
+        .start({
+          ownerId: j.task.userId,
+          fresh: true,
+          placement: { kind: "runner", runnerId: j.task.runnerId },
+        })
+        .catch(() => undefined);
+      sessionId = (
+        await j.database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", j.task.runnerId)
+          .orderBy("createdAt", "desc")
+          .executeTakeFirst()
+      )?.id;
+    } finally {
+      clean.mockRestore();
+    }
+    expect(cleanly).toBe(1);
+    expect(sessionId).toBeDefined();
+    expect((await j.row(sessionId!))?.state).not.toBe("closed");
   } finally {
     await j.close();
   }

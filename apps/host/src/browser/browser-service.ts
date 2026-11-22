@@ -1552,6 +1552,7 @@ export class BrowserService {
       retiring: () => pool.gate.retiringOrAdopting,
       // An adoption's pass has no end of its own; a restart's or a removal's hold still refuses.
       refusesWrite: (reservation) => pool.gate.refusesWrite(reservation),
+      closing: () => pool.stopped(),
     };
   }
 
@@ -7962,6 +7963,8 @@ interface PoolBrokerAdmission {
   retiring(): boolean;
   /** At the write: whether these bytes may not leave for the guest now (`refusesWrite`). */
   refusesWrite(reservation: BrowserPoolReservation | undefined): boolean;
+  /** The channel ended a session the runtime was closing: its end step asks for the rest. */
+  closing(): void;
 }
 
 interface HostedBrowserBrokerOptions {
@@ -8024,7 +8027,10 @@ export class HostedBrowserBroker {
   readonly #poolAdmission: PoolBrokerAdmission | undefined;
   readonly #onChannelLost: ((documents: ReadonlyMap<string, string>) => void) | undefined;
   /** The runtime announced this session's end: its close is not a lost channel. */
+  /** The runtime said `closed`: its own word that the session and its pages ended. */
   #runtimeEnded = false;
+  /** The runtime said `closing`: it is ending the session, which it has not said it finished. */
+  #runtimeClosing = false;
   readonly #adoptedFromPool: boolean;
   /** A pooled broker's end, for sends waiting on admission; an ordinary broker has none. */
   readonly #poolEnded: AbortController | undefined;
@@ -9208,7 +9214,16 @@ export class HostedBrowserBroker {
           !retired &&
           ready &&
           this.#poolAdmission !== undefined &&
-          !this.#runtimeEnded;
+          !this.#runtimeEnded &&
+          !this.#runtimeClosing;
+        // A pooled session says closed only on the runtime's `closed` (or its end request's
+        // answer): never on the channel's own close, whatever its code, before or after ready.
+        const pooledOutcome = (): "closed" | "failed" | "pooled" =>
+          this.#runtimeEnded
+            ? "closed"
+            : retired || channelLost || this.#stopping || this.#runtimeClosing
+              ? "pooled"
+              : "failed";
         if (channelLost) {
           const documents = new Map(
             [...this.#tabs.rows].map(([surfaceId, row]) => [surfaceId, row.documentId]),
@@ -9216,23 +9231,29 @@ export class HostedBrowserBroker {
           queueMicrotask(() => this.#onChannelLost?.(documents));
         }
         void this.#runtimeFrameTail
-          .then(() =>
-            this.#finish(
-              retired || channelLost
-                ? "pooled"
-                : this.#stopping
-                  ? // A pooled Stop is closed only by the runtime's own word that it ended the
-                    // session (its closed status); a close of the channel is not that.
-                    this.#poolAdmission && !this.#runtimeEnded
-                    ? "pooled"
-                    : "closed"
-                  : code === 1000
-                    ? "closed"
-                    : "failed",
+          .then(async () => {
+            const outcome = this.#poolAdmission
+              ? pooledOutcome()
+              : this.#stopping || code === 1000
+                ? "closed"
+                : "failed";
+            await this.#finish(
+              outcome,
               this.#stopping ? 1000 : 1011,
               this.#stopping ? "Browser session closed" : "Browser Runtime disconnected",
-            ),
-          )
+            );
+            // The runtime was ending the session and the channel went first: its row is closing,
+            // and, this broker gone, the end step asks the runtime for the rest.
+            if (
+              this.#poolAdmission &&
+              outcome === "pooled" &&
+              this.#runtimeClosing &&
+              !this.#stopping &&
+              !channelLost &&
+              !retired
+            )
+              this.#poolAdmission.closing();
+          })
           .catch((error: unknown) => {
             console.error("browser.session.finish.failed", this.#sessionId, error);
           });
@@ -9581,7 +9602,9 @@ export class HostedBrowserBroker {
         this.#snapshot = { ...this.#snapshot, dialog: message.dialog };
     } else if (message.type === "browser.status") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
-      if (message.state === "closing" || message.state === "closed") this.#runtimeEnded = true;
+      // Only `closed` ends a pooled session's row; `closing` is not that (P16).
+      if (message.state === "closing") this.#runtimeClosing = true;
+      if (message.state === "closed") this.#runtimeEnded = true;
       if (message.state === "closing") {
         this.#runtimeReady = false;
         this.#latestFrames.clear();
