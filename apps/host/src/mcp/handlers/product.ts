@@ -75,7 +75,7 @@ import {
   excludedBackgroundAccounts,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore, RequestOriginInput } from "@opensteer/database";
-import { MANAGED_MEMORY_WAKE_SKIPPED, TriggerProgramEventSchema } from "@opensteer/triggers";
+import { MANAGED_MEMORY_WAKE_SKIPPED, TriggerScriptEventSchema } from "@opensteer/triggers";
 import type { CommandService } from "@opensteer/orchestration";
 import { computerAppIdentityKey } from "@opensteer/protocol";
 
@@ -404,7 +404,7 @@ export class ProductToolHandlers {
       .select(["triggers.id as triggerId", "triggers.name", "triggerOccurrences.event"])
       .where("triggerOccurrences.id", "=", caller.program.occurrenceId)
       .executeTakeFirstOrThrow();
-    const parsed = TriggerProgramEventSchema.safeParse(row.event);
+    const parsed = TriggerScriptEventSchema.safeParse(row.event);
     return {
       kind: "trigger",
       displayName: row.name,

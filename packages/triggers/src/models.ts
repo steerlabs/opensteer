@@ -17,7 +17,7 @@ import { AutomationScriptSchema, AutomationScriptViewSchema } from "./script.js"
 
 export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
-export const TRIGGER_PROGRAM_UPDATE_REASON = "Needs an update: ask your agent";
+export const TRIGGER_SCRIPT_UPDATE_REASON = "Needs an update: ask your agent";
 
 export const TriggerScheduleSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -104,7 +104,7 @@ export const TriggerRevisionViewSchema = z.object({
 });
 export type TriggerRevision = z.infer<typeof TriggerRevisionSchema>;
 
-export const TriggerProgramEventSchema = z.strictObject({
+export const TriggerScriptEventSchema = z.strictObject({
   id: TriggerOccurrenceIdSchema,
   payload: z.unknown(),
   receivedAt: IsoDateTimeSchema,
@@ -131,17 +131,17 @@ export const TriggerProgramEventSchema = z.strictObject({
     revisionId: TriggerRevisionIdSchema,
   }),
 });
-const TriggerProgramEventViewSchema = z.object({
-  ...TriggerProgramEventSchema.shape,
+const TriggerScriptEventViewSchema = z.object({
+  ...TriggerScriptEventSchema.shape,
   source: z.discriminatedUnion("kind", [
-    z.object(TriggerProgramEventSchema.shape.source.options[0].shape),
-    z.object(TriggerProgramEventSchema.shape.source.options[1].shape),
-    z.object(TriggerProgramEventSchema.shape.source.options[2].shape),
-    z.object(TriggerProgramEventSchema.shape.source.options[3].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[0].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[1].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[2].shape),
+    z.object(TriggerScriptEventSchema.shape.source.options[3].shape),
   ]),
-  trigger: z.object(TriggerProgramEventSchema.shape.trigger.shape),
+  trigger: z.object(TriggerScriptEventSchema.shape.trigger.shape),
 });
-export type TriggerProgramEvent = z.infer<typeof TriggerProgramEventSchema>;
+export type TriggerScriptEvent = z.infer<typeof TriggerScriptEventSchema>;
 
 export const TriggerWatchDesiredSchema = z.enum(["active", "stopped"]);
 export const TriggerWatchObservedSchema = z.enum([
@@ -208,7 +208,7 @@ export const TriggerOccurrenceSchema = z.strictObject({
   createdAt: IsoDateTimeSchema,
   environmentId: EnvironmentIdSchema,
   error: z.unknown().nullable(),
-  event: TriggerProgramEventSchema,
+  event: TriggerScriptEventSchema,
   exitCode: z.number().int().nullable(),
   id: TriggerOccurrenceIdSchema,
   result: z.unknown().nullable(),
@@ -222,7 +222,7 @@ export const TriggerOccurrenceSchema = z.strictObject({
 });
 export const TriggerOccurrenceViewSchema = z.object({
   ...TriggerOccurrenceSchema.shape,
-  event: TriggerProgramEventViewSchema,
+  event: TriggerScriptEventViewSchema,
 });
 export type TriggerOccurrence = z.infer<typeof TriggerOccurrenceSchema>;
 

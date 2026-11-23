@@ -9,7 +9,7 @@ import {
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
-  TRIGGER_PROGRAM_UPDATE_REASON,
+  TRIGGER_SCRIPT_UPDATE_REASON,
   type AutomationScript,
   type TriggerSource,
 } from "@opensteer/triggers";
@@ -229,7 +229,7 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
           </fieldset>
           {editing.revision.script === null ? (
             <div className="field">
-              <p className="notice">{TRIGGER_PROGRAM_UPDATE_REASON}</p>
+              <p className="notice">{TRIGGER_SCRIPT_UPDATE_REASON}</p>
               {editing.revision.legacySource ? (
                 <>
                   <span className="field__label">Previous code (read-only)</span>

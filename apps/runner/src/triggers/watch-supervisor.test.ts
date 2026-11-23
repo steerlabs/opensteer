@@ -608,6 +608,28 @@ describe("WatchSupervisor", () => {
       await fixture.close();
     }
   });
+
+  it("sets only OPENSTEER_EVENT and not OPENSTEER_EVENT_PATH in watch environment (AB7)", async () => {
+    const fixture = await watchHarness(
+      'console.log(JSON.stringify({ event: Boolean(process.env.OPENSTEER_EVENT), legacyPath: "OPENSTEER_EVENT_PATH" in process.env })); setInterval(() => {}, 1_000);',
+    );
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      let reconcileGeneration = 2;
+      await vi.waitFor(async () => {
+        await fixture.supervisor.reconcile(fixture.command(reconcileGeneration++), fixture.sink);
+        expect(
+          fixture.messages.findLast(
+            (message) => message.type === "runner.watch-status" && message.observed === "running",
+          ),
+        ).toMatchObject({
+          stdoutTail: expect.stringContaining('{"event":true,"legacyPath":false}'),
+        });
+      });
+    } finally {
+      await fixture.close();
+    }
+  });
 });
 
 async function watchHarness(

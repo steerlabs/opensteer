@@ -69,7 +69,7 @@ import {
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
 import {
   TriggerExecutionOutputSchema,
-  TriggerProgramEventSchema,
+  TriggerScriptEventSchema,
 } from "@opensteer/triggers/models";
 import { AutomationScriptSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
@@ -318,7 +318,7 @@ export type WatchReconcileActivation = z.infer<typeof WatchReconcileActivationSc
 export const TriggerExecutionContextSchema = z.strictObject({
   anchorThreadId: ThreadIdSchema,
   browserCdp: TriggerCapabilityPlanSchema.nullable(),
-  event: TriggerProgramEventSchema,
+  event: TriggerScriptEventSchema,
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   mcp: TriggerCapabilityPlanSchema,
   occurrenceId: TriggerOccurrenceIdSchema,

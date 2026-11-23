@@ -34,7 +34,7 @@ import {
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import {
-  TriggerProgramEventSchema,
+  TriggerScriptEventSchema,
   TriggerViewSchema,
   TriggerRevisionViewSchema,
   TriggerOccurrenceViewSchema,
@@ -390,9 +390,9 @@ const AutomationOccurrenceSchema = TriggerOccurrenceViewSchema.omit({
   environmentId: true,
   event: true,
 }).extend({
-  event: z.object(TriggerProgramEventSchema.omit({ trigger: true }).shape).extend({
+  event: z.object(TriggerScriptEventSchema.omit({ trigger: true }).shape).extend({
     automation: z
-      .object(TriggerProgramEventSchema.shape.trigger.omit({ anchorThreadId: true }).shape)
+      .object(TriggerScriptEventSchema.shape.trigger.omit({ anchorThreadId: true }).shape)
       .extend({ taskId: ThreadIdSchema }),
   }),
   automationId: TriggerViewSchema.shape.id,

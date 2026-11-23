@@ -34,11 +34,11 @@ import {
   type TriggerSystemRole,
   MAX_PENDING_TRIGGER_OCCURRENCES,
   RETAINED_OUTPUT_OCCURRENCES,
-  TRIGGER_PROGRAM_UPDATE_REASON,
+  TRIGGER_SCRIPT_UPDATE_REASON,
   WATCH_CRASH_NOTICE_THRESHOLD,
   WATCH_HEALTHY_WINDOW_MS,
   TriggerOccurrenceSchema,
-  TriggerProgramEventSchema,
+  TriggerScriptEventSchema,
   TriggerRevisionSchema,
   TriggerSchema,
   TriggerSourceSchema,
@@ -54,7 +54,7 @@ import {
   type Trigger,
   type TriggerExecutionOutput,
   type TriggerOccurrence,
-  type TriggerProgramEvent,
+  type TriggerScriptEvent,
   type TriggerRevision,
   type TriggerSource,
   type TriggerSummary,
@@ -663,7 +663,7 @@ export class TriggerStore {
             ? AutomationScriptSchema.parse(current.script)
             : null;
       if (!nextScript) {
-        throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+        throw conflict(TRIGGER_SCRIPT_UPDATE_REASON);
       }
       const revisionId = createId("triggerRevision");
       const now = new Date();
@@ -696,7 +696,7 @@ export class TriggerStore {
       const updated = await transaction
         .updateTable("triggers")
         .set({
-          ...(input.script !== undefined && trigger.pauseReason === TRIGGER_PROGRAM_UPDATE_REASON
+          ...(input.script !== undefined && trigger.pauseReason === TRIGGER_SCRIPT_UPDATE_REASON
             ? { pauseReason: null }
             : {}),
           currentRevisionId: revisionId,
@@ -811,7 +811,7 @@ export class TriggerStore {
                 .where("id", "=", trigger.currentRevisionId)
                 .executeTakeFirstOrThrow();
         const needsUpdate = revision !== null && !revision.executable;
-        if (input.status === "active" && needsUpdate) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+        if (input.status === "active" && needsUpdate) throw conflict(TRIGGER_SCRIPT_UPDATE_REASON);
         // Repeating the current status is a no-op: a paused Trigger keeps
         // its reason and an active one keeps its failure count.
         if (trigger.status === input.status) {
@@ -1070,7 +1070,7 @@ export class TriggerStore {
         .select(["source", executableProgram.as("executable")])
         .where("id", "=", trigger.currentRevisionId)
         .executeTakeFirstOrThrow();
-      if (!revision.executable) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+      if (!revision.executable) throw conflict(TRIGGER_SCRIPT_UPDATE_REASON);
       const source = TriggerSourceSchema.parse(revision.source);
       if (source.kind !== "schedule" || source.schedule.kind !== "cron") {
         throw conflict("Only active cron schedule automations can reschedule their next run");
@@ -1215,7 +1215,7 @@ export class TriggerStore {
               exitCode: occurrence.exitCode,
               id: occurrence.id,
               sent: occurrence.frameSentAt !== null,
-              source: TriggerProgramEventSchema.parse(occurrence.event).source.kind,
+              source: TriggerScriptEventSchema.parse(occurrence.event).source.kind,
               status: occurrence.status,
             }
           : null,
@@ -1450,7 +1450,7 @@ export class TriggerStore {
         .where("id", "=", input.triggerId)
         .executeTakeFirstOrThrow(),
     ]);
-    if (!revisionRow?.script) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+    if (!revisionRow?.script) throw conflict(TRIGGER_SCRIPT_UPDATE_REASON);
     return {
       encryptedSecrets: triggerRow.encryptedSecrets ?? null,
       script: AutomationScriptSchema.parse(revisionRow.script),
@@ -3397,7 +3397,7 @@ async function enqueueOccurrence(
   transaction: Transaction<DatabaseSchema>,
   trigger: TriggerRow,
   sourceKey: string,
-  input: Pick<TriggerProgramEvent, "payload" | "source">,
+  input: Pick<TriggerScriptEvent, "payload" | "source">,
   webhookBody: Buffer | null = null,
 ): Promise<{
   readonly occurrence: TriggerOccurrence;
@@ -3409,7 +3409,7 @@ async function enqueueOccurrence(
     .select(["id", executableProgram.as("executable")])
     .where("id", "=", trigger.currentRevisionId)
     .executeTakeFirstOrThrow();
-  if (!revision.executable) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+  if (!revision.executable) throw conflict(TRIGGER_SCRIPT_UPDATE_REASON);
   const existing = await transaction
     .selectFrom("triggerOccurrences")
     .leftJoin("commands", "commands.id", "triggerOccurrences.commandId")
@@ -3441,7 +3441,7 @@ async function enqueueOccurrence(
   const occurrenceId = createId("triggerOccurrence");
   const commandId = createId("command");
   const now = new Date();
-  const event = TriggerProgramEventSchema.parse({
+  const event = TriggerScriptEventSchema.parse({
     id: occurrenceId,
     payload: input.payload,
     receivedAt: now.toISOString(),
@@ -3970,7 +3970,7 @@ function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
     kind: row.kind,
     name: row.name,
     nextFireAt: blocked ? null : (row.nextFireAt?.toISOString() ?? null),
-    pauseReason: blocked ? TRIGGER_PROGRAM_UPDATE_REASON : row.pauseReason,
+    pauseReason: blocked ? TRIGGER_SCRIPT_UPDATE_REASON : row.pauseReason,
     waitingReason: blocked ? null : row.waitingReason,
     status: blocked ? "paused" : row.status,
     updatedAt: row.updatedAt.toISOString(),

@@ -681,7 +681,6 @@ export class WatchSupervisor {
     environment.OPENSTEER_AUTOMATION_ID = active.desired.triggerId;
     environment.OPENSTEER_CLI = this.#cliScriptPath;
     environment.OPENSTEER_EVENT = eventFile;
-    environment.OPENSTEER_EVENT_PATH = eventFile;
     environment.OPENSTEER_NODE = this.#nodeExecutable;
     environment.OPENSTEER_TRIGGER_ID = active.desired.triggerId;
     environment.OPENSTEER_WATCH = "1";

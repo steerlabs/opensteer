@@ -120,7 +120,7 @@ import type {
 import type {
   AutomationPausedBy,
   AutomationScript,
-  TriggerProgramEvent,
+  TriggerScriptEvent,
   TriggerSource,
 } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
@@ -1219,7 +1219,7 @@ export interface TriggerOccurrenceTable {
   commandId: CommandId;
   environmentId: EnvironmentId;
   sourceKey: string;
-  event: JsonColumn<TriggerProgramEvent>;
+  event: JsonColumn<TriggerScriptEvent>;
   status: "pending" | "running" | "succeeded" | "failed" | "canceled" | "unknown";
   frameSentAt: Generated<Date | null>;
   runnerReportedAt: Generated<Date | null>;

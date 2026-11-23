@@ -40,7 +40,7 @@ import {
 } from "@opensteer/orchestration";
 import { hostApi, type HostApiServerContext, type RunnerDescriptor } from "@opensteer/protocol";
 import {
-  TRIGGER_PROGRAM_UPDATE_REASON,
+  TRIGGER_SCRIPT_UPDATE_REASON,
   TriggerControlInputSchema,
   TriggerRevisionSchema,
   TriggerSummarySchema,
@@ -1946,7 +1946,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     );
     if (!command) throw new Error("Expected the occurrence's command");
     await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toThrow(
-      TRIGGER_PROGRAM_UPDATE_REASON,
+      TRIGGER_SCRIPT_UPDATE_REASON,
     );
   });
 
@@ -1971,7 +1971,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const blocked = {
       status: "paused",
       nextFireAt: null,
-      pauseReason: TRIGGER_PROGRAM_UPDATE_REASON,
+      pauseReason: TRIGGER_SCRIPT_UPDATE_REASON,
     };
     const detail = await personDetail(f, triggerId);
     expect(detail).toMatchObject({
@@ -1991,7 +1991,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       { operation: "set_next_fire", nextFireAt: "2040-01-02T10:30:00.000Z" },
     ]) {
       await expect(manage(f, { ...input, triggerId }, null)).rejects.toThrow(
-        TRIGGER_PROGRAM_UPDATE_REASON,
+        TRIGGER_SCRIPT_UPDATE_REASON,
       );
     }
     expect(await store.listPendingCommands()).toEqual(pending);
@@ -2060,7 +2060,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     expect((await reconcile()).activations).toEqual([]);
     expect(await personDetail(f, triggerId)).toMatchObject({
       activation: { desired: "stopped", observed: "starting", leaseExpiresAt: null },
-      trigger: { status: "paused", pauseReason: TRIGGER_PROGRAM_UPDATE_REASON },
+      trigger: { status: "paused", pauseReason: TRIGGER_SCRIPT_UPDATE_REASON },
     });
     await triggerStore.applyWatchStatus({
       activationId: activation.id,
@@ -2124,7 +2124,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       headers: {},
       payload: null,
     };
-    await expect(triggers.acceptWebhook(delivery)).rejects.toThrow(TRIGGER_PROGRAM_UPDATE_REASON);
+    await expect(triggers.acceptWebhook(delivery)).rejects.toThrow(TRIGGER_SCRIPT_UPDATE_REASON);
     await manage(f, { operation: "set_status", triggerId, status: "paused" }, null);
     const repaired = createdSchema.parse(
       await manage(

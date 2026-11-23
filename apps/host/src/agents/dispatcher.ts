@@ -70,7 +70,7 @@ import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { automationScriptCompatibilityReason } from "../triggers/automation-script-compatibility.js";
 import type { AutomationSecrets } from "../triggers/automation-secrets.js";
-import { TRIGGER_PROGRAM_UPDATE_REASON } from "@opensteer/triggers";
+import { TRIGGER_SCRIPT_UPDATE_REASON } from "@opensteer/triggers";
 import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
@@ -885,7 +885,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     };
     const initial = await heldIfChatWaits(() => this.#triggers.loadDispatchContext(command.id));
     if (!initial.script) {
-      throw new CommandDispatchError(TRIGGER_PROGRAM_UPDATE_REASON, "failed");
+      throw new CommandDispatchError(TRIGGER_SCRIPT_UPDATE_REASON, "failed");
     }
     const incompatibility = await automationScriptCompatibilityReason(
       this.#store,
@@ -920,7 +920,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       const script = context.script;
       if (!script) {
         await notAdmitted?.();
-        throw new CommandDispatchError(TRIGGER_PROGRAM_UPDATE_REASON, "failed");
+        throw new CommandDispatchError(TRIGGER_SCRIPT_UPDATE_REASON, "failed");
       }
       const { capabilityToken, hasBrowser, secrets } = await (async () => {
         try {

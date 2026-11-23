@@ -77,9 +77,13 @@ describe("Automation skill and script guide", () => {
       "StoredTriggerProgramSchema",
       "TriggerProgramSchema",
       "isExecutableTriggerProgram",
+      "TriggerProgramEventSchema",
+      "TRIGGER_PROGRAM_UPDATE_REASON",
     ]) {
       expect(removed in triggersExports, removed).toBe(false);
     }
+    expect("TriggerScriptEventSchema" in triggersExports).toBe(true);
+    expect("TRIGGER_SCRIPT_UPDATE_REASON" in triggersExports).toBe(true);
     expect("consecutiveFailures" in TriggerSchema.shape).toBe(false);
   });
 });

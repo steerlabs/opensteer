@@ -17,7 +17,7 @@ import {
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
-  TRIGGER_PROGRAM_UPDATE_REASON,
+  TRIGGER_SCRIPT_UPDATE_REASON,
   triggerOccurrenceErrorMessage,
   type TriggerOccurrence,
   type TriggerSummary,
@@ -876,7 +876,7 @@ function Advanced({
               ? revision.script.interpreter
                 ? `${revision.script.interpreter.join(" ")} script`
                 : "Node.js script"
-              : TRIGGER_PROGRAM_UPDATE_REASON}
+              : TRIGGER_SCRIPT_UPDATE_REASON}
             , version {revision.ordinal}
           </span>
           {archived || detail.trigger.systemRole != null ? null : (
