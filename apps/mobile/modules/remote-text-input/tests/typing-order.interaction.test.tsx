@@ -285,6 +285,61 @@ async function open(abilities?: EditingTargetAbilities) {
   };
 }
 
+/**
+ * Every reading of what the page took, composition by composition: up to two of its marked texts
+ * for each change of context while it was open (the phone's reducer's, and the native field's
+ * when its configure ended it), then its commit's form. One reading that accounts for all of it,
+ * and nothing more, keeps the promise.
+ */
+function matchesCommittedLineages(
+  lineages: readonly {
+    readonly marked: readonly string[];
+    readonly start: number;
+    readonly end?: number;
+    readonly committed?: { readonly index: number; readonly text: string };
+  }[],
+  ended: readonly string[],
+  turnClock: ReadonlyMap<number, number>,
+  clock: number,
+  put: string,
+): boolean {
+  const read = (index: number, rest: string): boolean => {
+    if (index === lineages.length) return rest === "";
+    const lineage = lineages[index]!;
+    const commit = lineage.committed;
+    const ending = lineage.end === undefined ? undefined : turnClock.get(lineage.end);
+    const budget = 2 * ((ending ?? clock) - lineage.start);
+    const take = (from: number, used: number, last: string | null, left: string): boolean => {
+      if (commit) {
+        const forms =
+          last !== null
+            ? [committedRemainder(last, commit.text)]
+            : [
+                commit.text,
+                ...lineage.marked
+                  .filter((text) => ended.includes(text))
+                  .map((text) => committedRemainder(text, commit.text)),
+              ];
+        for (const form of new Set(forms))
+          if (left.startsWith(form) && read(index + 1, left.slice(form.length))) return true;
+      } else if (read(index + 1, left)) return true;
+      if (used < budget)
+        for (let at = from; at < lineage.marked.length; at++) {
+          const text = lineage.marked[at]!;
+          if (
+            text &&
+            left.startsWith(text) &&
+            take(at + 1, used + 1, text, left.slice(text.length))
+          )
+            return true;
+        }
+      return false;
+    };
+    return take(0, 0, null, rest);
+  };
+  return read(0, put);
+}
+
 describe("typing into a remote field", () => {
   it("delivers a burst of ten with every answer late, as typed", async () => {
     const { remote, native, keyboard, answer, answerAll } = await open();
@@ -1380,10 +1435,17 @@ describe("a person's caret moves and selections in the native field", () => {
         p.selection.end === before.selection.end
       )
         kinds[index] = "other";
-      // A text typed over a selection of the same text leaves the person's text as it was: it
-      // changed nothing of theirs, and nothing need reach the page; sending it would put the text
-      // in twice where the page's caret holds no selection (regime B, seed 4076).
-      if (kinds[index] === "typed" && !before.marked && !p.marked && p.text === before.text)
+      // A text typed over a non-empty selection of the exact same text leaves the person's text
+      // as it was: it changed nothing of theirs, and nothing need reach the page; sending it would
+      // put the text in twice where the page's caret holds no selection (regime B, seed 4076).
+      if (
+        kinds[index] === "typed" &&
+        !before.marked &&
+        !p.marked &&
+        p.text === before.text &&
+        before.selection.start < before.selection.end &&
+        before.text.slice(before.selection.start, before.selection.end) === texts[index]
+      )
         kinds[index] = "other";
       if (before.marked || p.marked) composing.add(index);
       if (!before.marked && p.marked) {
@@ -1790,18 +1852,27 @@ describe("a person's caret moves and selections in the native field", () => {
             return [];
           const its = sent.filter((entry) => entry.owners.includes(action));
           // The moves one report stands for that leave the person's caret where it was before them
-          // move nothing: none is sent (seed 1333, a swipe and a caret move back).
+          // move nothing: none is sent (seed 1333, a swipe and a caret move back). Only a
+          // contiguous run of coalesced selection moves with no interleaved action qualifies.
           const group = reported.get(action);
-          const first = group && carets.get(Math.min(...group))?.before;
-          const end = group && carets.get(Math.max(...group))?.after;
+          const min = group && group.length > 0 ? Math.min(...group) : undefined;
+          const max = group && group.length > 0 ? Math.max(...group) : undefined;
+          const contiguous =
+            min !== undefined &&
+            max !== undefined &&
+            Array.from({ length: max - min + 1 }, (_, i) => min + i).every((i) =>
+              group!.includes(i),
+            );
+          const first = min !== undefined ? carets.get(min)?.before : undefined;
+          const end = max !== undefined ? carets.get(max)?.after : undefined;
           const still =
             each === "move" &&
-            group !== undefined &&
+            contiguous &&
             first !== undefined &&
             end !== undefined &&
             first.start === end.start &&
             first.end === end.end &&
-            !sent.some((entry) => group.some((index) => entry.owners.includes(index)));
+            !sent.some((entry) => group!.some((index) => entry.owners.includes(index)));
           if (its.length === 0 && still) return [];
           if (its.length === 0) return [`action ${action + 1} (${each}) never reached the page`];
           const lostHere = its.filter(
@@ -1883,45 +1954,7 @@ describe("a person's caret moves and selections in the native field", () => {
           if (entry.owners.length === 0 || entry.owners.some((owner) => composing.has(owner)))
             if (!entry.owners.some((owner) => kinds[owner] === "typed")) put += entry.put;
         }
-        // Every reading of what the page took, composition by composition: up to two of its
-        // marked texts for each change of context while it was open (the phone's reducer's, and
-        // the native field's when its configure ended it), then its commit's form. One reading
-        // that accounts for all of it, and nothing more, keeps the promise.
-        const read = (index: number, rest: string): boolean => {
-          if (index === lineages.length) return rest === "";
-          const lineage = lineages[index]!;
-          const commit = lineage.committed;
-          const ending = lineage.end === undefined ? undefined : turnClock.get(lineage.end);
-          const budget = 2 * ((ending ?? clock) - lineage.start);
-          const take = (from: number, used: number, last: string | null, left: string): boolean => {
-            if (commit) {
-              const forms =
-                last !== null
-                  ? [committedRemainder(last, commit.text)]
-                  : [
-                      commit.text,
-                      ...lineage.marked
-                        .filter((text) => ended.includes(text))
-                        .map((text) => committedRemainder(text, commit.text)),
-                    ];
-              for (const form of new Set(forms))
-                if (left.startsWith(form) && read(index + 1, left.slice(form.length))) return true;
-            } else if (read(index + 1, left)) return true;
-            if (used < budget)
-              for (let at = from; at < lineage.marked.length; at++) {
-                const text = lineage.marked[at]!;
-                if (
-                  text &&
-                  left.startsWith(text) &&
-                  take(at, used + 1, text, left.slice(text.length))
-                )
-                  return true;
-              }
-            return false;
-          };
-          return take(0, 0, null, rest);
-        };
-        if (!read(0, put))
+        if (!matchesCommittedLineages(lineages, ended, turnClock, clock, put))
           promise = `the page took ${said(put)} of compositions; no reading of what the person committed (${lineages.flatMap((lineage) => (lineage.committed ? [said(lineage.committed.text)] : [])).join(", ")}) accounts for it`;
       }
       // Relative to the caret: an insertion, a paste, a move or deletion command. A refused
@@ -2520,6 +2553,17 @@ describe("a person's caret moves and selections in the native field", () => {
       if (result.changes > 0) left += 1;
     }
     expect(left).toBeGreaterThan(0);
+  });
+
+  // PH7 (Finding 6): the commit matcher advances past each consumed marked index so a doubled
+  // commit ("にに") across a context change fails instead of reusing the same marked entry twice.
+  it("rejects a doubled composition commit across a context change", () => {
+    const lineages = [
+      { marked: ["に"], start: 0, end: 1, committed: { index: 1, text: "に" } },
+    ] as const;
+    const turnClock = new Map([[1, 1]]);
+    expect(matchesCommittedLineages(lineages, [], turnClock, 1, "に")).toBe(true);
+    expect(matchesCommittedLineages(lineages, [], turnClock, 1, "にに")).toBe(false);
   });
 
   // Regimes B and C over OPENSTEER_TYPING_REGIME_RUNS sequences each (1,000 by default, every

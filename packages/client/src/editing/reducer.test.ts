@@ -655,8 +655,8 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       contextId: context.contextId,
     });
     expect(operations.slice(-2)).toEqual([
-      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
-      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
+      { kind: "command", command: "moveBackward", contextId: context.contextId },
     ]);
   });
   it.each([

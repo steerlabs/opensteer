@@ -451,11 +451,15 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     if (key && typeof key !== "string" && inputType === "insertText" && data === key.key)
       printableKey(key);
   };
-  const move = (from: number, to: number, text: string) => {
+  const move = (from: number, to: number, text: string, follows = false) => {
     const distance = countGraphemes(text.slice(Math.min(from, to), Math.max(from, to)));
     for (let count = 0; count < distance; count++)
-      // CZ7: computed from the edit before it: it goes with that edit.
-      emit({ kind: "command", command: to < from ? "moveBackward" : "moveForward", follows: true });
+      // CZ7: only a compensating move computed from a preceding edit carries follows: true.
+      emit({
+        kind: "command",
+        command: to < from ? "moveBackward" : "moveForward",
+        ...(follows ? { follows: true as const } : {}),
+      });
   };
   const publishComposition = (transaction: Composition, proxy: EditingProxyState): Composition => {
     if (!transaction.contextId || !state.abilities.composition) return transaction;
@@ -633,7 +637,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           if (transaction.sent && restated) {
             const appliedCaret = transaction.start + restated.length;
             if (proxy.selectionStart === proxy.selectionEnd) {
-              move(appliedCaret, proxy.selectionEnd, proxy.value);
+              move(appliedCaret, proxy.selectionEnd, proxy.value, true);
               if (!state.abilities.commands && appliedCaret !== proxy.selectionEnd)
                 state.resetPending = true;
             } else remoteCaret = appliedCaret;
@@ -653,7 +657,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
             };
           const appliedCaret = final.start + final.text.length;
           if (proxy.selectionStart === proxy.selectionEnd) {
-            move(appliedCaret, proxy.selectionEnd, value);
+            move(appliedCaret, proxy.selectionEnd, value, true);
             if (!state.abilities.commands && appliedCaret !== proxy.selectionEnd)
               state.resetPending = true;
           } else remoteCaret = appliedCaret;
@@ -964,7 +968,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           }
         }
         const text = base.value.slice(0, typed.start) + base.value.slice(typed.end);
-        if (far !== typed.start) move(far, typed.start, text);
+        if (far !== typed.start) move(far, typed.start, text, typed.start < typed.end);
         if (!emit({ kind: "edit", edit: { contextId, text: typed.text, before: "", after: "" } })) {
           reset();
           break;
@@ -984,7 +988,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           }
           const appliedCaret = caret - edit.before.length + edit.text.length;
           if (event.proxy.selectionStart === event.proxy.selectionEnd) {
-            move(appliedCaret, event.proxy.selectionEnd, event.proxy.value);
+            move(appliedCaret, event.proxy.selectionEnd, event.proxy.value, true);
             if (!state.abilities.commands && appliedCaret !== event.proxy.selectionEnd)
               state.resetPending = true;
           } else remoteCaret = appliedCaret;
@@ -1087,7 +1091,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         const far = deletion ? state.caret - deletion.before.length + deletion.text.length : 0;
         const placed = deletion !== null && (far === start || state.abilities.commands);
         if (deletion && placed && emit({ kind: "edit", edit: deletion })) {
-          move(far, start, removed.value);
+          move(far, start, removed.value, true);
           selected = true;
           deletedSelection = true;
         } else {
