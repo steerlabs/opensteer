@@ -817,7 +817,14 @@ async function schedule(
    */
   const opened = new Map<
     string,
-    { stopAsked: boolean; stopped: boolean; served: boolean; stoppedAt?: number }
+    {
+      stopAsked: boolean;
+      stopped: boolean;
+      served: boolean;
+      stoppedAt?: number;
+      /** The steps after which an open answered with it. */
+      servedAfter?: number[];
+    }
   >();
   /** The faults this schedule has injected so far. */
   const injected = new Set<Action>();
@@ -885,9 +892,10 @@ async function schedule(
   };
   /** `served`: its open answered, so it had a page (one whose open never answered may not). */
   const track = (sessionId: string, served: boolean) => {
-    const entry = opened.get(sessionId);
-    if (entry) entry.served ||= served;
-    else opened.set(sessionId, { stopAsked: false, stopped: false, served });
+    const entry = opened.get(sessionId) ?? { stopAsked: false, stopped: false, served: false };
+    entry.served ||= served;
+    if (served) entry.servedAfter = [...(entry.servedAfter ?? []), log.length];
+    opened.set(sessionId, entry);
   };
   const open = async (idempotencyKey: string) => {
     const opening = await w
@@ -1139,7 +1147,26 @@ async function schedule(
         .select("surfaceId")
         .where("sessionId", "=", BrowserSessionIdSchema.parse(sessionId))
         .execute();
-      if (!notes.length) say(`session ${sessionId} lost its page with no note`);
+      if (!notes.length) {
+        // What the trace does not hold: when it served, its binding, and its tabs (open/all).
+        const binding = await w.database
+          .selectFrom("browserPoolSessions")
+          .select(["slotId", "term"])
+          .where("sessionId", "=", BrowserSessionIdSchema.parse(sessionId))
+          .executeTakeFirst();
+        const tabs = await w.database
+          .selectFrom("personalTabs")
+          .select("closedAt")
+          .where(sql<string>`page_binding->>'sessionId'`, "=", sessionId)
+          .execute();
+        say(
+          `session ${sessionId} lost its page with no note (served after steps ${(
+            entry.servedAfter ?? []
+          ).join("/")}, bound ${
+            binding ? `${binding.slotId}#${binding.term}` : "nowhere"
+          }, tabs ${tabs.filter(({ closedAt }) => closedAt === null).length}/${tabs.length})`,
+        );
+      }
     }
   }
   // Nothing retries without a delay (no more than 100 failures in any second).
