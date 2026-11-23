@@ -35,7 +35,7 @@ import {
   lockThreadCaller,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
-import "./store-primitives.js";
+import { lockThreadRow } from "./store-primitives.js";
 import { runHasActiveGrant } from "./run-grants.js";
 type Database = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 /**
@@ -178,6 +178,9 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       };
     }
     const { node, run, bindingGeneration } = await assertNodeStop(tx, input);
+    // Publishing the stopping node writes the task's transcript, so the task's row is held now,
+    // after its Run and before the command and the node, as the lock order ranks them.
+    await lockThreadRow(tx, run.threadId);
     const payload = {
       type: "node.stop",
       nodeId: node.id,
@@ -267,14 +270,9 @@ export async function failNodeStop(
       .where("node.id", "=", payload.nodeId)
       .where("runs.id", "=", command.runId)
       .executeTakeFirstOrThrow();
-    await tx
-      .updateTable("executionNodes")
-      .set({
-        stopping: false,
-      })
-      .where("id", "=", node.id)
-      .execute();
-    await publishExecutionNode(tx, node.id);
+    // In the lock order's ranks: the Run (held above), its task (the node's publication writes the
+    // task's transcript), the command, then the node.
+    await lockThreadRow(tx, node.threadId);
     await tx
       .updateTable("commands")
       .set({
@@ -288,6 +286,14 @@ export async function failNodeStop(
       })
       .where("id", "=", commandId)
       .execute();
+    await tx
+      .updateTable("executionNodes")
+      .set({
+        stopping: false,
+      })
+      .where("id", "=", node.id)
+      .execute();
+    await publishExecutionNode(tx, node.id);
     return;
   });
 }

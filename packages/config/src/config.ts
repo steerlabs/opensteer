@@ -1,4 +1,3 @@
-import { WorkHomeMarkerSchema, type WorkHomeMarker } from "@opensteer/control-plane-protocol";
 import { hostExposurePolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
@@ -226,7 +225,6 @@ const HostEnvironmentSchema = z.object({
       .optional(),
   ),
   OPENSTEER_MANAGED_HOME_GENERATION: optionalPositiveInteger,
-  OPENSTEER_MANAGED_HOME_WORK_JSON: z.string().optional(),
   OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN: optionalUrl,
   OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID: z.preprocess(
     (value) => (value === "" ? undefined : value),
@@ -337,7 +335,6 @@ export interface HostConfig {
     readonly accountOrigin: URL;
     readonly cloudComputerId: string;
     readonly generation: number;
-    readonly work?: WorkHomeMarker;
     readonly oidc: { readonly clientId: string; readonly clientSecret: string };
   };
   readonly privateKeyPath: string | undefined;
@@ -679,7 +676,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
 function parseManagedHome(parsed: {
   readonly OPENSTEER_MANAGED_HOME_ID?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_GENERATION?: number | undefined;
-  readonly OPENSTEER_MANAGED_HOME_WORK_JSON?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID?: string | undefined;
   readonly OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET?: string | undefined;
@@ -692,10 +688,7 @@ function parseManagedHome(parsed: {
     parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET,
   ];
   const configured = values.filter((value) => value !== undefined).length;
-  const work = parsed.OPENSTEER_MANAGED_HOME_WORK_JSON
-    ? WorkHomeMarkerSchema.parse(JSON.parse(parsed.OPENSTEER_MANAGED_HOME_WORK_JSON))
-    : undefined;
-  if (configured === 0 && !work) return undefined;
+  if (configured === 0) return undefined;
   if (configured !== values.length)
     throw new Error(
       "OPENSTEER_MANAGED_HOME_ID, OPENSTEER_MANAGED_HOME_GENERATION, OPENSTEER_MANAGED_HOME_ACCOUNT_ORIGIN, OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID and OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET must be configured together",
@@ -707,7 +700,6 @@ function parseManagedHome(parsed: {
     ),
     cloudComputerId: parsed.OPENSTEER_MANAGED_HOME_ID!,
     generation: parsed.OPENSTEER_MANAGED_HOME_GENERATION!,
-    ...(work ? { work } : {}),
     oidc: {
       clientId: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_ID!,
       clientSecret: parsed.OPENSTEER_MANAGED_HOME_OIDC_CLIENT_SECRET!,

@@ -68,10 +68,12 @@ describe("Cursor and whose task it is", () => {
         mode === "start"
           ? fixture.adapter.startSession(fixture.context)
           : fixture.adapter.resumeSession(fixture.reference, fixture.context);
-      await expect(open).rejects.toThrow(
-        "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
-      );
-      await expect(open).rejects.toMatchObject({ code: "forbidden" });
+      await expect(open).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          "Cursor starts with your own Cursor settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      });
       // Nothing was launched: Cursor never read the person's configuration.
       expect(await fixture.invocations()).toEqual([]);
       await fixture.adapter.close();

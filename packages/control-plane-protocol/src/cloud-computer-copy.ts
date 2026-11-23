@@ -138,7 +138,6 @@ export const cloudComputerCopy = {
   "cloud.web.manageBilling": "Manage billing on Stripe",
   "cloud.web.noBilling": "There’s no Cloud Computer subscription on this account yet.",
   "cloud.web.typeWord": "Type delete in the box to confirm.",
-  "cloud.web.managed": "Your organization manages this Cloud Computer. Ask them to change it.",
   "cloud.web.personal": "Your own Cloud Computer",
   "cloud.step.payment": "Payment confirmed",
   "cloud.step.opensteer": "Starting Opensteer",
@@ -152,7 +151,6 @@ export const cloudComputerCopy = {
   "cloud.reason.no-capacity":
     "There’s no room for a new Cloud Computer right now. Nothing was charged.",
   "cloud.reason.sales-not-open": "Cloud Computers aren’t on sale yet.",
-  "cloud.reason.work-managed": "Your organization manages this Cloud Computer.",
   "cloud.reason.checkout-expired": "This checkout expired.",
   "cloud.reason.checkout-complete": "This checkout is already paid.",
   "cloud.reason.checkout-in-progress": "You already started a checkout.",
@@ -167,7 +165,6 @@ export const cloudComputerCopy = {
   "cloud.next.already-exists": "You already have one. Manage it below.",
   "cloud.next.no-capacity": "Try again later.",
   "cloud.next.sales-not-open": "Try again later.",
-  "cloud.next.work-managed": "Ask your organization to change it.",
   "cloud.next.checkout-expired": "Start again to get a fresh checkout.",
   "cloud.next.checkout-in-progress":
     "Finish the checkout you already started. If you closed it, it expires within a day and you can start again.",

@@ -8,7 +8,6 @@ export {
 
 const channelIdPrefixes = {
   account: "cha",
-  binding: "chb",
   connection: "con",
   conversation: "chv",
   delivery: "chd",
@@ -23,7 +22,6 @@ export type ChannelIdKind = keyof typeof channelIdPrefixes;
 type Brand<T, Name extends string> = T & { readonly __brand: Name };
 
 export type ChannelAccountId = Brand<string, "ChannelAccountId">;
-export type ChannelBindingId = Brand<string, "ChannelBindingId">;
 export type ChannelConversationId = Brand<string, "ChannelConversationId">;
 export type ChannelDeliveryId = Brand<string, "ChannelDeliveryId">;
 export type ChannelIdentityId = Brand<string, "ChannelIdentityId">;
@@ -34,7 +32,6 @@ export type ChannelRuntimeId = Brand<string, "ChannelRuntimeId">;
 
 interface ChannelIdByKind {
   readonly account: ChannelAccountId;
-  readonly binding: ChannelBindingId;
   readonly connection: IntegrationConnectionId;
   readonly conversation: ChannelConversationId;
   readonly delivery: ChannelDeliveryId;
@@ -59,7 +56,6 @@ export function createChannelId<K extends ChannelIdKind>(kind: K): ChannelIdByKi
 }
 
 export const ChannelAccountIdSchema = channelIdSchema("account");
-export const ChannelBindingIdSchema = channelIdSchema("binding");
 export const ChannelConversationIdSchema = channelIdSchema("conversation");
 export const ChannelDeliveryIdSchema = channelIdSchema("delivery");
 export const ChannelIngressIdSchema = channelIdSchema("ingress");

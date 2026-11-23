@@ -1,3 +1,4 @@
+import { personTaskReader } from "@opensteer/database";
 import { TriggerOccurrenceIdSchema, OpensteerError, type UserId } from "@opensteer/core";
 import {
   hostApi,
@@ -20,7 +21,12 @@ export function createTriggerRpcHandlers(
 ): Pick<HostApiHandlers, "triggers.get" | "triggers.list"> {
   return {
     "triggers.get": async (input, context) => {
-      const detail = await triggers.get(requireUserId(context), input.triggerId, 25);
+      const detail = await triggers.get(
+        requireUserId(context),
+        input.triggerId,
+        25,
+        personTaskReader,
+      );
       return rpcSuccess(hostApi["triggers.get"].success.parse(detail));
     },
     "triggers.list": async (input, context) =>
@@ -30,6 +36,7 @@ export function createTriggerRpcHandlers(
           // answers as many as the response carries.
           triggers: await triggers.list(requireUserId(context), {
             limit: 100,
+            reader: personTaskReader,
             ...(input.systemRole
               ? {
                   systemRole: input.systemRole,

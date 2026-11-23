@@ -1,6 +1,11 @@
 import { presentClientIssue } from "@opensteer/client/feedback";
 import { useHostSelector } from "@opensteer/client/react";
-import { needsYouEntryKey, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import {
+  needsYouEntryKey,
+  phoneSentence,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useState, type ReactNode } from "react";
@@ -126,7 +131,7 @@ function NeedsYouRow(props: {
             providerId={operation.agent.providerId}
             size={20}
           />
-          <AppText style={{ flex: 1 }}>{operation.listTitle}</AppText>
+          <AppText style={{ flex: 1 }}>{phoneSentence(operation.listTitleParts)}</AppText>
         </View>
       )}
     </Pressable>

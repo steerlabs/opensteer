@@ -33,7 +33,7 @@ function thisMac(home: boolean) {
 }
 
 const grok = mockAgentIdentity.selfNamed("Grok", "https://grok.com", false);
-const claude = mockAgentIdentity.verifiedPlatform("claude", "Claude", "https://claude.ai");
+const claude = mockAgentIdentity.verifiedOrigin("claude", "Claude", "https://claude.ai");
 
 const nothing: MenuBarInput = {
   hostedHome: null,

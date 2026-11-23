@@ -1,3 +1,4 @@
+import { readAsDrawn } from "../screens/read-as-drawn.test-support.js";
 import { connectedAgentIdentity, type HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
 import type { Request } from "@opensteer/core";
@@ -47,12 +48,12 @@ describe("a connected agent's own task on the phone", () => {
     const snapshot = seeded();
     expect(sessionTaskOf(snapshot, mockAgentWorkThreads.working)).toMatchObject({
       state: "working",
-      statusLine: "Claude is working",
-      stop: { label: "Stop Claude" },
+      statusLine: "“Claude” is working",
+      stop: { label: "Stop “Claude”" },
     });
     expect(sessionTaskOf(snapshot, mockAgentWorkThreads.waiting)).toMatchObject({
       state: "waiting",
-      statusLine: "Grok needs you",
+      statusLine: "“Grok” needs you",
     });
     expect(sessionTaskOf(snapshot, mockAgentWorkThreads.stopped)).toMatchObject({
       state: "stopped",
@@ -71,7 +72,7 @@ describe("a connected agent's own task on the phone", () => {
     const snapshot = seeded();
     expect(sessionRowOf(snapshot, mockAgentWorkThreads.working)).toMatchObject({
       agent: { name: "Claude", providerId: "anthropic" },
-      line: "Claude is working",
+      line: "“Claude” is working",
       working: true,
     });
     expect(sessionRowOf(snapshot, "thr_00000000-0000-4000-8000-00000000ffff")).toBeNull();
@@ -110,7 +111,7 @@ describe("a direct operation's Request on the phone", () => {
     expect(
       needsYouOperation(snapshot, { request, threadId: mockAgentWorkThreads.waiting }),
     ).toMatchObject({
-      listTitle: "Grok: Run a script in Shopping?",
+      listTitle: "“Grok”: Run a script in Shopping?",
       agent: { name: "Grok" },
     });
     expect(
@@ -135,7 +136,7 @@ describe("a direct operation's Request on the phone", () => {
     expect(item?.view).toMatchObject({
       state: "withdrawn",
       answers: null,
-      settled: "No longer needed: you stopped Grok.",
+      settled: "No longer needed: you stopped “Grok”.",
     });
   });
 });
@@ -147,7 +148,7 @@ describe("a tab a connected agent uses, on the phone", () => {
     expect(
       placeSessionLine(snapshot, { tabId: "mock-tab-1-0", occupants: [working] }),
     ).toMatchObject({
-      line: "Claude is using this page for “Find flights to Lisbon”",
+      line: "“Claude” is using this page for “Find flights to Lisbon”",
       stop: { sessionId: expect.any(String) },
     });
     const waiting = { threadId: mockAgentWorkThreads.waiting, title: "Buy the phone case" };
@@ -157,7 +158,7 @@ describe("a tab a connected agent uses, on the phone", () => {
         sharedFromChrome: true,
         occupants: [waiting],
       })?.line,
-    ).toBe("You and Grok are using this page, for “Buy the phone case”");
+    ).toBe("You and “Grok” are using this page, for “Buy the phone case”");
     const stopped = { threadId: mockAgentWorkThreads.stopped, title: "Renew" };
     expect(placeSessionLine(snapshot, { tabId: "x", occupants: [stopped] })).toMatchObject({
       line: "Stopped by you",
@@ -177,32 +178,32 @@ describe("who the agent is, on the phone", () => {
   const who = (label: string, redirect?: string, withdrawnAt?: string) =>
     connectedAgentIdentity(named(label), redirect, withdrawnAt ?? null).who;
 
-  it("says a verified pair or platform in the Home's words, and a self-given name as such", () => {
-    expect(whoLines(who("Errand"), { consent: true })).toMatchObject({
-      heading: "Errand via AgentPay",
+  it("says a verified agent in the Home's words, and a self-given name as such", () => {
+    expect(readAsDrawn(whoLines(who("Errand"), { consent: true }))).toMatchObject({
+      heading: "AgentPay",
       verified: true,
       warning: "Only allow this if you started it yourself.",
     });
-    expect(whoLines(who("Claude"), { consent: false })).toMatchObject({
+    expect(readAsDrawn(whoLines(who("Claude"), { consent: false }))).toMatchObject({
       heading: "Claude",
       detail: "https://claude.ai",
       verified: true,
       warning: null,
     });
-    expect(whoLines(who("Grok"), { consent: true })).toMatchObject({
-      heading: "Says it is Grok",
+    expect(readAsDrawn(whoLines(who("Grok"), { consent: true }))).toMatchObject({
+      heading: "Says it is “Grok”",
       detail: "https://grok.com",
       verified: false,
     });
-    expect(whoLines(who("Claude Code"), { consent: true })).toMatchObject({
-      heading: "Says it is Claude Code",
+    expect(readAsDrawn(whoLines(who("Claude Code"), { consent: true }))).toMatchObject({
+      heading: "Says it is “Claude Code”",
       detail: "an app on this computer",
     });
   });
 
   it("guesses nothing from a domain for an older Home, and says when verification was withdrawn", () => {
-    expect(whoLines(who("Shop helper"), { consent: true })).toMatchObject({
-      heading: "Says it is Shop helper",
+    expect(readAsDrawn(whoLines(who("Shop helper"), { consent: true }))).toMatchObject({
+      heading: "Says it is “Shop helper”",
       detail: "https://shophelper.example",
       verified: false,
     });

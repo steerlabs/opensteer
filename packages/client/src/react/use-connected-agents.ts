@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { readTaskActivity } from "../host/agent-work.js";
 import type { AgentOperationView } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { connectedAgentLive, connectedAgentWorkingTasks } from "../host/connected-agent-view.js";
+import {
+  connectedAgentActivity,
+  connectedAgentLive,
+  connectedAgentWorkingTasks,
+  type ConnectedAgentActivity,
+} from "../host/connected-agent-view.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 import { connectedAgentsClient, type ConnectedAgentsSnapshot } from "../host/connected-agents.js";
@@ -17,6 +22,7 @@ import { agentWords } from "../host/connected-agents-copy.js";
 const empty: ConnectedAgentsSnapshot = {
   connections: null,
   error: null,
+  readFailed: false,
   issue: null,
   pending: null,
   pendingAction: null,
@@ -104,6 +110,21 @@ export function useChromeTabGrantCatalog(client: HostClient | null, wanted: bool
 }
 
 const selectActiveTasks = (snapshot: HostSnapshot) => snapshot.activeTasks;
+const selectThreads = (snapshot: HostSnapshot) => snapshot.threads;
+const selectTaskList = (snapshot: HostSnapshot) => snapshot.tasks;
+
+/**
+ * The tasks as the Home's live task updates hold them (`threadInDirectory` reads it): a chat's
+ * page reads from it whether its tasks run, so a Stop ends when the Run does, with no poll.
+ */
+export function useLiveTasks(
+  client: HostClient,
+): Pick<HostSnapshot, "threads" | "tasks" | "activeTasks"> {
+  const threads = useHostSelector(client, selectThreads);
+  const tasks = useHostSelector(client, selectTaskList);
+  const activeTasks = useHostSelector(client, selectActiveTasks);
+  return useMemo(() => ({ threads, tasks, activeTasks }), [threads, tasks, activeTasks]);
+}
 
 export function useConnectedAgentLive(client: HostClient, connectionId: string) {
   const tasks = useHostSelector(client, selectActiveTasks);
@@ -140,6 +161,38 @@ export function useConnectedAgentLive(client: HostClient, connectionId: string) 
       ? result.operations
       : undefined,
   );
+}
+
+/**
+ * A connection's Recent activity: its operations and the commands it sent, in one list. Absent
+ * while it loads; unavailable when this Home cannot list it.
+ */
+export function useConnectedAgentActivity(
+  client: HostClient,
+  connectionId: string,
+  /** Read again when this changes: the task the agent is working on, for one. */
+  revision: string | null,
+): ConnectedAgentActivity | undefined {
+  const [result, setResult] = useState<{
+    client: HostClient;
+    key: string;
+    activity: ConnectedAgentActivity;
+  }>();
+  const key = `${connectionId}:${revision ?? ""}`;
+  useEffect(() => {
+    const controller = new AbortController();
+    const receive = (activity: ConnectedAgentActivity) => {
+      if (!controller.signal.aborted) setResult({ client, key, activity });
+    };
+    void client.rpc["connections.activity"]({ connectionId }, { signal: controller.signal })
+      .then(unwrapRpcResult)
+      .then(
+        (page) => receive(connectedAgentActivity(page)),
+        () => receive({ kind: "unavailable" }),
+      );
+    return () => controller.abort();
+  }, [client, connectionId, key]);
+  return result?.client === client && result.key === key ? result.activity : undefined;
 }
 
 export function useTaskActivity(

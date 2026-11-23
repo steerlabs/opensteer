@@ -2,6 +2,7 @@ import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   IsoDateTimeSchema,
   OpensteerError,
+  raisedBeforeEffect,
   type EnvironmentId,
   type ThreadId,
   type UserId,
@@ -10,7 +11,6 @@ import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
 import { refreshExecuteClaimProof } from "./personal-run-state.js";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import {
   admitThreadExecution,
   executionEnvironmentIsAvailableToUser,
@@ -77,14 +77,17 @@ export function requireBoundedIdentity(value: string, label: string, maximum: nu
     });
   }
 }
+/** A key used for a different command: refused before this one did anything (rule 4). */
 export function idempotencyConflict(key: string): OpensteerError {
-  return new OpensteerError({
-    code: "conflict",
-    details: {
-      idempotencyKey: key,
-    },
-    message: "The idempotency key was already used for a different command",
-  });
+  return raisedBeforeEffect(
+    new OpensteerError({
+      code: "conflict",
+      details: {
+        idempotencyKey: key,
+      },
+      message: "The idempotency key was already used for a different command",
+    }),
+  );
 }
 export async function lockCommandIdempotency(
   transaction: Transaction<DatabaseSchema>,
@@ -102,7 +105,6 @@ export async function lockThreadRow(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
 ): Promise<void> {
-  await lockThreadChannelAuthorities(transaction, [threadId]);
   await transaction
     .selectFrom("threads")
     .select("id")

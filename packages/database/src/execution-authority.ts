@@ -9,11 +9,10 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely } from "kysely";
+import { expressionBuilder, sql, type Expression, type Kysely, type SqlBool } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
-import { liveDelegatingConnection } from "./resource-access.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
+import { delegatingConnectionStanding, liveDelegatingConnection } from "./resource-access.js";
 type Database = Kysely<DatabaseSchema>;
 export interface ActiveExecutionBindingInput {
   readonly lostExecution?: boolean;
@@ -134,7 +133,6 @@ export async function assertActiveGrant(
   },
   executionNow: () => number = Date.now,
 ): Promise<RunLineage> {
-  const workHome = isWorkHomeDatabase(database);
   const row = await database
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
@@ -197,22 +195,12 @@ export async function assertActiveGrant(
         )
         .as("hasActiveGrant"),
     ])
-    .$if(workHome, (query) =>
-      query.select((eb) =>
-        eb
-          .exists(eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"))
-          .as("workHomeActive"),
-      ),
-    )
     .where("runs.id", "=", input.runId)
     .where("personalSettings.singletonKey", "=", "personal")
     .where("providerSessions.active", "=", true)
     .executeTakeFirst();
   const threadAdmitted =
-    row !== undefined &&
-    row.ownerDisabledAt === null &&
-    row.availableEnvironmentId !== null &&
-    (!workHome || Boolean(row.workHomeActive));
+    row !== undefined && row.ownerDisabledAt === null && row.availableEnvironmentId !== null;
   if (
     !row ||
     !executionBindingHolds(row, input, executionNow()) ||
@@ -285,12 +273,39 @@ export async function admitLineageExecution(
     ? admission
     : null;
 }
-export async function executionEnvironmentIsAvailableToUser(
+/**
+ * The same admission, telling held from lost: the connection's standing is read first, in one
+ * statement, so a chat that is waiting is `waiting` whatever else is true, and one that is live
+ * is never reported lost because its account changed between two reads.
+ */
+export async function lineageExecutionStanding(
   database: Database,
-  environmentId: EnvironmentId,
-  userId: UserId,
-): Promise<boolean> {
-  const row = await database
+  input: {
+    readonly threadId: ThreadId;
+    readonly userId: UserId;
+    readonly agentConnectionId: string | null;
+  },
+): Promise<
+  | { readonly kind: "admitted"; readonly environmentId: EnvironmentId }
+  | { readonly kind: "waiting" }
+  | { readonly kind: "lost" }
+> {
+  if (input.agentConnectionId) {
+    const standing = await delegatingConnectionStanding(
+      database,
+      input.userId,
+      input.agentConnectionId,
+    );
+    if (standing === "waiting") return { kind: "waiting" };
+    if (standing === "ended") return { kind: "lost" };
+  }
+  const admission = await admitThreadExecution(database, input.threadId, input.userId);
+  return admission
+    ? { kind: "admitted", environmentId: admission.environmentId }
+    : { kind: "lost" };
+}
+function availableExecutionEnvironmentSubquery(userId: UserId) {
+  return expressionBuilder<DatabaseSchema, "threads">()
     .selectFrom("personalSettings")
     .innerJoin("users", "users.id", "personalSettings.ownerId")
     .innerJoin(
@@ -303,10 +318,45 @@ export async function executionEnvironmentIsAvailableToUser(
     .where("personalSettings.singletonKey", "=", "personal")
     .where("personalSettings.ownerId", "=", userId)
     .where("users.disabledAt", "is", null)
-    .where("executionEnvironments.id", "=", environmentId)
-    .where("runners.revokedAt", "is", null)
-    .executeTakeFirst();
-  return row !== undefined;
+    .where("runners.revokedAt", "is", null);
+}
+
+/**
+ * The single SQL predicate for whether a `threads` row's execution is admitted for `userId`.
+ * Both `admitThreadExecution` and `connectionRequests` call this builder so execution admission
+ * cannot drift between execution checks and request visibility.
+ */
+export function threadExecutionAdmitted(userId: UserId): Expression<SqlBool> {
+  const eb = expressionBuilder<DatabaseSchema, "threads">();
+  return eb.exists(
+    availableExecutionEnvironmentSubquery(userId).whereRef(
+      "executionEnvironments.id",
+      "=",
+      "threads.environmentId",
+    ),
+  );
+}
+
+export async function executionEnvironmentIsAvailableToUser(
+  database: Database,
+  environmentId: EnvironmentId,
+  userId: UserId,
+): Promise<boolean> {
+  const eb = expressionBuilder<DatabaseSchema, never>();
+  const row = await database
+    .selectNoFrom(
+      eb
+        .exists(
+          availableExecutionEnvironmentSubquery(userId).where(
+            "executionEnvironments.id",
+            "=",
+            environmentId,
+          ),
+        )
+        .as("available"),
+    )
+    .executeTakeFirstOrThrow();
+  return Boolean(row.available);
 }
 export async function admitThreadExecution(
   database: Database,
@@ -319,17 +369,9 @@ export async function admitThreadExecution(
     .selectFrom("threads")
     .select("threads.environmentId")
     .where("threads.id", "=", threadId)
-    .$if(isWorkHomeDatabase(database), (query) =>
-      query.where((eb) =>
-        eb.exists(
-          eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"),
-        ),
-      ),
-    )
+    .where(threadExecutionAdmitted(userId))
     .executeTakeFirst();
-  return row && (await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId))
-    ? row
-    : null;
+  return row ?? null;
 }
 export async function deploymentOwnedExecutionIsAvailableToUser(
   database: Database,

@@ -369,6 +369,14 @@ it("signed leave is idempotent and an old proof cannot remove a later identity",
       }),
     }),
   ).rejects.toMatchObject({ code: "forbidden" });
+  // The device's own sign-out is on record once, as no person's act (AD10), and only for itself.
+  const left = await db
+    .selectFrom("securityAudit")
+    .select(["action", "actorUserId", "targetId"])
+    .where("action", "=", "device.left")
+    .where("targetId", "in", [old.runnerId, newer.runnerId])
+    .execute();
+  expect(left).toEqual([{ action: "device.left", actorUserId: null, targetId: old.runnerId }]);
 });
 
 it("retires a prepared key even when issuance never committed and refuses a late issuance", async () => {

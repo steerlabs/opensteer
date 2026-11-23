@@ -56,9 +56,8 @@ vi.mock("./welcome.js", () => ({ Welcome: () => null }));
 vi.mock("./setup-scanner.js", () => ({ useSetupScanner: () => null }));
 vi.mock("./add-deployment.js", () => ({ AccountIdentityRow: () => null }));
 vi.mock("./deployment-menu.js", () => ({ DeploymentMenu: () => null }));
-vi.mock("./work-home.js", () => ({
+vi.mock("./cloud-computer-ids.js", () => ({
   useCloudComputerIds: () => new Set(),
-  useWorkBadges: () => new Map(),
 }));
 vi.mock("../threads/task-row.js", () => ({ UnreadDot: () => null }));
 vi.mock("../ui/action-line.js", () => ({ ActionLine: () => null }));

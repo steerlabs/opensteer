@@ -20,12 +20,18 @@ import {
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
+  BrowserTabRecordSchema,
+  browserHostMethods,
   decodeBrowserFrameEnvelope,
 } from "../packages/protocol/src/browser.js";
+import { KeyedStreamPublisher } from "../packages/protocol/src/keyed-stream.js";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
+import { BrowserPoolGate } from "../apps/host/src/browser/browser-pool-gate.js";
+import { HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
 import { removeDevice } from "../apps/host/src/administration/device-removal.js";
 import {
@@ -388,6 +394,64 @@ it("keeps an unsent draft through a vetoed park, a park and a Home restart, and 
     } finally {
       attached.close();
     }
+  } finally {
+    await j.close();
+  }
+});
+
+it("closes the page a pooled reopening started when the person closed the tab meanwhile, relay recorded first", async () => {
+  const j = await journey("reopen-closed");
+  try {
+    const home = await j.startHome();
+    const { sessionId: first, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("reopen-closed"),
+    );
+    // The session ends; activating the tab reopens it in a new pooled session.
+    await home.service.stop(j.task.userId, first);
+    const row = (await j.tabs.get(j.task.userId, tabId))!;
+    // The person closes the tab once the reopening has bound it to the new session.
+    const bind = j.tabs.bindPage.bind(j.tabs);
+    vi.spyOn(j.tabs, "bindPage").mockImplementationOnce(async (...args) => {
+      const bound = await bind(...args);
+      await j.tabs.close(j.task.userId, [tabId], "close-while-reopening");
+      return bound;
+    });
+    const order: string[] = [];
+    const open = PooledBrowserRelay.open.bind(PooledBrowserRelay);
+    vi.spyOn(PooledBrowserRelay, "open").mockImplementation(async (...args) => {
+      const relay = await open(...args);
+      const recorded = await j.database.selectFrom("browserPoolRelays").select("id").execute();
+      order.push(recorded.length > 0 ? "relay recorded" : "relay without a row");
+      return relay;
+    });
+    const send = TestRuntimeConnection.prototype.send;
+    vi.spyOn(TestRuntimeConnection.prototype, "send").mockImplementation(function (
+      this: TestRuntimeConnection,
+      ...args: Parameters<TestRuntimeConnection["send"]>
+    ) {
+      const message = JSON.parse(args[0]) as {
+        type: string;
+        command?: { method?: string; parameters?: { surfaceId?: string } };
+      };
+      if (
+        message.type === "cdp.command" &&
+        message.command?.parameters?.surfaceId === tabId &&
+        (message.command.method === browserHostMethods.fenceTab ||
+          message.command.method === browserHostMethods.closeTab)
+      )
+        order.push(message.command.method);
+      return send.apply(this, args);
+    });
+    await expect(
+      home.service.pageTabs.activate(j.task.userId, row, "reopen-closed"),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await until(() => expect(order).toContain(browserHostMethods.closeTab));
+    expect(order).toEqual([
+      "relay recorded",
+      browserHostMethods.fenceTab,
+      browserHostMethods.closeTab,
+    ]);
   } finally {
     await j.close();
   }
@@ -1723,5 +1787,124 @@ it("reports the pooled browser's phase, a fresh start's reason and the pages not
     expect(await report()).not.toHaveProperty("pages");
   } finally {
     await j.close();
+  }
+});
+
+it("vetoes a park attempted during the first session.state send after a re-attach", async () => {
+  const gate = new BrowserPoolGate();
+  gate.set({ recovered: true });
+  const socket = Object.assign(new EventEmitter(), {
+    readyState: 1,
+    send: (_data: string, second?: unknown, third?: (error?: Error) => void) => {
+      const callback = typeof second === "function" ? (second as (error?: Error) => void) : third;
+      callback?.();
+    },
+    close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    terminate: () => socket.emit("close", 1006, Buffer.from("terminated")),
+  });
+  const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+  const surfaceId = BrowserSurfaceIdSchema.parse("bsf_reattach_hold");
+  let stateReads = 0;
+  const inReattachStateSend = Promise.withResolvers<void>();
+  const releaseReattachStateSend = Promise.withResolvers<void>();
+  const broker = new HostedBrowserBroker({
+    socket,
+    sessionId,
+    groupId: sessionId,
+    poolAdmission: {
+      now: () => gate.backgroundNow(),
+      wait: (signal: AbortSignal) => gate.background(signal),
+      retiring: () => gate.retiringOrAdopting,
+    },
+    readSessionState: async () => {
+      stateReads += 1;
+      if (stateReads === 2) {
+        inReattachStateSend.resolve();
+        await releaseReattachStateSend.promise;
+      }
+      return { runs: 0, pinned: [] };
+    },
+    personUse: { tabs: new Set(), ended: false },
+    profileId: null,
+    surfaceState: 1,
+    sharedControl: true,
+    connectTimeoutMs: 1_000,
+    passkeys: false,
+    onState: async () => ({}),
+    onTerminal: () => undefined,
+    onTabsChanged: () => undefined,
+    onRecordsChanged: () => undefined,
+    onPageChanged: () => undefined,
+    onPersonUseChanged: () => undefined,
+  } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+
+  const emitSnapshot = () => {
+    const emit = (message: unknown) =>
+      socket.emit("message", Buffer.from(JSON.stringify(message)), false);
+    emit({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      dialog: null,
+      surfaceState: 1,
+      targetedStreamingVersion: 1,
+    });
+    const rows = new Map([
+      [
+        surfaceId,
+        BrowserTabRecordSchema.parse({
+          id: surfaceId,
+          order: 0,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ],
+    ]);
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: surfaceId, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      emit({ type: "browser.tabs", stream });
+      publisher.settled(stream, true);
+    }
+  };
+
+  try {
+    emitSnapshot();
+    await broker.ready();
+    expect(gate.held).toBe(0);
+
+    await broker.prepareRuntimeReconnect();
+    const reattached = broker.ready();
+    emitSnapshot();
+    await inReattachStateSend.promise;
+
+    // While the first session.state send after re-attach is in flight, the pool gate is held
+    // and any park attempt is vetoed.
+    expect(gate.held).toBe(1);
+    expect(gate.beginPark()).toBe(false);
+
+    releaseReattachStateSend.resolve();
+    await reattached;
+    expect(gate.held).toBe(0);
+    expect(gate.beginPark()).toBe(true);
+  } finally {
+    releaseReattachStateSend.resolve();
+    socket.emit("close", 1000, Buffer.from("closed"));
   }
 });

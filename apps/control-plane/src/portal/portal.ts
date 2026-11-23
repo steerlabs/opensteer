@@ -1,8 +1,5 @@
 import { registerCloudComputerPortal } from "../cloud-computers/portal-routes.js";
 import { cloudComputerPortalPath } from "../cloud-computers/portal-pages.js";
-import { organizationsPortalPath } from "../organizations/portal-pages.js";
-import { registerOrganizationPortal } from "../organizations/portal-routes.js";
-import type { OrganizationStore } from "../organizations/store.js";
 import type { CloudComputerStore } from "../cloud-computers/store.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
@@ -115,10 +112,6 @@ interface PortalDependencies {
   readonly auth: ControlPlaneAuth;
   /** Present when this Account offers Cloud Computers. */
   readonly cloudComputers?: CloudComputerStore;
-  /** Present when this Account offers organizations. */
-  readonly organizations?: OrganizationStore;
-  /** How offboarding reaches a work Home to ask for its last audit records. */
-  readonly workHomeFetch?: typeof globalThis.fetch;
   /** Where "Get the desktop app" points; without it the row is absent. */
   readonly desktopDownloadUrl?: string;
   readonly iosAppUrl?: string;
@@ -200,11 +193,9 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
       // names no kind it cannot know. A service with no Cloud Computers has none to list.
       dependencies.cloudComputers?.listForAccount(accountId).catch(() => null) ?? [],
     ]);
-    const cloud = new Map(
+    const cloud = new Set(
       (computers ?? []).flatMap((computer) =>
-        computer.deploymentId
-          ? [[computer.deploymentId, { organization: computer.work?.organizationName ?? null }]]
-          : [],
+        computer.deploymentId ? [computer.deploymentId] : [],
       ),
     );
     const presence = await Promise.all(
@@ -221,13 +212,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           deploymentCard(
             deployment,
             presence[index] === true,
-            cloud.get(deployment.id) ?? (computers === null ? "unknown" : "not-cloud"),
+            cloud.has(deployment.id) ? "cloud" : computers === null ? "unknown" : "not-cloud",
           ),
         ),
         signOutAction: portalSignOutPath,
         cloudComputerHref: dependencies.cloudComputers ? cloudComputerPortalPath : null,
         cloudOffer: dependencies.cloudComputers?.offer ?? null,
-        organizationsHref: dependencies.organizations ? organizationsPortalPath : null,
       }),
       fonts,
       layout: "app",
@@ -285,8 +275,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           (deployment) =>
             deployment.reachability !== "routed" && !cloudDeployments.has(deployment.id),
         ),
-        cloudComputer: live.some((computer) => !computer.work),
-        workHomes: [...new Set(live.flatMap((computer) => computer.work?.organizationName ?? []))],
+        cloudComputer: live.length > 0,
       }),
       fonts,
       layout: "card",
@@ -385,26 +374,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
 
       registerCloudComputerPortal(app, {
         cloudComputers: dependencies.cloudComputers,
-        organizations: dependencies.organizations,
         openHome: async (accountId, deploymentId) => {
           const home = await store.deploymentForAccount(accountId, deploymentId);
           return home?.lifecycle === "active" && home.reachability === "canonical"
             ? deploymentOrigin(home.canonicalOrigin)
             : null;
         },
-        fonts,
-        guard,
-        portalOrigin: origin,
-        readSession,
-        signInPath: portalSignInPath,
-      });
-
-      registerOrganizationPortal(app, {
-        organizations: dependencies.organizations,
-        cloudComputers: dependencies.cloudComputers,
-        auth,
-        publicOrigin,
-        ...(dependencies.workHomeFetch ? { workHomeFetch: dependencies.workHomeFetch } : {}),
         fonts,
         guard,
         portalOrigin: origin,
@@ -603,7 +578,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         // Said on the page that follows: its cancellation and removal finish after the Account.
         const cloudComputer = (
           (await dependencies.cloudComputers?.listForAccount(accountId)) ?? []
-        ).some((computer) => !computer.work && computer.status !== "deleted");
+        ).some((computer) => computer.status !== "deleted");
         try {
           await dependencies.accountDeletion.delete(accountId);
         } catch (error) {
@@ -737,11 +712,11 @@ export function deploymentCard(
   deployment: AccountDeploymentDirectoryEntry,
   present: boolean,
   /**
-   * What the Account's own read of Cloud Computers says of this Home: one of them (a work
-   * Home names its organization), none of them, or nothing known because the read failed.
+   * What the Account's own read of Cloud Computers says of this Home: one of them, none of them,
+   * or nothing known because the read failed.
    * How a Home is reached never says what it is.
    */
-  cloud: { readonly organization: string | null } | "not-cloud" | "unknown" = "not-cloud",
+  cloud: "cloud" | "not-cloud" | "unknown" = "not-cloud",
 ): string {
   const current = currentAccountDeployment(deployment);
   const statusInfo = accountDeploymentStatus(deployment, present, current !== null);
@@ -782,21 +757,17 @@ export function deploymentCard(
  */
 function placeKind(
   deployment: AccountDeploymentDirectoryEntry,
-  cloud: { readonly organization: string | null } | "not-cloud" | "unknown",
+  cloud: "cloud" | "not-cloud" | "unknown",
 ): {
   readonly kind: "personal" | "cloud" | "server" | "unknown";
   readonly kindLabel: string;
-  readonly badge: string | null;
 } {
-  if (typeof cloud === "object") {
-    const words = homeKindWords(cloud.organization ? "work" : "cloud", cloud);
-    return { kind: "cloud", kindLabel: words.label, badge: words.badge };
-  }
+  if (cloud === "cloud") return { kind: "cloud", kindLabel: homeKindWords("cloud").label };
   if (deployment.reachability === "routed")
-    return { kind: "personal", kindLabel: homeKindWords("mac").label, badge: null };
+    return { kind: "personal", kindLabel: homeKindWords("mac").label };
   return cloud === "unknown" || !isCanonicalPersonalHome(deployment)
-    ? { kind: "unknown", kindLabel: homeKindWords("unknown").label, badge: null }
-    : { kind: "server", kindLabel: homeKindWords("server").label, badge: null };
+    ? { kind: "unknown", kindLabel: homeKindWords("unknown").label }
+    : { kind: "server", kindLabel: homeKindWords("server").label };
 }
 
 function currentAccountDeployment(deployment: AccountDeploymentDirectoryEntry) {

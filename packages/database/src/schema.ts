@@ -19,7 +19,6 @@ import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import type {
   ChannelAccountId,
-  ChannelBindingId,
   ChannelConnectionIssueKind,
   ChannelConversationId,
   ChannelDeliveryId,
@@ -622,7 +621,6 @@ interface RunnerEnrollmentTable {
   } | null>;
   issuanceModules: Generated<readonly RunnerModuleName[] | null>;
   deviceProfile: Generated<"iphone" | null>;
-  workEnrollmentPreviewedAt: NullableTimestamp;
   id: string;
   name: string;
   tokenHash: string;
@@ -1079,6 +1077,20 @@ export interface WatchControlRequestTable {
   createdAt: Timestamp;
 }
 
+/** A command with an effect outside the database: recorded before it acts, settled after (G4). */
+export interface CommandAttemptTable {
+  id: string;
+  requestedBy: UserId;
+  callerKey: string;
+  /** The connection whose Disconnect waits on it, when a connection (or its lineage) asked. */
+  connectionId: string | null;
+  type: string;
+  idempotencyKey: string;
+  state: Generated<"running" | "done" | "failed" | "unknown">;
+  startedAt: Generated<Date>;
+  settledAt: Date | null;
+}
+
 export interface RequestTable {
   revision: Generated<string>;
   id: RequestId;
@@ -1097,6 +1109,8 @@ export interface RequestTable {
   originatingAgentSessionId: Generated<AgentSessionId | null>;
   /** The direct operation this Request decides, in its parts (`Request.agentOperation`). */
   agentOperation: Generated<Readonly<Record<string, unknown>> | null>;
+  /** The Home command an agent proposed, in its parts (`Request.command`). */
+  command: Generated<Readonly<Record<string, unknown>> | null>;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -1290,7 +1304,6 @@ export interface CommandTable {
   payload: JsonColumn<unknown>;
   encryptedRequestResponse: Generated<Buffer | null>;
   requestResponseKeyVersion: Generated<number | null>;
-  workOwnerStop: Generated<boolean | null>;
   status: CommandStatus;
   attempts: Generated<number>;
   dispatcherId: string | null;
@@ -1757,34 +1770,6 @@ export interface ChannelAccountTable {
   updatedAt: Timestamp;
 }
 
-export interface ChannelBindingTable {
-  id: ChannelBindingId;
-  accountId: ChannelAccountId;
-
-  createdBy: UserId;
-  selector: JsonColumn<Readonly<Record<string, unknown>>>;
-  executionPolicy: JsonColumn<Readonly<Record<string, unknown>>>;
-  accessPolicy: JsonColumn<Readonly<Record<string, unknown>>>;
-  revision: number;
-  status: "active" | "paused" | "revoked";
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-export interface ChannelAccessGrantTable {
-  accountId: ChannelAccountId;
-  bindingId: ChannelBindingId;
-  externalUserId: string;
-  displayName: string;
-  status: "pending" | "approved" | "declined" | "revoked";
-  revision: number;
-  requestedAt: Timestamp;
-  requestIngressId: ChannelIngressId | null;
-  decidedAt: NullableTimestamp;
-  decidedBy: UserId | null;
-  updatedAt: Timestamp;
-}
-
 interface ChannelIdentityTable {
   id: ChannelIdentityId;
   accountId: ChannelAccountId;
@@ -1793,26 +1778,6 @@ interface ChannelIdentityTable {
   displayName: string;
   linkedUserId: UserId | null;
   status: "unlinked" | "linked";
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-interface ChannelConversationTable {
-  personalContext: Generated<boolean>;
-  id: ChannelConversationId;
-  accountId: ChannelAccountId;
-  provider: ChannelProvider;
-  externalAccountId: string;
-  bindingId: ChannelBindingId;
-  bindingRevision: number;
-
-  externalScopeId: string | null;
-  externalConversationId: string;
-  externalThreadId: string | null;
-  conversationType: "dm" | "group" | "channel";
-  displayName: string | null;
-  activeThreadId: ThreadId | null;
-  providerState: JsonColumn<Readonly<Record<string, unknown>>>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1830,57 +1795,12 @@ interface ChannelIngressEventTable {
   claimExpiresAt: NullableTimestamp;
   nextAttemptAt: Timestamp;
   lastError: string | null;
-  conversationId: ChannelConversationId | null;
   messageId: MessageId | null;
   runId: RunId | null;
   receivedAt: Timestamp;
   processedAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-}
-
-export interface ChannelDeliveryTable {
-  id: ChannelDeliveryId;
-  accountId: ChannelAccountId;
-  /** Exactly one of these is set: a routed conversation, or the ignored ingress a status answers. */
-  conversationId: ChannelConversationId | null;
-  ingressId: ChannelIngressId | null;
-  messageId: MessageId | null;
-  audience: "conversation" | "actor";
-  kind: "reply" | "status";
-  /** One provider message. A reply longer than the provider allows becomes `partCount` of these. */
-  part: Generated<number>;
-  partCount: Generated<number>;
-  content: JsonColumn<readonly unknown[]>;
-  status:
-    "pending" | "leased" | "attempt-started" | "sent" | "retryable-failed" | "unknown" | "dead";
-  attempts: Generated<number>;
-  claimTokenHash: string | null;
-  claimOwner: string | null;
-  claimExpiresAt: NullableTimestamp;
-  nextAttemptAt: Timestamp;
-  lastError: string | null;
-  receipt: JsonColumn<Readonly<Record<string, unknown>>> | null;
-  sentAt: NullableTimestamp;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-/**
- * A code is minted FOR a channel identity and consumed BY the Opensteer user
- * who redeems it in the web app, so the identity is known from the start and
- * the user only at consumption.
- */
-interface ChannelLinkCodeTable {
-  id: string;
-  accountId: ChannelAccountId;
-  userId: UserId | null;
-  codeHash: string;
-  expiresAt: Timestamp;
-  consumedAt: NullableTimestamp;
-  identityId: ChannelIdentityId;
-  requestIngressId: ChannelIngressId | null;
-  createdAt: Timestamp;
 }
 
 interface ComputerUsePolicyTable {
@@ -1975,18 +1895,85 @@ export interface AgentConnectionTable {
   /** Who the person was shown at consent (`AgentConnectionIdentityAtConsent`); null before 0045. */
   identityAtConsent: Generated<Readonly<Record<string, unknown>> | null>;
   verificationWithdrawnAt: Generated<Date | null>;
+  /** A messaging bridge: the provider account it speaks through. Null for an MCP connection. */
+  bridgeAccountId: Generated<ChannelAccountId | null>;
+  /** The one channel or group it covers; null covers direct messages. */
+  bridgeConversationId: Generated<string | null>;
+  /** Who may speak: the linked owner only, or anyone in its one conversation. */
+  bridgeSenders: Generated<BridgeSenders | null>;
+  /** The channel's name, for a bridge that covers one channel. */
+  bridgeConversationName: Generated<string | null>;
+  /** Why the bridge ended, recorded when it was revoked. */
+  bridgeEndedBy: Generated<BridgeEndedBy | null>;
+}
+
+export type BridgeSenders = "owner" | "anyone";
+export type BridgeEndedBy = "you" | "account" | "computer";
+
+export interface BridgeConversationTable {
+  id: ChannelConversationId;
+  bridgeId: string;
+  accountId: ChannelAccountId;
+  externalScopeId: string | null;
+  externalConversationId: string;
+  externalThreadId: string | null;
+  conversationType: "dm" | "group" | "channel";
+  displayName: string | null;
+  threadId: ThreadId | null;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
+export type BridgeDeliveryStatus =
+  | "pending"
+  | "leased"
+  | "attempt-started"
+  | "sent"
+  | "retryable-failed"
+  | "unknown"
+  | "dead"
+  | "cancelled";
+
+/** One message to a chat: an attempt of its bridge, written before it is sent. */
+export interface BridgeDeliveryTable {
+  id: ChannelDeliveryId;
+  bridgeId: string;
+  accountId: ChannelAccountId;
+  conversationId: ChannelConversationId;
+  messageId: MessageId | null;
+  kind: "reply" | "status";
+  part: Generated<number>;
+  partCount: Generated<number>;
+  content: JsonColumn<readonly unknown[]>;
+  status: BridgeDeliveryStatus;
+  attempts: Generated<number>;
+  claimTokenHash: Generated<string | null>;
+  claimOwner: Generated<string | null>;
+  claimExpiresAt: Generated<Date | null>;
+  nextAttemptAt: Generated<Date>;
+  lastError: Generated<string | null>;
+  receipt: JsonColumn<Readonly<Record<string, unknown>>> | null;
+  sentAt: Generated<Date | null>;
+  createdAt: Generated<Date>;
+  updatedAt: Generated<Date>;
+}
+
+/** Shown in Opensteer and sent by the person from their own account to link "me". */
+export interface BridgeLinkCodeTable {
+  id: string;
+  accountId: ChannelAccountId;
+  userId: UserId;
+  codeHash: string;
+  expiresAt: Date;
+  consumedAt: Generated<Date | null>;
+  identityId: Generated<ChannelIdentityId | null>;
+  createdAt: Generated<Date>;
 }
 
 interface AgentDirectoryCacheTable {
   issuer: string;
   document: Readonly<Record<string, unknown>>;
   acceptedAt: Date;
-}
-
-interface AgentEmbedderAssertionClaimTable {
-  issuer: string;
-  statementId: string;
-  expiresAt: Date;
 }
 
 export interface AgentSessionTable {
@@ -2013,7 +2000,6 @@ export interface AgentOperationTable {
   target: JsonColumn<AgentOperationTarget>;
   targetGeneration: string | null;
   grantRevision: number;
-  workPolicyRevision: Generated<number | null>;
   mode: ThreadAccessMode;
   effect: "read" | "write";
   state: AgentOperationState;
@@ -2036,27 +2022,6 @@ export interface AgentOperationTable {
 export interface DatabaseSchema {
   agentSessions: AgentSessionTable;
   agentOperations: AgentOperationTable;
-  workHomePolicy: {
-    singleton: Generated<boolean>;
-    assignmentId: import("@opensteer/control-plane-protocol").WorkAssignmentId;
-    deploymentId: DeploymentId;
-    organizationName: string;
-    state: Generated<import("@opensteer/control-plane-protocol").WorkPolicyDocument["state"]>;
-    revision: Generated<number>;
-    policy: JsonColumn<import("@opensteer/control-plane-protocol").WorkPolicy>;
-  };
-  workAuditHead: {
-    singleton: Generated<boolean>;
-    sequence: Generated<number>;
-    hash: Generated<string>;
-    acknowledgedSequence: Generated<number>;
-    sendingThrough: Generated<number | null>;
-  };
-  workAuditOutbox: {
-    sequence: number;
-    record: JsonColumn<import("@opensteer/control-plane-protocol").WorkAuditRecord>;
-    hash: string;
-  };
   pluginOauthRecords: {
     id: string;
     ownerUserId: UserId;
@@ -2151,7 +2116,6 @@ export interface DatabaseSchema {
 
   agentConnections: AgentConnectionTable;
   agentDirectoryCache: AgentDirectoryCacheTable;
-  agentEmbedderAssertionClaims: AgentEmbedderAssertionClaimTable;
   apps: AppTable;
   appServers: AppServerTable;
   appVersions: AppVersionTable;
@@ -2240,6 +2204,7 @@ export interface DatabaseSchema {
   grants: GrantTable;
   delegations: DelegationTable;
   requests: RequestTable;
+  commandAttempts: CommandAttemptTable;
   taskQuestionNotices: {
     requestId: RequestId;
     messageId: MessageId | null;
@@ -2395,13 +2360,11 @@ export interface DatabaseSchema {
 
   integrationGrants: IntegrationGrantTable;
   channelAccounts: ChannelAccountTable;
-  channelAccessGrants: ChannelAccessGrantTable;
-  channelBindings: ChannelBindingTable;
   channelIdentities: ChannelIdentityTable;
-  channelConversations: ChannelConversationTable;
   channelIngressEvents: ChannelIngressEventTable;
-  channelDeliveries: ChannelDeliveryTable;
-  channelLinkCodes: ChannelLinkCodeTable;
+  bridgeConversations: BridgeConversationTable;
+  bridgeDeliveries: BridgeDeliveryTable;
+  bridgeLinkCodes: BridgeLinkCodeTable;
 }
 
 export type DeploymentRow = Selectable<DeploymentTable>;
@@ -2409,7 +2372,7 @@ export type DeploymentRow = Selectable<DeploymentTable>;
 export type ThreadRow = Selectable<ThreadTable>;
 export type RunRow = Selectable<RunTable>;
 export type RequestRow = Selectable<RequestTable>;
-export type CommandRow = Omit<Selectable<CommandTable>, "workOwnerStop">;
+export type CommandRow = Selectable<CommandTable>;
 /** A command awaiting dispatch, with the AI account of the Run it names. */
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;

@@ -55,7 +55,6 @@ import { SettingsMessagingScreen } from "./screens/settings-messaging.js";
 import { AgentAuthorizationScreen } from "./screens/agent-authorization.js";
 import { ConnectedAgentScreen } from "./screens/connected-agent.js";
 import { CloudComputerScreen } from "./screens/cloud-computer.js";
-import { WorkHomePolicyScreen } from "./screens/work-home-policy.js";
 import {
   PluginCatalogScreen,
   PluginLocalToolScreen,
@@ -419,7 +418,6 @@ const RootStack = createNativeStackNavigator({
       screen: CloudComputerScreen,
       options: { title: cloudComputerCopy["cloud.shortTitle"] },
     },
-    WorkHomePolicy: { screen: WorkHomePolicyScreen, options: { title: "" } },
     SettingsAI: { screen: SettingsAIScreen, options: { title: "AI" } },
     SettingsPlugins: { screen: PluginsScreen, options: { title: "Plugins" } },
     PluginSkills: { screen: PluginSkillsScreen, options: { title: "Skills" } },
@@ -631,7 +629,8 @@ type OpensteerRootParamList = {
   };
   readonly FileViewer: FileViewerParams;
   readonly Deployments: undefined;
-  readonly DeploymentSwitcher: undefined;
+  /** `opening`: the Settings page a person was choosing a Home for, said on the picker. */
+  readonly DeploymentSwitcher: { readonly opening?: string } | undefined;
   readonly Home: { readonly deploymentId: string };
   readonly NotificationsIntro: undefined;
   readonly NewThread: {
@@ -652,7 +651,6 @@ type OpensteerRootParamList = {
   readonly SettingsExternalAgents: { readonly deploymentId: string };
   readonly ConnectedAgent: { readonly deploymentId: string; readonly connectionId: string };
   readonly CloudComputer: undefined;
-  readonly WorkHomePolicy: { readonly deploymentId: string };
   readonly SettingsAI: { readonly deploymentId: string };
   readonly SettingsPlugins: { readonly deploymentId: string };
   readonly PluginSkills: { readonly deploymentId: string };

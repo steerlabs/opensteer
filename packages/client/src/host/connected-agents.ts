@@ -17,7 +17,9 @@ import {
   type PersonalRemoteAdministrationStatus,
 } from "@opensteer/protocol";
 import { accessModeOptions } from "./access-modes.js";
+import { connectionStateEnded } from "./connected-agent-view.js";
 import type { HostClient } from "./client.js";
+import type { ChatScreenHost } from "./chat-screen-host.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
@@ -25,6 +27,11 @@ export interface ConnectedAgentsSnapshot {
   readonly connections: readonly AgentConnection[] | null;
   readonly error: string | null;
   readonly issue: ClientIssue | null;
+  /**
+   * The last read of the list failed, whether or not an earlier one gave the list shown: a page
+   * drawn from it then changes nothing until it is read again (`ReadGate`, `readGateSections`).
+   */
+  readonly readFailed: boolean;
   /** The connection an action is running for. */
   readonly pending: string | null;
   readonly pendingAction: ConnectedAgentAction | null;
@@ -59,10 +66,12 @@ export function connectedAgentsClient(client: HostClient): ConnectedAgentsClient
   }
   return resource;
 }
+// What it sends and reads is what the chat and connected-agent screens may (`ChatScreenHost`).
 type ConnectedAgentsHost = Pick<
   HostClient,
-  "connection" | "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
->;
+  "connection" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
+> &
+  Pick<ChatScreenHost, "dispatch" | "rpc">;
 
 async function readConnectedAgents(client: Pick<ConnectedAgentsHost, "rpc">, signal?: AbortSignal) {
   const { connections, endedConnections } = unwrapRpcResult(
@@ -98,6 +107,7 @@ export class ConnectedAgentsClient {
     this.#state = {
       connections: null,
       error: null,
+      readFailed: false,
       issue: null,
       pending: null,
       pendingAction: null,
@@ -125,7 +135,9 @@ export class ConnectedAgentsClient {
       reconcile: async (connectionId) => {
         const { connections } = await readConnectedAgents(client);
         const row = connections.find((candidate) => candidate.id === connectionId);
-        return !row || row.revokedAt || (row.state !== undefined && row.state !== "active")
+        // Only an ended state proves it: a paused chat, or a state this app does not know, is
+        // not a Disconnect.
+        return !row || row.revokedAt || connectionStateEnded(row.state)
           ? { kind: "confirmed", value: undefined }
           : null;
       },
@@ -186,14 +198,14 @@ export class ConnectedAgentsClient {
     if (connections && this.#revoked.size) {
       for (const id of this.#revoked) {
         const row = connections.find((candidate) => candidate.id === id);
-        if (!row || (row.state !== undefined && row.state !== "active") || row.revokedAt)
-          this.#revoked.delete(id);
+        if (!row || connectionStateEnded(row.state) || row.revokedAt) this.#revoked.delete(id);
       }
     }
     this.#publish({
       connections,
       issue,
       error: issue ? presentClientIssue(issue).title : null,
+      readFailed: read.issue !== null,
       pending: action?.running ? this.#state.pending : null,
       pendingAction: action?.running ? this.#state.pendingAction : null,
       revoked: this.#revoked.size ? new Set(this.#revoked) : noRevokes,
@@ -266,15 +278,17 @@ export class ConnectedAgentsClient {
     if (result.kind !== "failed") this.read.invalidate();
     return result;
   };
-  /** Takes an ended connection off the list. */
-  remove = async (connectionId: string): Promise<void> => {
+  /** Takes an ended connection off the list: true only once the Home confirms it is gone. */
+  remove = async (connectionId: string): Promise<boolean> => {
     const outcome = await this.#run(
       this.#removes.for(connectionId),
       "remove",
       connectionId,
       connectionId,
     );
-    if (outcome.kind === "confirmed") this.read.invalidate();
+    if (outcome.kind !== "confirmed") return false;
+    this.read.invalidate();
+    return true;
   };
   dismiss = (): void => {
     this.#action?.dismiss();
@@ -599,7 +613,7 @@ export function connectionAccessLabel(mode: AgentConnection["accessMode"]): stri
  * reuses it rather than creating a second profile.
  */
 export async function createDedicatedProfile(
-  client: Pick<HostClient, "dispatch">,
+  client: Pick<ChatScreenHost, "dispatch">,
   input: { readonly name: string; readonly homeRunnerId: string | null },
 ): Promise<string> {
   const result = await client.dispatch({

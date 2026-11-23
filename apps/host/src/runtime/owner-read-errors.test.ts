@@ -58,15 +58,13 @@ const owners: readonly [string, () => { owner: Owner; read: ReturnType<typeof vi
     () => {
       const read = failingOnce<null>(null);
       const owner = new ChannelService({
-        canonicalOrigin: "https://opensteer.test",
         channels: {
           claimIngress: read,
           nextIngressDeadline: async () => null,
           pruneHistory: async () => undefined,
         } as never,
         credentials: {} as never,
-        onExecutionQueued: () => undefined,
-        runners: {} as never,
+        bridgeTools: () => ({ callTool: async () => ({}) }),
         relay: {} as never,
         store: { listEnvironments: async () => [] } as never,
       });

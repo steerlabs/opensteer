@@ -67,14 +67,14 @@ function fixture(grant?: AgentGrant) {
     total: 0,
     nextCursor: null,
   }));
-  const settingsHandler = vi.fn(async (_call: ToolCall<"browser_profile_update">) => ({
+  const settingsHandler = vi.fn(async (_call: ToolCall<"local_server_remove">) => ({
     ok: true as const,
   }));
   const service = new OpensteerMcpService({
     callers,
-    handlers: { computer_apps: handler, browser_profile_update: settingsHandler },
+    handlers: { computer_apps: handler, local_server_remove: settingsHandler },
     store: {
-      getThreadForOwner: async () => thread,
+      readTask: async () => thread,
       threadOrigins: async () => new Map(),
       requests: { get: async () => null },
     },
@@ -388,8 +388,9 @@ it("re-authenticates a native Run after activity.start so a mode lowered during 
   });
   const pending = f.call({
     callId: crypto.randomUUID(),
-    name: "browser_profile_update",
-    input: { profileId: createId("browserProfile"), name: "Renamed" },
+    // A settings tool this release still has: the administration tools became the door (A5).
+    name: "local_server_remove",
+    input: { name: "parity-server" },
   });
   await withTimeout(entered.promise, 1_000, {
     timeoutError: () => new Error("activity.start did not begin"),

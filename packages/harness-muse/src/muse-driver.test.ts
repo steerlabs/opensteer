@@ -179,7 +179,8 @@ describe("Muse Code sessions", () => {
         adapter.startSession({ ...fixture.context, personLineage: false }),
       ).rejects.toMatchObject({
         code: "forbidden",
-        message:
+        message: "This engine is not available for this task.",
+        ownerMessage:
           "Muse Code starts with your own Muse Code settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
       });
     } finally {

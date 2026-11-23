@@ -1,3 +1,4 @@
+import { personTaskReader } from "@opensteer/database";
 import {
   opensteer_automation_list,
   opensteer_automation_read,
@@ -287,6 +288,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     expect(result.data.triggers.map((t) => t.id)).toEqual([root.trigger.id]);
     await expect(
       triggerStore.listForOwner({
+        reader: personTaskReader,
         ownerId: await store.createUser("Other automation reader"),
         anchorThreadId: f.root.id,
       }),
@@ -952,7 +954,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           handleTriggerCommand(triggers, runCommand, context),
         ]);
         expect(retriedRun).toEqual(firstRun);
-        const runDetail = await triggers.get(f.ownerId, created.trigger.id, 25);
+        const runDetail = await triggers.get(f.ownerId, created.trigger.id, 25, personTaskReader);
         expect(runDetail.occurrences).toHaveLength(1);
         await handleTriggerCommand(
           triggers,

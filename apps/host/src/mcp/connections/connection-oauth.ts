@@ -18,6 +18,7 @@ import {
 } from "@opensteer/protocol";
 import { randomBytes, sign, verify, timingSafeEqual, type KeyObject } from "node:crypto";
 import { z } from "zod";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   credentialHash,
   connectionCredentialPrefix,
@@ -27,7 +28,7 @@ import {
   describeIdentity,
   resolveConsentIdentity,
   unverifiedConsentIdentity,
-} from "./embedder-assertion.js";
+} from "./consent-identity.js";
 
 export const mcpResourcePath = agentConnectionMcpPath;
 export const mcpIssuerPath = "/oauth/mcp";
@@ -50,11 +51,9 @@ const ClientSchema = z.object({
 });
 type Client = z.infer<typeof ClientSchema>;
 const defaultClientName = "MCP client";
+/** A client's own name enters the Home clean, as every name from outside does. */
 function sanitizeClientName(name: string): string {
-  return name
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
-    .replace(/\s+/gu, " ")
-    .trim();
+  return outsideName(name, 100);
 }
 const RegistrationSchema = z.object({
   client_name: z
@@ -78,8 +77,6 @@ const AuthorizationSchema = z.object({
   resource: z.unknown().optional(),
   state: z.string().max(2048).optional(),
   scope: ScopeSchema,
-  /** A per-request proof, signed by the product that embeds this platform, that it asked. */
-  opensteer_embedder_assertion: z.unknown().optional(),
 });
 const TokenSchema = z.object({
   grant_type: z.literal("authorization_code"),
@@ -266,23 +263,11 @@ export class ConnectionOAuth {
     const resource = origin + mcpResourcePath;
     if (!matchesResource(parsed.data.resource, resource)) throw refusal("invalid_target");
     const authorization = { ...parsed.data, resource };
-    const identity = await resolveConsentIdentity({
+    const identity = resolveConsentIdentity({
       directory: (await this.#options.directory?.get()) ?? null,
       clientName: client.name,
-      assertion: authorization.opensteer_embedder_assertion,
-      request: {
-        clientId: authorization.client_id,
-        issuer: origin + mcpIssuerPath,
-        redirectUri: authorization.redirect_uri,
-        codeChallenge: authorization.code_challenge,
-        state: authorization.state,
-      },
+      redirectUri: authorization.redirect_uri,
       now: () => this.#now(),
-      claim: async (issuer, id, expiresAt) => {
-        const accepted = await this.store.claimEmbedderAssertion(issuer, id, expiresAt);
-        this.#options.onMaintenanceChanged?.();
-        return accepted;
-      },
     });
     this.#sweep();
     if (this.#consents.size >= maximumPending)
@@ -318,11 +303,11 @@ export class ConnectionOAuth {
     }
     return pending;
   }
-  async #currentConsentIdentity(pending: Consent): Promise<AgentConnectionIdentityAtConsent> {
+  #currentConsentIdentity(pending: Consent): AgentConnectionIdentityAtConsent {
     const evidence = pending.identityAtConsent;
     if (evidence.kind === "unverified") return evidence;
     const directory = this.#options.directory?.current() ?? null;
-    if (await isIdentityStillVerified(evidence, directory)) return evidence;
+    if (isIdentityStillVerified(evidence, directory)) return evidence;
     pending.verificationChanged = true;
     return unverifiedConsentIdentity(
       pending.authorization.redirect_uri,
@@ -334,7 +319,7 @@ export class ConnectionOAuth {
 
   async consent(requestId: string, _userId: UserId) {
     const pending = this.#consent(requestId);
-    const identity = await this.#currentConsentIdentity(pending);
+    const identity = this.#currentConsentIdentity(pending);
     return {
       requestId,
       clientName: pending.client.name,
@@ -374,7 +359,7 @@ export class ConnectionOAuth {
         const decision = command.decision;
         let connectionId: string | null = null;
         if (decision.kind === "approve") {
-          const identity = await this.#currentConsentIdentity(pending);
+          const identity = this.#currentConsentIdentity(pending);
           const expected = verificationSnapshot(command.requestId, identity);
           if (
             decision.verificationSnapshot !== undefined
@@ -474,7 +459,7 @@ export class ConnectionOAuth {
     if (!(await this.store.activate(pending.connectionId, credentialHash(credential))))
       throw new ConnectionOAuthError("invalid_grant");
     const connection = await this.store.authenticate(credentialHash(credential), resource);
-    if (!connection) throw new ConnectionOAuthError("invalid_grant");
+    if (!connection?.expiresAt) throw new ConnectionOAuthError("invalid_grant");
     return {
       access_token: credential,
       token_type: "Bearer",

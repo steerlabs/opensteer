@@ -150,6 +150,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",
@@ -212,6 +213,7 @@ describe("Product tool handlers", () => {
     });
     expect(agentPage).toHaveBeenCalledWith({
       ownerId,
+      reader: { kind: "work", threadId: claims.threadId },
       scope: { kind: "personal" },
       scopeId: claims.threadId,
       status: "all",
@@ -1164,6 +1166,11 @@ function makeService(options: {
       runId: null,
     }),
     getThreadForOwner: async (id: Thread["id"], requestedBy: typeof ownerId) => {
+      const value = options.threads.find((candidate) => candidate.id === id);
+      return value?.createdBy === requestedBy ? value : null;
+    },
+    // Agent tools read a task as their caller; these fixtures hold no memory pass.
+    readTask: async (_reader: unknown, id: Thread["id"], requestedBy: typeof ownerId) => {
       const value = options.threads.find((candidate) => candidate.id === id);
       return value?.createdBy === requestedBy ? value : null;
     },

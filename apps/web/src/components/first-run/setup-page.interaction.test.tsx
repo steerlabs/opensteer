@@ -664,7 +664,10 @@ it("offers to try again when the phone's code could not be made", async () => {
     };
   });
   await mount();
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Opensteer is offline.");
+  // "unavailable" is not a refusal the Home words for a person: the app says it in its own words.
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+    "A code for your phone couldn’t be made: Something went wrong. Try again.",
+  );
   failing = false;
   await act(async () => button("Try again").click());
   expect(container.querySelector(".setup-scan__svg")?.getAttribute("aria-label")).toContain(

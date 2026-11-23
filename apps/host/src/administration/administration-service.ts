@@ -1,9 +1,10 @@
+import type { CommandProposal } from "../commands/actor.js";
 import { removeDevice } from "./device-removal.js";
 import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
 import {
-  admitSettingsCaller,
+  commandAdmission,
   type AdministrationCommandIdentity,
   requirePersonalOwner,
 } from "@opensteer/database";
@@ -38,6 +39,8 @@ export type AdministrationCaller =
   | ({
       readonly kind: "person";
       readonly sessionId?: AuthSessionId;
+      /** An approved proposal's last admission, run where the change is written (K2). */
+      readonly readmit?: CommandProposal["readmit"];
     } & AdministrationActor);
 export type AdministrationDependencies = Pick<
   HostServerDependencies,
@@ -92,10 +95,22 @@ export type AdministrationCommand =
   | Extract<
       HostApiCommand,
       {
-        type: "browser.site.remove" | "channel.binding.revoke" | "channel.connection.status.set";
+        type: "browser.site.remove" | "channel.connection.status.set";
       }
     >
   | Parameters<typeof executeDeviceAdministration>[2];
+/**
+ * The commands this service runs for agents as well as the person: its own, the browser's site
+ * removal, a chat account's status and the device administration it hands on.
+ */
+export const agentAdministrationTypes: ReadonlySet<string> = new Set([
+  ...coreTypes,
+  "browser.site.remove",
+  "channel.connection.status.set",
+  "plugin.remove",
+  "integration.grant.revoke",
+  "integration.disconnect",
+]);
 export function isAdministrationCommand(
   command: HostApiCommand,
 ): command is CoreAdministrationCommand {
@@ -209,8 +224,8 @@ export class AdministrationService {
         callerKind: caller.kind,
         callerKey: caller.key,
       },
-      admit: (transaction) =>
-        admitSettingsCaller(transaction, { ownerUserId: caller.userId, callerKey: caller.key }),
+      // The one command rule, at commit: what an agent may change is the table's, not this list's.
+      ...commandAdmission({ ownerUserId: caller.userId, callerKey: caller.key, command }),
       output: async (result) => {
         let fields: Record<string, unknown> = {};
         if (command.type.startsWith("harness.")) {
@@ -311,15 +326,6 @@ export class AdministrationService {
           type: command.type,
         };
       }
-      case "channel.binding.revoke":
-        await dependencies.channels.service.revokeBinding(
-          command.bindingId,
-          userId,
-          administration,
-        );
-        return {
-          type: command.type,
-        };
       case "channel.connection.status.set":
         await dependencies.channels.service.setConnectionStatus(
           command.connectionId,
@@ -333,6 +339,7 @@ export class AdministrationService {
 
       case "settings.idleCompaction.set": {
         const policy = await dependencies.store.notificationState.setIdleCompactionPolicy({
+          administration,
           policy: command.policy,
           userId,
         });
@@ -602,6 +609,13 @@ export class AdministrationService {
             idempotency: {
               key: command.idempotencyKey,
               requestedBy: userId,
+              // An agent's Stop: its record names it, and it is admitted where it commits.
+              ...(administration
+                ? { authoritySource: administration.authoritySource, admit: administration.admit }
+                : {}),
+              // The person approving an agent's Stop: the agent that asked is admitted again
+              // where the end is written, before any socket closes (K2).
+              ...(caller.kind === "person" && caller.readmit ? { admit: caller.readmit } : {}),
             },
           },
         );

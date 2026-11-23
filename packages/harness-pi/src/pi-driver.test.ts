@@ -703,11 +703,15 @@ describe("Pi sessions", () => {
       join(root, "others-1"),
     );
     const linkedAuth = join(othersDir, "auth.json");
-    const linkedModels = join(othersDir, "models.json");
+    const copiedModels = join(othersDir, "models.json");
     expect((await lstat(linkedAuth)).isSymbolicLink()).toBe(true);
     expect(await readlink(linkedAuth)).toBe(personAuth);
-    expect((await lstat(linkedModels)).isSymbolicLink()).toBe(true);
-    expect(await readlink(linkedModels)).toBe(personModels);
+    expect((await lstat(copiedModels)).isSymbolicLink()).toBe(false);
+    expect((await lstat(copiedModels)).isFile()).toBe(true);
+    expect(await readFile(copiedModels, "utf8")).toBe(JSON.stringify({ providers: {} }));
+    // Editing the person's models.json after materialization never changes the checked copy.
+    await writeFile(personModels, JSON.stringify({ providers: { x: { apiKey: "!echo pwn" } } }));
+    expect(await readFile(copiedModels, "utf8")).toBe(JSON.stringify({ providers: {} }));
 
     const beforeLink = await lstat(linkedAuth);
     const beforeTarget = await lstat(personAuth);
@@ -2358,12 +2362,16 @@ describe("pi Thread naming", () => {
     try {
       await expect(
         piAgentDirectoryForOthersTasks({ HOME: ambientHome }, join(ambientHome, "others-dir")),
-      ).rejects.toThrow(
-        'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
-      );
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+      });
       await expect(fixture.adapter.startSession(ambientContext)).rejects.toMatchObject({
         code: "forbidden",
-        message:
+        message: "This engine is not available for this task.",
+        ownerMessage:
           'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
       });
       expect(
@@ -2381,6 +2389,73 @@ describe("pi Thread naming", () => {
     } finally {
       await fixture.adapter.close();
     }
+  });
+
+  it("re-checks auth.json before each turn on an others' task and refuses without prompting Pi if a ! command appears", async () => {
+    const fixture = await setup({});
+    const ambientHome = await temporaryDirectory();
+    const ambientAgentDir = join(ambientHome, ".pi", "agent");
+    await mkdir(ambientAgentDir, { recursive: true });
+    await writeFile(
+      join(ambientAgentDir, "auth.json"),
+      JSON.stringify({ openai: { key: "sk-clean", type: "api_key" } }),
+    );
+    await writeFile(join(ambientAgentDir, "models.json"), JSON.stringify({ providers: {} }));
+    const ambientContext: HarnessSessionContext = {
+      ...fixture.context,
+      environment: { ...fixture.context.environment, HOME: ambientHome },
+      personalContext: true,
+      personLineage: false,
+      providerState: {
+        ...fixture.context.providerState,
+        kind: "ambient",
+        providerHomeDirectory: undefined,
+      },
+    };
+    const session = await fixture.adapter.startSession(ambientContext);
+    const observer = observe(session.events);
+    try {
+      // Turn 1 succeeds while auth.json is clean.
+      await session.execute(fixture.turn("First turn"));
+      await observer.waitFor("run.completed");
+      const commandsAfterTurn1 = (await fixture.capture()).filter(
+        (c) => c.type === "prompt",
+      ).length;
+      expect(commandsAfterTurn1).toBe(1);
+
+      // Between turns, the person adds a ! command to auth.json (TOCTOU).
+      await writeFile(
+        join(ambientAgentDir, "auth.json"),
+        JSON.stringify({ openai: { key: "!echo leaked", type: "api_key" } }),
+      );
+      await session.execute(fixture.turn("Second turn"));
+      const failed = await observer.waitFor("run.failed");
+      expect(failed.data).toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+        retryable: false,
+      });
+      // Pi never received the second prompt and the session cannot be reused.
+      const commandsAfterTurn2 = (await fixture.capture()).filter(
+        (c) => c.type === "prompt",
+      ).length;
+      expect(commandsAfterTurn2).toBe(1);
+      expect(await session.releaseForReuse?.()).toBe(false);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("refuses others' tasks when both HOME and PI_CODING_AGENT_DIR are absent instead of falling back to os.homedir()", async () => {
+    const targetDir = join(await temporaryDirectory(), "others-no-home");
+    await expect(piAgentDirectoryForOthersTasks({}, targetDir)).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringMatching(/HOME|PI_CODING_AGENT_DIR/u),
+    });
   });
 });
 

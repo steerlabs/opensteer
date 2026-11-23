@@ -1,3 +1,4 @@
+import { HostClientRequestError } from "./client.js";
 import { describe, expect, it, vi } from "vitest";
 import type { PersonalAccountLinkStatus } from "@opensteer/protocol";
 import { HomeAccountLinkClient, homeAccountLinkView } from "./home-account-link.js";
@@ -17,7 +18,14 @@ function fixture(initial: PersonalAccountLinkStatus, refuse?: string) {
   const host = {
     dispatch: vi.fn(async (command: { readonly type: string }) => {
       dispatched.push(command.type);
-      if (refuse) throw new Error(refuse);
+      // The Home refuses in its own words for the person.
+      if (refuse)
+        throw new HostClientRequestError({
+          code: "conflict",
+          message: refuse,
+          provenance: "host",
+          status: 409,
+        });
       if (command.type === "personal.accountLink.unlink") status = { ...status, accountLink: null };
       return { type: command.type } as never;
     }),

@@ -141,11 +141,12 @@ type CloseParams struct {
 	SessionID    string `json:"sessionId"`
 }
 type Hello struct {
-	Bridge          string `json:"bridge"`
-	Version         string `json:"version"`
-	ProtocolVersion int    `json:"protocolVersion"`
-	BootID          string `json:"bootId"`
-	Bounds          Bounds `json:"bounds"`
+	Bridge              string `json:"bridge"`
+	Version             string `json:"version"`
+	ProtocolVersion     int    `json:"protocolVersion"`
+	BootID              string `json:"bootId"`
+	DisplayDemandActive bool   `json:"displayDemandActive,omitempty"`
+	Bounds              Bounds `json:"bounds"`
 }
 type Bounds struct {
 	RequestBytes    int `json:"requestBytes"`
@@ -158,7 +159,7 @@ type Bounds struct {
 }
 
 func HelloResult(boot string) Hello {
-	return Hello{"opensteer-iphone-bridge", "0.1.0", 1, boot, Bounds{MaxRequestBytes, MaxResponseBytes, MaxEventBytes, MaxPending, 64, 8, MaxTimeoutMs}}
+	return Hello{"opensteer-iphone-bridge", "0.1.0", 1, boot, true, Bounds{MaxRequestBytes, MaxResponseBytes, MaxEventBytes, MaxPending, 64, 8, MaxTimeoutMs}}
 }
 
 type Candidate struct {

@@ -6154,7 +6154,7 @@ integration.sequential("Computer use for a connected agent, through its session"
           .where("id", "=", pending.requestId as RequestId)
           .executeTakeFirstOrThrow();
         expect(request.presentation).toMatchObject({
-          title: `Let Test agent use Notes (${apps.notes.bundleId}) on ${mac}?`,
+          title: `Let “\u2068Test agent\u2069” use Notes (${apps.notes.bundleId}) on ${mac}?`,
         });
         expect(s.world.fakeMac.frames.filter((frame) => frame.operation === "act")).toEqual([]);
         await s.answer(pending.requestId as string, "allow");
@@ -6220,7 +6220,7 @@ integration.sequential("Computer use for a connected agent, through its session"
         .where("id", "=", pending.requestId as RequestId)
         .executeTakeFirstOrThrow();
       expect(request.presentation).toMatchObject({
-        title: `Let Test agent use Notes (${apps.notes.bundleId}) on ${mac}?`,
+        title: `Let “\u2068Test agent\u2069” use Notes (${apps.notes.bundleId}) on ${mac}?`,
       });
       expect(request.presentation.title).not.toContain(label);
       expect(request.presentation).toMatchObject({
@@ -6246,7 +6246,9 @@ integration.sequential("Computer use for a connected agent, through its session"
       const pending = await s.call({ code: "await (await (await target).window()).type('Hello')" });
       expect(pending.status).toBe("pending");
       expect(await s.world.store.requests.get(pending.requestId as RequestId)).toMatchObject({
-        presentation: { title: `Let Test agent use ${capped} (${apps.notes.bundleId}) on ${mac}?` },
+        presentation: {
+          title: `Let “\u2068Test agent\u2069” use ${capped} (${apps.notes.bundleId}) on ${mac}?`,
+        },
       });
     } finally {
       await s.world.close();

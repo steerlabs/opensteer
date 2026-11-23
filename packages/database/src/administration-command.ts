@@ -1,9 +1,10 @@
 import { withDatabaseTransaction } from "./connection.js";
 import { createId, OpensteerError, type UserId } from "@opensteer/core";
+import { commandFace, type Command } from "@opensteer/protocol/command-table";
 import {
-  admitExecution,
-  bindingAgentConnectionId,
-  type AuthoritySubject,
+  assertCommandAdmitted,
+  commandSubject,
+  type CommandStoredFace,
 } from "./resource-access.js";
 import type { Kysely, Transaction } from "kysely";
 import { isDeepStrictEqual } from "node:util";
@@ -17,8 +18,12 @@ import {
   principalIdForUser,
 } from "./store-primitives.js";
 
-/** Optional for agent administration; ordinary person and reconciliation writes keep their behavior. */
-export interface AdministrationCommandIdentity {
+/**
+ * Who sent a command and how it is admitted where it commits. Optional: the person's own writes
+ * and reconciliation keep their behaviour. An agent's identity rechecks its live authority under
+ * the command's fence, before any write, and is the record of who sent it.
+ */
+export interface CommandIdentity {
   readonly output?: (result: unknown) => unknown | Promise<unknown>;
   readonly requestedBy: UserId;
   readonly idempotencyKey: string;
@@ -27,6 +32,59 @@ export interface AdministrationCommandIdentity {
   readonly authoritySource: Readonly<Record<string, unknown>>;
   /** Rechecks the agent's live authority under this command's fence, before any write. */
   readonly admit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
+  /**
+   * For a command with two faces: the store reports what the command does against what it
+   * stores, inside the same transaction, and the agent must still be admitted on that face.
+   */
+  readonly face?: (
+    transaction: Transaction<DatabaseSchema>,
+    stored: CommandStoredFace,
+  ) => Promise<void>;
+  /**
+   * Whether the store reported the face in this transaction. Set for a command only the stored
+   * state can tell: such a command that reaches its commit without a reported face refuses.
+   */
+  readonly faced?: (transaction: Transaction<DatabaseSchema>) => boolean;
+  /**
+   * Settles what this command answers in the same transaction as its effect, once the effect is
+   * written: an approved command Request is marked fulfilled only if the effect commits.
+   */
+  readonly settle?: (transaction: Transaction<DatabaseSchema>, result: unknown) => Promise<void>;
+}
+/** The earlier name, kept for the stores that take it. */
+export type AdministrationCommandIdentity = CommandIdentity;
+
+/**
+ * How an agent's command is admitted where it commits: `admitCommand` under the connection's
+ * lock, on the face it was admitted on, and again on the face the store reports. A command only
+ * the stored state can tell is held to its strictest face until the store reports one, and fails
+ * closed if it reaches its commit without one.
+ */
+export function commandAdmission(input: {
+  readonly ownerUserId: UserId;
+  readonly callerKey: string;
+  readonly command: Command;
+}): Pick<CommandIdentity, "admit" | "face" | "faced"> &
+  Required<Pick<CommandIdentity, "admit" | "face">> {
+  const subject = commandSubject(input.callerKey);
+  const admitted = { ownerUserId: input.ownerUserId, subject, command: input.command };
+  // A caller never says which face it is: only the input, or the store's own report, can.
+  const storeDecides = commandFace(input.command) === undefined;
+  let reportedIn: Transaction<DatabaseSchema> | null = null;
+  return {
+    admit: (transaction) =>
+      assertCommandAdmitted(transaction, {
+        ...admitted,
+        ...(storeDecides ? { awaitingStore: true as const } : {}),
+      }),
+    face: async (transaction, stored) => {
+      await assertCommandAdmitted(transaction, { ...admitted, stored });
+      reportedIn = transaction;
+    },
+    ...(storeDecides
+      ? { faced: (transaction: Transaction<DatabaseSchema>) => reportedIn === transaction }
+      : {}),
+  };
 }
 
 const payloadSchema = z.object({
@@ -78,6 +136,13 @@ export async function administrationCommand<Result>(
   const replay = await readAdministrationCommand(transaction, identity);
   if (replay) return replay.result as Result;
   const result = await mutate();
+  if (identity.faced && !identity.faced(transaction))
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: "authority-changed",
+      message: "This change can't be made until the Home has checked what it does.",
+    });
+  await identity.settle?.(transaction, result);
   await transaction
     .insertInto("commands")
     .values({
@@ -120,37 +185,4 @@ export function withAdministrationTransaction<Result>(
   return withDatabaseTransaction(database, (transaction) =>
     administrationCommand(transaction, identity, () => mutate(transaction)),
   );
-}
-
-/**
- * Settings are the person's: an agent changes them only while its execution is live at
- * `full-access` and, for a connection, its grant is `everything`. Read under the caller's fence.
- */
-export async function admitSettingsCaller(
-  transaction: Transaction<DatabaseSchema>,
-  input: { readonly ownerUserId: UserId; readonly callerKey: string },
-): Promise<void> {
-  const subject: AuthoritySubject = input.callerKey.startsWith("connection:")
-    ? { kind: "connection", agentConnectionId: input.callerKey.slice("connection:".length) }
-    : { kind: "binding", bindingId: input.callerKey };
-  const connectionId =
-    subject.kind === "connection"
-      ? subject.agentConnectionId
-      : await bindingAgentConnectionId(transaction, subject.bindingId);
-  if (connectionId)
-    await transaction
-      .selectFrom("agentConnections")
-      .select("id")
-      .where("id", "=", connectionId)
-      .forShare()
-      .executeTakeFirst();
-  const execution = await admitExecution(transaction, { ownerUserId: input.ownerUserId, subject });
-  if (
-    execution.mode !== "full-access" ||
-    (execution.agentConnection && execution.agentConnection.grant.scope !== "everything")
-  )
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Changing settings requires full-access",
-    });
 }

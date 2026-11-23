@@ -1,5 +1,6 @@
+import type { AgentCommandActivity } from "@opensteer/core";
+import type { CommandActivityOf, CommandActivitySpan } from "../../commands/activity.js";
 import { agentOperationCursor, listAgentOperations } from "@opensteer/database";
-import { embedderAssertionParam } from "@opensteer/control-plane-protocol";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ConnectionCaller } from "../agent-caller.js";
 import type { UserId } from "@opensteer/core";
@@ -201,9 +202,6 @@ export function registerConnectionRoutes(
     );
     routes.get(`${mcpIssuerPath}/authorize`, async (request, reply) => {
       const parameters = new URL(request.url, options.canonicalOrigin).searchParams;
-      if (parameters.getAll(embedderAssertionParam).length > 1) {
-        parameters.set(embedderAssertionParam, "");
-      }
       const path = await oauth.authorize(await getOrigin(request), uniqueParameters(parameters));
       return reply
         .header("cache-control", "no-store")
@@ -258,28 +256,46 @@ export function createConnectionRpcHandlers(
   ) => Promise<
     Pick<AgentConnectionConsent, "chromeTabs" | "chromeTabsNeedPairing" | "chromeTabsRepairNames">
   >,
+  /** The commands agents sent through the door: activity's second source (C5). */
+  commandActivityOf?: (
+    input: { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan,
+  ) => Promise<readonly AgentCommandActivity[]>,
 ): Pick<
   HostApiHandlers,
   "connections.list" | "connections.authorization.get" | "connections.activity" | "threads.activity"
 > {
+  // One page of operations, with the door's commands of the same span beside them.
+  const page = async (userId: UserId, of: CommandActivityOf, before: string | undefined) => {
+    const cursor = optionalBefore(before);
+    const operations = await listAgentOperations(oauth.store.database, {
+      userId,
+      ...of,
+      limit: 50,
+      ...cursor,
+    });
+    if (!commandActivityOf) return { ...operations, commands: [] };
+    // A page that goes on stops at its oldest operation: older commands come with the next page.
+    const oldest = operations.nextBefore ? operations.operations.at(-1)?.createdAt : undefined;
+    const commands = await commandActivityOf({
+      userId,
+      ...of,
+      ...cursor,
+      ...(oldest ? { since: new Date(oldest) } : {}),
+    } as { readonly userId: UserId } & CommandActivityOf & CommandActivitySpan);
+    return { ...operations, commands: [...commands] };
+  };
   return {
     "connections.activity": async (input, context) =>
       rpcSuccess(
-        await listAgentOperations(oauth.store.database, {
-          userId: requireOwner(context).user.id,
-          connectionId: input.connectionId,
-          limit: 50,
-          ...optionalBefore(input.before),
-        }),
+        await page(
+          requireOwner(context).user.id,
+          { connectionId: input.connectionId },
+          input.before,
+        ),
       ),
     "threads.activity": async (input, context) =>
       rpcSuccess(
-        await listAgentOperations(oauth.store.database, {
-          userId: requireOwner(context).user.id,
-          threadId: input.threadId,
-          limit: 50,
-          ...optionalBefore(input.before),
-        }),
+        await page(requireOwner(context).user.id, { threadId: input.threadId }, input.before),
       ),
     "connections.list": async (input, context) => {
       const connections = (
@@ -289,8 +305,13 @@ export function createConnectionRpcHandlers(
         input.includeRevoked
           ? { connections, endedConnections: [] }
           : {
-              connections: connections.filter((connection) => connection.state === "active"),
-              endedConnections: connections.filter((connection) => connection.state !== "active"),
+              // A paused chat is still connected: it waits, and comes back with what it holds.
+              connections: connections.filter(
+                (connection) => connection.state === "active" || connection.state === "paused",
+              ),
+              endedConnections: connections.filter(
+                (connection) => connection.state !== "active" && connection.state !== "paused",
+              ),
             },
       );
     },
@@ -387,10 +408,16 @@ export async function handleConnectionCommand(
         ...(command.grant !== undefined ? { grant: command.grant } : {}),
       });
       if (narrowed) await effects.stopLineage?.(session.user.id, command.connectionId, "narrowed");
-      return { type: "connection.update" as const, connection };
+      // The connection as the list draws it (a chat with its account, who is you, its tasks), so
+      // a screen that keeps this answer loses nothing until its next read.
+      const listed = (await oauth.store.list(session.user.id, { includeRevoked: true })).find(
+        ({ id }) => id === connection.id,
+      );
+      return { type: "connection.update" as const, connection: withIdentity(listed ?? connection) };
     }
     case "connection.remove":
       await oauth.store.remove(session.user.id, command.connectionId);
+      await effects.stopLineage?.(session.user.id, command.connectionId, "disconnect");
       return { type: "connection.remove" as const };
     case "connection.uncertain.acknowledge":
       await oauth.store.acknowledgeUncertain(session.user.id, command.connectionId);

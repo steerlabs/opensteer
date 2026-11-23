@@ -60,10 +60,6 @@ export const threadContinuationIdentitySelection = sql<Thread["continuationIdent
 /** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
 export const threadStartedByOtherSelection = sql<boolean>`(
   threads.origin_connection_id is not null
-  or exists (
-    select 1 from channel_conversations
-    where channel_conversations.active_thread_id = threads.id
-  )
 )`.as("startedByOther");
 type ThreadReadRow = {
   readonly lastVisitedAt?: Date | null;
@@ -142,7 +138,9 @@ export function isRetiredMessageRow(row: Pick<Selectable<MessageTable>, "author"
   return (row.author as { readonly kind?: unknown }).kind === "team-member";
 }
 /** The same rule as `isRetiredMessageRow`, for a query that pages or counts messages. */
-export const keptMessageSql = sql<boolean>`messages.author->>'kind' is distinct from 'team-member'`;
+export function keptMessageSql(alias = "messages") {
+  return sql<boolean>`${sql.ref(`${alias}.author`)}->>'kind' is distinct from 'team-member'`;
+}
 export function messagesFromRows(rows: readonly Selectable<MessageTable>[]): Message[] {
   return MessageSchema.array().parse(
     rows.filter((row) => !isRetiredMessageRow(row)).map(messageValueFromRow),

@@ -1,3 +1,4 @@
+import { homeFailureText } from "./failure-text.js";
 import { unsupportedVersionCloseCode } from "@opensteer/protocol";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
@@ -596,6 +597,7 @@ export class HttpHostClient {
   readonly organizeTabs = this.#tabsClient.organizeTabs;
   readonly updateTabGroup = this.#tabsClient.updateTabGroup;
   readonly deleteTabGroup = this.#tabsClient.deleteTabGroup;
+  readonly closeTabGroup = this.#tabsClient.closeTabGroup;
   readonly listApps = this.#tabsClient.listApps;
   readonly getApp = this.#tabsClient.getApp;
   readonly renameApp = this.#tabsClient.renameApp;
@@ -1545,7 +1547,11 @@ export class HttpHostClient {
           ? toThreadSummary(row.thread, this.#snapshot.environments, this.#snapshot.harnesses)
           : compactThread(row);
         const thread = this.#threadState.reconcile(
-          row.retry === undefined ? detailSummary : { ...detailSummary, retry: row.retry },
+          {
+            ...detailSummary,
+            ...(row.thread ? { endedOrigin: row.endedOrigin ?? null } : {}),
+            ...(row.retry === undefined ? {} : { retry: row.retry }),
+          },
           SequenceSchema.parse(row.revision),
           undefined,
           row.thread ? undefined : row,
@@ -2019,13 +2025,11 @@ export class HttpHostClient {
       old?.attention !== state.attention ||
       old.snapshot?.counts.pendingRequestCount !== shell.counts.pendingRequestCount ||
       old.snapshot?.counts.needsYouCount !== shell.counts.needsYouCount;
-    const effectiveWorkPolicy = shell.effectiveWorkPolicy ?? null;
     if (
       tasksChanged ||
       taskChanges ||
       visitsChanged ||
       attentionChanged ||
-      effectiveWorkPolicy !== this.#snapshot.effectiveWorkPolicy ||
       connection !== this.#snapshot.connection
     ) {
       const taskLists =
@@ -2041,7 +2045,6 @@ export class HttpHostClient {
           ...this.#snapshot,
           connection,
           connectionInterrupted: attached ? false : this.#snapshot.connectionInterrupted,
-          effectiveWorkPolicy,
           ...taskLists,
           ...(attentionChanged
             ? {
@@ -2785,8 +2788,7 @@ export class HttpHostClient {
       }
     } catch (error) {
       if (!current()) return false;
-      const message =
-        error instanceof Error ? error.message : "Could not load this conversation’s browsers.";
+      const message = homeFailureText(error, "Could not load this conversation’s browsers.");
       if (error instanceof HostClientRequestError && [403, 404].includes(error.status)) {
         this.#replaceBrowserUsage(threadId, [], { runIds: null }, message);
       } else {

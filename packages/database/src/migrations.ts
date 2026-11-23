@@ -41,8 +41,17 @@ import {
   agentDirectoryMigrationName,
   applyAgentDirectoryVerification,
 } from "./agent-directory-migration.js";
-import { workHomeMigrationName, applyWorkHome } from "./work-home-migration.js";
+import { platformVerificationRemovalMigration } from "./platform-verification-removal-migration.js";
+import {
+  onePersonHomeContractMigration,
+  onePersonHomeFirstMigration,
+} from "./one-person-home-migration.js";
 import { browserPoolMigrationName, applyBrowserPool } from "./browser-pool-migration.js";
+import {
+  applyBridgeConnections,
+  bridgeConnectionsMigrationName,
+} from "./bridge-connections-migration.js";
+import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -323,6 +332,7 @@ create unique index plugins_owner_name on plugins(installed_by, name);
  * the Host stores each such package again under its current digest at startup.
  */
 export const pluginPackageFormatMigrationName = "0037_plugin_package_format";
+export const commandRequestsMigrationName = "0112_command_requests";
 const PLUGIN_PACKAGE_FORMAT_SQL = `
 alter table plugin_versions add column package_format text;
 `;
@@ -642,7 +652,7 @@ export function migrationProvider(options?: {
                   `.execute(database);
                 },
               },
-              [workHomeMigrationName]: { up: applyWorkHome },
+              ...onePersonHomeFirstMigration,
               [browserPoolMigrationName]: { up: applyBrowserPool },
               "0107_needs_you_counts_requests": {
                 /**
@@ -658,6 +668,62 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
+              [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
+              // A Home is one person's, and a connected agent holds only what they granted.
+              ...onePersonHomeContractMigration,
+              // A connected agent is verified by the origin it is reached at, and nothing else.
+              ...platformVerificationRemovalMigration,
+              [commandRequestsMigrationName]: {
+                /**
+                 * An agent's proposed Home command rides an ordinary Request, with its parts in one
+                 * column. One open ask per proposer and thing.
+                 * An approval a restart cut off is found by its own small index, however many
+                 * Requests the Home has. Activity finds an agent's asks and the commands it ran at
+                 * once by who sent them (C5).
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table requests add column command jsonb;
+                    create unique index requests_command_open on requests
+                      (requested_by, (command->>'askKey'))
+                      where command is not null and status = 'pending';
+                    create index requests_command_running on requests (id)
+                      where status = 'fulfilled' and (command->'outcome'->>'status') = 'running';
+                    create index requests_command_proposer on requests
+                      ((command->'proposer'->>'key'), created_at desc)
+                      where command is not null;
+                    create index requests_command_thread on requests
+                      (originating_thread_id, created_at desc)
+                      where command is not null;
+                    create index commands_agent_caller on commands
+                      ((authority_source->>'callerKey'), created_at desc)
+                      where authority_source->>'kind' = 'mcp';
+                    -- A command with an effect outside the database, recorded before it acts and
+                    -- settled after: what a Disconnect waits on for a connection's (G4).
+                    create table command_attempts (
+                      id text primary key,
+                      requested_by text not null references users(id) on delete cascade,
+                      caller_key text not null,
+                      connection_id text references agent_connections(id) on delete cascade,
+                      type text not null,
+                      idempotency_key text not null,
+                      state text not null default 'running'
+                        check (state in ('running', 'done', 'failed', 'unknown')),
+                      started_at timestamptz not null default now(),
+                      settled_at timestamptz,
+                      check ((state = 'running') = (settled_at is null))
+                    );
+                    create index command_attempts_connection on command_attempts (connection_id)
+                      where connection_id is not null;
+                    create index command_attempts_running on command_attempts (id)
+                      where state = 'running';
+                    -- One key, one attempt (K1): an earlier one that did not fail answers instead.
+                    create unique index command_attempts_one_key on command_attempts
+                      (requested_by, caller_key, idempotency_key) where state <> 'failed';
+                  `.execute(database);
+                },
+              },
               "0114_thread_inputs_written_by_connection": {
                 /**
                  * Indexes connection-written inputs per task so `threadContextLineage` checks
@@ -666,9 +732,15 @@ export function migrationProvider(options?: {
                  */
                 async up(database: Kysely<unknown>) {
                   await sql`
-                    create index if not exists thread_inputs_written_by_connection
+                    create index thread_inputs_written_by_connection
                     on thread_inputs(thread_id)
-                    where connection_id is not null and state <> 'cancelled'
+                    where connection_id is not null
+                      and (
+                        state <> 'cancelled'
+                        or run_id is not null
+                        or steer_command_id is not null
+                        or delivered_at is not null
+                      )
                   `.execute(database);
                 },
               },
@@ -681,7 +753,7 @@ export function migrationProvider(options?: {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table provider_sessions
-                    add column if not exists person_lineage boolean not null default true
+                    add column person_lineage boolean not null default true
                   `.execute(database);
                 },
               },

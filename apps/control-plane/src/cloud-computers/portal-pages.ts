@@ -4,17 +4,11 @@ import {
   cloudComputerReasonSentence,
   cloudComputerStepLabel,
   cloudWords,
-  orgWords,
-  workAuditExcluded,
-  workAuditRecordKinds,
-  workHomeStatusLabel,
-  workPolicyLines,
   type CloudComputerCopyId,
   type CloudComputerDeletion,
   type CloudComputerListResponse,
   type CloudComputerReasonCode,
   type CloudComputerView,
-  type WorkHomeResponse,
 } from "@opensteer/control-plane-protocol";
 import {
   escapeHtml,
@@ -44,16 +38,6 @@ export interface CloudComputerRefusal {
   readonly next: string;
 }
 
-/** A work Home an organization assigned this person, as its own card on the page. */
-export interface WorkHomeCard {
-  readonly assignment: NonNullable<WorkHomeResponse>["assignment"];
-  readonly policy: NonNullable<WorkHomeResponse>["policy"];
-  /** The Account's own view of its computer, when it is still listed for this person. */
-  readonly computer: CloudComputerView | null;
-  /** Where to open it, found by its pinned deployment; null until there is one. */
-  readonly openHref: string | null;
-}
-
 export type CloudComputerLanding =
   | { readonly kind: "signed-out"; readonly plan: Plan; readonly signInHref: string }
   | {
@@ -61,31 +45,13 @@ export type CloudComputerLanding =
       readonly plan: Plan;
       readonly deleted: boolean;
       readonly deletion?: CloudComputerDeletion;
-      readonly work: readonly WorkHomeCard[];
     }
   | {
       readonly kind: "computer";
       readonly plan: Plan;
       readonly computer: Computer;
       readonly openHref: string | null;
-      readonly work: readonly WorkHomeCard[];
     };
-
-/**
- * Whether an organization pays for and manages this Cloud Computer, so the person may not
- * bill, suspend, resume or delete it here: its view's work marker when the Account sends
- * one, its "work-managed" reason code, or its id among the person's work Homes.
- */
-export function cloudComputerManagedByOrganization(
-  computer: CloudComputerView,
-  workComputerIds: ReadonlySet<string>,
-): boolean {
-  return (
-    computer.work !== undefined ||
-    workComputerIds.has(computer.id) ||
-    ("reasonCode" in computer && computer.reasonCode === "cloud-computer-work-managed")
-  );
-}
 
 /** The Account's reason in the app's own words where it has them, else as the Account gave it. */
 export function cloudComputerReason(computer: {
@@ -165,7 +131,7 @@ export function cloudComputerLandingBody(input: {
   if (state.kind === "offer")
     return card(
       head(),
-      `${alert(input.refusal)}${note(input.notice)}${workCards(state.work)}${state.work.length ? `<h2 class="section-title">${escapeHtml(cloudWords("cloud.web.personal"))}</h2>` : ""}${state.deleted ? note(cloudWords("cloud.web.deleted.detail")) : ""}${deletionNotes(state.deletion)}${whatItIs()}${price(state.plan)}${changes()}<a class="btn btn--primary btn--block" href="${cloudComputerCheckoutPortalPath}">${escapeHtml(cloudWords("cloud.checkout"))}</a>`,
+      `${alert(input.refusal)}${note(input.notice)}${state.deleted ? note(cloudWords("cloud.web.deleted.detail")) : ""}${deletionNotes(state.deletion)}${whatItIs()}${price(state.plan)}${changes()}<a class="btn btn--primary btn--block" href="${cloudComputerCheckoutPortalPath}">${escapeHtml(cloudWords("cloud.checkout"))}</a>`,
     );
   const { computer } = state;
   if (computer.status === "preparing")
@@ -173,12 +139,8 @@ export function cloudComputerLandingBody(input: {
       head(cloudWords("cloud.preparing.title")),
       `${alert(input.refusal)}${preparingSteps(computer)}
       <p class="lead">${escapeHtml(cloudWords("cloud.step.machineDetail"))} ${escapeHtml(cloudWords("cloud.preparing.footer"))}</p>
-      <p class="fine">${escapeHtml(cloudWords("cloud.web.preparing.refresh"))}</p>${changes()}${workCards(state.work)}`,
+      <p class="fine">${escapeHtml(cloudWords("cloud.web.preparing.refresh"))}</p>${changes()}`,
     );
-  const managed = cloudComputerManagedByOrganization(
-    computer,
-    new Set(state.work.map(({ assignment }) => assignment.computerId)),
-  );
   const deleting =
     computer.status === "needs_attention" &&
     computer.reasonCode === "cloud-computer-deletion-pending";
@@ -235,15 +197,13 @@ export function cloudComputerLandingBody(input: {
   const hidden = `<input type="hidden" name="id" value="${escapeHtml(computer.id)}">`;
   const power = deleting
     ? ""
-    : managed
-      ? note(cloudWords("cloud.web.managed"))
-      : `${
-          computer.status === "suspended"
-            ? `<form method="post" action="${cloudComputerActionPortalPath("resume")}">${hidden}<button class="btn btn--primary btn--block" type="submit">${escapeHtml(cloudWords("cloud.resume"))}</button></form>`
-            : `<details class="cloud-computer__confirm"><summary class="btn btn--block">${escapeHtml(cloudWords("cloud.suspend"))}</summary>
+    : `${
+        computer.status === "suspended"
+          ? `<form method="post" action="${cloudComputerActionPortalPath("resume")}">${hidden}<button class="btn btn--primary btn--block" type="submit">${escapeHtml(cloudWords("cloud.resume"))}</button></form>`
+          : `<details class="cloud-computer__confirm"><summary class="btn btn--block">${escapeHtml(cloudWords("cloud.suspend"))}</summary>
         <p class="lead"><strong>${escapeHtml(cloudWords("cloud.suspend.title"))}</strong> ${escapeHtml(cloudWords("cloud.suspend.body"))}</p>
         <form method="post" action="${cloudComputerActionPortalPath("suspend")}">${hidden}<button class="btn btn--block" type="submit">${escapeHtml(cloudWords("cloud.suspend"))}</button></form></details>`
-        }
+      }
       <details class="cloud-computer__confirm"${input.refusal?.sentence === cloudWords("cloud.web.typeWord") ? " open" : ""}><summary class="btn btn--block cloud-computer__danger">${escapeHtml(cloudWords("cloud.delete"))}</summary>
         <p class="lead"><strong>${escapeHtml(cloudWords("cloud.delete.title"))}</strong> ${escapeHtml(cloudWords("cloud.delete.body"))}</p>
         <form class="form" method="post" action="${cloudComputerActionPortalPath("delete")}">${hidden}
@@ -256,8 +216,8 @@ export function cloudComputerLandingBody(input: {
     ${deletionNotes(computer.deletion)}
     <h2 class="section-title">${escapeHtml(cloudWords("cloud.plan.title"))}</h2>
     <p class="lead">${escapeHtml(cloudComputerPriceLine(state.plan, "en-US").line)}${computer.renewsAt ? `<br>${escapeHtml(cloudWords("cloud.renews", { date: day(computer.renewsAt) }))}` : ""}</p>
-    ${managed ? "" : `<a class="btn btn--block" href="${cloudComputerBillingPortalPath}">${escapeHtml(cloudWords("cloud.web.manageBilling"))}</a>`}
-    <div class="cloud-computer__power">${power}</div>${workCards(state.work)}`,
+    <a class="btn btn--block" href="${cloudComputerBillingPortalPath}">${escapeHtml(cloudWords("cloud.web.manageBilling"))}</a>
+    <div class="cloud-computer__power">${power}</div>`,
   );
 }
 
@@ -336,65 +296,6 @@ export function preparingSteps(
         `<li class="step" data-state="${stepStates[step.state]}">${escapeHtml(cloudComputerStepLabel(step.id))}${step.state === "failed" ? ` · ${escapeHtml(cloudWords("cloud.step.failed"))}` : ""}</li>`,
     )
     .join("")}</ol>`;
-}
-
-/** Each work Home as its own card: what the organization decides, and no controls. */
-function workCards(work: readonly WorkHomeCard[]): string {
-  return work
-    .map(({ assignment, policy, computer, openHref }) => {
-      const organization = assignment.organizationName;
-      const tone =
-        assignment.deleted || assignment.signInCut
-          ? "muted"
-          : assignment.homeStatus === "ready"
-            ? "ok"
-            : assignment.homeStatus === "needs_attention"
-              ? "warn"
-              : assignment.homeStatus === "preparing"
-                ? "busy"
-                : "muted";
-      const policyRows = workPolicyLines(policy)
-        .map((line) =>
-          row({ icon: "shield", title: `${line.title}: ${line.value}`, detail: line.detail }),
-        )
-        .join("");
-      const sees = [
-        orgWords("org.work.see.status"),
-        orgWords("org.work.see.policy"),
-        ...workAuditRecordKinds.map(({ words }) => words),
-      ];
-      const never = [...workAuditExcluded, orgWords("org.work.see.personal")];
-      return `<section class="cloud-computer__work" aria-label="${escapeHtml(orgWords("org.work.title", { organization }))}">
-      <h2 class="cloud-computer__work-title"><span class="cloud-computer__badge">${escapeHtml(orgWords("org.work.badge", { organization }))}</span>${escapeHtml(orgWords("org.work.title", { organization }))}</h2>
-      <p class="lead">${escapeHtml(orgWords("org.work.managed", { organization }))}</p>
-      ${openHref ? `<a class="btn btn--primary btn--block" href="${escapeHtml(openHref)}">${escapeHtml(cloudWords("cloud.ready.open"))}</a>` : ""}
-      <ul class="places">${row({
-        icon: "server",
-        title: workHomeStatusLabel(assignment),
-        detail: assignment.reason,
-        tone,
-      })}${
-        assignment.address
-          ? row({
-              icon: "link",
-              title: cloudWords("cloud.address"),
-              detail: assignment.address,
-              mono: true,
-            })
-          : ""
-      }${computer ? details(computer) : ""}</ul>
-      <h3 class="section-title">${escapeHtml(orgWords("org.work.policy", { organization }))}</h3>
-      <ul class="places">${policyRows}</ul>
-      <details class="cloud-computer__confirm"><summary class="btn btn--block">${escapeHtml(orgWords("org.work.see.title", { organization }))}</summary>
-        <p class="lead">${escapeHtml(orgWords("org.work.see.lead", { organization }))}</p>
-        <p class="cloud-computer__list-title">${escapeHtml(orgWords("org.work.see.sees", { organization }))}</p>
-        <ul class="cloud-computer__list cloud-computer__list--sees">${sees.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-        <p class="cloud-computer__list-title">${escapeHtml(orgWords("org.work.see.never", { organization }))}</p>
-        <ul class="cloud-computer__list cloud-computer__list--never">${never.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-      </details>
-    </section>`;
-    })
-    .join("");
 }
 
 /** `{portal}/cloud-computer/checkout`: the price once more and one button that buys it. */

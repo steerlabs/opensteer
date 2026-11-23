@@ -38,8 +38,6 @@ import { nodeItemsPredicate, taskItemsPredicate } from "./personal-state-schema.
 type Database = Kysely<DatabaseSchema>;
 type Read = Transaction<DatabaseSchema>;
 
-import { inheritWorkHomeDatabase } from "./work-home-context.js";
-
 export type PersonalReadScope =
   | { readonly kind: "shell" }
   | { readonly kind: "thread"; readonly threadId: ThreadId }
@@ -82,7 +80,6 @@ export function withPersonalSyncRead<Result>(
     .setAccessMode("read only")
     .execute(async (tx) => {
       scopedReadTransactions.add(tx);
-      inheritWorkHomeDatabase(database, tx);
       return action(tx);
     });
 }

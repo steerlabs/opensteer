@@ -1,10 +1,10 @@
 # Verified Agent Directory Operations
 
-The Account service publishes a signed list of verified agent platforms and embedding products at `GET /v1/agent-directory` (`Cache-Control: public, max-age=300`). Homes fetch this list from their configured Account origin so consent screens can verify known redirect origins without ever fetching a URL supplied by an agent.
+The Account service publishes a signed list of verified agents at `GET /v1/agent-directory` (`Cache-Control: public, max-age=300`). Homes fetch this list from their configured Account origin so consent screens can verify known redirect origins without ever fetching a URL supplied by an agent.
 
 ## Running the operator CLI
 
-An operator needs write access to the Account database to edit the directory. The public HTTP route serves only the signed directory, and the document holds curated names, origins, relationships and public verification keys.
+An operator needs write access to the Account database to edit the directory. The public HTTP route serves only the signed directory, and the document holds curated names and origins.
 
 The directory operator CLI ships in the Account image as `dist/agent-directory-operator-main.js`. It requires only `OPENSTEER_CONTROL_PLANE_DATABASE_URL` in the environment:
 
@@ -12,7 +12,7 @@ The directory operator CLI ships in the Account image as `dist/agent-directory-o
 node dist/agent-directory-operator-main.js list | add <json-file> | update <id> <json-file> | remove <id>
 ```
 
-Every command prints JSON to stdout and exits `0` on success, or prints an error message to stderr and exits `1`. Every `add`, `update`, and `remove` runs in a transaction, validates the full directory (unique IDs, unique exact `https://` origins with no wildcards or loopback hosts, valid `embedsVia` references), and increments the monotonic `revision`.
+Every command prints JSON to stdout and exits `0` on success, or prints an error message to stderr and exits `1`. Every `add`, `update`, and `remove` runs in a transaction, validates the full directory (unique IDs, unique exact `https://` origins with no wildcards or loopback hosts), and increments the monotonic `revision`.
 
 ### List current entries
 
@@ -37,7 +37,7 @@ done
 
 ### Add one entry
 
-Write a JSON file containing `id`, `displayName`, `origins`, and optionally `keys` (public JWKS for `EdDSA`/`ES256`) and `embedsVia` (IDs of platform entries already in the directory):
+Write a JSON file containing `id`, `displayName` and `origins`:
 
 ```json
 {
@@ -69,7 +69,7 @@ Returns `{"revision":3,"entry":{...}}`.
 node dist/agent-directory-operator-main.js remove claude
 ```
 
-Returns `{"revision":4,"removed":true}`. Removal is refused with a conflict if another entry still lists `<id>` in `embedsVia`; update or remove the embedding entry first.
+Returns `{"revision":4,"removed":true}`.
 
 ## Trust, refresh and expiry
 
@@ -79,4 +79,4 @@ The Home persists its last accepted directory across restarts. It rejects lower 
 
 The Home refreshes at start and in the background. Consent uses the current copy immediately. On a Home that has never accepted a copy, consent can wait for the first refresh for at most two seconds. Without a usable copy, consent continues with an unverified identity.
 
-A supplied statement that is malformed, expired, replayed, or otherwise unverifiable also leaves consent fully unverified, even for a known platform. A newer directory can withdraw verification by removing an origin, a pairing, or the signing key used at consent. The Home records the first withdrawal and preserves the original evidence. Pending consent uses the current local directory. If verification changes before approval, the Home asks the person to review the request again.
+A newer directory can withdraw verification by removing the origin a consent was verified by. The Home records the first withdrawal and preserves the original evidence. Pending consent uses the current local directory. If verification changes before approval, the Home asks the person to review the request again.

@@ -73,8 +73,6 @@ export interface RunnerStatementContext {
   /** Undefined when the Run has no active session or its requester is not the owner. */
   readonly binding: ExecutionBindingFacts | undefined;
   readonly threadAdmitted: boolean;
-  /** Whether queued Messaging inputs hold authority over this task. */
-  readonly channelInputs: boolean;
 }
 
 function isTerminal(status: string) {
@@ -270,16 +268,6 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
             .where("runners.revokedAt", "is", null),
         )
         .as("threadAdmitted"),
-      eb
-        .exists(
-          eb
-            .selectFrom("threadInputs")
-            .select(sql.lit(1).as("held"))
-            .where("threadInputs.threadId", "=", run.threadId)
-            .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
-            .where(sql<string>`thread_inputs.authority_source->>'kind'`, "=", "channel-ingress"),
-        )
-        .as("channelInputs"),
     ])
     .where("runAttempts.runId", "=", run.id)
     .where("runAttempts.bindingGeneration", "=", statement.bindingGeneration)
@@ -328,7 +316,6 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
     sessionRunnerRevokedAt,
     agentHomeComputerId,
     threadAdmitted,
-    channelInputs,
     ...attempt
   } = bound;
   const context: RunnerStatementContext = {
@@ -355,7 +342,6 @@ export async function acceptPersonalRunnerStatement<Statement extends RunnerStat
           }
         : undefined,
     threadAdmitted: Boolean(threadAdmitted),
-    channelInputs: Boolean(channelInputs),
   };
 
   const disposition =

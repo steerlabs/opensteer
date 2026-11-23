@@ -833,6 +833,12 @@ export const runFailureMessageMaxLength = 20_000;
 const runFailureShape = {
   code: z.string().min(1).max(255),
   message: z.string().max(runFailureMessageMaxLength),
+  /**
+   * Optional detail shown only to the person on their own screens (task view,
+   * task list preview, notifications). Never sent to a connected agent, a chat
+   * reply, a delegation result, or a follow-up Run's context.
+   */
+  ownerMessage: z.string().max(runFailureMessageMaxLength).optional(),
   retryable: z.boolean(),
   status: z.literal("failed"),
 } as const;

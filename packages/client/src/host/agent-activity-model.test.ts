@@ -2832,3 +2832,21 @@ it("keeps one maintenance summary for completed, failed and interrupted Runs", (
     ).toEqual([entry.compaction]);
   }
 });
+
+describe("ACP engine steps", () => {
+  const present = (namespace: string, name: string, args: Record<string, unknown>) =>
+    toolPresentation(tool({ arguments: args, tool: { name, namespace } }));
+
+  it("reads Antigravity's native tools and the ACP kinds like every other engine's", () => {
+    expect(present("antigravity", "run_command", { command_line: "git status" })).toMatchObject({
+      command: "git status",
+      kind: "command",
+    });
+    expect(present("antigravity", "view_file", { absolute_path: "/a/notes.md" })).toMatchObject({
+      kind: "read",
+      paths: ["/a/notes.md"],
+    });
+    expect(present("acp", "execute", { command: "pwd" })).toMatchObject({ kind: "command" });
+    expect(present("acp", "edit", { path: "/a/b.ts" })).toMatchObject({ kind: "edit" });
+  });
+});

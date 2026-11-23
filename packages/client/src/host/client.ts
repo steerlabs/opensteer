@@ -7,12 +7,7 @@ import type { TabsClient } from "./tabs-contract.js";
 import type { AnsweredQuestion } from "@opensteer/core";
 import type { PersonShowMessage, PluginEngineStateView } from "@opensteer/protocol";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
-import type {
-  ChannelAccessPolicy,
-  ChannelAccount,
-  ChannelBinding,
-  IntegrationConnection,
-} from "@opensteer/channel-core";
+import type { ChannelAccount, IntegrationConnection } from "@opensteer/channel-core";
 import type {
   ArtifactContentPart,
   AssignmentSummary,
@@ -251,6 +246,8 @@ export interface ThreadSummary {
   agentSessionId?: string | null;
   /** A connected agent's own task: its session and connection, kept after the session ends. */
   externalWork?: import("@opensteer/protocol/personal-sync").PersonalTaskExternalWork | null;
+  /** The chat or connected agent that started this task ended, so it takes no new messages. */
+  endedOrigin?: "chat" | "agent" | null | undefined;
   /** Active provider retry on the task's executing Run, when retrying. */
   retry?: import("@opensteer/core").RunRetry | null;
   id: string;
@@ -538,7 +535,12 @@ export interface RunEntry {
   interruptedCause?: import("@opensteer/core").RunInterruptedCause;
   /** When late confirmation proved this Run stopped after an earlier unconfirmed stop. */
   stopConfirmedAt?: string;
-  error: { code: string; message: string; retryable: boolean } | null;
+  error: {
+    code: string;
+    message: string;
+    ownerMessage?: string | undefined;
+    retryable: boolean;
+  } | null;
   id: string;
   kind: "run";
   /**
@@ -654,6 +656,8 @@ export interface BrowserTabSummary {
   /** The page is loading; absent from an older Browser Runtime. */
   loading?: boolean | undefined;
   navigationFailed?: boolean | undefined;
+  /** The last wake opened this tab again at its address (ms since the epoch). */
+  reopenedAt?: number | undefined;
   id: BrowserSurfaceId;
   title: string;
   url: string;
@@ -903,8 +907,6 @@ export interface HostSnapshot {
     readonly manageComputers: boolean;
     readonly managePrivateResources: boolean;
   } | null;
-  /** Undefined before the shell arrives and null when it reports a personal Home. */
-  effectiveWorkPolicy?: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
   needsYou: import("@opensteer/protocol").NeedsYouPage | null;
   attentionSummaries?: readonly import("zod").infer<
     typeof import("@opensteer/protocol/personal-sync").PersonalShellSnapshotSchema
@@ -1050,7 +1052,6 @@ export interface ResolveRequestInput {
 }
 
 export interface CreateChannelConnectionInput {
-  accessPolicy: ChannelAccessPolicy;
   credentials: Readonly<Record<string, string>>;
   provider: string;
   routingMode: "dedicated" | "shared";
@@ -1059,7 +1060,6 @@ export interface CreateChannelConnectionInput {
 
 export interface CreatedChannelConnection {
   account: ChannelAccount;
-  binding: ChannelBinding;
   connection: IntegrationConnection;
 }
 

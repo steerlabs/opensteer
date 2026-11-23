@@ -470,9 +470,22 @@ async function startSignInHome(withBrowser: boolean) {
 
 async function clickFromViewer(
   stack: PersonalRuntime,
-  { sessionId, surfaceId }: { readonly sessionId: string; readonly surfaceId: string },
+  {
+    page,
+    sessionId,
+    surfaceId,
+  }: {
+    readonly page: {
+      title(): Promise<string>;
+      settleRendering?(signal?: AbortSignal): Promise<void>;
+    };
+    readonly sessionId: string;
+    readonly surfaceId: string;
+  },
   waitForCallback: () => Promise<void>,
 ) {
+  await expect.poll(() => page.title(), { timeout: 5_000 }).toBe("Fixture authorization");
+  await page.settleRendering?.(AbortSignal.timeout(5_000));
   const socket = new WebSocket(
     new URL(`/v1/browser-sessions/${sessionId}/connect`, stack.hostOrigin),
     { headers: viewerHeaders(stack) },

@@ -403,7 +403,7 @@ export class CodexAppServer {
     if (this.#failure) return;
     this.#failure = error;
     this.#log?.("warn", "codex.app-server.failed", {
-      detail: error.message,
+      detail: this.client.redactDiagnostic(error.message),
       sessions: this.#attached.size,
     });
     const owners = [...this.#attached];
@@ -523,7 +523,7 @@ export class CodexAppServer {
       owner.receive(message);
     } catch (error) {
       this.#log?.("warn", "codex.app-server.frame-failed", {
-        detail: error instanceof Error ? error.message : "unknown",
+        detail: this.client.redactDiagnostic(error instanceof Error ? error.message : "unknown"),
         method: message.method,
       });
     }

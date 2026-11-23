@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BrowserAttachTicketClaims } from "@opensteer/protocol";
@@ -276,6 +276,8 @@ describe("Ed25519AttachTicketVerifier", () => {
       replayLedgerPath,
       resolvePublicKey: () => keys.publicKey,
     });
+    // The runtime has used its state since the ledger was written: its session files are there.
+    await mkdir(path.join(path.dirname(replayLedgerPath), "session-files"));
     await rm(replayLedgerPath);
 
     await expect(
@@ -288,6 +290,43 @@ describe("Ed25519AttachTicketVerifier", () => {
       message: "The browser attach ticket replay ledger is unavailable.",
     });
   });
+
+  it.each([
+    ["empty", [] as string[]],
+    ["holding only its own unfinished write", [".attach-ticket-replay-0000.tmp"]],
+    ["holding only a profile's staging", ["profile-abc123"]],
+  ])(
+    "starts an empty ledger in a runtime state directory %s: a ledger never written is not a lost one",
+    async (_case, entries) => {
+      const keys = generateKeyPairSync("ed25519");
+      const replayLedgerPath = await temporaryLedgerPath();
+      const directory = path.dirname(replayLedgerPath);
+      // A stop or a full disk between making the directory and the ledger's first write.
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      for (const entry of entries)
+        if (entry.startsWith("profile-")) await mkdir(path.join(directory, entry), { mode: 0o700 });
+        else await writeFile(path.join(directory, entry), "partial", { mode: 0o600 });
+      const verifier = await Ed25519AttachTicketVerifier.create({
+        replayLedgerPath,
+        resolvePublicKey: () => keys.publicKey,
+      });
+      const token = ticket(validClaims(), keys.privateKey);
+      await verifier.verify(token, expectation());
+      // And it is the durable ledger from then on: the nonce stays used.
+      await expect(
+        (
+          await Ed25519AttachTicketVerifier.create({
+            initializationNow: expectation().now,
+            replayLedgerPath,
+            resolvePublicKey: () => keys.publicKey,
+          })
+        ).verify(token, expectation()),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "The browser attach ticket has already been used.",
+      });
+    },
+  );
 
   it("rejects a claim that would exceed the ledger byte bound without corrupting state", async () => {
     const keys = generateKeyPairSync("ed25519");

@@ -63,6 +63,12 @@ export const BrowserTabRecordSchema = z.strictObject({
   canGoBack: z.boolean(),
   canGoForward: z.boolean(),
   sizedByAgent: z.boolean(),
+  /**
+   * The last wake opened this tab again at its address (ms since the epoch): its history, scroll
+   * and page state are gone, and the person is told so once. Absent for a tab that came back as
+   * it was.
+   */
+  reopenedAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 });
 export type BrowserTabRecord = z.infer<typeof BrowserTabRecordSchema>;
 export const BrowserTabStreamMetaSchema = z.strictObject({

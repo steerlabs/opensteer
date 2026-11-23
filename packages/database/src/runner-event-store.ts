@@ -1,4 +1,5 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { executionDate } from "./personal-transaction.js";
 import {
   projectThreadState,
@@ -7,7 +8,6 @@ import {
   replyPreview,
   writeThreadSummary,
 } from "./thread-status.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, type PersonalMutation } from "./personal-mutation.js";
 import { acceptPersonalRunnerStatement } from "./personal-runner-receipts.js";
@@ -141,12 +141,7 @@ function assertRunnerEventTransition(
 type StatementThread = Awaited<ReturnType<typeof lockStatementThread>>;
 
 /** lockThreadRow, also reading what a Runner message needs from the locked task. */
-async function lockStatementThread(
-  tx: Transaction<DatabaseSchema>,
-  threadId: ThreadId,
-  channelInputs: boolean,
-) {
-  if (channelInputs) await lockThreadChannelAuthorities(tx, [threadId]);
+async function lockStatementThread(tx: Transaction<DatabaseSchema>, threadId: ThreadId) {
   return tx
     .selectFrom("threads")
     .select((eb) => [
@@ -624,9 +619,17 @@ async function applyEventProjection(
         !event.runId ||
         ((await runHasActiveGrant(transaction, event.runId)) &&
           (await runAssignmentAcceptsRequests(transaction, event.runId)));
+      const request = event.data.request;
+      const presentation =
+        request.kind === "harness.approval"
+          ? {
+              ...request.presentation,
+              title: outsideName(request.presentation.title, 240) || "Approval required",
+            }
+          : request.presentation;
       await transaction
         .insertInto("requests")
-        .values(requestInsert(event.data.request))
+        .values(requestInsert({ ...request, presentation }))
         .executeTakeFirstOrThrow();
       if (!accepted) {
         await transaction
@@ -660,7 +663,8 @@ async function applyEventProjection(
         if (replyTarget?.kind === "channel") {
           await enqueueChannelConversationStatus(transaction, {
             conversationId: replyTarget.conversationId,
-            text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(event.threadId)}`,
+            // One line and a link: what is asked, and every answer, stay in Opensteer.
+            text: `This task needs you: ${links.threadUrl(event.threadId)}`,
           });
         }
       }
@@ -1038,7 +1042,7 @@ export async function commitRunnerEvent(
             (!lostExecution && !context.threadAdmitted)
           )
             refuseExecutionBinding();
-          const thread = await lockStatementThread(tx, event.threadId, context.channelInputs);
+          const thread = await lockStatementThread(tx, event.threadId);
           if (lostExecution) {
             assertRunnerEventTransition(run, event);
             const recovery = await recoverLostRunTransaction(tx, {

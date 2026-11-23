@@ -26,6 +26,8 @@
     "scripts/electron-cdp-boundary-smoke.ts",
     "scripts/electron-browser-passkey-smoke.ts",
     "scripts/electron-profile-restore-smoke.ts",
+    "scripts/electron-browser-cookie-smoke.ts",
+    "scripts/electron-tab-restore-trial.ts",
     "scripts/fixtures/profile-restore-tls.ts",
     "scripts/electron-usb-smoke.ts",
     "scripts/electron-system-ca-smoke.ts",

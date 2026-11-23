@@ -205,7 +205,7 @@ describe("Needs you", () => {
 describe("Right now", () => {
   const plain = { verified: false, selfAsserted: false, providerId: null };
   const grok = mockAgentIdentity.selfNamed("Grok", "https://grok.com", false);
-  const claude = mockAgentIdentity.verifiedPlatform("claude", "Claude", "https://claude.ai");
+  const claude = mockAgentIdentity.verifiedOrigin("claude", "Claude", "https://claude.ai");
 
   it("shows an agent in an app as information, named by its task and the app", () => {
     const status = menuBarStatus({
@@ -370,7 +370,7 @@ describe("Right now", () => {
     expect(status.rightNow.map((row) => [row.actor, row.using])).toEqual([
       [
         {
-          label: "Says it is Grok",
+          label: "Says it is “Grok”",
           name: "Grok",
           verified: false,
           selfAsserted: true,
@@ -380,7 +380,7 @@ describe("Right now", () => {
       ],
       [
         {
-          label: "Says it is ChatGPT",
+          label: "Says it is “ChatGPT”",
           name: "ChatGPT",
           verified: false,
           selfAsserted: true,
@@ -390,7 +390,7 @@ describe("Right now", () => {
       ],
       [
         {
-          label: "Verified: Claude",
+          label: "Verified: “Claude”",
           name: "Claude",
           verified: true,
           selfAsserted: false,

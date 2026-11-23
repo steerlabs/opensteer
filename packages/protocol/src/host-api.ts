@@ -25,6 +25,7 @@ import {
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import {
   AgentGrantSchema,
+  AgentCommandActivitySchema,
   AgentOperationViewSchema,
   AgentSessionIdSchema,
   DeviceIdSchema,
@@ -62,6 +63,7 @@ import {
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import {
   AgentConnectionSchema,
+  BridgeSendersSchema,
   AgentConnectionIdSchema,
   AgentConnectionConsentSchema,
 } from "./agent-connections.js";
@@ -76,15 +78,9 @@ import { CardApprovalSchema } from "./card-use.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import { ComputerUseResolvedAppSchema } from "./computer-use.js";
 import {
-  ChannelAccessGrantViewSchema,
-  ChannelAccessPolicySchema,
   ChannelAccountIdSchema,
   ChannelAccountViewSchema,
-  ChannelBindingIdSchema,
-  ChannelBindingViewSchema,
   ChannelDashboardViewSchema,
-  ChannelExecutionPolicySchema,
-  ChannelRouteSelectorSchema,
   IntegrationConnectionViewSchema,
 } from "@opensteer/channel-core";
 import {
@@ -138,6 +134,7 @@ import {
   RequestIdSchema,
   RequestResponseSchema,
   RequestViewSchema,
+  commandRequestOutcomeSchema,
   RunAttemptViewSchema,
   RunIdSchema,
   RunViewSchema,
@@ -465,6 +462,8 @@ export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessio
 const AgentOperationPageSchema = z.object({
   operations: z.array(AgentOperationViewSchema).max(100),
   nextBefore: z.string().max(200).nullable(),
+  /** The commands sent through the door in the same span as this page's operations, newest first. */
+  commands: z.array(AgentCommandActivitySchema).max(100),
 });
 const otherCommandInputSchema = z.discriminatedUnion("type", [
   IphoneScreenAttachCommandSchema,
@@ -717,6 +716,18 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("request.respond"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    requestId: RequestIdSchema,
+    /** The revision of the Request the person reviewed. */
+    expectedRevision: PersonalRevisionSchema,
+    /**
+     * The command as the person approves it: as proposed, or changed on its screen, with the values
+     * only the person types. Its type and what it changes must be what was asked.
+     */
+    command: z.record(z.string().max(200), z.unknown()),
+    type: z.literal("request.command.approve"),
+  }),
+  z.strictObject({
     /** Source fields the person filled in (a base URL, a region); the driver validates them. */
     config: z.record(z.string().max(60), z.string().max(2_048)).optional(),
     driverKind: HarnessIdSchema,
@@ -851,9 +862,14 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("personal.accountLink.resume"),
   }),
-  /** Ends this Home's Account link here and at the Account, with no Remote access involved. */
+  /**
+   * Ends this Home's Account link here and at the Account, with no Remote access involved. The
+   * Mac app sends it as two steps with its Account work between them: `revoke-sessions` ends the
+   * Home's Remote access sessions, `remove-link` forgets the link. Without `step`, both.
+   */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    step: z.enum(["revoke-sessions", "remove-link"]).optional(),
     type: z.literal("personal.accountLink.unlink"),
   }),
   z.strictObject({
@@ -973,6 +989,12 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     requestId: z.uuid(),
     type: z.literal("integration.computer.setup.cancel"),
   }),
+  /** The person ends one computer-use session from its live view: it narrows, and runs now. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    sessionId: ComputerUseSessionIdSchema,
+    type: z.literal("integration.computer.session.stop"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     setupRequestId: z.uuid(),
@@ -1009,7 +1031,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.disconnect"),
   }),
   z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
     credentials: z.record(z.string(), z.string()),
     idempotencyKey: idempotencyKeySchema,
     provider: z.string().min(1),
@@ -1024,48 +1045,43 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   /**
    * A channel whose transport runs on one of the owner's computers — iMessage
-   * through that Mac — pinned there, using its app connection. `ownerHandles`
-   * are where the owner writes from, linked to them at once.
+   * through that Mac — pinned there, using its app connection. "Me" on it is
+   * linked as on any account: by sending, from the owner's phone, a code
+   * Opensteer shows.
    */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    ownerHandles: z.array(z.string().trim().min(3).max(320)).min(1).max(8),
     provider: z.string().min(1),
     runnerId: RunnerIdSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
+  /**
+   * A chat: a connection reached through a chat account, for its direct messages or for one
+   * named channel. Who may give it work is chosen here and never changes; "anyone" only for a
+   * named channel, holding tasks and plugins only.
+   */
   z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
     accountId: ChannelAccountIdSchema,
-    executionPolicy: ChannelExecutionPolicySchema,
+    conversation: z
+      .strictObject({
+        id: z.string().trim().min(1).max(512),
+        name: z.string().trim().min(1).max(160),
+      })
+      .nullable(),
+    senders: BridgeSendersSchema,
+    accessMode: ThreadAccessModeSchema,
+    grant: AgentGrantSchema,
     idempotencyKey: idempotencyKeySchema,
-    selector: ChannelRouteSelectorSchema,
-    type: z.literal("channel.binding.create"),
+    type: z.literal("channel.chat.create"),
   }),
+  /**
+   * A code the person sends from their own account on the chat account, to link it as "me".
+   * Linking another replaces the one linked before. Nothing is said in the chat.
+   */
   z.strictObject({
-    bindingId: ChannelBindingIdSchema,
+    accountId: ChannelAccountIdSchema,
     idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.binding.revoke"),
-  }),
-  z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
-    bindingId: ChannelBindingIdSchema,
-    expectedRevision: z.number().int().positive(),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.binding.update"),
-  }),
-  z.strictObject({
-    bindingId: ChannelBindingIdSchema,
-    externalUserId: z.string().trim().min(1).max(512),
-    expectedRevision: z.number().int().positive(),
-    decision: z.enum(["approved", "declined", "revoked"]),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.access.review"),
-  }),
-  z.strictObject({
-    code: z.string().trim().min(8).max(32),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.identity.link"),
+    type: z.literal("channel.me.link"),
   }),
   z.strictObject({
     connectionId: IntegrationConnectionIdSchema,
@@ -1332,6 +1348,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
+  z.object({
+    type: z.literal("request.command.approve"),
+    outcome: commandRequestOutcomeSchema,
+  }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
   z.object({ installation: HarnessInstallationSchema, type: z.literal("harness.update") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.rename") }),
@@ -1420,6 +1440,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.computer.setup.request"),
   }),
   z.object({ type: z.literal("integration.computer.setup.cancel") }),
+  z.object({ type: z.literal("integration.computer.session.stop") }),
   z.object({
     type: z.literal("integration.computer.setup.respond"),
   }),
@@ -1442,28 +1463,20 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.create"),
   }),
   z.object({ type: z.literal("channel.connection.credentials.replace") }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
-  z.object({ binding: ChannelBindingViewSchema, type: z.literal("channel.binding.create") }),
-  z.object({ type: z.literal("channel.binding.revoke") }),
-  z.object({ binding: ChannelBindingViewSchema, type: z.literal("channel.binding.update") }),
-  z.object({ grant: ChannelAccessGrantViewSchema, type: z.literal("channel.access.review") }),
+  z.object({ connection: AgentConnectionSchema, type: z.literal("channel.chat.create") }),
   z.object({
-    account: ChannelAccountViewSchema,
-    identity: z.object({
-      displayName: z.string().min(1).max(160),
-      externalUserId: z.string().min(1).max(512),
-    }),
-    type: z.literal("channel.identity.link"),
+    code: z.string().min(8).max(32),
+    expiresAt: z.iso.datetime({ offset: true }),
+    type: z.literal("channel.me.link"),
   }),
   z.object({ type: z.literal("channel.connection.status.set") }),
   StartHostedBrowserResponseSchema.extend({ type: z.literal("browser.session.start") }),
@@ -1921,11 +1934,6 @@ const hostApiGroup3 = defineRpc({
    * Stop a live session from any client, which is the person saying so from
    * somewhere other than the Mac's own pill. Only that Mac's owner may.
    */
-  "integration.computer.session.stop": declaration(
-    "POST",
-    z.strictObject({ sessionId: ComputerUseSessionIdSchema }),
-    emptyOutputSchema,
-  ),
 } as const);
 
 const hostApiGroup4 = defineRpc({

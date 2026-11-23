@@ -360,6 +360,24 @@ export class MockTabCatalog {
     );
     this.#revision++;
   }
+  /** As the Home's store does it: the members it has now close, then the group if empty. */
+  closeGroup(groupId: TabGroupId): Omit<TabCloseResult, "layout"> & { groupClosed: boolean } {
+    const held = this.#items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    if (held?.kind !== "group") fail("not_found", "This group no longer exists.", 404);
+    const result = held.group.tabIds.length
+      ? this.close(held.group.tabIds)
+      : { closed: [], failed: [] };
+    const remaining = this.#items.find(
+      (item) => item.kind === "group" && item.group.groupId === groupId,
+    );
+    if (remaining?.kind === "group" && remaining.group.tabIds.length === 0) {
+      this.#items = this.#items.filter((item) => item !== remaining);
+      this.#revision++;
+    }
+    return { ...result, groupClosed: !this.groups().some((group) => group.groupId === groupId) };
+  }
   groups(): TabGroup[] {
     return this.#items.flatMap((item) => (item.kind === "group" ? [item.group] : []));
   }

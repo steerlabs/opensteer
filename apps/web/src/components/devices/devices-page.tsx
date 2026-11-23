@@ -1,4 +1,4 @@
-import { useUnreadableResources, useWorkPolicy } from "@opensteer/client/react";
+import { useUnreadableResources } from "@opensteer/client/react";
 import { useState } from "react";
 import { Link } from "react-router";
 import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
@@ -14,7 +14,7 @@ import {
   type SignedInDeviceRow,
 } from "@opensteer/client/computers";
 import { otherDeviceLine } from "@opensteer/client/settings";
-import { unwrapRpcResult, workDeviceLimit } from "@opensteer/client/host";
+import { unwrapRpcResult } from "@opensteer/client/host";
 import { isAgentPhone } from "@opensteer/client/integrations";
 import { act, failureWords } from "../use-action.js";
 import { useShell } from "../app-shell.js";
@@ -50,8 +50,6 @@ const deviceKinds = ["machine"] as const;
 export function DevicesSection() {
   const { desktopBridge, hostClient, snapshot } = useShell();
   const home = useHomeKind();
-  // A work Home whose organization keeps other devices out says so where a device would be added.
-  const addLimit = workDeviceLimit(useWorkPolicy(hostClient));
   const toast = useToast();
   const hereId = useHereId();
   const [adding, setAdding] = useState(false);
@@ -108,21 +106,10 @@ export function DevicesSection() {
       <SectionHeader
         action={
           <span className="devices__add">
-            <button
-              aria-describedby={addLimit ? "devices-add-limit" : undefined}
-              className="btn btn--primary"
-              disabled={addLimit !== null}
-              onClick={() => setAdding(true)}
-              type="button"
-            >
+            <button className="btn btn--primary" onClick={() => setAdding(true)} type="button">
               <Icon name="plus" />
               {deviceWords("devices.add")}
             </button>
-            {addLimit ? (
-              <span className="devices__add-limit" id="devices-add-limit">
-                {addLimit}
-              </span>
-            ) : null}
           </span>
         }
         lead={view.lead}
@@ -233,7 +220,6 @@ function HomeListRow({ here, row }: { readonly here: boolean; readonly row: Home
         <span className="card__row-title devices-row__title">
           <span className="devices-row__name">{row.title}</span>
           {here ? <HerePin /> : null}
-          {row.badge ? <span className="chip devices-row__badge">{row.badge}</span> : null}
         </span>
         <span className="card__row-detail devices-row__status">{row.detail}</span>
       </span>

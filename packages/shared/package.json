@@ -6,6 +6,7 @@
   "type": "module",
   "exports": {
     "./mentionHandles": "./src/mentionHandles.ts",
+    "./outsideName": "./src/outsideName.ts",
     "./requestGuidance": "./src/requestGuidance.ts",
     "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",

@@ -1,4 +1,7 @@
 import { lockRequestThreads } from "./request-persistence.js";
+import { outsideName } from "@opensteer/shared/outsideName";
+import { cleanPluginDeviceName } from "./plugin-store.js";
+import { liveConnection } from "./connection-liveness.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   getDeviceSelfRunnerId,
@@ -279,9 +282,7 @@ export abstract class IntegrationPlatformStoreBase {
       .select("id")
       .where("id", "=", connectionId)
       .where("userId", "=", userId)
-      .where("revokedAt", "is", null)
-      .where("tokenHash", "is not", null)
-      .where("expiresAt", ">", new Date())
+      .where(liveConnection())
       .executeTakeFirst();
     if (!connection)
       throw new OpensteerError({ code: "forbidden", message: "Connection is unavailable" });
@@ -949,18 +950,25 @@ export async function installIntegrationInTransaction(
       .forNoKeyUpdate()
       .execute();
 
+  const plugin = input.installation.sourceKind === "plugin";
+  const title = plugin
+    ? outsideName(input.installation.title, 160) || "Plugin"
+    : input.installation.title;
+  const manifest = plugin
+    ? cleanPluginDeviceName(input.installation.manifest)
+    : input.installation.manifest;
   const installation = current
     ? await transaction
         .updateTable("integrationInstallations")
         .set({
           description: input.installation.description,
-          manifest: jsonValue(input.installation.manifest),
+          manifest: jsonValue(manifest),
           provenance: jsonValue(input.installation.provenance),
           revision: current.revision + 1,
           pluginId: input.installation.pluginId ?? null,
           sourceKind: input.installation.sourceKind,
           status: input.installation.status,
-          title: input.installation.title,
+          title,
           trust: input.installation.trust,
           updatedAt: now,
           updatedBy: input.actorUserId,
@@ -976,14 +984,14 @@ export async function installIntegrationInTransaction(
           createdBy: input.actorUserId,
           description: input.installation.description,
           id: input.installation.id,
-          manifest: jsonValue(input.installation.manifest),
+          manifest: jsonValue(manifest),
           name: input.installation.name,
           provenance: jsonValue(input.installation.provenance),
           revision: 1,
           pluginId: input.installation.pluginId ?? null,
           sourceKind: input.installation.sourceKind,
           status: input.installation.status,
-          title: input.installation.title,
+          title,
           trust: input.installation.trust,
           updatedAt: now,
           updatedBy: input.actorUserId,
@@ -2203,7 +2211,18 @@ async function prepareToolCatalog(
   connectionId: IntegrationConnectionId | null,
 ): Promise<ReturnType<typeof materializeToolCatalog>> {
   const tools = catalog.tools.map((tool) => {
-    const parsed = IntegrationToolMaterialSchema.safeParse(tool);
+    const annotationTitle = tool.annotations?.title;
+    const title =
+      typeof tool.title === "string"
+        ? outsideName(tool.title, 160) ||
+          (typeof tool.name === "string" ? outsideName(tool.name, 160) : "") ||
+          "Tool"
+        : tool.title;
+    const annotations =
+      typeof annotationTitle === "string"
+        ? { ...tool.annotations, title: outsideName(annotationTitle, 160) || title }
+        : tool.annotations;
+    const parsed = IntegrationToolMaterialSchema.safeParse({ ...tool, annotations, title });
     if (!parsed.success) {
       throw new OpensteerError({
         code: "bad_request",

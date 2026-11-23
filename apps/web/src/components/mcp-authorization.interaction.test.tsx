@@ -26,6 +26,7 @@ describe("signed-in MCP connection consent", () => {
         latencyMs: 0,
         connectionConsent: {
           requestId: "r".repeat(43),
+          // The preview, as the Home, cleans the name where the client registers it.
           clientName: "Grok\u202e\nVerified",
           redirectUri: "https://example.agent/callback",
           resource: "https://host.example/internal/v1/mcp",
@@ -49,7 +50,7 @@ describe("signed-in MCP connection consent", () => {
       expect(container.querySelector("h1, h2")?.textContent).toBe("An agent wants to connect");
       expect(container.querySelector(".agent-mark")).toBeNull();
       expect(container.querySelector(".agent-who__claim")?.textContent).toBe(
-        "It calls itself: Grok Verified",
+        "It calls itself: “Grok Verified”",
       );
       expect(
         container.querySelector<HTMLInputElement>('input[placeholder="Connection name"]')?.value,
@@ -100,11 +101,11 @@ describe("signed-in MCP connection consent", () => {
           </MemoryRouter>,
         ),
       );
-      expect(container.querySelector("h1, h2")?.textContent).toBe("Errand via AgentPay");
+      expect(container.querySelector("h1, h2")?.textContent).toBe("AgentPay");
       expect(container.querySelector(".agent-mark")).not.toBeNull();
-      expect(container.textContent).toContain("Asked for this: Errand · https://errand.example");
+      expect(container.textContent).not.toContain("Asked for this");
       expect(container.textContent).toContain(
-        "Holds the access: AgentPay · https://agentpay.example",
+        "Holds the access: “AgentPay” · https://agentpay.example",
       );
       expect(container.textContent).not.toContain("Untrusted name");
       // The verified name is the heading; the line under it says only that it is verified.
@@ -299,7 +300,7 @@ describe("signed-in MCP connection consent", () => {
     );
     expect(dispatch).not.toHaveBeenCalled();
     expect(container.querySelector("h1, h2")?.textContent).toBe("An agent wants to connect");
-    expect(container.textContent).toContain("It calls itself: Example agent");
+    expect(container.textContent).toContain("It calls itself: “Example agent”");
     // Where access goes is said once, as the destination; not again as "Returns to".
     expect(container.textContent).not.toContain("Returns to");
     expect(container.textContent).toContain("Access goes to example.agent.");

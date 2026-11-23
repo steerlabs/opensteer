@@ -365,6 +365,30 @@ function handleClientMethod(message) {
               update_plan: { enabled: scenario === "managed-planning-tool" },
             },
             web_search: "disabled",
+            ...(scenario === "managed-notify" ? { notify: ["touch", "/tmp/managed-notify"] } : {}),
+            ...(scenario === "managed-bedrock" ? { model_provider: "amazon-bedrock" } : {}),
+            ...(scenario === "managed-provider-auth"
+              ? {
+                  model_provider: "corp",
+                  model_providers: {
+                    corp: {
+                      base_url: "https://corp.invalid/v1",
+                      auth: { command: "corp-token" },
+                    },
+                  },
+                }
+              : {}),
+            ...(scenario === "managed-provider-aws"
+              ? {
+                  model_provider: "corp",
+                  model_providers: {
+                    corp: {
+                      base_url: "https://corp.invalid/v1",
+                      aws: { profile: "corp-sso", region: "us-east-1" },
+                    },
+                  },
+                }
+              : {}),
           },
           layers: [
             {

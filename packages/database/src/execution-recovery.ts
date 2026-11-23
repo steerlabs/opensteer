@@ -1,10 +1,10 @@
 import { deleteTerminalRunReceipts } from "./personal-runner-receipts.js";
 import { drainAssignmentCancellation } from "./assignment-store.js";
-import { drainRevokedChannelInputs } from "./channel-store.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { executionDate } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
+
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { lockRunProjectionRows, lockThreadProviderSession } from "./run-projection-locks.js";
 import "./connection.js";
@@ -274,7 +274,6 @@ export async function failRunForRefusedRunnerEvent(
   });
 }
 export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>): Promise<void> {
-  await drainRevokedChannelInputs(database);
   const obsolete = await database
     .selectFrom("runs")
     .innerJoin("threadInputs", "threadInputs.messageId", "runs.seedInputId")
@@ -365,7 +364,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
         .selectAll()
         .where("id", "=", run.threadId)
         .executeTakeFirstOrThrow();
-      await ensureQueuedRun(transaction, thread);
+      await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
       await updateExecutionThread(transaction, thread.id, now);
     });
   }
@@ -385,7 +384,7 @@ export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>):
         .selectAll()
         .where("id", "=", threadId)
         .executeTakeFirstOrThrow();
-      await ensureQueuedRun(transaction, thread);
+      await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
     });
   }
 }
@@ -484,6 +483,18 @@ export async function recoverCommandsAfterHostRestart(
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
         .executeTakeFirst();
+      // Claimed with a terminal failure the stopped Host never recorded (an ended connection, a
+      // sender no longer "me"): the claim left the Run queued, so nothing reached a Runner. It
+      // goes back to pending, and the next claim decides and records its end.
+      if (run?.status === "queued" && !run.finishIntent) {
+        await transaction
+          .updateTable("commands")
+          .set({ dispatcherId: null, status: "pending", updatedAt: new Date() })
+          .where("id", "=", id)
+          .where("status", "=", "dispatched")
+          .execute();
+        return null;
+      }
       if (run?.status !== "starting" || run.finishIntent) return null;
       await lockThreadRow(transaction, run.threadId);
       const session = await lockThreadProviderSession(

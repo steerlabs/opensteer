@@ -2297,8 +2297,9 @@ it("refuses a task that is not the person's own before starting OpenCode", async
       fixture.adapter.startSession({ ...fixture.context, personLineage: false }),
     ).rejects.toMatchObject({
       code: "forbidden",
-      message:
-        "OpenCode starts with your own OpenCode settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+      message: "This engine is not available for this task.",
+      ownerMessage:
+        "OpenCode is not yet verified to keep your settings out of tasks a connected agent or chat started, so it runs only tasks you started yourself that no connected agent or chat has written to.",
     });
   } finally {
     await fixture.adapter.close();

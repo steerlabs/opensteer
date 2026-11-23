@@ -240,3 +240,105 @@ function killOwnedGroup(pid: number): void {
     // The successful owner close already reaped the process group.
   }
 }
+
+describe.skipIf(process.platform === "win32")("the browser service's stop (TS17)", () => {
+  it("exits 0 within seconds of SIGTERM half a second to a second after a cold profile open, every time", async () => {
+    const { nativeRuntimeProfile } = await import("./native-profile.test-support.js");
+    const { generateKeyPairSync, randomUUID, sign } = await import("node:crypto");
+    const { fileURLToPath } = await import("node:url");
+    const { WebSocket } = await import("ws");
+    const main = fileURLToPath(new URL("../main.ts", import.meta.url));
+    const signing = generateKeyPairSync("ed25519");
+    const publicPem = signing.publicKey.export({ type: "spki", format: "pem" }).toString();
+    const outcomes: { delayMs: number; exit: number | null; signal: string | null; ms: number }[] =
+      [];
+    const stopped: (string | null)[] = [];
+    // oxlint-disable-next-line opensteer/no-polling-loop-in-tests -- Ten independent stops of a race; each waits for its own process's events.
+    for (let round = 0; round < 10; round++) {
+      const profile = await nativeRuntimeProfile();
+      try {
+        const runtimeId = `runtime_ts17_${round}`;
+        const child = childProcess.spawn(process.execPath, ["--import", "tsx", main], {
+          env: {
+            ...process.env,
+            OPENSTEER_BROWSER_ATTACH_PUBLIC_KEYS: JSON.stringify({ test: publicPem }),
+            OPENSTEER_BROWSER_PROFILE_ROOT: profile.localProfiles.root,
+            OPENSTEER_CHROMIUM_EXECUTABLE: executablePath,
+            OPENSTEER_CHROMIUM_SANDBOX: "false",
+            OPENSTEER_BROWSER_PORT: "0",
+            OPENSTEER_BROWSER_RUNTIME_ID: runtimeId,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let output = "";
+        child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+        child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+        const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) =>
+          child.once("exit", (code, signal) => resolve({ code, signal })),
+        );
+        try {
+          await vi.waitFor(() => expect(output).toContain('"browser-runtime.ready"'), {
+            timeout: 30_000,
+          });
+          const ready = JSON.parse(
+            output.split("\n").find((line) => line.includes('"browser-runtime.ready"'))!,
+          ) as { host: string; port: number };
+          const claims = validClaims({ identity: profile.identity, runtimeId });
+          const header = Buffer.from(
+            JSON.stringify({ alg: "EdDSA", kid: "test", typ: "opensteer-browser-attach+jwt" }),
+          ).toString("base64url");
+          const now = Date.now();
+          const payload = Buffer.from(
+            JSON.stringify({
+              ...claims,
+              nonce: randomUUID(),
+              issuedAt: new Date(now).toISOString(),
+              expiresAt: new Date(now + 60_000).toISOString(),
+              operationExpiresAt: new Date(now + 18_000).toISOString(),
+            }),
+          ).toString("base64url");
+          const content = `${header}.${payload}`;
+          const ticket = `${content}.${sign(null, Buffer.from(content), signing.privateKey).toString("base64url")}`;
+          // A cold open of the profile: its Chromium launches now.
+          const socket = new WebSocket(`ws://${ready.host}:${ready.port}/v1/browser`, {
+            headers: { authorization: `Bearer ${ticket}` },
+          });
+          socket.on("error", () => undefined);
+          await vi.waitFor(() => expect(output).toContain('"stage":"chromium-launch"'), {
+            timeout: 30_000,
+          });
+          const delayMs = 500 + Math.round(Math.random() * 500);
+          // oxlint-disable-next-line opensteer/no-real-time-wait-in-tests -- The signal lands at a real moment of another process's Chromium launch; no fake clock reaches it.
+          await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+          const signalled = performance.now();
+          child.kill("SIGTERM");
+          const end = await withTimeout(exited, 10_000, {
+            timeoutError: () => new Error("The service did not exit."),
+          }).catch(() => null);
+          outcomes.push({
+            delayMs,
+            exit: end?.code ?? null,
+            signal: end?.signal ?? null,
+            ms: Math.round(performance.now() - signalled),
+          });
+          // The stop says it ended, and what it could not confirm.
+          stopped.push(
+            output.split("\n").find((line) => line.includes('"browser-runtime.stopped"')) ?? null,
+          );
+          socket.terminate();
+        } finally {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+            await exited;
+          }
+        }
+      } finally {
+        await profile.close();
+      }
+    }
+    process.stdout.write(`${JSON.stringify({ event: "ts17.service-stop", outcomes, stopped })}\n`);
+    expect(stopped.filter((line) => line === null)).toEqual([]);
+    // Every stop ended in a clean exit, within a few seconds of the signal.
+    expect(outcomes.filter((outcome) => outcome.exit !== 0 || outcome.ms > 5_000)).toEqual([]);
+  }, 600_000);
+});

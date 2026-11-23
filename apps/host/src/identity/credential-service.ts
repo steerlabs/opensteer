@@ -5,6 +5,7 @@ import {
 } from "@opensteer/access/host";
 import type { ChannelCredentialPurpose } from "@opensteer/channel-protocol";
 import {
+  chatAddRefusals,
   OpensteerError,
   createId,
   type CredentialId,
@@ -155,7 +156,7 @@ export class CredentialService {
       input.ownerId,
     );
     if (!credential || !credential.provider.startsWith("channel:")) {
-      throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
+      throw new OpensteerError({ code: "not_found", message: chatAddRefusals.accountGone });
     }
     const sealed = await this.#vault.seal(input.secrets, {
       credentialId: credential.credentialId,

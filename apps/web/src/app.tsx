@@ -59,7 +59,6 @@ import { hostsDeployment } from "@opensteer/client/computers";
 import { UnreachableHomeLine } from "./components/asleep-moment.js";
 import { DevicePage } from "./components/devices/device-page.js";
 import { OtherDevicePage } from "./components/devices/other-device-page.js";
-import { WorkHomePolicyPage } from "./components/settings/sections/work-home-policy.js";
 
 const McpAuthorization = lazy(() =>
   import("./components/mcp-authorization.js").then((module) => ({
@@ -531,7 +530,6 @@ export function App({
               ))}
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
               <Route path="devices/:deviceId" element={<DevicePage />} />
-              <Route path="work" element={<WorkHomePolicyPage />} />
               <Route path="devices/other/:pluginId" element={<OtherDevicePage />} />
               <Route path="sign-ins/chrome/*" element={<SettingsSectionRoute section="chrome" />} />
               <Route

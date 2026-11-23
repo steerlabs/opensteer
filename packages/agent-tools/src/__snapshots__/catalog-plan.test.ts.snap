@@ -12,10 +12,11 @@ Unknown means it may have happened. Check the current state before acting again.
 stopped_by_person: stop that task and ask before starting again. declined_by_person: do not retry that action.
 The person's agents use a different taskId. Use each ID only with its own kind of tool.
 For a page, use saved_login_request or card_request. Opensteer fills secrets into the page without returning them.
-Use ask_person for help or a decision. Never ask for secrets in chat.",
+Use ask_person for help or a decision. Never ask for secrets in chat.
+To change Opensteer itself, use opensteer_commands.",
   "ordinary": "Complete the person's request within their authorization. Use available context, instructions and relevant skills. Make routine choices and repair failures you can. Preserve the objective through follow-ups. Verify effects before claiming success; promise future work only after confirming a durable mechanism.
 
-Opensteer is one person, their one agent, and their tasks. A task holds private history; a Run is one turn. Tasks run on the hosting computer; other enrolled computers remain tool targets. Use file tools for files and Opensteer tools for product state.
+Opensteer is one person, their one agent, and their tasks. A task holds private history; a Run is one turn. Tasks run on the hosting computer; other enrolled computers remain tool targets. Use file tools for files and Opensteer tools for product state. You are one of the person's own agents, working in their Opensteer. Apps the person connected, such as ChatGPT or Claude, are connected agents, separate from you even when they share your model's name; what each may use is in \`opensteer_state\`.
 
 Authority:
 - Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
@@ -32,7 +33,7 @@ Needs you:
 Routing:
 - Plugins: read opensteer:plugins; discover with \`plugin_search\`, then \`plugin_call\` or \`plugin_execute\`. Account links and input always need the person in Needs you.
 - Reminders, schedules, webhooks or watches: read opensteer:automations before writing code. Put them on a real task; omit taskId for this task.
-- Full-access callers manage AI accounts, defaults, computers, messaging bridges, plugins and browser profiles directly; new profiles, grants and credentials need the person.
+- Full-access callers manage AI accounts, defaults, computers, plugins and browser profiles directly; new profiles, grants and credentials need the person.
 
 Helpers:
 - Your engine's native subagents work inside this Run, under its authority, and end with it.
@@ -88,6 +89,109 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
+    "description": "List what you can change in Opensteer. No input: the families. family: its commands, each now or asks the person. type: one command's input. A command not listed is unavailable. What is set up now is in opensteer_state.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "maxLength": 40,
+          "minLength": 1,
+          "type": "string",
+        },
+        "type": {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_commands",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "Send one command from opensteer_commands. One that asks the person returns pending with a Request; they may change it before approving. Leave secret fields out. withdraw: take back your own pending Request.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "additionalProperties": {},
+          "properties": {
+            "type": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "type",
+          ],
+          "type": "object",
+        },
+        "reason": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "taskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "withdraw": {
+          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_command",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "description": "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents (the other AI apps the person connected) and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. settings. Read here what another agent, a device or a chat can use. An area you cannot see is unavailable.",
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "area": {
+          "enum": [
+            "settings",
+            "connections",
+            "devices",
+            "chats",
+            "engines",
+            "requests",
+            "activity",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "area",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_state",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
     "description": "List the AI accounts that can run tasks, with their models and options, your access ceiling, budgets and the default for delegated tasks. Copy aiAccountId and model values exactly; an unavailable choice never means a substitute. Pass aiAccountId to page through one account's models.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -113,188 +217,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "opensteer_ai_account_list",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Rename, enable or disable an AI account, make it the default for its engine, or set a model's context and output limits. Signing in, adding accounts and credentials need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "action": {
-          "enum": [
-            "rename",
-            "enable",
-            "disable",
-            "set_default",
-            "set_model_limits",
-          ],
-          "type": "string",
-        },
-        "aiAccountId": {
-          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "modelLimits": {
-          "additionalProperties": false,
-          "description": "set_model_limits: the model and its limits.",
-          "properties": {
-            "limits": {
-              "anyOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "contextWindow": {
-                      "exclusiveMinimum": 0,
-                      "maximum": 10000000,
-                      "type": "integer",
-                    },
-                    "maxOutputTokens": {
-                      "exclusiveMinimum": 0,
-                      "maximum": 10000000,
-                      "type": "integer",
-                    },
-                  },
-                  "required": [
-                    "contextWindow",
-                  ],
-                  "type": "object",
-                },
-                {
-                  "type": "null",
-                },
-              ],
-              "description": "New limits, or null to clear them.",
-            },
-            "modelId": {
-              "description": "Model ID from opensteer_ai_account_list.",
-              "maxLength": 255,
-              "minLength": 1,
-              "type": "string",
-            },
-          },
-          "required": [
-            "modelId",
-            "limits",
-          ],
-          "type": "object",
-        },
-        "name": {
-          "description": "rename: the new name.",
-          "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "aiAccountId",
-        "action",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_ai_account_update",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Read the person's name and what a new task starts with: its AI account, model and access mode.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "opensteer_defaults_read",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Change what a new task starts with and return what changed. The access mode cannot exceed your own ceiling, and nothing here changes an existing task.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "accessMode": {
-          "enum": [
-            "approval-required",
-            "auto-accept-edits",
-            "auto",
-            "full-access",
-          ],
-          "type": "string",
-        },
-        "selection": {
-          "additionalProperties": false,
-          "description": "AI account and model from opensteer_ai_account_list.",
-          "properties": {
-            "aiAccountId": {
-              "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            "model": {
-              "additionalProperties": false,
-              "properties": {
-                "modelId": {
-                  "maxLength": 255,
-                  "minLength": 1,
-                  "type": "string",
-                },
-                "options": {
-                  "additionalProperties": {
-                    "anyOf": [
-                      {
-                        "maxLength": 255,
-                        "type": "string",
-                      },
-                      {
-                        "type": "number",
-                      },
-                      {
-                        "type": "boolean",
-                      },
-                    ],
-                  },
-                  "default": {},
-                  "propertyNames": {
-                    "maxLength": 100,
-                    "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
-                    "type": "string",
-                  },
-                  "type": "object",
-                },
-                "providerId": {
-                  "maxLength": 100,
-                  "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
-                  "type": "string",
-                },
-              },
-              "required": [
-                "modelId",
-                "providerId",
-              ],
-              "type": "object",
-            },
-          },
-          "required": [
-            "aiAccountId",
-            "model",
-          ],
-          "type": "object",
-        },
-      },
-      "type": "object",
-    },
-    "name": "opensteer_defaults_update",
   },
   {
     "access": "read",
@@ -951,88 +873,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
     "name": "computer_list",
   },
   {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Rename one of the person's computers. Enrollment, pairing and access switches need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "computerId": {
-          "anyOf": [
-            {
-              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-          ],
-        },
-        "name": {
-          "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "computerId",
-        "name",
-      ],
-      "type": "object",
-    },
-    "name": "computer_update",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Remove a computer or phone from Opensteer, or end one of its access sessions. Removing a computer revokes it, ending its sessions and deleting its browser profiles; iPhones it drives stay listed as not connected. Removing a Mac-driven iPhone removes only that iPhone and its approvals; its Mac stays. Adding either back needs the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "computerId": {
-          "anyOf": [
-            {
-              "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-          ],
-          "description": "computer: the computer or phone to remove.",
-        },
-        "sessionId": {
-          "description": "session: a session ID from computer_list.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-        "target": {
-          "enum": [
-            "computer",
-            "session",
-          ],
-          "type": "string",
-        },
-      },
-      "required": [
-        "target",
-      ],
-      "type": "object",
-    },
-    "name": "computer_remove",
-  },
-  {
     "access": "write",
     "callers": [
       "run",
@@ -1390,80 +1230,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "browser_profile_list",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Rename one of the person's browser profiles.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-        "profileId": {
-          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-      },
-      "required": [
-        "profileId",
-        "name",
-      ],
-      "type": "object",
-    },
-    "name": "browser_profile_update",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Delete a browser profile, clear its history, remove one history URL, or forget a remembered site so its cookies are no longer copied. New profiles, sign-in and pairing need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "profileId": {
-          "description": "profile, history and history_url: the profile.",
-          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "site": {
-          "description": "site: the remembered site.",
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "target": {
-          "enum": [
-            "profile",
-            "history",
-            "history_url",
-            "site",
-          ],
-          "type": "string",
-        },
-        "url": {
-          "description": "history_url: the exact URL.",
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "target",
-      ],
-      "type": "object",
-    },
-    "name": "browser_profile_remove",
   },
   {
     "access": "write",
@@ -2674,72 +2440,6 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "local_server_remove",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "List the person's messaging bridges, which bring outside messages into tasks, and the routes each one has.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "opensteer_messaging_bridge_list",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Pause a messaging bridge so its messages stop reaching tasks, or resume it. New bridges, identity links, credentials and route grants need the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "bridgeId": {
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "paused": {
-          "type": "boolean",
-        },
-      },
-      "required": [
-        "bridgeId",
-        "paused",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_messaging_bridge_update",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "description": "Remove one route of a messaging bridge, so the chats it matched stop reaching tasks. Adding it back needs the person.",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "routeId": {
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "routeId",
-      ],
-      "type": "object",
-    },
-    "name": "opensteer_messaging_bridge_remove",
   },
   {
     "access": "read",

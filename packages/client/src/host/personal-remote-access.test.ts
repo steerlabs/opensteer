@@ -110,9 +110,11 @@ it("recovers a failed status read on Host reconnect without polling", async () =
   const resource = new PersonalRemoteAccessClient(client);
   const stop = resource.start();
   try {
-    await vi.waitFor(() => expect(resource.getSnapshot().error).toBe("Connection lost"), {
-      timeout: 1000,
-    });
+    // Said in the app's words, never the failure's own text.
+    await vi.waitFor(
+      () => expect(resource.getSnapshot().error).toBe("Couldn't load remote access."),
+      { timeout: 1000 },
+    );
     expect(read).toHaveBeenCalledTimes(1);
     expect(invalidate).toBeTypeOf("function");
     invalidate!();
@@ -235,5 +237,41 @@ it("forwards only the sealed Account completion from the signing device to the H
     });
   } finally {
     host.dispose();
+  }
+});
+
+it("never shows a validation report: not for a reply it can't read, nor for a refusal of its input", async () => {
+  const report = "Request is invalid: access.route: Active mode needs a route";
+  const client = {
+    rpc: {
+      "personal.remoteAccess.get": async () => ({
+        ok: false,
+        error: {
+          code: "bad_request",
+          message: report,
+          reason: "invalid-request",
+          retryable: false,
+        },
+      }),
+    },
+    dispatch: vi.fn(async () => {
+      throw new HostClientRequestError({
+        code: "bad_request",
+        message: report,
+        reason: "invalid-request",
+        status: 400,
+      });
+    }),
+    subscribePersonalRemoteAccess: () => () => {},
+  } as unknown as import("./client.js").HostClient;
+  const resource = new PersonalRemoteAccessClient(client);
+  const stop = resource.start();
+  try {
+    await vi.waitFor(() => expect(resource.getSnapshot().error).not.toBeNull(), { timeout: 1000 });
+    expect(resource.getSnapshot().error).not.toContain("Request is invalid");
+    await resource.pair();
+    expect(resource.getSnapshot().actionError).toBe("Something went wrong. Try again.");
+  } finally {
+    stop();
   }
 });

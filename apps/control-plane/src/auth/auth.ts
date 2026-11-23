@@ -1,10 +1,8 @@
 import { AccountProfiles } from "../account/account-profiles.js";
-import { APIError } from "better-auth/api";
 import { resolveSigningKey } from "better-auth/plugins/jwt";
 import { SignJWT } from "jose";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import {
-  CloudComputerIdSchema,
   ControlPlaneAccountIdSchema,
   controlPlaneOAuthScopes,
   type ControlPlaneAccountId,
@@ -203,26 +201,8 @@ export function createControlPlaneAuth(
         enforcePerClientResources: false,
         // 1.7 moved profile and email claims to userinfo, but released desktop
         // and mobile clients read the Account email from the ID token.
-        customIdTokenClaims: async ({ user, scopes, metadata }) => {
-          const id = CloudComputerIdSchema.safeParse(metadata?.cloudComputerId);
-          if (id.success) {
-            const assignment = await database
-              .selectFrom("cloudComputers")
-              .innerJoin("workAssignments", "workAssignments.id", "cloudComputers.workAssignmentId")
-              .select(["workAssignments.assigneeAccountId", "workAssignments.state"])
-              .where("cloudComputers.id", "=", id.data)
-              .executeTakeFirst();
-            if (
-              assignment &&
-              (assignment.state !== "active" || assignment.assigneeAccountId !== user.id)
-            ) {
-              throw new APIError("FORBIDDEN", {
-                message: "Sign-in to this work Home is not allowed",
-              });
-            }
-          }
-          return scopes.includes("email") ? { email: user.email } : {};
-        },
+        customIdTokenClaims: async ({ user, scopes }) =>
+          scopes.includes("email") ? { email: user.email } : {},
       }),
     ],
     rateLimit: {

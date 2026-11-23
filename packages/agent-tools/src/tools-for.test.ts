@@ -16,6 +16,9 @@ it("offers discovery for both browser grants and reserves saved fills for profil
     "browser_connect",
     "browser_use",
     "discover",
+    "opensteer_command",
+    "opensteer_commands",
+    "opensteer_state",
   ]);
   expect(offered({ kind: "browser-profile", profileId: createId("browserProfile") })).toEqual([
     "ask_person",
@@ -23,6 +26,23 @@ it("offers discovery for both browser grants and reserves saved fills for profil
     "browser_use",
     "card_request",
     "discover",
+    "opensteer_command",
+    "opensteer_commands",
+    "opensteer_state",
     "saved_login_request",
   ]);
+});
+
+it("offers no automation to work without the person's personal context", () => {
+  const names = (personalContext: boolean) =>
+    toolsFor({
+      kind: "run",
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+      personalContext,
+    })
+      .map(({ name }) => name)
+      .filter((name) => name.startsWith("opensteer_automation_"));
+  expect(names(true)).toContain("opensteer_automation_create");
+  expect(names(false)).toEqual([]);
 });

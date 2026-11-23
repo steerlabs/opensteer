@@ -1003,7 +1003,7 @@ export function AppShell({
     return (
       <ShellContext value={shell}>
         <ThisDeviceProvider value={thisDevice}>
-          <SetUpThisMac bridge={localBridge} device={thisDevice} hostClient={shell.hostClient} />
+          <SetUpThisMac bridge={localBridge} device={thisDevice} />
         </ThisDeviceProvider>
       </ShellContext>
     );
@@ -1340,8 +1340,12 @@ function WorkspaceKeys({
   return null;
 }
 
+// Whether the remembered tab is still listed can be answered only once the whole tab list has
+// arrived; deciding earlier opened New tab and overwrote the memory on every launch.
 const selectBrowsersKnown = (snapshot: HostSnapshot) =>
-  snapshot.deploymentShape !== null && snapshot.connection === "connected";
+  snapshot.deploymentShape !== null &&
+  snapshot.connection === "connected" &&
+  snapshot.tabs.complete;
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 

@@ -9,7 +9,7 @@ import { Icon } from "../icon.js";
 import { ErrorNotice } from "../onboarding-card.js";
 import { PlaceList } from "./place-list.js";
 import { PlaceSignInCard } from "./place-account.js";
-import { usePlaceCloudComputers, usePlaceWorkBadges } from "../settings/sections/work-home.js";
+import { usePlaceCloudComputers } from "../settings/sections/cloud-computer.js";
 
 /**
  * Places in the switch dialog, checked while open. Choosing or adding one closes it. With
@@ -44,7 +44,6 @@ function PlaceMenuBody({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const facts = useComputerFacts(factsStore, computers);
-  const work = usePlaceWorkBadges(bridge);
   const cloud = usePlaceCloudComputers(bridge);
   useEffect(() => {
     const check = () => void bridge.checkDeployments().catch(() => undefined);
@@ -56,7 +55,6 @@ function PlaceMenuBody({
   const rows = placeRows(snapshot, {
     thisComputer: thisComputerLabel(),
     facts,
-    work,
     cloud,
   }).filter((row) => personalIds.has(row.id));
   const run = (operation: () => Promise<void>, then?: () => void) => {

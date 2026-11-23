@@ -24,6 +24,7 @@ import {
   type ConnectionCleanup,
   openCleanups,
   requestExpiredCleanups,
+  stopChatAttempt,
   releaseConnectionCleanupClaim,
   renewConnectionCleanupClaim,
   settleLineageRequests,
@@ -183,6 +184,7 @@ import { readThreadHistory, type ThreadHistoryQuery } from "./thread-history.js"
 import { latestRunStoppedByPerson, type AssignmentReturnDrain } from "./thread-inbox.js";
 import { executionNodeFromRow, runAttemptFromRow } from "./thread-row-mappers.js";
 import * as threadStore from "./thread-store.js";
+import type { TaskReader } from "./task-reader.js";
 import {
   type AdmittedThreadDelegationRequest,
   type AdmittedThreadInputRequest,
@@ -537,10 +539,7 @@ export class OpensteerStore {
     readonly bytesOut?: number;
     readonly endedAt?: Date;
     /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: {
-      readonly key: string;
-      readonly requestedBy: UserId;
-    };
+    readonly idempotency?: machineStore.ShellStopIdempotency;
     readonly reason: ShellCloseReason;
     readonly sessionId: ShellSessionId;
   }): Promise<{
@@ -1038,18 +1037,19 @@ export class OpensteerStore {
             case "request":
               await step(() => settleLineageRequests(this.#database, [attempt.id], cleanup));
               break;
-            case "input":
-              await mutate(
-                (tx) =>
-                  threadStore.cancelThreadInput(tx, {
-                    threadId: attempt.threadId!,
-                    messageId: attempt.id,
-                    idempotencyKey: key,
-                    requestedBy: userId,
-                  }),
-                true,
-              );
+            case "input": {
+              let cancelled: Awaited<
+                ReturnType<typeof threadStore.cancelDisconnectedThreadInput>
+              > | null = null;
+              await mutate(async (tx) => {
+                cancelled = await threadStore.cancelDisconnectedThreadInput(tx, {
+                  threadId: attempt.threadId!,
+                  messageId: attempt.id,
+                });
+              });
+              if (cancelled) this.#announceRevokedGrants(cancelled);
               break;
+            }
             case "trigger":
               await mutate((tx) => pauseLineageTrigger(tx, attempt.id));
               break;
@@ -1126,6 +1126,9 @@ export class OpensteerStore {
                 new TriggerStore(tx).stopConnectionWatch(attempt.id, attempt.generation!),
               );
               if (attempt.handedOff) await stop();
+              break;
+            case "chat":
+              await mutate((tx) => stopChatAttempt(tx, attempt.id));
               break;
             case "operation":
               if (!attempt.handedOff)
@@ -1373,7 +1376,12 @@ export class OpensteerStore {
   async getAssignmentForOwner(input: {
     readonly assignmentId: AssignmentId;
     readonly ownerId: UserId;
-  }): Promise<AssignmentView | null> {
+    readonly reader: TaskReader;
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
+  }): Promise<(AssignmentView & { readonly pendingRequests?: number }) | null> {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
@@ -1400,6 +1408,7 @@ export class OpensteerStore {
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
+    readonly reader: TaskReader;
     readonly done?: boolean;
     readonly hasPendingRequests?: boolean;
     readonly omitPendingRequests?: boolean;
@@ -1410,11 +1419,16 @@ export class OpensteerStore {
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }
+  /** A task as the person reads it; work reading a task reads it through `readTask`. */
   async getThreadForOwner(
     threadId: ThreadId,
     ownerId: UserId,
     lineageConnectionId?: string,
     nativeOnly?: boolean,
+    connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >,
   ): Promise<Thread | null> {
     return threadStore.getThreadForOwner(
       this.#database,
@@ -1422,7 +1436,17 @@ export class OpensteerStore {
       ownerId,
       lineageConnectionId,
       nativeOnly,
+      connectionAuthority,
     );
+  }
+  /** A task as its reader may see it; one it may not read is null, as a missing one. */
+  async readTask(
+    reader: TaskReader,
+    threadId: ThreadId,
+    ownerId: UserId,
+    options?: Parameters<typeof threadStore.readTask>[4],
+  ): Promise<Thread | null> {
+    return threadStore.readTask(this.#database, reader, threadId, ownerId, options);
   }
 
   /** A Run's attempts and subagents, for a person who can read its Thread; null otherwise. */
@@ -1675,14 +1699,6 @@ export class OpensteerStore {
   ): Promise<void> {
     this.#announceRevokedGrants(
       await commandStore.dispatchRequestResponse(this.#database, commandId, send),
-    );
-  }
-  async dispatchChannelCommand(
-    commandId: CommandRow["id"],
-    send: (beforeAck: () => Promise<void>) => Promise<void>,
-  ): Promise<void> {
-    this.#announceRevokedGrants(
-      await commandStore.dispatchChannelCommand(this.#database, commandId, send),
     );
   }
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
@@ -2009,7 +2025,7 @@ export type { RevokedRunGrant } from "./run-grants.js";
 
 export type { CreateThreadInput } from "./thread-store.js";
 export type { ThreadCreationResult } from "./thread-store.js";
-export type { ThreadInputSource } from "./thread-store.js";
+export type { BridgeChatSource, ThreadInputSource } from "./thread-store.js";
 export type { EnqueueThreadInputRequest } from "./thread-store.js";
 export type { EnqueuedThreadInput } from "./thread-store.js";
 export type { SteerThreadInputRequest } from "./thread-store.js";

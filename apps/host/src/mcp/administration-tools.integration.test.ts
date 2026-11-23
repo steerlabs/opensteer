@@ -1,6 +1,5 @@
 import { createId, DeviceIdSchema, emptyExecutionPreferences, type Thread } from "@opensteer/core";
 import { type OpensteerStore } from "@opensteer/database";
-import { createIntegrationId } from "@opensteer/integration-core";
 import { machineAccessPolicyDefault } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -36,7 +35,6 @@ function fixture() {
     profileId = createId("browserProfile"),
     grantId = crypto.randomUUID();
   const deviceId = DeviceIdSchema.parse(machineId);
-  const connectionId = createIntegrationId("connection");
   const harness = {
     id: harnessInstanceId,
     environmentId,
@@ -170,15 +168,7 @@ function fixture() {
     store: {} as never,
   });
   const inputs = {
-    opensteer_ai_account_update: {
-      aiAccountId: harnessInstanceId,
-      action: "rename",
-      name: "Engine",
-    },
-    computer_update: { computerId: machineId, name: "Mac" },
     local_server_remove: { name: "tv" },
-    opensteer_messaging_bridge_update: { bridgeId: connectionId, paused: true },
-    browser_profile_update: { profileId, name: "Work" },
   };
   const asNativeRun = () => {
     caller = {
@@ -206,13 +196,8 @@ function fixture() {
     },
   };
 }
-const mutations = [
-  "opensteer_ai_account_update",
-  "computer_update",
-  "local_server_remove",
-  "opensteer_messaging_bridge_update",
-  "browser_profile_update",
-] as const;
+// The administration tools A5 removed are Home commands now (opensteer_command); what stays.
+const mutations = ["local_server_remove"] as const;
 const reads = ["computer_list", "browser_profile_list", "local_server_list"] as const;
 async function expectRemoved(
   f: ReturnType<typeof fixture>,
@@ -252,19 +237,6 @@ describe("administration through the MCP service", () => {
     f.setCaller({ ...f.caller(), accessMode: "approval-required" });
     expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
   });
-  it.each(["opensteer_defaults_read", "opensteer_messaging_bridge_list"])(
-    "keeps the person's settings read %s available to Runs only",
-    async (name) => {
-      const f = fixture();
-      await expectRemoved(f, name, {});
-      f.setCaller({ ...f.caller(), accessMode: "approval-required" });
-      await expectRemoved(f, name, {});
-      f.asNativeRun();
-      expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
-      f.setCaller({ ...f.caller(), accessMode: "full-access" });
-      expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
-    },
-  );
   it("names the hosting computer once, by the same ID as its tools", async () => {
     const f = fixture();
     await expectRemoved(f, "computer_list", {});
@@ -274,81 +246,5 @@ describe("administration through the MCP service", () => {
     ).toMatchObject({
       computers: [{ computerId: f.machineId, hosting: true, canRunTasks: true }],
     });
-  });
-  it("remembers an access preference without changing the caller's authority", async () => {
-    const f = fixture();
-    await expectRemoved(f, "opensteer_defaults_update", { accessMode: "approval-required" });
-    f.setCaller({ ...f.caller(), accessMode: "approval-required" });
-    await expectRemoved(f, "opensteer_defaults_update", { accessMode: "full-access" });
-    f.setCaller({ ...f.caller(), accessMode: "full-access" });
-    f.asNativeRun();
-    await f.mcp.callTool(
-      "token",
-      "opensteer_defaults_update",
-      { accessMode: "approval-required" },
-      { operationKey: "preference" },
-    );
-    expect(f.deps.store.rememberExecutionChoice).toHaveBeenCalledWith(
-      f.userId,
-      {
-        accessMode: "approval-required",
-      },
-      expect.objectContaining({ idempotencyKey: expect.any(String) }),
-    );
-    expect(f.caller().accessMode).toBe("full-access");
-    f.setCaller({ ...f.caller(), accessMode: "approval-required" });
-    await expect(
-      f.mcp.callTool(
-        "token",
-        "opensteer_defaults_update",
-        { accessMode: "full-access" },
-        { operationKey: "raise" },
-      ),
-    ).rejects.toThrow("Changing settings requires full-access");
-    expect(f.deps.store.rememberExecutionChoice).toHaveBeenCalledOnce();
-  });
-  it("strips provider config and browser session tokens", async () => {
-    const f = fixture();
-    await expectRemoved(f, "opensteer_defaults_read", {});
-    await expectRemoved(f, "browser_profile_update", f.inputs.browser_profile_update);
-    f.asNativeRun();
-    for (const [name, input] of [
-      ["opensteer_defaults_read", {}],
-      ["browser_profile_update", f.inputs.browser_profile_update],
-    ] as const) {
-      expect(
-        JSON.stringify(await f.mcp.callTool("token", name, input, { operationKey: name })),
-      ).not.toMatch(/secret|apiKey|config|token/);
-    }
-  });
-  it("applies the same administration to a Run without requiring a fake person session", async () => {
-    const f = fixture();
-    const base = f.caller();
-    f.setCaller({ ...base, kind: "run", thread: {} as Thread, claims: {} as never });
-    await f.mcp.callTool("token", "computer_update", f.inputs.computer_update, {
-      operationKey: "run",
-    });
-    expect(f.deps.store.renameDevice).toHaveBeenCalledOnce();
-  });
-  it("rechecks the access ceiling before reading an administration replay", async () => {
-    const f = fixture();
-    const replay = () =>
-      f.mcp.callTool("token", "computer_update", f.inputs.computer_update, {
-        operationKey: "once",
-      });
-    await expectRemoved(f, "computer_update", f.inputs.computer_update);
-    f.asNativeRun();
-    const first = await replay();
-    expect(first).toMatchObject({ ok: true });
-    f.deps.store.replayAdministrationCommand.mockResolvedValueOnce({
-      output: { type: "machine.rename", ok: true },
-    } as never);
-    expect(await replay()).toEqual(first);
-    expect(f.deps.store.renameDevice).toHaveBeenCalledOnce();
-    f.setCaller({ ...f.caller(), accessMode: "approval-required" });
-    f.deps.store.replayAdministrationCommand.mockClear();
-    await expect(replay()).rejects.toThrow("Changing settings requires full-access");
-    expect(f.deps.store.replayAdministrationCommand).not.toHaveBeenCalled();
-    expect(f.deps.store.renameDevice).toHaveBeenCalledOnce();
   });
 });
