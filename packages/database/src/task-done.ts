@@ -29,7 +29,7 @@ import { finalizeRunTransaction } from "./run-finalization.js";
 import { revokeRunGrants } from "./run-grants.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { cancelPending } from "./request-cancellation.js";
-import { pauseTriggerInTransaction } from "./trigger-store.js";
+import { pauseTriggerInTransaction, type RunningFiringRef } from "./trigger-store.js";
 import {
   idempotencyConflict,
   jsonValue,
@@ -167,7 +167,7 @@ async function discoverDoneScope(
     .where("anchorThreadId", "in", threadIds)
     .orderBy("id")
     .execute();
-  const pendingTriggerOccurrences = triggers.length
+  const activeTriggerOccurrences = triggers.length
     ? await transaction
         .selectFrom("triggerOccurrences")
         .select("id")
@@ -176,7 +176,7 @@ async function discoverDoneScope(
           "in",
           triggers.map(({ id }) => id),
         )
-        .where("status", "=", "pending")
+        .where("status", "in", ["pending", "running"])
         .orderBy("id")
         .execute()
     : [];
@@ -200,7 +200,7 @@ async function discoverDoneScope(
     threadIds,
     runs,
     triggers,
-    pendingTriggerOccurrences,
+    activeTriggerOccurrences,
     requests,
     inputs,
   };
@@ -258,14 +258,22 @@ export async function setThreadDone(
             .forNoKeyUpdate()
             .execute()
         : [];
-      const pendingTriggerOccurrences = scope.pendingTriggerOccurrences.length
+      const activeTriggerOccurrences = scope.activeTriggerOccurrences.length
         ? await transaction
             .selectFrom("triggerOccurrences")
-            .select(["commandId", "id"])
+            .select([
+              "commandId",
+              "environmentId",
+              "executionGeneration",
+              "id",
+              "runnerBootId",
+              "runnerId",
+              "status",
+            ])
             .where(
               "id",
               "in",
-              scope.pendingTriggerOccurrences.map(({ id }) => id),
+              scope.activeTriggerOccurrences.map(({ id }) => id),
             )
             .orderBy("id")
             .forNoKeyUpdate()
@@ -326,6 +334,7 @@ export async function setThreadDone(
         throw new TransactionScopeChanged("Task changed while being marked Done");
 
       const interruptCommands = [];
+      const runningTriggerFirings: RunningFiringRef[] = [];
       let doneWhenRunEnds = false;
       const now = new Date();
       const stillQuiet =
@@ -434,6 +443,21 @@ export async function setThreadDone(
             });
             for (const assignment of cancelledAssignments)
               await publishAssignmentSummaries(transaction, assignment, true);
+            const pendingTriggerOccurrences = activeTriggerOccurrences.filter(
+              (row) => row.status === "pending",
+            );
+            for (const row of activeTriggerOccurrences) {
+              if (row.status === "running" && row.runnerId && row.runnerBootId) {
+                runningTriggerFirings.push({
+                  commandId: row.commandId,
+                  environmentId: row.environmentId,
+                  executionGeneration: row.executionGeneration,
+                  occurrenceId: row.id,
+                  runnerBootId: row.runnerBootId,
+                  runnerId: row.runnerId,
+                });
+              }
+            }
             if (pendingTriggerOccurrences.length) {
               await transaction
                 .selectFrom("commands")
@@ -568,6 +592,7 @@ export async function setThreadDone(
         thread: threadFromRow(current),
         interruptCommands,
         revokedGrants,
+        runningTriggerFirings,
         wasDuplicate: !!existing,
         doneWhenRunEnds,
       };

@@ -533,6 +533,7 @@ export class TriggerService {
 export class TriggerScheduleLoop {
   readonly #onChanged: () => void;
   readonly #onError: (error: unknown) => void;
+  readonly #onInterruptFiring: ((firing: RunningFiringRef) => void) | undefined;
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly #store: Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">;
   readonly #drain: DeadlineDrain;
@@ -540,12 +541,14 @@ export class TriggerScheduleLoop {
     /** A due Trigger was paused or moved on to its next instant. */
     readonly onChanged: () => void;
     readonly onError: (error: unknown) => void;
+    readonly onInterruptFiring?: (firing: RunningFiringRef) => void;
     readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
     readonly store: Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">;
     readonly clock?: Clock;
   }) {
     this.#onChanged = options.onChanged;
     this.#onError = options.onError;
+    this.#onInterruptFiring = options.onInterruptFiring;
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#store = options.store;
     this.#drain = new DeadlineDrain({
@@ -566,10 +569,13 @@ export class TriggerScheduleLoop {
   async #tick(): Promise<Date | typeof retryWithBackoff | null> {
     const now = Date.now();
     // One time for the claim and the "still due" comparison below.
-    const { occurrences, changed, failures } = await this.#store.claimDueSchedules(new Date(now));
+    const { occurrences, changed, failures, runningFirings } = await this.#store.claimDueSchedules(
+      new Date(now),
+    );
     // A schedule that could not be claimed rolled back alone; the rest committed.
     for (const failure of failures) this.#onError(failure);
     for (const occurrence of occurrences) this.#onOccurrenceQueued(occurrence);
+    for (const firing of runningFirings ?? []) this.#onInterruptFiring?.(firing);
     if (changed) this.#onChanged();
     const next = await this.#store.nextScheduleAt();
     // A due schedule this pass could not claim (another transaction holds it)

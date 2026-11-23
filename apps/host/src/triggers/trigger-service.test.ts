@@ -449,11 +449,13 @@ describe("TriggerService", () => {
         ],
         changed: true,
         failures: [],
+        runningFirings: [],
       })
       .mockResolvedValue({
         occurrences: [],
         changed: false,
         failures: [],
+        runningFirings: [],
       });
     // The next schedule is a minute out, and then none is armed.
     const nextScheduleAt = vi
@@ -491,6 +493,38 @@ describe("TriggerService", () => {
     expect(claimDueSchedules).toHaveBeenCalledTimes(3);
     await loop.close();
   });
+  it("interrupts running firings paused by authority loss during claimDueSchedules (AA10)", async () => {
+    vi.useFakeTimers();
+    const firing = {
+      commandId: createId("command"),
+      environmentId: createId("environment"),
+      executionGeneration: 1,
+      occurrenceId: createId("triggerOccurrence"),
+      runnerBootId: "boot-auth-loss",
+      runnerId: createId("runner"),
+    };
+    const onInterruptFiring = vi.fn();
+    const claimDueSchedules = vi.fn(async () => ({
+      changed: true,
+      failures: [],
+      occurrences: [],
+      runningFirings: [firing],
+    }));
+    const loop = new TriggerScheduleLoop({
+      onChanged: vi.fn(),
+      onError: vi.fn(),
+      onInterruptFiring,
+      onOccurrenceQueued: vi.fn(),
+      store: {
+        claimDueSchedules,
+        nextScheduleAt: async () => null,
+      } as unknown as Pick<TriggerStore, "claimDueSchedules" | "nextScheduleAt">,
+    } as ConstructorParameters<typeof TriggerScheduleLoop>[0]);
+    loop.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onInterruptFiring).toHaveBeenCalledWith(firing);
+    await loop.close();
+  });
 });
 
 describe("TriggerScheduleLoop exits", () => {
@@ -502,7 +536,12 @@ describe("TriggerScheduleLoop exits", () => {
   ] as const)("%s", async (_, changed, nextIn, armedIn) => {
     vi.useFakeTimers();
     try {
-      const claimDueSchedules = vi.fn(async () => ({ occurrences: [], changed, failures: [] }));
+      const claimDueSchedules = vi.fn(async () => ({
+        occurrences: [],
+        changed,
+        failures: [],
+        runningFirings: [],
+      }));
       const nextScheduleAt = vi.fn(async () =>
         nextIn === null ? null : new Date(Date.now() + nextIn),
       );

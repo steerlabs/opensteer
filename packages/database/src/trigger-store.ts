@@ -2,6 +2,7 @@ import { personalSettings, requirePersonalOwner } from "./personal-settings-stor
 import {
   commitPersonalMutation,
   wakeExecutionCommands,
+  wakePausedTriggerInterrupts,
   wakeTriggerSchedules,
 } from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
@@ -2057,6 +2058,8 @@ export class TriggerStore {
     readonly changed: boolean;
     /** Schedules this claim could not process; each was rolled back alone. */
     readonly failures: readonly unknown[];
+    /** Running firings on schedules paused during this pass (e.g., authority loss, AA10). */
+    readonly runningFirings: readonly RunningFiringRef[];
   }> {
     const dueSchedules = (database: Kysely<DatabaseSchema>) =>
       database
@@ -2072,7 +2075,7 @@ export class TriggerStore {
       .select("triggers.id")
       .limit(1)
       .executeTakeFirst();
-    if (!candidate) return { occurrences: [], changed: false, failures: [] };
+    if (!candidate) return { occurrences: [], changed: false, failures: [], runningFirings: [] };
     return commitPersonalMutation(this.#database, async (transaction) => {
       const due = await dueSchedules(transaction)
         .selectAll("triggers")
@@ -2084,14 +2087,18 @@ export class TriggerStore {
         .execute();
       const occurrences: TriggerOccurrence[] = [];
       const failures: unknown[] = [];
+      const runningFirings: RunningFiringRef[] = [];
       let claimed = 0;
       // Each schedule is claimed under its own savepoint: one that cannot be
       // claimed rolls back alone and is reported, instead of failing the whole
       // batch and starving every schedule behind it on every pass.
       const claim = async (
         trigger: (typeof due)[number],
-      ): Promise<TriggerOccurrence | typeof held | undefined> => {
-        if (!trigger.nextFireAt) return undefined;
+      ): Promise<
+        | { readonly occurrence?: TriggerOccurrence; readonly runningFirings?: RunningFiringRef[] }
+        | typeof held
+      > => {
+        if (!trigger.nextFireAt) return {};
         let occurrence: TriggerOccurrence | undefined;
         await seam?.afterDueRead?.();
         // Held or lost, read as one fact in one statement: a chat that started waiting since the
@@ -2103,17 +2110,36 @@ export class TriggerStore {
           // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
           // condition.
-          await transaction
-            .updateTable("triggers")
-            .set({
-              nextFireAt: null,
-              pauseReason: triggerAuthorityLossPauseReason,
-              status: "paused",
-              updatedAt: new Date(),
-            })
-            .where("id", "=", trigger.id)
+          await pauseTriggerInTransaction(transaction, trigger, {
+            pauseReason: triggerAuthorityLossPauseReason,
+            pausedBy: "system",
+          });
+          const running = await transaction
+            .selectFrom("triggerOccurrences")
+            .select([
+              "commandId",
+              "environmentId",
+              "executionGeneration",
+              "id",
+              "runnerBootId",
+              "runnerId",
+            ])
+            .where("triggerId", "=", trigger.id)
+            .where("status", "=", "running")
+            .where("runnerId", "is not", null)
+            .where("runnerBootId", "is not", null)
+            .orderBy("id", "asc")
             .execute();
-          return undefined;
+          return {
+            runningFirings: running.map((row) => ({
+              commandId: row.commandId,
+              environmentId: row.environmentId,
+              executionGeneration: row.executionGeneration,
+              occurrenceId: row.id,
+              runnerBootId: row.runnerBootId!,
+              runnerId: row.runnerId!,
+            })),
+          };
         }
         const revision = await transaction
           .selectFrom("triggerRevisions")
@@ -2172,19 +2198,20 @@ export class TriggerStore {
             triggerId: trigger.id,
           });
         }
-        return occurrence;
+        return occurrence ? { occurrence } : {};
       };
       for (const trigger of due) {
         await sql`savepoint claim_schedule`.execute(transaction);
         try {
-          const occurrence = await claim(trigger);
-          if (occurrence === held) {
+          const outcome = await claim(trigger);
+          if (outcome === held) {
             // Held changes nothing: the savepoint holds nothing to keep.
             await sql`rollback to savepoint claim_schedule`.execute(transaction);
             continue;
           }
           await sql`release savepoint claim_schedule`.execute(transaction);
-          if (occurrence) occurrences.push(occurrence);
+          if (outcome.occurrence) occurrences.push(outcome.occurrence);
+          if (outcome.runningFirings?.length) runningFirings.push(...outcome.runningFirings);
           claimed += 1;
         } catch (error) {
           await sql`rollback to savepoint claim_schedule`.execute(transaction);
@@ -2197,8 +2224,48 @@ export class TriggerStore {
         occurrences,
         changed: claimed > 0,
         failures,
+        runningFirings,
       };
     });
+  }
+  async listPausedRunningFirings(): Promise<readonly RunningFiringRef[]> {
+    const rows = await this.#database
+      .selectFrom("triggerOccurrences")
+      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .select([
+        "triggerOccurrences.commandId",
+        "triggerOccurrences.environmentId",
+        "triggerOccurrences.executionGeneration",
+        "triggerOccurrences.id",
+        "triggerOccurrences.runnerBootId",
+        "triggerOccurrences.runnerId",
+      ])
+      .where("triggerOccurrences.status", "=", "running")
+      .where("triggers.status", "<>", "active")
+      .where("triggerOccurrences.runnerId", "is not", null)
+      .where("triggerOccurrences.runnerBootId", "is not", null)
+      .orderBy("triggerOccurrences.id", "asc")
+      .execute();
+    return rows.map((row) => ({
+      commandId: row.commandId,
+      environmentId: row.environmentId,
+      executionGeneration: row.executionGeneration,
+      occurrenceId: row.id,
+      runnerBootId: row.runnerBootId!,
+      runnerId: row.runnerId!,
+    }));
+  }
+  async isFiringStillRunning(firing: RunningFiringRef): Promise<boolean> {
+    const row = await this.#database
+      .selectFrom("triggerOccurrences")
+      .select("id")
+      .where("id", "=", firing.occurrenceId)
+      .where("status", "=", "running")
+      .where("runnerId", "=", firing.runnerId)
+      .where("runnerBootId", "=", firing.runnerBootId)
+      .where("executionGeneration", "=", firing.executionGeneration)
+      .executeTakeFirst();
+    return row !== undefined;
   }
   async loadDispatchContext(commandId: CommandId): Promise<TriggerDispatchContext> {
     const occurrence = await this.#database
@@ -3910,6 +3977,7 @@ export async function pauseTriggerInTransaction(
     .returningAll()
     .executeTakeFirstOrThrow();
   if (trigger.kind === "watch") await stopActiveWatchActivation(transaction, trigger.id, now);
+  await wakePausedTriggerInterrupts(transaction);
   return updated;
 }
 

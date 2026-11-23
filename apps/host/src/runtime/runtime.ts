@@ -22,7 +22,7 @@ import { shadowRunsTouched } from "../browser/shadow-host.js";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
 import { RequestDeadlines, settleEach } from "../agents/request-deadlines.js";
-import { createId, harnessUsageLimitFailureCode, isLoopbackHostname } from "@opensteer/core";
+import { harnessUsageLimitFailureCode, isLoopbackHostname } from "@opensteer/core";
 import { pluginCategoryResources, type PersonalResourceKind } from "@opensteer/protocol/resources";
 import type { PluginChange } from "@opensteer/protocol";
 import { resolvePublicAddress } from "@opensteer/access";
@@ -262,6 +262,7 @@ import { machineAccessNotifier, notifyComputerPresence } from "../shell/machine-
 import { MachineFullDiskAccessService } from "../shell/machine-full-disk-access-service.js";
 import { ShellHub } from "../shell/shell-hub.js";
 import { AutomationFailureService } from "../triggers/automation-failure-service.js";
+import { FiringInterruptLoop } from "../triggers/firing-interrupt-loop.js";
 import { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { MemoryPassService } from "../agents/memory-pass-service.js";
 import { TriggerScheduleLoop, TriggerService } from "../triggers/trigger-service.js";
@@ -1886,6 +1887,9 @@ export async function createHostRuntime(
         case "triggerSchedulesChanged":
           wakeTriggerSchedules?.();
           break;
+        case "triggerPaused":
+          void firingInterrupts?.wake();
+          break;
         case "runnerRevoked":
           void runnerRegistry?.revoke(reaction.runnerId).catch(reportMutationFailure);
           break;
@@ -2177,6 +2181,7 @@ export async function createHostRuntime(
     await store.endAllOpenShellSessions("host-shutdown");
     let dispatchingRunIds = (): readonly RunId[] => [];
     let watchService: WatchService | undefined;
+    let firingInterrupts: FiringInterruptLoop | undefined;
     const registeringRunners = new Set<string>();
     const runnerAuthenticator = new RunnerAuthenticator({
       issuancePrivateKey: keys.privateKey,
@@ -2577,6 +2582,7 @@ export async function createHostRuntime(
             runnerId: identity.runnerId,
           });
           if (attached.settledUnknownCount > 0) realtime.publishTriggersChanged();
+          firingInterrupts?.runnerAttached(identity.runnerId, identity.bootId);
           return attached.results;
         },
         onRenewProxyToken: async (identity, request) =>
@@ -2721,6 +2727,7 @@ export async function createHostRuntime(
             runnerId: identity.runnerId,
           });
           if (occurrence === null) return "retired";
+          firingInterrupts?.settled(occurrence.id);
           realtime.publishTriggersChanged();
           return undefined;
         },
@@ -2974,10 +2981,23 @@ export async function createHostRuntime(
       maxQueuedBytes: 32 * 1_024 * 1_024,
       maxQueuedCommands: 5_000,
     });
+    firingInterrupts = new FiringInterruptLoop({
+      onWarn: (error, firing) => {
+        app.log.warn(
+          { err: error, occurrenceId: firing.occurrenceId },
+          "Failed to interrupt running automation firing on pause; will retry",
+        );
+      },
+      runners,
+      store: triggerStore,
+    });
     const commands = new CommandService({
       admission,
       onExecutionQueued: () => {
         coordinator.wake();
+      },
+      onInterruptFiring: (firing) => {
+        firingInterrupts?.interrupt(firing);
       },
 
       store,
@@ -3016,35 +3036,7 @@ export async function createHostRuntime(
       secrets: automationSecrets,
       onChanged: () => realtime.publishTriggersChanged(),
       onInterruptFiring: (firing) => {
-        const identity = runners.identityForEnvironment(firing.environmentId);
-        if (
-          !identity ||
-          identity.runnerId !== firing.runnerId ||
-          identity.bootId !== firing.runnerBootId ||
-          !identity.capabilities.includes(triggerStopGenerationCapability)
-        ) {
-          return;
-        }
-        const stopId = createId("command");
-        void runners
-          .dispatch(
-            {
-              commandId: stopId,
-              correlationId: CorrelationIdSchema.parse(stopId),
-              environmentId: firing.environmentId,
-              executionGeneration: firing.executionGeneration,
-              occurrenceId: firing.occurrenceId,
-              type: "trigger.interrupt",
-            },
-            AbortSignal.timeout(3_000),
-            { connectionGeneration: identity.connectionGeneration },
-          )
-          .catch((error) => {
-            app.log.warn(
-              { err: error, occurrenceId: firing.occurrenceId },
-              "Failed to interrupt running automation firing on pause",
-            );
-          });
+        firingInterrupts?.interrupt(firing);
       },
 
       onOccurrenceQueued: () => {
@@ -3889,6 +3881,7 @@ export async function createHostRuntime(
     const triggerScheduleLoop = new TriggerScheduleLoop({
       onChanged: () => realtime.publishTriggersChanged(),
       onError: (error) => app.log.error({ err: error }, "Trigger scheduling failed"),
+      onInterruptFiring: (firing) => firingInterrupts?.interrupt(firing),
       onOccurrenceQueued: () => {
         coordinator.wake();
         realtime.publishTriggersChanged();
@@ -3897,6 +3890,7 @@ export async function createHostRuntime(
     });
     wakeTriggerSchedules = () => triggerScheduleLoop.wake();
     triggerScheduleLoop.start();
+    void firingInterrupts?.wake();
     watchService.start();
     channels.start();
     await initializePersonal();
@@ -3975,6 +3969,7 @@ export async function createHostRuntime(
           await idleCompactionService?.close();
         });
         await step("trigger schedule loop", () => triggerScheduleLoop.close());
+        firingInterrupts?.close();
         await step("watch service", () => watchService?.close());
         await step("continuations", () => continuations.close());
         await step("automation failures", () => automationFailures.close());
