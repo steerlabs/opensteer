@@ -1,4 +1,4 @@
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { refreshInputQueue } from "./waiting-inputs.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
@@ -498,6 +498,7 @@ export async function setThreadDone(
                   .where("status", "=", "pending")
                   .execute();
               }
+              await wakeExecutionCommands(transaction);
             }
             for (const run of runs) {
               if (

@@ -121,7 +121,11 @@ import {
   type BrowserSessionWithAttachmentCountRecord,
 } from "./browser-session-store.js";
 import * as commandStore from "./command-store.js";
-import { type ClaimedCommand, type RunnerControlInput } from "./command-store.js";
+import {
+  type BlockedCommandClaim,
+  type ClaimedCommand,
+  type RunnerControlInput,
+} from "./command-store.js";
 import * as computerUseStore from "./computer-use-store.js";
 import * as credentialStore from "./credential-store.js";
 import { type CredentialRecord } from "./credential-store.js";
@@ -1693,10 +1697,23 @@ export class OpensteerStore {
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
     return commandStore.listPendingCommands(this.#database, limit);
   }
+  claimCommand(
+    commandId: CommandRow["id"],
+    dispatcherId: string,
+  ): Promise<ClaimedCommand | null>;
+  claimCommand(
+    commandId: CommandRow["id"],
+    dispatcherId: string,
+    options: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null>;
   async claimCommand(
     commandId: CommandRow["id"],
     dispatcherId: string,
-  ): Promise<ClaimedCommand | null> {
+    options?: { readonly includeBlocked?: boolean },
+  ): Promise<ClaimedCommand | BlockedCommandClaim | null> {
+    if (options) {
+      return commandStore.claimCommand(this.#database, commandId, dispatcherId, options);
+    }
     return commandStore.claimCommand(this.#database, commandId, dispatcherId);
   }
   async finalizeRunInitialContext(input: {
@@ -2037,7 +2054,7 @@ export type { ThreadMutationAdmission } from "./thread-store.js";
 export type { AdmittedThreadInputRequest } from "./thread-store.js";
 export type { AdmittedThreadDelegationRequest } from "./thread-store.js";
 export type { RunnerControlInput } from "./command-store.js";
-export type { ClaimedCommand } from "./command-store.js";
+export type { BlockedCommandClaim, ClaimedCommand } from "./command-store.js";
 export type { RecoveredRunTarget } from "./execution-recovery.js";
 export type { BackgroundDeadlineStop } from "./execution-recovery.js";
 export type { AnnouncedExecution } from "./execution-recovery.js";

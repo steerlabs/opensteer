@@ -42,6 +42,7 @@ import {
   type UserId,
   type RunId,
   type ThreadId,
+  type TriggerId,
   type RequestId,
   type RequestResponse,
   OpensteerError,
@@ -143,6 +144,7 @@ export type RunnerControlInput =
       readonly type: "request.respond";
     };
 export interface ClaimedCommand {
+  readonly blocked?: undefined;
   readonly command: CommandRow;
 
   /**
@@ -153,6 +155,10 @@ export interface ClaimedCommand {
   /** External sender revocation cancels that input, not other people sharing its authority. */
   readonly terminalFailureInput?: "seed-input";
 }
+export interface BlockedCommandClaim {
+  readonly blocked: "firing-ahead";
+  readonly triggerId: TriggerId;
+}
 async function claimObservedCommand(
   transaction: Transaction<DatabaseSchema>,
   observed: Pick<
@@ -160,7 +166,7 @@ async function claimObservedCommand(
     "environmentId" | "id" | "payload" | "requestedBy" | "runId" | "threadId" | "type"
   > & { readonly connectionId: string | null },
   dispatcherId: string,
-): Promise<ClaimedCommand | null> {
+): Promise<ClaimedCommand | BlockedCommandClaim | null> {
   const lineage =
     observed.type === "run.execute" || observed.type === "run.steer" ? observed.connectionId : null;
   await lockLineageConnection(transaction, lineage);
@@ -198,7 +204,12 @@ async function claimObservedCommand(
         )
         .limit(1)
         .executeTakeFirst();
-      if (blocker) return null;
+      if (blocker) {
+        return {
+          blocked: "firing-ahead",
+          triggerId: candidate.triggerId,
+        };
+      }
     }
   }
   // Follow ./lock-order.ts: an ambiguous prior dispatch may requeue a command
@@ -1282,7 +1293,8 @@ export async function claimNextCommand(
       .orderBy("commands.createdAt", "asc")
       .executeTakeFirst();
     if (!candidate) return null;
-    return claimObservedCommand(transaction, candidate, dispatcherId);
+    const result = await claimObservedCommand(transaction, candidate, dispatcherId);
+    return result && !result.blocked ? result : null;
   });
 }
 
@@ -1565,11 +1577,23 @@ async function triggerCommandHeld(
         and ${connectionState(transaction)} = 'waiting') as held`.execute(transaction);
   return rows[0]?.held === true;
 }
+export function claimCommand(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  dispatcherId: string,
+): Promise<ClaimedCommand | null>;
+export function claimCommand(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  dispatcherId: string,
+  options: { readonly includeBlocked?: boolean },
+): Promise<ClaimedCommand | BlockedCommandClaim | null>;
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   dispatcherId: string,
-): Promise<ClaimedCommand | null> {
+  options?: { readonly includeBlocked?: boolean },
+): Promise<ClaimedCommand | BlockedCommandClaim | null> {
   return commitPersonalMutation(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
@@ -1588,7 +1612,9 @@ export async function claimCommand(
       .where("commands.status", "=", "pending")
       .executeTakeFirst();
     if (!observed) return null;
-    return claimObservedCommand(transaction, observed, dispatcherId);
+    const result = await claimObservedCommand(transaction, observed, dispatcherId);
+    if (result?.blocked && !options?.includeBlocked) return null;
+    return result;
   });
 }
 export async function loadSteerDispatchInput(
@@ -1878,6 +1904,7 @@ export async function failCommand(
           .where("commandId", "=", commandId)
           .where("status", "in", ["pending", "running"])
           .execute();
+        await wakeExecutionCommands(transaction);
       }
     });
     return;

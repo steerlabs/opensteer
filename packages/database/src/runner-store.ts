@@ -15,7 +15,7 @@ import { upsertSelfDeviceInTransaction, getSelfDeviceId } from "./device-invento
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
-import { commitPersonalMutation } from "./personal-mutation.js";
+import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
 import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
@@ -1402,6 +1402,7 @@ export async function revokeRunner(
                 .execute(databaseOperationOptions());
             }
           }
+          await wakeExecutionCommands(transaction);
         }
         const sessionTargets = [
           ...new Set([DeviceIdSchema.parse(runnerId), ...deviceEffects.removedDeviceIds]),

@@ -1011,6 +1011,9 @@ export class TriggerStore {
                 .execute();
             }
           }
+          if (canceledOccurrenceIds.length > 0 || lostPersonalRunning.length > 0) {
+            await wakeExecutionCommands(transaction);
+          }
           for (const row of activeOccurrences) {
             if (row.status === "running" && row.runnerId && row.runnerBootId) {
               runningFirings.push({
@@ -2115,6 +2118,9 @@ export class TriggerStore {
             .execute();
           canceledOccurrenceIds.push(row.id);
         }
+        if (canceledOccurrenceIds.length > 0) {
+          await wakeExecutionCommands(transaction);
+        }
         return {
           canceledOccurrenceIds,
         };
@@ -3134,6 +3140,9 @@ export class TriggerStore {
           triggerId: row.triggerId,
         });
       }
+      if (unknownRows.length > 0 || unsentRows.length > 0) {
+        await wakeExecutionCommands(transaction);
+      }
 
       return { pausedRunningFirings, results, settledUnknownCount: unknownRows.length };
     });
@@ -3213,6 +3222,7 @@ export class TriggerStore {
         .where("id", "in", unsentCommandIds)
         .where("status", "in", ["pending", "dispatched"])
         .execute();
+      await wakeExecutionCommands(transaction);
     }
 
     if (unknownRows.length === 0) return 0;
@@ -3248,6 +3258,7 @@ export class TriggerStore {
       .where("id", "in", unknownCommandIds)
       .where("status", "=", "dispatched")
       .execute();
+    await wakeExecutionCommands(transaction);
 
     for (const row of unknownRows) {
       if (!(await isFinalOccurrence(transaction, row))) continue;
