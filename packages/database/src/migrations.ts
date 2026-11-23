@@ -665,7 +665,8 @@ export function migrationProvider(options?: {
                  * An agent's proposed Home command rides an ordinary Request, with its parts in one
                  * column. One open ask per proposer and thing; a decline is found by the same key.
                  * An approval a restart cut off is found by its own small index, however many
-                 * Requests the Home has.
+                 * Requests the Home has. Activity finds an agent's asks and the commands it ran at
+                 * once by who sent them (C5).
                  */
                 async up(database: Kysely<unknown>) {
                   await sql`
@@ -678,6 +679,15 @@ export function migrationProvider(options?: {
                       where command is not null;
                     create index requests_command_running on requests (id)
                       where status = 'fulfilled' and (command->'outcome'->>'status') = 'running';
+                    create index requests_command_proposer on requests
+                      ((command->'proposer'->>'key'), created_at desc)
+                      where command is not null;
+                    create index requests_command_thread on requests
+                      (originating_thread_id, created_at desc)
+                      where command is not null;
+                    create index commands_agent_caller on commands
+                      ((authority_source->>'callerKey'), created_at desc)
+                      where authority_source->>'kind' = 'mcp';
                   `.execute(database);
                 },
               },

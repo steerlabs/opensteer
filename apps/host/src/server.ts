@@ -1,3 +1,4 @@
+import { commandActivity } from "./commands/activity.js";
 import { runnerRestartingCloseCode } from "@opensteer/protocol";
 import { registerStandardCdpRoute } from "./browser/standard-cdp-route.js";
 import { standardCdpConnectPrefix } from "./browser/standard-cdp-tickets.js";
@@ -166,6 +167,7 @@ import {
   ConfigurePersonalRemoteAccessRequestSchema,
   ConsumePersonalHostAccountLinkRequestSchema,
   CorrelationIdSchema,
+  ResumePersonalHostAccountLinkRequestSchema,
   HostToIntegrationsModuleMessageSchema,
   HostToShellModuleMessageSchema,
   IntegrationsModuleEventSchema,
@@ -189,6 +191,8 @@ import {
   type ComputerUseSessionSummary,
   type HarnessAuthenticationState,
   type HarnessSourceDescriptor,
+  type HostApiCommand,
+  type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
   type HostToIntegrationsModuleMessage,
@@ -219,7 +223,12 @@ import { BoundedAsyncInbox } from "@opensteer/shared/boundedAsyncInbox";
 import { parseHttpEndpointBaseUrl } from "@opensteer/shared/httpEndpoint";
 import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
-import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, {
+  LogController,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type WebSocket from "ws";
@@ -311,7 +320,11 @@ import {
 import { closeWebSocketsWithin } from "./server/connection-drain.js";
 import type { EgressService } from "./server/egress-service.js";
 import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handlers.js";
-import { installPersonalVersionGate, registerHostApi } from "./server/host-api-registration.js";
+import {
+  createContext as createHostApiContext,
+  installPersonalVersionGate,
+  registerHostApi,
+} from "./server/host-api-registration.js";
 import { unversionedRoute } from "./server/unversioned-route.js";
 import { normalizeHostError } from "./server/http-errors.js";
 import { installHostHttpBoundary } from "./server/host-http-boundary.js";
@@ -508,6 +521,27 @@ export interface HostServerDependencies {
   };
 }
 
+const hostRoutes = new WeakMap<
+  FastifyInstance,
+  { readonly method: string; readonly url: string }[]
+>();
+
+/** Every route a Host server registers, as it registers it: what the door's route test reads. */
+function recordHostRoutes(app: FastifyInstance): void {
+  const routes: { readonly method: string; readonly url: string }[] = [];
+  hostRoutes.set(app, routes);
+  app.addHook("onRoute", (route) => {
+    for (const method of [route.method].flat()) routes.push({ method, url: route.url });
+  });
+}
+
+/** The routes this Host server registered: none if it was not made by `createHostServer`. */
+export function registeredHostRoutes(
+  app: FastifyInstance,
+): readonly { readonly method: string; readonly url: string }[] {
+  return hostRoutes.get(app) ?? [];
+}
+
 export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
@@ -534,6 +568,7 @@ export async function createHostServer(
   });
   installTrustedProxy(app, dependencies.trustedProxy ?? "loopback-cloudflared");
   installClientAddress(app);
+  recordHostRoutes(app);
   const noSendKeys: ReadonlyMap<string, string> = new Map();
   const readSendKeys =
     (session: AuthenticatedHostSession["session"]) => async (ids: readonly MessageId[]) => {
@@ -802,43 +837,54 @@ export async function createHostServer(
     dependencies.personalRemoteAccess?.service.desktopUpdates ?? null,
     dependencies.store.database,
   );
+  /**
+   * A route that sends one of the person's commands: signed in as for any change, then the one
+   * door, `commands.dispatch`, with the same context a Host API call has (AD10).
+   */
+  const personCommand = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    command: HostApiCommand,
+  ): Promise<HostApiCommandOutput> => {
+    const authenticated = await dependencies.authenticator.authenticateSessionContext(
+      request.headers,
+      { mutation: true },
+    );
+    const answer = await hostApiHandlers["commands.dispatch"]!(
+      command as never,
+      createHostApiContext(authenticated, request, reply, false),
+    );
+    return (answer as { readonly data: HostApiCommandOutput }).data;
+  };
   // The Account link is its own subsystem: a Home on its own server links to an
   // Opensteer Account with no Remote access at all.
   if (dependencies.personalAccountLink) {
     const accountLink = dependencies.personalAccountLink.service;
+    // The Mac app's account-link steps are the person's commands: through the one door (AD10),
+    // as the same table types the person's other apps send, each answered as this route always was.
     app.post("/v1/personal-remote-access/account-link/proof", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(
-          await accountLink.approveAccountLink(
-            caller,
-            ApprovePersonalHostAccountLinkRequestSchema.parse(request.body),
-          ),
-        );
+      const output = (await personCommand(request, reply, {
+        type: "personal.accountLink.approve",
+        idempotencyKey: randomUUID(),
+        challenge: ApprovePersonalHostAccountLinkRequestSchema.parse(request.body),
+      })) as Extract<HostApiCommandOutput, { type: "personal.accountLink.approve" }>;
+      return reply.header("cache-control", "no-store").send(output.proof);
     });
     app.post("/v1/personal-remote-access/account-link/consume", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(
-          await accountLink.consumeAccountLink(
-            caller,
-            ConsumePersonalHostAccountLinkRequestSchema.parse(request.body),
-          ),
-        );
+      const output = (await personCommand(request, reply, {
+        type: "personal.accountLink.complete",
+        idempotencyKey: randomUUID(),
+        completion: ConsumePersonalHostAccountLinkRequestSchema.parse(request.body),
+      })) as Extract<HostApiCommandOutput, { type: "personal.accountLink.complete" }>;
+      return reply.header("cache-control", "no-store").send(output.access);
     });
     app.post("/v1/personal-remote-access/account-link/resume", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(await accountLink.resumeAccountLink(caller, request.body));
+      ResumePersonalHostAccountLinkRequestSchema.parse(request.body);
+      const output = (await personCommand(request, reply, {
+        type: "personal.accountLink.resume",
+        idempotencyKey: randomUUID(),
+      })) as Extract<HostApiCommandOutput, { type: "personal.accountLink.resume" }>;
+      return reply.header("cache-control", "no-store").send(output.access);
     });
     app.post(
       "/v1/personal-remote-access/account-unlink/revoke-sessions",
@@ -907,12 +953,12 @@ export async function createHostServer(
         );
     });
     app.post("/v1/personal-remote-access/pairing-codes", async (request, reply) => {
-      const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
-        mutation: true,
-      });
-      return reply
-        .header("cache-control", "no-store")
-        .send(await personalRemoteAccess.issuePairingCode(caller));
+      // The person's command, through the door (AD10).
+      const output = (await personCommand(request, reply, {
+        type: "personal.remoteAccess.pairing.create",
+        idempotencyKey: randomUUID(),
+      })) as Extract<HostApiCommandOutput, { type: "personal.remoteAccess.pairing.create" }>;
+      return reply.header("cache-control", "no-store").send(output.pairing);
     });
     app.put("/v1/personal-remote-access/connect-projection", async (request, reply) => {
       const caller = await dependencies.authenticator.authenticateSessionContext(request.headers, {
@@ -2678,8 +2724,13 @@ export async function createHostServer(
       dependencies.commandRequests,
     ),
     ...(dependencies.connections
-      ? createConnectionRpcHandlers(dependencies.connections, (ownerId) =>
-          dependencies.browserSources.chromeTabGrantCatalog(ownerId),
+      ? createConnectionRpcHandlers(
+          dependencies.connections,
+          (ownerId) => dependencies.browserSources.chromeTabGrantCatalog(ownerId),
+          dependencies.commandRequests
+            ? (input) =>
+                commandActivity(dependencies.store.database, dependencies.commandRequests!, input)
+            : undefined,
         )
       : {
           "connections.list": async () => {

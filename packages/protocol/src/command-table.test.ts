@@ -12,7 +12,14 @@ import {
   type CommandStep,
   type CommandType,
 } from "./command-table.js";
-import { commandEditor, commandSentence, commandTitles } from "./command-words.js";
+import {
+  commandAskedWords,
+  commandDoneWords,
+  commandEditor,
+  commandPastTenseKnown,
+  commandSentence,
+  commandTitles,
+} from "./command-words.js";
 import { decidingInputPaths } from "./command-inputs.test-support.js";
 import expected from "./command-table.rows.json" with { type: "json" };
 
@@ -339,5 +346,21 @@ describe("the command table", () => {
     // Only the stored policy says whether a switch goes up.
     expect(commandTable["machine.access.update"].face?.({} as never)).toBeUndefined();
     expect(commandTable["connection.update"].face?.({} as never)).toBeUndefined();
+  });
+});
+
+describe("activity's words for a command (C5)", () => {
+  it("says every command in the past, from its own title", () => {
+    for (const type of Object.keys(commandTitles) as (keyof typeof commandTitles)[])
+      expect(commandPastTenseKnown(type), type).toBe(true);
+    expect(commandDoneWords({ type: "thread.rename" })).toBe("renamed a task");
+    expect(commandDoneWords({ type: "thread.sendMessage" })).toBe("sent a message to a task");
+    expect(commandAskedWords({ type: "thread.rename" })).toBe("asked to rename a task");
+    // One title, three changes: activity says the one made.
+    const chat = { type: "channel.connection.status.set", status: "paused" } as const;
+    expect(commandDoneWords(chat)).toBe("paused a chat account");
+    expect(commandAskedWords({ ...chat, status: "revoked" })).toBe(
+      "asked to disconnect a chat account",
+    );
   });
 });

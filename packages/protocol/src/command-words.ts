@@ -214,6 +214,129 @@ export function commandSentence(
   return named ? `${title}: ${named}` : title;
 }
 
+/** Each title's first word as it reads once done: activity says what an agent did (C5). */
+const pastTense: Readonly<Record<string, string>> = {
+  Add: "added",
+  Answer: "answered",
+  Approve: "approved",
+  Archive: "archived",
+  Arrange: "arranged",
+  Ask: "asked",
+  Block: "blocked",
+  Cancel: "cancelled",
+  Change: "changed",
+  Clear: "cleared",
+  Close: "closed",
+  Confirm: "confirmed",
+  Connect: "connected",
+  Copy: "copied",
+  Create: "created",
+  Delete: "deleted",
+  Discard: "discarded",
+  Disconnect: "disconnected",
+  Dismiss: "dismissed",
+  Edit: "edited",
+  End: "ended",
+  Enter: "entered",
+  Finish: "finished",
+  Install: "installed",
+  Keep: "kept",
+  Let: "let",
+  Link: "linked",
+  Make: "made",
+  Mark: "marked",
+  Open: "opened",
+  Pair: "paired",
+  Pause: "paused",
+  Prepare: "prepared",
+  Register: "registered",
+  Remove: "removed",
+  Rename: "renamed",
+  Reopen: "reopened",
+  Reorder: "reordered",
+  Replace: "replaced",
+  Restart: "restarted",
+  Resume: "resumed",
+  Run: "ran",
+  Save: "saved",
+  Send: "sent",
+  Show: "showed",
+  Sign: "signed",
+  Start: "started",
+  Stop: "stopped",
+  Switch: "switched",
+  Turn: "turned",
+  Unlink: "unlinked",
+  Unpair: "unpaired",
+  Update: "updated",
+};
+
+/** A title's words after the first, as they follow a verb: "Rename a task" gives "a task". */
+function titleRest(title: string): { readonly verb: string; readonly rest: string } {
+  const space = title.indexOf(" ");
+  return space < 0
+    ? { verb: title, rest: "" }
+    : { verb: title.slice(0, space), rest: title.slice(space) };
+}
+
+/**
+ * A title that names several changes, as the one this command made: one title covers pausing,
+ * resuming and disconnecting a chat account, and activity says which.
+ */
+function chosenTitle(command: CommandWordsInput): string {
+  const input = command as {
+    readonly status?: string;
+    readonly enabled?: boolean;
+    readonly done?: boolean;
+  };
+  switch (command.type) {
+    case "channel.connection.status.set":
+      return input.status === "paused"
+        ? "Pause a chat account"
+        : input.status === "revoked"
+          ? "Disconnect a chat account"
+          : "Resume a chat account";
+    case "trigger.status.set":
+      return input.status === "paused"
+        ? "Pause an automation"
+        : input.status === "archived"
+          ? "Archive an automation"
+          : "Resume an automation";
+    case "harness.enabled.set":
+      return input.enabled === false
+        ? "Turn off an AI engine account"
+        : "Turn on an AI engine account";
+    case "settings.plugin.enabled.set":
+      return input.enabled === false
+        ? "Turn off a plugin, device app or skill"
+        : "Turn on a plugin, device app or skill";
+    case "thread.done.set":
+      return input.done === false ? "Mark a task not done" : "Mark a task done";
+    default:
+      return commandTitles[command.type];
+  }
+}
+
+/** A command as activity reads it: its type, and whatever input says which change it made. */
+export type CommandWordsInput = { readonly type: CommandType } & Readonly<Record<string, unknown>>;
+
+/** What the command did, in the past and lower case: "renamed a task". */
+export function commandDoneWords(command: CommandWordsInput): string {
+  const { verb, rest } = titleRest(chosenTitle(command));
+  return `${pastTense[verb] ?? verb.toLowerCase()}${rest}`;
+}
+
+/** What the agent asked for, in its own clause: "asked to rename a task". */
+export function commandAskedWords(command: CommandWordsInput): string {
+  const { verb, rest } = titleRest(chosenTitle(command));
+  return `asked to ${verb.toLowerCase()}${rest}`;
+}
+
+/** Whether every title's first word has its past form here: the table's words test it. */
+export function commandPastTenseKnown(type: CommandType): boolean {
+  return titleRest(chosenTitle({ type })).verb in pastTense;
+}
+
 /** The class of a face, from the worst it can do to the least, for the one a card speaks of. */
 const severity: readonly EffectClass[] = [
   "identity",

@@ -43,7 +43,6 @@ import {
   dispatchCallerRun,
   enrollmentToken,
   startPrivateMachineHost,
-  waitForValue,
   type CallerRun,
 } from "../runtime/private-machine-host.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
@@ -209,7 +208,11 @@ it("records what today's tools let each caller do, and the door answers the same
       tabCommands: true,
     });
     close.unshift(() => browserRuntime.close());
-    await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
+    await until(
+      "the fixture computer's browser to connect to the Host",
+      async () => host.runtime.browser.available,
+      30_000,
+    );
     await host.runtime.browser.initialize();
     const owner = host.ownerId;
     // The fixture computer runs automation programs (tool contract version 5), as a released one does.
@@ -666,16 +669,16 @@ it("records what today's tools let each caller do, and the door answers the same
         // descriptor (its browser) is read in the background, and the agent's call meets it ready.
         before: async () => {
           await catalogued();
-          await waitForValue(async () =>
-            asPerson({
-              type: "harness.model.configure",
-              ...spare,
-              nativeModelId: "gpt-5.6-sol",
-              settings: { contextWindow: 100_000 },
-            }).then(
-              () => true,
-              () => undefined,
-            ),
+          await until(
+            "the spare engine to offer gpt-5.6-sol again, so the person's same limits apply",
+            () =>
+              asPerson({
+                type: "harness.model.configure",
+                ...spare,
+                nativeModelId: "gpt-5.6-sol",
+                settings: { contextWindow: 100_000 },
+              }).then(() => true),
+            30_000,
           );
         },
         args: () => ({
@@ -1122,3 +1125,31 @@ it("records what today's tools let each caller do, and the door answers the same
     await database.drop?.();
   }
 }, 180_000);
+
+/**
+ * Waits for one named thing, polling, within a stated bound. On timeout it says what it waited
+ * for and the last answer it had, so a slow fixture never reads as a failure of the command.
+ */
+async function until(
+  what: string,
+  ready: () => Promise<boolean>,
+  timeoutMs: number,
+): Promise<void> {
+  let last: unknown = "not ready";
+  try {
+    await vi.waitFor(
+      async () => {
+        try {
+          if (await ready()) return;
+          last = "not ready";
+        } catch (error) {
+          last = error instanceof Error ? error.message : error;
+        }
+        throw new Error(`Not yet: ${what}`);
+      },
+      { timeout: timeoutMs, interval: 100 },
+    );
+  } catch {
+    throw new Error(`Waited ${timeoutMs} ms for ${what}; the last answer was: ${String(last)}`);
+  }
+}

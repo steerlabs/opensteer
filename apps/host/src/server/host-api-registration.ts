@@ -373,7 +373,8 @@ async function authenticateScope(
   return null;
 }
 
-function createContext(
+/** A Host API call's context: the same for a route that sends the person's command to the door. */
+export function createContext(
   authenticated: AuthenticatedHostSession | null,
   request: FastifyRequest,
   reply: FastifyReply,

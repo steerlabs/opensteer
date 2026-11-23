@@ -188,7 +188,7 @@ export class CommandRequestService {
     const face = commandAskedFace(input.command.type, input.face);
     const governs = (row.governs as (c: HostApiCommand) => CommandResource)(input.command);
     const stored = proposedCommand(row, input.command);
-    const names = await this.#name(governs, input.ownerUserId);
+    const names = await this.name(governs, input.ownerUserId);
     const named = commandSentence(input.command, () => names).slice(0, requestTitleMaxLength);
     const asker = askedBy(input.proposer);
     const summary = titleFirst(named, ` · ${asker}`);
@@ -381,7 +381,7 @@ export class CommandRequestService {
   }
 
   /** The governed thing as the person's apps name it, where the Home can tell cheaply. */
-  async #name(resource: CommandResource, owner: UserId): Promise<string | null> {
+  async name(resource: CommandResource, owner: UserId): Promise<string | null> {
     const id = resource.id;
     const database = this.#database;
     const quoted = (value: string | null | undefined) =>
@@ -443,6 +443,33 @@ export class CommandRequestService {
               .where("createdBy", "=", owner)
               .executeTakeFirst()
           )?.name,
+        );
+      case "engine":
+        // An engine account belongs to its Home's work location; the rule admitted the caller on it.
+        return quoted(
+          (
+            await database
+              .selectFrom("harnessInstances")
+              .select("name")
+              .where("id", "=", id as never)
+              .executeTakeFirst()
+          )?.name,
+        );
+      case "chat-account":
+        return quoted(
+          (
+            await database
+              .selectFrom("channelAccounts")
+              .innerJoin(
+                "integrationConnections",
+                "integrationConnections.id",
+                "channelAccounts.connectionId",
+              )
+              .select("channelAccounts.displayName")
+              .where("channelAccounts.connectionId", "=", id as never)
+              .where("integrationConnections.ownerUserId", "=", owner)
+              .executeTakeFirst()
+          )?.displayName,
         );
       default:
         return null;

@@ -1,5 +1,6 @@
 import { ThreadIdSchema } from "@opensteer/core";
 import type {
+  AgentCommandActivity,
   AgentOperationTarget,
   AgentOperationView,
   AgentSessionEndReason,
@@ -226,6 +227,82 @@ function operationOutcome(operation: AgentOperationView): OperationRow["outcome"
         ? { label: workWords("op.state.pending"), tone: "warn" }
         : { label: workWords("op.state.running"), tone: "busy" };
   }
+}
+
+/**
+ * One command the agent sent through the door, as a row beside its operations: the Home's own
+ * sentence, which names the agent and the task it came from (C5), and what became of it.
+ */
+export function commandActivityRow(command: AgentCommandActivity): OperationRow {
+  return {
+    id: command.id,
+    glyph: "list",
+    action: command.sentence,
+    allowedBy: null,
+    outcome: commandOutcome(command),
+    detail:
+      command.status === "unknown" || command.outcome === "unknown"
+        ? workWords("op.outcome.unknownDetail")
+        : null,
+    at: command.createdAt,
+  };
+}
+
+function commandOutcome(command: AgentCommandActivity): OperationRow["outcome"] {
+  switch (command.status) {
+    case "running":
+      return { label: workWords("op.state.running"), tone: "busy" };
+    case "done":
+      return { label: workWords("op.outcome.completed"), tone: "ok" };
+    case "failed":
+      return { label: workWords("op.outcome.failed"), tone: "bad" };
+    case "unknown":
+      return { label: workWords("op.outcome.unknown"), tone: "warn" };
+    case "asked":
+      return { label: workWords("cmd.asked"), tone: "warn" };
+    case "approved": {
+      const then =
+        command.outcome === "done"
+          ? null
+          : command.outcome === "failed"
+            ? { word: workWords("op.outcome.failed"), tone: "bad" as const }
+            : command.outcome === "unknown"
+              ? { word: workWords("op.outcome.unknown"), tone: "warn" as const }
+              : { word: workWords("op.state.running"), tone: "busy" as const };
+      return then
+        ? { label: workWords("cmd.approvedThen", { outcome: then.word }), tone: then.tone }
+        : { label: workWords("cmd.approved"), tone: "ok" };
+    }
+    case "declined":
+      return { label: workWords("cmd.declined"), tone: "muted" };
+    case "expired":
+      return { label: workWords("cmd.expired"), tone: "muted" };
+    case "withdrawn":
+      return { label: workWords("cmd.withdrawn"), tone: "muted" };
+    case "closed":
+      return { label: workWords("cmd.closed"), tone: "muted" };
+  }
+}
+
+/**
+ * A page of activity as one list, newest first: the operations and the commands of the same span,
+ * in the order they happened, never as two blocks.
+ */
+export function activityRows(page: {
+  readonly operations: readonly AgentOperationView[];
+  readonly commands?: readonly AgentCommandActivity[] | undefined;
+}): readonly OperationRow[] {
+  const rows = [
+    ...page.operations.map((operation) => ({
+      row: operationRow(operation),
+      at: operation.createdAt,
+    })),
+    ...(page.commands ?? []).map((command) => ({
+      row: commandActivityRow(command),
+      at: command.createdAt,
+    })),
+  ];
+  return rows.sort((a, b) => (a.at === b.at ? 0 : a.at < b.at ? 1 : -1)).map(({ row }) => row);
 }
 
 /* ------------------------------------------------------------------------- *

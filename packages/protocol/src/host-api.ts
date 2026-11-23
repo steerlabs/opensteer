@@ -25,6 +25,7 @@ import {
 import { ChannelConnectionInspectionViewSchema } from "@opensteer/channel-core";
 import {
   AgentGrantSchema,
+  AgentCommandActivitySchema,
   AgentOperationViewSchema,
   AgentSessionIdSchema,
   DeviceIdSchema,
@@ -461,6 +462,11 @@ export type DeviceMachineSessionBindCommand = z.infer<typeof DeviceMachineSessio
 const AgentOperationPageSchema = z.object({
   operations: z.array(AgentOperationViewSchema).max(100),
   nextBefore: z.string().max(200).nullable(),
+  /**
+   * The commands sent through the door in the same span as this page's operations, newest first.
+   * Optional: an older Home sends none, and an older app reads `operations` alone.
+   */
+  commands: z.array(AgentCommandActivitySchema).max(100).optional(),
 });
 const otherCommandInputSchema = z.discriminatedUnion("type", [
   IphoneScreenAttachCommandSchema,

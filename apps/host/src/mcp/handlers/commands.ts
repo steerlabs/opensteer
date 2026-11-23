@@ -297,7 +297,7 @@ export class CommandTools {
         return { area: input.area, view: await read("channels.get", {}) };
       case "devices": {
         const view = await read("machines.list", {});
-        const machines = (view.machines ?? []) as readonly { readonly machineId?: string }[];
+        const machines = (view.machines ?? []) as readonly { readonly id: string }[];
         if (scope !== "selected" || grant?.scope !== "selected")
           return { area: input.area, view: { machines } };
         // A selected grant sees the devices of the apps it was given, as its tools do.
@@ -308,7 +308,7 @@ export class CommandTools {
         );
         return {
           area: input.area,
-          view: { machines: machines.filter(({ machineId }) => devices.has(machineId ?? "")) },
+          view: { machines: machines.filter(({ id }) => devices.has(id)) },
         };
       }
       case "engines":

@@ -3287,12 +3287,33 @@ export async function createHostRuntime(
         commands: new CommandTools({
           database,
           reads: () => personReadHandlers,
-          engines: async (caller) =>
-            (await productHandlers.opensteer_ai_account_list({
+          engines: async (caller) => {
+            const listed = (await productHandlers.opensteer_ai_account_list({
               caller,
               input: {},
               operationKey: "opensteer_state",
-            } as never)) as Record<string, unknown>,
+            } as never)) as { readonly accounts?: readonly { readonly aiAccountId: string }[] };
+            // Each account with the work location its engine commands name (`environmentId`).
+            const ids = (listed.accounts ?? []).map(({ aiAccountId }) => aiAccountId);
+            const places = new Map(
+              ids.length
+                ? (
+                    await database
+                      .selectFrom("harnessInstances")
+                      .select(["id", "environmentId"])
+                      .where("id", "in", ids as never)
+                      .execute()
+                  ).map(({ id, environmentId }) => [id as string, environmentId as string])
+                : [],
+            );
+            return {
+              ...listed,
+              accounts: (listed.accounts ?? []).map((account) => ({
+                ...account,
+                environmentId: places.get(account.aiAccountId) ?? null,
+              })),
+            } as Record<string, unknown>;
+          },
           policy: async () => (claimedWork ? claimedWork.applied() : null),
           registry: agentCommandRegistry(administration.service),
           requests: () => commandRequestsForTools,

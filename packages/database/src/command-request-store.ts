@@ -71,8 +71,8 @@ const tooManyWaiting =
   "Too many changes are waiting for the person. Wait for an answer before asking for more.";
 const heldBackPrefix = "Agents asked for ";
 
-/** What became of a command Request, as its proposer may read it. */
-function presentState(row: {
+/** What became of a command Request, as its proposer and the person's activity read it. */
+export function commandRequestState(row: {
   readonly id: RequestId;
   readonly status: string;
   readonly command: unknown;
@@ -210,7 +210,7 @@ export class CommandRequestStore {
             message: "That key was used for a different proposal. Use a new key.",
           });
         return (
-          presentState(replay) ?? {
+          commandRequestState(replay) ?? {
             status: "pending" as const,
             request: requestFromRow(replay),
             replayed: true,
@@ -378,7 +378,7 @@ export class CommandRequestStore {
         .executeTakeFirst();
       if (!row || CommandRequestPartSchema.parse(row.command).proposer.key !== input.proposerKey)
         throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
-      const settled = presentState(row);
+      const settled = commandRequestState(row);
       if (settled) return settled;
       const now = this.#now();
       const withdrawn = await transaction

@@ -136,3 +136,33 @@ export const AgentOperationViewSchema = z.object({
   completedAt: z.iso.datetime({ offset: true }).nullable(),
 });
 export type AgentOperationView = z.infer<typeof AgentOperationViewSchema>;
+
+/**
+ * One command an agent sent through the door, as the person's activity list shows it beside the
+ * operations: the Home's sentence naming the agent, and what became of it. A command that asked
+ * is listed as its Request (asked, then approved, declined, or ended otherwise).
+ */
+export const AgentCommandActivitySchema = z.object({
+  /** The ledger row's id, or the Request's for one that asked. */
+  id: z.string().min(1).max(200),
+  type: z.string().min(1).max(100),
+  /** "Claude Code, from the task “Tidy up”, renamed a task: “Notes”", in the Home's words. */
+  sentence: z.string().min(1).max(600),
+  status: z.enum([
+    "running",
+    "done",
+    "failed",
+    "unknown",
+    "asked",
+    "approved",
+    "declined",
+    "expired",
+    "withdrawn",
+    "closed",
+  ]),
+  /** For one the person approved: what the command came to once it ran. */
+  outcome: z.enum(["running", "done", "failed", "unknown"]).nullable(),
+  requestId: RequestIdSchema.nullable(),
+  createdAt: z.iso.datetime({ offset: true }),
+});
+export type AgentCommandActivity = z.infer<typeof AgentCommandActivitySchema>;

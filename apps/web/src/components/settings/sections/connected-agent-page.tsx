@@ -20,6 +20,7 @@ import {
 } from "@opensteer/client/host";
 import {
   useChromeTabGrantCatalog,
+  useConnectedAgentActivity,
   useConnectedAgentLive,
   useConnectedAgents,
   useWorkPolicy,
@@ -55,6 +56,7 @@ export function ConnectedAgentPage({
   const navigate = useNavigate();
   const agents = useConnectedAgents(client);
   const live = useConnectedAgentLive(client, connectionId);
+  const activity = useConnectedAgentActivity(client, connectionId, live?.threadId ?? null);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const workPolicy = useWorkPolicy(client);
   const { snapshot } = shell;
@@ -108,6 +110,7 @@ export function ConnectedAgentPage({
     revoked: agents.revoked,
     grantsAvailable: agents.grantsAvailable,
     live,
+    ...(activity ? { activity } : {}),
   });
   const who = detail.row.identity.who;
   // A withdrawn verification offers Disconnect once, in its own notice.

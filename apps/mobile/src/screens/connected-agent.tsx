@@ -24,6 +24,7 @@ import {
   useAgentAppOptions,
   useAgentPluginOptions,
   useChromeTabGrantCatalog,
+  useConnectedAgentActivity,
   useConnectedAgentLive,
   useConnectedAgents,
   useWorkPolicy,
@@ -71,6 +72,7 @@ export function ConnectedAgentController(props: {
   const navigation = useNavigation();
   const agents = useConnectedAgents(host);
   const live = useConnectedAgentLive(host, connectionId);
+  const activity = useConnectedAgentActivity(host, connectionId, live?.threadId ?? null);
   const chromeTabs = useChromeTabGrantCatalog(host, true);
   const workPolicy = useWorkPolicy(host);
   const [sheet, setSheet] = useState<{
@@ -91,6 +93,7 @@ export function ConnectedAgentController(props: {
           revoked: agents.revoked,
           grantsAvailable: agents.grantsAvailable,
           live,
+          ...(activity ? { activity } : {}),
         });
   const agent = detail?.row.identity.label ?? null;
   useEffect(() => {
