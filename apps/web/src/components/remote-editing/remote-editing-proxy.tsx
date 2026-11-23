@@ -133,13 +133,22 @@ export function RemoteEditingProxy({
     (reason: unknown) => refuse(presentFailure(reason, "edit remotely")),
     [refuse],
   );
+  /**
+   * CU5, CW9: an operation that never left (the input is off, or the wire refused it) is told back
+   * to the reducer, which sends a composition it carried again as a fresh start in the same field.
+   */
+  const refused = useCallback((operation: EditingOperation) => {
+    state.current = reduceEditing(state.current, { type: "refused", operation }).state;
+  }, []);
   const perform = useCallback(
     (operation: EditingOperation) => {
       if (
         !current.current.enabled &&
         !(operation.kind === "key" && operation.keystroke.action === "up")
-      )
+      ) {
+        refused(operation);
         return;
+      }
       const arm =
         operation.kind === "copy" || operation.kind === "cut"
           ? clipboard.current!.arm(operation.kind)
@@ -167,15 +176,17 @@ export function RemoteEditingProxy({
           },
           (reason) => {
             arm?.reject();
+            refused(operation);
             failure(reason);
           },
         );
       } catch (reason) {
         arm?.reject();
+        refused(operation);
         failure(reason);
       }
     },
-    [failure],
+    [failure, refused],
   );
   const feed = useCallback(
     (event: EditingProxyEvent, native?: Event) => {

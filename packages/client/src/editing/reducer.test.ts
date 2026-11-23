@@ -965,3 +965,25 @@ describe("a composition the transport refused", () => {
     expect(step.operations[0]).not.toHaveProperty("composition.before");
   });
 });
+
+// CW9 (CT8): a paste over a selection is pasted whole or refused whole. Where the selection's
+// deletion cannot go first (a target without range edits), nothing is sent.
+describe("a paste over a selection the target cannot delete", () => {
+  it("is refused whole, nothing sent", () => {
+    const bytes = new TextEncoder().encode("x");
+    let state = createEditingState("ios", { ...abilities, rangeEdits: false });
+    for (const event of [
+      { type: "context", context },
+      { type: "beforeinput", inputType: "insertText", data: "hello" },
+      input("hello"),
+    ] satisfies EditingProxyEvent[])
+      state = reduceEditing(state, event).state;
+    state = { ...state, proxy: proxy("hello", 0, 5) };
+    const result = reduceEditing(state, {
+      type: "paste",
+      items: [{ type: "text/plain", bytes }],
+    });
+    expect(result.operations).toEqual([]);
+    expect(result.refusal).toBe("range-edits");
+  });
+});

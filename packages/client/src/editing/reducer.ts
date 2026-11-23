@@ -999,6 +999,10 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         ) {
           move(state.caret - edit.before.length + edit.text.length, start, removed.value);
           selected = true;
+        } else {
+          // CW9 (CT8): the selection could not go first, so the paste does not go either.
+          refusal ??= "range-edits";
+          break;
         }
       }
       // The pasted text is known: on a target that verifies range edits the mirror keeps it where

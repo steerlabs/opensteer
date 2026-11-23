@@ -265,6 +265,30 @@ describe("real shared proxy element", () => {
     composition(field, "compositionend", "한");
     expect(operations.filter((op) => op.kind === "edit")).toHaveLength(2);
   });
+  // CU5, CW9: a composition the wire refused before it left is told back to the reducer, so its
+  // next update is a fresh start again (it restates what it replaces) instead of an update the
+  // page never saw the start of.
+  it("sends a composition the wire refused again as a fresh start", async () => {
+    const { element, operations, wire } = setup();
+    let refuse = true;
+    wire.send.mockImplementation(async (operation: EditingOperation) => {
+      if (operation.kind === "compose" && refuse) {
+        refuse = false;
+        throw new Error("The socket is closed.");
+      }
+      operations.push(operation);
+      return undefined;
+    });
+    const field = element();
+    composition(field, "compositionstart");
+    input(field, "한", true, "insertCompositionText");
+    // The wire's refusal comes back before the person goes on.
+    await act(async () => undefined);
+    input(field, "한글", true, "insertCompositionText");
+    const composes = operations.filter((operation) => operation.kind === "compose");
+    expect(composes).toHaveLength(1);
+    expect(composes[0]).toMatchObject({ composition: { text: "한글", before: "", after: "" } });
+  });
   it("uses remote caret and field hints, then replaces sensitive fields with a password proxy", () => {
     const { element, render } = setup();
     expect(element().style.left).toBe("120px");
