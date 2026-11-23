@@ -3600,9 +3600,15 @@ async function readCodexUsage(client: CodexStdioClient): Promise<HarnessObserved
   const parsed = CodexRateLimitsResponseSchema.safeParse(response);
   const limits = parsed.success ? parsed.data.rateLimits : null;
   if (!limits) return undefined;
-  const windows = [limits.primary, limits.secondary].flatMap((window) =>
-    window ? codexUsageWindow(window) : [],
+  const windows: HarnessObservedUsageWindow[] = [limits.primary, limits.secondary].flatMap(
+    (window) => (window ? codexUsageWindow(window) : []),
   );
+  // A spend control cap has no rate-limit reset timer; represent it as its own
+  // non-expiring account window so resetting an exhausted 5h/weekly window
+  // never clears an active spending block.
+  if (limits.spendControlReached === true) {
+    windows.push({ label: "Spend limit", resetsAt: null, usedPercent: 100 });
+  }
   const limitReached =
     (limits.rateLimitReachedType ?? null) !== null ||
     limits.spendControlReached === true ||
