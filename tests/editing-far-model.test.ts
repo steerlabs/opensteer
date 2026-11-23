@@ -483,6 +483,25 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await settle();
   });
 
+  // The walk: the phone sends undo and redo as commands; the applier turns them into the page's
+  // own (editing-commands.ts, the page platform's chord), and the page's text changes.
+  it("undoes and redoes what was typed with the page's own undo", async () => {
+    await seed(page, kind, "", 0);
+    await settle();
+    const contextId = observer.context.contextId!;
+    for (const text of ["a", "b"])
+      expect(await send({ kind: "edit", edit: { contextId, text, before: "", after: "" } })).toBe(
+        true,
+      );
+    expect((await read(page, kind)).value).toBe("ab");
+    expect(await send({ kind: "command", command: "undo" })).toBe(true);
+    const undone = (await read(page, kind)).value;
+    expect(undone).not.toBe("ab");
+    expect("ab".startsWith(undone)).toBe(true);
+    expect(await send({ kind: "command", command: "redo" })).toBe(true);
+    expect((await read(page, kind)).value).toBe("ab");
+  });
+
   // CS1: a refusal inside the context while composing. The page moved the selection under an
   // open composition (Blink keeps the composition open), so the next update is refused for the
   // changed selection; the composition stays the composer's. The person keeps what they
