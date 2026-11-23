@@ -2969,6 +2969,159 @@ describe("Electron debugger teardown", () => {
     await hub.browser.close();
   });
 
+  // F32, widened after the walker's runs on 963f808d0 and fb245664c: one ordering passing proves
+  // nothing. Every order of the events around a tab's first start, for a tab opened with an
+  // address: the start's answer, a frame that beats it, the commit bumping the geometry revision,
+  // Electron's did-navigate letting the capture go and restoring it, and a second channel asking
+  // for the same picture. In each, one start reaches Chromium, no stop, and the follow view is
+  // handed a frame.
+  it("starts one cast for a tab opened with an address, in every order of what happens around it", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const shown = { height: 900, width: 1_400 };
+    const settings = {
+      everyNthFrame: 1,
+      format: "jpeg",
+      maxHeight: shown.height,
+      maxWidth: shown.width,
+      quality: 72,
+    };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    const events = ["answer", "early frame", "commit", "did-navigate", "second channel"] as const;
+    type Event = (typeof events)[number];
+    // Every order of the first four, then orders of all five drawn from a fixed seed.
+    const orders: Event[][] = [];
+    const permute = (rest: readonly Event[], made: Event[]) => {
+      if (rest.length === 0) orders.push(made);
+      for (const [index, event] of rest.entries())
+        permute([...rest.slice(0, index), ...rest.slice(index + 1)], [...made, event]);
+    };
+    permute(events.slice(0, 4), []);
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed / 2_147_483_648;
+    };
+    for (let drawn = 0; drawn < 24; drawn += 1) {
+      const order = [...events];
+      for (let index = order.length - 1; index > 0; index -= 1) {
+        const other = Math.floor(random() * (index + 1));
+        [order[index], order[other]] = [order[other]!, order[index]!];
+      }
+      orders.push(order);
+    }
+    const failures: string[] = [];
+    for (const [index, order] of orders.entries()) {
+      const hub = await hubPage(String(700 + index));
+      const channel = await hub.page.cdp();
+      const surface = {
+        active: true,
+        documentId: "about-blank",
+        geometryRevision: 1,
+        id: "surface-1",
+        loading: true,
+      };
+      let capture: { height: number; rasterScale: number; revision: number; width: number } | null =
+        { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+      const captureListeners = new Set<() => void>();
+      const binding = {
+        cdp: channel,
+        page: {
+          applyGeometry: async () => undefined,
+          capture: {
+            read: () => capture,
+            subscribe: (listener: () => void) => {
+              captureListeners.add(listener);
+              return () => captureListeners.delete(listener);
+            },
+          },
+          invalidateSurface: async () => undefined,
+          settleRendering: async () => undefined,
+        },
+        surface,
+      };
+      const ledgerListeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => null,
+        dialogOpen: () => false,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          ledgerListeners.add(listener);
+          return () => ledgerListeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => shown,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      };
+      const delivered: unknown[] = [];
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+      const start = hub.hold("Page.startScreencast");
+      await follow.start();
+      const streaming = follow.setStreaming(true).catch(() => undefined);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      const other = await hub.page.agentCdp();
+      let otherAsked: Promise<unknown> = Promise.resolve();
+      for (const event of order) {
+        if (event === "answer") {
+          start.release();
+          for (const reply of start.replies) reply.resolve({});
+        } else if (event === "early frame") hub.deliver("Page.screencastFrame", frameOf(1));
+        else if (event === "commit") {
+          Object.assign(surface, { documentId: "follow", geometryRevision: 2 });
+          for (const listener of ledgerListeners)
+            listener({ change: "updated", surface: { ...surface }, type: "changed" });
+        } else if (event === "did-navigate") {
+          for (const [name, listener] of hub.contents.on.mock.calls)
+            if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+          capture = null;
+          for (const listener of captureListeners) listener();
+          capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+          for (const listener of captureListeners) listener();
+        } else otherAsked = other.send("Page.startScreencast", settings).catch(() => undefined);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await streaming;
+      await otherAsked;
+      // The page draws: Chromium's frames carry the latest start it answered.
+      await vi.waitFor(() => {
+        hub.deliver("Page.screencastFrame", frameOf(hub.sent("Page.startScreencast").length));
+        expect(delivered.length).toBeGreaterThan(0);
+      });
+      await pastParking();
+      const reached = {
+        starts: hub.sent("Page.startScreencast").length,
+        stops: hub.sent("Page.stopScreencast").length,
+      };
+      if (reached.starts !== 1 || reached.stops !== 0)
+        failures.push(`${order.join(" → ")}: ${JSON.stringify(reached)}`);
+      await follow.close();
+      await hub.browser.close();
+    }
+    expect(failures).toEqual([]);
+    expect(orders).toHaveLength(48);
+  });
+
   // F30, the first half of the hypothesis for follow-never-shown-tab's four starts: a tab never
   // shown sends, before its start's answer is handled, a first frame at the size it last drew,
   // which 6a0311f0b made the hub hand on; the real follow view, sized as the Electron page sizes
