@@ -2485,6 +2485,8 @@ class ElectronDebuggerHub {
   >();
   /** For each session a cast can run in (the page's own is ""), the highest frame id Chromium sent. */
   readonly #laneFrames = new Map<string, number>();
+  /** For each session, the starts Chromium has answered: its next cast's frames carry one more. */
+  #laneStarts = new Map<string, number>();
   #castStarts = 0;
   /**
    * The sessions the hub attached to this page for itself (cast sessions, profile inspections):
@@ -2585,23 +2587,7 @@ class ElectronDebuggerHub {
           return;
         }
       }
-      this.#contexts.observe(method, record);
-      const pageEvent = this.#agentWorlds.observe(method, record);
-      if (method.startsWith("Runtime.executionContext"))
-        for (const channel of this.#channels) channel.observeContextEvent(method, record);
-      if (method === "Page.screencastFrame") {
-        this.#laneFrame(undefined, record);
-        return;
-      }
-      const recipients = this.#domainOwners.get(method.split(".", 1)[0] ?? "");
-      for (const channel of recipients ?? []) {
-        if (channel.role === "agent" && !pageEvent) {
-          if (method === "Debugger.paused")
-            void this.#command("Debugger.resume").catch(() => undefined);
-          continue;
-        }
-        channel.emit(method, record);
-      }
+      this.#pageEvent(method, record);
     });
     this.#debugger.on("detach", (_event, reason) => {
       // Every session it held is gone with it, the hub's own among them, and every cast.
@@ -3340,17 +3326,28 @@ class ElectronDebuggerHub {
   ): Promise<unknown> {
     const generation = this.#rendererGeneration;
     const key = castKey(parameters);
+    // Nothing read before an await is used after it unless read again.
+    const running = () =>
+      [...this.#casts].find(
+        (cast) => cast.key === key && cast.run?.started === true && cast.run.lane !== null,
+      );
+    if (running() !== undefined) {
+      // Out of its old cast first, then into the running one, as both are after the leaving.
+      if (this.#castOf.get(channel) !== running()) {
+        await this.#leaveCast(channel, generation);
+        this.#assertCurrent(generation);
+      }
+      const joined = running();
+      if (joined?.run) {
+        this.#joinCast(channel, joined);
+        // One that asks again has reset what it shows: it is handed the latest frame too.
+        this.#replay(channel, joined.run);
+        return {};
+      }
+      // It ended while the channel left its old cast: it starts afresh, below.
+    }
     const previous = this.#castOf.get(channel);
     const same = [...this.#casts].find((cast) => cast.key === key);
-    if (same?.run?.started) {
-      if (previous !== same) {
-        if (previous) await this.#leaveCast(channel, generation);
-        this.#joinCast(channel, same);
-      }
-      // One that asks again has reset what it shows: it is handed the latest frame too.
-      this.#replay(channel, same.run);
-      return {};
-    }
     const leavingAlone = previous !== undefined && previous !== same && previous.owners.size === 1;
     if (
       same === undefined &&
@@ -3384,26 +3381,45 @@ class ElectronDebuggerHub {
     cast.run = run;
     this.#castStarts += 1;
     this.#updateThrottling();
+    let ending: Screencast | null = null;
     try {
       this.#assertCurrent(generation);
-      run.lane ??= this.#pageSessionFree(run)
-        ? { id: undefined }
-        : { id: await this.#attachOwn(generation) };
-      run.floor = this.#laneFrames.get(run.lane.id ?? "") ?? 0;
-      await (run.lane.id === undefined
+      if (run.lane === null) {
+        run.lane = this.#pageSessionFree(run)
+          ? { id: undefined }
+          : { id: await this.#attachOwn(generation) };
+        // A crash or the debugger's detach while it attached ended this run.
+        if (cast.run !== run)
+          throw new Error("Electron CDP renderer changed before command dispatch.");
+      }
+      const lane = run.lane;
+      const laneKey = lane.id ?? "";
+      // Chromium numbers a session's casts upward, one more for each start it answers: every
+      // earlier run's frames carry at most the higher of what it sent and what it answered.
+      // The count is the debugger session's: one that lets go and attaches again counts afresh.
+      const starts = this.#laneStarts;
+      run.floor = Math.max(this.#laneFrames.get(laneKey) ?? 0, starts.get(laneKey) ?? 0);
+      await (lane.id === undefined
         ? send("Page.startScreencast", parameters)
-        : this.#command("Page.startScreencast", parameters, run.lane.id));
+        : this.#command("Page.startScreencast", parameters, lane.id));
+      starts.set(laneKey, (starts.get(laneKey) ?? 0) + 1);
+      this.#assertCurrent(generation);
+      if (cast.run !== run || run.lane !== lane)
+        throw new Error("Electron CDP renderer changed before command dispatch.");
       run.started = true;
-      if (left && !handed) await this.#leaveCast(channel, generation);
+      // The channel moves in one step, out of its old cast and into this one, so no frame of
+      // this run reaches no one; the old cast, if no one is left in it, ends after.
+      if (left && !handed) ending = this.#leaveMembership(channel);
       this.#joinCast(channel, cast);
-      return {};
+      // A frame of this run that came before its start resolved is handed now, to each owner.
+      for (const owner of cast.owners) this.#replay(owner, run);
     } catch (error) {
       if (cast.run === run) cast.run = null;
       const lane = run.lane;
       run.lane = null;
       // A renderer change or the debugger's detach has ended every cast already.
       const interrupted = generation !== this.#rendererGeneration;
-      if (handed && left && !interrupted) {
+      if (handed && left && !interrupted && lane !== null) {
         handed.lane = lane;
         left.run = handed;
         this.#casts.add(left);
@@ -3420,6 +3436,9 @@ class ElectronDebuggerHub {
       this.#castStarts -= 1;
       this.#updateThrottling();
     }
+    // The start is done whatever ending the old cast comes to.
+    if (ending) await this.#endCast(ending, generation).catch(() => undefined);
+    return {};
   }
 
   #joinCast(channel: ElectronCdpChannel, cast: Screencast): void {
@@ -3434,13 +3453,21 @@ class ElectronDebuggerHub {
     generation: number,
     parameters?: Record<string, unknown>,
   ): Promise<void> {
-    // What it was handed stays: its late acks of this cast go to this cast's run, or nowhere.
+    const empty = this.#leaveMembership(channel);
+    if (empty) await this.#endCast(empty, generation, parameters);
+  }
+
+  /**
+   * The channel is no longer one of its cast's owners, at once; the cast, if no one is left in it,
+   * is returned to be ended. What it was handed stays: its late acks go to that run, or nowhere.
+   */
+  #leaveMembership(channel: ElectronCdpChannel): Screencast | null {
     const cast = this.#castOf.get(channel);
-    if (!cast) return;
+    if (!cast) return null;
     cast.owners.delete(channel);
     this.#castOf.delete(channel);
     this.#updateThrottling();
-    if (cast.owners.size === 0) await this.#endCast(cast, generation, parameters);
+    return cast.owners.size === 0 ? cast : null;
   }
 
   /** Whether the page's own session runs no cast but `run`. */
@@ -3471,11 +3498,23 @@ class ElectronDebuggerHub {
     const key = lane ?? "";
     if (id > (this.#laneFrames.get(key) ?? 0)) this.#laneFrames.set(key, id);
     const run = this.#runIn(lane);
-    if (!run?.started) return;
+    if (!run) return;
     if (run.frameSession === null) {
       if (id <= run.floor) return;
       run.frameSession = id;
     } else if (id !== run.frameSession) return;
+    if (!run.started) {
+      // Above every earlier run's, so this run's, though its start has not resolved: it is kept,
+      // to be handed once it has, and reaches no one before. Chromium waits for an ack of each
+      // frame it sends, and stops for good at two: one this one replaces is acked here.
+      if (run.lastFrame !== null && run.lane)
+        void this.#command("Page.screencastFrameAck", { sessionId: id }, run.lane.id).catch(
+          () => undefined,
+        );
+      else run.awaitingAck += 1;
+      run.lastFrame = frame;
+      return;
+    }
     run.lastFrame = frame;
     run.awaitingAck += 1;
     for (const owner of run.cast.owners) this.#hand(owner, run, id, frame);
@@ -3555,6 +3594,8 @@ class ElectronDebuggerHub {
       this.#ownSessions.clear();
       this.#ownSessionsSeen.clear();
       this.#laneFrames.clear();
+      // A start answered by the session that let go counts in the map it was asked in.
+      this.#laneStarts = new Map();
     }
   }
 
@@ -3584,6 +3625,27 @@ class ElectronDebuggerHub {
       throw new Error("Electron CDP renderer changed before command dispatch.");
     }
     return sessionId;
+  }
+
+  /** An event of the page's own session, to the channels that hear it. */
+  #pageEvent(method: string, record: Record<string, unknown>): void {
+    this.#contexts.observe(method, record);
+    const pageEvent = this.#agentWorlds.observe(method, record);
+    if (method.startsWith("Runtime.executionContext"))
+      for (const channel of this.#channels) channel.observeContextEvent(method, record);
+    if (method === "Page.screencastFrame") {
+      this.#laneFrame(undefined, record);
+      return;
+    }
+    const recipients = this.#domainOwners.get(method.split(".", 1)[0] ?? "");
+    for (const channel of recipients ?? []) {
+      if (channel.role === "agent" && !pageEvent) {
+        if (method === "Debugger.paused")
+          void this.#command("Debugger.resume").catch(() => undefined);
+        continue;
+      }
+      channel.emit(method, record);
+    }
   }
 
   /**

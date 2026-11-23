@@ -2060,6 +2060,150 @@ describe("Electron debugger teardown", () => {
       expect(agentSaw).toEqual(["view 1"]);
       await hub.browser.close();
     });
+
+    // The re-check of 5d197dfbc..e7080ea31, finding 1: what a start read before an await was used
+    // after it without being read again. Its three orders.
+    const crash = (hub: Awaited<ReturnType<typeof hubPage>>) => {
+      for (const [name, listener] of [
+        ...hub.contents.on.mock.calls,
+        ...hub.contents.once.mock.calls,
+      ])
+        if (name === "render-process-gone")
+          (listener as (...a: unknown[]) => void)({}, { reason: "crashed" });
+    };
+
+    it("refuses a move to a running cast that ended while the channel left its own", async () => {
+      const hub = await hubPage("35");
+      ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", small);
+      const detach = hub.hold("Target.detachFromTarget");
+      const moving = agent.send("Page.startScreencast", view);
+      await vi.waitFor(() => expect(detach.replies).toHaveLength(1));
+      crash(hub);
+      detach.release();
+      detach.replies[0]!.resolve({});
+      // Refused for the renderer's loss, not with a TypeError of the ended cast.
+      await expect(moving).rejects.toThrow(/crashed/u);
+      // It is in no cast: the person's, started again, reaches the person alone.
+      for (const [name, listener] of hub.contents.on.mock.calls)
+        if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("view again", 2));
+      expect(agentSaw).toEqual([]);
+      await hub.browser.close();
+    });
+
+    it("hands a new cast's first frame to the owner that started it, and sends its ack", async () => {
+      const hub = await hubPage("36");
+      const own = ownSessions(hub);
+      const person = await hub.page.cdp();
+      const agent = await hub.page.agentCdp();
+      const agentSaw = seen(agent);
+      await person.send("Page.startScreencast", view);
+      await agent.send("Page.startScreencast", view);
+      const start = hub.hold("Page.startScreencast");
+      const starting = agent.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      expect(own.attached).toEqual(["cast-1"]);
+      start.release();
+      // Chromium answers the start, and its first frame arrives before the hub hears the answer.
+      start.replies[0]!.resolve({});
+      hub.deliver("Page.screencastFrame", frame("small 1", 1), "cast-1");
+      await starting;
+      expect(agentSaw).toEqual(["small 1"]);
+      await agent.send("Page.screencastFrameAck", { sessionId: 1 });
+      expect(hub.sent("Page.screencastFrameAck")).toEqual([
+        ["Page.screencastFrameAck", { sessionId: 1 }, "cast-1"],
+      ]);
+      await hub.browser.close();
+    });
+
+    it("takes no late frame of an earlier run for a run whose first frame has not come", async () => {
+      const hub = await hubPage("37");
+      const person = await hub.page.cdp();
+      const personSaw = seen(person);
+      await person.send("Page.startScreencast", view);
+      const start = hub.hold("Page.startScreencast");
+      const starting = person.send("Page.startScreencast", small);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frame("view 1", 1));
+      start.release();
+      start.replies[0]!.resolve({});
+      await starting;
+      hub.deliver("Page.screencastFrame", frame("view 2", 1));
+      hub.deliver("Page.screencastFrame", frame("small 1", 2));
+      expect(personSaw).toEqual(["small 1"]);
+      await hub.browser.close();
+    });
+
+    // Run on e7080ea31, follow-stale-dialog-answers: the second tab, answered, was pictured no
+    // more. The smoke's order on that tab: opened and pictured, its cast started again in a new
+    // size, then left before that start's first frame; a dialog opens there and is answered; its
+    // cast starts again. A late frame of the start that never pictured anything (Chromium's id 2)
+    // then arrives first.
+    const underADialog = async (label: string) => {
+      const hub = await hubPage(label);
+      const person = await hub.page.cdp();
+      const personSaw = seen(person);
+      const resized = { ...view, maxWidth: 1_200 };
+      await person.send("Page.startScreencast", view);
+      hub.deliver("Page.screencastFrame", frame("opened", 1));
+      await person.send("Page.screencastFrameAck", { sessionId: 1 });
+      await person.send("Page.stopScreencast");
+      await person.send("Page.startScreencast", resized);
+      await person.send("Page.stopScreencast");
+      hub.deliver("Page.javascriptDialogOpening", {
+        defaultPrompt: "",
+        frameId: "target-1",
+        hasBrowserHandler: false,
+        message: "Allow destructive action B?",
+        type: "confirm",
+        url: "https://example.test/follow?dialog-b",
+      });
+      await person.send("Page.handleJavaScriptDialog", { accept: false });
+      hub.deliver("Page.javascriptDialogClosed", {
+        frameId: "target-1",
+        result: false,
+        userInput: "",
+      });
+      return { hub, person, personSaw, resized };
+    };
+
+    it("pictures a tab again once its dialog is answered, though a late frame comes first", async () => {
+      const { hub, person, personSaw, resized } = await underADialog("38");
+      await person.send("Page.startScreencast", resized);
+      hub.deliver("Page.screencastFrame", frame("late, never pictured", 2));
+      hub.deliver("Page.screencastFrame", frame("answered", 3));
+      expect(personSaw).toEqual(["opened", "answered"]);
+      await person.send("Page.screencastFrameAck", { sessionId: 3 });
+      expect(hub.sent("Page.screencastFrameAck").at(-1)).toEqual([
+        "Page.screencastFrameAck",
+        { sessionId: 3 },
+      ]);
+      await hub.browser.close();
+    });
+
+    it("pictures a still tab once its dialog is answered, though its one frame beats the start's answer", async () => {
+      const { hub, person, personSaw, resized } = await underADialog("39");
+      const start = hub.hold("Page.startScreencast");
+      const starting = person.send("Page.startScreencast", resized);
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      start.release();
+      start.replies[0]!.resolve({});
+      hub.deliver("Page.screencastFrame", frame("answered", 3));
+      await starting;
+      expect(personSaw).toEqual(["opened", "answered"]);
+      await person.send("Page.screencastFrameAck", { sessionId: 3 });
+      expect(hub.sent("Page.screencastFrameAck").at(-1)).toEqual([
+        "Page.screencastFrameAck",
+        { sessionId: 3 },
+      ]);
+      await hub.browser.close();
+    });
   });
 
   // Finding 5: every session the hub attaches for itself is detached exactly once, on every path
