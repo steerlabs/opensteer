@@ -96,7 +96,7 @@ function makeMcpTestServer() {
             result: {
               content: [{ text: "boom", type: "text" }],
               isError: true,
-              structuredContent: { error: { code: "conflict", message: "boom" } },
+              structuredContent: { error: { code: "access_denied", message: "refused" } },
             },
           }),
         );

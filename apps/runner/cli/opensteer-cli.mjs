@@ -22,8 +22,34 @@ class CliExitError extends Error {
   }
 }
 
+const PROVABLY_NO_EFFECT_CODES = new Set([
+  "access_denied",
+  "bad_request",
+  "declined_by_person",
+  "forbidden",
+  "invalid_arguments",
+  "invalid_input",
+  "not_found",
+  "organization_not_allowed",
+  "unauthenticated",
+  "unauthorized",
+  "unsupported",
+]);
+
 function isOutcomeUnknownCode(code) {
   return code === "outcome_unknown" || code === "outcome-unknown";
+}
+
+function errorCodeFromPayload(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.error && typeof value.error === "object" && typeof value.error.code === "string") {
+    return value.error.code;
+  }
+  if (typeof value.code === "string") return value.code;
+  if (value.data && typeof value.data === "object" && typeof value.data.code === "string") {
+    return value.data.code;
+  }
+  return null;
 }
 
 function isOutcomeUnknownPayload(value) {
@@ -46,6 +72,29 @@ function isOutcomeUnknownText(text) {
   );
 }
 
+/**
+ * Exit 2 means provably nothing happened (AA4). Every other tool failure exits 3 so scripts
+ * never blindly retry a partial or uncertain write.
+ */
+function isProvablyNoEffectToolError(result, serialized) {
+  if (
+    isOutcomeUnknownPayload(result?.structuredContent) ||
+    isOutcomeUnknownPayload(result) ||
+    isOutcomeUnknownText(serialized)
+  ) {
+    return false;
+  }
+  let code = errorCodeFromPayload(result?.structuredContent) ?? errorCodeFromPayload(result);
+  if (!code && typeof serialized === "string" && serialized.trim().startsWith("{")) {
+    try {
+      code = errorCodeFromPayload(JSON.parse(serialized));
+    } catch {
+      code = null;
+    }
+  }
+  return code !== null && PROVABLY_NO_EFFECT_CODES.has(code);
+}
+
 function usage() {
   process.stderr.write(
     [
@@ -58,8 +107,8 @@ function usage() {
       "Exit codes:",
       "  0  Done",
       "  1  Usage or local error (nothing was sent)",
-      "  2  Refused by Opensteer (nothing happened; safe to retry)",
-      "  3  Outcome unknown (effect may have happened; do not blind-retry)",
+      "  2  Refused before running (provably nothing happened)",
+      "  3  Outcome unknown (effect may have happened; check before retrying)",
     ].join("\n") + "\n",
   );
 }
@@ -122,11 +171,21 @@ async function mcpRequest(url, token, sessionId, payload, options = {}) {
     } catch {
       parsedError = null;
     }
-    const unknown =
-      response.status >= 500 || isOutcomeUnknownPayload(parsedError) || isOutcomeUnknownText(text);
+    const refusedBeforeEffect =
+      [400, 401, 403, 404].includes(response.status) &&
+      !isOutcomeUnknownPayload(parsedError) &&
+      !isOutcomeUnknownText(text);
     throw new CliExitError(
       `Opensteer MCP HTTP ${response.status}: ${text || response.statusText}`,
-      unknown ? EXIT_UNKNOWN : EXIT_REFUSED,
+      mayHaveEffect
+        ? refusedBeforeEffect
+          ? EXIT_REFUSED
+          : EXIT_UNKNOWN
+        : response.status >= 500 ||
+            isOutcomeUnknownPayload(parsedError) ||
+            isOutcomeUnknownText(text)
+          ? EXIT_UNKNOWN
+          : EXIT_REFUSED,
     );
   }
   try {
@@ -260,12 +319,17 @@ async function main() {
         { mayHaveEffect: true },
       );
       if (response.body?.error) {
+        const rpcCode = response.body.error.code;
+        const payloadCode = errorCodeFromPayload(response.body.error);
+        const provablyNoEffect =
+          !isOutcomeUnknownPayload(response.body.error) &&
+          !isOutcomeUnknownText(response.body.error.message) &&
+          (rpcCode === -32601 ||
+            rpcCode === -32602 ||
+            (payloadCode !== null && PROVABLY_NO_EFFECT_CODES.has(payloadCode)));
         throw new CliExitError(
           response.body.error.message || `Tool ${name} failed`,
-          isOutcomeUnknownPayload(response.body.error) ||
-            isOutcomeUnknownText(response.body.error.message)
-            ? EXIT_UNKNOWN
-            : EXIT_REFUSED,
+          provablyNoEffect ? EXIT_REFUSED : EXIT_UNKNOWN,
         );
       }
       return response.body?.result ?? {};
@@ -281,12 +345,8 @@ async function main() {
           : result;
     const serialized = typeof output === "string" ? output : JSON.stringify(output, null, 2);
     if (result.isError) {
-      const unknown =
-        isOutcomeUnknownPayload(result.structuredContent) ||
-        isOutcomeUnknownPayload(result) ||
-        isOutcomeUnknownText(serialized);
       process.stderr.write(`${serialized}\n`);
-      process.exit(unknown ? EXIT_UNKNOWN : EXIT_REFUSED);
+      process.exit(isProvablyNoEffectToolError(result, serialized) ? EXIT_REFUSED : EXIT_UNKNOWN);
     }
     process.stdout.write(`${serialized}\n`);
     return;
