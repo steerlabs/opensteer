@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  DisplayInputRefusalSchema,
+  DisplayInputSchema,
+  DisplayMaxFpsSchema,
+  DisplayMaxLongSideSchema,
+  DisplayStreamIdSchema,
+  DisplayViewerStateSchema,
+} from "./display-stream.js";
 
 export const iphoneBridgeProtocolVersion = 1;
 export const iphoneBridgeBounds = {
@@ -65,6 +73,10 @@ export const iphoneNativeReasonSchema = z.enum([
   "wifi-pairing-required",
   "wifi-transport-unsupported",
   "wifi-identity-mismatch",
+  /** The person chose not to allow this Mac when the iPhone asked. */
+  "wifi-pairing-denied",
+  /** Wi‑Fi pairing over the cable didn’t finish; trying again can work. */
+  "wifi-pairing-failed",
 ]);
 export type IphoneNativeReason = z.infer<typeof iphoneNativeReasonSchema>;
 export const iphoneNativeCapabilitiesSchema = z.strictObject({
@@ -72,10 +84,11 @@ export const iphoneNativeCapabilitiesSchema = z.strictObject({
   act: iphoneNativeReasonSchema.nullable(),
   launch: iphoneNativeReasonSchema.nullable(),
   installedApps: iphoneNativeReasonSchema.nullable(),
-  text: z.literal("unsupported-text"),
-  clear: z.literal("unsupported-clear"),
-  indexedTargets: z.literal("geometry-unavailable"),
-  liveVideo: z.literal("unsupported"),
+  text: iphoneNativeReasonSchema.nullable(),
+  clear: iphoneNativeReasonSchema.nullable(),
+  indexedTargets: iphoneNativeReasonSchema.nullable(),
+  liveVideo: iphoneNativeReasonSchema.nullable(),
+  wake: iphoneNativeReasonSchema.nullable().optional(),
 });
 const id = z.string().min(1).max(128);
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -108,12 +121,25 @@ const target = z.union([
   z.object({ point: iphoneNativePointSchema }).strict(),
   z.object({ nodeId: id }).strict(),
 ]);
+const nativeButton = z.enum([
+  "home",
+  "lock",
+  "volumeUp",
+  "volumeDown",
+  "recents",
+  "notifications",
+  "quickSettings",
+  "action",
+  "siri",
+]);
+const tapCount = z.union([z.literal(1), z.literal(2)]);
 export const iphoneNativeActionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("tap"), target }).strict(),
+  z.object({ kind: z.literal("tap"), target, count: tapCount.optional() }).strict(),
   z.object({ kind: z.literal("longPress"), target, durationMs: positive.max(10000) }).strict(),
   z
     .object({
       kind: z.literal("swipe"),
+      edge: z.enum(["none", "top", "left", "bottom", "right"]).optional(),
       target,
       to: iphoneNativePointSchema,
       durationMs: positive.max(10000),
@@ -143,10 +169,25 @@ export const iphoneNativeActionSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("navigate"),
-      button: z.enum(["home", "lock", "volumeUp", "volumeDown"]),
+      button: nativeButton,
     })
     .strict(),
   z.object({ kind: z.literal("launch"), appId: id }).strict(),
+  z.strictObject({ kind: z.literal("terminate"), appId: id }),
+  z.strictObject({
+    kind: z.literal("pinch"),
+    target,
+    scale: z.number().min(0.1).max(10),
+    durationMs: positive.max(10000),
+  }),
+  z.strictObject({
+    kind: z.literal("key"),
+    key: z.string().min(1).max(32),
+    modifiers: z
+      .array(z.enum(["command", "shift", "option", "control"]))
+      .max(4)
+      .optional(),
+  }),
   z.object({ kind: z.literal("wake") }).strict(),
   z.object({ kind: z.literal("wait"), durationMs: positive.max(10000) }).strict(),
 ]);
@@ -204,8 +245,9 @@ const nativeNode = z
     enabled: z.boolean().nullable(),
     focused: z.boolean().nullable(),
     selected: z.boolean().nullable(),
-    editable: z.literal("unknown"),
-    secure: z.literal("unknown"),
+    editable: z.enum(["yes", "no", "unknown"]),
+    secure: z.enum(["yes", "no", "unknown"]),
+    source: z.enum(["ax", "ocr"]).optional(),
   })
   .strict();
 export const iphoneNativeObservationSchema = z
@@ -218,7 +260,7 @@ export const iphoneNativeObservationSchema = z
     nodes: z.array(nativeNode).max(1500),
     coverage: z
       .object({
-        coordinateSpace: z.literal("unqualified"),
+        coordinateSpace: z.enum(["qualified", "unqualified"]),
         status: z.enum(["partial", "unavailable"]),
         reason: z.enum([
           "accessibility-unavailable",
@@ -241,9 +283,9 @@ export const iphoneNativeObservationSchema = z
       .object({ appId: id, label: z.string().max(400) })
       .strict()
       .nullable(),
-    buttons: z.array(z.enum(["home", "lock", "volumeUp", "volumeDown"])).max(4),
-    textReason: z.literal("unsupported-text"),
-    clearReason: z.literal("unsupported-clear"),
+    buttons: z.array(nativeButton).max(10),
+    textReason: iphoneNativeReasonSchema.nullable(),
+    clearReason: iphoneNativeReasonSchema.nullable(),
     screenshot: z
       .object({
         mimeType: z.literal("image/jpeg"),
@@ -279,6 +321,8 @@ const iphoneNativeScreenStatusSchema = z.strictObject({
     "wake-on-phone-required",
     "screen-state-unknown",
   ]),
+  wakeToken: id.optional(),
+  geometryRevision: positive.optional(),
 });
 const iphoneNativeObserveResultSchema = z.union([
   iphoneNativeObservationSchema,
@@ -305,6 +349,39 @@ const requestBase = {
 };
 const phoneRef = iphoneNativePhoneRefSchema.shape;
 const imageRoots = z.array(z.string().min(1).max(4096)).max(8);
+const displayStartProfile = { maxLongSide: DisplayMaxLongSideSchema, maxFps: DisplayMaxFpsSchema };
+const displayDemandProfile = {
+  maxLongSide: DisplayMaxLongSideSchema.optional(),
+  maxFps: DisplayMaxFpsSchema.optional(),
+};
+const nativeDisplayRef = {
+  bindingToken: id,
+  nativeEpoch: positive,
+  streamId: DisplayStreamIdSchema,
+};
+const displayPowerAction = z.enum(["wake", "lock"]);
+const displayInputOutcome = z.enum(["dispatched", "refused", "stale"]);
+const displayPowerOutcome = z.enum(["dispatched", "refused"]);
+export const iphoneNativeDisplayStartResultSchema = z.strictObject({
+  socketPath: z.string().min(1).max(4096),
+});
+export const iphoneNativeDisplayInputResultSchema = z.strictObject({
+  outcome: displayInputOutcome,
+  reason: z.string().optional(),
+});
+export const iphoneNativeDisplayPowerResultSchema = z.strictObject({
+  outcome: displayPowerOutcome,
+  reason: z.string().optional(),
+});
+const displayState = {
+  streamId: DisplayStreamIdSchema,
+  state: z.enum(["starting", "live", "protected", "screen-off", "stopped", "failed"]),
+  reason: z.string().optional(),
+  generation: DisplayViewerStateSchema.shape.generation,
+  width: DisplayViewerStateSchema.shape.width,
+  height: DisplayViewerStateSchema.shape.height,
+  rotation: rotation.unwrap(),
+};
 const paramsByMethod = {
   hello: empty,
   init: z
@@ -452,6 +529,52 @@ const iphoneNativeBaseRequestSchema = z
         params: paramsByMethod["setup.prepareDeveloperServices"],
       })
       .strict(),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("display.start"),
+      timeoutMs: positive.max(30000),
+      params: z.strictObject({ ...nativeDisplayRef, ...displayStartProfile }),
+    }),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("display.demand"),
+      timeoutMs: positive.max(30000),
+      params: z.strictObject({ ...nativeDisplayRef, ...displayDemandProfile }),
+    }),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("display.refresh"),
+      timeoutMs: positive.max(30000),
+      params: z.strictObject(nativeDisplayRef),
+    }),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("display.stop"),
+      timeoutMs: positive.max(30000),
+      params: z.strictObject(nativeDisplayRef),
+    }),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("display.input"),
+      timeoutMs: positive.max(30000),
+      params: z.strictObject({
+        ...nativeDisplayRef,
+        geometry: positive.optional(),
+        events: DisplayInputSchema.shape.events,
+      }),
+    }),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("display.inputReset"),
+      timeoutMs: positive.max(30000),
+      params: z.strictObject(nativeDisplayRef),
+    }),
+    z.strictObject({
+      ...requestBase,
+      method: z.literal("display.power"),
+      timeoutMs: positive.max(30000),
+      params: z.strictObject({ ...nativeDisplayRef, action: displayPowerAction }),
+    }),
     // Explicit same-LAN setup; no endpoints or pairing material cross this pipe.
     z
       .object({
@@ -640,6 +763,9 @@ export const iphoneNativeResponseSchema = z
       iphoneNativeObserveResultSchema,
       iphoneNativePerformResultSchema,
       iphoneNativeInstalledAppsSchema,
+      iphoneNativeDisplayStartResultSchema,
+      iphoneNativeDisplayInputResultSchema,
+      iphoneNativeDisplayPowerResultSchema,
       iphoneNativePhoneRefSchema,
       z.object({ bindingToken: id }).strict(),
       z
@@ -660,15 +786,19 @@ export const iphoneNativeResponseSchema = z
     ]),
   })
   .strict();
-export const iphoneNativeEventSchema = z
-  .object({
-    kind: z.literal("event"),
-    bootId: id,
-    sequence: positive,
+const nativeEventBase = { kind: z.literal("event"), bootId: id, sequence: positive };
+export const iphoneNativeEventSchema = z.discriminatedUnion("event", [
+  z.strictObject({
+    ...nativeEventBase,
     event: z.literal("roster.changed"),
     roster: iphoneNativeRosterSchema,
-  })
-  .strict();
+  }),
+  z.strictObject({
+    ...nativeEventBase,
+    event: z.literal("display.state"),
+    displayState: z.strictObject(displayState),
+  }),
+]);
 export const iphoneNativeMessageSchema = z.union([
   iphoneNativeResponseSchema,
   iphoneNativeEventSchema,
@@ -695,9 +825,17 @@ export const iphoneRunnerMethodSchema = z.enum([
   "iphone.installedApps",
   "iphone.cancel",
   "iphone.media",
+  "iphone.display.start",
+  "iphone.display.demand",
+  "iphone.display.refresh",
+  "iphone.display.stop",
+  "iphone.display.input",
+  "iphone.display.inputReset",
+  "iphone.display.power",
 ]);
 export type IphoneRunnerMethod = z.infer<typeof iphoneRunnerMethodSchema>;
 const driverRef = { deviceId: id, driverGeneration: positive };
+const runnerDisplayRef = { ...driverRef, streamId: DisplayStreamIdSchema };
 const sessionRef = { ...driverRef, sessionId: id, runId: id };
 export const iphoneRunnerAssignmentSchema = z.strictObject({
   deviceId: id,
@@ -745,6 +883,13 @@ export const iphoneRunnerParams = {
   }),
   "iphone.cancel": z.strictObject(sessionRef),
   "iphone.media": z.strictObject(driverRef),
+  "iphone.display.start": z.strictObject({ ...runnerDisplayRef, ...displayStartProfile }),
+  "iphone.display.demand": z.strictObject({ ...runnerDisplayRef, ...displayDemandProfile }),
+  "iphone.display.refresh": z.strictObject(runnerDisplayRef),
+  "iphone.display.stop": z.strictObject(runnerDisplayRef),
+  "iphone.display.input": z.strictObject({ ...runnerDisplayRef, ...DisplayInputSchema.shape }),
+  "iphone.display.inputReset": z.strictObject(runnerDisplayRef),
+  "iphone.display.power": z.strictObject({ ...runnerDisplayRef, action: displayPowerAction }),
 } as const;
 export const iphoneRunnerResults = {
   "iphone.targets": z.strictObject({ targets: z.array(iphoneRunnerTargetSchema).max(8) }),
@@ -758,6 +903,19 @@ export const iphoneRunnerResults = {
   "iphone.installedApps": iphoneScreenNativeInstalledAppsSchema,
   "iphone.cancel": empty,
   "iphone.media": z.strictObject({ available: z.literal(false), reason: z.literal("unsupported") }),
+  "iphone.display.start": z.strictObject({ attachmentToken: z.string() }),
+  "iphone.display.demand": empty,
+  "iphone.display.refresh": empty,
+  "iphone.display.stop": empty,
+  "iphone.display.input": z.strictObject({
+    outcome: displayInputOutcome,
+    reason: DisplayInputRefusalSchema.optional(),
+  }),
+  "iphone.display.inputReset": empty,
+  "iphone.display.power": z.strictObject({
+    outcome: displayPowerOutcome,
+    reason: DisplayInputRefusalSchema.optional(),
+  }),
 } as const;
 export type IphoneRunnerParams<M extends IphoneRunnerMethod> = z.infer<
   (typeof iphoneRunnerParams)[M]
@@ -766,6 +924,11 @@ export type IphoneRunnerResult<M extends IphoneRunnerMethod> = z.infer<
   (typeof iphoneRunnerResults)[M]
 >;
 export const iphoneRunnerEventSchema = z.discriminatedUnion("event", [
+  z.strictObject({
+    kind: z.literal("event"),
+    event: z.literal("iphone.displayState"),
+    params: z.strictObject({ ...driverRef, ...displayState }),
+  }),
   z.strictObject({
     kind: z.literal("event"),
     event: z.literal("iphone.targetsChanged"),
@@ -790,8 +953,14 @@ export interface IphoneRunnerConnection {
   ): Promise<IphoneRunnerResult<M>>;
   close(): void;
 }
+export interface IphoneMediaAttachment {
+  readonly socketPath: string;
+  readonly signal: AbortSignal;
+  close(): void;
+}
 export interface IphoneRunnerPort {
   connect(emit: (event: IphoneRunnerEvent) => void): IphoneRunnerConnection;
+  claimMediaAttachment?(token: string): IphoneMediaAttachment | undefined;
 }
 
 /**

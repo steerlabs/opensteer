@@ -2541,82 +2541,15 @@ export async function createHostServer(
           }),
           type: command.type,
         };
-      case "tab.open": {
-        const { tab } = await dependencies.tabs.open(
-          { kind: "person", ownerId: userId },
-          command.target,
-          command.idempotencyKey,
-          undefined,
-          command.typed === true,
-        );
-        return {
-          type: command.type,
-          tab,
-          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
-        };
-      }
+      case "tab.open":
       case "tab.reopen":
-        return {
-          type: command.type,
-          ...(await dependencies.tabs.reopen(
-            { kind: "person", ownerId: userId },
-            command.tabId,
-            command.idempotencyKey,
-          )),
-        };
       case "tab.close":
-        return {
-          type: command.type,
-          ...(await dependencies.tabs.close(
-            { kind: "person", ownerId: userId },
-            command.tabIds,
-            command.idempotencyKey,
-          )),
-          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
-        };
       case "tab.activate":
-        return {
-          type: command.type,
-          ...(await dependencies.tabs.activate(userId, command.tabId, command.idempotencyKey)),
-        };
-      case "tab.organize": {
-        const { type, idempotencyKey, ...input } = command;
-        return {
-          type,
-          ...(await dependencies.tabs.organize(
-            { kind: "person", ownerId: userId },
-            input,
-            idempotencyKey,
-          )),
-          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
-        };
-      }
-      case "tab.group.update": {
-        const { type, idempotencyKey, ...input } = command;
-        return {
-          type,
-          ...(await dependencies.tabs.updateGroup(
-            { kind: "person", ownerId: userId },
-            input,
-            idempotencyKey,
-          )),
-          layout: (await dependencies.tabs.project({ kind: "person", ownerId: userId })).layout,
-        };
-      }
+      case "tab.organize":
+      case "tab.group.update":
       case "tab.group.delete":
-        return {
-          type: command.type,
-          ...(await dependencies.tabs.deleteGroup(userId, command.groupId, command.idempotencyKey)),
-        };
       case "tab.group.close":
-        return {
-          type: command.type,
-          ...(await dependencies.tabs.closeGroup(
-            { kind: "person", ownerId: userId },
-            command.groupId,
-            command.idempotencyKey,
-          )),
-        };
+        return dependencies.tabs.executeCommand(userId, command);
       case "app.rename":
       case "app.start":
       case "app.stop":
@@ -3293,6 +3226,7 @@ function attachRunnerSocket(
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   }) => Promise<void>,
 ): void {
+  installWebSocketLiveness(socket);
   const peer = jsonPeer(socket, `runner-peer:${randomUUID()}`);
   // A Run can stream many small events at once, for example a command's output
   // delta by delta. The Runner awaits each frame's write, so pausing the socket
@@ -3610,6 +3544,7 @@ function attachRunnerAuxiliarySocket(options: {
   readonly socket: WebSocket;
 }): void {
   const { module, socket } = options;
+  installWebSocketLiveness(socket);
   const dispatch = runnerAuxiliaryModuleDispatch(options)[module];
   const { peer } = dispatch;
   const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({

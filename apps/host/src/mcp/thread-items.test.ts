@@ -91,6 +91,8 @@ it("links Request activity using its real Request ID and returns the stable item
         type: "request.opened",
         requestId,
         requestKind: "harness.input",
+        requestStatus: "pending",
+        question: null,
         title: "Choose export",
         runId: null,
         createdAt: "2026-11-06T12:00:00.000Z",
@@ -99,6 +101,101 @@ it("links Request activity using its real Request ID and returns the stable item
     ),
   ).toMatchObject({
     itemId,
+    status: "pending",
+    text: "harness.input",
     link: formatReferenceLink(requestId, "Choose export"),
   });
+});
+
+it("formats non-secret settled person.question cards with their real outcome status", () => {
+  const answeredId = createId("request");
+  expect(
+    activityItem(
+      {
+        id: `request:${answeredId}`,
+        position: "43",
+        type: "request.resolved",
+        requestId: answeredId,
+        requestKind: "person.question",
+        requestStatus: "fulfilled",
+        question: {
+          outcome: "answered",
+          detail: "Draft reply to Acme",
+          answers: [{ prompt: "Send this?", answer: ["Yes, send it"] }],
+        },
+        title: "Reply to Acme",
+        runId: null,
+        createdAt: "2026-11-06T12:01:00.000Z",
+      },
+      { named: false, maxChars: 500 },
+    ),
+  ).toMatchObject({
+    itemId: `request:${answeredId}`,
+    status: "fulfilled",
+    text: "Draft reply to Acme\n\nQuestion: Send this?\nAnswer: Yes, send it",
+  });
+
+  const dismissedId = createId("request");
+  expect(
+    activityItem(
+      {
+        id: `request:${dismissedId}`,
+        position: "44",
+        type: "request.resolved",
+        requestId: dismissedId,
+        requestKind: "person.question",
+        requestStatus: "declined",
+        question: {
+          outcome: "dismissed",
+          answers: [{ prompt: "Check billing portal?", answer: [] }],
+        },
+        title: "Billing check",
+        runId: null,
+        createdAt: "2026-11-06T12:02:00.000Z",
+      },
+      { named: false, maxChars: 500 },
+    ),
+  ).toMatchObject({
+    itemId: `request:${dismissedId}`,
+    status: "declined",
+    text: "Question: Check billing portal?\n\nDismissed by the person without answering.",
+  });
+
+  // Long prompts report textTruncated: true and resume seamlessly on the same canonical text.
+  const longId = createId("request");
+  const longPrompt = "P".repeat(10_000);
+  const longItem = {
+    id: `request:${longId}`,
+    position: "45",
+    type: "request.resolved" as const,
+    requestId: longId,
+    requestKind: "person.question",
+    requestStatus: "fulfilled" as const,
+    question: {
+      outcome: "answered" as const,
+      answers: [
+        {
+          prompt: longPrompt,
+          options: [{ label: "Proceed", description: "Submit now" }],
+          answer: ["Proceed"],
+        },
+      ],
+    },
+    title: "Long question",
+    runId: null,
+    createdAt: "2026-11-06T12:03:00.000Z",
+  };
+  const preview = activityItem(longItem, { named: false, maxChars: 20_000 });
+  expect(preview.textTruncated).toBe(true);
+  expect(preview.nextTextOffset).toBe(4_096);
+  const rest = activityItem(longItem, {
+    named: true,
+    maxChars: 20_000,
+    offset: preview.nextTextOffset!,
+  });
+  expect(rest.textTruncated).toBe(false);
+  expect(rest.nextTextOffset).toBeNull();
+  expect(`${preview.text}${rest.text}`).toBe(
+    `Question: ${longPrompt}\nOptions: Proceed — Submit now\nAnswer: Proceed`,
+  );
 });

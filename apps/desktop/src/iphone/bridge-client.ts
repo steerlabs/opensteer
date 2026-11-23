@@ -224,7 +224,14 @@ export class IphoneBridgeClient implements IphoneNativeTransport {
             for (const listener of this.#gaps) listener();
             void this.request("roster.get", {}, iphoneNativeRosterSchema)
               .then((roster) => {
-                for (const listener of this.#events) listener({ ...event.data, roster });
+                for (const listener of this.#events)
+                  listener({
+                    kind: "event",
+                    bootId: event.data.bootId,
+                    sequence: event.data.sequence,
+                    event: "roster.changed",
+                    roster,
+                  });
               })
               .catch(() => this.#fail());
           }

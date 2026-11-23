@@ -182,6 +182,73 @@ describe("usageLimitNotice", () => {
       notice({})!.key,
     );
   });
+
+  it("clears a refused run once its exhausted window resets even when a healthy weekly window survives", () => {
+    const fiveHourReset = "2026-09-05T04:00:00.000Z";
+    const multiWindow = placement([
+      connection({
+        limitReached: true,
+        observedAt: "2026-09-04T23:00:00.000Z",
+        windows: [
+          { label: "5h", resetsAt: fiveHourReset, usedPercent: 100 },
+          { label: "weekly", resetsAt: weeklyReset, usedPercent: 25 },
+        ],
+      }),
+    ]);
+    const refused = run("failed", "run-1", harnessUsageLimitFailureCode);
+    expect(
+      notice({ entries: [refused], placements: [multiWindow], now: Date.parse(fiveHourReset) }),
+    ).toBeNull();
+  });
+
+  it("keys distinct exhausted pools separately even when they share a reset time or lack one", () => {
+    const sharedReset = "2026-09-05T06:00:00.000Z";
+    const antigravity = placement([
+      connection({
+        limitReached: false,
+        observedAt: "2026-09-05T00:00:00.000Z",
+        windows: [
+          {
+            label: "Gemini 5h",
+            providerIds: ["google" as never],
+            resetsAt: sharedReset,
+            usedPercent: 100,
+          },
+          {
+            label: "Claude & GPT 5h",
+            providerIds: ["anthropic" as never, "openai" as never],
+            resetsAt: sharedReset,
+            usedPercent: 100,
+          },
+        ],
+      }),
+    ]);
+    const geminiNotice = notice({
+      placements: [antigravity],
+      selection: {
+        ...selection,
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: "gemini-4-neon",
+          options: {},
+          providerId: "google",
+        }),
+      },
+    });
+    const claudeNotice = notice({
+      placements: [antigravity],
+      selection: {
+        ...selection,
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: "claude-opus-5-5",
+          options: {},
+          providerId: "anthropic",
+        }),
+      },
+    });
+    expect(geminiNotice).not.toBeNull();
+    expect(claudeNotice).not.toBeNull();
+    expect(geminiNotice!.key).not.toBe(claudeNotice!.key);
+  });
 });
 
 describe("createUsageNoticeDismissals", () => {

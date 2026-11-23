@@ -284,7 +284,7 @@ function baseSnapshot(): TranscriptFixtureSnapshot {
     personalSettings: null,
     can: null,
     needsYou: null,
-    sessionId: "session",
+    sessionId: createId("authSession"),
     environments: [],
     executionPreferences: emptyExecutionPreferences,
     harnesses: [],

@@ -4,7 +4,9 @@ import { refreshInputQueue } from "./waiting-inputs.js";
 import { lockThreadProviderSession } from "./run-projection-locks.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
-import { type TaskPurpose } from "@opensteer/core";
+import { type TaskPurpose, type ThreadDoneBy } from "@opensteer/core";
+import { changedTasksSubquery } from "./changed-tasks.js";
+import { connectionRequests } from "./request-agent-response.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
@@ -101,6 +103,7 @@ import {
 } from "./store-primitives.js";
 import { isDeepStrictEqual } from "node:util";
 import {
+  keptMessageSql,
   threadPendingRequestsSelection,
   threadVisitSelection,
   threadProviderSessionSelection,
@@ -384,6 +387,8 @@ interface AgentThreadListEntry {
   readonly assignmentId: AssignmentId | null;
   readonly taskStatus: AssignmentSummary["status"] | null;
   readonly doneAt: string | null;
+  readonly doneBy: ThreadDoneBy | null;
+  readonly lastVisitedAt: string | null;
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
   readonly parentThreadId: ThreadId | null;
@@ -393,6 +398,8 @@ interface AgentThreadListEntry {
   readonly updatedAt: string;
   readonly newMessages?: number;
   readonly firstNewAt?: string;
+  readonly questionsAnswered?: number;
+  readonly questionsDismissed?: number;
 }
 export interface AgentThreadListPage {
   readonly threads: readonly AgentThreadListEntry[];
@@ -797,21 +804,36 @@ export async function agentThreadPageForOwner(
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
+    readonly done?: boolean;
+    readonly hasPendingRequests?: boolean;
+    readonly omitPendingRequests?: boolean;
+    readonly connectionAuthority?: Extract<ThreadCallerAuthority, { kind: "connection" }>;
   },
 ): Promise<AgentThreadListPage> {
   const maxItems = boundedWindowLimit(input.maxItems, 50);
   const maxBytes = boundedWindowBytes(input.maxBytes, 192 * 1_024);
   const since = input.changedSince ?? null;
-  // A changed page orders by new messages, so its cursor is bound to that order and that time.
+  // A changed page orders by recent activity, so its cursor is bound to that order and that time.
   const cursorKind = since ? "agent-thread-changed" : "agent-thread";
-  const cursorScope = since ? `${input.scopeId}@${since.toISOString()}` : input.scopeId;
+  const filterKey = `${input.done === undefined ? "" : `:done=${input.done}`}${input.hasPendingRequests === undefined ? "" : `:pending=${input.hasPendingRequests}`}`;
+  const cursorScope = since
+    ? `${input.scopeId}${filterKey}@${since.toISOString()}`
+    : `${input.scopeId}${filterKey}`;
   const anchor = input.before ? decodeWindowCursor(input.before, cursorKind, cursorScope) : null;
-  const pattern = input.query === undefined ? null : `%${escapeLikePattern(input.query)}%`;
+  const search = input.query?.trim() || null;
+  const pattern = search === null ? null : `%${escapeLikePattern(search)}%`;
   const scope = input.scope;
   return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
+      const visibleRequests =
+        input.connectionAuthority &&
+        (since !== null || input.hasPendingRequests !== undefined || !input.omitPendingRequests)
+          ? await connectionRequests(transaction, input.connectionAuthority, {
+              ownerVerified: true,
+            })
+          : undefined;
       const lineageRootThreadId =
         scope.kind === "lineage"
           ? (
@@ -827,8 +849,13 @@ export async function agentThreadPageForOwner(
         .where("threads.removedAt", "is", null)
         .$if(input.nativeOnly === true, (q) => q.where("threads.worker", "=", "native"))
         .$if(since !== null, (query) =>
-          query.innerJoin(changedThreads(transaction, since!).as("changed"), (join) =>
-            join.onRef("changed.threadId", "=", "threads.id"),
+          query.innerJoin(
+            changedTasksSubquery(
+              transaction,
+              since!,
+              visibleRequests ? { visibleRequests } : {},
+            ).as("changed"),
+            (join) => join.onRef("changed.threadId", "=", "threads.id"),
           ),
         );
       if (input.parentThreadId) {
@@ -851,8 +878,45 @@ export async function agentThreadPageForOwner(
       if (scope.kind === "connection") {
         base = base.where("threads.originConnectionId", "=", scope.connectionId);
       }
-      if (pattern) {
-        base = base.where(sql<boolean>`threads.title ilike ${pattern} escape '\\'`);
+      if (input.done !== undefined) {
+        base = input.done
+          ? base.where("threads.doneAt", "is not", null)
+          : base.where("threads.doneAt", "is", null);
+      }
+      if (input.hasPendingRequests !== undefined) {
+        if (visibleRequests) {
+          base = base.where((eb) => {
+            const pendingExists = eb.exists(
+              eb
+                .selectFrom(visibleRequests.as("visible_requests"))
+                .select("visible_requests.id")
+                .whereRef("visible_requests.originatingThreadId", "=", "threads.id")
+                .where("visible_requests.status", "=", "pending"),
+            );
+            return input.hasPendingRequests ? pendingExists : eb.not(pendingExists);
+          });
+        } else {
+          const pendingExists = sql<boolean>`exists (
+          select 1 from requests
+          where requests.originating_thread_id = threads.id
+            and requests.status = 'pending'
+        )`;
+          base = base.where(
+            input.hasPendingRequests ? pendingExists : sql<boolean>`not ${pendingExists}`,
+          );
+        }
+      }
+      if (pattern && search) {
+        base = base.where(
+          sql<boolean>`(threads.title ilike ${pattern} escape '\\' or exists (
+            select 1 from messages
+            where messages.thread_id = threads.id
+              and messages.published
+              and messages.kind <> 'continuation'
+              and ${keptMessageSql}
+              and jsonb_to_tsvector('simple', jsonb_path_query_array(messages.content, '$[*] ? (@.type == "text").text'), '["string"]') @@ plainto_tsquery('simple', ${search})
+          ))`,
+        );
       }
       let page = base;
       if (anchor && since) {
@@ -897,6 +961,7 @@ export async function agentThreadPageForOwner(
             "threads.status",
             "threads.title",
             "threads.doneAt",
+            "threads.doneBy",
             "threads.updatedAt",
           ])
           .select((eb) =>
@@ -906,8 +971,20 @@ export async function agentThreadPageForOwner(
               .whereRef("visibleParent.id", "=", "threads.parentThreadId")
               .as("parentThreadId"),
           )
+          .$if(visibleRequests !== undefined && !input.omitPendingRequests, (query) =>
+            query.select((eb) =>
+              eb
+                .selectFrom(visibleRequests!.as("visible_requests"))
+                .select(sql<number>`count(*)::int`.as("count"))
+                .whereRef("visible_requests.originatingThreadId", "=", "threads.id")
+                .where("visible_requests.status", "=", "pending")
+                .as("pendingRequests"),
+            ),
+          )
+          .$if(visibleRequests === undefined && !input.omitPendingRequests, (query) =>
+            query.select(threadPendingRequestsSelection),
+          )
           .select([
-            threadPendingRequestsSelection,
             threadVisitSelection,
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
@@ -915,7 +992,9 @@ export async function agentThreadPageForOwner(
           .$if(since !== null, (query) =>
             query.select([
               sql<string>`changed.new_messages`.as("newMessages"),
-              sql<Date>`changed.first_new_at`.as("firstNewAt"),
+              sql<Date | null>`changed.first_new_at`.as("firstNewAt"),
+              sql<string>`changed.questions_answered`.as("questionsAnswered"),
+              sql<string>`changed.questions_dismissed`.as("questionsDismissed"),
               sql<Date>`changed.last_new_at`.as("lastNewAt"),
             ]),
           )
@@ -926,14 +1005,37 @@ export async function agentThreadPageForOwner(
         base.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
       const window = boundedSerializedPrefix(
-        rows.slice(0, maxItems).map(({ newMessages, firstNewAt, lastNewAt: _, ...row }) => ({
-          ...row,
-          updatedAt: row.updatedAt.toISOString(),
-          doneAt: row.doneAt?.toISOString() ?? null,
-          ...(newMessages !== undefined && firstNewAt !== undefined
-            ? { newMessages: Number(newMessages), firstNewAt: firstNewAt.toISOString() }
-            : {}),
-        })),
+        rows
+          .slice(0, maxItems)
+          .map(
+            ({
+              newMessages,
+              firstNewAt,
+              questionsAnswered,
+              questionsDismissed,
+              lastNewAt: _,
+              lastVisitedAt,
+              ...row
+            }) => {
+              const messageCount = newMessages === undefined ? 0 : Number(newMessages);
+              const answeredCount = questionsAnswered === undefined ? 0 : Number(questionsAnswered);
+              const dismissedCount =
+                questionsDismissed === undefined ? 0 : Number(questionsDismissed);
+              return {
+                ...row,
+                pendingRequests: row.pendingRequests ?? 0,
+                updatedAt: row.updatedAt.toISOString(),
+                doneAt: row.doneAt?.toISOString() ?? null,
+                doneBy: row.doneBy ?? null,
+                lastVisitedAt: lastVisitedAt ? lastVisitedAt.toISOString() : null,
+                ...(messageCount > 0 && firstNewAt
+                  ? { newMessages: messageCount, firstNewAt: firstNewAt.toISOString() }
+                  : {}),
+                ...(answeredCount > 0 ? { questionsAnswered: answeredCount } : {}),
+                ...(dismissedCount > 0 ? { questionsDismissed: dismissedCount } : {}),
+              };
+            },
+          ),
         maxItems,
         maxBytes,
       );
@@ -958,43 +1060,6 @@ export async function agentThreadPageForOwner(
     },
     "repeatable read",
   );
-}
-/**
- * Tasks with messages opensteer_task_read shows that are newer than `since`. A message is dated
- * by its creation, or a queued input by its delivery. The union lets both indexes bound the read.
- */
-function changedThreads(transaction: Transaction<DatabaseSchema>, since: Date) {
-  const changedAt = sql<Date>`coalesce(thread_inputs.updated_at, messages.created_at)`;
-  // Milliseconds, as cursors carry; the bound itself compares at full precision.
-  const dated = sql<Date>`date_trunc('milliseconds', ${changedAt})`;
-  return transaction
-    .selectFrom("messages")
-    .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
-    .select(({ fn }) => [
-      "messages.threadId",
-      fn.countAll<string>().as("newMessages"),
-      // The oldest new message's own time, where opensteer_task_read's history shows it.
-      sql<Date>`min(messages.created_at)`.as("firstNewAt"),
-      sql<Date>`max(${dated})`.as("lastNewAt"),
-    ])
-    .where(
-      "messages.id",
-      "in",
-      transaction
-        .selectFrom("messages")
-        .select("id")
-        .where("createdAt", ">", since)
-        .union(
-          transaction
-            .selectFrom("threadInputs")
-            .select("messageId as id")
-            .where("updatedAt", ">", since),
-        ),
-    )
-    .where("messages.kind", "!=", "continuation")
-    .where("messages.published", "=", true)
-    .where(changedAt, ">", since)
-    .groupBy("messages.threadId");
 }
 export async function getThreadForOwner(
   database: Kysely<DatabaseSchema>,

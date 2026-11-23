@@ -57,11 +57,12 @@ export function usageLimitNotice(input: UsageLimitNoticeInput): UsageLimitNotice
   const connection = observedAccountConnection(placement.observedConnections);
   const usage = connection ? currentConnectionUsage(connection, now, model) : null;
   const refusedRun = latestUsageLimitRun(input.entries ?? []);
-  // A refusal from an expired window must not keep that window alive.
+  // A refusal from an expired window must not keep that window alive, even when
+  // a separate healthy window (such as a weekly window) remains active.
   const refusalExpired =
     refusedRun !== null &&
     connection !== null &&
-    usage === null &&
+    usage?.limitReached !== true &&
     currentConnectionUsage(
       connection,
       Date.parse(refusedRun.endedAt ?? refusedRun.createdAt),
@@ -74,11 +75,13 @@ export function usageLimitNotice(input: UsageLimitNoticeInput): UsageLimitNotice
     connection?.usage !== undefined &&
     Date.parse(connection.usage.observedAt) >=
       Date.parse(refusedRun.endedAt ?? refusedRun.createdAt);
-  const episode =
+  const windowEpisode =
     usage?.limitReached === true
-      ? // The window's reset names the episode; a limit stated without one is
-        // known only by the reading that stated it.
-        (usage.constrainingWindow?.resetsAt ?? connection?.usage?.observedAt ?? "limit")
+      ? usageEpisodeKey(usage.constrainingWindow, connection?.usage?.observedAt)
+      : null;
+  const episode =
+    windowEpisode !== null
+      ? windowEpisode
       : refusedRun !== null && !refusalExpired && !refusalRecovered
         ? `run:${refusedRun.runId ?? refusedRun.id}`
         : null;
@@ -119,6 +122,33 @@ export function usageLimitReached(
   return (
     connection !== null && currentConnectionUsage(connection, now, model)?.limitReached === true
   );
+}
+
+/**
+ * The window's reset names the episode; a limit stated without one is known
+ * only by the reading that stated it. Scoped pools include their scope identity
+ * so dismissing one exhausted pool does not hide a separate pool sharing the
+ * same reset time.
+ */
+function usageEpisodeKey(
+  window: {
+    readonly providerIds?: readonly string[] | undefined;
+    readonly resetsAt: string | null;
+    readonly scope?:
+      | { readonly kind: "account" }
+      | { readonly kind: "model"; readonly modelId: string; readonly providerId: string }
+      | undefined;
+  } | null,
+  observedAt: string | undefined,
+): string {
+  const base = window?.resetsAt ?? observedAt ?? "limit";
+  if (window?.scope?.kind === "model") {
+    return `model:${window.scope.providerId}/${window.scope.modelId}:${base}`;
+  }
+  if (window?.providerIds !== undefined) {
+    return `pool:${[...window.providerIds].sort().join(",")}:${base}`;
+  }
+  return base;
 }
 
 /** The latest Run's id when it was refused for want of capacity; any later Run clears it. */

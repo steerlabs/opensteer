@@ -47,6 +47,31 @@ it("keeps app tabs out of a draft's choices and its automatic context", async ()
   expect(await autoPlacePart({} as unknown as HostClient, app)).toBeNull();
 });
 
+it("builds a phone place part for a Mac-driven iPhone whose machineId is a dev_ device id", async () => {
+  const deviceId = "dev_12345678-1234-4123-8123-123456789abc";
+  const place = placeOf(
+    TabSchema.parse({
+      tabId: "tab:iphone",
+      kind: "phone",
+      title: "Tim’s iPhone",
+      computer: { computerId: deviceId, name: "Tim’s iPhone" },
+      groupId: null,
+      state: "open",
+      openedBy: "person",
+      usedBy: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }),
+    [],
+  );
+  expect(await autoPlacePart({} as unknown as HostClient, place)).toEqual({
+    display: "main",
+    machineId: deviceId,
+    name: "Tim’s iPhone",
+    type: "phone",
+  });
+});
+
 const sessionId = "bsn_12345678-1234-4123-8123-123456789abc";
 /** One page tab as the Host lists it, showing `url` with `iconRef`. */
 function pageTabShowing(url: string, iconRef: string | null, title = ""): PlaceItem {

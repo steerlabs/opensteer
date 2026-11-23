@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios/coredevice"
@@ -29,6 +30,7 @@ type DeviceState struct {
 	DisplayID     uint64 `json:"displayId"`
 	configuration string
 	uniqueID      string
+	viewport      AXFrame
 }
 
 func unknownState() DeviceState { return DeviceState{Lock: "unknown", Display: "unknown"} }
@@ -83,7 +85,6 @@ func exchangeOn(ctx context.Context, conn xpcChannel, request map[string]interfa
 		return nil, Classify(err, wire.NativeServiceFailed)
 	}
 	failure := func(err error) error {
-		slog.Debug("bridge.native-error", "err", err)
 		if effect {
 			return &wire.Failure{Code: wire.OutcomeUnknown, Effect: "unknown"}
 		}
@@ -105,6 +106,79 @@ func exchangeOn(ctx context.Context, conn xpcChannel, request map[string]interfa
 	}
 	return output, nil
 }
+
+// warmDeviceInfo reuses a single com.apple.coredevice.deviceinfo XPC channel
+// across monitor ticks and input checks instead of opening a fresh tunnel TCP
+// + HTTP/2 + XPC handshake on every sample.
+type warmDeviceInfo struct {
+	life   context.Context
+	open   channelOpener
+	mu     sync.Mutex
+	conn   xpcChannel
+	cancel context.CancelFunc
+}
+
+func (w *warmDeviceInfo) close() {
+	w.mu.Lock()
+	conn, cancel := w.conn, w.cancel
+	w.conn, w.cancel = nil, nil
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func (w *warmDeviceInfo) getDisplayInfo(ctx context.Context) (map[string]interface{}, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	req := coredevice.BuildRequest(uuid.New().String(), "com.apple.coredevice.feature.getdisplayinfo", map[string]interface{}{})
+	for attempt := range 2 {
+		if err := ctx.Err(); err != nil {
+			return nil, Classify(err, wire.NativeServiceFailed)
+		}
+		hadConn := w.conn != nil
+		if w.conn == nil {
+			base := w.life
+			if base == nil {
+				base = context.Background()
+			}
+			connCtx, connCancel := context.WithCancel(base)
+			abortDial := context.AfterFunc(ctx, connCancel)
+			conn, err := w.open(connCtx, deviceInfoService)
+			aborted := !abortDial()
+			if err != nil {
+				connCancel()
+				return nil, Classify(err, wire.NativeServiceFailed)
+			}
+			if aborted || ctx.Err() != nil {
+				connCancel()
+				_ = conn.Close()
+				return nil, Classify(ctx.Err(), wire.NativeServiceFailed)
+			}
+			w.conn, w.cancel = conn, connCancel
+		}
+		out, err := exchangeOn(ctx, w.conn, req, nil, false)
+		if err == nil {
+			return out, nil
+		}
+		conn, cancel := w.conn, w.cancel
+		w.conn, w.cancel = nil, nil
+		if cancel != nil {
+			cancel()
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if !hadConn || attempt == 1 || ctx.Err() != nil {
+			return nil, err
+		}
+	}
+	return nil, wire.Fail(wire.NativeServiceFailed)
+}
+
 func readDeviceState(ctx context.Context, open channelOpener, lock func(context.Context) string) (DeviceState, error) {
 	state := unknownState()
 	state.Lock = lock(ctx)
@@ -117,6 +191,20 @@ func readDeviceState(ctx context.Context, open channelOpener, lock func(context.
 	if err != nil {
 		return state, err
 	}
+	return parseDisplayState(state, display)
+}
+
+func readDeviceStateWarm(ctx context.Context, warm *warmDeviceInfo, lock func(context.Context) string) (DeviceState, error) {
+	state := unknownState()
+	state.Lock = lock(ctx)
+	display, err := warm.getDisplayInfo(ctx)
+	if err != nil {
+		return state, err
+	}
+	return parseDisplayState(state, display)
+}
+
+func parseDisplayState(state DeviceState, display map[string]interface{}) (DeviceState, error) {
 	d, err := selectDisplay(display)
 	if err != nil {
 		return state, err
@@ -148,7 +236,23 @@ func readDeviceState(ctx context.Context, open channelOpener, lock func(context.
 	if r, ok := map[string]int{"rot0": 0, "rot90": 90, "rot180": 180, "rot270": 270}[orientation]; ok {
 		state.Rotation = &r
 	}
+	if size, ok := d["nativeSize"].([]interface{}); ok && len(size) == 2 {
+		width, height := number(size[0]), number(size[1])
+		scale := number(d["pointScale"])
+		if scale > 0 && width > 0 && height > 0 {
+			state.viewport = AXFrame{Width: width / scale, Height: height / scale}
+		}
+	}
 	return state, nil
+}
+func number(v interface{}) float64 {
+	if n, ok := v.(float64); ok && finite(n) {
+		return n
+	}
+	if n, ok := unsigned(v); ok {
+		return float64(n)
+	}
+	return 0
 }
 func unsigned(v interface{}) (uint64, bool) {
 	switch n := v.(type) {

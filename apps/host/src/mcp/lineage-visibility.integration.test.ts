@@ -8,7 +8,12 @@ import {
   type TabId,
   type ThreadId,
 } from "@opensteer/core";
-import { AgentConnectionStore, TabStore, beginAgentSession } from "@opensteer/database";
+import {
+  AgentConnectionStore,
+  TabStore,
+  TriggerStore,
+  beginAgentSession,
+} from "@opensteer/database";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -160,6 +165,23 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     expect(
       await runTool("opensteer_request_read", { requestId: hiddenRequest.request.id }),
     ).toEqual(await runTool("opensteer_request_read", { requestId: createId("request") }));
+    const listedRequests = await runTool("opensteer_request_list", { status: "pending" });
+    expect(listedRequests.isError, JSON.stringify(listedRequests.content)).not.toBe(true);
+    expect(
+      (listedRequests.structuredContent as { requests: { id: string }[] }).requests.map(
+        ({ id }) => id,
+      ),
+    ).toEqual([ownedRequest.request.id]);
+    expect(await runTool("opensteer_request_list", { taskId: f.threadId })).toEqual(
+      await runTool("opensteer_request_list", { taskId: createId("thread") }),
+    );
+    const listedPendingTasks = await runTool("opensteer_task_list", { hasPendingRequests: true });
+    expect(listedPendingTasks.isError, JSON.stringify(listedPendingTasks.content)).not.toBe(true);
+    expect(
+      (listedPendingTasks.structuredContent as { tasks: { id: string }[] }).tasks.map(
+        ({ id }) => id,
+      ),
+    ).toEqual([own]);
 
     for (const subagentId of [ownNode, ownerNode, createId("executionNode")])
       await expectUnknownTool(agent.client, "opensteer_subagent_read", { subagentId });
@@ -499,5 +521,513 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     });
     expect(withdrawn.isError, JSON.stringify(withdrawn.content)).not.toBe(true);
     expect((withdrawn.structuredContent as { recentPlaces: unknown[] }).recentPlaces).toEqual([]);
+  });
+
+  it("derives task list pending filter, counts, changedSince questions, and task read pendingRequests from connectionRequests", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("lineage-requests-predicate");
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, { runScopes });
+    const agentA = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const agentB = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const taskA = await createTask(agentA, f, "everything-reader");
+    const taskB = await createTask(agentB, f, "foreign-connection-task");
+    const runA = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskA)).id,
+    );
+    const runB = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskB)).id,
+    );
+    runScopes["run-a"] = fixtureRunScope({ ...f, ...runA, threadId: taskA });
+    runScopes["run-b"] = fixtureRunScope({ ...f, ...runB, threadId: taskB });
+    const clientA = await runClient(url, "run-a");
+    const callA = (name: string, arguments_: Record<string, unknown>) =>
+      clientA.callTool({ name, arguments: arguments_ });
+
+    const questionPresentation = {
+      kind: "form" as const,
+      title: "Question",
+      fields: [{ id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false }],
+    };
+
+    // 1. Everything-grant lineage Run A vs foreign connection B's Request on B's task.
+    const qB = await storeFixture.store.requests.create({
+      callId: "foreign-b-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: runB.runId,
+      originatingThreadId: taskB,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation,
+    });
+
+    const pendingListA = await callA("opensteer_task_list", { hasPendingRequests: true });
+    expect(pendingListA.isError, JSON.stringify(pendingListA.content)).not.toBe(true);
+    expect(
+      (pendingListA.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
+    ).not.toContain(taskB);
+
+    const allListA = await callA("opensteer_task_list", {});
+    expect(allListA.isError, JSON.stringify(allListA.content)).not.toBe(true);
+    const taskBSummary = (
+      allListA.structuredContent as { tasks: { id: string; pendingRequests: number }[] }
+    ).tasks.find(({ id }) => id === taskB);
+    expect(taskBSummary?.pendingRequests).toBe(0);
+
+    const readBA = await callA("opensteer_task_read", { taskId: taskB });
+    expect(readBA.isError, JSON.stringify(readBA.content)).not.toBe(true);
+    expect(
+      (readBA.structuredContent as { task: { pendingRequests: number }; pendingRequests?: unknown })
+        .task.pendingRequests,
+    ).toBe(0);
+    expect(readBA.structuredContent).not.toHaveProperty("pendingRequests");
+
+    const reqListBA = await callA("opensteer_request_list", { taskId: taskB });
+    expect(reqListBA.isError, JSON.stringify(reqListBA.content)).not.toBe(true);
+    expect((reqListBA.structuredContent as { requests: unknown[] }).requests).toEqual([]);
+    expect(await callA("opensteer_request_read", { requestId: qB.request.id })).toEqual(
+      await callA("opensteer_request_read", { requestId: createId("request") }),
+    );
+
+    const sinceBeforeAnswer = new Date(Date.now() + 30_000);
+    const revB = await storeFixture.store.requests.revision(qB.request.id);
+    await storeFixture.store.requests.answerPersonQuestion({
+      requestId: qB.request.id,
+      expectedRevision: revB!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { answer: ["yes"] } },
+    });
+    await storeFixture.database
+      .updateTable("requests")
+      .set({ resolvedAt: new Date(sinceBeforeAnswer.getTime() + 10_000) })
+      .where("id", "=", qB.request.id)
+      .execute();
+
+    const changedA = await callA("opensteer_task_list", {
+      changedSince: sinceBeforeAnswer.toISOString(),
+    });
+    expect(changedA.isError, JSON.stringify(changedA.content)).not.toBe(true);
+    const changedBEntry = (
+      changedA.structuredContent as {
+        tasks: { id: string; questionsAnswered?: number; questionsDismissed?: number }[];
+      }
+    ).tasks.find(({ id }) => id === taskB);
+    expect(changedBEntry).toBeUndefined();
+    const reqListAllBA = await callA("opensteer_request_list", { taskId: taskB, status: "all" });
+    expect(reqListAllBA.isError, JSON.stringify(reqListAllBA.content)).not.toBe(true);
+    expect((reqListAllBA.structuredContent as { requests: unknown[] }).requests).toEqual([]);
+
+    // 2. Selected-grant lineage Run B vs a person's automation Request (no connection asker) on B's own task.
+    const clientB = await runClient(url, "run-b");
+    const callB = (name: string, arguments_: Record<string, unknown>) =>
+      clientB.callTool({ name, arguments: arguments_ });
+
+    const taskB2 = await createTask(agentB, f, "selected-no-asker-task");
+    const triggers = new TriggerStore(storeFixture.database);
+    const automation = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: taskB2,
+      createdBy: f.userId,
+      idempotencyKey: "person-automation-on-b-task",
+      name: "Person automation on B task",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+    });
+    await storeFixture.store.claimCommand(occurrence.commandId, "r1-no-asker-occurrence");
+    await triggers.startExecution({
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      commandId: occurrence.commandId,
+    });
+    const qNoAsker = await storeFixture.store.requests.create({
+      callId: "no-asker-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingOccurrenceId: occurrence.id,
+      originatingThreadId: taskB2,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation,
+    });
+
+    const pendingListB = await callB("opensteer_task_list", { hasPendingRequests: true });
+    expect(pendingListB.isError, JSON.stringify(pendingListB.content)).not.toBe(true);
+    expect(
+      (pendingListB.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
+    ).not.toContain(taskB2);
+
+    const allListB = await callB("opensteer_task_list", {});
+    expect(allListB.isError, JSON.stringify(allListB.content)).not.toBe(true);
+    const ownTaskB2Summary = (
+      allListB.structuredContent as { tasks: { id: string; pendingRequests: number }[] }
+    ).tasks.find(({ id }) => id === taskB2);
+    expect(ownTaskB2Summary?.pendingRequests).toBe(0);
+
+    const readB2B = await callB("opensteer_task_read", { taskId: taskB2 });
+    expect(readB2B.isError, JSON.stringify(readB2B.content)).not.toBe(true);
+    expect(
+      (readB2B.structuredContent as { task: { pendingRequests: number } }).task.pendingRequests,
+    ).toBe(0);
+    expect(readB2B.structuredContent).not.toHaveProperty("pendingRequests");
+
+    expect(await callB("opensteer_request_read", { requestId: qNoAsker.request.id })).toEqual(
+      await callB("opensteer_request_read", { requestId: createId("request") }),
+    );
+
+    const sinceBeforeNoAskerAnswer = new Date(Date.now() + 30_000);
+    const revNoAsker = await storeFixture.store.requests.revision(qNoAsker.request.id);
+    await storeFixture.store.requests.answerPersonQuestion({
+      requestId: qNoAsker.request.id,
+      expectedRevision: revNoAsker!,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { answer: ["done"] } },
+    });
+    await storeFixture.database
+      .updateTable("requests")
+      .set({ resolvedAt: new Date(sinceBeforeNoAskerAnswer.getTime() + 10_000) })
+      .where("id", "=", qNoAsker.request.id)
+      .execute();
+
+    const changedB = await callB("opensteer_task_list", {
+      changedSince: sinceBeforeNoAskerAnswer.toISOString(),
+    });
+    expect(changedB.isError, JSON.stringify(changedB.content)).not.toBe(true);
+    expect(
+      (changedB.structuredContent as { tasks: { id: string }[] }).tasks.find(
+        ({ id }) => id === taskB2,
+      ),
+    ).toBeUndefined();
+
+    // And B's own Request on B's own task remains visible across all four surfaces.
+    const qOwnB = await storeFixture.store.requests.create({
+      callId: "own-b-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: runB.runId,
+      originatingThreadId: taskB,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation,
+    });
+    const ownPendingListB = await callB("opensteer_task_list", { hasPendingRequests: true });
+    expect(ownPendingListB.isError, JSON.stringify(ownPendingListB.content)).not.toBe(true);
+    expect(
+      (ownPendingListB.structuredContent as { tasks: { id: string; pendingRequests: number }[] })
+        .tasks,
+    ).toEqual([expect.objectContaining({ id: taskB, pendingRequests: 1 })]);
+    const ownReadBB = await callB("opensteer_task_read", { taskId: taskB });
+    expect(ownReadBB.isError, JSON.stringify(ownReadBB.content)).not.toBe(true);
+    expect(
+      (ownReadBB.structuredContent as { task: { pendingRequests: number } }).task.pendingRequests,
+    ).toBe(1);
+    const ownReqReadB = await callB("opensteer_request_read", { requestId: qOwnB.request.id });
+    expect(ownReqReadB.isError, JSON.stringify(ownReqReadB.content)).not.toBe(true);
+    expect((ownReqReadB.structuredContent as { request: { id: string } }).request.id).toBe(
+      qOwnB.request.id,
+    );
+  });
+
+  it("hides Requests on tasks whose execution environment is unavailable in both list and read", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("lineage-unavailable-env");
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, { runScopes });
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const liveTask = await createTask(agent, f, "live-env-reader");
+    const unavailableTask = await createTask(agent, f, "unavailable-env-task");
+    const liveRun = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, liveTask)).id,
+    );
+    const unavailableRun = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, unavailableTask)).id,
+    );
+    runScopes["live-run"] = fixtureRunScope({ ...f, ...liveRun, threadId: liveTask });
+    const client = await runClient(url, "live-run");
+    const call = (name: string, arguments_: Record<string, unknown>) =>
+      client.callTool({ name, arguments: arguments_ });
+
+    const req = await storeFixture.store.requests.create({
+      callId: "unavailable-env-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: unavailableRun.runId,
+      originatingThreadId: unavailableTask,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Unavailable env question",
+        fields: [
+          { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+        ],
+      },
+    });
+
+    const unavailableEnv = await storeFixture.store.createEnvironment({
+      kind: "local",
+      name: "Unavailable computer",
+      runnerId: null,
+    });
+    const unavailableHarnessId = createId("harnessInstance");
+    await storeFixture.database
+      .insertInto("harnessInstances")
+      .values({
+        id: unavailableHarnessId,
+        environmentId: unavailableEnv,
+        driverKind: f.harnessInstance.driverKind,
+        name: "Unavailable Harness",
+        config: sql`'{}'::jsonb`,
+        runtimeRevision: 1,
+        stateKind: "isolated",
+        enabled: true,
+        isDefault: false,
+        sourceId: "unavailable-env-fixture",
+      })
+      .execute();
+    await storeFixture.database
+      .updateTable("threads")
+      .set({ environmentId: unavailableEnv, harnessInstanceId: unavailableHarnessId })
+      .where("id", "=", unavailableTask)
+      .execute();
+
+    const listedAll = await call("opensteer_request_list", { status: "all" });
+    expect(listedAll.isError, JSON.stringify(listedAll.content)).not.toBe(true);
+    expect((listedAll.structuredContent as { requests: unknown[] }).requests).toEqual([]);
+
+    const listedTask = await call("opensteer_request_list", {
+      taskId: unavailableTask,
+      status: "all",
+    });
+    expect(listedTask.isError, JSON.stringify(listedTask.content)).not.toBe(true);
+    expect((listedTask.structuredContent as { requests: unknown[] }).requests).toEqual([]);
+
+    expect(await call("opensteer_request_read", { requestId: req.request.id })).toEqual(
+      await call("opensteer_request_read", { requestId: createId("request") }),
+    );
+
+    const pendingTasks = await call("opensteer_task_list", { hasPendingRequests: true });
+    expect(pendingTasks.isError, JSON.stringify(pendingTasks.content)).not.toBe(true);
+    expect(
+      (pendingTasks.structuredContent as { tasks: { id: string }[] }).tasks.map(({ id }) => id),
+    ).not.toContain(unavailableTask);
+  });
+
+  it("applies connectionRequests inside SQL before pending caps and activity paging, matching absence byte-for-byte", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("lineage-sql-paging-and-caps");
+    const runScopes: Record<string, RunToolScope> = {};
+    const url = await serveMcp(storeFixture, { runScopes });
+    const agentA = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const agentB = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const taskA = await createTask(agentA, f, "r5-reader");
+    const taskB = await createTask(agentB, f, "r5-pending-cap");
+    const runA = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskA)).id,
+    );
+    const runB = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskB)).id,
+    );
+    runScopes["r5-run-a"] = fixtureRunScope({ ...f, ...runA, threadId: taskA });
+    const clientA = await runClient(url, "r5-run-a");
+    const callA = (name: string, arguments_: Record<string, unknown>) =>
+      clientA.callTool({ name, arguments: arguments_ });
+
+    const questionPresentation = (title: string) => ({
+      kind: "form" as const,
+      title,
+      fields: [{ id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false }],
+    });
+
+    // 1. 26 earlier hidden pending Requests from connection B + 1 newer visible pending Request
+    // (person automation, no connection asker): visible Request must survive the 25-row cap.
+    for (let i = 0; i < 26; i++) {
+      await storeFixture.store.requests.create({
+        callId: `r5-hidden-pending-${i}`,
+        kind: "person.question",
+        mode: "durable",
+        originatingRunId: runB.runId,
+        originatingThreadId: taskB,
+        requestedBy: f.userId,
+        requiredActor: "requester",
+        payload: { kind: "person.question" },
+        presentation: questionPresentation(`Hidden ${i}`),
+      });
+    }
+    const triggers = new TriggerStore(storeFixture.database);
+    const automation = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: taskB,
+      createdBy: f.userId,
+      idempotencyKey: "r5-person-automation-on-b",
+      name: "Person automation on B",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const occurrence = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: f.userId,
+      triggerId: automation.trigger.id,
+    });
+    await storeFixture.store.claimCommand(occurrence.commandId, "r5-occurrence");
+    await triggers.startExecution({
+      runnerId: f.runnerId,
+      runnerBootId: f.runnerBootId,
+      commandId: occurrence.commandId,
+    });
+    const visiblePending = await storeFixture.store.requests.create({
+      callId: "r5-visible-pending",
+      kind: "person.question",
+      mode: "durable",
+      originatingOccurrenceId: occurrence.id,
+      originatingThreadId: taskB,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation("Visible after 26 hidden"),
+    });
+
+    const cappedRead = await callA("opensteer_task_read", { taskId: taskB });
+    expect(cappedRead.isError, JSON.stringify(cappedRead.content)).not.toBe(true);
+    const cappedBody = cappedRead.structuredContent as {
+      task: { pendingRequests: number };
+      pendingRequests?: { id: string }[];
+    };
+    expect(cappedBody.task.pendingRequests).toBe(1);
+    expect(cappedBody.pendingRequests?.map(({ id }) => id)).toEqual([visiblePending.request.id]);
+
+    // 2. Default (messagesOnly) and activity views: a newer hidden person.question from B must
+    // neither appear nor shorten/split pages or change page bytes compared to its absence.
+    const taskBActivity = await createTask(agentB, f, "r5-activity-paging");
+    const runBActivity = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskBActivity)).id,
+    );
+    await storeFixture.store.enqueueThreadInput({
+      threadId: taskBActivity,
+      requestedBy: f.userId,
+      policy: "report",
+      content: [{ type: "text", text: "Second visible message" }],
+      source: { kind: "human" },
+      idempotencyKey: "r5-second-visible-message",
+    });
+
+    const pageSlice = (result: Awaited<ReturnType<typeof callA>>) => {
+      const body = result.structuredContent as {
+        items: unknown[];
+        hasMore: boolean;
+        nextBefore: string | null;
+      };
+      return { items: body.items, hasMore: body.hasMore, nextBefore: body.nextBefore };
+    };
+
+    const baseDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
+    expect(baseDefault.isError, JSON.stringify(baseDefault.content)).not.toBe(true);
+    expect(pageSlice(baseDefault).items).toHaveLength(2);
+    expect(pageSlice(baseDefault).hasMore).toBe(false);
+
+    const baseActivity = await callA("opensteer_task_read", {
+      taskId: taskBActivity,
+      view: "activity",
+      limit: 2,
+    });
+    expect(baseActivity.isError, JSON.stringify(baseActivity.content)).not.toBe(true);
+    expect(pageSlice(baseActivity).items).toHaveLength(2);
+    expect(pageSlice(baseActivity).hasMore).toBe(false);
+
+    const hiddenActivityReq = await storeFixture.store.requests.create({
+      callId: "r5-hidden-activity-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: runBActivity.runId,
+      originatingThreadId: taskBActivity,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation("Hidden newest question"),
+    });
+
+    const afterDefault = await callA("opensteer_task_read", { taskId: taskBActivity, limit: 2 });
+    expect(afterDefault.isError, JSON.stringify(afterDefault.content)).not.toBe(true);
+    expect(afterDefault.structuredContent).not.toHaveProperty("pendingRequests");
+    expect(JSON.stringify(afterDefault.structuredContent)).not.toContain(
+      hiddenActivityReq.request.id,
+    );
+    expect(JSON.stringify(pageSlice(afterDefault))).toBe(JSON.stringify(pageSlice(baseDefault)));
+
+    const afterActivity = await callA("opensteer_task_read", {
+      taskId: taskBActivity,
+      view: "activity",
+      limit: 2,
+    });
+    expect(afterActivity.isError, JSON.stringify(afterActivity.content)).not.toBe(true);
+    expect(JSON.stringify(afterActivity.structuredContent)).not.toContain(
+      hiddenActivityReq.request.id,
+    );
+    expect(JSON.stringify(pageSlice(afterActivity))).toBe(JSON.stringify(pageSlice(baseActivity)));
+
+    expect(
+      await callA("opensteer_task_read", {
+        taskId: taskBActivity,
+        itemId: hiddenActivityReq.request.id,
+      }),
+    ).toEqual(
+      await callA("opensteer_task_read", {
+        taskId: taskBActivity,
+        itemId: createId("request"),
+      }),
+    );
   });
 });

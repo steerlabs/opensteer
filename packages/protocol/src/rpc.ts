@@ -1,3 +1,4 @@
+import type { AuthSessionId } from "@opensteer/core";
 import { z } from "zod";
 
 type RpcMethod = "GET" | "POST";
@@ -40,7 +41,7 @@ export const expectedMutationSessionHeader = "x-opensteer-expected-session";
 
 /** Per-call transport controls travel beside the payload. */
 export interface RpcCallOptions {
-  readonly expectedSessionId?: string;
+  readonly expectedSessionId?: AuthSessionId;
   readonly body?: Blob | Uint8Array;
   readonly signal?: AbortSignal;
 }
