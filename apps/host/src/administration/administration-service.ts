@@ -336,6 +336,7 @@ export class AdministrationService {
 
       case "settings.idleCompaction.set": {
         const policy = await dependencies.store.notificationState.setIdleCompactionPolicy({
+          administration,
           policy: command.policy,
           userId,
         });
