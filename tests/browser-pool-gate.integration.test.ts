@@ -1754,7 +1754,7 @@ it("vetoes a park attempted during the first session.state send after a re-attac
     groupId: sessionId,
     poolAdmission: {
       now: () => gate.backgroundNow(),
-      wait: (signal) => gate.background(signal),
+      wait: (signal: AbortSignal) => gate.background(signal),
       retiring: () => gate.retiringOrAdopting,
     },
     readSessionState: async () => {
