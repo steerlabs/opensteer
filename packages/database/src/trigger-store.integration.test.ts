@@ -19,8 +19,9 @@ import {
 } from "@opensteer/core";
 import type { RunnerDescriptor } from "@opensteer/protocol";
 import type { TriggerOccurrence } from "@opensteer/triggers";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
-import { describe, expect, it as baseIt } from "vitest";
+import { describe, expect, it as baseIt, vi } from "vitest";
 import {
   AgentConnectionStore,
   OpensteerStore,
@@ -2734,20 +2735,32 @@ integration.sequential("Trigger failure auto-pause", () => {
       ownerId: fixture.userId,
       transform: async (current) => {
         enteredFirstLock();
-        await gate;
+        await withTimeout(gate, 5_000, {
+          timeoutError: () => new Error("First secret patch never released"),
+        });
         return mergeJson(current, "FIRST", "one");
       },
       triggerId: created.trigger.id,
     });
-    await firstLocked;
+    await withTimeout(firstLocked, 5_000, {
+      timeoutError: () => new Error("First secret patch never acquired row lock"),
+    });
     const p2 = triggers.updateEncryptedSecrets({
       actorThreadId: null,
       ownerId: fixture.userId,
       transform: async (current) => mergeJson(current, "SECOND", "two"),
       triggerId: created.trigger.id,
     });
-    // Yield so p2 reaches the FOR NO KEY UPDATE lock behind p1 before releasing p1.
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    // Wait until p2 is blocked on the FOR NO KEY UPDATE lock behind p1 before releasing p1.
+    await vi.waitFor(
+      async () => {
+        const waiting = await sql<{ pid: number }>`
+          select pid from pg_locks where not granted
+        `.execute(storeFixture.database);
+        expect(waiting.rows.length).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
     releaseFirst();
 
     await Promise.all([p1, p2]);

@@ -461,7 +461,7 @@ describe("WatchSupervisor", () => {
           ),
         ).toBe(true);
       });
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
       expect(terminateCalls).toBe(1);
       expect(runCount).toBe(1);
     } finally {
