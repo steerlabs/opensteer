@@ -726,6 +726,8 @@ const BaselineBrowserClientMessageSchema = z
        * refuses it whole when that field is no longer the one focused, as it does an edit.
        */
       contextId: EditingContextIdSchema,
+      /** PH2: set when this paste follows a selection-deletion edit so both fail as one unit. */
+      follows: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserBase,
@@ -749,6 +751,8 @@ const BaselineBrowserClientMessageSchema = z
       text: z.string().max(browserPasteTextMaxLength),
       /** CZ5: the context of the field it was made for, refused whole in any other. */
       contextId: EditingContextIdSchema,
+      /** PH2: set when this paste follows a selection-deletion edit so both fail as one unit. */
+      follows: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserRequestBase,

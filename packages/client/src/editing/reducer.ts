@@ -1043,6 +1043,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       // selection: the selection is deleted first, and the paste goes in where it was.
       const { value, selectionStart: start, selectionEnd: end } = state.proxy;
       let selected = start === end;
+      let deletedSelection = false;
       if (items.length && !state.composition && start < end) {
         const removed = {
           value: value.slice(0, start) + value.slice(end),
@@ -1065,6 +1066,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         if (deletion && placed && emit({ kind: "edit", edit: deletion })) {
           move(far, start, removed.value);
           selected = true;
+          deletedSelection = true;
         } else {
           // CW9 (CT8): the selection could not go first, so the paste does not go either.
           refusal ??= deletion && !placed ? "commands" : "range-edits";
@@ -1093,7 +1095,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
           }
           move(state.caret, start, value);
         }
-        emit({ kind: "paste", items });
+        emit({ kind: "paste", items, ...(deletedSelection ? { follows: true as const } : {}) });
         const at = start + plain.length;
         state.proxy = {
           value: value.slice(0, start) + plain + value.slice(end),
@@ -1108,7 +1110,8 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         break;
       }
       interrupt();
-      if (items.length) emit({ kind: "paste", items });
+      if (items.length)
+        emit({ kind: "paste", items, ...(deletedSelection ? { follows: true as const } : {}) });
       else if (event.items.length) refusal = "clipboard";
       break;
     }

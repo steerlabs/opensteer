@@ -556,13 +556,81 @@ export class PageEditingObserver {
   }
 
   /**
-   * CZ5: whether a paste made for `contextId` may go in now: as an insertion, while that field
-   * (in that context or an earlier one of it) is the one focused. A paste made with no field
-   * focused carries the page's own context, and goes while that is still the page's.
+   * CZ5, PH2: whether a paste made for `contextId` may go in now: as an insertion, while that field
+   * (in that context or an earlier one of it) is the one focused, and not following a refused
+   * selection-deletion edit from the same producer under that context.
    */
-  admitsInsertion(contextId: string): boolean {
-    if (this.#activeChild) return this.#activeChild.admitsInsertion(contextId);
+  admitsInsertion(contextId: string, producer?: string, follows = false): boolean {
+    if (this.#activeChild) return this.#activeChild.admitsInsertion(contextId, producer, follows);
+    if (follows && this.#refusedFrom.get(producer) === contextId) return false;
     return this.#admission.admits(contextId, "relative");
+  }
+
+  /**
+   * PH2: performs a paste after verifying the focused field LIVE in the page (after all awaits,
+   * including closing any open composition and clipboard setup). Refuses if focus moved, the field
+   * became sensitive/disabled, or a preceding selection-deletion edit under this context was refused.
+   */
+  async paste(
+    contextId: string,
+    action: () => Promise<unknown>,
+    producer?: string,
+    follows = false,
+  ): Promise<boolean> {
+    if (this.#activeChild) return this.#activeChild.paste(contextId, action, producer, follows);
+    const admitted = () =>
+      this.#admission.admits(contextId, "relative") &&
+      !(follows && this.#refusedFrom.get(producer) === contextId);
+    if (!admitted()) return false;
+    const focus = this.#focused;
+    if (!focus) {
+      for (const execContext of this.#contexts.keys()) {
+        const response = await this.#cdp
+          .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+            contextId: execContext,
+            expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: null, requireNonSensitive: false })})`,
+            returnByValue: true,
+            silent: true,
+          })
+          .catch(() => null);
+        const parsed = prepared.safeParse(response?.result?.value);
+        if (!parsed.success || !parsed.data.ok) return false;
+      }
+      if (this.#focused !== null || !admitted()) return false;
+      await action();
+      return true;
+    }
+    await this.#close(focus, contextId, producer);
+    if (
+      this.#focused?.fieldId !== focus.fieldId ||
+      this.#focused?.context !== focus.context ||
+      !admitted()
+    )
+      return false;
+    const response = await this.#cdp
+      .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        contextId: focus.context,
+        expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: focus.fieldId, requireNonSensitive: false })})`,
+        returnByValue: true,
+        silent: true,
+      })
+      .catch(() => null);
+    const parsed = prepared.safeParse(response?.result?.value);
+    const stillFocused =
+      this.#focused?.fieldId === focus.fieldId &&
+      this.#focused?.context === focus.context &&
+      admitted();
+    if (!parsed.success || !parsed.data.ok || !stillFocused) {
+      if (parsed.success && parsed.data.ok) await this.#finishInput(focus.context);
+      return false;
+    }
+    try {
+      if (this.#refusedFrom.get(producer) === contextId) this.#refusedFrom.delete(producer);
+      await action();
+      return true;
+    } finally {
+      await this.#finishInput(focus.context);
+    }
   }
 
   async input<T>(action: () => Promise<T>, producer?: string): Promise<T> {
@@ -1642,6 +1710,29 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       if (!event.defaultPrevented) globalThis[${JSON.stringify(binding)}](JSON.stringify(facts));
     }, 0);
   });
+  const prepareClipboard = (request) => {
+    const element = active(),
+      kind = mechanism(element);
+    if (request.fieldId !== null) {
+      if (
+        !kind ||
+        !document.hasFocus() ||
+        element.disabled ||
+        element.readOnly ||
+        fieldKey(element) !== request.fieldId
+      )
+        return { ok: false, reason: "focus-changed" };
+      if (request.requireNonSensitive && isSensitive(element))
+        return { ok: false, reason: "sensitive" };
+      syncSelection();
+      ownInput++;
+      return { ok: true };
+    }
+    if (document.hasFocus() && kind && !element.disabled && !element.readOnly)
+      return { ok: false, reason: "focus-changed" };
+    if (request.requireNonSensitive && sensitive()) return { ok: false, reason: "sensitive" };
+    return { ok: true };
+  };
   globalThis.editingOwner = {
     sensitive,
     release,
@@ -1654,6 +1745,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       schedule();
     },
     prepare,
+    prepareClipboard,
     /** The marked text of the active field's open composition, or null. */
     composition: () => {
       rewritten();

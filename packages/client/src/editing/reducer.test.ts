@@ -292,7 +292,12 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
     expect(result.operations.slice(1)).toEqual([
       { kind: "edit", edit: { contextId: context.contextId, text: "c", before: "abc", after: "" } },
       { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
-      { kind: "paste", items: [{ type: "text/plain", bytes }], contextId: context.contextId },
+      {
+        kind: "paste",
+        items: [{ type: "text/plain", bytes }],
+        contextId: context.contextId,
+        follows: true,
+      },
     ]);
   });
   // CS4: the hidden field's undo and redo arrive as the far page's own chords (iOS's undo manager,
@@ -1048,6 +1053,15 @@ describe("a paste over a selection the target cannot delete", () => {
       expect(result.refusal).toBe("commands");
     },
   );
+  it("marks paste over a selection with follows: true so it fails as one unit if the deletion is refused", () => {
+    const state = { ...typed(abilities), proxy: proxy("hello", 1, 4) };
+    const result = reduceEditing(state, paste);
+    expect(result.operations).toMatchObject([
+      { kind: "edit", edit: { contextId: context.contextId, before: "ello", after: "", text: "o" } },
+      { kind: "command", command: "moveBackward", contextId: context.contextId, follows: true },
+      { kind: "paste", contextId: context.contextId, follows: true },
+    ]);
+  });
 });
 
 // CV1 (found by regime C, seed 735): a Backspace at the mirror's start is the page's, at its

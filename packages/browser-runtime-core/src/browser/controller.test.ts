@@ -4065,6 +4065,148 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  // PH2: live in-page focus check for clipboard.paste-data and clipboard.paste after all awaits,
+  // and paste over selection refused as one unit when its preceding deletion edit was refused.
+  it("verifies focus live in page right before pasting and refuses paste-over-selection after a refused deletion", async () => {
+    const cdp = page.cdpSession;
+    let clipboardOpenHook: (() => void) | null = null;
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims({ editingVersion: 2, clipboard: true }),
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+      clipboard: {
+        open: async () => {
+          clipboardOpenHook?.();
+          return { close: async () => null };
+        },
+      },
+    });
+    await controller.start();
+    try {
+      await flushMicrotasks();
+      const active = ledger.active();
+      if (!active) throw new Error("Missing active surface");
+      const world = cdp.sent.find(
+        (entry) =>
+          entry.method === "Runtime.addBinding" &&
+          String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+      )!.parameters!;
+      cdp.emit("Runtime.executionContextCreated", {
+        context: {
+          id: 7,
+          uniqueId: globalThis.crypto.randomUUID(),
+          name: world.executionContextName,
+          origin: "https://example.test",
+          auxData: { frameId: "main", isDefault: false },
+        },
+      });
+      cdp.emit("Runtime.bindingCalled", {
+        name: world.name,
+        executionContextId: 7,
+        payload: JSON.stringify({
+          fieldId: "1:control:text:false:false",
+          selectionRevision: 0,
+          field: { kind: "text", multiline: false, sensitive: false },
+          caret: null,
+        }),
+      });
+      await flushMicrotasks();
+      const firstContext = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (firstContext?.type !== "browser.editing") throw new Error("Missing editing context");
+      const ctx = firstContext.context.contextId;
+      const producer = crypto.randomUUID();
+
+      // 1) Focus flips in page DURING clipboard.open (after admitsInsertion passed): must refuse!
+      let liveOk = true;
+      cdp.responses.set("Runtime.evaluate", (params) => {
+        const expr = String(params?.expression ?? "");
+        if (expr.includes("prepareClipboard"))
+          return { result: { value: liveOk ? { ok: true } : { ok: false, reason: "focus-changed" } } };
+        if (expr.includes("prepare("))
+          return { result: { value: { ok: false, reason: "range-mismatch" } } };
+        return { result: { value: false } };
+      });
+      clipboardOpenHook = () => {
+        liveOk = false;
+      };
+      const op1 = crypto.randomUUID();
+      const data = Buffer.from("secret");
+      const pasteDone = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: op1,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: ctx,
+        producerId: producer,
+      });
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: op1, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await pasteDone;
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === op1),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 2) Paste over selection (follows: true) after its preceding deletion edit was refused:
+      // even though ctx is in earlier of the same field after mismatch rotation, paste must refuse.
+      clipboardOpenHook = null;
+      liveOk = true;
+      await controller.handle({
+        type: "input.text",
+        surfaceId: active.surface.id,
+        edit: { contextId: ctx, before: "sel", after: "", text: "" },
+        producerId: producer,
+      });
+      const op2 = crypto.randomUUID();
+      const followPaste = controller.handle({
+        type: "clipboard.paste-data",
+        surfaceId: active.surface.id,
+        operationId: op2,
+        items: [{ type: "text/plain", size: data.length }],
+        contextId: ctx,
+        follows: true,
+        producerId: producer,
+      } as never);
+      await controller.handle({
+        type: "clipboard.part",
+        part: { operationId: op2, index: 0, data: data.toString("base64") },
+        producerId: producer,
+      });
+      await followPaste;
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === op2),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      // 3) Legacy clipboard.paste also verifies focus live in page.
+      liveOk = false;
+      const latestContext = sink.messages
+        .filter((message) => message.type === "browser.editing")
+        .at(-1);
+      if (latestContext?.type !== "browser.editing") throw new Error("Missing latest context");
+      await controller.handle({
+        type: "clipboard.paste",
+        surfaceId: active.surface.id,
+        text: "secret",
+        contextId: latestContext.context.contextId,
+        producerId: producer,
+      });
+      expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("reports only the latest human action on its exact target without typed content", async () => {
     // CZ5: a paste names the field it was made for: the page's context, published with editing.
     const controller = createController(

@@ -1002,11 +1002,11 @@ export class FarField {
         return true;
       }
     }
-    // CY5: the moves computed from an edit refused go with it, until that producer's next edit
-    // that applies. A Backspace is the person's own.
+    // CY5, PH2: moves or a paste over a selection computed from a refused edit go with it,
+    // until that producer's next edit that applies. A Backspace is the person's own.
     if (
-      operation.kind === "command" &&
-      caretMoveEditingCommands.has(operation.command) &&
+      ((operation.kind === "command" && caretMoveEditingCommands.has(operation.command)) ||
+        operation.kind === "paste") &&
       operation.follows === true &&
       context !== null &&
       this.refusedFrom.has(producer) &&
@@ -1091,6 +1091,8 @@ export class FarField {
           this.replace(this.caret, characterAt(this.value, this.caret).end, "");
         return true;
       case "paste": {
+        if (this.refusedFrom.has(producer) && this.refusedFrom.get(producer) === context)
+          this.refusedFrom.delete(producer);
         const item = operation.items.find((candidate) => candidate.type === "text/plain");
         const text = item ? new TextDecoder().decode(item.bytes) : "";
         this.replace(this.caret, this.caret, text);

@@ -180,19 +180,24 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     if (operation.kind === "compose")
       return observer.edit(operation.composition, true, admitted, producer);
     if (operation.kind === "paste") {
-      // CZ5: as the controller takes it: into the field it was made for, or refused whole.
-      if (!operation.contextId || !observer.admitsInsertion(operation.contextId)) return false;
+      // CZ5, PH2: as the controller takes it: verified live in page, or refused whole.
+      if (
+        !operation.contextId ||
+        !observer.admitsInsertion(operation.contextId, producer, operation.follows === true)
+      )
+        return false;
       const scope = await clipboard.open({} as BrowserPage, operation.items);
       try {
-        await observer.input(
+        return await observer.paste(
+          operation.contextId,
           () =>
             cdp.send("Input.dispatchKeyEvent", editingCommandParameters("paste", process.platform)),
           producer,
+          operation.follows === true,
         );
       } finally {
         await scope.close();
       }
-      return true;
     }
     // CZ3: a command carries the context it was computed for, from the reducer; nothing fills one
     // in (the client's store sends none without one).
@@ -487,6 +492,49 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await settle();
     // Made for the field focused, it lands.
     expect(await send({ ...paste, contextId: observer.context.contextId })).toBe(true);
+  });
+
+  // PH2: live in-page focus check catches a focus move that has not published yet, and paste over
+  // a selection (follows: true) refuses as one unit when its preceding deletion edit was refused.
+  it("refuses a paste live in page before publish and refuses paste-over-selection after a refused deletion", async () => {
+    await seed(page, kind, "hello", 5);
+    await settle();
+    const made = observer.context.contextId;
+    const paste = {
+      kind: "paste",
+      items: [{ type: "text/plain", bytes: new TextEncoder().encode("X") }],
+      contextId: made,
+    } as const;
+    // Move focus to a password field WITHOUT settling (observer still holds `made` as current).
+    await page.evaluate(() => {
+      const password = document.createElement("input");
+      password.type = "password";
+      password.id = "p2";
+      document.body.append(password);
+      password.focus();
+    });
+    expect(await send(paste)).toBe(false);
+    expect(
+      await page.evaluate(() => (document.getElementById("p2") as HTMLInputElement).value),
+    ).toBe("");
+    await page.evaluate(() => {
+      document.getElementById("p2")?.remove();
+      document.getElementById("f")?.focus();
+    });
+    await settle();
+
+    // Paste over selection as one unit: deletion edit mismatches -> paste with follows: true refuses.
+    await seed(page, kind, "hello", 5);
+    await settle();
+    const ctx = observer.context.contextId;
+    expect(
+      await send(
+        { kind: "edit", edit: { contextId: ctx, before: "WRONG", after: "", text: "" } },
+        "A",
+      ),
+    ).toBe(false);
+    expect(await send({ ...paste, contextId: ctx, follows: true }, "A")).toBe(false);
+    expect((await read(page, kind)).value).toBe("hello");
   });
 
   // CZ3: a command carries the context it was computed for. A Backspace the reducer computed for

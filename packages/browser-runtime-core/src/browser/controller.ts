@@ -2004,8 +2004,11 @@ export class BrowserController {
         await outcome("refused");
         return;
       }
-      // CZ5: a paste goes into the field it was made for, or nowhere: refused whole.
-      if (message.type === "clipboard.paste-data" && !observer.admitsInsertion(message.contextId)) {
+      // CZ5, PH2: a paste goes into the field it was made for, or nowhere: refused whole.
+      if (
+        message.type === "clipboard.paste-data" &&
+        !observer.admitsInsertion(message.contextId, message.producerId, message.follows === true)
+      ) {
         this.clipboardParts.discard(message);
         await outcome("refused");
         return;
@@ -2013,8 +2016,11 @@ export class BrowserController {
       const input =
         message.type === "clipboard.paste-data" ? await this.clipboardParts.take(message) : null;
       if (message.type === "clipboard.paste-data" && input === null) return;
-      // Focus may have moved while its bytes arrived: checked again, just before it is put in.
-      if (message.type === "clipboard.paste-data" && !observer.admitsInsertion(message.contextId)) {
+      // Focus may have moved while its bytes arrived: checked again, and again live in page inside run().
+      if (
+        message.type === "clipboard.paste-data" &&
+        !observer.admitsInsertion(message.contextId, message.producerId, message.follows === true)
+      ) {
         await outcome("refused");
         return;
       }
@@ -2025,16 +2031,24 @@ export class BrowserController {
             ? "copy"
             : "cut";
       try {
-        const result = await this.clipboard!.run(active.page, input, () =>
-          observer.input(() => {
+        const result = await this.clipboard!.run(active.page, input, () => {
+          const dispatch = () => {
             this.recordPasskeyInput(message, active.surface.id);
             return cdp.send(
               "Input.dispatchKeyEvent",
               editingCommandParameters(command, this.platform),
             );
-          }, message.producerId),
-        );
-        if (command === "paste") await outcome("pasted");
+          };
+          if (message.type === "clipboard.paste-data")
+            return observer.paste(
+              message.contextId,
+              dispatch,
+              message.producerId,
+              message.follows === true,
+            );
+          return observer.input(dispatch, message.producerId).then(() => true);
+        });
+        if (command === "paste") await outcome(result.result ? "pasted" : "refused");
         else
           await publishClipboardItems(
             {
@@ -2248,13 +2262,20 @@ export class BrowserController {
     }
     if (message.type === "clipboard.paste") {
       if (message.surfaceId !== active.surface.id) return;
-      // CZ5: into the field it was made for, or nowhere.
-      if (!(await this.editingObserver(active.surface.id)).admitsInsertion(message.contextId))
-        throw new BrowserRuntimeError("conflict", "The field changed. Paste again.");
-      this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
-      this.ledger.recordViewerInput(message.surfaceId, message.producerId);
-      this.recordPasskeyInput(message, active.surface.id);
-      await cdp.send("Input.insertText", { text: message.text });
+      // CZ5, PH2: into the field it was made for, verified live in page, or nowhere.
+      const observer = await this.editingObserver(active.surface.id);
+      const applied = await observer.paste(
+        message.contextId,
+        () => {
+          this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
+          this.ledger.recordViewerInput(message.surfaceId, message.producerId);
+          this.recordPasskeyInput(message, active.surface.id);
+          return cdp.send("Input.insertText", { text: message.text });
+        },
+        message.producerId,
+        message.follows === true,
+      );
+      if (!applied) throw new BrowserRuntimeError("conflict", "The field changed. Paste again.");
       return;
     }
     if (message.type === "dialog.respond") {

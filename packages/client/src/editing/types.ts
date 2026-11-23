@@ -114,6 +114,8 @@ export type EditingOperation =
       readonly items: readonly EditingClipboardPayloadItem[];
       /** CZ5: the context it was made for, stamped where it is made (the reducer's). */
       readonly contextId?: string | undefined;
+      /** PH2: a paste over a selection follows its selection-deletion edit as one unit. */
+      readonly follows?: true;
     };
 
 export interface EditingProxyInstruction {

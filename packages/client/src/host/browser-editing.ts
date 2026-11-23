@@ -422,6 +422,7 @@ export class BrowserEditingStore {
                 operationId,
                 items: [...items!],
                 contextId: operation.contextId!,
+                ...(operation.follows ? { follows: true } : {}),
               }
             : {
                 type: operation.kind === "copy" ? "clipboard.copy" : "clipboard.cut",
@@ -782,6 +783,7 @@ export class BrowserEditingStore {
           surfaceId,
           text: operation.items.map((item) => new TextDecoder().decode(item.bytes)).join(""),
           contextId: operation.contextId,
+          ...(operation.follows ? { follows: true } : {}),
         });
         return { outcome: "pasted", items: [] };
       }
