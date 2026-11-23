@@ -54,202 +54,324 @@ import {
   startPasswordsAuthority,
 } from "../apps/host/src/browser/passwords-authority.test-support.js";
 
+const tabOutput = z
+  .tuple([z.object({ type: z.literal("text"), text: BrowserSurfaceIdSchema })])
+  .rest(z.unknown());
+
+async function startSessionPersonFixture() {
+  const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
+  const close: (() => Promise<unknown>)[] = [() => database.drop()];
+  const notices = new Map<
+    Request["kind"],
+    (
+      reaction: Extract<
+        import("../packages/database/src/personal-mutation.js").PersonalCommitReaction,
+        { type: "requestChanged" }
+      >,
+    ) => void
+  >();
+  const dispose = async () => {
+    for (const fn of close.reverse()) await fn().catch(() => undefined);
+  };
+  try {
+    const site = await signInFixture();
+    close.push(site.close);
+    const scratch = await mkdtemp(join(tmpdir(), "opensteer-session-person-"));
+    close.push(() => rm(scratch, { recursive: true, force: true }));
+    const launcher = new PlaywrightChromiumLauncher({
+      executablePath: chromium.executablePath(),
+      headless: true,
+      chromiumSandbox: false,
+      args: [
+        "--no-proxy-server",
+        "--host-resolver-rules=MAP passwords-fixture.test 127.0.0.1, MAP other-fixture.test 127.0.0.1",
+      ],
+    });
+    let chromiumBrowser: LaunchedBrowser | undefined;
+    let keys: readonly BrowserAttachPublicKey[] = [];
+    let passwords: Awaited<ReturnType<typeof startPasswordsAuthority>> | undefined;
+    const runtimeId = "browser-runtime-integration";
+    const runtime = new BrowserRuntime({
+      runtimeId,
+      launcher: {
+        localProfiles: launcher.localProfiles,
+        launch: async (request, signal) => {
+          chromiumBrowser = await launcher.launch(request, signal);
+          return chromiumBrowser;
+        },
+      },
+      localProfiles: { root: join(scratch, "profiles") },
+      sessionFilesRoot: join(scratch, "files"),
+      ticketVerifier: await Ed25519AttachTicketVerifier.create({
+        replayLedgerPath: join(scratch, "private", "replay.json"),
+        resolvePublicKey: (id) => keys.find((key) => key.keyId === id)?.publicKeyPem ?? null,
+      }),
+      loginAuthority: {
+        probe: async () => "has-login",
+        authorize: async () => ({ kind: "ended", outcome: { kind: "expired" } }),
+        end: async () => undefined,
+        fill: async () => "expired",
+        fillReference: async ({ loginRef, field, targetId, lease }) => {
+          const value = passwords?.releasedLogin(loginRef, field);
+          if (!value || !chromiumBrowser) return "expired";
+          const page = await pageWithTarget(
+            chromiumBrowser.context.pages(),
+            targetId,
+            1_000,
+            (entry) => !entry.isClosed(),
+          );
+          if (!page || new URL(page.url()).origin !== site.origin) return "wrong-site";
+          const cdp = await page.agentCdp();
+          try {
+            lease.throwIfAborted();
+            await cdp.send("Input.insertText", { text: value });
+            return "filled";
+          } finally {
+            await cdp.detach();
+          }
+        },
+      },
+    });
+    const bridgeToken = randomBytes(32).toString("base64url");
+    const runtimeServer = new BrowserRuntimeServer({
+      runtime,
+      port: 0,
+      relayBridge: {
+        token: bridgeToken,
+        updateAttachKeys: (next) => {
+          keys = next;
+        },
+      },
+    });
+    close.push(() => runtimeServer.close());
+    const address = await runtimeServer.start();
+    const runtimeRelay = new BrowserModuleRelay(
+      new LocalBrowserRuntimeBridge({
+        runtimeId,
+        bridgeToken,
+        url: new URL(`http://${address.host}:${address.port}`),
+      }),
+    );
+    const host = await startPrivateMachineHost(database.url, {
+      onPersonalReaction: (reaction) => {
+        if (reaction.type === "requestChanged" && reaction.status === "pending")
+          notices.get(reaction.kind)?.(reaction);
+      },
+    });
+    close.push(() => host.close());
+    const mac = await connectCallerMachine(host, {
+      name: "Passwords Mac",
+      environmentId: host.ownerEnvironmentId,
+      loginFill: true,
+      token: host.hostingRunnerEnrollmentToken,
+      integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2, cardUse: 1 },
+      browser: {
+        runtimeId,
+        wireVersion: 2,
+        cdpBoundary: 1,
+        sharedControl: 1,
+        tabRestoreVersion: 1,
+        surfaceState: 1,
+        signIn: { version: 3 },
+        cardFill: 1,
+        localProfileStorage: runtime.localProfileStorage!,
+      },
+    });
+    close.push(() => mac.close());
+    const witnessed: boolean[] = [];
+    const authority = (passwords = await startPasswordsAuthority(
+      host.hostPort,
+      mac.primary,
+      async (operationId) => {
+        const witness = await host.store.database
+          .selectFrom("requests")
+          .innerJoin("agentOperations", "agentOperations.requestId", "requests.id")
+          .select("requests.status")
+          .where(sql<boolean>`requests.payload @> ${JSON.stringify({ operationId })}::jsonb`)
+          .where("agentOperations.state", "=", "handed-off")
+          .executeTakeFirst();
+        witnessed.push(witness?.status === "pending");
+      },
+    ));
+    close.push(() => authority.close());
+    let loseOpenReply: { url: string; requestId?: string; observed: boolean } | undefined;
+    const browser = await startBrowserRuntime(host.hostPort, "existing-main", {
+      primary: mac.primary,
+      runtimeRelay: {
+        detach: () => runtimeRelay.detach(),
+        async handleFrame(frame, binary) {
+          if (!binary && loseOpenReply) {
+            const command = z
+              .object({
+                type: z.literal("browser.client-message"),
+                message: z.object({
+                  type: z.literal("cdp.command"),
+                  requestId: z.string(),
+                  command: z.object({
+                    method: z.literal("Opensteer.openTab"),
+                    parameters: z.object({ url: z.literal(loseOpenReply.url) }),
+                  }),
+                }),
+              })
+              .safeParse(JSON.parse(frame.toString()));
+            if (command.success) loseOpenReply.requestId = command.data.message.requestId;
+          }
+          await runtimeRelay.handleFrame(frame, binary);
+        },
+        attach: (stream) =>
+          runtimeRelay.attach({
+            ...stream,
+            async send(frame, binary) {
+              if (!binary && loseOpenReply?.requestId) {
+                const response = z
+                  .object({
+                    type: z.literal("browser.server-message"),
+                    message: z.object({
+                      type: z.literal("cdp.result"),
+                      requestId: z.literal(loseOpenReply.requestId),
+                      result: z.object({ tabId: BrowserSurfaceIdSchema }),
+                    }),
+                  })
+                  .safeParse(JSON.parse(frame.toString()));
+                if (response.success) {
+                  loseOpenReply.observed = true;
+                  await browser.close();
+                  return;
+                }
+              }
+              await stream.send(frame, binary);
+            },
+          }),
+      },
+      keepAlive: true,
+    });
+    close.push(() => browser.close());
+    const profile = await host.store.createBrowserProfile({
+      ownerId: host.ownerId,
+      homeRunnerId: browser.runnerId,
+      idempotencyKey: "work",
+      name: "Work",
+    });
+    const endpoint = new URL(mcpResourcePath, host.origin);
+    const transcript: unknown[] = [];
+    const connection = new AgentConnectionStore(host.store.database);
+    const connectAgent = async (bearer: string) => {
+      const transport = new StreamableHTTPClientTransport(endpoint, {
+        requestInit: { headers: { authorization: "Bearer " + bearer } },
+      });
+      let receive: typeof transport.onmessage;
+      Object.defineProperty(transport, "onmessage", {
+        get: () => receive,
+        set: (receiver: typeof transport.onmessage) => {
+          receive = (message) => {
+            transcript.push(message);
+            receiver?.(message);
+          };
+        },
+      });
+      const client = new Client({ name: "external-session", version: "1" });
+      close.push(() => client.close());
+      await client.connect(transport as unknown as Transport);
+      return (name: string, args: Record<string, unknown>) => {
+        const context = new Error(
+          `MCP ${name} (${args.operationKey ?? "no operation key"}) did not return`,
+        );
+        return client.callTool({ name, arguments: args }).catch((error: unknown) => {
+          context.cause = error;
+          throw context;
+        });
+      };
+    };
+    type AgentCall = Awaited<ReturnType<typeof connectAgent>>;
+    const refusedOrDisconnected = (result: ReturnType<AgentCall>) =>
+      result.then(
+        (reply) => reply.isError === true,
+        (error: unknown) => {
+          if (
+            z
+              .object({
+                cause: z.object({ cause: z.object({ code: z.literal("UND_ERR_SOCKET") }) }),
+              })
+              .safeParse(error).success
+          )
+            return true;
+          throw error;
+        },
+      );
+    const owner = { headers: host.ownerHeaders };
+    const pending = async (
+      kind: Request["kind"],
+      invoke: () => ReturnType<AgentCall>,
+      expectedTask: string | null,
+    ) => {
+      const shown =
+        Promise.withResolvers<Parameters<NonNullable<ReturnType<typeof notices.get>>>[0]>();
+      notices.set(kind, shown.resolve);
+      const result = invoke();
+      const reaction = await Promise.race([
+        shown.promise,
+        result.then((response) => {
+          throw new Error("Call ended before opening its Request: " + JSON.stringify(response));
+        }),
+      ]);
+      notices.delete(kind);
+      const { requestId } = reaction;
+      const row = await host.store.database
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", requestId)
+        .executeTakeFirstOrThrow();
+      if (expectedTask) expect(row.originatingThreadId).toBe(expectedTask);
+      expect(row.originatingAgentSessionId).toBeTruthy();
+      return { reaction, requestId, expectedRevision: row.revision, row, result };
+    };
+
+    return {
+      site,
+      host,
+      authority,
+      witnessed,
+      browser,
+      profile,
+      endpoint,
+      transcript,
+      connection,
+      connectAgent,
+      refusedOrDisconnected,
+      owner,
+      pending,
+      close,
+      setLoseOpenReply: (value: { url: string; requestId?: string; observed: boolean }) => {
+        loseOpenReply = value;
+      },
+      dispose,
+    };
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+}
+
 it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
   "lets a selected browser agent ask the person, fill approved Passwords, and lose the reference on Disconnect",
   async () => {
-    const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
-    const close: (() => Promise<unknown>)[] = [() => database.drop()];
-    const notices = new Map<
-      Request["kind"],
-      (
-        reaction: Extract<
-          import("../packages/database/src/personal-mutation.js").PersonalCommitReaction,
-          { type: "requestChanged" }
-        >,
-      ) => void
-    >();
+    const fixture = await startSessionPersonFixture();
+    const {
+      site,
+      host,
+      authority,
+      witnessed,
+      browser,
+      profile,
+      endpoint,
+      transcript,
+      connection,
+      connectAgent,
+      refusedOrDisconnected,
+      owner,
+      close,
+    } = fixture;
     try {
-      const site = await signInFixture();
-      close.push(site.close);
-      const scratch = await mkdtemp(join(tmpdir(), "opensteer-session-person-"));
-      close.push(() => rm(scratch, { recursive: true, force: true }));
-      const launcher = new PlaywrightChromiumLauncher({
-        executablePath: chromium.executablePath(),
-        headless: true,
-        chromiumSandbox: false,
-        args: [
-          "--no-proxy-server",
-          "--host-resolver-rules=MAP passwords-fixture.test 127.0.0.1, MAP other-fixture.test 127.0.0.1",
-        ],
-      });
-      let chromiumBrowser: LaunchedBrowser | undefined;
-      let keys: readonly BrowserAttachPublicKey[] = [];
-      let passwords: Awaited<ReturnType<typeof startPasswordsAuthority>> | undefined;
-      const runtimeId = "browser-runtime-integration";
-      const runtime = new BrowserRuntime({
-        runtimeId,
-        launcher: {
-          localProfiles: launcher.localProfiles,
-          launch: async (request, signal) => {
-            chromiumBrowser = await launcher.launch(request, signal);
-            return chromiumBrowser;
-          },
-        },
-        localProfiles: { root: join(scratch, "profiles") },
-        sessionFilesRoot: join(scratch, "files"),
-        ticketVerifier: await Ed25519AttachTicketVerifier.create({
-          replayLedgerPath: join(scratch, "private", "replay.json"),
-          resolvePublicKey: (id) => keys.find((key) => key.keyId === id)?.publicKeyPem ?? null,
-        }),
-        loginAuthority: {
-          probe: async () => "has-login",
-          authorize: async () => ({ kind: "ended", outcome: { kind: "expired" } }),
-          end: async () => undefined,
-          fill: async () => "expired",
-          fillReference: async ({ loginRef, field, targetId, lease }) => {
-            const value = passwords?.releasedLogin(loginRef, field);
-            if (!value || !chromiumBrowser) return "expired";
-            const page = await pageWithTarget(
-              chromiumBrowser.context.pages(),
-              targetId,
-              1_000,
-              (entry) => !entry.isClosed(),
-            );
-            if (!page || new URL(page.url()).origin !== site.origin) return "wrong-site";
-            const cdp = await page.agentCdp();
-            try {
-              lease.throwIfAborted();
-              await cdp.send("Input.insertText", { text: value });
-              return "filled";
-            } finally {
-              await cdp.detach();
-            }
-          },
-        },
-      });
-      const bridgeToken = randomBytes(32).toString("base64url");
-      const runtimeServer = new BrowserRuntimeServer({
-        runtime,
-        port: 0,
-        relayBridge: {
-          token: bridgeToken,
-          updateAttachKeys: (next) => {
-            keys = next;
-          },
-        },
-      });
-      close.push(() => runtimeServer.close());
-      const address = await runtimeServer.start();
-      const runtimeRelay = new BrowserModuleRelay(
-        new LocalBrowserRuntimeBridge({
-          runtimeId,
-          bridgeToken,
-          url: new URL(`http://${address.host}:${address.port}`),
-        }),
-      );
-      const host = await startPrivateMachineHost(database.url, {
-        onPersonalReaction: (reaction) => {
-          if (reaction.type === "requestChanged" && reaction.status === "pending")
-            notices.get(reaction.kind)?.(reaction);
-        },
-      });
-      close.push(() => host.close());
-      const mac = await connectCallerMachine(host, {
-        name: "Passwords Mac",
-        environmentId: host.ownerEnvironmentId,
-        loginFill: true,
-        token: host.hostingRunnerEnrollmentToken,
-        integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2, cardUse: 1 },
-        browser: {
-          runtimeId,
-          wireVersion: 2,
-          cdpBoundary: 1,
-          sharedControl: 1,
-          tabRestoreVersion: 1,
-          surfaceState: 1,
-          signIn: { version: 3 },
-          cardFill: 1,
-          localProfileStorage: runtime.localProfileStorage!,
-        },
-      });
-      close.push(() => mac.close());
-      const witnessed: boolean[] = [];
-      const authority = (passwords = await startPasswordsAuthority(
-        host.hostPort,
-        mac.primary,
-        async (operationId) => {
-          const witness = await host.store.database
-            .selectFrom("requests")
-            .innerJoin("agentOperations", "agentOperations.requestId", "requests.id")
-            .select("requests.status")
-            .where(sql<boolean>`requests.payload @> ${JSON.stringify({ operationId })}::jsonb`)
-            .where("agentOperations.state", "=", "handed-off")
-            .executeTakeFirst();
-          witnessed.push(witness?.status === "pending");
-        },
-      ));
-      close.push(() => authority.close());
-      let loseOpenReply: { url: string; requestId?: string; observed: boolean } | undefined;
-      const browser = await startBrowserRuntime(host.hostPort, "existing-main", {
-        primary: mac.primary,
-        runtimeRelay: {
-          detach: () => runtimeRelay.detach(),
-          async handleFrame(frame, binary) {
-            if (!binary && loseOpenReply) {
-              const command = z
-                .object({
-                  type: z.literal("browser.client-message"),
-                  message: z.object({
-                    type: z.literal("cdp.command"),
-                    requestId: z.string(),
-                    command: z.object({
-                      method: z.literal("Opensteer.openTab"),
-                      parameters: z.object({ url: z.literal(loseOpenReply.url) }),
-                    }),
-                  }),
-                })
-                .safeParse(JSON.parse(frame.toString()));
-              if (command.success) loseOpenReply.requestId = command.data.message.requestId;
-            }
-            await runtimeRelay.handleFrame(frame, binary);
-          },
-          attach: (stream) =>
-            runtimeRelay.attach({
-              ...stream,
-              async send(frame, binary) {
-                if (!binary && loseOpenReply?.requestId) {
-                  const response = z
-                    .object({
-                      type: z.literal("browser.server-message"),
-                      message: z.object({
-                        type: z.literal("cdp.result"),
-                        requestId: z.literal(loseOpenReply.requestId),
-                        result: z.object({ tabId: BrowserSurfaceIdSchema }),
-                      }),
-                    })
-                    .safeParse(JSON.parse(frame.toString()));
-                  if (response.success) {
-                    loseOpenReply.observed = true;
-                    await browser.close();
-                    return;
-                  }
-                }
-                await stream.send(frame, binary);
-              },
-            }),
-        },
-        keepAlive: true,
-      });
-      close.push(() => browser.close());
-      const profile = await host.store.createBrowserProfile({
-        ownerId: host.ownerId,
-        homeRunnerId: browser.runnerId,
-        idempotencyKey: "work",
-        name: "Work",
-      });
-      const endpoint = new URL(mcpResourcePath, host.origin);
-      const transcript: unknown[] = [];
-      const connection = new AgentConnectionStore(host.store.database);
       const agent = await connection.create({
         userId: host.ownerId,
         label: "Research assistant",
@@ -265,49 +387,7 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       });
       const token = connectionCredentialPrefix + randomBytes(32).toString("base64url");
       expect(await connection.activate(agent.id, credentialHash(token))).toBe(true);
-      const connectAgent = async (bearer: string) => {
-        const transport = new StreamableHTTPClientTransport(endpoint, {
-          requestInit: { headers: { authorization: "Bearer " + bearer } },
-        });
-        let receive: typeof transport.onmessage;
-        Object.defineProperty(transport, "onmessage", {
-          get: () => receive,
-          set: (receiver: typeof transport.onmessage) => {
-            receive = (message) => {
-              transcript.push(message);
-              receiver?.(message);
-            };
-          },
-        });
-        const client = new Client({ name: "external-session", version: "1" });
-        close.push(() => client.close());
-        await client.connect(transport as unknown as Transport);
-        return (name: string, args: Record<string, unknown>) => {
-          const context = new Error(
-            `MCP ${name} (${args.operationKey ?? "no operation key"}) did not return`,
-          );
-          return client.callTool({ name, arguments: args }).catch((error: unknown) => {
-            context.cause = error;
-            throw context;
-          });
-        };
-      };
       const call = await connectAgent(token);
-      const refusedOrDisconnected = (result: ReturnType<typeof call>) =>
-        result.then(
-          (reply) => reply.isError === true,
-          (error: unknown) => {
-            if (
-              z
-                .object({
-                  cause: z.object({ cause: z.object({ code: z.literal("UND_ERR_SOCKET") }) }),
-                })
-                .safeParse(error).success
-            )
-              return true;
-            throw error;
-          },
-        );
       const opened = await call("browser_use", {
         profileId: profile.id,
         code: `const page = await newPage(${JSON.stringify(site.origin)}); print(page.tabId);`,
@@ -323,37 +403,12 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         }),
       ).not.toBe(true);
       const { taskId } = z.object({ taskId: ThreadIdSchema }).parse(opened.structuredContent);
-      const tabOutput = z
-        .tuple([z.object({ type: z.literal("text"), text: BrowserSurfaceIdSchema })])
-        .rest(z.unknown());
       const tabId = tabOutput.parse(opened.content)[0].text;
-      const owner = { headers: host.ownerHeaders };
-      const pending = async (
+      const pending = (
         kind: Request["kind"],
         invoke: () => ReturnType<typeof call>,
         expectedTask: string | null = taskId,
-      ) => {
-        const shown =
-          Promise.withResolvers<Parameters<NonNullable<ReturnType<typeof notices.get>>>[0]>();
-        notices.set(kind, shown.resolve);
-        const result = invoke();
-        const reaction = await Promise.race([
-          shown.promise,
-          result.then((response) => {
-            throw new Error("Call ended before opening its Request: " + JSON.stringify(response));
-          }),
-        ]);
-        notices.delete(kind);
-        const { requestId } = reaction;
-        const row = await host.store.database
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", requestId)
-          .executeTakeFirstOrThrow();
-        if (expectedTask) expect(row.originatingThreadId).toBe(expectedTask);
-        expect(row.originatingAgentSessionId).toBeTruthy();
-        return { reaction, requestId, expectedRevision: row.revision, row, result };
-      };
+      ) => fixture.pending(kind, invoke, expectedTask);
 
       const question = await pending("person.question", () =>
         call("ask_person", {
@@ -663,128 +718,6 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       );
       expect(returned.isError, JSON.stringify(returned.content)).not.toBe(true);
 
-      if (!sibling.grant) throw new Error("The sibling connection has no grant.");
-      const supervised = await connection.create({
-        userId: host.ownerId,
-        label: "Approval fixture",
-        clientName: "Approval fixture",
-        resource: endpoint.href,
-        expiresAt: new Date(Date.now() + 60 * 60_000),
-        accessMode: "approval-required",
-        grant: sibling.grant,
-      });
-      const reviewedToken = connectionCredentialPrefix + randomBytes(32).toString("base64url");
-      expect(await connection.activate(supervised.id, credentialHash(reviewedToken))).toBe(true);
-      const reviewedCall = await connectAgent(reviewedToken);
-      const openScript = `const page = await newPage(${JSON.stringify(site.origin)}); print(page.tabId);\n/* `;
-      const reviewedOpen = {
-        profileId: profile.id,
-        code: openScript.padEnd(requestOperationCallsMaxLength - 2, "x") + "*/",
-        operationKey: "reviewed-open",
-      };
-      const allowOnce = (
-        request: { requestId: Request["id"]; expectedRevision: string },
-        idempotencyKey: string,
-      ) =>
-        testRpcData(
-          host.origin,
-          "commands.dispatch",
-          {
-            type: "request.respond",
-            requestId: request.requestId,
-            expectedRevision: request.expectedRevision,
-            idempotencyKey,
-            response: { kind: "form", answers: { decision: ["allow"] } },
-          },
-          owner,
-        );
-      const beforeOpen = browser.receivedCommands().length;
-      const queuedOpen = await pending(
-        "person.question",
-        () => reviewedCall("browser_use", reviewedOpen),
-        null,
-      );
-      expect(browser.receivedCommands()).toHaveLength(beforeOpen);
-      expect(reviewedOpen.code).toHaveLength(requestOperationCallsMaxLength);
-      const presentation = queuedOpen.row.presentation;
-      if (presentation.kind !== "form" || !presentation.detail)
-        throw new Error("The Request must have plain detail");
-      expect(presentation.detail.length).toBeLessThanOrEqual(requestTextMaxLength);
-      expect(presentation.detail.endsWith(requestOperationCallsHeading + reviewedOpen.code)).toBe(
-        true,
-      );
-      expect(queuedOpen.row.agentOperation?.calls).toBe(reviewedOpen.code);
-      await allowOnce(queuedOpen, "allow-reviewed-open");
-      const realOpen = await queuedOpen.result;
-      expect(realOpen.structuredContent).toMatchObject({ status: "completed" });
-      const reviewedTabId = tabOutput.parse(realOpen.content)[0].text;
-      const reviewedClose = (operationKey: string) =>
-        pending(
-          "person.question",
-          () =>
-            reviewedCall("browser_use", {
-              tabId: reviewedTabId,
-              operationKey,
-              code: `const page = await openPage(${JSON.stringify(reviewedTabId)}); await page.close();`,
-            }),
-          null,
-        );
-      const queuedClose = await reviewedClose("reviewed-close");
-      const closeOperation = AgentOperationIdSchema.parse(
-        queuedClose.row.agentOperation?.operationId,
-      );
-      const admittedClose = await host.store.database
-        .selectFrom("agentOperations")
-        .select("targetGeneration")
-        .where("id", "=", closeOperation)
-        .executeTakeFirstOrThrow();
-      const oldTab = await host.store.database
-        .selectFrom("personalTabs")
-        .select("generation")
-        .where("id", "=", reviewedTabId)
-        .executeTakeFirstOrThrow();
-      expect(admittedClose.targetGeneration).toBe(String(oldTab.generation));
-      const ownerActor = { kind: "person" as const, ownerId: host.ownerId };
-      const connectionTab = host.runtime.tabs.connectionTab.bind(host.runtime.tabs);
-      const race = vi
-        .spyOn(host.runtime.tabs, "connectionTab")
-        .mockImplementationOnce(async (...args) => {
-          expect(
-            (await host.runtime.tabs.close(ownerActor, [reviewedTabId], "person-close")).closed,
-          ).toEqual([reviewedTabId]);
-          await host.runtime.tabs.reopen(ownerActor, reviewedTabId, "person-reopen");
-          return connectionTab(...args);
-        });
-      await allowOnce(queuedClose, "allow-reviewed-close");
-      const closeResult = await queuedClose.result.finally(() => race.mockRestore());
-      expect(closeResult.structuredContent).not.toMatchObject({ status: "completed" });
-      const settledClose = await host.store.database
-        .selectFrom("agentOperations")
-        .select("state")
-        .where("id", "=", closeOperation)
-        .executeTakeFirstOrThrow();
-      expect(settledClose.state).toBe("failed");
-      const replacement = await host.store.database
-        .selectFrom("personalTabs")
-        .select(["closedAt", "generation"])
-        .where("id", "=", reviewedTabId)
-        .executeTakeFirstOrThrow();
-      expect(replacement.closedAt).toBeNull();
-      expect(replacement.generation).not.toBe(oldTab.generation);
-      const beforeFreshClose = browser.receivedCommands().length;
-      const freshClose = await reviewedClose("reviewed-close-new-generation");
-      await allowOnce(freshClose, "allow-close-new-generation");
-      const closed = await freshClose.result;
-      expect(closed.structuredContent).toMatchObject({ status: "completed" });
-      expect(closed.isError).not.toBe(true);
-      expect(browser.receivedCommands().slice(beforeFreshClose)).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            command: expect.objectContaining({ method: "Target.closeTarget" }),
-          }),
-        ]),
-      );
-
       const stillWaiting = await pending("person.question", () =>
         call("ask_person", {
           taskId,
@@ -910,6 +843,100 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
                 .safeParse(entry.command).success,
           ),
       ).toHaveLength(0);
+
+      const traffic = JSON.stringify(transcript);
+      for (const value of [
+        passwordFixture.username,
+        passwordFixture.password,
+        passwordFixture.code,
+      ])
+        expect(traffic).not.toContain(value);
+    } finally {
+      await fixture.dispose();
+    }
+  },
+);
+
+it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
+  "reviews approval-required browser actions, rejects a stale tab close, cancels on stop/narrow/expire, and records a lost open reply as unknown",
+  async () => {
+    const fixture = await startSessionPersonFixture();
+    const {
+      site,
+      host,
+      authority,
+      browser,
+      profile,
+      endpoint,
+      connection,
+      connectAgent,
+      refusedOrDisconnected,
+      owner,
+      pending,
+      transcript,
+      setLoseOpenReply,
+    } = fixture;
+    try {
+      const workGrant = {
+        scope: "selected" as const,
+        tasks: false,
+        resources: [{ kind: "browser-profile" as const, profileId: profile.id }],
+      };
+      const supervised = await connection.create({
+        userId: host.ownerId,
+        label: "Approval fixture",
+        clientName: "Approval fixture",
+        resource: endpoint.href,
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+        accessMode: "approval-required",
+        grant: workGrant,
+      });
+      const reviewedToken = connectionCredentialPrefix + randomBytes(32).toString("base64url");
+      expect(await connection.activate(supervised.id, credentialHash(reviewedToken))).toBe(true);
+      const reviewedCall = await connectAgent(reviewedToken);
+      const openScript = `const page = await newPage(${JSON.stringify(site.origin)}); print(page.tabId);\n/* `;
+      const reviewedOpen = {
+        profileId: profile.id,
+        code: openScript.padEnd(requestOperationCallsMaxLength - 2, "x") + "*/",
+        operationKey: "reviewed-open",
+      };
+      const allowOnce = (
+        request: { requestId: Request["id"]; expectedRevision: string },
+        idempotencyKey: string,
+      ) =>
+        testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "request.respond",
+            requestId: request.requestId,
+            expectedRevision: request.expectedRevision,
+            idempotencyKey,
+            response: { kind: "form", answers: { decision: ["allow"] } },
+          },
+          owner,
+        );
+      const beforeOpen = browser.receivedCommands().length;
+      const queuedOpen = await pending(
+        "person.question",
+        () => reviewedCall("browser_use", reviewedOpen),
+        null,
+      );
+      expect(browser.receivedCommands()).toHaveLength(beforeOpen);
+      expect(reviewedOpen.code).toHaveLength(requestOperationCallsMaxLength);
+      const presentation = queuedOpen.row.presentation;
+      if (presentation.kind !== "form" || !presentation.detail)
+        throw new Error("The Request must have plain detail");
+      expect(presentation.detail.length).toBeLessThanOrEqual(requestTextMaxLength);
+      expect(presentation.detail.endsWith(requestOperationCallsHeading + reviewedOpen.code)).toBe(
+        true,
+      );
+      expect(queuedOpen.row.agentOperation?.calls).toBe(reviewedOpen.code);
+      await allowOnce(queuedOpen, "allow-reviewed-open");
+      const realOpen = await queuedOpen.result;
+      expect(realOpen.structuredContent).toMatchObject({ status: "completed" });
+      const reviewedTabId = tabOutput.parse(realOpen.content)[0].text;
+
       const other = await host.store.createBrowserProfile({
         ownerId: host.ownerId,
         homeRunnerId: browser.runnerId,
@@ -944,11 +971,78 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           reason: "Continue",
           operationKey,
         });
-      const unshared = await requestLogin(tabId, "unshared");
+      const unshared = await requestLogin(reviewedTabId, "unshared");
       const missing = await requestLogin("does-not-exist", "missing");
       expect(unshared.isError).toBe(true);
       expect(unshared.content).toEqual(missing.content);
       expect(authority.commands).toHaveLength(authorityCalls);
+
+      const reviewedClose = (operationKey: string) =>
+        pending(
+          "person.question",
+          () =>
+            reviewedCall("browser_use", {
+              tabId: reviewedTabId,
+              operationKey,
+              code: `const page = await openPage(${JSON.stringify(reviewedTabId)}); await page.close();`,
+            }),
+          null,
+        );
+      const queuedClose = await reviewedClose("reviewed-close");
+      const closeOperation = AgentOperationIdSchema.parse(
+        queuedClose.row.agentOperation?.operationId,
+      );
+      const admittedClose = await host.store.database
+        .selectFrom("agentOperations")
+        .select("targetGeneration")
+        .where("id", "=", closeOperation)
+        .executeTakeFirstOrThrow();
+      const oldTab = await host.store.database
+        .selectFrom("personalTabs")
+        .select("generation")
+        .where("id", "=", reviewedTabId)
+        .executeTakeFirstOrThrow();
+      expect(admittedClose.targetGeneration).toBe(String(oldTab.generation));
+      const ownerActor = { kind: "person" as const, ownerId: host.ownerId };
+      const connectionTab = host.runtime.tabs.connectionTab.bind(host.runtime.tabs);
+      const race = vi
+        .spyOn(host.runtime.tabs, "connectionTab")
+        .mockImplementationOnce(async (...args) => {
+          expect(
+            (await host.runtime.tabs.close(ownerActor, [reviewedTabId], "person-close")).closed,
+          ).toEqual([reviewedTabId]);
+          await host.runtime.tabs.reopen(ownerActor, reviewedTabId, "person-reopen");
+          return connectionTab(...args);
+        });
+      await allowOnce(queuedClose, "allow-reviewed-close");
+      const closeResult = await queuedClose.result.finally(() => race.mockRestore());
+      expect(closeResult.structuredContent).not.toMatchObject({ status: "completed" });
+      const settledClose = await host.store.database
+        .selectFrom("agentOperations")
+        .select("state")
+        .where("id", "=", closeOperation)
+        .executeTakeFirstOrThrow();
+      expect(settledClose.state).toBe("failed");
+      const replacement = await host.store.database
+        .selectFrom("personalTabs")
+        .select(["closedAt", "generation"])
+        .where("id", "=", reviewedTabId)
+        .executeTakeFirstOrThrow();
+      expect(replacement.closedAt).toBeNull();
+      expect(replacement.generation).not.toBe(oldTab.generation);
+      const beforeFreshClose = browser.receivedCommands().length;
+      const freshClose = await reviewedClose("reviewed-close-new-generation");
+      await allowOnce(freshClose, "allow-close-new-generation");
+      const closed = await freshClose.result;
+      expect(closed.structuredContent).toMatchObject({ status: "completed" });
+      expect(closed.isError).not.toBe(true);
+      expect(browser.receivedCommands().slice(beforeFreshClose)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            command: expect.objectContaining({ method: "Target.closeTarget" }),
+          }),
+        ]),
+      );
 
       for (const action of ["stop", "narrow", "expire"] as const) {
         const agent = await newAgent(action);
@@ -1026,15 +1120,22 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         ).rejects.toThrow();
       }
 
-      const traffic = JSON.stringify(transcript);
-      for (const value of [
-        passwordFixture.username,
-        passwordFixture.password,
-        passwordFixture.code,
-      ])
-        expect(traffic).not.toContain(value);
-      loseOpenReply = { url: `${site.origin}/?drop-open-reply`, observed: false };
-      const lost = await siblingCall("browser_use", {
+      const lostAgent = await connection.create({
+        userId: host.ownerId,
+        label: "Lost reply fixture",
+        clientName: "Lost reply fixture",
+        resource: endpoint.href,
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+        accessMode: "full-access",
+        grant: workGrant,
+      });
+      const lostToken = connectionCredentialPrefix + randomBytes(32).toString("base64url");
+      if (!(await connection.activate(lostAgent.id, credentialHash(lostToken))))
+        throw new Error("Failed to activate lost-reply connection");
+      const lostCall = await connectAgent(lostToken);
+      const loseOpenReply = { url: `${site.origin}/?drop-open-reply`, observed: false };
+      setLoseOpenReply(loseOpenReply);
+      const lost = await lostCall("browser_use", {
         profileId: profile.id,
         code: `await newPage(${JSON.stringify(loseOpenReply.url)});`,
         operationKey: "lost-browser-open-reply",
@@ -1055,8 +1156,16 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         .where("id", "=", AgentOperationIdSchema.parse(unknown.operationId))
         .executeTakeFirstOrThrow();
       expect(lostRow.state).toBe("unknown");
+
+      const traffic = JSON.stringify(transcript);
+      for (const value of [
+        passwordFixture.username,
+        passwordFixture.password,
+        passwordFixture.code,
+      ])
+        expect(traffic).not.toContain(value);
     } finally {
-      for (const dispose of close.reverse()) await dispose().catch(() => undefined);
+      await fixture.dispose();
     }
   },
 );

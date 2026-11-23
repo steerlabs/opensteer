@@ -323,3 +323,75 @@ it("shares one owner read and refreshes only the changed binding for two devices
   }).toEqual({ databaseSnapshots: 0, nativeRPCs: 1, computerReads: 1, taskReads: 2 });
   f.service.dispose();
 });
+
+it("projects only the opened ungrouped tab for a Run actor without scanning unrelated tabs", async () => {
+  const existing = Array.from({ length: 12 }, () => row("window"));
+  const f = fixture(existing);
+  const runActor: TabActor = {
+    kind: "run",
+    claims: {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      iat: 1,
+      exp: 9_999_999_999,
+      jti: "jti-1",
+      runId: createId("run"),
+      threadId: taskId,
+      environmentId: createId("environment"),
+      requestedBy: ownerId,
+      runnerId: computerId,
+      runnerBootId: "boot-1",
+      bindingGeneration: 1,
+      grantId: createId("grant"),
+    },
+  };
+  let openedRow: TabRecord | undefined;
+  f.options.pages.open = async (_actor, target) => ({
+    id: tabId(),
+    ownerId,
+    kind: "page",
+    computerId: DeviceIdSchema.parse(computerId),
+    title: "Opened",
+    url: target.url ?? null,
+    openedBy: { taskId },
+    pageBinding: {
+      lineageId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+      sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+      surfaceId: BrowserSurfaceIdSchema.parse(`bsf_${randomUUID()}`),
+    },
+  });
+  f.options.store.open = async (write) => {
+    const created: TabRecord = {
+      ...row("phone"),
+      id: write.id,
+      kind: "page",
+      title: write.title,
+      url: write.kind === "page" ? (write.url ?? null) : null,
+      openedBy: write.openedBy,
+      pageBinding: write.kind === "page" ? (write.pageBinding ?? null) : null,
+    };
+    openedRow = created;
+    existing.push(created);
+    const layout: TabLayout = {
+      revision: 2,
+      items: existing.map((item) => ({ kind: "tab", tabId: item.id })),
+    };
+    f.setLayout(layout);
+    return { tab: created, tabIds: [created.id], layout };
+  };
+  const snapshots = vi.spyOn(f.options.store, "snapshot");
+  const windows = vi.spyOn(f.native, "windowState");
+  const pageStates = vi.spyOn(f.options.pages, "state");
+
+  const opened = await f.service.open(
+    runActor,
+    { kind: "page", guest: true, url: "https://example.test/" },
+    "run-open-key",
+    1,
+  );
+  expect(opened.tab.tabId).toBe(openedRow!.id);
+  expect(snapshots).not.toHaveBeenCalled();
+  expect(windows).not.toHaveBeenCalled();
+  expect(pageStates).toHaveBeenCalledTimes(1);
+  f.service.dispose();
+});

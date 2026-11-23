@@ -208,12 +208,21 @@ export class BrowserReplService<Target extends BrowserUseTarget = BrowserUseTarg
   readonly #repl: ReplService<BrowserReplRequest>;
   readonly #contexts = new Map<string, BrowserContext<Target>>();
 
-  constructor({ port, clock }: { port: BrowserUsePort<Target>; clock?: Clock }) {
+  constructor({
+    port,
+    clock,
+    workerEntry,
+  }: {
+    port: BrowserUsePort<Target>;
+    clock?: Clock;
+    workerEntry?: URL;
+  }) {
     this.#port = port;
     this.#repl = new ReplService({
       request: BrowserReplRequestSchema,
       invoke: (request) => this.#invoke(request),
       ...(clock ? { clock } : {}),
+      ...(workerEntry ? { workerEntry } : {}),
       browser: {
         batch: ({ runId }) => this.#batch(runId),
         acknowledge: ({ runId }) => {
