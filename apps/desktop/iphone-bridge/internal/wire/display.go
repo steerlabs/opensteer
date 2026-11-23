@@ -173,8 +173,8 @@ func (e *DisplayInputEvent) UnmarshalJSON(data []byte) error {
 		}
 	case "paste":
 		if value.Text != nil {
-			add("text")
-			if !validString(*value.Text, 1, 30000) {
+			add("text", "contextId")
+			if !validString(*value.Text, 1, 30000) || !editingContextID.MatchString(value.ContextID) {
 				return ErrProtocol
 			}
 		} else {
@@ -196,8 +196,8 @@ func (e *DisplayInputEvent) UnmarshalJSON(data []byte) error {
 			}
 		}
 	case "command":
-		add("command")
-		if !oneOf(value.Command, "selectAll", "undo", "redo", "moveBackward", "moveForward", "moveUp", "moveDown",
+		add("command", "contextId")
+		if !editingContextID.MatchString(value.ContextID) || !oneOf(value.Command, "selectAll", "undo", "redo", "moveBackward", "moveForward", "moveUp", "moveDown",
 			"moveWordLeft", "moveWordRight", "moveWordLeftAndModifySelection", "moveWordRightAndModifySelection",
 			"moveToLeftEndOfLine", "moveToRightEndOfLine", "moveToLeftEndOfLineAndModifySelection", "moveToRightEndOfLineAndModifySelection",
 			"moveToBeginningOfLine", "moveToEndOfLine", "moveToBeginningOfLineAndModifySelection", "moveToEndOfLineAndModifySelection",
@@ -207,8 +207,8 @@ func (e *DisplayInputEvent) UnmarshalJSON(data []byte) error {
 			return ErrProtocol
 		}
 	case "copy":
-		optional = []string{"contextId"}
-		if value.ContextID != "" && !editingContextID.MatchString(value.ContextID) {
+		add("contextId")
+		if !editingContextID.MatchString(value.ContextID) {
 			return ErrProtocol
 		}
 	case "cut":
