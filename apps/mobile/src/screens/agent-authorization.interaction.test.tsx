@@ -315,7 +315,7 @@ describe("agent consent on the phone", () => {
     });
     // Each mode reads as it does for a connection: its work never runs with
     // the person's own engine settings.
-    const modes = (ready() as { modes: { description: string; mode: string }[] }).modes;
+    const modes = ready().modes;
     expect(modes.find(({ mode }) => mode === "approval-required")?.description).toBe(
       "Asks you before anything that changes something.",
     );
