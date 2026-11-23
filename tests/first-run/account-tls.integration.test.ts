@@ -12,6 +12,7 @@ import {
   opensteerDesktopOAuthClientId,
 } from "../../packages/core/src/index.js";
 import { createControlPlaneDatabase } from "../../apps/control-plane/src/database/database.js";
+import { migrateControlPlaneToLatest } from "../../apps/control-plane/src/database/migrations.js";
 import {
   journeyAccount,
   startJourneyAccountService,
@@ -43,7 +44,31 @@ integration("the first-run journey's account service over HTTPS", () => {
   let account: JourneyAccountService;
   let ca: string;
 
+  async function clearAuthTables(): Promise<void> {
+    const database = createControlPlaneDatabase({ connectionString: databaseUrl! });
+    try {
+      await migrateControlPlaneToLatest(database);
+      await sql`
+        truncate table
+          oauth_consents,
+          oauth_access_tokens,
+          oauth_refresh_token,
+          oauth_clients,
+          auth_jwks,
+          auth_rate_limits,
+          auth_verifications,
+          auth_sessions,
+          auth_accounts,
+          users
+        cascade
+      `.execute(database);
+    } finally {
+      await database.destroy();
+    }
+  }
+
   beforeAll(async () => {
+    await clearAuthTables();
     execFileSync("/bin/bash", [
       path.join(repositoryRoot, "scripts/test-vm/fixture-authority-files.sh"),
       directory,
@@ -63,12 +88,7 @@ integration("the first-run journey's account service over HTTPS", () => {
 
   afterAll(async () => {
     await account?.close();
-    const database = createControlPlaneDatabase({ connectionString: databaseUrl! });
-    try {
-      await sql`delete from users where email = ${journeyAccount.email}`.execute(database);
-    } finally {
-      await database.destroy();
-    }
+    await clearAuthTables();
   });
 
   /** One HTTPS request to the account service, trusting the fixture authority, sent to loopback. */

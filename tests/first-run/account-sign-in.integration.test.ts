@@ -7,6 +7,7 @@ import {
 } from "../../packages/core/src/index.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createControlPlaneDatabase } from "../../apps/control-plane/src/database/database.js";
+import { migrateControlPlaneToLatest } from "../../apps/control-plane/src/database/migrations.js";
 import {
   journeyAccount,
   startJourneyAccountService,
@@ -28,18 +29,37 @@ const integration = databaseUrl ? describe : describe.skip;
 integration("the first-run journey's account service", () => {
   let account: JourneyAccountService;
 
+  async function clearAuthTables(): Promise<void> {
+    const database = createControlPlaneDatabase({ connectionString: databaseUrl! });
+    try {
+      await migrateControlPlaneToLatest(database);
+      await sql`
+        truncate table
+          oauth_consents,
+          oauth_access_tokens,
+          oauth_refresh_token,
+          oauth_clients,
+          auth_jwks,
+          auth_rate_limits,
+          auth_verifications,
+          auth_sessions,
+          auth_accounts,
+          users
+        cascade
+      `.execute(database);
+    } finally {
+      await database.destroy();
+    }
+  }
+
   beforeAll(async () => {
+    await clearAuthTables();
     account = await startJourneyAccountService({ databaseUrl: databaseUrl! });
   });
 
   afterAll(async () => {
     await account?.close();
-    const database = createControlPlaneDatabase({ connectionString: databaseUrl! });
-    try {
-      await sql`delete from users where email = ${journeyAccount.email}`.execute(database);
-    } finally {
-      await database.destroy();
-    }
+    await clearAuthTables();
   });
 
   it("signs in through its own sign-in and consent pages and issues the Mac app its tokens", async () => {
