@@ -1248,13 +1248,19 @@ export async function createHostRuntime(
             .where("runnerId", "=", runnerId)
             .execute();
           if (sessions.length) {
+            const sessionIds = sessions.map(({ id }) => id);
+            await tx
+              .selectFrom("browserSessionAttachments")
+              .select("sessionId")
+              .where("sessionId", "in", sessionIds)
+              .orderBy("sessionId")
+              .orderBy("agentBindingId")
+              // FOR UPDATE: Deletes the attachments for this runner's sessions in key order.
+              .forUpdate()
+              .execute();
             const removed = await tx
               .deleteFrom("browserSessionAttachments")
-              .where(
-                "sessionId",
-                "in",
-                sessions.map(({ id }) => id),
-              )
+              .where("sessionId", "in", sessionIds)
               .executeTakeFirst();
             if (removed.numDeletedRows > 0) mutation.bumpResource("browser-placement");
           }

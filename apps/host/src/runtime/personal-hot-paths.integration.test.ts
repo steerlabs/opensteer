@@ -496,6 +496,170 @@ it.skipIf(Boolean(reportPath))(
   },
 );
 
+it.skipIf(Boolean(reportPath))(
+  "keeps concurrent holds by a person's own agents on a personal Home unserialized and without extra re-admission queries (PH6)",
+  async () => {
+    const database = await cloneTestDatabase("host");
+    const close: (() => unknown | Promise<unknown>)[] = [() => database.drop()];
+    const own = new AsyncLocalStorage<string[]>();
+    const trace = traceQueries((statement) => own.getStore()?.push(statement));
+    const reconcile = MemoryPassService.prototype.reconcileMissing;
+    const reconciling = vi
+      .spyOn(MemoryPassService.prototype, "reconcileMissing")
+      .mockImplementation(function (this: MemoryPassService) {
+        return own.exit(() => Reflect.apply(reconcile, this, []) as ReturnType<typeof reconcile>);
+      });
+    close.unshift(() => reconciling.mockRestore());
+    const listPending = OpensteerStore.prototype.listPendingCommands;
+    const reading = vi
+      .spyOn(OpensteerStore.prototype, "listPendingCommands")
+      .mockImplementation(function (this: OpensteerStore, ...args) {
+        return own.exit(
+          () => Reflect.apply(listPending, this, args) as ReturnType<typeof listPending>,
+        );
+      });
+    close.unshift(() => reading.mockRestore());
+    try {
+      const host = await startPrivateMachineHost(database.url, { logger: false });
+      close.unshift(() => host.close());
+      const runner = await connectCallerMachine(host, {
+        name: "PH6 fixture",
+        token: host.hostingRunnerEnrollmentToken,
+        browser: {
+          runtimeId: "browser-runtime-ph6",
+          wireVersion: 2,
+          cdpBoundary: 1,
+          sharedControl: 1,
+          tabRestoreVersion: 1,
+          surfaceState: 1,
+        },
+      });
+      close.unshift(() => runner.close());
+      const browser = await startBrowserRuntime(host.hostPort, "unused-existing-main", {
+        primary: runner.primary,
+        agentReady: true,
+        targetedStreaming: true,
+        personalTabs: true,
+        surfaceState: true,
+        uniqueTabs: true,
+        tabCommands: true,
+      });
+      close.unshift(() => browser.close());
+      await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
+
+      const opened = await host.api["commands.dispatch"]({
+        type: "tab.open",
+        idempotencyKey: "ph6-person-tab",
+        target: { kind: "page", guest: true, url: "about:blank" },
+      });
+      if (!opened.ok) throw new Error(opened.error.message);
+      const tabId = (opened.data as { tab: { tabId: Parameters<TabStore["get"]>[1] } }).tab.tabId;
+      const tabRow = (await new TabStore(host.store.database).get(host.ownerId, tabId))!;
+      expect(tabRow.pageBinding?.sessionId).toBeTruthy();
+
+      const runA = await dispatchCallerRun(host, runner, { key: "ph6-a", title: "PH6 Run A" });
+      const runB = await dispatchCallerRun(host, runner, { key: "ph6-b", title: "PH6 Run B" });
+      const claimsA = {
+        requestedBy: host.ownerId,
+        runId: runA.runId,
+        threadId: runA.threadId,
+      } as unknown as Parameters<typeof host.runtime.browser.bindPage>[0];
+      const claimsB = {
+        requestedBy: host.ownerId,
+        runId: runB.runId,
+        threadId: runB.threadId,
+      } as unknown as Parameters<typeof host.runtime.browser.bindPage>[0];
+
+      // Pause the first attachBrowserSession briefly so a second concurrent bindPage overlaps it
+      // unless #holdForAgent queues the two holds behind each other on the runner lane.
+      let activeAttaches = 0;
+      let overlapped = false;
+      const firstEntered = Promise.withResolvers<void>();
+      const releaseFirst = Promise.withResolvers<void>();
+      const originalAttach = host.store.attachBrowserSession.bind(host.store);
+      const attachSpy = vi
+        .spyOn(host.store, "attachBrowserSession")
+        .mockImplementation(async (input) => {
+          activeAttaches++;
+          try {
+            if (activeAttaches === 1) {
+              firstEntered.resolve();
+              await Promise.race([
+                releaseFirst.promise,
+                new Promise<void>((resolve) => setTimeout(resolve, 250)),
+              ]);
+            } else {
+              overlapped = true;
+              releaseFirst.resolve();
+            }
+            return await originalAttach(input);
+          } finally {
+            activeAttaches--;
+          }
+        });
+      const resolveSpy = vi.spyOn(host.store, "resolveResourceAccess");
+      const concurrentSql: string[] = [];
+      try {
+        await own.run(concurrentSql, () =>
+          Promise.all([
+            host.runtime.browser.bindPage(claimsA, tabRow),
+            host.runtime.browser.bindPage(claimsB, tabRow),
+          ]),
+        );
+      } finally {
+        releaseFirst.resolve();
+        attachSpy.mockRestore();
+      }
+      const resolveCalls = resolveSpy.mock.calls.length;
+      resolveSpy.mockRestore();
+
+      expect(
+        concurrentSql.filter((sql) => /work_home_policy|organization|browser_pool/u.test(sql)),
+      ).toEqual([]);
+      expect(overlapped).toBe(true);
+      // Matches the 5369592d9 baseline (8 resolveResourceAccess calls across two concurrent
+      // bindPage holds; before PH6 it was 9 resolveCalls / 194 statements and serialized).
+      expect(resolveCalls).toBe(8);
+      expect(concurrentSql.length).toBeLessThanOrEqual(186);
+
+      // Device switch is still honoured even without queuing holds on the runner admission lane:
+      // turning browser access off while attachBrowserSession is in flight refuses and leaves no hold.
+      const runC = await dispatchCallerRun(host, runner, { key: "ph6-c", title: "PH6 Run C" });
+      const claimsC = {
+        requestedBy: host.ownerId,
+        runId: runC.runId,
+        threadId: runC.threadId,
+      } as unknown as Parameters<typeof host.runtime.browser.bindPage>[0];
+      const enteredC = Promise.withResolvers<void>();
+      const releaseC = Promise.withResolvers<void>();
+      const attachCSpy = vi
+        .spyOn(host.store, "attachBrowserSession")
+        .mockImplementationOnce(async (input) => {
+          enteredC.resolve();
+          await releaseC.promise;
+          return originalAttach(input);
+        });
+      const bindingC = host.runtime.browser.bindPage(claimsC, tabRow);
+      bindingC.catch(() => undefined);
+      try {
+        await enteredC.promise;
+        await host.runtime.browser.disableAgentAccess(runner.runnerId);
+        releaseC.resolve();
+        await expect(bindingC).rejects.toThrow(/turned off/u);
+        expect(
+          await host.store.listBrowserSessionAttachmentBindings(tabRow.pageBinding!.sessionId),
+        ).toEqual([]);
+      } finally {
+        releaseC.resolve();
+        attachCSpy.mockRestore();
+      }
+    } finally {
+      trace.mockRestore();
+      for (const step of close) await step();
+    }
+  },
+);
+
 it.skipIf(!reportPath)(
   "measures a Personal Home with its own Run, without a connection",
   async () => {

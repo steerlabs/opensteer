@@ -8109,8 +8109,20 @@ export class BrowserService {
           )
         : undefined;
       try {
+        // Rule 7 (PH6): a person's own agent on an unpooled personal Home does not queue behind
+        // sibling holds on the runner admission lane or pay an extra #admitAgentSession pass when
+        // another admission is in flight. It still honours the device switch (generation checks
+        // before and after attachBrowserSession) and task mode (admitted before and re-checked on
+        // profile waits or generation changes).
+        const useRunnerLane = Boolean(pool || connectedAgentBinding(input.agentBindingId));
         const admissionWaited =
-          !options?.inRunnerAdmission && this.#agentAdmissions.busy(record.runnerId);
+          useRunnerLane &&
+          !options?.inRunnerAdmission &&
+          this.#agentAdmissions.busy(record.runnerId);
+        const accessChanged = () =>
+          (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration ||
+          (options?.globalAccessGeneration !== undefined &&
+            this.#accessGeneration !== options.globalAccessGeneration);
         const holdStep = async () => {
           if (this.#closed || this.#endedBindings.has(input.agentBindingId))
             throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
@@ -8119,9 +8131,7 @@ export class BrowserService {
             profileWaited ||
             reservation?.waited ||
             admissionWaited ||
-            (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration ||
-            (options?.globalAccessGeneration !== undefined &&
-              this.#accessGeneration !== options.globalAccessGeneration),
+            accessChanged(),
           );
           if (mustRecheck) await this.#admitAgentSession(input, record.id, false);
           else if (options?.requireAccess) await this.#requireAgentAccess(record.runnerId);
@@ -8134,6 +8144,10 @@ export class BrowserService {
             sessionId: record.id,
             ...(pool ? { pool: pool.identity() } : {}),
           });
+          if (!useRunnerLane && !options?.inRunnerAdmission && accessChanged()) {
+            await this.#detachRunnerAgents?.(record.runnerId);
+            throw this.#deviceAccessDisabled;
+          }
           if (!attached && (this.#closed || this.#endedBindings.has(input.agentBindingId))) return;
           if (attached) this.#onSessionsChanged([record.id]);
           if (
@@ -8152,7 +8166,7 @@ export class BrowserService {
             this.announceUsage(credits);
           }
         };
-        if (options?.inRunnerAdmission) await holdStep();
+        if (options?.inRunnerAdmission || !useRunnerLane) await holdStep();
         else await this.withRunnerAdmission(record.runnerId, holdStep);
       } finally {
         reservation?.release();
