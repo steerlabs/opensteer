@@ -2732,6 +2732,47 @@ describe("Electron debugger teardown", () => {
       await hub.browser.close();
     });
 
+    // The re-check of 963f808d0..fb245664c, finding 6: what is counted is released on every exit.
+    it("holds nothing once an attach of the hub's own throws before it is sent", async () => {
+      const hub = await hubPage("81");
+      const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+      let throws = true;
+      hub.contents.debugger.sendCommand.mockImplementation(
+        (method: string, parameters?: Record<string, unknown>, session?: string) => {
+          if (method === "Target.attachToTarget" && throws) {
+            throws = false;
+            throw new Error("Debugger is not attached to a target.");
+          }
+          return answer(method, parameters, session);
+        },
+      );
+      const platform = await hub.page.cdp();
+      const heard: string[] = [];
+      platform.onEvent((method, parameters) => {
+        if (method.startsWith("Target."))
+          heard.push(`${method} ${String((parameters as { sessionId?: string }).sessionId)}`);
+      });
+      await platform.send("Target.setAutoAttach", {
+        autoAttach: true,
+        flatten: true,
+        waitForDebuggerOnStart: false,
+      });
+      await platform.send("Page.startScreencast", view);
+      const agent = await hub.page.agentCdp();
+      await expect(agent.send("Page.startScreencast", small)).rejects.toThrow(/not attached/u);
+      hub.deliver("Target.attachedToTarget", {
+        sessionId: "frame-1",
+        targetInfo: { targetId: "iframe-1", type: "iframe" },
+        waitingForDebugger: false,
+      });
+      hub.deliver("Target.detachedFromTarget", { sessionId: "frame-1", targetId: "iframe-1" });
+      expect(heard).toEqual([
+        "Target.attachedToTarget frame-1",
+        "Target.detachedFromTarget frame-1",
+      ]);
+      await hub.browser.close();
+    });
+
     it("passes on an agent's attach and detach that came meanwhile, in order, attach first", async () => {
       const { attaches, heard, hub } = await announcing("76");
       const caster = await hub.page.agentCdp();

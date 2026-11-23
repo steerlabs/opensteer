@@ -3781,17 +3781,23 @@ class ElectronDebuggerHub {
           session.ownAttaching -= 1;
           if (session.ownAttaching === 0 && session === this.#session) this.#releaseHeldEvents();
         };
-        void this.#debugger.sendCommand("Target.attachToTarget", { targetId, flatten: true }).then(
-          (result) => {
-            answered(asRecord(result).sessionId);
-            settled();
-          },
-          (error: unknown) => {
-            this.#pending.delete(interrupt);
-            reject(error instanceof Error ? error : new Error(String(error)));
-            settled();
-          },
-        );
+        const failed = (error: unknown) => {
+          this.#pending.delete(interrupt);
+          reject(error instanceof Error ? error : new Error(String(error)));
+          settled();
+        };
+        // Released on every exit: an answer, a refusal, or a throw before anything was sent.
+        let sent: Promise<unknown>;
+        try {
+          sent = this.#debugger.sendCommand("Target.attachToTarget", { targetId, flatten: true });
+        } catch (error) {
+          failed(error);
+          return;
+        }
+        void sent.then((result) => {
+          answered(asRecord(result).sessionId);
+          settled();
+        }, failed);
       }
     });
   }
