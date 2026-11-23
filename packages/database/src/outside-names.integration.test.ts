@@ -18,11 +18,14 @@ import {
 import { integrationConnectionFromRow } from "./integration-connections.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { needsYouPage } from "./needs-you-store.js";
+import { requestFromRow } from "./request-persistence.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
 import { TabStore } from "./tab-store.js";
 import {
   describeStore,
+  liveRequest,
+  pendingEvent,
   testMessagingRunnerId,
   testModelSelection,
 } from "./store.integration.test-support.js";
@@ -586,6 +589,122 @@ describeStore("a name from outside enters the Home clean", (it) => {
         });
       expect(plugin?.name).toBe(packageName);
       expect(installation.name).toBe(packageName);
+    }
+  });
+  it("keeps engine approval titles clean without changing the call ID (the wire caps length)", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const f = await storeFixture.startRunFixture("outside-approvals");
+    const titles: string[] = [];
+    for (const title of boundedNames) {
+      const requestId = createId("request");
+      const { nextRunnerOrdinal } = await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", f.run.id)
+        .executeTakeFirstOrThrow();
+      const request = liveRequest({
+        harnessInstanceId: f.harnessInstance.id,
+        id: requestId,
+        presentation: {
+          kind: "choice",
+          options: [{ hint: "allow-once", id: "allow", label: "Allow" }],
+          title,
+        },
+        requestedBy: f.userId,
+        runId: f.run.id,
+        threadId: f.threadId,
+      });
+      await store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerBootId: f.runnerBootId,
+        runnerId: f.runnerId,
+        event: pendingEvent({
+          bindingGeneration: f.bindingGeneration,
+          data: {
+            request: {
+              ...request,
+              kind: "harness.approval",
+              payload: { kind: "harness.approval" },
+            },
+          },
+          environmentId: f.environmentId,
+          ordinal: nextRunnerOrdinal,
+          runId: f.run.id,
+          threadId: f.threadId,
+          type: "request.opened",
+        }),
+      });
+      const row = await database
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", requestId)
+        .executeTakeFirstOrThrow();
+      const served = requestFromRow(row);
+      expect(served.callId).toBe(requestId);
+      titles.push(served.presentation.title);
+    }
+    expect(titles).toEqual(cleaned);
+  });
+
+  it("keeps MCP tool titles clean without changing machine names", async ({ storeFixture }) => {
+    const { database } = storeFixture;
+    const { userId, runnerId } = await storeFixture.createRunFixture("outside-tool-titles");
+    const platform = new IntegrationPlatformStore(database);
+    const installationId = createIntegrationId("installation");
+    const serverId = createIntegrationId("server");
+    for (const [index, title] of forged.entries()) {
+      const name = "test\u200DTool";
+      await platform.install({
+        actorUserId: userId,
+        installation: {
+          description: "",
+          id: installationId,
+          manifest: {},
+          name: "outside-tool-titles",
+          provenance: {},
+          sourceKind: "plugin",
+          status: "active",
+          title: "Outside tools",
+          trust: "administrator-approved",
+          version: null,
+        },
+        requestId: `outside-tool-${index}`,
+        servers: [
+          {
+            catalog: {
+              definitions: {},
+              tools: [
+                {
+                  annotations: { title },
+                  connectionId: null,
+                  description: "",
+                  id: createIntegrationId("tool"),
+                  inputSchema: { type: "object" },
+                  name,
+                  outputSchema: null,
+                  status: "active",
+                  title,
+                },
+              ],
+            },
+            connectionRequirement: { kind: "none" },
+            id: serverId,
+            name: "outside-server",
+            status: "active",
+            statusDetail: null,
+            transport: {
+              launch: { args: [], command: "node", cwd: "/tmp", env: {}, type: "stdio" },
+              runnerId,
+              type: "runner",
+            },
+          },
+        ],
+      });
+      const cleanTitle = cleaned[index] ?? "x".repeat(160);
+      const [tool] = await platform.listTools(installationId);
+      expect(tool).toMatchObject({ name, title: cleanTitle, annotations: { title: cleanTitle } });
     }
   });
 });

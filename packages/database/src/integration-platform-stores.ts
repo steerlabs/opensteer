@@ -2211,7 +2211,18 @@ async function prepareToolCatalog(
   connectionId: IntegrationConnectionId | null,
 ): Promise<ReturnType<typeof materializeToolCatalog>> {
   const tools = catalog.tools.map((tool) => {
-    const parsed = IntegrationToolMaterialSchema.safeParse(tool);
+    const annotationTitle = tool.annotations?.title;
+    const title =
+      typeof tool.title === "string"
+        ? outsideName(tool.title, 160) ||
+          (typeof tool.name === "string" ? outsideName(tool.name, 160) : "") ||
+          "Tool"
+        : tool.title;
+    const annotations =
+      typeof annotationTitle === "string"
+        ? { ...tool.annotations, title: outsideName(annotationTitle, 160) || title }
+        : tool.annotations;
+    const parsed = IntegrationToolMaterialSchema.safeParse({ ...tool, annotations, title });
     if (!parsed.success) {
       throw new OpensteerError({
         code: "bad_request",

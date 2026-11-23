@@ -1,4 +1,5 @@
 import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { executionDate } from "./personal-transaction.js";
 import {
   projectThreadState,
@@ -615,9 +616,17 @@ async function applyEventProjection(
         !event.runId ||
         ((await runHasActiveGrant(transaction, event.runId)) &&
           (await runAssignmentAcceptsRequests(transaction, event.runId)));
+      const request = event.data.request;
+      const presentation =
+        request.kind === "harness.approval"
+          ? {
+              ...request.presentation,
+              title: outsideName(request.presentation.title, 240) || "Approval required",
+            }
+          : request.presentation;
       await transaction
         .insertInto("requests")
-        .values(requestInsert(event.data.request))
+        .values(requestInsert({ ...request, presentation }))
         .executeTakeFirstOrThrow();
       if (!accepted) {
         await transaction
