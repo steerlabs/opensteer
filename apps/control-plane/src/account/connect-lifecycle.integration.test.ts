@@ -67,6 +67,9 @@ integration("Opensteer Connect lifecycle PostgreSQL boundary", () => {
   });
 
   afterAll(async () => {
+    await sql`
+      truncate table deployments, oauth_clients, users cascade
+    `.execute(database);
     await database.destroy();
   });
 
