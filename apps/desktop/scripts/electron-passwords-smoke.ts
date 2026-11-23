@@ -205,8 +205,6 @@ async function journey(id: string, title: string, run: () => Promise<void>): Pro
   if (active.status === "failed" && !setupHealthy)
     throw new Error("Shared Electron/broker setup failed; remaining journeys were not run.");
 }
-/** How long one poll of a waitFor predicate may take before the next poll replaces it. */
-const predicateCallLimitMs = 2_000;
 async function waitFor(
   label: string,
   predicate: () => boolean | Promise<boolean>,
@@ -214,27 +212,10 @@ async function waitFor(
 ): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    // A frame's executeJavaScript issued as its document is replaced can stay
-    // pending forever. Such a call is abandoned and the next poll asks the frame
-    // now in place, so the deadline above still holds.
-    const abandoned = Symbol("abandoned");
-    let timer: NodeJS.Timeout | undefined;
     try {
-      const answer = await Promise.race([
-        Promise.resolve().then(predicate),
-        new Promise<typeof abandoned>((resolve) => {
-          timer = setTimeout(
-            () => resolve(abandoned),
-            Math.max(0, Math.min(predicateCallLimitMs, deadline - Date.now())),
-          );
-        }),
-      ]);
-      if (answer === abandoned) record("predicate-abandoned", { label });
-      else if (answer) return;
+      if (await predicate()) return;
     } catch {
       /* A navigation can destroy the observed context. */
-    } finally {
-      clearTimeout(timer);
     }
     await delay(30);
   }
@@ -867,7 +848,23 @@ async function releaseRace(
   await waitFor("release in flight", () => h.broker.received("signin.release").length > before);
   const held = z.object({ id: z.number() }).parse(h.broker.received("signin.release").at(-1));
   if (action) {
+    // A frame's executeJavaScript issued while its document is replaced can stay pending
+    // forever, so a reload is evaluated only once the reloaded document has finished loading.
+    const reloaded =
+      action === "reload"
+        ? new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error("Timed out: the reloaded document finished loading")),
+              12_000,
+            );
+            h.contents.once("did-finish-load", () => {
+              clearTimeout(timer);
+              resolve();
+            });
+          })
+        : undefined;
     fixture.signal(id);
+    await reloaded;
     await waitFor("race happened before release answer", async () => {
       try {
         return (
