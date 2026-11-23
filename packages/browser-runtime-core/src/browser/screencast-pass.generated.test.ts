@@ -16,7 +16,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  * 6. every picture delivered is of the cast running on its tab, and of the tab's document now;
  * 7. the starts Chromium took since a tab's last picture, or since the last thing that happened
  *    outside it (a person's act, a document, a tab closing beside it), stay within the bound: a
- *    restart or repair for a new fact is a change and does not count, so it cannot become a loop.
+ *    restart or repair for a new fact is a change and does not count, so it cannot become a loop;
+ * 8. no frame of a cast is shown, held for showing or restamped while a stop of that cast is with
+ *    Chromium (M6);
+ * 9. after the engine ends a session's casts, no stop of that session is counted as outstanding
+ *    and the generation has advanced (M8);
+ * 10. an answer to a stop from an earlier generation changes nothing (M9);
+ * 11. every wait that has a limit ends by its limit when the clock advances past it with no other
+ *     event: the cast is then pictured, started again, or given up with its reason (M13);
+ * 12. after a change (a new key) or a resume, a cast that then fails gets its full number of
+ *     retries again (M16).
  *
  * Stand-in rules and the real ElectronDebuggerHub behaviour each mirrors (launcher tests in
  * apps/desktop/src/browser/electron-browser-launcher.test.ts):
@@ -36,10 +45,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  *   `#startCast` error cleanup ("acks a frame kept for a start that then fails").
  */
 
+import type { CastKey, SessionCastState, TabCastState } from "./screencast-plan.js";
+
 const { ScreencastController } = await import("./screencast-controller.js");
 const { jpeg } = await import("../test-support/fakes.js");
 const { BrowserPaintTimeoutError, screencastEndedEvent } = await import("./backend.js");
-const { fits, screencastRaster, wanted } = await import("./screencast-plan.js");
+const {
+  after,
+  afterSession,
+  fits,
+  frameVerdict,
+  initialSessionCastState,
+  pictureLimit,
+  screencastRaster,
+  startFacts,
+  stopAnswerWaitMs,
+  wanted,
+} = await import("./screencast-plan.js");
 
 type Size = { width: number; height: number };
 type Id = "A" | "B";
@@ -72,7 +94,13 @@ class Chromium {
   casting = false;
   /** Each cast Chromium started on this session, counted. */
   cast = 0;
+  /** Each stop Chromium received on this session, counted synchronously when sent (M13, M9). */
+  stopsSent = 0;
+  /** Stops of the session's current generation whose answer settled (M9). */
+  currentGenStopsAnswered = 0;
   readonly lateAnswers: Array<() => void> = [];
+  /** Held stop answers tagged with the session generation when sent, for live M9 checks. */
+  readonly lateStops: Array<{ readonly generation: number; readonly resolve: () => void }> = [];
   /** Each frame it sent to a listener, by its id, and how often it was acked. */
   readonly acks = new Map<number, number>();
   doubleAck = false;
@@ -129,6 +157,7 @@ class Chromium {
     const sentWith = method === "Page.startScreencast" ? this.world.refusalFacts(this.id) : null;
     const castTag = method === "Page.startScreencast" ? this.world.tabs[this.id].castTag : null;
     const knownRefused = sentWith !== null && sameRefusal(this.lastRefusal, sentWith);
+    if (method === "Page.stopScreencast") this.stopsSent += 1;
     // A stop whose answer is lost: it takes effect, and the commands after it go on.
     if (method === "Page.stopScreencast" && this.stopHangs && !this.dead) {
       this.stopHangs = false;
@@ -137,6 +166,8 @@ class Chromium {
       });
       return new Promise(() => undefined);
     }
+    const sentStopGeneration =
+      method === "Page.stopScreencast" ? this.world.sessionState(this.id).generation : null;
     const era = this.era;
     const interrupted = () => {
       if (era !== this.era) throw new Error("Interrupted: the casts ended.");
@@ -152,8 +183,18 @@ class Chromium {
         throw new Error("Emulation.setVisibleSize failed");
       }
       if (method === "Page.stopScreencast") {
+        const wasCasting = this.casting;
         this.casting = false;
-        if (this.stopLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
+        if (this.stopLate) {
+          // A late in-flight frame from the cast being stopped while the stop is still with Chromium (M6).
+          if (wasCasting && this.world.chance(0.5)) this.frame(true, false, true);
+          await new Promise<void>((resolve) => {
+            this.lateAnswers.push(resolve);
+            this.lateStops.push({ generation: sentStopGeneration ?? 0, resolve });
+          });
+        }
+        if (sentStopGeneration === this.world.sessionState(this.id).generation)
+          this.currentGenStopsAnswered += 1;
         interrupted();
       }
       if (method !== "Page.startScreencast") return {};
@@ -184,8 +225,10 @@ class Chromium {
       const fit = this.framesFit;
       // Chromium casts from when it takes the start; its answer may reach the follow view later.
       this.casting = true;
-      // Chromium answers, and no frame of the start ever comes.
+      // Chromium answers, and no fitting frame of the start ever comes (though a stale other-size
+      // frame before the answer can still arrive, exercising the 1 s other-size timer in M13).
       if (this.silent) {
+        if (before && !fit) this.frame(false, true);
         if (this.answerLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
         interrupted();
         return {};
@@ -211,7 +254,7 @@ class Chromium {
     return result;
   }
   /** A frame of the page as it is now, or of another size; `forStart`, the start's own. */
-  frame(fit: boolean, forStart = false) {
+  frame(fit: boolean, forStart = false, forStopped = false) {
     if (this.dead) return;
     const tab = this.world.tabs[this.id];
     // The page held in a hold as each start's frame came: it is set aside.
@@ -231,7 +274,7 @@ class Chromium {
     const listening = (this.listeners.get("Page.screencastFrame")?.size ?? 0) > 0;
     // A frame no one listens for any more is no one's to ack: the cast it belongs to was stopped.
     if (listening) this.acks.set(id, 0);
-    if (fit) tab.unpainted = false;
+    if (fit && !forStopped) tab.unpainted = false;
     const picture = fit ? raster : { height: raster.height + 50, width: raster.width + 100 };
     // The frame carries which cast and document painted it, after the picture's own end.
     this.world.painted.set(id, {
@@ -292,6 +335,8 @@ interface TabWorld {
   readonly startsByTag: Map<number, number>;
   /** Attempts (starts, pre-send failures, misfits) recorded per cast key since the last picture/resume/session (U1). */
   readonly attemptsByCast: Map<string, number>;
+  /** Cast keys whose first attempt came from restamping an already-running cast (M16). */
+  readonly restampedCasts: Set<string>;
   /** Stop timeouts recorded for this tab since its last picture/resume/session (U1/U4). */
   stopTimeouts: number;
   readonly captureListeners: Set<() => void>;
@@ -302,6 +347,8 @@ class World {
   frameCount = 0;
   /** The run's own chance, for Chromium's choices. */
   chance: (p: number) => boolean = () => false;
+  /** Reads the controller's live `SessionCastState` for one tab's session (M6, M8, M9). */
+  sessionState: (id: Id) => SessionCastState = () => initialSessionCastState;
   density: 1 | 2 = 2;
   active: Id = "A";
   streaming = false;
@@ -344,6 +391,7 @@ class World {
       stallPaint: false,
       attemptsByCast: new Map(),
       castTag: 0,
+      restampedCasts: new Set(),
       startsByTag: new Map(),
       stopTimeouts: 0,
       unpainted: opening,
@@ -493,6 +541,10 @@ class World {
           return;
         }
         this.delivered.add(id);
+        if (this.sessionState(tab.id).stops > 0)
+          this.violations.push(
+            `${tab.id} showed a frame while a stop of its cast was with Chromium`,
+          );
         if (painted.tab !== tab.id)
           this.violations.push(`${tab.id} was shown ${painted.tab}'s picture`);
         else if (painted.session !== tab.chromium || painted.cast !== tab.chromium.cast)
@@ -506,6 +558,7 @@ class World {
         tab.castTag += 1;
         tab.startsByTag.clear();
         tab.attemptsByCast.clear();
+        tab.restampedCasts.clear();
         tab.stopTimeouts = 0;
       },
     };
@@ -599,6 +652,7 @@ function actions(
         if (!world.streaming) {
           inView().epoch += 1;
           inView().attemptsByCast.clear();
+          inView().restampedCasts.clear();
           inView().stopTimeouts = 0;
           world.afresh(world.active);
         }
@@ -637,6 +691,10 @@ function actions(
         tab.geometryRevision += 1;
         if (tab.capture)
           tab.capture = { ...tab.capture, ...tab.size, revision: tab.capture.revision + 1 };
+        if (world.streaming && !tab.dialog && !tab.captureLetGo) {
+          tab.attemptsByCast.delete(world.castOf(tab.id));
+          tab.restampedCasts.delete(world.castOf(tab.id));
+        }
         world.afresh(tab.id);
         world.captureChanged(tab.id);
         world.emit({ surfaceId: tab.id, type: "resized" });
@@ -752,9 +810,42 @@ function actions(
     },
     {
       name: "Chromium answers the starts it holds",
-      run: () => {
-        for (const tab of [world.tabs.A, world.tabs.B])
-          for (const answer of tab.chromium.lateAnswers.splice(0)) answer();
+      run: async () => {
+        for (const tab of [world.tabs.A, world.tabs.B]) {
+          // Settle any held stop from an earlier generation on its own first, so M9 compares
+          // the session state directly before and after that late stop answer.
+          const staleStops = tab.chromium.lateStops.splice(0);
+          const handled = new Set<() => void>();
+          for (const stop of staleStops) {
+            const before = world.sessionState(tab.id);
+            if (stop.generation < before.generation) {
+              const stopsSentBefore = tab.chromium.stopsSent;
+              const answeredBefore = tab.chromium.currentGenStopsAnswered;
+              handled.add(stop.resolve);
+              stop.resolve();
+              await turns(2);
+              const afterState = world.sessionState(tab.id);
+              const expectedStops = Math.max(
+                0,
+                before.stops +
+                  (tab.chromium.stopsSent - stopsSentBefore) -
+                  (tab.chromium.currentGenStopsAnswered - answeredBefore),
+              );
+              if (
+                afterState.generation !== before.generation ||
+                afterState.stops !== expectedStops ||
+                afterState.timedOut !== before.timedOut
+              ) {
+                world.violations.push(
+                  `an answer to a stop from earlier generation ${stop.generation} changed ${tab.id}'s session state at generation ${before.generation} (stops ${before.stops} → ${afterState.stops}, expected ${expectedStops})`,
+                );
+              }
+            }
+          }
+          for (const answer of tab.chromium.lateAnswers.splice(0)) {
+            if (!handled.has(answer)) answer();
+          }
+        }
       },
     },
     {
@@ -776,10 +867,15 @@ function actions(
         if (world.engine !== "desktop") return;
         const tab = inView();
         const chromium = tab.chromium;
+        const before = world.sessionState(tab.id);
         world.afresh(tab.id, false);
         chromium.casting = false;
         chromium.era += 1;
         chromium.emit(screencastEndedEvent, {});
+        world.violations.push(
+          ...castsEndedClearsSessionStops(tab.id, before, world.sessionState(tab.id)),
+        );
+        chromium.lateStops.splice(0);
         for (const answer of chromium.lateAnswers.splice(0)) answer();
       },
     },
@@ -841,13 +937,18 @@ function actions(
       run: () => {
         const tab = inView();
         const chromium = tab.chromium;
+        chromium.lateStops.splice(0);
         for (const answer of chromium.lateAnswers.splice(0)) answer();
         if (world.engine === "desktop") {
           // The hub ends the session's casts and says so on it, then fails what it still holds;
           // the page's navigation ends.
+          const before = world.sessionState(tab.id);
           chromium.casting = false;
           chromium.era += 1;
           chromium.emit(screencastEndedEvent, {});
+          world.violations.push(
+            ...castsEndedClearsSessionStops(tab.id, before, world.sessionState(tab.id)),
+          );
           tab.navigation = { ...tab.navigation, pending: false };
           world.navigated(tab.id);
         }
@@ -872,12 +973,14 @@ function actions(
       run: () => {
         const tab = inView();
         tab.chromium.dead = true;
+        tab.chromium.lateStops.splice(0);
         for (const answer of tab.chromium.lateAnswers.splice(0)) answer();
         const next = new Chromium(world, tab.id);
         next.attached = !tab.navigation.pending;
         tab.chromium = next;
         tab.epoch += 1;
         tab.attemptsByCast.clear();
+        tab.restampedCasts.clear();
         tab.stopTimeouts = 0;
         world.afresh(tab.id);
         world.changed(tab.id);
@@ -893,19 +996,234 @@ async function turns(count: number) {
 
 interface Internals {
   readonly passing: boolean;
+  readonly sessionStates: WeakMap<Chromium, SessionCastState>;
   readonly stopTimers?: Map<object, unknown>;
   readonly bound: {
     readonly id: Id;
     readonly cdp: Chromium;
     readonly held: { readonly parameters?: unknown } | null;
     readonly waiting: string | null;
-    readonly firstFrameTimer?: unknown;
+    readonly firstFrameTimer: { readonly ms: number } | null;
     readonly paintTimer: unknown;
-    readonly state: {
-      readonly told: { state: string; key?: unknown };
-      readonly shown: boolean;
-    };
+    readonly state: TabCastState;
   } | null;
+}
+
+/** Invariant 8 (M6): no frame of a cast is shown, held for showing or restamped while a stop of that cast is with Chromium. */
+function noFrameAdmittedWhileStopWithChromium(
+  world: World,
+  follow: InstanceType<typeof ScreencastController>,
+): string[] {
+  const broken: string[] = [];
+  const internals = follow as unknown as Internals;
+  const bound = internals.bound;
+  if (!bound) return broken;
+  const session = world.sessionState(bound.id);
+  if (bound.held !== null && session.stops > 0)
+    broken.push(`${bound.id} held a frame for showing while a stop of its cast was with Chromium`);
+  const told = bound.state.told;
+  if (bound.id !== world.active || (told.state !== "sent" && told.state !== "running"))
+    return broken;
+  const facts = world.facts();
+  const want = wanted(facts as never);
+  if (want.kind !== "cast") return broken;
+  const stopping: SessionCastState = { ...session, stops: Math.max(1, session.stops) };
+  const frame = {
+    document: told.key.document,
+    geometry: told.key.region,
+    raster: told.key.expectedRaster ?? told.key.raster,
+  };
+  const verdict = frameVerdict(bound.state, stopping, frame, facts as never);
+  if (verdict === "show" || verdict === "held" || verdict === "restamp-show")
+    broken.push(
+      `a frame of ${bound.id} was ${verdict} while a stop of that cast was with Chromium (told ${told.state})`,
+    );
+  if (told.state === "running") {
+    const nextDoc = `${told.key.document ?? ""}+`;
+    const restampFacts = { ...facts, tab: { ...facts.tab, document: nextDoc } };
+    const restampVerdict = frameVerdict(
+      bound.state,
+      stopping,
+      { ...frame, document: nextDoc },
+      restampFacts as never,
+    );
+    if (restampVerdict === "show" || restampVerdict === "held" || restampVerdict === "restamp-show")
+      broken.push(
+        `a frame of ${bound.id} was ${restampVerdict} while a stop of that cast was with Chromium (new document)`,
+      );
+  }
+  return broken;
+}
+
+/** Invariant 9 (M8): after the engine ends a session's casts, no stop of that session is counted as outstanding and the generation has advanced. */
+function castsEndedClearsSessionStops(
+  id: Id,
+  before: SessionCastState,
+  afterState: SessionCastState,
+): string[] {
+  if (afterState.stops === 0 && afterState.generation > before.generation) return [];
+  return [
+    `after the engine ended ${id}'s casts, ${afterState.stops} stop(s) remained outstanding and generation went from ${before.generation} to ${afterState.generation}`,
+  ];
+}
+
+/** Invariant 10 (M9): an answer to a stop from an earlier generation changes nothing. */
+function lateStopAnswerChangesNothing(world: World): string[] {
+  const broken: string[] = [];
+  for (const id of ["A", "B"] as const) {
+    const state = world.sessionState(id);
+    if (state.generation === 0) continue;
+    const before: SessionCastState = { ...state, stops: Math.max(1, state.stops) };
+    const afterState = afterSession(before, {
+      generation: state.generation - 1,
+      kind: "stop-answered",
+    });
+    if (
+      afterState.generation !== before.generation ||
+      afterState.stops !== before.stops ||
+      afterState.timedOut !== before.timedOut
+    ) {
+      broken.push(
+        `an answer to a stop from earlier generation ${state.generation - 1} changed ${id}'s session state at generation ${before.generation} (stops ${before.stops} → ${afterState.stops})`,
+      );
+    }
+  }
+  return broken;
+}
+
+/** Invariant 11 (M13): every wait that has a limit ends by its limit when the clock advances past it with no other event. */
+async function timedWaitEndsByItsLimit(
+  world: World,
+  follow: InstanceType<typeof ScreencastController>,
+): Promise<string[]> {
+  const internals = follow as unknown as Internals;
+  const bound = internals.bound;
+  const want = wanted(world.facts() as never);
+  if (!bound || bound.id !== world.active || want.kind !== "cast") return [];
+  const chromium = world.tabs[world.active].chromium;
+  const why = bound.waiting;
+  if (
+    bound.firstFrameTimer !== null &&
+    (why === "its first frame" ||
+      why === "its own frame, after one of another size" ||
+      why === "its document's first frame, as it loads")
+  ) {
+    const limitMs = bound.firstFrameTimer.ms;
+    const castBefore = chromium.cast;
+    const stopsBefore = chromium.stopsSent;
+    const refusalBefore = bound.state.refusal;
+    const paintBefore = bound.state.paint;
+    const failedBefore = bound.state.failed;
+    await vi.advanceTimersByTimeAsync(limitMs + 1);
+    await turns(6);
+    const nowBound = internals.bound;
+    const progressed =
+      !nowBound ||
+      nowBound.id !== world.active ||
+      nowBound.state.shown ||
+      chromium.cast > castBefore ||
+      chromium.stopsSent > stopsBefore ||
+      nowBound.state.told.state === "sent" ||
+      nowBound.state.told.state === "preparing" ||
+      nowBound.state.repairing !== null ||
+      nowBound.state.refusal !== refusalBefore ||
+      nowBound.state.paint !== paintBefore ||
+      (nowBound.state.failed !== null && nowBound.state.failed !== failedBefore);
+    if (!progressed)
+      return [
+        `${world.active} stayed waiting on "${why}" past its ${limitMs}ms limit without being pictured, started again, or given up`,
+      ];
+    return [];
+  }
+  if (why === "a stop is with Chromium" && internals.stopTimers?.has(chromium)) {
+    const genBefore = world.sessionState(world.active).generation;
+    const castBefore = chromium.cast;
+    const stopsBefore = chromium.stopsSent;
+    await vi.advanceTimersByTimeAsync(stopAnswerWaitMs + 1);
+    await turns(6);
+    const afterSessionState = world.sessionState(world.active);
+    const nowBound = internals.bound;
+    const progressed =
+      afterSessionState.generation > genBefore &&
+      (!nowBound ||
+        nowBound.id !== world.active ||
+        nowBound.state.shown ||
+        chromium.cast > castBefore ||
+        chromium.stopsSent > stopsBefore ||
+        nowBound.state.told.state === "sent" ||
+        nowBound.state.told.state === "preparing" ||
+        nowBound.state.refusal !== null ||
+        nowBound.state.paint !== null ||
+        nowBound.state.failed !== null ||
+        nowBound.waiting !== "a stop is with Chromium");
+    if (!progressed)
+      return [
+        `${world.active} stayed waiting on "a stop is with Chromium" past its ${stopAnswerWaitMs}ms limit without settling the stop (generation ${genBefore} → ${afterSessionState.generation}, stops ${afterSessionState.stops})`,
+      ];
+  }
+  return [];
+}
+
+/** Invariant 12 (M16): after a change (a new key) or a resume, a cast that then fails gets its full number of retries again. */
+function fullRetriesAfterChangeOrResume(
+  world: World,
+  follow: InstanceType<typeof ScreencastController>,
+): string[] {
+  const broken: string[] = [];
+  const internals = follow as unknown as Internals;
+  const bound = internals.bound;
+  if (!bound || bound.id !== world.active) return broken;
+  const tab = world.tabs[world.active];
+  const facts = world.facts();
+  const want = wanted(facts as never);
+  if (want.kind === "cast") {
+    const cast = world.castOf(tab.id);
+    if (
+      bound.state.told.state === "running" &&
+      fits(bound.state.told.key, want.key) === "same" &&
+      (tab.attemptsByCast.get(cast) ?? 0) === 0 &&
+      !tab.restampedCasts.has(cast)
+    ) {
+      tab.restampedCasts.add(cast);
+      world.attemptOn(tab.id);
+    }
+    if (bound.waiting?.startsWith("its cast was given up")) {
+      const limit = pictureLimit(world.engine === "desktop");
+      const observed = (tab.attemptsByCast.get(cast) ?? 0) + tab.stopTimeouts;
+      if (observed < 1 + limit) {
+        broken.push(
+          `after a change or resume, ${tab.id} gave up on ${cast} after ${Math.max(0, observed - 1)} retry/retries instead of its full ${limit} retries`,
+        );
+      }
+    }
+  }
+  if (bound.state.unpictured > 0) {
+    const resumed = after(bound.state, { kind: "resumed" }, facts as never);
+    if (resumed.unpictured !== 0) {
+      broken.push(
+        `after a resume on ${tab.id}, unpictured stayed ${resumed.unpictured} instead of resetting to 0 so the cast gets its full retries`,
+      );
+    }
+    if (bound.state.lastKey !== null) {
+      const last = bound.state.lastKey;
+      const changedKey: CastKey = {
+        ...last,
+        region: { height: last.region.height + 100, width: last.region.width + 100 },
+        size: { height: last.size.height + 100, width: last.size.width + 100 },
+      };
+      const sentNew = after(
+        { ...bound.state, told: { state: "preparing" } },
+        { at: startFacts(facts.tab as never), key: changedKey, kind: "sent" },
+        facts as never,
+      );
+      if (sentNew.unpictured !== 0) {
+        broken.push(
+          `after a new key on ${tab.id}, unpictured stayed ${sentNew.unpictured} instead of resetting to 0 so the cast gets its full retries`,
+        );
+      }
+    }
+  }
+  return broken;
 }
 
 /** The invariants at a quiet point; each one broken is said in words. */
@@ -922,6 +1240,9 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
     broken.push(`the tab in view, ${world.active}, is not the one bound`);
   const facts = world.facts();
   const want = wanted(facts as never);
+  broken.push(...noFrameAdmittedWhileStopWithChromium(world, follow));
+  broken.push(...lateStopAnswerChangesNothing(world));
+  broken.push(...fullRetriesAfterChangeOrResume(world, follow));
   if (bound && bound.id === world.active && want.kind === "cast") {
     const told = bound.state.told;
     const pictured =
@@ -1016,6 +1337,9 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
         world.errorsFor.set(world.active, world.castOf(world.active));
     },
   });
+  world.sessionState = (id) =>
+    (follow as unknown as Internals).sessionStates.get(world.tabs[id].chromium) ??
+    initialSessionCastState;
   const pushDiagnostic = follow.diagnostics.push.bind(follow.diagnostics);
   follow.diagnostics.push = (...entries) => {
     for (const entry of entries) {
@@ -1045,7 +1369,12 @@ async function run(seed: number, engine: "desktop" | "linux", length: number) {
     await turns(6);
     if (!ran) world.violations.push(`"${action.name}" did not return`);
     world.releaseRefusals();
-    const broken = [...world.violations.splice(0), ...check(world, follow)];
+    let broken = [...world.violations.splice(0), ...check(world, follow)];
+    if (broken.length === 0) {
+      const limitBroken = await timedWaitEndsByItsLimit(world, follow);
+      world.releaseRefusals();
+      broken = [...world.violations.splice(0), ...limitBroken, ...check(world, follow)];
+    }
     if (broken.length > 0) {
       // The follow view's own record, for reading one seed (OPENSTEER_FOLLOW_GENERATED_SEED).
       const record = follow.diagnostics
