@@ -651,6 +651,29 @@ describe("Pi sessions", () => {
     await fixture.adapter.close();
   });
 
+  it.each([
+    ["a connected agent's or a chat's task", false, true],
+    ["the person's own task", true, false],
+  ] as const)(
+    "keeps the person's own SYSTEM.md out of %s",
+    async (_label, own, emptySystemPrompt) => {
+      const fixture = await setup();
+      const session = await fixture.adapter.startSession({
+        ...fixture.context,
+        personalContext: own,
+        personLineage: own,
+      });
+      await session.execute(fixture.turn("Say something"));
+      await session.stop();
+      const launch = (await fixture.capture()).find((entry) => entry.fakePiProcess)
+        ?.fakePiProcess as Record<string, unknown> | undefined;
+      const argv = (launch?.argv ?? []) as string[];
+      const at = argv.indexOf("--system-prompt");
+      expect(at >= 0 && argv[at + 1] === "").toBe(emptySystemPrompt);
+      await fixture.adapter.close();
+    },
+  );
+
   it("sends the native model id and the thinking level, and verifies both", async () => {
     const fixture = await setup({
       modelSelection: {

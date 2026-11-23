@@ -89,6 +89,7 @@ import {
   type HarnessSessionContext,
   type HarnessSteerInput,
   type ResolvedAttachment,
+  engineConfiguration,
 } from "@opensteer/harness";
 import { z } from "zod";
 import { PiHarnessConfigSchema, TESTED_PI_VERSION, type PiHarnessConfig } from "./config.js";
@@ -1873,7 +1874,10 @@ function accumulateUsage(usage: MutableUsage, value: unknown): void {
  * selection, which `set_model` then verifies exactly.
  */
 export function piProcessArguments(options: {
-  readonly context: Pick<HarnessSessionContext, "modelSelection">;
+  readonly context: Pick<
+    HarnessSessionContext,
+    "modelSelection" | "personalContext" | "personLineage"
+  >;
   readonly extensionPath: string;
   readonly instructionsPath: string;
   readonly sessionPath?: string;
@@ -1889,6 +1893,10 @@ export function piProcessArguments(options: {
     options.extensionPath,
     "--append-system-prompt",
     options.instructionsPath,
+    // Pi replaces its own system prompt with the person's `SYSTEM.md` unless
+    // one is given (Pi 0.87.1); an empty one keeps Pi's own. A task a
+    // connected agent or a chat started must not read the person's.
+    ...(engineConfiguration(options.context) === "stripped" ? ["--system-prompt", ""] : []),
     "--model",
     piModelSelectionId(options.context.modelSelection),
     ...(thinking ? ["--thinking", thinking] : []),
