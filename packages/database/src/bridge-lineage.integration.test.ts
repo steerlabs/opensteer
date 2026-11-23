@@ -2,7 +2,11 @@ import { expect } from "vitest";
 import type { AgentGrant, ThreadId } from "@opensteer/core";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
-import { describeStore, testModelSelection } from "./store.integration.test-support.js";
+import {
+  describeStore,
+  testContinuationIdentity,
+  testModelSelection,
+} from "./store.integration.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
 
 const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
@@ -68,6 +72,27 @@ describeStore(
       });
       expect(await lineageOf(root.id)).toBe(anyone.id);
       expect(await sessions(root.id)).toEqual([{ personalContext: false }]);
+
+      // A change of engine mid-task makes a new session: without personal context from its first
+      // row, read before any Run binds it.
+      const [previous] = await f.database
+        .selectFrom("providerSessions")
+        .select("id")
+        .where("threadId", "=", root.id)
+        .execute();
+      await f.store.updateThreadExecutionSelection({
+        continuation: { expectedProviderSessionId: previous!.id },
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: fixture.harnessInstance.id,
+        idempotencyKey: "team-engine-change",
+        modelSelection: testModelSelection,
+        requestedBy: fixture.userId,
+        threadId: root.id,
+      });
+      expect(await sessions(root.id)).toEqual([
+        { personalContext: false },
+        { personalContext: false },
+      ]);
 
       // A task made under it inherits its lineage, and so its restriction.
       const { thread: sub } = await create("under-team", { parentThreadId: root.id });

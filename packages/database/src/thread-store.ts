@@ -1594,6 +1594,9 @@ export async function updateThreadExecutionSelection(
             leaseExpiresAt: null,
             leaseTokenHash: null,
             providerSessionReference: null,
+            // Whether it may use the person's personal context, from its first row: from the
+            // task's lineage, never the column's default until a Run binds it.
+            personalContext: await lineagePersonalContext(transaction, thread.originConnectionId),
             runnerBootId: null,
             runnerId: null,
             status: "starting",

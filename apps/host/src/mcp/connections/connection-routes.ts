@@ -397,7 +397,7 @@ export async function handleConnectionCommand(
       const listed = (await oauth.store.list(session.user.id, { includeRevoked: true })).find(
         ({ id }) => id === connection.id,
       );
-      return { type: "connection.update" as const, connection: listed ?? connection };
+      return { type: "connection.update" as const, connection: withIdentity(listed ?? connection) };
     }
     case "connection.remove":
       await oauth.store.remove(session.user.id, command.connectionId);
