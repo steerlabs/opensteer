@@ -2176,7 +2176,8 @@ export class RunnerRuntime {
       return true;
     };
     const liftIfProven = (): boolean => {
-      if (this.#uncontainedThreads.get(threadId) !== hold) return !this.#uncontainedThreads.has(threadId);
+      if (this.#uncontainedThreads.get(threadId) !== hold)
+        return !this.#uncontainedThreads.has(threadId);
       if (!allEngineStopsDone() || scopes.size > 0) return false;
       cancel();
       this.#uncontainedThreads.delete(threadId);
@@ -2279,7 +2280,7 @@ export class RunnerRuntime {
       return { proven };
     }
     let stillUnproven = false;
-    for (const [key, pending] of [...this.#unverifiedRunEnds.entries()]) {
+    for (const [key, pending] of this.#unverifiedRunEnds.entries()) {
       if (pending.report.event.threadId !== threadId) continue;
       const proof = await this.#containment.terminate(pending.scope).catch(() => "unknown");
       if (proof !== "proven" || pending.engineStopped?.done === false) {
@@ -2298,7 +2299,7 @@ export class RunnerRuntime {
   }
 
   #flushUnverifiedRunEnds(threadId: ThreadId): void {
-    for (const [key, pending] of [...this.#unverifiedRunEnds.entries()]) {
+    for (const [key, pending] of this.#unverifiedRunEnds.entries()) {
       if (pending.report.event.threadId !== threadId) continue;
       this.#unverifiedRunEnds.delete(key);
       const report = {
@@ -2347,7 +2348,7 @@ export class RunnerRuntime {
     }
     return {
       proven: false,
-      termination: pending ? "unknown" : termination,
+      termination: pending || termination === "proven" ? "unknown" : termination,
       ...(pending ? { engineStopping: pending } : {}),
       ...(settled?.lastResort ? { lastResort: settled.lastResort } : {}),
     };
@@ -3255,9 +3256,10 @@ export class RunnerRuntime {
       // An engine that may live on keeps its Thread from running anything else.
       if (this.#uncontainedThreads.has(context.threadId)) {
         throw new OpensteerError({
-          code: runTerminationUnprovenCode,
+          code: "conflict",
           message:
             "Stopping could not be confirmed. Something from the previous Run may still be running on that device.",
+          reason: "previous-stop-unconfirmed",
           retryable: false,
         });
       }
@@ -3605,7 +3607,7 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : failureEvent(
               safeMessage(error, safeMessageOptions),
-              error instanceof OpensteerError && error.code === runTerminationUnprovenCode
+              error instanceof OpensteerError && error.reason === "previous-stop-unconfirmed"
                 ? runTerminationUnprovenCode
                 : "runner_execution_error",
             );

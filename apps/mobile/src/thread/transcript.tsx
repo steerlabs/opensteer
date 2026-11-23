@@ -1952,7 +1952,10 @@ function RunOutcome(props: {
         <>
           <View accessibilityRole="summary" style={styles.failure}>
             <AppText role="secondaryMedium" tone="soft">
-              {runInterruptedTitle(run, { conversation: props.conversation === true, mobile: true })}
+              {runInterruptedTitle(run, {
+                conversation: props.conversation === true,
+                mobile: true,
+              })}
             </AppText>
             <AppText role="secondary" selectable tone="soft">
               {message}

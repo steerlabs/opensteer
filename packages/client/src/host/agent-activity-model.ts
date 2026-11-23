@@ -3106,9 +3106,7 @@ export function isRunTerminationUnproven(run: Pick<RunEntry, "error" | "status">
   return run.status === "failed" && run.error?.code === runTerminationUnprovenCode;
 }
 
-export function isRunEngineRetired(
-  run: Pick<RunEntry, "interruptedCause" | "status">,
-): boolean {
+export function isRunEngineRetired(run: Pick<RunEntry, "interruptedCause" | "status">): boolean {
   return run.status === "interrupted" && run.interruptedCause === "engine-retired";
 }
 

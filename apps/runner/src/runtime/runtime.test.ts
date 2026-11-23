@@ -4589,8 +4589,12 @@ describe("RunnerRuntime", () => {
         await f.runtime.handleCommand(execute, f.sink);
         await reached.promise;
         await f.runtime.handleCommand(stopOf(execute), f.sink);
-        // Stop must NOT report proven before the open settles.
-        await new Promise((resolve) => setTimeout(resolve, 60));
+        // Stop must NOT report proven before the open settles, and the Thread must reject new work.
+        await Promise.resolve();
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", retryable: true },
+        });
         expect(f.ends()).toHaveLength(0);
         opened.resolve();
         await waitUntil(() => f.ends().length === 1);
@@ -4645,11 +4649,8 @@ describe("RunnerRuntime", () => {
         // Once the process exits, the Runner's automatic last resort (scoped retire + containment)
         // lifts the hold and emits the confirmed-stopped run.interrupted receipt.
         processAlive = false;
-        await waitUntil(() => retiredReason !== undefined, 15_000);
-        await waitUntil(
-          () => f.ends().some((event) => event.type === "run.interrupted"),
-          15_000,
-        );
+        await waitUntil(() => retiredReason !== undefined);
+        await waitUntil(() => f.ends().some((event) => event.type === "run.interrupted"));
         expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
           status: "accepted",
         });
@@ -6685,7 +6686,7 @@ class SharedEngineSession implements HarnessSession {
   readonly #settled: Promise<void>;
   #stopping: Promise<void> | undefined;
   stops = false;
-  readonly retireEngine?: ((reason: string) => Promise<void>) | undefined;
+  readonly retireEngine?: (reason: string) => Promise<void>;
 
   constructor(
     settled: Promise<void>,

@@ -2175,7 +2175,7 @@ export class RunnerRegistry {
     }
     signal.throwIfAborted();
     const fence = connection.identity.fence;
-    const requestId = randomUUID();
+    const requestId = CorrelationIdSchema.parse(`stop-recheck:${randomUUID()}`);
     const pending =
       deferred<
         Extract<RunnerOperationalMessage, { readonly type: "runner.thread.stop.recheck.result" }>

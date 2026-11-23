@@ -1409,7 +1409,17 @@ it("shows Check again on an unproven stop and calls recheckThreadStop without an
             threadId,
           }}
         >
-          <TranscriptGroupRow group={group!} />
+          <PaneRow
+            activityKey={null}
+            conversation={false}
+            group={group!}
+            highlightRequestId={null}
+            onOpenActivity={vi.fn()}
+            onOpenStep={vi.fn()}
+            onOpenThread={vi.fn()}
+            spacingTop={0}
+            viewerUserId={null}
+          />
         </TaskScopeContext>
       </TranscriptHostClientContext>,
     );
