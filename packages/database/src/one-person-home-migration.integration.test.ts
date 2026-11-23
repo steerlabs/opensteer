@@ -1,44 +1,73 @@
-import { createId, type UserId } from "@opensteer/core";
+import type { AgentGrant, ThreadAccessMode, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { migrateToLatest } from "./migrations.js";
 import { removeOrganizationsMigrationName } from "./one-person-home-migration.js";
 import { applyWorkHome, enableWorkHomeTriggers } from "./one-person-home-migration.test-support.js";
+import { withLockOrderMode } from "./lock-order-checker.test-support.js";
 import { admitExecution } from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
 import { describeStore } from "./store.integration.test-support.js";
 
+interface Policy {
+  readonly externalMaxMode: ThreadAccessMode;
+  readonly allowEverything: boolean;
+  readonly allowTasks: boolean;
+  readonly devices: "cloud-computer-only" | "assignee-may-enroll";
+}
+/** A policy that caps nothing, so each test turns one field on. */
+const open: Policy = {
+  externalMaxMode: "full-access",
+  allowEverything: true,
+  allowTasks: true,
+  devices: "assignee-may-enroll",
+};
+
 /**
  * A database at the release before this one, that a work Home was opened on: the work Home's
  * tables, gates, audit triggers and columns exist, the chat end reasons still allow its two, and
- * the contracting migration has not run.
+ * the contracting migration has not run. `seed` writes what that Home held while its audit
+ * triggers ran; the lock order of that release is not this one's, so the checker sits it out.
  */
-async function workHomeDatabase(
+async function workHomeDatabase<T>(
   database: Kysely<DatabaseSchema>,
   deploymentId: string,
   state: "active" | "offboarding",
-) {
+  policy: Policy,
+  seed: () => Promise<T>,
+): Promise<T> {
   await applyWorkHome(database as Kysely<unknown>);
   await sql`
     alter table agent_connections
       drop constraint agent_connections_bridge_ended_by_check,
       add constraint agent_connections_bridge_ended_by_check check (bridge_ended_by in
         ('you', 'organization', 'account', 'computer', 'work-home'));
+    insert into work_audit_head default values;
+  `.execute(database);
+  await sql`
     insert into work_home_policy (assignment_id, deployment_id, organization_name, state,
         revision, policy)
       values (${`was_${crypto.randomUUID()}`}, ${deploymentId}, 'Workshop', ${state}, 3,
-        '{"externalMaxMode":"approval-required","allowEverything":false,"allowTasks":false,"devices":"cloud-computer-only"}');
-    insert into work_audit_head default values;
+        ${JSON.stringify(policy)}::jsonb)
   `.execute(database);
-  await enableWorkHomeTriggers(database);
-  await sql`delete from kysely_migration where name = ${removeOrganizationsMigrationName}`.execute(
+  const seeded = await withLockOrderMode("off", async () => {
+    await enableWorkHomeTriggers(database);
+    return seed();
+  });
+  await sql`delete from kysely_migration where name >= ${removeOrganizationsMigrationName}`.execute(
     database,
   );
+  return seeded;
 }
 
-/** What the person chose for a connected agent: Tasks, and Auto, above what the policy allowed. */
-async function personsChoice(database: Kysely<DatabaseSchema>, userId: UserId) {
+/** A live connected agent with this grant and mode on its row. */
+async function connected(
+  database: Kysely<DatabaseSchema>,
+  userId: UserId,
+  grant: AgentGrant,
+  accessMode: ThreadAccessMode,
+) {
   const connections = new AgentConnectionStore(database);
   const agent = await connections.create({
     userId,
@@ -52,22 +81,37 @@ async function personsChoice(database: Kysely<DatabaseSchema>, userId: UserId) {
   await connections.activate(agent.id, `hash-${agent.id}`);
   await database
     .updateTable("agentConnections")
-    .set({
-      accessMode: "auto",
-      grant: sql`'{"scope":"selected","tasks":true,"resources":[]}'::jsonb` as never,
-    })
+    .set({ accessMode, grant: sql`${JSON.stringify(grant)}::jsonb` as never })
     .where("id", "=", agent.id)
     .execute();
   return agent.id;
 }
 
+const tasks: AgentGrant = { scope: "selected", tasks: true, resources: [] };
+const noTasks: AgentGrant = { scope: "selected", tasks: false, resources: [] };
+const everything: AgentGrant = { scope: "everything" };
+
 function connection(database: Kysely<DatabaseSchema>, id: string) {
   return database
     .selectFrom("agentConnections")
-    .select(["grant", "accessMode", "grantRevision", "revokedAt", "tokenHash", "cleanupReason"])
+    .select([
+      "grant",
+      "accessMode",
+      "grantRevision",
+      "revokedAt",
+      "tokenHash",
+      "cleanupReason",
+      "cleanupMaximumMode",
+    ])
     .where("id", "=", id)
     .executeTakeFirstOrThrow();
 }
+
+const admit = (database: Kysely<DatabaseSchema>, ownerUserId: UserId, agentConnectionId: string) =>
+  admitExecution(database, {
+    ownerUserId,
+    subject: { kind: "connection", agentConnectionId },
+  });
 
 async function leftovers(database: Kysely<DatabaseSchema>) {
   const { rows } = await sql<{ name: string }>`
@@ -82,26 +126,45 @@ async function leftovers(database: Kysely<DatabaseSchema>) {
   return rows.map(({ name }) => name);
 }
 
+/**
+ * After the migration, each connection can do no more than it could the moment before it: what
+ * the organization's policy let through is what it keeps, and a grant the policy refused, which
+ * could do nothing, is ended the way Disconnect ends one, for the person to grant again.
+ */
 describeStore("a Home that was a work Home becomes an ordinary Home of its one person", (it) => {
-  it("drops the work Home and admits its connection with the grant and mode the person chose", async ({
+  it("externalMaxMode: a mode above the organization's cap becomes the cap", async ({
     storeFixture,
   }) => {
     const { database } = storeFixture;
-    const { bridgeId, fixture } = await storeFixture.createChannelDeliveryFixture("former-work");
-    await workHomeDatabase(database, fixture.deploymentId, "active");
-    const agent = await personsChoice(database, fixture.userId);
-    // A chat the organization had ended, with the reason it gave.
-    await database
-      .updateTable("agentConnections")
-      .set({
-        revokedAt: new Date(),
-        cleanupReason: "revoked",
-        bridgeEndedBy: "organization" as never,
-      })
-      .where("id", "=", bridgeId!)
-      .execute();
-    const before = await connection(database, agent);
-    // The audit triggers wrote what happened to the outbox the organization read.
+    const { bridgeId, fixture } = await storeFixture.createChannelDeliveryFixture("work-mode");
+    const [above, within] = await workHomeDatabase(
+      database,
+      fixture.deploymentId,
+      "active",
+      { ...open, externalMaxMode: "auto-accept-edits" },
+      async () => {
+        const ids = [
+          await connected(database, fixture.userId, tasks, "full-access"),
+          await connected(database, fixture.userId, tasks, "approval-required"),
+        ] as const;
+        // A chat the organization had ended, with the reason it gave.
+        await database
+          .updateTable("agentConnections")
+          .set({
+            revokedAt: new Date(),
+            cleanupReason: "revoked",
+            cleanupRequestedAt: new Date(),
+            bridgeEndedBy: "organization" as never,
+          })
+          .where("id", "=", bridgeId!)
+          .execute();
+        return ids;
+      },
+    );
+    const [aboveBefore, withinBefore] = [
+      await connection(database, above),
+      await connection(database, within),
+    ];
     const { rows } = await sql<{ count: number }>`
       select count(*)::integer as count from work_audit_outbox`.execute(database);
     expect(rows[0]!.count).toBeGreaterThan(0);
@@ -109,20 +172,21 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     await migrateToLatest(database);
 
     expect(await leftovers(database)).toEqual([]);
-    // Exactly what the person chose, uncapped: nothing narrows it any more.
-    expect(await connection(database, agent)).toEqual(before);
-    const admitted = await admitExecution(database, {
-      ownerUserId: fixture.userId,
-      subject: { kind: "connection", agentConnectionId: agent },
+    expect(await connection(database, above)).toEqual({
+      ...aboveBefore,
+      accessMode: "auto-accept-edits",
+      grantRevision: aboveBefore.grantRevision + 1,
+      cleanupReason: "narrowed",
+      cleanupMaximumMode: "auto-accept-edits",
     });
-    expect(admitted).toMatchObject({
-      actor: "agent",
-      mode: "auto",
-      agentConnection: {
-        agentConnectionId: agent,
-        accessMode: "auto",
-        grant: { scope: "selected", tasks: true, resources: [] },
-      },
+    expect(await admit(database, fixture.userId, above)).toMatchObject({
+      mode: "auto-accept-edits",
+      agentConnection: { grant: tasks, accessMode: "auto-accept-edits" },
+    });
+    expect(await connection(database, within)).toEqual(withinBefore);
+    expect(await admit(database, fixture.userId, within)).toMatchObject({
+      mode: "approval-required",
+      agentConnection: { grant: tasks },
     });
     // The chat ended for a reason that no longer exists: it keeps none, and reads as ended.
     expect(
@@ -137,19 +201,123 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
         database,
       ),
     ).rejects.toMatchObject({ code: "23514" });
-    const listed = (
-      await new AgentConnectionStore(database).list(fixture.userId, { includeRevoked: true })
-    ).find(({ id }) => id === bridgeId);
-    expect(listed?.bridge?.endedBy).not.toBe("organization");
+  });
+
+  it("allowTasks: a grant holding Tasks the policy refused is ended; one without Tasks is kept", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-tasks");
+    const [refused, kept] = await workHomeDatabase(
+      database,
+      fixture.deploymentId,
+      "active",
+      { ...open, allowTasks: false },
+      async () => [
+        await connected(database, fixture.userId, tasks, "auto"),
+        await connected(database, fixture.userId, noTasks, "auto"),
+      ],
+    );
+    const [refusedBefore, keptBefore] = [
+      await connection(database, refused),
+      await connection(database, kept),
+    ];
+
+    await migrateToLatest(database);
+
+    expect(await connection(database, refused)).toEqual({
+      ...refusedBefore,
+      revokedAt: expect.any(Date),
+      tokenHash: null,
+      grantRevision: refusedBefore.grantRevision + 1,
+      cleanupReason: "revoked",
+    });
+    await expect(admit(database, fixture.userId, refused)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(await connection(database, kept)).toEqual(keptBefore);
+    expect(await admit(database, fixture.userId, kept)).toMatchObject({ mode: "auto" });
+  });
+
+  it("allowEverything: an everything grant the policy refused is ended; a selected one is kept", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-everything");
+    const [refused, kept] = await workHomeDatabase(
+      database,
+      fixture.deploymentId,
+      "active",
+      { ...open, allowEverything: false },
+      async () => [
+        await connected(database, fixture.userId, everything, "full-access"),
+        await connected(database, fixture.userId, tasks, "full-access"),
+      ],
+    );
+    const keptBefore = await connection(database, kept);
+
+    await migrateToLatest(database);
+
+    expect(await connection(database, refused)).toMatchObject({
+      revokedAt: expect.any(Date),
+      tokenHash: null,
+      cleanupReason: "revoked",
+    });
+    await expect(admit(database, fixture.userId, refused)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(await connection(database, kept)).toEqual(keptBefore);
+  });
+
+  it("allowEverything needs allowTasks: everything under a policy without Tasks is ended", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-everything-tasks");
+    const refused = await workHomeDatabase(
+      database,
+      fixture.deploymentId,
+      "active",
+      { ...open, allowTasks: false },
+      () => connected(database, fixture.userId, everything, "approval-required"),
+    );
+
+    await migrateToLatest(database);
+
+    expect(await connection(database, refused)).toMatchObject({
+      revokedAt: expect.any(Date),
+      cleanupReason: "revoked",
+    });
+  });
+
+  it("devices: what the policy said about enrolling devices leaves every connection as it was", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-devices");
+    const agent = await workHomeDatabase(
+      database,
+      fixture.deploymentId,
+      "active",
+      { ...open, devices: "cloud-computer-only" },
+      () => connected(database, fixture.userId, everything, "full-access"),
+    );
+    const before = await connection(database, agent);
+
+    await migrateToLatest(database);
+
+    expect(await connection(database, agent)).toEqual(before);
+    expect(await admit(database, fixture.userId, agent)).toMatchObject({ mode: "full-access" });
   });
 
   it("keeps ended what a closing work Home had ended: its connections are revoked, as Disconnect revokes them", async ({
     storeFixture,
   }) => {
     const { database } = storeFixture;
-    const { fixture } = await storeFixture.createChannelDeliveryFixture("former-work-closing");
-    await workHomeDatabase(database, fixture.deploymentId, "offboarding");
-    const agent = await personsChoice(database, fixture.userId);
+    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-closing");
+    const agent = await workHomeDatabase(database, fixture.deploymentId, "offboarding", open, () =>
+      connected(database, fixture.userId, tasks, "auto"),
+    );
     const before = await connection(database, agent);
 
     await migrateToLatest(database);
@@ -162,25 +330,21 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       tokenHash: null,
       cleanupReason: "revoked",
     });
-    await expect(
-      admitExecution(database, {
-        ownerUserId: fixture.userId,
-        subject: { kind: "connection", agentConnectionId: agent },
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(admit(database, fixture.userId, agent)).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
 
   it("touches nothing on a database that never had a work Home", async ({ storeFixture }) => {
     const { database } = storeFixture;
     const { fixture } = await storeFixture.createChannelDeliveryFixture("never-work");
-    const agent = await personsChoice(database, fixture.userId);
+    const agent = await connected(database, fixture.userId, tasks, "auto");
     const before = await connection(database, agent);
-    await sql`delete from kysely_migration where name = ${removeOrganizationsMigrationName}`.execute(
+    await sql`delete from kysely_migration where name >= ${removeOrganizationsMigrationName}`.execute(
       database,
     );
     await migrateToLatest(database);
     expect(await connection(database, agent)).toEqual(before);
     expect(await leftovers(database)).toEqual([]);
-    expect(createId("deployment")).toMatch(/^dep_/u);
   });
 });

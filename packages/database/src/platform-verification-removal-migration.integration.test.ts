@@ -24,8 +24,10 @@ describeStore("a connection verified through a platform reads as verified by its
         primary key (issuer, statement_id)
       );
       insert into agent_embedder_assertion_claims values ('https://errand.example', 'jti-1', now());
-      delete from kysely_migration where name = ${removePlatformVerificationMigrationName};
     `.execute(database);
+    await sql`delete from kysely_migration where name = ${removePlatformVerificationMigrationName}`.execute(
+      database,
+    );
     const connections = new AgentConnectionStore(database);
     const agent = await connections.create({
       userId: fixture.userId,
@@ -48,7 +50,9 @@ describeStore("a connection verified through a platform reads as verified by its
         keyThumbprint: "a".repeat(43),
         directoryRevision: 3,
         recordedAt,
-      })}::jsonb where id = ${agent.id};
+      })}::jsonb where id = ${agent.id}
+    `.execute(database);
+    await sql`
       insert into agent_directory_cache (issuer, document, accepted_at) values (${issuer}, ${JSON.stringify(
         {
           revision: 3,
@@ -64,7 +68,7 @@ describeStore("a connection verified through a platform reads as verified by its
             },
           ],
         },
-      )}::jsonb, now());
+      )}::jsonb, now())
     `.execute(database);
 
     await migrateToLatest(database);
