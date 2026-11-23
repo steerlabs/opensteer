@@ -151,8 +151,7 @@ describe("the listing tells the truth about dispatch (ruling 2)", () => {
       }
     }
     expect(wrong).toEqual([]);
-    // Nine kinds of caller, every type, in and outside its lineage: some seconds of real work.
-  }, 60_000);
+  });
 
   it("keeps an ask for want of an agent handler apart from an ask of the rule", () => {
     // A connected agent with everything at Full access: the commands the rule would run now that

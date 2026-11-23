@@ -7,6 +7,7 @@ import {
   migrateToLatest,
   migrationProvider,
 } from "../packages/database/src/index.js";
+import { commandRequestsMigrationName } from "../packages/database/src/migrations.js";
 import { seedPersonalFixture } from "../packages/database/src/personal-fixture.test-support.js";
 import {
   liveRequest,
@@ -260,6 +261,7 @@ test("carries a person's work from a database the released Home last migrated th
       "0107_needs_you_counts_requests",
       bridgeConnectionsMigrationName,
       chatRoutesEndMigrationName,
+      commandRequestsMigrationName,
     ]);
     await migrateToLatest(database, {
       async getMigrations() {

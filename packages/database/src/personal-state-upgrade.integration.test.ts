@@ -5,6 +5,7 @@ import { expect, test, vi } from "vitest";
 import { createDatabase } from "./connection.js";
 import { ensureDeployment } from "./deployment-store.js";
 import {
+  commandRequestsMigrationName,
   migrateToLatest,
   migrationProvider,
   personalCurrentStateMigrationName,
@@ -110,6 +111,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         "0107_needs_you_counts_requests",
         bridgeConnectionsMigrationName,
         chatRoutesEndMigrationName,
+        commandRequestsMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

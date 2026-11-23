@@ -309,6 +309,7 @@
     "apps/host/src/commands/activity.ts",
     "apps/host/src/commands/actor.ts",
     "apps/host/src/commands/agent-door.ts",
+    "apps/host/src/commands/command-effect.ts",
     "apps/host/src/commands/dispatch.ts",
     "apps/host/src/commands/registry.ts",
     "apps/host/src/commands/requests.ts",
