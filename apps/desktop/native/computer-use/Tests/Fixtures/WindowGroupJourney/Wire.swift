@@ -817,6 +817,9 @@ extension WireJourney {
     }
     let afterLower = try await note()
     try require(afterLower == renderedLower, "Insertion before app rewrite did not render")
+    let afterLowerMark = editingMark
+    let contextBeforeRewrite = try await settledEditingContext(streamA, after: afterLowerMark)
+    try require(contextBeforeRewrite == rewriteContext, "Own insertion before app rewrite already rotated the context")
     try await Contracts.command(out, "owner-rewrite-last")
     let rotatedContext = try await context(sensitive: false, excluding: rewriteContext)
     try require(rotatedContext != rewriteContext, "App rewrite of typed text did not rotate the published context")
