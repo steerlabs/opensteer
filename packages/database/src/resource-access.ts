@@ -928,7 +928,10 @@ function classRule(
   }
   switch (effect) {
     case "approve":
-      return { answer: "ask", reason: "approval" };
+      // A schedule your own Full agent makes asks no less than its task, which asks nothing.
+      return face.ownFullAccess && !connection && caller.mode === "full-access"
+        ? { answer: "now" }
+        : { answer: "ask", reason: "approval" };
     case "widen-other":
       return { answer: "ask", reason: "widens-other" };
     case "secret":

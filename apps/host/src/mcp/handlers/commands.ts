@@ -12,7 +12,7 @@ import {
   type CommandRequestOrigin,
   type DatabaseSchema,
 } from "@opensteer/database";
-import { hostApi, type HostApiCommand } from "@opensteer/protocol";
+import type { HostApiCommand } from "@opensteer/protocol";
 import {
   commandFamilies,
   commandRow,
@@ -27,6 +27,7 @@ import { agentCommandDoor } from "../../commands/agent-door.js";
 import {
   agentCommandScope,
   agentRunsNow,
+  commandVariants,
   dispatchCommand,
   type AgentCommandOutcome,
 } from "../../commands/dispatch.js";
@@ -37,25 +38,13 @@ import {
   type CommandProposer,
   type CommandRequestService,
 } from "../../commands/requests.js";
-import type { AgentCaller } from "../agent-caller.js";
+import { callerLineage, type AgentCaller } from "../agent-caller.js";
 import { operationId } from "../operations.js";
 import type { AdministrationToolHandlers } from "./administration.js";
 import type { ToolCall } from "./types.js";
 
 type Answer = "now" | "ask" | "now or ask";
 const notFound = () => new OpensteerError({ code: "not_found", message: commandNotFoundMessage });
-
-/** Each command type's own schemas, by type. */
-const variants = (() => {
-  const byType = new Map<string, z.ZodObject[]>();
-  for (const option of (
-    hostApi["commands.dispatch"].payload as unknown as z.ZodUnion<z.ZodObject[]>
-  ).options) {
-    const type = (option.shape.type as z.ZodLiteral<string>).value;
-    byType.set(type, [...(byType.get(type) ?? []), option]);
-  }
-  return byType;
-})();
 
 /**
  * The three tools for Home commands. What a caller may change is listed from the one rule, cut
@@ -114,7 +103,7 @@ export class CommandTools {
     if (input.type) {
       const found = held.find((entry) => entry.type === input.type);
       if (!found) throw notFound();
-      const schemas = commandInputSchemas(found.type);
+      const schemas = commandInputSchemas(found.type, callerLineage(caller) !== null);
       return {
         type: found.type,
         title: found.title,
@@ -443,9 +432,12 @@ export class CommandTools {
  * One command's input as JSON Schemas, one per variant: without its key, and without any value
  * only the person types, at whatever depth the table's paths name it.
  */
-export function commandInputSchemas(type: CommandType): Record<string, unknown>[] {
+export function commandInputSchemas(
+  type: CommandType,
+  underConnection = false,
+): Record<string, unknown>[] {
   const row = commandRow(type) as CommandRow;
-  return (variants.get(type) ?? []).map((variant) => {
+  return commandVariants(type, underConnection).map((variant) => {
     const schema = z.toJSONSchema(
       "idempotencyKey" in variant.shape ? variant.omit({ idempotencyKey: true } as never) : variant,
       { io: "input", unrepresentable: "any" },

@@ -125,6 +125,13 @@
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
+  "plugins.install (folder)": {
+    "own-full": "refused:conflict",
+    "own-supervised": "refused:not_offered",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
   "plugins.version.activate": {
     "own-full": "allowed",
     "own-supervised": "refused:not_offered",

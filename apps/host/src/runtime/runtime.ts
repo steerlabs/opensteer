@@ -3190,6 +3190,8 @@ export async function createHostRuntime(
     });
     const pluginOwnerApi = new PluginOwnerApi({
       service: pluginService,
+      folder: (directory) =>
+        withFolderPluginPackage({ directory, files, install: pluginSourceFiles }),
       pages: pluginPages,
       webhooks: { service: pluginService, origin: () => pluginService!.webhookOrigin() },
       settings: pluginAgentStore,

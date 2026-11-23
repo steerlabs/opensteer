@@ -29,6 +29,7 @@ import { TriggerService } from "../triggers/trigger-service.js";
 import { TabService } from "../tabs/tab-service.js";
 import { AppService } from "../apps/app-service.js";
 import { LocalServerRegistry } from "../local-servers/local-server-registry.js";
+import { PluginToolHandlers } from "../mcp/handlers/plugins.js";
 import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js";
 import { agentCommandAdmission, agentCommandScope, dispatchCommand } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
@@ -144,12 +145,12 @@ const decided: Readonly<Record<string, string>> = {
     "the test's apps computer is offline: the start was admitted and then refused there (computer_offline), as tab.open (profile) is by the test's browser",
   "plugins.remove / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
-  "plugins.schedule.configure / own-full":
-    "differs from the tool at f4d789f84: the tool switches a schedule on with no approvalMode, which takes the store's default and may approve itself; the door asks (the approve face, reviews G2 and D5)",
   "plugins.install / selected-not":
     "differs from the tool at f4d789f84: a grant holding nothing has no tool server today; a new plugin is outside the grant and the door asks for more (the table's (d))",
   "plugin.remove / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "plugins.install (folder) / own-full":
+    "the test's computer serves no Agent home files: the folder install was admitted and then refused reading the folder (conflict), as app.start is by the offline apps computer",
   "tab.organize (into a new group) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.group.update (rename) / everything":
@@ -769,6 +770,11 @@ export default defineApp({}, { tools: router({ tick }),
       /** The person puts things back before each caller, so each acts on the same state. */
       readonly before?: () => Promise<unknown>;
       readonly after?: () => Promise<unknown>;
+      /**
+       * Its input has a kind only your own agents send (the table's ownAgentsOnly): under a
+       * connection's grant the door reads it like any kind the schema does not know.
+       */
+      readonly unknownToConnections?: true;
     }
     const scenarios: Scenario[] = [
       {
@@ -931,6 +937,16 @@ export default defineApp({}, { tools: router({ tick }),
         command: () => ({
           type: "plugins.install",
           source: { kind: "catalog", catalogId: "fixture" },
+        }),
+      },
+      {
+        name: "plugins.install (folder)",
+        tool: "opensteer_plugin_install",
+        unknownToConnections: true,
+        args: () => ({ source: "folder", directory: "parity-draft" }),
+        command: () => ({
+          type: "plugins.install",
+          source: { kind: "folder", directory: "parity-draft" },
         }),
       },
       {
@@ -1536,6 +1552,20 @@ export default defineApp({}, { tools: router({ tick }),
         type: `app.${method}`,
         appId,
       }));
+    // A folder install is caught where the tool reads it, before the folder is read.
+    intercept(PluginToolHandlers.prototype, "install", ([call]) => {
+      const i = (call as { input: Record<string, unknown> }).input;
+      if (i.source !== "folder") return undefined;
+      return {
+        type: "plugins.install",
+        source: {
+          kind: "folder",
+          directory: i.directory,
+          ...(i.name ? { name: i.name } : {}),
+          ...(i.pluginId ? { pluginId: i.pluginId } : {}),
+        },
+      };
+    });
     // The Home's plugin service holds its operations as fields: they are caught on the instance.
     intercept(plugins, "install", ([input]) => {
       const i = input as { kind: string; id?: string };
@@ -1788,7 +1818,14 @@ export default defineApp({}, { tools: router({ tick }),
         if (process.env.OPENSTEER_TOOL_PARITY_TRACE === "1" && result.isError)
           console.error("PARITY", scenario.name, caller, JSON.stringify(result).slice(0, 600));
         const key = `${scenario.name} / ${caller}`;
-        if (door && !corresponds(tool, door) !== Boolean(decided[key]))
+        // A kind a connection's schema does not have is refused as unknown input, which is the
+        // tool not being there for it.
+        const unknownInput =
+          scenario.unknownToConnections === true &&
+          !caller.startsWith("own-") &&
+          door?.startsWith("invalid:bad_request") === true &&
+          (tool === "refused:not_offered" || tool === "not_found");
+        if (door && !unknownInput && !corresponds(tool, door) !== Boolean(decided[key]))
           differences.push(
             decided[key]
               ? `${key}: named as a difference, but tool ${tool} and door ${door} agree`
@@ -1813,7 +1850,8 @@ export default defineApp({}, { tools: router({ tick }),
     for (const step of close) await step().catch(() => undefined);
     await database.drop?.();
   }
-}, 180_000);
+  // Every command an agent can send, five callers each, with real plugin builds among them.
+}, 600_000);
 
 /**
  * Waits for one named thing, polling, within a stated bound. On timeout it says what it waited

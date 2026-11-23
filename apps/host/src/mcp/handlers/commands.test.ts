@@ -13,4 +13,13 @@ describe("a command's input schema (AD8)", () => {
       expect(text, type).not.toContain("idempotencyKey");
     }
   });
+
+  it("shows a folder install to your own agents only: a connection holds no folder", () => {
+    const own = JSON.stringify(commandInputSchemas("plugins.install"));
+    const underConnection = JSON.stringify(commandInputSchemas("plugins.install", true));
+    expect(own).toContain('"folder"');
+    expect(underConnection).not.toContain('"folder"');
+    expect(underConnection).not.toContain('"directory"');
+    expect(underConnection).toContain('"catalog"');
+  });
 });

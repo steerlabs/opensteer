@@ -89,6 +89,13 @@ export interface CommandFace {
    * connection's surface and your own agents' tool does not check it).
    */
   readonly readWrite?: true | "connections";
+  /**
+   * It lifts an approval, yet your own agent at Full access runs it now: in the person's own task
+   * the mode is the task's, at Full access nothing asks, and what a task makes never asks less
+   * than the task that made it. Below Full access, and for every connection (standing work that
+   * would outlive its Disconnect), the person is asked.
+   */
+  readonly ownFullAccess?: true;
   /** Its handler needs the person's signed-in session today: every agent asks. */
   readonly personSession?: true;
   /**
@@ -186,6 +193,12 @@ export interface CommandRow<K extends CommandType = CommandType> {
    * carries them, and a stored proposal never holds them.
    */
   readonly secretFields?: readonly string[];
+  /**
+   * Kinds of a top-level input field that only your own agents send: under a connection's grant
+   * the schema has no such kind, in its listing and at the door, so one sent anyway reads like any
+   * kind the schema does not know (rule 5).
+   */
+  readonly ownAgentsOnly?: readonly { readonly field: string; readonly kind: string }[];
   /**
    * The faces that answer an ask the person already has (a Request, a consent, a setup, a plugin
    * approval) and what they answer. An agent's ask on such a face points at that ask; it never
@@ -901,6 +914,8 @@ export const commandTable: CommandTable = {
     step: "A",
     // Its code runs later wherever the plugin is used, in no connection's lineage (X11).
     faces: one("widen-self", { lineage: true }),
+    // A folder is inside Agent home, which only your own agents' tasks have.
+    ownAgentsOnly: [{ field: "source", kind: "folder" }],
     governs: () => resource("plugin"),
   },
   "plugins.version.activate": {
@@ -966,7 +981,8 @@ export const commandTable: CommandTable = {
     faces: [
       { class: "widen-self", lineage: true },
       { class: "narrow" },
-      { class: "approve", step: "none" },
+      // Your own agent at Full access makes it as today's tool does (the lead's ruling on D0a).
+      { class: "approve", ownFullAccess: true },
     ],
     // Left out, an enabled schedule takes the default the store applies, which on the person's own
     // path is automatic: only an explicit browser approval keeps it from approving itself.

@@ -330,6 +330,27 @@ describe("the command rule, generated from the table", () => {
     }
   });
 
+  it("lets your own Full agent make a schedule that approves itself, and asks everyone else", () => {
+    // The lead's ruling: a schedule a task makes never asks less than that task, and at Full
+    // access nothing asks; a connection's would run on past its Disconnect.
+    const automatic = commandFace({
+      type: "plugins.schedule.configure",
+      pluginId: "plugin",
+      schedule: "tick",
+      enabled: true,
+      idempotencyKey: "k",
+    } as never);
+    expect(automatic).toBe(2);
+    const rule = (caller: CommandRuleCaller) =>
+      commandRule(row("plugins.schedule.configure"), automatic, caller).answer;
+    expect(rule(callers.a())).toBe("now");
+    for (const mode of belowFullAccess) expect(rule(callers.b(mode)), mode).toBe("ask");
+    for (const mode of ThreadAccessModeSchema.options) {
+      expect(rule(callers.c(mode)), `everything ${mode}`).toBe("ask");
+      expect(rule(callers.d(mode)), `selected ${mode}`).toBe("ask");
+    }
+  });
+
   it("holds a face only the store can tell to the strictest of its faces", () => {
     const own = callers.a();
     expect(commandRule(row("machine.access.update"), undefined, own).answer).toBe("ask");

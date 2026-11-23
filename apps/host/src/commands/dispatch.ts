@@ -167,7 +167,8 @@ export async function dispatchCommand(
     throw notFound();
   // A type it holds is read with its schema; what is wrong with it may be said. A value only the
   // person types is left out by the agent, so a schema that requires it reads the rest without it.
-  const parsed = parseHeld(row, command);
+  // Under a connection's grant (the scope just read says so) the own-agents-only kinds are absent.
+  const parsed = parseHeld(row, command, (holder?.scope ?? null) !== null);
   if (!parsed.success)
     throw new OpensteerError({
       code: "bad_request",
@@ -271,14 +272,41 @@ const variants = (() => {
   return byType;
 })();
 
+const connectionVariants = new Map<string, readonly z.ZodObject[]>();
+/**
+ * A command's schemas as a caller may send them: under a connection's grant, without the kinds
+ * only your own agents send, so such a kind reads like one the schema does not know.
+ */
+export function commandVariants(type: string, underConnection: boolean): readonly z.ZodObject[] {
+  const all = variants.get(type) ?? [];
+  const hidden = Object.hasOwn(commandTable, type)
+    ? ((commandRow(type as CommandType) as CommandRow).ownAgentsOnly ?? [])
+    : [];
+  if (!underConnection || hidden.length === 0) return all;
+  const cached = connectionVariants.get(type);
+  if (cached) return cached;
+  const narrowed = all.map((variant) =>
+    hidden.reduce((schema, { field, kind }) => {
+      const union = variant.shape[field] as z.ZodDiscriminatedUnion<z.ZodObject[]> | undefined;
+      if (!union) return schema;
+      const kept = union.options.filter(
+        (option) => (option.shape.kind as z.ZodLiteral<string>).value !== kind,
+      );
+      return schema.extend({ [field]: z.discriminatedUnion("kind", kept as never) });
+    }, variant),
+  );
+  connectionVariants.set(type, narrowed);
+  return narrowed;
+}
+
 /** Reads a command with its own schema, leaving out each top-level secret field it does not carry. */
-function parseHeld(row: CommandRow, command: HostApiCommand) {
+function parseHeld(row: CommandRow, command: HostApiCommand, underConnection: boolean) {
   const input = command as unknown as Record<string, unknown>;
   const absent = (row.secretFields ?? []).filter(
     (path) => !path.includes(".") && input[path] === undefined,
   );
   let first: ReturnType<z.ZodObject["safeParse"]> | undefined;
-  for (const variant of variants.get(command.type) ?? []) {
+  for (const variant of commandVariants(command.type, underConnection)) {
     const schema = absent.length
       ? variant.omit(Object.fromEntries(absent.map((key) => [key, true])) as never)
       : variant;

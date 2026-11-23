@@ -2283,16 +2283,15 @@
           "when": "approvalMode automatic, or enabled with approvalMode left out",
           "class": "approve",
           "answers": {
-            "a": "ask",
+            "a": "now",
             "b": "ask",
             "c": "ask",
             "d": "ask"
-          },
-          "step": "—"
+          }
         }
       ],
       "step": "A",
-      "note": "runs only; a connection lineage is refused today (`pauth:331`) → B for (c)(d); review G2: automatic approval lifts the browser approval (`apps/host/src/plugins/plugin-owner-api.ts:1150-1159`); review D5: left out, the store's default may be automatic; D0a: differs from the tool at f4d789f84: the tool switches a schedule on with no approvalMode, which takes the store's default and may approve itself; the door asks (the approve face, reviews G2 and D5)",
+      "note": "runs only; a connection lineage is refused today (`pauth:331`) → B for (c)(d); review G2: automatic approval lifts the browser approval (`apps/host/src/plugins/plugin-owner-api.ts:1150-1159`); review D5: left out, the store's default may be automatic; the lead's ruling on D0a: your own agent at Full access makes it now, with today's default, and below Full access and every connection ask",
       "stepFor": {
         "c": "B",
         "d": "B"
@@ -3622,7 +3621,7 @@
     "tab.group.update collapsed": "same class; omitted: unchanged (schema only)",
     "settings.plugin.enabled.set target.kind": "same class: which kind of thing is turned on or off",
     "settings.plugin.enabled.set enabled": "face: false narrow, true approve",
-    "plugins.install source.kind": "same class (widen-self): a new plugin, catalog or by address; lead decision D10",
+    "plugins.install source.kind": "same class (widen-self): a new plugin, catalog or by address; lead decision D10; folder: a folder inside Agent home, your own agents only, as today's tool reads it (the lead's ruling); under a connection's grant the kind is not in the schema",
     "plugins.install source.url": "same class (widen-self): the plugin's server receives only what an agent sends it in a call (lead decision D10)",
     "plugins.access.set access": "face: off narrow; otherwise the store decides against the stored access",
     "plugins.account.create label": "same class (secret); omitted: the provider's name (schema only)",
@@ -3788,6 +3787,8 @@
     "trigger.status.set status": "face: paused narrow, archived narrow with Full access, active widen-self",
     "trigger.run payload": "same class; omitted: no payload",
     "trigger.cancel occurrenceId": "same class; omitted: every pending occurrence (agent-tools triggers.ts:86)",
-    "personal.accountLink.unlink step": "same class: identity whatever the step, the Mac app's two unlink steps (lead's AD10 ruling)"
+    "personal.accountLink.unlink step": "same class: identity whatever the step, the Mac app's two unlink steps (lead's AD10 ruling)",
+    "plugins.install source.name": "same class; omitted: the folder's own plugin name",
+    "plugins.install source.pluginId": "same class (widen-self): a new version of that plugin from your own agent's folder, as today's tool deploys one"
   }
 }

@@ -253,6 +253,35 @@ describe("dispatchCommand", () => {
     });
   });
 
+  it("reads a folder install under a connection's grant like a kind the schema does not know (rule 5)", async () => {
+    const { registry } = spyRegistry();
+    const asked = async () => ({ answer: "ask" as const, face: 0, execution: null });
+    const install = (source: Record<string, unknown>) =>
+      ({
+        type: "plugins.install",
+        idempotencyKey: "install-1",
+        source,
+      }) as unknown as HostApiCommand;
+    const refusal = (caller: AgentCaller, source: Record<string, unknown>) =>
+      dispatchCommand(caller, install(source), { registry, admit: asked, scope: signedIn }).catch(
+        (error: unknown) => error,
+      );
+    for (const caller of [connection("full-access", everything), run("full-access", everything)]) {
+      const folder = await refusal(caller, { kind: "folder", directory: "draft" });
+      const unknown = await refusal(caller, { kind: "unheard-of", directory: "draft" });
+      expect(folder).toMatchObject({ code: "bad_request" });
+      expect(folder).toEqual(unknown);
+    }
+    // Your own agent's folder install is a command the door reads and puts to the person.
+    await expect(
+      dispatchCommand(run("full-access"), install({ kind: "folder", directory: "draft" }), {
+        registry,
+        admit: asked,
+        scope: signedIn,
+      }),
+    ).resolves.toMatchObject({ status: "ask" });
+  });
+
   it("refuses an agent's command that carries a value only the person types, nested included", async () => {
     const { registry, calls } = spyRegistry();
     const admitted = async () => ({ answer: "ask" as const, face: 0, execution: null });
