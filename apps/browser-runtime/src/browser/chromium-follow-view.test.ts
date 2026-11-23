@@ -1729,6 +1729,24 @@ describe("real Chromium pages follow the person's view", () => {
     const session = await startFollowSession({ path: "/plain" });
     const messages = session.sink.messages;
     const tabA = session.rootSurfaceId;
+    // Tab A's casts as Chromium answered them, from before it is first streamed: each start it
+    // answered is running, and counted so, or was stopped. Once the person has left A, none runs.
+    const castsOnA = { started: 0, stopped: 0 };
+    {
+      const cdp = session.ledger.binding(tabA)?.cdp;
+      if (!cdp) throw new Error("The root tab has no page.");
+      const send = cdp.send.bind(cdp);
+      cdp.send = ((method: string, parameters?: Record<string, unknown>) => {
+        const sent = send(method, parameters);
+        if (method === "Page.startScreencast")
+          void sent.then(
+            () => (castsOnA.started += 1),
+            () => undefined,
+          );
+        else if (method === "Page.stopScreencast") castsOnA.stopped += 1;
+        return sent;
+      }) as typeof cdp.send;
+    }
     await session.controller.handle({ type: "stream.subscribe" });
     await session.controller.handle({
       type: "surface.open",
@@ -1874,6 +1892,9 @@ describe("real Chromium pages follow the person's view", () => {
     });
     expect(pictureB).not.toBeNull();
     expect(outcome.errors).toHaveLength(1);
+    // A, which the person left for B, pictures nothing: every start Chromium answered there stopped.
+    expect(castsOnA.started).toBeGreaterThan(0);
+    expect(castsOnA.stopped).toBe(castsOnA.started);
   }, 30_000);
 
   it("lands the person's click where an agent's phone layout pictures a button, zoomed out or not", async () => {
