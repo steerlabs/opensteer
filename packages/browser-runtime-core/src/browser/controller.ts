@@ -1109,15 +1109,15 @@ export class BrowserController {
       // write or a click included; an answer never waits behind what it frees.
       return this.run(message);
     }
+    // Closing a tab never waits behind a size write, input or navigation on
+    // its lane: a tab that cannot answer them would otherwise refuse to close.
     if (
       message.type === "cdp.command" &&
       message.command.method === "Target.closeTarget" &&
-      this.pageOf(message) &&
-      this.ledger.dialogOpen(this.pageOf(message)!)
+      this.pageOf(message)
     )
       return this.run(message, this.pageOf(message));
-    if (message.type === "surface.close" && this.ledger.dialogOpen(message.surfaceId))
-      return this.run(message, message.surfaceId);
+    if (message.type === "surface.close") return this.run(message, message.surfaceId);
     if (
       message.type === "navigation.stop" ||
       (message.type === "cdp.command" && message.command.method === "Page.stopLoading")
@@ -1940,7 +1940,6 @@ export class BrowserController {
       if (this.ledger.snapshot().length <= 1) {
         throw new BrowserRuntimeError("conflict", "The final browser surface cannot be closed.");
       }
-      if (!this.ledger.dialogOpen(message.surfaceId)) await this.prepareResize(message.surfaceId);
       this.closingSurfaces.add(message.surfaceId);
       try {
         await this.ledger.closeSurface(message.surfaceId, "person-closed");
@@ -4517,7 +4516,6 @@ function isOrderedAgentMutation(
       "Page.reload",
       "Page.navigateToHistoryEntry",
       "Page.setDocumentContent",
-      "Target.closeTarget",
     ].includes(message.command.method)
   );
 }

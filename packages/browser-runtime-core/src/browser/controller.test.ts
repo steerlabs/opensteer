@@ -3818,6 +3818,129 @@ describe("BrowserController", () => {
     }
   });
 
+  it("closes an agent's tab or a person's tab without waiting on a held size write or drag cancel (X3)", async () => {
+    const controller = createController();
+    const heldSize = gate({ label: "agent-tab held size", deadlineMs: 2_000 });
+    const heldPersonSize = gate({ label: "person-tab held size", deadlineMs: 2_000 });
+    const heldDragCancel = gate({ label: "person-tab held drag cancel", deadlineMs: 2_000 });
+    let pendingAgentFollow1: Promise<void> | undefined;
+    let pendingAgentFollow2: Promise<void> | undefined;
+    let pendingPersonFollow: Promise<void> | undefined;
+    try {
+      await controller.start();
+
+      // 1. Agent opens a tab; view starts a size write that Chromium holds; agent closes the tab.
+      const agentPage = new FakePage({ title: "Agent tab", url: "https://example.test/agent" });
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(agentPage);
+        return agentPage;
+      });
+      const createId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId: createId,
+        command: {
+          method: "Target.createTarget",
+          parameters: { url: "https://example.test/agent" },
+        },
+      });
+      const created = sink.messages.find(
+        (message) => message.type === "cdp.result" && message.requestId === createId,
+      );
+      if (created?.type !== "cdp.result") throw new Error("Target.createTarget failed");
+      const agentTargetId = String((created.result as { targetId: string }).targetId);
+      const agentSurfaceId = ledger.surfaceIdForTarget(agentTargetId)!;
+      expect(agentSurfaceId).toBeDefined();
+
+      agentPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
+        heldSize.enter(),
+      );
+      pendingAgentFollow1 = controller.handle({
+        type: "viewport.follow",
+        surfaceId: agentSurfaceId,
+        width: 900,
+        height: 650,
+      });
+      await heldSize.entered;
+      pendingAgentFollow2 = controller.handle({
+        type: "viewport.follow",
+        surfaceId: agentSurfaceId,
+        width: 880,
+        height: 640,
+      });
+
+      const closeId = randomUUID();
+      await withTimeout(
+        controller.handle({
+          type: "cdp.command",
+          requestId: closeId,
+          command: { method: "Target.closeTarget", parameters: { targetId: agentTargetId } },
+        }),
+        500,
+        { timeoutError: () => new Error("Target.closeTarget waited on held viewport.follow") },
+      );
+      expect(
+        sink.messages.find(
+          (message) => message.type === "cdp.result" && message.requestId === closeId,
+        ),
+      ).toMatchObject({ type: "cdp.result", result: { success: true } });
+      expect(ledger.snapshot().map((surface) => surface.id)).not.toContain(agentSurfaceId);
+
+      // 2. Person tab has a held pointer drag and an in-flight size write; person closes it.
+      const personPage = new FakePage({ title: "Person tab", url: "https://example.test/person" });
+      vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        context.addPage(personPage);
+        return personPage;
+      });
+      await controller.handle({ type: "surface.open", url: "https://example.test/person" });
+      const personSurfaceId = ledger.surfaceIdForTarget(await personPage.targetId())!;
+      expect(personSurfaceId).toBeDefined();
+      const personViewport = ledger.viewportOf(personSurfaceId)!;
+      await controller.handle({
+        type: "input.pointer",
+        action: "down",
+        button: "left",
+        surfaceId: personSurfaceId,
+        viewportWidth: personViewport.width,
+        viewportHeight: personViewport.height,
+        x: 0.25,
+        y: 0.25,
+        producerId: "00000000-0000-4000-8000-000000000001",
+      });
+      personPage.cdpSession.responses.set("Input.cancelDragging", () => heldDragCancel.enter());
+      personPage.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () =>
+        heldPersonSize.enter(),
+      );
+      pendingPersonFollow = controller.handle({
+        type: "viewport.follow",
+        surfaceId: personSurfaceId,
+        width: 840,
+        height: 600,
+      });
+      await heldDragCancel.entered;
+
+      await withTimeout(
+        controller.handle({ type: "surface.close", surfaceId: personSurfaceId }),
+        500,
+        { timeoutError: () => new Error("surface.close waited on held size/drag cleanup") },
+      );
+      expect(ledger.snapshot().map((surface) => surface.id)).not.toContain(personSurfaceId);
+
+      heldSize.release();
+      heldDragCancel.release();
+      heldPersonSize.release();
+      await Promise.all([pendingAgentFollow1, pendingAgentFollow2, pendingPersonFollow]);
+      expect(sink.messages.filter((message) => message.type === "browser.error")).toEqual([]);
+    } finally {
+      heldSize.release();
+      heldDragCancel.release();
+      heldPersonSize.release();
+      await Promise.allSettled([pendingAgentFollow1, pendingAgentFollow2, pendingPersonFollow]);
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("keeps a script detach pending while input cleanup is blocked by a dialog", async () => {
     const controller = createController();
     const scriptAttachmentId = randomUUID();
