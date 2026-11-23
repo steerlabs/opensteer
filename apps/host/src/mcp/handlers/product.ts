@@ -689,7 +689,7 @@ export class ProductToolHandlers {
   }
 
   async #scopedPendingRequests(caller: AgentCaller, threadId: ThreadId, fallback: number) {
-    if (caller.kind === "connection") return fallback;
+    if (caller.kind === "connection") return 0;
     const connectionAuthority = connectionAuthorityForLineage(caller);
     if (!connectionAuthority) return fallback;
     return countPendingConnectionRequests(this.#store.database, connectionAuthority, threadId);

@@ -26,6 +26,11 @@ import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { TabActor } from "../tabs/ports.js";
 import { readableTabTasks, tabComputer, tabReadAuthority } from "../tabs/tab-authority.js";
 import { TabService } from "../tabs/tab-service.js";
+import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
+import { ThreadService } from "../threads/thread-service.js";
+import type { AgentCaller } from "./agent-caller.js";
+import { ProductToolHandlers } from "./handlers/product.js";
+import { personalTestExecution } from "./personal-execution.test-support.js";
 import {
   clients,
   connection,
@@ -1029,5 +1034,135 @@ describeStore("a selected connection reads only its own lineage", (it) => {
         itemId: createId("request"),
       }),
     );
+  });
+
+  it("scopes pendingRequests in the handler itself for connection callers, even on tools not named opensteer_task_*", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("connection-handler-pending-count");
+    const url = await serveMcp(storeFixture);
+    const agentA = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const agentB = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const taskB = await createTask(agentB, f, "handler-foreign-parent");
+    const runB = await startPersonalQueuedRunFixture(
+      storeFixture.store,
+      (await queuedRun(storeFixture, taskB)).id,
+    );
+    const childB = await storeFixture.store.delegateThread({
+      accessMode: "full-access",
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstance.id,
+      idempotencyKey: "handler-foreign-child",
+      modelSelection: testModelSelection,
+      origin: { kind: "run", parentRunId: runB.runId, parentThreadId: taskB },
+      task: [{ type: "text", text: "Foreign child work" }],
+      title: "Foreign child task",
+    });
+    const childRunB = await startPersonalQueuedRunFixture(storeFixture.store, childB.run.id);
+    await storeFixture.store.requests.create({
+      callId: "handler-foreign-child-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: childRunB.runId,
+      originatingThreadId: childB.thread.id,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Foreign connection question",
+        fields: [{ id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false }],
+      },
+    });
+
+    const unavailable = new Proxy(
+      {},
+      {
+        get: () => async () => {
+          throw new Error("Unexpected tool");
+        },
+      },
+    );
+    const realtime = new RealtimeHub();
+    const commands = new CommandService({
+      store: storeFixture.store,
+      admission: new KeyedAdmissionQueue({
+        maxInFlight: 8,
+        maxQueuedBytes: 1024 * 1024,
+        maxQueuedCommands: 100,
+      }),
+      onExecutionQueued: () => {},
+    });
+    const settings = await storeFixture.database
+      .selectFrom("personalSettings")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const threads = new ThreadService({
+      store: storeFixture.store,
+      commands,
+      runners: {
+        canRunHarness: () => true,
+        isAvailable: () => true,
+        harnessAccessModes: () => undefined,
+        identityForEnvironment: () => undefined,
+        attachmentInputFailure: () => null,
+      },
+      placeContext: unavailable as never,
+      browser: unavailable as never,
+    });
+    const handlers = new ProductToolHandlers({
+      execution: personalTestExecution(storeFixture.store, {
+        userId: settings.ownerId,
+        environmentId: f.environmentId,
+        agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
+      }),
+      deploymentId: (
+        await storeFixture.database
+          .selectFrom("deployments")
+          .select("id")
+          .executeTakeFirstOrThrow()
+      ).id,
+      store: storeFixture.store,
+      threads,
+      realtime: {
+        observe: realtime.observe.bind(realtime),
+        observeScopes: realtime.observeScopes.bind(realtime),
+        sendToUsers: realtime.sendToUsers.bind(realtime),
+      },
+      commands,
+      browser: {
+        readablePlaces: async (_owner: unknown, references: readonly unknown[]) => [...references],
+      },
+      isEnvironmentConnected: () => true,
+      canRunHarness: () => true,
+    } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
+
+    const connectionACaller: AgentCaller = {
+      kind: "connection",
+      key: `connection:${agentA.id}`,
+      connectionId: agentA.id,
+      grant: { scope: "everything" },
+      grantRevision: 1,
+      userId: f.userId,
+      accessMode: "full-access",
+    };
+
+    // opensteer_delegation_status is NOT named opensteer_task_*, so withoutRequestCounts
+    // does not strip its output: the handler itself must not carry another connection's count.
+    const delegation = await handlers.opensteer_delegation_status({
+      caller: connectionACaller,
+      input: { delegationId: childB.assignment.id },
+      operationKey: "p2-delegation-status",
+    });
+    expect(delegation.pendingRequests).toBe(0);
   });
 });
