@@ -1488,7 +1488,7 @@ class PlaywrightContextHandle implements BrowserContext {
       !this.explicitPages.has(page)
     ) {
       this.identifyingPages.add(page);
-      void Promise.allSettled([...this.inFlightCreations]).then(() =>
+      void Promise.allSettled(this.inFlightCreations).then(() =>
         queueMicrotask(() => {
           if (!this.identifyingPages.delete(page)) return;
           this.handOutOrdinary(page, true);
