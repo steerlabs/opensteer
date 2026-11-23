@@ -94,8 +94,8 @@ export class TriggerToolHandlers {
         },
       ),
     );
-    const hasWebhook = (item: { readonly webhookRouteKey?: unknown; readonly webhook?: unknown }) =>
-      Boolean(item.webhookRouteKey) || Boolean(item.webhook);
+    const hasWebhook = (item: Record<string, unknown>) =>
+      Boolean(item["webhookRouteKey"]) || Boolean(item["webhook"]);
     const needsOrigins =
       Boolean(lineage) ||
       (output.trigger !== undefined &&

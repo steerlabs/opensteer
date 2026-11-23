@@ -194,7 +194,6 @@ describe("opensteer CLI exit codes against real Home failure payloads (AA4)", ()
         return await executor.execute({
           automationId,
           endpoints: {
-            browserCdp: null,
             mcp: { token: "tok", url: `http://127.0.0.1:${address.port}/mcp` },
           },
           event: {
@@ -213,9 +212,8 @@ describe("opensteer CLI exit codes against real Home failure payloads (AA4)", ()
           },
           signal: new AbortController().signal,
           workspace: {
-            agentHome: { configuredPath: null, mode: "default", resolvedPath: root },
+            instructions: undefined,
             path: root,
-            release: async () => undefined,
           },
         });
       } finally {

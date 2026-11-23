@@ -454,8 +454,7 @@ describe("WatchSupervisor", () => {
       await vi.waitFor(() => {
         expect(
           fixture.messages.some(
-            (message) =>
-              message.type === "runner.watch-status" && message.observed === "halted",
+            (message) => message.type === "runner.watch-status" && message.observed === "halted",
           ),
         ).toBe(true);
       });

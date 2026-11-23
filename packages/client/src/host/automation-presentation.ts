@@ -97,10 +97,13 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
     case "running":
       return { group: "upcoming", problem: null };
     case "failed":
-      return attention(`It failed when it ran${exitCodeSuffix(summary.latestOccurrence.exitCode)}.`);
+      return attention(
+        `It failed when it ran${exitCodeSuffix(summary.latestOccurrence.exitCode)}.`,
+      );
     case "unknown":
       return attention(
-        summary.latestOccurrence.exitCode !== null && summary.latestOccurrence.exitCode !== undefined
+        summary.latestOccurrence.exitCode !== null &&
+          summary.latestOccurrence.exitCode !== undefined
           ? `It ended without saying whether its effect happened${exitCodeSuffix(summary.latestOccurrence.exitCode)}.`
           : summary.latestOccurrence.error &&
               /computer was removed/iu.test(summary.latestOccurrence.error)

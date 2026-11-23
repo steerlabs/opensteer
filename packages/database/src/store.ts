@@ -1697,14 +1697,11 @@ export class OpensteerStore {
   async listPendingCommands(limit = 500): Promise<readonly PendingCommandRow[]> {
     return commandStore.listPendingCommands(this.#database, limit);
   }
+  claimCommand(commandId: CommandRow["id"], dispatcherId: string): Promise<ClaimedCommand | null>;
   claimCommand(
     commandId: CommandRow["id"],
     dispatcherId: string,
-  ): Promise<ClaimedCommand | null>;
-  claimCommand(
-    commandId: CommandRow["id"],
-    dispatcherId: string,
-    options: { readonly includeBlocked?: boolean },
+    options?: { readonly includeBlocked?: boolean },
   ): Promise<ClaimedCommand | BlockedCommandClaim | null>;
   async claimCommand(
     commandId: CommandRow["id"],

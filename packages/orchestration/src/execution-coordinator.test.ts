@@ -920,11 +920,15 @@ describe("ExecutionCoordinator", () => {
     );
     let firingAhead = true;
     const dispatched: CommandId[] = [];
-    const listPendingCommands = vi.fn<ExecutionCoordinatorStore["listPendingCommands"]>(
-      async () => waiting.filter((cmd) => !dispatched.includes(cmd.id)),
+    const listPendingCommands = vi.fn<ExecutionCoordinatorStore["listPendingCommands"]>(async () =>
+      waiting.filter((cmd) => !dispatched.includes(cmd.id)),
     );
     const claimCommand = vi.fn(
-      async (id: CommandId, _dispatcherId: string, options?: { readonly includeBlocked?: boolean }) => {
+      async (
+        id: CommandId,
+        _dispatcherId: string,
+        options?: { readonly includeBlocked?: boolean },
+      ) => {
         const found = waiting.find((cmd) => cmd.id === id);
         if (!found) return null;
         if (firingAhead) {
@@ -962,7 +966,7 @@ describe("ExecutionCoordinator", () => {
     coordinator.start();
     await waitFor(() => claimCommand.mock.calls.length >= 1);
     // Let any microtasks settle.
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     // At most one claim attempt for all 5 waiting firings of the same automation, and NO poll timer!
     expect(claimCommand).toHaveBeenCalledTimes(1);
     expect(clock.timers()).toEqual([]);
@@ -970,7 +974,7 @@ describe("ExecutionCoordinator", () => {
     const claimsAfterBlocked = claimCommand.mock.calls.length;
     // Advance 2.5 seconds (5 poll intervals): zero statements!
     clock.advance(2_500);
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(listPendingCommands).toHaveBeenCalledTimes(listsAfterBlocked);
     expect(claimCommand).toHaveBeenCalledTimes(claimsAfterBlocked);
     // When the firing ahead ends and wakes the coordinator, the earliest waiting firing runs at once.

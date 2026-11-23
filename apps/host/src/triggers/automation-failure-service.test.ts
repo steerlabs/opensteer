@@ -379,7 +379,8 @@ it("explains watch-halted truthfully and tells the reader to pause and resume (A
     anchorThreadTitle: "Task",
     attempts: 0,
     createdBy: createId("user"),
-    detail: "exit 1: Watch stopped restarting because prior process containment could not be verified.",
+    detail:
+      "exit 1: Watch stopped restarting because prior process containment could not be verified.",
     destinationThreadId: threadId,
     id: crypto.randomUUID(),
     reason: "watch-halted",

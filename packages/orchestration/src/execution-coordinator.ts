@@ -42,11 +42,10 @@ export interface DurableCommandDispatcher {
   isAvailable(command: PendingCommandRow, dispatchingRuns: number): boolean;
   dispatch(command: CommandRow, signal: AbortSignal): Promise<void>;
 }
-export interface ExecutionCoordinatorStore
-  extends Pick<
-    OpensteerStore,
-    "failCommand" | "listPendingCommands" | "markSteerUnknown" | "retryCommand"
-  > {
+export interface ExecutionCoordinatorStore extends Pick<
+  OpensteerStore,
+  "failCommand" | "listPendingCommands" | "markSteerUnknown" | "retryCommand"
+> {
   claimCommand(
     commandId: CommandId,
     dispatcherId: string,
@@ -425,13 +424,9 @@ export class ExecutionCoordinator {
       } else if (dispatchError.disposition === "failed") {
         await this.#settle(command.id, () =>
           dispatchError.provenNotStarted
-            ? this.#store.failCommand(
-                command.id,
-                dispatchError.message,
-                undefined,
-                undefined,
-                { provenNotStarted: true },
-              )
+            ? this.#store.failCommand(command.id, dispatchError.message, undefined, undefined, {
+                provenNotStarted: true,
+              })
             : this.#store.failCommand(command.id, dispatchError.message),
         );
       } else if (command.type === "run.steer") {

@@ -53,7 +53,9 @@ describe("placing automations", () => {
     });
     expect(placeAutomation(lostMemory, now)).toEqual({
       group: "attention",
-      problem: expect.stringMatching(/^Running as far as Opensteer knows — contact lost yesterday,/u),
+      problem: expect.stringMatching(
+        /^Running as far as Opensteer knows — contact lost yesterday,/u,
+      ),
     });
     expect(sectionAutomations([light, automation()], now).map(({ id }) => id)).toEqual([
       "repeating",
@@ -214,7 +216,8 @@ describe("placing automations", () => {
     const haltedWatch = automation({
       source: { kind: "watch" },
       watch: {
-        lastError: "Watch stopped restarting because prior process containment could not be verified.",
+        lastError:
+          "Watch stopped restarting because prior process containment could not be verified.",
         observed: "halted",
       },
     });
@@ -242,7 +245,9 @@ describe("placing automations", () => {
       ),
     });
     expect(watchState("running", contactLostAt, now)).toEqual({
-      text: expect.stringMatching(/^Computer out of contact since yesterday, .*may still be running$/u),
+      text: expect.stringMatching(
+        /^Computer out of contact since yesterday, .*may still be running$/u,
+      ),
       tone: "warn",
     });
   });

@@ -3172,12 +3172,14 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(requeued.provenNotStartedAt).not.toBeNull();
   });
 
-  it("halts a watch instead of spawning a second copy when a new boot lacks earlier-boots-contained-v1 (AB8)", async () => {
-    const fixture = await seedFixture("/tmp/opensteer-ab8-uncontained-watch");
-    const task = await createTask(fixture, "Watch containment anchor");
+  it("halts a watch instead of spawning a second copy when a new boot lacks earlier-boots-contained-v1 (AB8)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, triggers } = storeFixture;
+    const fixture = await createFixture("ab8-uncontained-watch");
     const created = await triggers.create({
       actorThreadId: null,
-      anchorThreadId: task.id,
+      anchorThreadId: fixture.threadId,
       createdBy: fixture.userId,
       idempotencyKey: `ab8-watch-${randomUUID()}`,
       name: "Uncontained boot watch",
@@ -3250,12 +3252,14 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(thirdBoot.activations).toEqual([]);
   });
 
-  it("marks a person's own active watch contact-lost on disconnect, exposes it on list/get, and clears it on reconnect (AB8)", async () => {
-    const fixture = await seedFixture("/tmp/opensteer-ab8-personal-watch-contact-lost");
-    const task = await createTask(fixture, "Personal watch anchor");
+  it("marks a person's own active watch contact-lost on disconnect, exposes it on list/get, and clears it on reconnect (AB8)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, store, triggers } = storeFixture;
+    const fixture = await createFixture("ab8-personal-watch-contact-lost");
     const created = await triggers.create({
       actorThreadId: null,
-      anchorThreadId: task.id,
+      anchorThreadId: fixture.threadId,
       createdBy: fixture.userId,
       idempotencyKey: `ab8-personal-watch-${randomUUID()}`,
       name: "Personal file watch",
@@ -3301,7 +3305,12 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(summary?.watch?.observed).toBe("running");
     expect(summary?.watch?.contactLostAt).toEqual(expect.any(String));
 
-    const detail = await triggers.getForOwner(created.trigger.id, fixture.userId, 5, personTaskReader);
+    const detail = await triggers.getForOwner(
+      created.trigger.id,
+      fixture.userId,
+      5,
+      personTaskReader,
+    );
     expect(detail?.activation?.contactLostAt).toEqual(expect.any(String));
 
     // Reconnecting on the same boot clears contactLostAt so it returns to healthy Watching.

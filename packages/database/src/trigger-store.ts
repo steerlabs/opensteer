@@ -2759,10 +2759,7 @@ export class TriggerStore {
         | {
             readonly detail: string;
             readonly reason:
-              | "final-occurrence-failed"
-              | "started-failing"
-              | "started-unknown"
-              | "outcome-unknown";
+              "final-occurrence-failed" | "started-failing" | "started-unknown" | "outcome-unknown";
           }
         | undefined;
       if (input.output.status === "succeeded") {
@@ -2820,7 +2817,8 @@ export class TriggerStore {
               ? `${base}\n${stderr}`
               : base || stderr || "The script failed without an error message.";
           const detail =
-            input.output.exitCode !== null && !/\bexit(?:ed)?(?:\s+with)?\s+code\s+\d+/iu.test(rawDetail)
+            input.output.exitCode !== null &&
+            !/\bexit(?:ed)?(?:\s+with)?\s+code\s+\d+/iu.test(rawDetail)
               ? `Exit code ${input.output.exitCode}: ${rawDetail}`
               : rawDetail;
           failureNotice = {
@@ -2854,8 +2852,7 @@ export class TriggerStore {
             (input.output.exitCode !== null
               ? `Automation script exited with code ${input.output.exitCode}: outcome unknown (an effect may have happened)`
               : "Automation script exit status could not be determined.");
-          const detail =
-            base && stderr && !base.includes(stderr) ? `${base}\n${stderr}` : base;
+          const detail = base && stderr && !base.includes(stderr) ? `${base}\n${stderr}` : base;
           failureNotice = {
             detail,
             reason: final ? "outcome-unknown" : "started-unknown",

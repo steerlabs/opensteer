@@ -18,9 +18,9 @@ describe("Automations migration contract (AA13 / AB5)", () => {
     expect(migrationSource).toContain("trigger_occurrences_sent_evidence_check");
     expect(migrationSource).toContain("runner_reported_at");
     expect(migrationSource).toContain("proven_not_started_at");
-    expect(existsSync(fileURLToPath(new URL("./trigger-occurrence-state.ts", import.meta.url)))).toBe(
-      false,
-    );
+    expect(
+      existsSync(fileURLToPath(new URL("./trigger-occurrence-state.ts", import.meta.url))),
+    ).toBe(false);
     expect(
       existsSync(
         fileURLToPath(new URL("./trigger-occurrence-state-writers.test.ts", import.meta.url)),

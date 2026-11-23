@@ -67,10 +67,7 @@ import {
   type EnvironmentId,
 } from "@opensteer/core";
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
-import {
-  TriggerExecutionOutputSchema,
-  TriggerScriptEventSchema,
-} from "@opensteer/triggers/models";
+import { TriggerExecutionOutputSchema, TriggerScriptEventSchema } from "@opensteer/triggers/models";
 import { AutomationScriptSchema } from "@opensteer/triggers/script";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";

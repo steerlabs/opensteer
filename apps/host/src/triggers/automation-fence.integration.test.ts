@@ -176,7 +176,7 @@ describeStore(
       const unhook = storeFixture.observePersonalReactions({
         notice: () => undefined,
         reaction: (reaction) => {
-          if (reaction.type === "executionCommands") {
+          if (reaction.type === "executionCommandsChanged") {
             executionWakes.push(reaction.type);
             coordinator.wake();
           }
@@ -197,7 +197,7 @@ describeStore(
         const claimsWhenBlocked = claimCalls;
         // Advance 2.5 seconds (5 poll intervals): zero DB statements!
         now += 2_500;
-        for (const timer of [...scheduled]) {
+        for (const timer of scheduled) {
           if (timer.at <= now) {
             scheduled.delete(timer);
             timer.run();

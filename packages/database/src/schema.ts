@@ -1385,8 +1385,10 @@ export interface AutomationFailureNoticeTable {
     | "final-occurrence-interrupted"
     | "paused"
     | "started-failing"
+    | "started-unknown"
     | "overran-schedule"
     | "watch-crash-loop"
+    | "watch-halted"
     | "outcome-unknown";
   detail: string;
   attempts: Generated<number>;

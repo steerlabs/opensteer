@@ -385,7 +385,7 @@ describe("TriggerService", () => {
   it("redacts a connected agent's webhook address from your own full-access agent Run (AB7)", async () => {
     const ownerId = createId("user");
     const triggerId = createId("trigger");
-    const foreignConnectionId = createId("agentConnection");
+    const foreignConnectionId = "acn_foreign_lineage_test";
     const routeKey = "whk_foreign_lineage_key_0123456789abcdef0123";
     const triggerRow = {
       id: triggerId,
