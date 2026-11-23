@@ -1,7 +1,7 @@
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
-export const automationsContractMigrationName = "0055_automations_contract";
+export const automationsContractMigrationName = "0113_automations_contract";
 
 /**
  * Moves pre-script automations storage directly onto the script-automation contract

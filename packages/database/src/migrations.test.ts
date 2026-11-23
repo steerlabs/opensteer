@@ -76,7 +76,8 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0054_command_requests",
     automationsContractMigrationName,
   ]);
-  // Kysely runs migrations in name order, so a later one must also sort later.
+  // Kysely runs migrations in name order, so names must be unique and ascending (gaps are allowed).
+  expect(new Set(names).size).toBe(names.length);
   expect(names).toEqual(names.toSorted());
   expect(personalTeamBaselineName).toBe("0002_personal_team_baseline");
 });

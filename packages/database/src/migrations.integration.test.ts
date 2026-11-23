@@ -1534,8 +1534,8 @@ it("keeps a server's recorded home when the publishing computer can no longer be
   ]);
 });
 
-it("applies 0055_automations_contract in one migration from pre-script state and matches a fresh catalog", async () => {
-  await migrateToLatest(database, migrationsBefore("0055_automations_contract"));
+it("applies 0113_automations_contract in one migration from pre-script state and matches a fresh catalog", async () => {
+  await migrateToLatest(database, migrationsBefore("0113_automations_contract"));
   const fixture = await seedPersonalFixture(database, "/tmp/automations-contract-migration");
   const task = await legacyTask(fixture, "Automations contract anchor");
   const principalId =
@@ -1599,14 +1599,14 @@ it("applies 0055_automations_contract in one migration from pre-script state and
       ${legacyWatchActId}, ${legacyWatchId}, ${legacyWatchRevId}, ${task.id}, ${fixture.environmentId}, ${fixture.userId},
       'active', 'running', 1, 0, 0, '', ''
     )`.execute(tx);
-    // AA3(a): an in-flight v5 firing dispatched before 0055 must get frame_sent_at backfilled so
+    // AA3(a): an in-flight v5 firing dispatched before 0113 must get frame_sent_at backfilled so
     // it settles to unknown after upgrade rather than returning to pending and failing.
     await sql`insert into commands(
       id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
       idempotency_key, type, payload, status
     ) values (
       ${inFlightCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
-      '{"kind":"person"}'::jsonb, 'in-flight-pre-0055', 'trigger.execute', '{}'::jsonb, 'dispatched'
+      '{"kind":"person"}'::jsonb, 'in-flight-pre-0113', 'trigger.execute', '{}'::jsonb, 'dispatched'
     )`.execute(tx);
     await sql`insert into trigger_occurrences(
       id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, stdout, stderr
@@ -1614,13 +1614,13 @@ it("applies 0055_automations_contract in one migration from pre-script state and
       ${inFlightOccId}, ${legacyScheduleId}, ${legacyScheduleRevId}, ${inFlightCmdId}, ${fixture.environmentId},
       'schedule:in-flight', '{}'::jsonb, 'running', '', ''
     )`.execute(tx);
-    // AB7: a pending firing queued for a legacy automation paused by 0055 must be canceled in place.
+    // AB7: a pending firing queued for a legacy automation paused by 0113 must be canceled in place.
     await sql`insert into commands(
       id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
       idempotency_key, type, payload, status
     ) values (
       ${pendingLegacyCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
-      '{"kind":"person"}'::jsonb, 'pending-legacy-pre-0055', 'trigger.execute', '{}'::jsonb, 'pending'
+      '{"kind":"person"}'::jsonb, 'pending-legacy-pre-0113', 'trigger.execute', '{}'::jsonb, 'pending'
     )`.execute(tx);
     await sql`insert into trigger_occurrences(
       id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, stdout, stderr

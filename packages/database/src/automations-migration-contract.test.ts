@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 import { migrationProvider } from "./migrations.js";
 
 describe("Automations migration contract (AA13 / AB5)", () => {
-  it("collapses all automations schema changes into a single 0055_automations_contract migration", async () => {
+  it("collapses all automations schema changes into a single 0113_automations_contract migration", async () => {
     const names = Object.keys(await migrationProvider().getMigrations());
-    const after0054 = names.filter((name) => name > "0054_command_requests");
-    expect(after0054).toEqual(["0055_automations_contract"]);
+    expect(names.filter((name) => name.includes("automation"))).toEqual([
+      "0113_automations_contract",
+    ]);
   });
 
   it("enforces sent-firing outcome invariants via PostgreSQL CHECK and deletes the pretence helper (AB5)", () => {
@@ -28,7 +29,7 @@ describe("Automations migration contract (AA13 / AB5)", () => {
     ).toBe(false);
   });
 
-  it("cancels pending firings of legacy automations paused by 0055 (AB7)", () => {
+  it("cancels pending firings of legacy automations paused by 0113 (AB7)", () => {
     const migrationSource = readFileSync(
       fileURLToPath(new URL("./automation-scripts-migration.ts", import.meta.url)),
       "utf8",
