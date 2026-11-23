@@ -288,12 +288,16 @@ task and does not refuse by engine itself, so the Runner refuses.
   person's `auth.json` and `models.json` and with an empty system prompt, so their settings,
   command prefix, `SYSTEM.md`, `APPEND_SYSTEM.md`, `AGENTS.md`, prompts and the project's `.pi`
   stay out and Pi keeps its own prompt (`packages/harness-pi/src/own-configuration.engine.test.ts`).
-- **Codex** runs only the person's own tasks. Started without their configuration it still applies
-  their command rules, runs their `notify`, and reads their global `AGENTS.md`, their custom agents
-  and a trusted project's developer instructions, none of which can be turned off one by one
-  (`packages/harness-codex/src/own-configuration.engine.test.ts`). A Codex home of Opensteer's
-  would shut them out but would need the person's sign-in shared without copying it, which is not
-  shown.
+- **Codex** runs both when the person's sign-in is in a file (`auth.json`, Codex's default) or on
+  an isolated profile. Its own task runs from the person's Codex home with their rules, `notify`,
+  instructions and MCP servers. Another's task runs from an Opensteer-owned `CODEX_HOME` that holds
+  only a symbolic link to the person's `auth.json` (never a copy; Codex 0.162.0 writes `auth.json`
+  through the link on both login and OAuth token refresh) and the reach-the-model settings from
+  their `config.toml`, with `cli_auth_credentials_store = "file"` and `project_doc_max_bytes = 0`
+  (`packages/harness-codex/src/own-configuration.engine.test.ts`). When the person stores their
+  Codex sign-in in the OS keyring (keyed by `CODEX_HOME` path) or has no `auth.json`,
+  `assertEngineMayRun` refuses others' tasks with code `forbidden` and tells them how to switch to a
+  file login.
 - **Cursor**, **Grok** and **Muse Code** run only the person's own tasks: each reads the person's
   own configuration with no way shown to start without it.
 - **OpenCode** and **Antigravity** run both and do not read the person's own configuration of

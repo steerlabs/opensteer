@@ -1,4 +1,5 @@
 import { harnessCatalogEntry, OpensteerError } from "@opensteer/core";
+import { checkCodexOthersHome } from "./codex-config.js";
 
 /**
  * Whose configuration an engine starts with for one Run.
@@ -31,12 +32,17 @@ export function engineConfiguration(context: {
 }
 
 /**
- * The engines that may run a task that is not the person's own, each on
- * evidence. For each of the first group a real-engine test in the engine lane
- * plants one of every kind of the person's configuration that engine loads, in
- * a temporary home and project, and shows that such a task's mode holds,
- * nothing of theirs runs for it, and none of their instructions or memory
- * reaches it. The second group always start with a home of Opensteer's.
+ * The engines that may unconditionally run a task that is not the person's own,
+ * each on evidence. For each of the first group a real-engine test in the
+ * engine lane plants one of every kind of the person's configuration that
+ * engine loads, in a temporary home and project, and shows that such a task's
+ * mode holds, nothing of theirs runs for it, and none of their instructions or
+ * memory reaches it. The second group always start with a home of Opensteer's.
+ *
+ * Codex is checked dynamically below: it runs others' tasks from an
+ * Opensteer-owned `CODEX_HOME` sharing the person's `auth.json` by symlink
+ * whenever a file login exists (or on an isolated profile), and refuses when
+ * their login is in the system keyring or missing.
  */
 const enginesShownWithoutThePersonsConfiguration: ReadonlySet<string> = new Set([
   // packages/harness-claude/src/own-configuration.engine.test.ts
@@ -52,14 +58,25 @@ const enginesShownWithoutThePersonsConfiguration: ReadonlySet<string> = new Set(
 /**
  * The one place that refuses a Run an engine cannot be shown to start without
  * the person's own configuration, before any process starts. The Runner asks
- * it for every Run; a driver that cannot start without that configuration asks
- * it again as a backstop.
+ * it for every Run; drivers that may refuse ask it again as a backstop.
  */
 export function assertEngineMayRun(
   driverKind: string,
-  context: { readonly personalContext: boolean; readonly personLineage: boolean },
+  context: {
+    readonly personalContext: boolean;
+    readonly personLineage: boolean;
+    readonly environment?: Readonly<Record<string, string>>;
+    readonly providerState?: { readonly kind: "ambient" | "isolated" };
+  },
 ): void {
   if (engineConfiguration(context) === "own") return;
+  if (driverKind === "codex") {
+    const check = checkCodexOthersHome(context);
+    if (!check.ok) {
+      throw new OpensteerError({ code: "forbidden", message: check.message });
+    }
+    return;
+  }
   if (enginesShownWithoutThePersonsConfiguration.has(driverKind)) return;
   const label = harnessCatalogEntry(driverKind)?.label ?? "This engine";
   throw new OpensteerError({

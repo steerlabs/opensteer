@@ -2748,9 +2748,14 @@ export class RunnerRuntime {
         active.abort.abort(new Error("The Run's execution lease ran out without the Host"));
       }
       signal.throwIfAborted();
+      const baseEnvironment = await this.#harnessEnvironment(context.harness.driverKind);
       // Before anything of the Run starts: an engine not shown to start
       // without the person's own configuration runs only their own tasks.
-      assertEngineMayRun(context.harness.driverKind, context);
+      assertEngineMayRun(context.harness.driverKind, {
+        ...context,
+        environment: baseEnvironment,
+        providerState: { kind: context.harness.stateKind },
+      });
       workspace = await this.#agentHome.prepare({
         agentHome: command.agentHome,
         personalContext: context.personalContext,
@@ -2762,7 +2767,6 @@ export class RunnerRuntime {
       const credentials = new RunCredentials(context);
       active.credentials = credentials;
       this.#scheduleCredentialRefresh(active, context.credentialRefreshAfterMs);
-      const baseEnvironment = await this.#harnessEnvironment(context.harness.driverKind);
       // Both state kinds resolve through the same store record, so a Run and an
       // inspection of the same profile always project one continuation
       // namespace instead of two derived from different identities.

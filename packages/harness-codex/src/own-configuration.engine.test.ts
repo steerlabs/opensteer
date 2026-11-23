@@ -1,15 +1,25 @@
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createId, ModelSelectionSchema, type ThreadAccessMode } from "@opensteer/core";
+import {
+  createId,
+  ModelSelectionSchema,
+  OpensteerError,
+  requestOptionDeclines,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import {
   nativeUserHarnessRuntimeBoundary,
   type HarnessEvent,
   type HarnessSessionContext,
 } from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
-import { CodexHarnessDriver, packagedCodexExecutable } from "./index.js";
+import {
+  CodexHarnessDriver,
+  codexOthersHomeDirectory,
+  packagedCodexExecutable,
+} from "./index.js";
 
 /**
  * The shipped Codex, started by the driver in a temporary `CODEX_HOME` and
@@ -128,6 +138,8 @@ async function startStubApi(command: string) {
  */
 async function codexRun(input: {
   readonly accessMode: ThreadAccessMode;
+  readonly authFile?: false;
+  readonly credentialStore?: "auto" | "file" | "keyring";
   readonly own: boolean;
   readonly rules?: false;
 }) {
@@ -141,9 +153,18 @@ async function codexRun(input: {
   await mkdir(join(codexHome, "rules"), { recursive: true });
   await mkdir(join(project, ".codex", "rules"), { recursive: true });
   const api = await startStubApi("touch ran.txt");
+  if (input.authFile !== false) {
+    await writeFile(
+      join(codexHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-local-stub", auth_mode: "apikey" }),
+    );
+  }
   await writeFile(
     join(codexHome, "config.toml"),
     [
+      ...(input.credentialStore
+        ? [`cli_auth_credentials_store = ${JSON.stringify(input.credentialStore)}`]
+        : []),
       'model_provider = "stub"',
       `notify = ["touch", "${notifyRan}"]`,
       'developer_instructions = "PERSON-DEVELOPER-MARKER"',
@@ -199,7 +220,10 @@ async function codexRun(input: {
     TMPDIR: state,
   };
   const driver = new CodexHarnessDriver({
-    launch: { arguments: [], executable: packagedCodexExecutable() },
+    launch: {
+      arguments: [],
+      executable: process.env.OPENSTEER_CODEX_EXECUTABLE || packagedCodexExecutable(),
+    },
   });
   const instanceId = createId("harnessInstance");
   const adapter = await driver.create({ config: {}, instanceId, sourceId: "openai" });
@@ -259,13 +283,11 @@ async function codexRun(input: {
       for await (const event of session.events) {
         events.push(event);
         if (event.type === "request.opened") {
-          // Decline with what Codex offers: a command it asks about has no
-          // "Reject" of its own, only "Cancel", which ends the turn.
+          // Decline using the same helper the product uses: Codex 0.162.0
+          // offers "allow-once" and "cancel" on command approvals, not "reject".
           const presentation = event.data.request.presentation;
           const options = presentation.kind === "choice" ? presentation.options : [];
-          const decline =
-            options.find((option) => option.hint === "reject-once") ??
-            options.find((option) => option.hint === "cancel");
+          const decline = options.find(requestOptionDeclines);
           if (!decline) throw new Error("Codex offered no way to decline");
           await session.resolveRequest(event.data.request.id, {
             kind: "choice",
@@ -301,11 +323,17 @@ async function codexRun(input: {
       await observing;
     }
   }
+  const othersHome = codexOthersHomeDirectory({ privateStateRoot: state }, codexHome);
   return {
+    codexHome,
     commandRan: await exists(join(project, "ran.txt")),
     events,
     hookRan: await exists(hookRan),
     notifyRan: await exists(notifyRan),
+    othersHome,
+    othersAuthStat: await lstat(join(othersHome, "auth.json")).catch(() => undefined),
+    othersAuthRealPath: await realpath(join(othersHome, "auth.json")).catch(() => undefined),
+    othersConfig: await readFile(join(othersHome, "config.toml"), "utf8").catch(() => undefined),
     requests: api.requests,
     startFailure,
   };
@@ -330,40 +358,61 @@ it("runs the person's own Supervised task with their own Codex configuration", a
     expect(sent).toContain(marker);
 }, 240_000);
 
-/**
- * Why Codex refuses a task a connected agent or a chat started
- * (`assertEngineMayRun`): even started with Opensteer's stripped
- * configuration, Codex 0.162.0 still applies the person's command rules and
- * `notify`, and reads their `~/.codex/AGENTS.md`, custom agents and the
- * project's developer instructions. When this stops being true, Codex can be
- * shown and added to the engines that run such tasks.
- */
-it("still reads the person's Codex configuration when started stripped", async () => {
+it("runs a connected agent's or a chat's Supervised task from an Opensteer-owned home without the person's configuration", async () => {
   const run = await codexRun({ accessMode: "approval-required", own: false });
   expect(run.startFailure).toBeUndefined();
-  // (A) Their rule ran the command in Supervised without asking.
-  expect(run.events.filter((event) => event.type === "request.opened")).toHaveLength(0);
-  expect(run.commandRan).toBe(true);
-  // (B) Their notify command ran; their hook did not (Codex's hooks feature is off).
-  expect(run.notifyRan).toBe(true);
+  expect(run.events.find((event) => event.type === "run.failed")).toBeUndefined();
+  // The Opensteer home shares auth.json by symbolic link (never a copy) and
+  // carries only reach-the-model settings.
+  expect(run.othersAuthStat?.isSymbolicLink()).toBe(true);
+  expect(run.othersAuthRealPath).toBe(await realpath(join(run.codexHome, "auth.json")));
+  expect(run.othersConfig).toContain('cli_auth_credentials_store = "file"');
+  expect(run.othersConfig).toContain("[model_providers.stub]");
+  expect(run.othersConfig).not.toContain("notify");
+  expect(run.othersConfig).not.toContain("PERSON-DEVELOPER-MARKER");
+  expect(run.othersConfig).not.toContain("PERSON-AGENT-MARKER");
+  expect(run.othersConfig).not.toContain("trust_level");
+  // (A) The mode holds: neither the person's nor the project's command rule applies.
+  // Declining with what Codex 0.162.0 offers ("cancel") stops the command and interrupts cleanly.
+  const opened = run.events.filter((event) => event.type === "request.opened");
+  expect(opened).toHaveLength(1);
+  expect(run.commandRan).toBe(false);
+  expect(run.events.some((event) => event.type === "run.interrupted")).toBe(true);
+  // (B) Nothing of the person's runs: neither notify nor hooks.
+  expect(run.notifyRan).toBe(false);
   expect(run.hookRan).toBe(false);
-  // (C) Their AGENTS.md, custom agent and the project's developer instructions reached the model.
+  // (C) None of their instructions, custom agent, or project instructions reach the model.
   const sent = run.requests.join("\n");
   for (const marker of [
+    "PERSON-DEVELOPER-MARKER",
     "PERSON-AGENT-MARKER",
     "PERSON-GLOBAL-AGENTS-MARKER",
+    "PROJECT-AGENTS-MARKER",
     "PROJECT-DEVELOPER-MARKER",
   ])
-    expect(sent).toContain(marker);
-  // Without their rules the same command asks: the rule is what let it through.
-  const withoutRules = await codexRun({
-    accessMode: "approval-required",
-    own: false,
-    rules: false,
-  });
-  expect(withoutRules.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
-  expect(withoutRules.commandRan).toBe(false);
-  // The project's AGENTS.md and the person's own developer instructions do not.
-  expect(sent).not.toContain("PROJECT-AGENTS-MARKER");
-  expect(sent).not.toContain("PERSON-DEVELOPER-MARKER");
+    expect(sent).not.toContain(marker);
 }, 240_000);
+
+it("refuses others' tasks before starting Codex when the login is in the keyring or auth.json is absent", async () => {
+  const keyring = await codexRun({
+    accessMode: "approval-required",
+    credentialStore: "keyring",
+    own: false,
+  });
+  expect(keyring.startFailure).toBeInstanceOf(OpensteerError);
+  expect((keyring.startFailure as OpensteerError).code).toBe("forbidden");
+  expect((keyring.startFailure as OpensteerError).message).toContain(
+    'cli_auth_credentials_store = "file"',
+  );
+  expect(keyring.requests).toHaveLength(0);
+
+  const missingAuth = await codexRun({
+    accessMode: "approval-required",
+    authFile: false,
+    own: false,
+  });
+  expect(missingAuth.startFailure).toBeInstanceOf(OpensteerError);
+  expect((missingAuth.startFailure as OpensteerError).code).toBe("forbidden");
+  expect((missingAuth.startFailure as OpensteerError).message).toContain("auth.json");
+  expect(missingAuth.requests).toHaveLength(0);
+}, 120_000);

@@ -2757,13 +2757,81 @@ describe("Codex app-server harness", () => {
       });
       const session = await fixture.adapter.startSession(fixture.context);
       const { argv, config } = await threadStartOf(fixture);
-      expect(argv).toEqual(expect.arrayContaining(['web_search="disabled"']));
+      expect(argv).toEqual(
+        expect.arrayContaining(['web_search="disabled"', 'cli_auth_credentials_store="file"']),
+      );
       expect(config).toMatchObject({
         "mcp_servers.github.enabled": false,
         project_doc_max_bytes: 0,
         web_search: "disabled",
       });
       await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts others' tasks from an Opensteer-owned CODEX_HOME linking auth.json and keeping only model-reaching config", async () => {
+      const root = await mkdtemp(join(tmpdir(), "opensteer-codex-others-home-"));
+      temporaryDirectories.push(root);
+      const personCodexHome = join(root, "person-codex");
+      await mkdir(personCodexHome, { recursive: true });
+      const personAuth = join(personCodexHome, "auth.json");
+      await writeFile(personAuth, JSON.stringify({ OPENAI_API_KEY: "sk-stub", auth_mode: "apikey" }));
+      await writeFile(
+        join(personCodexHome, "config.toml"),
+        [
+          'model_provider = "corp"',
+          'notify = ["touch", "/tmp/should-not-run"]',
+          'developer_instructions = "PRIVATE-MARKER"',
+          "[model_providers.corp]",
+          'name = "Corp"',
+          'base_url = "https://corp.invalid/v1"',
+          'wire_api = "responses"',
+          'env_key = "CORP_API_KEY"',
+          "[agents.custom]",
+          'description = "PRIVATE-AGENT"',
+        ].join("\n"),
+      );
+      const fixture = await setup("ambient-extensions", {
+        environmentOverrides: { CODEX_HOME: personCodexHome },
+        personalContext: true,
+        personLineage: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const captured = await fixture.capture();
+      const processRecord = captured.find((message) => message.fakeCodexProcess)
+        ?.fakeCodexProcess as { environment?: Record<string, string | null> } | undefined;
+      const codexHome = processRecord?.environment?.CODEX_HOME ?? undefined;
+      expect(codexHome).toBeDefined();
+      expect(codexHome).not.toBe(personCodexHome);
+      const authLink = join(codexHome!, "auth.json");
+      expect((await lstat(authLink)).isSymbolicLink()).toBe(true);
+      expect(await readlink(authLink)).toBe(personAuth);
+      const generatedConfig = await readFile(join(codexHome!, "config.toml"), "utf8");
+      expect(generatedConfig).toContain('cli_auth_credentials_store = "file"');
+      expect(generatedConfig).toContain('model_provider = "corp"');
+      expect(generatedConfig).toContain('base_url = "https://corp.invalid/v1"');
+      expect(generatedConfig).not.toContain("notify");
+      expect(generatedConfig).not.toContain("PRIVATE-MARKER");
+      expect(generatedConfig).not.toContain("PRIVATE-AGENT");
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("refuses others' tasks before spawning Codex when the person uses keyring auth or has no auth.json", async () => {
+      const root = await mkdtemp(join(tmpdir(), "opensteer-codex-keyring-"));
+      temporaryDirectories.push(root);
+      const keyringHome = join(root, "keyring-codex");
+      await mkdir(keyringHome, { recursive: true });
+      await writeFile(join(keyringHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+      const fixture = await setup("ambient-extensions", {
+        environmentOverrides: { CODEX_HOME: keyringHome },
+        personalContext: true,
+        personLineage: false,
+      });
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "forbidden",
+        message: expect.stringContaining('cli_auth_credentials_store = "file"'),
+      });
       await fixture.adapter.close();
     });
   });
@@ -3981,9 +4049,18 @@ interface Fixture {
 async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixture> {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-test-"));
   temporaryDirectories.push(directory);
+  const defaultCodexHome = join(directory, "ambient-codex-home");
+  if (!options.environmentOverrides?.CODEX_HOME) {
+    await mkdir(defaultCodexHome, { recursive: true });
+    await writeFile(
+      join(defaultCodexHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-test-stub", auth_mode: "apikey" }),
+    );
+  }
   const capturePath = join(directory, "capture.jsonl");
   const environment = stringEnvironment({
     ...process.env,
+    CODEX_HOME: defaultCodexHome,
     ...options.environmentOverrides,
     ...(scenario === "ambient-extensions"
       ? { FAKE_CODEX_AMBIENT_SKILL_PATH: join(directory, "ambient-skill", "SKILL.md") }

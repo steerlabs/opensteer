@@ -130,6 +130,8 @@ import {
   type SupervisedProcess,
   linkDirectory,
   linkNames,
+  assertEngineMayRun,
+  checkCodexOthersHome,
   engineConfiguration,
   type HarnessEngineConfiguration,
 } from "@opensteer/harness";
@@ -1091,6 +1093,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
   }
 
   #open(context: HarnessSessionContext, mode: SessionMode): Promise<CodexHarnessSession> {
+    assertEngineMayRun("codex", context);
     return CodexHarnessSession.open(
       this.#config,
       context,
@@ -1117,6 +1120,14 @@ class CodexHarnessAdapter implements HarnessAdapter {
         AbortSignal.any([lifetime, this.#lifetime.signal]),
       );
     }
+    const configuration = engineConfiguration(context);
+    const othersCheck =
+      configuration === "stripped" && context.providerState.kind === "ambient"
+        ? checkCodexOthersHome({
+            environment: shared.environment,
+            providerState: context.providerState,
+          })
+        : undefined;
     const key = JSON.stringify([
       shared.environment,
       shared.workingDirectory,
@@ -1124,7 +1135,10 @@ class CodexHarnessAdapter implements HarnessAdapter {
       context.providerState.kind,
       // A process runs one kind of configuration: its flags and the settings
       // it loaded are the person's own, or none of theirs.
-      engineConfiguration(context),
+      configuration,
+      othersCheck?.ok && othersCheck.mode === "ambient"
+        ? [othersCheck.sourceHome, othersCheck.configTomlText]
+        : null,
     ]);
     const current = this.#shared;
     if (current?.key === key) {
@@ -1175,6 +1189,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
       context.providerState,
       this.#source,
       { ...context, config: this.#config, launch: this.#launch, workingDirectory },
+      configuration,
     );
     // A call's text log can hold its session descriptions, so it lives in the
     // call's private directory, removed when the call ends. Codex also keeps a
@@ -1191,6 +1206,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
           context.writableRoots,
           context,
           configuration,
+          configuration === "stripped",
         ),
         // A conversation no session holds unloads at once, so its next load
         // takes that Run's configuration and nothing it ran outlives it.
@@ -3669,6 +3685,7 @@ function codexProcessBoundaryArgs(
   writableRoots: readonly string[],
   attachments?: Pick<HarnessSessionContext, "attachmentDirectory" | "attachmentRoot">,
   configuration: HarnessEngineConfiguration = "stripped",
+  usesOthersHome = false,
 ): string[] {
   const args = [
     "-c",
@@ -3693,11 +3710,12 @@ function codexProcessBoundaryArgs(
     `shell_environment_policy.inherit=${JSON.stringify(codexShellEnvironmentInherit)}`,
     "-c",
     `shell_environment_policy.exclude=${JSON.stringify(codexShellEnvironmentExclude)}`,
-    // The credential store follows the profile, not the runtime boundary: an
-    // isolated profile on a person's own computer must keep its credentials in
-    // its private provider home instead of the machine-wide store that login,
-    // logout, and inspection would otherwise disagree about.
-    ...codexCredentialStoreArgs(providerState),
+    // The credential store follows the profile and whether this process uses
+    // the Opensteer-owned others'-tasks home: an isolated profile or an
+    // others'-tasks home keeps credentials in its `auth.json` file (or symlink
+    // to it) instead of the OS keyring keyed by `CODEX_HOME`. Inspection and
+    // login on an ambient profile stay with the person's own store.
+    ...codexCredentialStoreArgs(providerState, usesOthersHome),
   ];
   if (runtimeBoundary.kind === "native-user") return args;
 
@@ -3777,8 +3795,13 @@ function minimalPathRoots(paths: readonly string[]): readonly string[] {
   );
 }
 
-function codexCredentialStoreArgs(providerState: Pick<HarnessProviderState, "kind">): string[] {
-  return providerState.kind === "isolated" ? ["-c", 'cli_auth_credentials_store="file"'] : [];
+function codexCredentialStoreArgs(
+  providerState: Pick<HarnessProviderState, "kind">,
+  usesOthersHome = false,
+): string[] {
+  return providerState.kind === "isolated" || usesOthersHome
+    ? ["-c", 'cli_auth_credentials_store="file"']
+    : [];
 }
 
 /**
@@ -4179,13 +4202,89 @@ function codexSourceApiKey(providerState: HarnessProviderState) {
   });
 }
 
+/**
+ * The Opensteer-owned `CODEX_HOME` for tasks that are not the person's own on
+ * an ambient Codex profile. Holds only:
+ *  - `auth.json`: a symbolic link to the person's `auth.json` (never a copy),
+ *    which Codex 0.162.0 writes in place on both login and OAuth refresh.
+ *  - `config.toml`: `cli_auth_credentials_store = "file"` plus only the
+ *    reach-the-model settings extracted from the person's `config.toml`.
+ *  - `sqlite/`: Codex's state directory, separate from the person's own home.
+ */
+export function codexOthersHomeDirectory(
+  providerState: Pick<HarnessProviderState, "privateStateRoot">,
+  sourceHome: string,
+): string {
+  const digest = createHash("sha256").update(resolve(sourceHome)).digest("hex").slice(0, 16);
+  return join(resolve(providerState.privateStateRoot), "codex-others-home", digest);
+}
+
+const othersHomeMaterializations = new Map<string, Promise<void>>();
+
+async function materializeCodexOthersHome(
+  environment: Readonly<Record<string, string>>,
+  providerState: HarnessProviderState,
+): Promise<Readonly<Record<string, string>>> {
+  const check = checkCodexOthersHome({ environment, providerState });
+  if (!check.ok) {
+    throw new OpensteerError({ code: "forbidden", message: check.message });
+  }
+  if (check.mode !== "ambient") return environment;
+  const othersHome = codexOthersHomeDirectory(providerState, check.sourceHome);
+  const previous = othersHomeMaterializations.get(othersHome) ?? Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      await mkdir(othersHome, { mode: 0o700, recursive: true });
+      await mkdir(codexSqliteHome(othersHome), { mode: 0o700, recursive: true });
+      await replacePrivateFileAtomically(join(othersHome, "config.toml"), check.configTomlText);
+      const authLink = join(othersHome, "auth.json");
+      const existing = await lstat(authLink).catch((error: unknown) => {
+        if (nodeErrorCode(error) === "ENOENT") return undefined;
+        throw error;
+      });
+      if (existing) {
+        if (existing.isSymbolicLink() && (await linkNames(authLink, check.authPath))) return;
+        await rm(authLink, { force: true, recursive: true });
+      }
+      try {
+        await symlink(check.authPath, authLink);
+      } catch (error) {
+        if (nodeErrorCode(error) !== "EEXIST") throw error;
+        const winner = await lstat(authLink);
+        if (!winner.isSymbolicLink() || !(await linkNames(authLink, check.authPath))) {
+          throw error;
+        }
+      }
+    });
+  othersHomeMaterializations.set(othersHome, current);
+  try {
+    await current;
+  } finally {
+    if (othersHomeMaterializations.get(othersHome) === current) {
+      othersHomeMaterializations.delete(othersHome);
+    }
+  }
+  return {
+    ...environment,
+    CODEX_HOME: othersHome,
+    CODEX_SQLITE_HOME: codexSqliteHome(othersHome),
+  };
+}
+
 async function codexProcessEnvironment(
   environment: Readonly<Record<string, string>>,
   providerState: HarnessProviderState,
   source: CodexSourceSelection | undefined,
   preparation: CodexHomePreparation,
+  configuration: HarnessEngineConfiguration = "own",
 ): Promise<Readonly<Record<string, string>>> {
-  if (providerState.kind === "ambient") return environment;
+  if (providerState.kind === "ambient") {
+    if (configuration === "stripped") {
+      return materializeCodexOthersHome(environment, providerState);
+    }
+    return environment;
+  }
   const providerHome = isolatedCodexProviderHome(providerState);
   const processEnvironment = {
     ...environment,
