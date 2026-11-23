@@ -346,19 +346,25 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       grant: tasks,
     });
     await connections.revoke(fixture.userId, personEndedChat.id);
-    const agent = await workHomeDatabase(database, fixture.deploymentId, "offboarding", open, async () => {
-      await database
-        .updateTable("agentConnections")
-        .set({
-          revokedAt: new Date(),
-          cleanupReason: "revoked",
-          cleanupRequestedAt: new Date(),
-          bridgeEndedBy: "work-home" as never,
-        })
-        .where("id", "=", workHomeEndedChat.id)
-        .execute();
-      return connected(database, fixture.userId, tasks, "auto");
-    });
+    const agent = await workHomeDatabase(
+      database,
+      fixture.deploymentId,
+      "offboarding",
+      open,
+      async () => {
+        await database
+          .updateTable("agentConnections")
+          .set({
+            revokedAt: new Date(),
+            cleanupReason: "revoked",
+            cleanupRequestedAt: new Date(),
+            bridgeEndedBy: "work-home" as never,
+          })
+          .where("id", "=", workHomeEndedChat.id)
+          .execute();
+        return connected(database, fixture.userId, tasks, "auto");
+      },
+    );
     const before = await connection(database, agent);
 
     await migrateToLatest(database);
@@ -399,7 +405,9 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     expect(await leftovers(database)).toEqual([]);
   });
 
-  it("leaves connections that had already expired exactly as they are", async ({ storeFixture }) => {
+  it("leaves connections that had already expired exactly as they are", async ({
+    storeFixture,
+  }) => {
     const { database } = storeFixture;
     const { fixture } = await storeFixture.createChannelDeliveryFixture("work-expired");
     const expiredAt = new Date(Date.now() - 60 * 60_000);
@@ -424,10 +432,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       "active",
       { ...open, externalMaxMode: "approval-required", allowEverything: false },
       async () =>
-        [
-          await expired(tasks, "full-access"),
-          await expired(everything, "full-access"),
-        ] as const,
+        [await expired(tasks, "full-access"), await expired(everything, "full-access")] as const,
     );
     const snapshot = (id: string) =>
       database
