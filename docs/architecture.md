@@ -271,9 +271,13 @@ documentation, not yet shown on the engines).
 
 Every task's engine gets the person's proxy and certificate variables (`HTTPS_PROXY`,
 `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`)
-from their login shell: they are how the engine reaches the network, not its configuration. A
-proxy address can carry a password, so a URL's user and password are removed from every engine
-error, Run failure and Runner log line (`redactUrlCredentials`, `packages/shared/src/safeMessage.ts`).
+from their login shell: they are how the engine reaches the network, not its configuration.
+Without them an engine behind a proxy cannot reach its model at all. A task's commands run as the
+person's user and can read the engine's environment, so a proxy address that carries a password
+is readable by every task's commands, the person's own and those a connected agent or a chat
+started, as the person's shell profile already is. Opensteer removes a URL's user and password
+only from its own records: every engine error, Run failure and Runner log line
+(`redactUrlCredentials`, `packages/shared/src/safeMessage.ts`).
 
 The task's mode wins over the person's settings. Claude Code receives the permission mode on the
 command line, and in Supervised and Auto-accept edits an Opensteer PreToolUse hook asks before
