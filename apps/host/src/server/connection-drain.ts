@@ -1,10 +1,48 @@
 import { refuseConnection } from "@opensteer/shared/httpServer";
 import type { FastifyInstance } from "fastify";
 import type { IncomingMessage, Server } from "node:http";
+import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 
 /** How often connections that have become idle are closed while the server drains. */
 const idleSweepIntervalMs = 50;
+
+const trackedSockets = new WeakMap<Server, Set<Socket>>();
+
+/**
+ * Records open sockets on `server` without attaching data listeners so shutdown
+ * can close sockets that connected and never sent a byte (such as HTTP client
+ * pool pre-connects). Node's `server.closeIdleConnections()` only closes sockets
+ * that have finished at least one HTTP request, leaving zero-byte sockets open
+ * until the full shutdown grace elapses.
+ */
+export function trackIdleConnections(server: Server): void {
+  if (trackedSockets.has(server)) return;
+  const sockets = new Set<Socket>();
+  trackedSockets.set(server, sockets);
+  server.on("connection", (socket: Socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+}
+
+function closeUnusedConnections(server: Server): void {
+  const sockets = trackedSockets.get(server);
+  if (!sockets) return;
+  for (const socket of sockets) {
+    if (socket.bytesRead === 0 && socket.readableLength === 0) {
+      sockets.delete(socket);
+      socket.destroy();
+    }
+  }
+}
+
+function closeIdle(server: Server): void {
+  server.closeIdleConnections();
+  // Only cut zero-byte sockets once the server has stopped listening so a late
+  // connection arriving during WebSocket preClose still gets its HTTP answer.
+  if (!server.listening) closeUnusedConnections(server);
+}
 
 /**
  * Bounds how long a closing server waits for its HTTP connections.
@@ -16,11 +54,14 @@ const idleSweepIntervalMs = 50;
  * unanswered when the grace runs out is cut off.
  */
 export function drainConnectionsWithin(server: Server, graceMs: number): void {
-  const sweep = setInterval(() => server.closeIdleConnections(), idleSweepIntervalMs);
+  const immediate = setImmediate(() => closeIdle(server));
+  const sweep = setInterval(() => closeIdle(server), idleSweepIntervalMs);
   const cutoff = setTimeout(() => server.closeAllConnections(), graceMs);
+  immediate.unref();
   sweep.unref();
   cutoff.unref();
   server.once("close", () => {
+    clearImmediate(immediate);
     clearInterval(sweep);
     clearTimeout(cutoff);
   });
@@ -36,7 +77,9 @@ export function drainConnectionsWithin(server: Server, graceMs: number): void {
 export function closeWebSocketsWithin(
   graceMs: number,
   httpGraceMs: number,
+  httpServer?: Server,
 ): (this: FastifyInstance, done: () => void) => void {
+  if (httpServer) trackIdleConnections(httpServer);
   return function preClose(done) {
     // Fastify closes the HTTP server once this finishes; the drain then keeps
     // a request answered mid-shutdown from holding it in keep-alive.
@@ -57,6 +100,7 @@ export function closeWebSocketsWithin(
     server.close(() => {
       clearTimeout(deadline);
       done();
+      setImmediate(() => closeIdle(this.server)).unref();
     });
     if (server.clients.size === 0) {
       clearTimeout(deadline);

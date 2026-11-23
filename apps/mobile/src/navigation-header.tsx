@@ -3,9 +3,19 @@ import { useNavigation, useNavigationState, useRoute } from "@react-navigation/n
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type HostInstance } from "react-native";
-import { presentedFrom } from "./navigation-presentations.js";
-import { isTopLevel } from "./top-level.js";
-import { useSidebarControl, useSidebarDocked } from "./sidebar/sidebar-context.js";
+import { presentedFrom, pushedInPresentation } from "./navigation-presentations.js";
+import {
+  isTopLevel,
+  showsSidebarMenu,
+  topLevelScreenOptions,
+  type StackView,
+} from "./top-level.js";
+import {
+  sidebarDockedRef,
+  sidebarRef,
+  useSidebarControl,
+  useSidebarDocked,
+} from "./sidebar/sidebar-context.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "./theme.js";
 import { useHostValue, useSelectedHostClient } from "./ui/mobile-client-context.js";
 import { AppText } from "./ui/primitives.js";
@@ -82,9 +92,86 @@ export function useIsPresented(): boolean {
   });
 }
 
-/** Menu stays beside Back on drill-ins; presented flows keep their own controls. */
+/**
+ * The leading Menu options for a screen inside a Home. Used both from static
+ * `rootScreenOptions` (so the Menu is present on the route's very first frame,
+ * before any effect runs) and from `InstallMenu` (which updates the attention
+ * badge and docked state live).
+ */
+export function menuHeaderOptions(options: {
+  readonly attention: number;
+  readonly docked: boolean;
+  readonly onOpen: (trigger?: HostInstance | null) => void;
+  readonly topLevel: boolean;
+}): NativeStackNavigationOptions {
+  if (options.docked) {
+    return {
+      headerBackVisible: !options.topLevel,
+      headerLeft: () => null,
+      unstable_headerLeftItems: () => [],
+    };
+  }
+  const menu: HeaderActionSpec = {
+    accessibilityHint: menuHint,
+    accessibilityLabel: menuLabel(options.attention),
+    ...(options.attention === 0 ? {} : { badge: attentionBadge(options.attention) }),
+    icon: "line.3.horizontal",
+    label: "Menu",
+    onPress: () => options.onOpen(),
+  };
+  return {
+    headerBackVisible: !options.topLevel,
+    headerLeft: () => <MenuHeaderButton {...menu} onOpen={options.onOpen} />,
+    unstable_headerLeftItems: () => [nativeHeaderItem(menu)],
+  };
+}
+
+/**
+ * Recomputed as the stack changes, so a top-level screen's transition and Menu
+ * are in force on its first frame rather than waiting on a post-mount effect.
+ * A page pushed inside a sheet, as every Settings page is, carries its own Back:
+ * iOS shows it as another sheet with no chevron. Screens outside a Home (such as
+ * Your Opensteers) keep their own leading action.
+ */
+export function rootScreenOptions({
+  navigation,
+  route,
+}: {
+  readonly navigation: {
+    readonly getState: () => StackView;
+    readonly goBack: () => void;
+  };
+  readonly route: { readonly key: string };
+}): NativeStackNavigationOptions {
+  const state = navigation.getState();
+  const topLevel = isTopLevel(state, route.key);
+  const options = topLevel
+    ? { ...stackScreenOptions, ...topLevelScreenOptions }
+    : stackScreenOptions;
+  if (Platform.OS === "ios" && pushedInPresentation(state, route.key)) {
+    return {
+      ...options,
+      ...headerActions({ left: { label: "Back", onPress: () => navigation.goBack() } }),
+    };
+  }
+  return showsSidebarMenu(state, route.key)
+    ? {
+        ...options,
+        ...menuHeaderOptions({
+          attention: 0,
+          docked: sidebarDockedRef.current,
+          onOpen: (trigger) => sidebarRef.current?.open(trigger),
+          topLevel,
+        }),
+      }
+    : options;
+}
+
+/** Menu stays beside Back on screens inside a Home; the Home list and presented flows keep their own controls. */
 export function TopLevelMenu(): ReactNode {
-  return useIsPresented() ? null : <InstallMenu />;
+  const { key } = useRoute();
+  const hasMenu = useNavigationState((state) => showsSidebarMenu(state, key));
+  return hasMenu ? <InstallMenu /> : null;
 }
 
 function InstallMenu(): null {
@@ -97,27 +184,7 @@ function InstallMenu(): null {
     if (sidebar === null) return;
     // Docked, the sidebar is in view with its marks on its rows: there is
     // nothing to open, and a top-level screen has no Back.
-    if (docked) {
-      navigation.setOptions({
-        headerBackVisible: !topLevel,
-        headerLeft: () => null,
-        unstable_headerLeftItems: () => [],
-      });
-      return;
-    }
-    const menu: HeaderActionSpec = {
-      accessibilityHint: menuHint,
-      accessibilityLabel: menuLabel(attention),
-      ...(attention === 0 ? {} : { badge: attentionBadge(attention) }),
-      icon: "line.3.horizontal",
-      label: "Menu",
-      onPress: () => sidebar.open(),
-    };
-    navigation.setOptions({
-      headerBackVisible: !topLevel,
-      headerLeft: () => <MenuHeaderButton {...menu} onOpen={sidebar.open} />,
-      unstable_headerLeftItems: () => [nativeHeaderItem(menu)],
-    });
+    navigation.setOptions(menuHeaderOptions({ attention, docked, onOpen: sidebar.open, topLevel }));
   }, [attention, docked, navigation, sidebar, topLevel]);
   return null;
 }

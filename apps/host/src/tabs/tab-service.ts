@@ -692,12 +692,25 @@ export class TabService implements TabServicePort {
     );
     if (write.kind === "page") await this.options.pages.admitted?.(write);
     this.changed(ownerId);
-    return { tab: await this.#get(actor, result.tabIds[0]!) };
+    return { tab: await this.#get(actor, result.tabIds[0]!, result.layout) };
   }
   get(ownerId: UserId, tabId: TabId): Promise<Tab> {
     return this.#get({ kind: "person", ownerId }, tabId);
   }
-  async #get(actor: TabActor, tabId: TabId): Promise<Tab> {
+  async #get(actor: TabActor, tabId: TabId, layout?: TabLayout): Promise<Tab> {
+    if (actor.kind !== "person" && layout && tabGroupOf(layout, tabId) === null) {
+      const row = await this.options.store.get(owner(actor), tabId);
+      if (row) {
+        const { tabs } = await this.#projectRows(
+          actor,
+          [row],
+          layout,
+          this.options.store.database,
+          new Map([[row.id, { groupId: null }]]),
+        );
+        return tabs[0] ?? notFound();
+      }
+    }
     const { tabs } = await this.project(actor);
     return tabs.find((tab) => tab.tabId === tabId) ?? notFound();
   }
