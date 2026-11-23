@@ -8,6 +8,7 @@ import type { EditingOperation, EditingTargetAbilities } from "../editing/types.
 import type { ViewerClipboardResult } from "../host/browser-editing.js";
 import { mergeDisplayInput } from "./display-input.js";
 import {
+  DisplayInputTooLargeError,
   maxDisplayInputEvents,
   type DisplayEditingMessage,
   type DisplayLease,
@@ -398,13 +399,20 @@ export class DisplayEditingSession {
           );
           return;
         }
+        if (error instanceof DisplayInputTooLargeError) {
+          this.#finish(pending, this.#refuse("too-large", refusalWords["too-large"]));
+          return;
+        }
+        if (pending.sent) {
+          this.#finish(
+            pending,
+            this.#refuse("unavailable", "This edit couldn’t be sent. Try again."),
+          );
+          return;
+        }
         this.#finish(
           pending,
-          atomic
-            ? this.#refuse("too-large", refusalWords["too-large"])
-            : error instanceof Error
-              ? error
-              : new Error("This edit couldn’t be sent."),
+          error instanceof Error ? error : new Error("This edit couldn’t be sent."),
         );
       }
     });

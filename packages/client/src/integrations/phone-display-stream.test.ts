@@ -1493,6 +1493,90 @@ describe("display editing receipt adapter", () => {
       editing.dispose();
     }
   });
+  it("reports a socket error in a non-clipboard atomic group honestly instead of saying too large", async () => {
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const { DisplayEditingSession } = await import("./display-editing.js");
+    const lease = streams.retain({ ...target, scope: "a4-socket-error", editing: 1 });
+    const socket = opened();
+    socket.json({
+      type: "display.state",
+      state: "live",
+      generation: 1,
+      width: 720,
+      height: 1280,
+      editingVersion: 1,
+      sharedInput: 1,
+    });
+    const editing = new DisplayEditingSession(lease);
+    editing.setGeometry(1);
+    const originalSend = socket.send.bind(socket);
+    socket.send = () => {
+      throw new Error("WebSocket is still connecting");
+    };
+    await expect(
+      editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "x", after: "", text: "" } },
+        { kind: "command", command: "moveBackward", contextId, follows: true },
+      ]),
+    ).rejects.toThrow("This edit couldn’t be sent. Try again.");
+    expect(editing.getSnapshot().receipt).toBe("This edit couldn’t be sent. Try again.");
+    expect(editing.diagnostics.refusals["too-large"]).toBeUndefined();
+
+    // A genuinely over-limit atomic group still reports "This edit is too large.".
+    socket.send = originalSend;
+    await expect(
+      editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "x", after: "", text: "a".repeat(10_000) } },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+        {
+          kind: "edit",
+          edit: { contextId, before: "", after: "", text: "\u0001".repeat(5_000) },
+          follows: true,
+        },
+      ]),
+    ).rejects.toThrow("This edit is too large.");
+    expect(editing.diagnostics.refusals["too-large"]).toBe(1);
+    editing.dispose();
+  });
 });
 
 describe("phone power and explicit-open intent", () => {
