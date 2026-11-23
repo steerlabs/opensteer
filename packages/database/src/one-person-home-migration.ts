@@ -42,11 +42,13 @@ export async function applyRemoveOrganizations(database: Kysely<unknown>): Promi
       select state, policy into work from work_home_policy where singleton;
       if not found then return; end if;
       -- What the policy refused could do nothing: it ends, as Disconnect ends it. So does every
-      -- connection of a Home its organization was closing.
+      -- open connection of a Home its organization was closing. Already-expired connections stay
+      -- as they are.
       update agent_connections set revoked_at = now(), token_hash = null,
         grant_revision = grant_revision + 1, cleanup_reason = 'revoked',
         cleanup_requested_at = now(), cleanup_completed_at = null
-      where revoked_at is null and (work.state <> 'active' or case
+      where revoked_at is null and (bridge_account_id is not null or expires_at > now())
+        and (work.state <> 'active' or case
         when "grant"->>'scope' = 'everything' then not (
           coalesce((work.policy->>'allowEverything')::boolean, false)
           and coalesce((work.policy->>'allowTasks')::boolean, false))
@@ -57,7 +59,8 @@ export async function applyRemoveOrganizations(database: Kysely<unknown>): Promi
         grant_revision = grant_revision + 1, cleanup_reason = 'narrowed',
         cleanup_requested_at = now(), cleanup_minimum_grant_revision = grant_revision + 1,
         cleanup_maximum_mode = work.policy->>'externalMaxMode', cleanup_completed_at = null
-      where revoked_at is null and array_position(modes, access_mode)
+      where revoked_at is null and (bridge_account_id is not null or expires_at > now())
+        and array_position(modes, access_mode)
         > array_position(modes, work.policy->>'externalMaxMode');
     end $remove$;
     drop table if exists work_home_policy, work_audit_outbox, work_audit_head;

@@ -398,4 +398,69 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     expect(await connection(database, agent)).toEqual(before);
     expect(await leftovers(database)).toEqual([]);
   });
+
+  it("leaves connections that had already expired exactly as they are", async ({ storeFixture }) => {
+    const { database } = storeFixture;
+    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-expired");
+    const expiredAt = new Date(Date.now() - 60 * 60_000);
+    const cleanedAt = new Date(Date.now() - 30 * 60_000);
+    const expired = async (grant: AgentGrant, accessMode: ThreadAccessMode) => {
+      const id = await connected(database, fixture.userId, grant, accessMode);
+      await database
+        .updateTable("agentConnections")
+        .set({
+          expiresAt: expiredAt,
+          cleanupReason: "expired",
+          cleanupRequestedAt: expiredAt,
+          cleanupCompletedAt: cleanedAt,
+        })
+        .where("id", "=", id)
+        .execute();
+      return id;
+    };
+    const [aboveCap, refusedGrant] = await workHomeDatabase(
+      database,
+      fixture.deploymentId,
+      "active",
+      { ...open, externalMaxMode: "approval-required", allowEverything: false },
+      async () =>
+        [
+          await expired(tasks, "full-access"),
+          await expired(everything, "full-access"),
+        ] as const,
+    );
+    const snapshot = (id: string) =>
+      database
+        .selectFrom("agentConnections")
+        .select([
+          "grant",
+          "accessMode",
+          "grantRevision",
+          "revokedAt",
+          "tokenHash",
+          "expiresAt",
+          "cleanupReason",
+          "cleanupRequestedAt",
+          "cleanupCompletedAt",
+          "cleanupMinimumGrantRevision",
+          "cleanupMaximumMode",
+        ])
+        .where("id", "=", id)
+        .executeTakeFirstOrThrow();
+    const [aboveCapBefore, refusedGrantBefore] = [
+      await snapshot(aboveCap),
+      await snapshot(refusedGrant),
+    ];
+
+    await migrateToLatest(database);
+
+    expect(await snapshot(aboveCap)).toEqual(aboveCapBefore);
+    expect(await snapshot(refusedGrant)).toEqual(refusedGrantBefore);
+    await expect(admit(database, fixture.userId, aboveCap)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(admit(database, fixture.userId, refusedGrant)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+  });
 });
