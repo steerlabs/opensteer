@@ -237,6 +237,33 @@ describe("PersonalRemoteAccessService", () => {
       "remote-access.connect-off",
       "remote-access.connect-removed",
     ]);
+    // No operation behind them: the Mac app cleaning up, never the person (Activity's words).
+    expect(
+      database.audits.map((row) => JSON.parse(row.metadata as string) as { by: string }),
+    ).toEqual([
+      { narrowing: true, by: "app-cleanup" },
+      { narrowing: true, by: "app-cleanup" },
+    ]);
+    // With the person's own Off behind it: the person.
+    const asked = projectionDatabase(issuer, `osc_${"h".repeat(43)}`, undefined, {
+      intent: { action: "configure", mode: "off" },
+      state: "running",
+    });
+    await new PersonalRemoteAccessService({
+      authority,
+      database: ownerAuthority(asked) as never,
+      fetch,
+      grantVerifier: { issuer } as never,
+      identity: fakeIdentity(),
+      keys,
+    }).publishConnectProjection(ownerSession(), {
+      expectedAccessRoute: null,
+      schemaVersion: 2,
+      state: "disabled",
+    });
+    expect(asked.audits.map((row) => JSON.parse(row.metadata as string))).toEqual([
+      { narrowing: true, by: "person" },
+    ]);
   });
 
   it("refuses non-owners before any administration effect", async () => {

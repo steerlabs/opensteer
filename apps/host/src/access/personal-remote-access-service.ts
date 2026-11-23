@@ -1549,12 +1549,25 @@ export async function requireRemoteAccessOperation(
     });
 }
 
-/** A step that only takes Remote access away, on record for the person's activity. */
+/**
+ * A step that only takes Remote access away, on record for the person's activity, with who acted:
+ * the person, when an operation they asked for stands behind it, or the Mac app cleaning up on its
+ * own at startup, when none does. The desktop sends both on the person's session, so the session
+ * alone cannot say; the record must never tell the person they did what the app did.
+ */
 async function recordRemoteAccessNarrowing(
   transaction: Transaction<DatabaseSchema>,
   session: AuthenticatedSession,
   action: "remote-access.connect-off" | "remote-access.connect-removed",
 ): Promise<void> {
+  const operation = await transaction
+    .selectFrom("personalRemoteAdministration")
+    .select("state")
+    .orderBy("position", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  const by =
+    operation?.state === "pending" || operation?.state === "running" ? "person" : "app-cleanup";
   await transaction
     .insertInto("securityAudit")
     .values({
@@ -1565,7 +1578,7 @@ async function recordRemoteAccessNarrowing(
       requestId: null,
       targetType: "remote-access",
       targetId: null,
-      metadata: sql`${JSON.stringify({ narrowing: true })}::jsonb` as never,
+      metadata: JSON.stringify({ narrowing: true, by }) as never,
     })
     .execute();
 }
