@@ -13,7 +13,7 @@ it("gives the engine's own configuration only to the person's own task with pers
 it("refuses a task that is not the person's own only on an engine not shown to start without their configuration", () => {
   const others = { personalContext: true, personLineage: false };
   const own = { personalContext: true, personLineage: true };
-  for (const engine of ["claude", "opencode", "antigravity"])
+  for (const engine of ["claude", "pi", "opencode", "antigravity"])
     expect(() => assertEngineMayRun(engine, others)).not.toThrow();
   for (const [engine, label] of [
     ["cursor", "Cursor"],
