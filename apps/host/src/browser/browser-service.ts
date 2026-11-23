@@ -2316,7 +2316,7 @@ export class BrowserService {
                 });
                 if (budget.admitted!.browserStarted)
                   await this.#transitionBrowserSession({
-                    from: ["starting", "ready", "closing"],
+                    from: budget.pool ? ["starting"] : ["starting", "ready", "closing"],
                     sessionId: budget.admitted!.chosenSessionId,
                     state: "failed",
                   }).catch(() => undefined);
@@ -7473,6 +7473,8 @@ export class BrowserService {
             this.#startShadow(sessionId, input.ownerId);
           stage = "session-read";
           const latest = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
+          if (pooled && latest?.state !== "ready")
+            throw unavailable("The browser session ended before it was ready.");
           const session = await this.#personSession(latest ?? record, input.ownerId);
           readinessBudget = undefined;
           return { session, wasExisting: false };
@@ -7481,7 +7483,7 @@ export class BrowserService {
           this.#taskPageOpens.delete(sessionId);
           await broker.abort(`The session failed during ${stage}.`).catch(() => undefined);
           await this.#transitionBrowserSession({
-            from: ["starting", "ready", "closing"],
+            from: pooled ? ["starting"] : ["starting", "ready", "closing"],
             sessionId,
             state: "failed",
           }).catch(() => undefined);
@@ -8761,6 +8763,7 @@ export class HostedBrowserBroker {
   readonly #pendingPersonUse: Set<BrowserSurfaceId>;
   readonly #onPersonUseChanged: () => void;
   #sessionStateSending: Promise<void> | undefined;
+  #rejectReady: ((error: Error) => void) | null = null;
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
     this.#poolAdmission = options.poolAdmission;
@@ -9560,12 +9563,14 @@ export class HostedBrowserBroker {
       // the end step's request; nothing heard leaves the row closing for that step.
       this.#stopping = true;
       this.#runtimeReady = false;
+      this.#rejectReady?.(new Error(this.#failure ?? "Browser session stopped during attach."));
       await this.#onState("closing").catch(() => undefined);
       await this.stopWithReceipt(5_000);
       return;
     }
     this.#stopping = true;
     this.#runtimeReady = false;
+    this.#rejectReady?.(new Error(this.#failure ?? "Browser session stopped during attach."));
     await this.#onState("closing").catch(() => undefined);
     if (this.#socket.readyState === WebSocket.CONNECTING) this.#socket.close();
     else if (this.#socket.readyState === WebSocket.OPEN)
@@ -9587,6 +9592,7 @@ export class HostedBrowserBroker {
     }
     this.#stopping = true;
     this.#runtimeReady = false;
+    this.#rejectReady?.(new Error(this.#failure ?? "Browser session stopped during attach."));
     if (this.#socket.readyState !== WebSocket.OPEN) {
       this.#socket.terminate();
       await this.#runtimeFrameTail;
@@ -9625,6 +9631,8 @@ export class HostedBrowserBroker {
     this.#failure ??= reason;
     // The Home ends this channel itself: its close is not a lost channel.
     this.#detaching = true;
+    this.#runtimeReady = false;
+    this.#rejectReady?.(new Error(this.#failure));
     if (
       this.#socket.readyState === WebSocket.CONNECTING ||
       this.#socket.readyState === WebSocket.OPEN
@@ -9642,12 +9650,21 @@ export class HostedBrowserBroker {
   async letGoPooled(reason: string): Promise<void> {
     this.#failure ??= reason;
     this.#detaching = true;
+    this.#runtimeReady = false;
+    this.#rejectReady?.(new Error(this.#failure));
     await this.#runtimeFrameTail;
     await this.#finish("pooled", 1001, "Browser Runtime disconnected");
   }
 
   async abort(reason: string): Promise<void> {
     this.#failure ??= reason;
+    if (this.#poolAdmission && (this.#stopping || this.#detaching)) {
+      if (this.#finishPromise) return this.#finishPromise;
+      await this.#runtimeFrameTail;
+      await this.#finish("pooled", 1011, "Browser Runtime disconnected");
+      return;
+    }
+    this.#rejectReady?.(new Error(this.#failure));
     if (this.#socket.readyState === WebSocket.CONNECTING) this.#socket.terminate();
     else if (this.#socket.readyState === WebSocket.OPEN) this.#socket.terminate();
     await this.#runtimeFrameTail;
@@ -9657,10 +9674,18 @@ export class HostedBrowserBroker {
   async #waitUntilReady(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let ready = false;
+      const abortReady = (error: Error) => {
+        if (ready) return;
+        ready = true;
+        clearTimeout(timeout);
+        this.#rejectReady = null;
+        reject(error);
+      };
+      this.#rejectReady = abortReady;
       const timeout = setTimeout(() => {
         this.#protocolFailed = true;
         const error = new Error("Browser Runtime attach timed out.");
-        reject(error);
+        abortReady(error);
         if (this.#socket.readyState === WebSocket.OPEN)
           this.#socket.close(1002, "attach timed out");
       }, this.#connectTimeoutMs);
@@ -9671,10 +9696,7 @@ export class HostedBrowserBroker {
         this.#runtimeReady = false;
         const normalized =
           error instanceof Error ? error : new Error("Browser Runtime attach failed.");
-        if (!ready) {
-          clearTimeout(timeout);
-          reject(normalized);
-        }
+        abortReady(normalized);
         this.#rejectReconnectReady(normalized);
         if (this.#socket.readyState === WebSocket.OPEN) {
           this.#socket.close(1002, "invalid Browser Runtime protocol");
@@ -9690,18 +9712,20 @@ export class HostedBrowserBroker {
         void handled
           .then((becameReady) => {
             if (!becameReady || ready) return;
+            if (this.#stopping || this.#detaching || !this.#runtimeReady) {
+              abortReady(new Error(this.#failure ?? "Browser Runtime detached during attach."));
+              return;
+            }
             ready = true;
             clearTimeout(timeout);
+            this.#rejectReady = null;
             resolve();
           })
           .catch(fail);
       });
       this.#socket.on("close", (code, reason) => {
         this.#failure ??= `Browser Runtime closed the connection (${code} ${reason.toString()}).`;
-        if (!ready) {
-          clearTimeout(timeout);
-          reject(new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`));
-        }
+        abortReady(new Error(`Browser Runtime closed during attach (${code} ${reason.toString()}).`));
         const retired =
           !this.#stopping &&
           !this.#detaching &&
@@ -10040,18 +10064,23 @@ export class HostedBrowserBroker {
       });
       assertBrowserDialogSurface(this.#snapshot?.dialog ?? null, this.#surfaces);
       this.#reconcileHistory(this.#surfaces);
-      // A broker being stopped never makes its row ready again: Stop already took it.
+      // A broker being stopped or detached never makes its row ready again: Stop or detach already
+      // took it (X6).
       if (!this.#runtimeReady && !this.#stopping && !this.#detaching) {
+        let readyConfirmed = true;
         if (!this.#reconnecting) {
           if (!this.#adoptedFromPool) await this.#sendSavedTabs();
-          await this.#onState("ready");
+          const updated = await this.#onState("ready");
+          readyConfirmed = updated.state === "ready";
         }
-        this.#reconnecting = false;
-        this.#runtimeReady = true;
-        await this.#sendSessionState();
-        const reconnectReady = this.#reconnectReady;
-        this.#reconnectReady = null;
-        reconnectReady?.resolve();
+        if (readyConfirmed && !this.#stopping && !this.#detaching) {
+          this.#reconnecting = false;
+          this.#runtimeReady = true;
+          await this.#sendSessionState();
+          const reconnectReady = this.#reconnectReady;
+          this.#reconnectReady = null;
+          reconnectReady?.resolve();
+        }
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
       this.#onTabsChanged();
@@ -10079,7 +10108,7 @@ export class HostedBrowserBroker {
         changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id)))
       )
         this.refreshSessionState();
-      return stream.op === "end";
+      return stream.op === "end" && this.#runtimeReady && !this.#stopping && !this.#detaching;
     } else if (message.type === "browser.dialog.changed") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
       assertBrowserDialogSurface(message.dialog, this.#surfaces);

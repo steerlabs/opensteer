@@ -3329,3 +3329,155 @@ it("re-checks authority after #holdForAgent waits in the profile queue on a pers
     await fixture.close();
   }
 });
+
+it("never resolves broker.ready() or confirms openTab while the broker is detaching or stopping (X6)", async () => {
+  const j = await journey("x6-detach-ready", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    let activeBroker: HostedBrowserBroker | undefined;
+    const readyOriginal = HostedBrowserBroker.prototype.ready;
+    const captureBroker = vi
+      .spyOn(HostedBrowserBroker.prototype, "ready")
+      .mockImplementation(function (this: HostedBrowserBroker) {
+        activeBroker = this;
+        return readyOriginal.call(this);
+      });
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (!release && event === "message" && !binary && /"type":"browser\.tabs"/u.test(data.toString())) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    try {
+      const opening = home.service.openTab(j.task.userId, j.command("x6-detach-ready"));
+      await until(() => {
+        expect(activeBroker).toBeDefined();
+        expect(
+          held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString())),
+        ).toBe(true);
+      });
+      // Exact Finding 1 sequence: browser.tabs (rows + end) are queued on #runtimeFrameTail right
+      // as letGoPooled sets #detaching = true before rows executes.
+      release = true;
+      for (const frame of held.splice(0))
+        emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+      const lettingGo = activeBroker!.letGoPooled("The Home is shutting down.");
+      const opened = await opening.then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await lettingGo;
+      // On unfixed code, openTab falsely resolves while the session is still "starting", so a
+      // Home restart (failActiveBrowserSessions) fails the served session with zero loss notes.
+      if (opened.ok) {
+        await j.store.failActiveBrowserSessions(undefined, j.task.runnerId);
+        const losses = await listBrowserPoolDocumentLosses(
+          j.database,
+          j.task.userId,
+          opened.result.tabId,
+        );
+        expect(
+          losses,
+          "served session was confirmed during detach and lost with no note",
+        ).not.toEqual([]);
+      }
+      expect(opened.ok).toBe(false);
+    } finally {
+      captureBroker.mockRestore();
+      frames.mockRestore();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("rejects openTab and preserves closing when Stop races attach before ready (X6)", async () => {
+  const j = await journey("x6-stop-during-attach", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const emit = EventEmitter.prototype.emit;
+    const held: { connection: TestRuntimeConnection; args: unknown[] }[] = [];
+    let release = false;
+    const frames = vi.spyOn(TestRuntimeConnection.prototype, "emit").mockImplementation(function (
+      this: TestRuntimeConnection,
+      event,
+      ...args
+    ) {
+      const [data, binary] = args as [Buffer, boolean];
+      if (!release && event === "message" && !binary && /"type":"browser\.tabs"/u.test(data.toString())) {
+        held.push({ connection: this, args: [event, ...args] });
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    const stopBroker = HostedBrowserBroker.prototype.stop;
+    const stopping = vi
+      .spyOn(HostedBrowserBroker.prototype, "stop")
+      .mockImplementation(function (this: HostedBrowserBroker) {
+        release = true;
+        for (const frame of held.splice(0))
+          emit.call(frame.connection, ...(frame.args as [string, ...unknown[]]));
+        return stopBroker.call(this);
+      });
+    try {
+      const opening = home.service.openTab(j.task.userId, j.command("x6-stop-during-attach"));
+      await until(() =>
+        expect(
+          held.some(({ args }) => /"op":"end"/u.test((args[1] as Buffer).toString())),
+        ).toBe(true),
+      );
+      const [row] = await j.database
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("state", "=", "starting")
+        .execute();
+      expect(row).toBeDefined();
+      const stopResult = home.service.stop(j.task.userId, row!.id);
+      const opened = await opening.then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await stopResult;
+      expect(opened.ok).toBe(false);
+      // A Stop never turns into "failed" (W14 / Rule 4): it ends closed (with evidence) or stays closing.
+      const finalState = (await j.row(row!.id))?.state;
+      expect(["closing", "closed"]).toContain(finalState);
+    } finally {
+      stopping.mockRestore();
+      frames.mockRestore();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("writes a loss note when failActiveBrowserSessions ends a pooled session with an open tab (X6)", async () => {
+  const j = await journey("x6-restart-note", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId, tabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x6-restart-note"),
+    );
+    await home.service.close();
+    // Simulate a Home restart while no slot row exists (mid-swap): failActiveBrowserSessions ends
+    // the ready pooled session, and must still write its loss note so the served page has one.
+    await retireBrowserPoolTarget(j.database, j.task.runnerId);
+    await j.store.failActiveBrowserSessions(undefined, j.task.runnerId);
+    expect((await j.row(sessionId))?.state).toBe("failed");
+    expect(await listBrowserPoolDocumentLosses(j.database, j.task.userId, tabId)).toMatchObject([
+      { sessionId },
+    ]);
+  } finally {
+    await j.close();
+  }
+});

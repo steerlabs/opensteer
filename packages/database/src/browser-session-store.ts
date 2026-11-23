@@ -50,7 +50,7 @@ import {
   browserUsageTabsPerRun,
 } from "@opensteer/protocol";
 import { type ExpressionBuilder, type Kysely, type Transaction, sql } from "kysely";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { lockBrowserHistory } from "./browser-history-store.js";
 import {
@@ -1820,13 +1820,57 @@ export async function failActiveBrowserSessions(
     }
     const failed = await transactionalUpdate.returning("id").execute(databaseOperationOptions());
     if (failed.length > 0) {
+      const failedIds = failed.map((session) => session.id);
+      if (pooledRunner !== undefined) {
+        // Any pooled session that already served an open tab gets its loss note if a restart
+        // sweep ever fails it (for example mid-swap when no slot row exists, X6).
+        const pooledFailed = await transaction
+          .selectFrom("browserPoolSessions")
+          .select("sessionId")
+          .where("sessionId", "in", failedIds)
+          .execute(databaseOperationOptions());
+        if (pooledFailed.length > 0) {
+          const owner = await transaction
+            .selectFrom("personalSettings")
+            .select("ownerId")
+            .executeTakeFirst(databaseOperationOptions());
+          if (owner?.ownerId) {
+            const tabs = await transaction
+              .selectFrom("personalTabs")
+              .select(["id", sql<BrowserSessionId>`page_binding->>'sessionId'`.as("sessionId")])
+              .where(
+                sql<string>`page_binding->>'sessionId'`,
+                "in",
+                pooledFailed.map(({ sessionId }) => sessionId),
+              )
+              .where("closedAt", "is", null)
+              .orderBy("id")
+              .execute(databaseOperationOptions());
+            if (tabs.length > 0) {
+              const noteId = randomUUID();
+              await transaction
+                .insertInto("browserPoolDocumentLosses")
+                .values(
+                  tabs.map((tab) => ({
+                    intentId: noteId,
+                    runnerId: pooledRunner,
+                    ownerId: owner.ownerId as UserId,
+                    sessionId: tab.sessionId,
+                    surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
+                    documentId: null,
+                    reason: "home-restart",
+                    typed: null,
+                  })),
+                )
+                .onConflict((conflict) => conflict.columns(["intentId", "surfaceId"]).doNothing())
+                .execute(databaseOperationOptions());
+            }
+          }
+        }
+      }
       await transaction
         .deleteFrom("browserSessionAttachments")
-        .where(
-          "sessionId",
-          "in",
-          failed.map((session) => session.id),
-        )
+        .where("sessionId", "in", failedIds)
         .execute(databaseOperationOptions());
     }
     if (failed.length) {

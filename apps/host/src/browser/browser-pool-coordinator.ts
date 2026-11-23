@@ -1827,18 +1827,38 @@ export class BrowserPoolCoordinator {
       throw new Error("The browser adoption has no outcome yet.");
     const lostIds = new Set(outcome.lost.map(({ sessionId }) => sessionId));
     // A session the person stopped was left out on purpose: it ends, and its tabs are not ones
-    // the browser lost, so they have no note (P20).
+    // the browser lost, so they have no note (P20). Any ready session left out falls back to the
+    // Home's own tab rows and kept pages if `retained.documents` missed one (X6 / Finding 6).
     const ready = new Set(
       outcome.lost.length
         ? await listBrowserPoolReadySessions(this.#options.database, this.#own)
         : [],
     );
+    const lostReadyIds = outcome.lost
+      .map(({ sessionId }) => sessionId)
+      .filter((sessionId) => ready.has(sessionId));
+    const lostTabRows = lostReadyIds.length
+      ? await listBrowserPoolSessionTabs(this.#options.database, lostReadyIds)
+      : new Map<BrowserSessionId, readonly string[]>();
+    const lostSessionLosses = await Promise.all(
+      outcome.lost.map(async ({ sessionId, reason }) => {
+        if (!ready.has(sessionId))
+          return { sessionId, reason: reason ?? "not-adopted", surfaces: [] };
+        const kept = surfacesOf(retained, sessionId);
+        const known = new Set<string>(kept.map(({ surfaceId }) => surfaceId));
+        const extra = [
+          ...(lostTabRows.get(sessionId) ?? []),
+          ...((await this.#adopter?.pagesOf(sessionId).catch(() => [])) ?? []),
+        ].filter((surfaceId) => !known.has(surfaceId) && known.add(surfaceId));
+        return {
+          sessionId,
+          reason: reason ?? "not-adopted",
+          surfaces: [...kept, ...extra.map((surfaceId) => ({ surfaceId, documentId: null }))],
+        };
+      }),
+    );
     const losses: BrowserPoolSessionLoss[] = [
-      ...outcome.lost.map(({ sessionId, reason }) => ({
-        sessionId,
-        reason: reason ?? "not-adopted",
-        surfaces: ready.has(sessionId) ? surfacesOf(retained, sessionId) : [],
-      })),
+      ...lostSessionLosses,
       ...tabLosses.filter(({ sessionId }) => !lostIds.has(sessionId)),
       // A page that did not thaw is that page's loss with its note; its session is kept.
       ...pageLosses(
