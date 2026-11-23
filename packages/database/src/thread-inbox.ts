@@ -3290,17 +3290,19 @@ async function resolveThreadInputFacts(
         owner
           ? {
               kind: "human",
-              displayName: `${owner.displayName} (via ${connection.label})`.slice(0, 160),
+              displayName:
+                outsideName(`${owner.displayName} (via ${connection.label})`, 160) || "Someone",
               principalId: actorPrincipalId,
               userId: input.requestedBy,
             }
           : {
               kind: "connection",
               connectionId: connection.id,
-              displayName: (chat
-                ? `${chat.sender.displayName} in ${connection.label}`
-                : connection.label
-              ).slice(0, 160),
+              displayName:
+                outsideName(
+                  chat ? `${chat.sender.displayName} in ${connection.label}` : connection.label,
+                  160,
+                ) || "Someone",
             },
       ),
       authoritySource: {
