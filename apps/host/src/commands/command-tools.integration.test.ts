@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { sql } from "kysely";
+import pg from "pg";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -7,7 +8,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { AgentGrant, ThreadAccessMode, ThreadId } from "@opensteer/core";
 import { AgentConnectionStore } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   connectionCredentialPrefix,
   credentialHash,
@@ -21,7 +22,7 @@ import {
 } from "../runtime/private-machine-host.test-support.js";
 import { registeredHostRoutes } from "../server.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
-import { testRpcData } from "../server/test-host-api-request.js";
+import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 
 /**
  * The three tools (A5) on a real Home: what a caller may change is listed from the one rule,
@@ -571,6 +572,99 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     expect(onB.isError).toBe(true);
     expect(JSON.stringify(onB.content)).toBe(JSON.stringify(nothing.content));
 
+    // The reads sent as POST write nothing (AD10 2d): every statement the Home issues while the
+    // person makes each is a read, apart from what signing a request in does for any call, which
+    // a plain GET of the same session shows.
+    const readTask = await task("Read only", "full-access");
+    const reads: readonly (readonly [string, Record<string, unknown>])[] = [
+      ["apps.view", { appId: `app_${randomUUID()}`, theme: "light" }],
+      ["asset.urls", { assets: [{ path: "/tmp/opensteer-read-only.png", variant: "preview" }] }],
+      ["attention.get", {}],
+      ["browser.password-sign-in.get", { requestId: `req_${randomUUID()}` }],
+      ["browser.sources.inspect", { url: "https://example.com" }],
+      ["channel.connection.check", { connectionId: `con_${randomUUID()}` }],
+      [
+        "computer.app.windows",
+        {
+          machineId: machine.runnerId,
+          app: { bundleId: "com.apple.notes", displayName: "Notes", teamId: null },
+        },
+      ],
+      ["file.open", { threadId: readTask, source: { kind: "path", path: "/tmp/none.txt" } }],
+      ["harness.modelServers.discover", { environmentId: machine.environmentId }],
+      ["integration.computer.apps.installed", { runnerId: machine.runnerId }],
+      ["integration.computer.setup.review", { setupRequestId: randomUUID() }],
+      ["needsYou.get", {}],
+      ["references.resolve", { ids: [readTask] }],
+      ["thread.browserUsage.get", { threadId: readTask, runIds: [] }],
+      ["thread.messages.list", { threadId: readTask }],
+    ];
+    const statements: string[] = [];
+    let tracing = false;
+    const clientQuery = pg.Client.prototype.query;
+    const traced = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const first = args[0] as string | { readonly text?: string } | undefined;
+      if (tracing)
+        statements.push(typeof first === "string" ? first : (first?.text ?? "<unknown>"));
+      return Reflect.apply(clientQuery, this, args) as never;
+    });
+    const writesDuring = async (send: () => Promise<unknown>) => {
+      statements.length = 0;
+      tracing = true;
+      try {
+        await send().catch(() => undefined);
+      } finally {
+        tracing = false;
+      }
+      return statements.filter((statement) =>
+        /^\s*(?:insert|update|delete|merge)\b|\bfor (?:no key )?update\b/iu.test(statement),
+      );
+    };
+    try {
+      const signIn = new Set(
+        await writesDuring(() =>
+          testRpcRequest(host.origin, "channels.get", {} as never, { headers: host.ownerHeaders }),
+        ),
+      );
+      const wrote: string[] = [];
+      for (const [name, input] of reads) {
+        for (const statement of await writesDuring(() =>
+          testRpcRequest(host.origin, name as never, input as never, {
+            headers: host.ownerHeaders,
+          }),
+        ))
+          if (!signIn.has(statement)) wrote.push(`${name}: ${statement.slice(0, 160)}`);
+        expect(doorRoutes.get(`POST /v1/rpc/${name}`), name).toMatchObject({
+          kind: "not a Home command",
+          why: expect.stringContaining("writes nothing"),
+        });
+      }
+      // The extension's pair challenge (ruling 3): it signs the extension's nonce with this Home's
+      // key and returns it. No row is written, with or without a pairing the person started, so
+      // nothing it leaves can outlive the pairing.
+      for (const statement of await writesDuring(() =>
+        fetch(new URL(hostInternalRoutePaths.browserSourcePairChallenge, host.origin), {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: `chrome-extension://${"a".repeat(32)}`,
+          },
+          body: JSON.stringify({
+            origin: new URL(host.origin).origin,
+            routeGeneration: null,
+            nonce: randomUUID(),
+          }),
+        }),
+      ))
+        if (!signIn.has(statement)) wrote.push(`pair/challenge: ${statement.slice(0, 160)}`);
+      expect(wrote).toEqual([]);
+    } finally {
+      traced.mockRestore();
+    }
+
     // A change to the Home is a command through one door, whoever sends it (AD10): every route
     // that can change something is the door itself, sends its command there, or is listed here
     // with why it is not a Home command. A route added without a word here fails.
@@ -583,7 +677,7 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       ),
     ].sort();
     console.log(`MUTATING_ROUTES ${JSON.stringify(mutating)}`);
-    expect(mutating).toEqual([...doorRoutes.keys(), ...outsideTheDoor.keys()].sort());
+    expect(mutating).toEqual([...doorRoutes.keys()].sort());
   } finally {
     for (const step of close) await step().catch(() => undefined);
     await database.drop?.();
@@ -597,7 +691,7 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
  */
 type DoorRoute =
   | { readonly kind: "door" }
-  | { readonly kind: "executor"; readonly of: string }
+  | { readonly kind: "executor"; readonly of: string; readonly why?: string }
   | { readonly kind: "not a Home command"; readonly why: string };
 const doorRoutes = new Map<string, DoorRoute>([
   ["POST /v1/rpc/commands.dispatch", { kind: "door" }],
@@ -608,6 +702,22 @@ const doorRoutes = new Map<string, DoorRoute>([
   ["POST /v1/personal-remote-access/account-unlink/revoke-sessions", { kind: "door" }],
   ["POST /v1/personal-remote-access/pairing-codes", { kind: "door" }],
   ["PUT /v1/personal-remote-access", { kind: "executor", of: "personal.remoteAccess.request" }],
+  [
+    "DELETE /v1/personal-remote-access/connect-resource",
+    {
+      kind: "executor",
+      of: "personal.remoteAccess.request",
+      why: "takes away only: needs no operation, so the Mac app's startup cleanup is never refused; recorded as remote-access.connect-removed",
+    },
+  ],
+  [
+    "PUT /v1/personal-remote-access/connect-projection",
+    {
+      kind: "executor",
+      of: "personal.remoteAccess.request",
+      why: "as off it takes away only and needs no operation (recorded as remote-access.connect-off); as on it is refused without its operation",
+    },
+  ],
   [
     "POST /v1/personal-remote-access/executor/connect-provision",
     { kind: "executor", of: "personal.remoteAccess.request" },
@@ -867,47 +977,65 @@ const doorRoutes = new Map<string, DoorRoute>([
     "POST /v1/rpc/auth.signOut",
     { kind: "not a Home command", why: "signing in or out: the person’s own session" },
   ],
-  ["POST /v1/rpc/apps.view", { kind: "not a Home command", why: "a read, sent as POST" }],
-  ["POST /v1/rpc/asset.urls", { kind: "not a Home command", why: "a read, sent as POST" }],
-  ["POST /v1/rpc/attention.get", { kind: "not a Home command", why: "a read, sent as POST" }],
+  [
+    "POST /v1/rpc/apps.view",
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
+  ],
+  [
+    "POST /v1/rpc/asset.urls",
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
+  ],
+  [
+    "POST /v1/rpc/attention.get",
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
+  ],
   [
     "POST /v1/rpc/browser.password-sign-in.get",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
   [
     "POST /v1/rpc/browser.sources.inspect",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
   [
     "POST /v1/rpc/channel.connection.check",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
   [
     "POST /v1/rpc/computer.app.windows",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
-  ["POST /v1/rpc/file.open", { kind: "not a Home command", why: "a read, sent as POST" }],
+  [
+    "POST /v1/rpc/file.open",
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
+  ],
   [
     "POST /v1/rpc/harness.modelServers.discover",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
   [
     "POST /v1/rpc/integration.computer.apps.installed",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
   [
     "POST /v1/rpc/integration.computer.setup.review",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
-  ["POST /v1/rpc/needsYou.get", { kind: "not a Home command", why: "a read, sent as POST" }],
-  ["POST /v1/rpc/references.resolve", { kind: "not a Home command", why: "a read, sent as POST" }],
+  [
+    "POST /v1/rpc/needsYou.get",
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
+  ],
+  [
+    "POST /v1/rpc/references.resolve",
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
+  ],
   [
     "POST /v1/rpc/thread.browserUsage.get",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
   [
     "POST /v1/rpc/thread.messages.list",
-    { kind: "not a Home command", why: "a read, sent as POST" },
+    { kind: "not a Home command", why: "a read sent as POST: its handler writes nothing" },
   ],
   [
     "POST /v1/rpc/attachment.upload",
@@ -972,19 +1100,5 @@ const doorRoutes = new Map<string, DoorRoute>([
   [
     "PUT /v1/runner/file-transfers/:id",
     { kind: "not a Home command", why: "the bytes of a file a Run moves between computers" },
-  ],
-]);
-/**
- * Routes that change the Home outside the door today, each put to the lead (AD10) and owed:
- * this list only shrinks.
- */
-const outsideTheDoor = new Map<string, string>([
-  [
-    "DELETE /v1/personal-remote-access/connect-resource",
-    "the Mac app's step of an unlink or Off, and its startup cleanup; narrowing, put to the lead",
-  ],
-  [
-    "PUT /v1/personal-remote-access/connect-projection",
-    "publishing Connect as on is refused without its operation; as off, the Mac app's startup cleanup does it with none; put to the lead",
   ],
 ]);
