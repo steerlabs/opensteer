@@ -817,8 +817,9 @@ export function after(state: TabCastState, event: CastEvent, facts: CastFacts): 
         : state;
     case "stop-timed-out":
       // S3 / U4: the stop counts as answered, and the start after it as an attempt with no picture,
-      // kept across a resize or rebind (`lastKey: null` so `sent` preserves the count).
-      return { ...state, lastKey: null, unpictured: state.unpictured + (event.count ?? 1) };
+      // kept across a resize or rebind (where `lastKey` is already null), while preserving `lastKey`
+      // on a same-cast retry stop so a subsequent new document still resets the old cast's retries.
+      return { ...state, unpictured: state.unpictured + (event.count ?? 1) };
     case "frame":
       switch (event.verdict) {
         case "other-size-with-start":

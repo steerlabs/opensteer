@@ -148,7 +148,7 @@ class Chromium {
         this.world.tabs[this.id].failPrepare = false;
         const tab = this.world.tabs[this.id];
         if (!tab.loading && !(this.world.port && tab.navigation.pending))
-          tab.prepareFailuresOnCast += 1;
+          this.world.attemptOn(this.id);
         throw new Error("Emulation.setVisibleSize failed");
       }
       if (method === "Page.stopScreencast") {
@@ -290,13 +290,9 @@ interface TabWorld {
   castTag: number;
   /** Starts Chromium took for each `castTag` since the last picture. */
   readonly startsByTag: Map<number, number>;
-  /** Starts accepted on the cast now wanted (U1: giving up needs more than pictureLimit attempts). */
-  startsOnCast: number;
-  /** Pre-send start failures on the cast now wanted (U1). */
-  prepareFailuresOnCast: number;
-  /** Misfit frames emitted on the cast now wanted (U1: a pictured cast can retry from a misfit). */
-  misfitsOnCast: number;
-  /** Stop timeouts recorded for this tab since its last picture/resume/session end (U1/U4). */
+  /** Attempts (starts, pre-send failures, misfits) recorded per cast key since the last picture/resume/session (U1). */
+  readonly attemptsByCast: Map<string, number>;
+  /** Stop timeouts recorded for this tab since its last picture/resume/session (U1/U4). */
   stopTimeouts: number;
   readonly captureListeners: Set<() => void>;
   readonly navigationListeners: Set<() => void>;
@@ -346,11 +342,9 @@ class World {
       paintTimedOut: false,
       size: { height: 600, width: 800 },
       stallPaint: false,
+      attemptsByCast: new Map(),
       castTag: 0,
-      misfitsOnCast: 0,
-      prepareFailuresOnCast: 0,
       startsByTag: new Map(),
-      startsOnCast: 0,
       stopTimeouts: 0,
       unpainted: opening,
     });
@@ -384,22 +378,21 @@ class World {
         chromium.lastRefusal = null;
     }
   }
+  attemptOn(id: Id) {
+    const tab = this.tabs[id];
+    const cast = this.castOf(id);
+    tab.attemptsByCast.set(cast, (tab.attemptsByCast.get(cast) ?? 0) + 1);
+  }
   startedOn(id: Id, castTag: number) {
     const tab = this.tabs[id];
     tab.startsByTag.set(castTag, (tab.startsByTag.get(castTag) ?? 0) + 1);
-    tab.startsOnCast += 1;
+    this.attemptOn(id);
     if (this.port && tab.navigation.pending && tab.navigation.blankDocument)
       this.violations.push(`a start reached ${id} before its first document committed`);
   }
   /** A new showing, or a new cast wanted: one cast's starts are allowed for this tag (no banking). */
-  afresh(id: Id, resetsCast = true) {
-    const tab = this.tabs[id];
-    tab.castTag += 1;
-    if (resetsCast) {
-      tab.startsOnCast = 0;
-      tab.prepareFailuresOnCast = 0;
-      tab.misfitsOnCast = 0;
-    }
+  afresh(id: Id, _resetsCast = true) {
+    this.tabs[id].castTag += 1;
   }
   /** Which cast the follow view should picture now on a tab, as a key. */
   castOf(id: Id) {
@@ -450,7 +443,7 @@ class World {
           // The desktop page moved to another window as its paint was awaited.
           if (tab.failPrepare && desktop) {
             tab.failPrepare = false;
-            tab.prepareFailuresOnCast += 1;
+            this.attemptOn(id);
             throw new Error("Electron browser page is closed.");
           }
           if (tab.stallPaint) {
@@ -512,9 +505,7 @@ class World {
           );
         tab.castTag += 1;
         tab.startsByTag.clear();
-        tab.startsOnCast = 0;
-        tab.prepareFailuresOnCast = 0;
-        tab.misfitsOnCast = 0;
+        tab.attemptsByCast.clear();
         tab.stopTimeouts = 0;
       },
     };
@@ -607,6 +598,7 @@ function actions(
         // Asking for the picture again asks the page afresh.
         if (!world.streaming) {
           inView().epoch += 1;
+          inView().attemptsByCast.clear();
           inView().stopTimeouts = 0;
           world.afresh(world.active);
         }
@@ -784,7 +776,6 @@ function actions(
         if (world.engine !== "desktop") return;
         const tab = inView();
         const chromium = tab.chromium;
-        tab.stopTimeouts = 0;
         world.afresh(tab.id, false);
         chromium.casting = false;
         chromium.era += 1;
@@ -828,7 +819,7 @@ function actions(
       run: () => {
         const tab = inView();
         if (tab.chromium.casting) {
-          tab.misfitsOnCast += 1;
+          world.attemptOn(tab.id);
           tab.chromium.frame(false);
         }
       },
@@ -854,7 +845,6 @@ function actions(
         if (world.engine === "desktop") {
           // The hub ends the session's casts and says so on it, then fails what it still holds;
           // the page's navigation ends.
-          tab.stopTimeouts = 0;
           chromium.casting = false;
           chromium.era += 1;
           chromium.emit(screencastEndedEvent, {});
@@ -887,6 +877,7 @@ function actions(
         next.attached = !tab.navigation.pending;
         tab.chromium = next;
         tab.epoch += 1;
+        tab.attemptsByCast.clear();
         tab.stopTimeouts = 0;
         world.afresh(tab.id);
         world.changed(tab.id);
@@ -968,7 +959,7 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
       (why === "the page did not paint" && tab.paintTimedOut && bound.paintTimer !== null) ||
       (why.startsWith("its cast was given up") &&
         world.errorsFor.get(tab.id) === world.castOf(tab.id) &&
-        tab.startsOnCast + tab.prepareFailuresOnCast + tab.misfitsOnCast + tab.stopTimeouts >
+        (tab.attemptsByCast.get(world.castOf(tab.id)) ?? 0) + tab.stopTimeouts >
           (world.engine === "desktop" ? 1 : 3));
     if (!pictured && !named)
       broken.push(

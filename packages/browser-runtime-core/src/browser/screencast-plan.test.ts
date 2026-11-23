@@ -846,5 +846,17 @@ describe("the state after each event", () => {
         facts({}, { size: { height: 700, width: 900 } }),
       ).unpictured,
     ).toBe(1);
+    // A stop timeout on a retry/repair of one document still resets retries if a new document
+    // commits before the next start (caught by 3,000-seed generated test, Linux seed 3769445).
+    const retryTimedOut = after(
+      { ...initialTabCastState(), lastKey: key, unpictured: 1 },
+      { kind: "stop-timed-out" },
+      base,
+    );
+    expect(retryTimedOut).toMatchObject({ lastKey: key, unpictured: 2 });
+    expect(after(retryTimedOut, { kind: "observed" }, facts({}, { document: "b" }))).toMatchObject({
+      lastKey: null,
+      unpictured: 0,
+    });
   });
 });
