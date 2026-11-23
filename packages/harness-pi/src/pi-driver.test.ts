@@ -717,11 +717,15 @@ describe("Pi sessions", () => {
       join(root, "others-1"),
     );
     const linkedAuth = join(othersDir, "auth.json");
-    const linkedModels = join(othersDir, "models.json");
+    const copiedModels = join(othersDir, "models.json");
     expect((await lstat(linkedAuth)).isSymbolicLink()).toBe(true);
     expect(await readlink(linkedAuth)).toBe(personAuth);
-    expect((await lstat(linkedModels)).isSymbolicLink()).toBe(true);
-    expect(await readlink(linkedModels)).toBe(personModels);
+    expect((await lstat(copiedModels)).isSymbolicLink()).toBe(false);
+    expect((await lstat(copiedModels)).isFile()).toBe(true);
+    expect(await readFile(copiedModels, "utf8")).toBe(JSON.stringify({ providers: {} }));
+    // Editing the person's models.json after materialization never changes the checked copy.
+    await writeFile(personModels, JSON.stringify({ providers: { x: { apiKey: "!echo pwn" } } }));
+    expect(await readFile(copiedModels, "utf8")).toBe(JSON.stringify({ providers: {} }));
 
     const beforeLink = await lstat(linkedAuth);
     const beforeTarget = await lstat(personAuth);
@@ -2429,6 +2433,66 @@ describe("pi Thread naming", () => {
       ).toEqual({ ok: false, failure: "unavailable" });
       expect(spawned).toBe(false);
     } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("re-checks auth.json before each turn on an others' task and refuses without prompting Pi if a ! command appears", async () => {
+    const fixture = await setup({});
+    const ambientHome = await temporaryDirectory();
+    const ambientAgentDir = join(ambientHome, ".pi", "agent");
+    await mkdir(ambientAgentDir, { recursive: true });
+    await writeFile(
+      join(ambientAgentDir, "auth.json"),
+      JSON.stringify({ openai: { key: "sk-clean", type: "api_key" } }),
+    );
+    await writeFile(join(ambientAgentDir, "models.json"), JSON.stringify({ providers: {} }));
+    const ambientContext: HarnessSessionContext = {
+      ...fixture.context,
+      environment: { ...fixture.context.environment, HOME: ambientHome },
+      personalContext: true,
+      personLineage: false,
+      providerState: {
+        ...fixture.context.providerState,
+        kind: "ambient",
+        providerHomeDirectory: undefined,
+      },
+    };
+    const session = await fixture.adapter.startSession(ambientContext);
+    const observer = observe(session.events);
+    try {
+      // Turn 1 succeeds while auth.json is clean.
+      await session.execute(fixture.turn("First turn"));
+      expect(observer.events.some((event) => event.type === "run.completed")).toBe(true);
+      const commandsAfterTurn1 = (await fixture.capture()).filter(
+        (c) => c.type === "prompt",
+      ).length;
+      expect(commandsAfterTurn1).toBe(1);
+
+      // Between turns, the person adds a ! command to auth.json (TOCTOU).
+      await writeFile(
+        join(ambientAgentDir, "auth.json"),
+        JSON.stringify({ openai: { key: "!echo leaked", type: "api_key" } }),
+      );
+      const countBeforeTurn2 = observer.events.length;
+      await session.execute(fixture.turn("Second turn"));
+      const turn2Events = observer.events.slice(countBeforeTurn2);
+      const failed = turn2Events.find((event) => event.type === "run.failed");
+      expect(failed?.data).toMatchObject({
+        code: "forbidden",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          'Your Pi configuration runs a local shell command to fetch a credential (a "!" value in models.json or auth.json), which Opensteer does not run for tasks a connected agent or chat started.',
+        retryable: false,
+      });
+      // Pi never received the second prompt and the session cannot be reused.
+      const commandsAfterTurn2 = (await fixture.capture()).filter(
+        (c) => c.type === "prompt",
+      ).length;
+      expect(commandsAfterTurn2).toBe(1);
+      expect(await session.releaseForReuse()).toBe(false);
+    } finally {
+      await session.stop();
       await fixture.adapter.close();
     }
   });

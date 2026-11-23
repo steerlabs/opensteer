@@ -94,6 +94,7 @@ import {
   type ResolvedAttachment,
   EngineUnavailableForTaskError,
   assertEngineMayRun,
+  checkPiOthersAuthFile,
   checkPiOthersHome,
   engineConfiguration,
 } from "@opensteer/harness";
@@ -825,6 +826,21 @@ class PiHarnessSession implements HarnessSession {
         this.#publishTerminal(active, "interrupted");
         return;
       }
+      if (
+        engineConfiguration(this.#context) === "stripped" &&
+        this.#context.providerState.kind !== "isolated"
+      ) {
+        const authCheck = checkPiOthersAuthFile({
+          environment: this.#context.environment,
+          providerState: this.#context.providerState,
+        });
+        if (!authCheck.ok) {
+          const refusal = new EngineUnavailableForTaskError(authCheck.message);
+          this.#publisher.latchUnusable(refusal);
+          this.#publishFailure(active, refusal);
+          return;
+        }
+      }
       const response = await this.#requireClient().command("prompt", { message, images });
       if (response.success !== true) {
         // Pi refuses a prompt before the model is ever reached when no
@@ -861,6 +877,23 @@ class PiHarnessSession implements HarnessSession {
     this.#assertUsable();
     const active = this.#activeTurn;
     if (!active || active.terminal || active.interruptRequested) throw steerConflict();
+    if (
+      engineConfiguration(this.#context) === "stripped" &&
+      this.#context.providerState.kind !== "isolated"
+    ) {
+      const authCheck = checkPiOthersAuthFile({
+        environment: this.#context.environment,
+        providerState: this.#context.providerState,
+      });
+      if (!authCheck.ok) {
+        const refusal = new EngineUnavailableForTaskError(authCheck.message);
+        active.interruptRequested = true;
+        this.#publisher.latchUnusable(refusal);
+        this.#publishFailure(active, refusal);
+        void this.#interruptActive(active);
+        throw refusal;
+      }
+    }
     const client = this.#requireClient();
     const message = inputsToPiPrompt([input.input], null, input.attachments);
     // Preparing images sends nothing, so a failure here is a definite refusal.
@@ -2208,13 +2241,18 @@ export async function piAgentDirectoryForOthersTasks(
     environment.PI_CODING_AGENT_DIR?.trim() || join(environment.HOME ?? homedir(), ".pi", "agent");
   await rm(directory, { force: true, recursive: true });
   await mkdir(directory, { mode: 0o700, recursive: true });
-  for (const name of ["auth.json", "models.json"]) {
-    const source = join(theirs, name);
-    const exists = await stat(source).then(
-      (info) => info.isFile(),
-      () => false,
-    );
-    if (exists) await symlink(source, join(directory, name));
+  // Keep `auth.json` symlinked so OAuth token refreshes write back through to
+  // the person's file; re-check it before every turn.
+  const authSource = join(theirs, "auth.json");
+  const authExists = await stat(authSource).then(
+    (info) => info.isFile(),
+    () => false,
+  );
+  if (authExists) await symlink(authSource, join(directory, "auth.json"));
+  // Write a checked private copy of `models.json` rather than symlinking it, so
+  // a `!` command added later cannot execute on a running others' task.
+  if (check.mode === "ambient" && check.modelsJsonText !== undefined) {
+    await replacePrivateFileAtomically(join(directory, "models.json"), check.modelsJsonText);
   }
   return directory;
 }
