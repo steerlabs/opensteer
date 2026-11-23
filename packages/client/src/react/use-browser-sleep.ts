@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import {
   browserReturnNotes,
   browserSleepFromHome,
+  browserTabReturnOf,
   browserWakeSteps,
   noteKey,
   type BrowserSleep,
@@ -42,6 +43,8 @@ const quiet = () => () => {};
 export function useBrowserSleep(
   hostClient: BrowserSleepClient,
   tabId: string | null,
+  /** The viewed tab row's `reopenedAt`: its last wake opened it again at its address (TS7). */
+  reopenedAt?: number | null,
 ): BrowserSleepState {
   const tabs = hostClient.getSnapshot().tabs;
   const computerId = useSyncExternalStore(
@@ -59,10 +62,10 @@ export function useBrowserSleep(
     hostClient.subscribe ?? quiet,
     useCallback(() => hostClient.getSnapshot().browserPools, [hostClient]),
   );
-  const view = useMemo(
-    () => browserSleepFromHome(pools, computerId, tabId),
-    [computerId, pools, tabId],
-  );
+  const view = useMemo(() => {
+    const reported = browserSleepFromHome(pools, computerId, tabId);
+    return { ...reported, tab: browserTabReturnOf(reported.tab, reopenedAt) };
+  }, [computerId, pools, reopenedAt, tabId]);
   const elapsedMs = useWaitElapsed(view.browser);
   const notes = browserReturnNotes(hostClient);
   useSyncExternalStore(notes.subscribe, notes.version, notes.version);

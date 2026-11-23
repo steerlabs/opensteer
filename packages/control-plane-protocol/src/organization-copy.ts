@@ -152,10 +152,10 @@ export const organizationCopy = {
   "org.policy.off": "Not allowed",
   "org.policy.externalMaxMode.title": "Most a connected agent may do on its own",
   "org.policy.externalMaxMode.detail":
-    "This sets the most freedom a connected agent can have, whatever access the person chooses for it. It applies only to connected agents.",
+    "This sets the most freedom a connected agent can have, whatever access the person chooses for it. It applies to connected agents, chats on Slack or iMessage among them.",
   "org.policy.allowTasks.title": "Agents may run tasks",
   "org.policy.allowTasks.detail":
-    "Whether a connected agent may be given tasks to run. When this is off, it can’t be given everything either.",
+    "Whether a connected agent may be given tasks to run. When this is off, it can’t be given everything either, and chats on Slack or iMessage end, since a chat can only start tasks.",
   "org.policy.allowEverything.title": "Agents may be given everything",
   "org.policy.allowEverything.detail":
     "Whether a connected agent may be granted everything on the work Home at once. Needs tasks allowed too.",

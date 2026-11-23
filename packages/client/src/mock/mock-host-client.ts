@@ -1,4 +1,7 @@
+import { outsideName } from "@opensteer/shared/outsideName";
+import { chatParityProvider } from "./chat-parity.js";
 import { ItemTextStore } from "../host/item-text-store.js";
+import { taskOriginEndedMessage } from "../host/connected-agents-copy.js";
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
 import {
   mockMessageContent,
@@ -49,13 +52,20 @@ import {
   mockIphoneScreenSession,
   type MockIphoneScreenState,
 } from "./mock-screen-devices.js";
-import { DeviceIdSchema, isPhoneDisplayDefinitionId } from "@opensteer/core";
+import {
+  chatAddRefusals,
+  chatConsentRefusal,
+  chatGrantRefusal,
+  chatGrantShape,
+  DeviceIdSchema,
+  isPhoneDisplayDefinitionId,
+} from "@opensteer/core";
 import {
   DeviceMachineAccessUpdateCommandSchema,
   type IphoneScreenAttachCommand,
   type IphoneScreenDetachCommand,
 } from "@opensteer/protocol";
-import { NeedsYouPageSchema } from "@opensteer/protocol";
+import { NeedsYouPageSchema, PersonalRemoteAccessStatusSchema } from "@opensteer/protocol";
 import {
   agentConnectionConsentRefusals,
   agentConnectionVerificationChangedMessage,
@@ -165,7 +175,7 @@ import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import { channelProviderCatalog } from "@opensteer/channel-core";
+import { ChannelDashboardSchema, channelProviderCatalog } from "@opensteer/channel-core";
 import {
   PlaceEnteredEventViewSchema,
   AssignmentIdSchema,
@@ -594,10 +604,6 @@ const mockInstalledApps: readonly ComputerAppIdentity[] = [
   { bundleId: "com.apple.systempreferences", displayName: "System Settings", teamId: null },
 ];
 
-type CommandInputOf<Type extends HostApiCommandInput["type"]> = Extract<
-  HostApiCommandInput,
-  { readonly type: Type }
->;
 type ParsedCommandOf<Type extends HostApiCommand["type"]> = Extract<
   HostApiCommand,
   { readonly type: Type }
@@ -1529,6 +1535,47 @@ function sameMockApp(
   return (left?.bundleId.toLowerCase() ?? null) === (right?.bundleId.toLowerCase() ?? null);
 }
 
+/** A messaging provider as the preview reaches it (`MockHostClientOptions.messagingProvider`). */
+export interface MockMessagingProvider {
+  inspect(input: {
+    readonly credentials: Readonly<Record<string, string>>;
+    readonly provider: string;
+    /** The account being checked, where the preview holds no tokens it was added with. */
+    readonly account?: { readonly externalAccountId: string; readonly displayName: string };
+  }): import("@opensteer/channel-core").ChannelConnectionInspection;
+}
+
+/**
+ * The tokens a provider takes, checked as the Home checks them (`providerCredentials` in apps/host's
+ * channel service): only its own fields, each one 8 to 65,536 characters on one line.
+ */
+function mockProviderCredentials(
+  manifest: import("@opensteer/channel-core").ChannelProviderManifest,
+  input: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+  const fields = new Map(manifest.credentialFields.map((field) => [field.key, field] as const));
+  const unknown = Object.keys(input).find((key) => !fields.has(key));
+  if (unknown)
+    throw mockBadRequest(`${manifest.label} does not accept credential field ${unknown}`);
+  return Object.fromEntries(
+    [...fields.values()].map((field) => {
+      const value = input[field.key] ?? "";
+      if (value.length < 8 || value.length > 65_536 || /[\r\n\0]/u.test(value))
+        throw mockBadRequest(`${field.label} is invalid`);
+      return [field.key, value];
+    }),
+  );
+}
+
+/** A provider's no, in the Home's words (`inspectionError` in apps/host's channel service). */
+function mockInspectionRefusal(
+  inspection: import("@opensteer/channel-core").ChannelConnectionInspection,
+): HostClientRequestError {
+  const issue = inspection.issues[0];
+  const missing = issue?.missing.length ? ` Missing: ${issue.missing.join(", ")}.` : "";
+  return mockBadRequest(`${issue?.message ?? "Messaging provider setup is incomplete."}${missing}`);
+}
+
 function mockConflict(message: string): HostClientRequestError {
   return new HostClientRequestError({ code: "conflict", message, status: 409 });
 }
@@ -1862,6 +1909,16 @@ export interface MockHostClientOptions {
   /** The sessions `sessions.list` reports; one current session by default. */
   sessions?: readonly AuthSessionSummary[];
   connections?: readonly import("@opensteer/protocol").AgentConnection[];
+  /** The Messaging accounts `channels.get` lists; none by default. */
+  channels?: import("@opensteer/channel-core").ChannelDashboard;
+  /**
+   * The messaging provider this preview reaches, as a Home's messaging runtime reaches one: it
+   * checks tokens and says whose they are. Without one, the stand-in the chat parity script
+   * compares (`chatParityProvider`), so the preview a person walks runs the compared code.
+   */
+  messagingProvider?: MockMessagingProvider;
+  /** The tokens each seeded messaging connection holds, as its provider will read them. */
+  channelTokens?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   connectionConsent?: import("@opensteer/protocol").AgentConnectionConsent;
   /**
    * The consent as the Home presents it once its verification changes: the first approval is
@@ -1874,6 +1931,8 @@ export interface MockHostClientOptions {
   chromeTabs?: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   /** Whether the connection reads report grants support. Defaults to true. */
   grantsAvailable?: boolean;
+  /** Messaging accounts and connected agents can't be read, as on an unreachable Home. */
+  unreadable?: boolean;
   /** The Opensteer website this Home names, where Account billing happens; none by default. */
   portalOrigin?: string;
   /** How the Home is reached: a networked server or Cloud Computer, not this computer. */
@@ -2144,6 +2203,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "threads.activity": async (input) =>
       rpcSuccess(client.agentActivity({ threadId: input.threadId })),
     "connections.list": async (input) => {
+      if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);
       if (!client.grantsAvailable) return rpcSuccess({ connections });
       const activeIds = new Set(connections.map((connection) => connection.id));
@@ -2540,9 +2600,13 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
           );
     },
     "channel.connection.check": async (input) =>
-      rpcSuccess(await client.checkChannelConnection(input.connectionId)),
-    "channels.get": async () =>
-      rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
+      client
+        .checkChannelConnection(input.connectionId)
+        .then((inspection) => rpcSuccess(inspection), mockRefusal),
+    "channels.get": async () => {
+      if (client.unreadable) throw new Error("The preview Home can't be reached.");
+      return rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels()));
+    },
     "plugins.overview.get": async () => {
       const deploymentId = DeploymentIdSchema.parse(client.getSnapshot().deploymentId!);
       const overview = client.settings.overview(deploymentId);
@@ -2803,7 +2867,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(
           new HostClientRequestError({
             code: "not_found",
-            message: "Thread not found",
+            message: "Task not found",
             status: 404,
           }),
         );
@@ -2899,7 +2963,7 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
         return mockRefusal(
           new HostClientRequestError({
             code: "not_found",
-            message: "Thread not found",
+            message: "Task not found",
             status: 404,
           }),
         );
@@ -3081,6 +3145,7 @@ async function executeMockCommand(
       });
     }
     case "thread.sendMessage": {
+      client.assertThreadOriginLive(command.threadId);
       if (command.freshContext && command.delivery !== "queue")
         throw mockConflict("freshContext requires queue delivery.");
       const body = command.content
@@ -3182,6 +3247,7 @@ async function executeMockCommand(
         type: command.type,
       });
     case "thread.input.steer":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({
         input: client.steerThreadInput(command.threadId, command.messageId, command.expectedRunId),
         type: command.type,
@@ -3195,13 +3261,16 @@ async function executeMockCommand(
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
     case "thread.input.lease.take":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ ...client.takeEditLease(command), type: command.type });
     case "thread.input.lease.renew":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ lease: client.renewEditLease(command), type: command.type });
     case "thread.input.lease.release":
       client.releaseEditLease(command);
       return rpcSuccess({ type: command.type });
     case "thread.input.edit":
+      client.assertThreadOriginLive(command.threadId);
       return rpcSuccess({ ...client.editWaitingInput(command), type: command.type });
     case "execution.preferences.remember":
       return rpcSuccess(
@@ -3484,34 +3553,42 @@ async function executeMockCommand(
       await client.revokeIntegrationGrant(client.getSnapshot().deploymentId!, command.grantId);
       return rpcSuccess({ type: command.type });
     case "channel.connection.create":
-      await client.createChannelConnection({
-        accessPolicy: command.accessPolicy,
-        credentials: command.credentials,
-        provider: command.provider,
-        routingMode: command.routingMode,
-        deploymentId: client.getSnapshot().deploymentId!,
-      });
-      return unsupportedMockRpc();
-    case "channel.binding.create":
-      await client.createChannelBinding(command);
-      return unsupportedMockRpc();
-    case "channel.binding.update":
-    case "channel.access.review":
+      return client
+        .createChannelConnection({
+          credentials: command.credentials,
+          provider: command.provider,
+          routingMode: command.routingMode,
+          deploymentId: client.getSnapshot().deploymentId!,
+        })
+        .then((created) => rpcSuccess({ ...created, type: command.type }), mockRefusal);
+    case "channel.chat.create":
+      try {
+        const connection = client.createChat(command);
+        for (const listener of client.connectionsListeners) listener();
+        return rpcSuccess({ connection, type: command.type });
+      } catch (error) {
+        return mockRefusal(error);
+      }
     case "channel.connection.computer.create":
-      return unsupportedMockRpc();
-    case "channel.binding.revoke":
-      await client.revokeChannelBinding(command.bindingId);
-      return rpcSuccess({ type: command.type });
-    case "channel.identity.link":
+      return mockRefusal(client.computerChannelRefusal(command.provider));
+    case "channel.me.link": {
+      // A preview shows the code the person would send; the mock Host links nobody. An account
+      // that is gone is said to be gone, in the Home's words.
+      if (!client.channelAccountLinkable(command.accountId))
+        return mockRefusal(mockNotFound(chatAddRefusals.accountGone));
       return rpcSuccess({
-        ...(await client.linkChannelIdentity(command.code)),
+        code: "MOCKCODE",
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
         type: command.type,
       });
+    }
     case "channel.connection.credentials.replace":
       await client.replaceChannelConnectionCredentials(command.connectionId, command.credentials);
       return rpcSuccess({ type: command.type });
     case "channel.connection.status.set":
       await client.setChannelConnectionStatus(command.connectionId, command.status);
+      // Its chats paused, resumed or ended with it.
+      for (const listener of client.connectionsListeners) listener();
       return rpcSuccess({ type: command.type });
     case "node.stop":
       await client.stopNode(command.threadId, command.nodeId);
@@ -4319,6 +4396,39 @@ export class MockHostClient implements HostClient {
     this.#state.receiveAgentInput(threadId, MessageAuthorSchema.parse(author), body);
   }
 
+  /**
+   * Remote access on through Connect at `origin`, as a Home that has it reports it: an active
+   * Opensteer Account link and a signed route for this Home's own authority. It passes the
+   * protocol's own rules, so a preview never shows a status a Home could not send.
+   */
+  connectRemoteAccess(origin: string): void {
+    const authority = this.#state.remoteAdministration.authorityEnvelope;
+    this.setPersonalRemoteAccessStatus(
+      PersonalRemoteAccessStatusSchema.parse({
+        accountLink: {
+          issuer: "https://account.opensteer.invalid",
+          subject: "acct_00000000-0000-4000-8000-000000000001",
+          generation: "A".repeat(43),
+          state: "active",
+        },
+        generation: 1,
+        mode: "connect",
+        route: {
+          document: {
+            authority: authority.document,
+            documentVersion: 2,
+            purpose: "opensteer-personal-access-route",
+            route: { generation: 1, kind: "connect", origin },
+          },
+          publicKey: authority.publicKey,
+          schemaVersion: 1,
+          signature: authority.signature,
+        },
+        schemaVersion: 2,
+      }),
+    );
+  }
+
   setPersonalRemoteAccessStatus(
     access: import("@opensteer/protocol").PersonalRemoteAccessStatus,
   ): void {
@@ -4425,6 +4535,32 @@ export class MockHostClient implements HostClient {
               },
             }
           : {}),
+      })),
+    });
+  }
+
+  /** TS10: the runtime put this tab to sleep, or woke it, as the Home then lists it. */
+  setBrowserTabState(tabId: string, state: "live" | "suspended"): void {
+    const snapshot = this.#state.getSnapshot();
+    this.#state.updatePlaces({
+      ...snapshot,
+      browserGroups: snapshot.browserGroups?.map((group) => ({
+        ...group,
+        tabs: group.tabs?.map((tab) => (tab.id === tabId ? { ...tab, state } : tab)),
+      })),
+    } as typeof snapshot);
+  }
+
+  /** TS7: the tab's last wake opened it again at its address, at `at` (ms since the epoch). */
+  setBrowserReopened(tabId: string, at: number | undefined): void {
+    const snapshot = this.#state.getSnapshot();
+    this.#state.updatePlaces({
+      ...snapshot,
+      browserSessions: snapshot.browserSessions.map((session) => ({
+        ...session,
+        surfaces: session.surfaces.map((tab) =>
+          tab.id === tabId ? { ...tab, reopenedAt: at } : tab,
+        ),
       })),
     });
   }
@@ -5129,7 +5265,7 @@ export class MockHostClient implements HostClient {
     const result = await this.dispatch({
       type: "thread.create",
       ...input,
-      title: input.title?.trim() || "New task",
+      title: (input.title ? outsideName(input.title, 240) : "") || "New task",
       idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     });
     if (result.type !== "thread.create") throw new Error("Thread result mismatch.");
@@ -5142,7 +5278,7 @@ export class MockHostClient implements HostClient {
     const result = await this.dispatch({
       type: "thread.rename",
       threadId,
-      title: ThreadTitleSchema.parse(title),
+      title: outsideName(ThreadTitleSchema.parse(title), 240) || "Task",
       idempotencyKey: `mock-thread-rename:${crypto.randomUUID()}`,
     });
     if (result.type !== "thread.rename") throw new Error("Thread command mismatch.");
@@ -5886,7 +6022,10 @@ class MockHostState {
     };
     switch (command.type) {
       case "app.rename":
-        return { type: command.type, app: put({ ...app, name: command.name, updatedAt: at }) };
+        return {
+          type: command.type,
+          app: put({ ...app, name: outsideName(command.name, 160) || "App", updatedAt: at }),
+        };
       case "app.start":
       case "app.stop": {
         if (!app.server)
@@ -5924,7 +6063,12 @@ class MockHostState {
   agentHomeSettingsFile: AgentHomeSettingsFileView = { status: "missing" };
   readonly automaticModels: NonNullable<MockHostClientOptions["automaticModels"]>;
   readonly grantsAvailable: boolean;
+  readonly unreadable: boolean;
   private connections: import("@opensteer/protocol").AgentConnection[];
+  private channels: import("@opensteer/channel-core").ChannelDashboard | null;
+  readonly #messagingProvider: MockMessagingProvider;
+  /** The tokens each account was added or last replaced with, as its provider checks them. */
+  readonly #channelTokens = new Map<string, Readonly<Record<string, string>>>();
   private pendingConnectionConsent: import("@opensteer/protocol").AgentConnectionConsent | null;
   readonly chromeTabs: import("../host/connected-agent-options.js").ChromeTabGrantCatalog;
   workPolicy: import("@opensteer/control-plane-protocol").EffectiveWorkPolicy | null;
@@ -5967,7 +6111,8 @@ class MockHostState {
         this.connections.push({
           id: `mcn_${crypto.randomUUID()}`,
           userId: this.snapshot.user!.id,
-          label: command.decision.label,
+          // As the Home does: a name from outside is cleaned where it enters (`outsideName`).
+          label: outsideName(command.decision.label, 120) || consent.clientName,
           clientName: consent.clientName,
           accessMode: command.decision.accessMode,
           grant: command.decision.grant ?? { scope: "everything" },
@@ -6004,33 +6149,136 @@ class MockHostState {
     return { operations: operations.slice(0, 50), nextBefore: null };
   }
   listConnections(includeRevoked = false) {
-    return this.connections.filter(
-      (row) =>
-        row.userId === this.snapshot.user?.id &&
-        (includeRevoked ||
-          (row.state !== "stopped" && Date.parse(row.expiresAt) > this.now().getTime())),
-    );
+    return this.connections
+      .filter(
+        (row) =>
+          row.userId === this.snapshot.user?.id &&
+          (includeRevoked ||
+            (row.state !== "stopped" &&
+              (row.expiresAt === null || Date.parse(row.expiresAt) > this.now().getTime()))),
+      )
+      .map((row) => (row.bridge?.tasks ? { ...row, bridge: this.chatTasksNow(row.bridge) } : row));
   }
-  revokeConnection(id: string) {
+  /**
+   * A chat's recent tasks as the Home lists them when asked: newest first, running while the task
+   * runs. The task is a task like any other, and nothing else about it changes the connection.
+   */
+  private chatTasksNow(
+    bridge: NonNullable<import("@opensteer/protocol").AgentConnection["bridge"]>,
+  ) {
+    const tasks = (bridge.tasks ?? []).map((task) => {
+      const thread = this.snapshot.threads.find(({ id }) => id === task.id);
+      return {
+        task: thread
+          ? {
+              id: task.id,
+              title: thread.title,
+              running: thread.status === "running",
+              runId:
+                thread.status === "running"
+                  ? ((this.snapshot.runQueue.find(
+                      (run) => run.threadId === task.id && run.status !== "queued",
+                    )?.id ?? null) as import("@opensteer/core").RunId | null)
+                  : null,
+            }
+          : task,
+        at: thread?.updatedAt ?? "",
+      };
+    });
+    tasks.sort((left, right) => (left.at < right.at ? 1 : left.at > right.at ? -1 : 0));
+    return { ...bridge, tasks: tasks.map(({ task }) => task) };
+  }
+  readonly #threadOriginConnection = new Map<string, string>();
+  assertThreadOriginLive(threadId: string) {
+    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
+    if (!thread?.endedOrigin) return;
+    throw new HostClientRequestError({
+      code: "forbidden",
+      message: taskOriginEndedMessage(thread.endedOrigin),
+      status: 403,
+    });
+  }
+  /**
+   * As on the Home: what it may do moves on (its revision), and a chat remembers that you ended
+   * it; it is no longer paused, so nothing says why it was.
+   */
+  revokeConnection(id: string, endedBy: "you" | "account" = "you") {
     const revokedAt = this.now().toISOString();
-    this.connections = this.connections.map((row) =>
-      row.id === id && row.userId === this.snapshot.user?.id && row.state !== "stopped"
-        ? { ...row, state: "stopped", revokedAt }
-        : row,
+    let endedOrigin: "chat" | "agent" | null = null;
+    this.connections = this.connections.map((row) => {
+      if (row.id !== id || row.userId !== this.snapshot.user?.id || row.revokedAt) return row;
+      endedOrigin = row.bridge ? "chat" : "agent";
+      const ended = {
+        ...row,
+        state: "stopped" as const,
+        revokedAt,
+        grantRevision: (row.grantRevision ?? 1) + 1,
+      };
+      if (!row.bridge) return ended;
+      const {
+        pausedBy: _by,
+        pauseDetail: _detail,
+        pausedMessages: _messages,
+        ...bridge
+      } = row.bridge;
+      return { ...ended, bridge: { ...bridge, endedBy } };
+    });
+    if (endedOrigin === null) return;
+    const affected = new Set(
+      [...this.#threadOriginConnection.entries()]
+        .filter(([, connId]) => connId === id)
+        .map(([threadId]) => threadId),
     );
+    if (affected.size === 0) return;
+    this.update({
+      ...this.snapshot,
+      threads: this.snapshot.threads.map((thread) =>
+        affected.has(thread.id)
+          ? {
+              ...thread,
+              endedOrigin,
+              status: thread.status === "running" ? "idle" : thread.status,
+            }
+          : thread,
+      ),
+      runQueue: this.snapshot.runQueue.filter((run) => !affected.has(run.threadId)),
+    });
   }
   updateConnection(command: Extract<HostApiCommand, { type: "connection.update" }>) {
     const current = this.listConnections().find((row) => row.id === command.connectionId);
-    if (!current) throw mockConflict("This connected agent is no longer connected.");
+    if (!current) throw mockNotFound("This connected agent is no longer connected.");
     if ((current.grantRevision ?? 1) !== command.expectedRevision)
-      throw mockConflict("This connected agent changed since you opened it.");
+      throw new HostClientRequestError({
+        code: "conflict",
+        reason: "revision-changed",
+        message: "This connected agent changed since you opened it. Review it and try again.",
+        status: 409,
+      });
+    // A chat's grant is refused by the Home's own rule, here as there.
+    const refusal =
+      current.bridge && command.grant
+        ? chatGrantRefusal(chatGrantShape(current.bridge.senders), command.grant)
+        : null;
+    if (refusal)
+      throw new HostClientRequestError({
+        code: "bad_request",
+        reason: refusal.reason,
+        message: refusal.message,
+        status: 400,
+      });
     const next = {
       ...current,
-      ...(command.label !== undefined ? { label: command.label } : {}),
+      ...(command.label !== undefined
+        ? { label: outsideName(command.label, 120) || current.label }
+        : {}),
       ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
       ...(command.grant !== undefined ? { grant: command.grant } : {}),
-      grantRevision: (current.grantRevision ?? 1) + 1,
     };
+    // A new name is not a change to what it may do: the revision moves only for mode or grant.
+    const changed =
+      next.accessMode !== current.accessMode ||
+      JSON.stringify(next.grant) !== JSON.stringify(current.grant);
+    if (changed) next.grantRevision = (current.grantRevision ?? 1) + 1;
     this.connections = this.connections.map((row) => (row.id === current.id ? next : row));
     return next;
   }
@@ -6042,6 +6290,11 @@ class MockHostState {
     );
   }
   removeConnection(id: string) {
+    const row = this.connections.find(
+      (connection) => connection.id === id && connection.userId === this.snapshot.user?.id,
+    );
+    if (row && row.state !== "stopped" && row.state !== "expired")
+      throw mockConflict("Disconnect this agent before removing it.");
     this.connections = this.connections.filter(
       (row) =>
         row.id !== id ||
@@ -6214,7 +6467,7 @@ class MockHostState {
     if (!this.snapshot.threads.some((thread) => thread.id === threadId))
       throw new HostClientRequestError({
         code: "not_found",
-        message: "Thread not found",
+        message: "Task not found",
         status: 404,
       });
     const hidden = new Set<string>(
@@ -6635,7 +6888,7 @@ class MockHostState {
     if (!thread)
       throw new HostClientRequestError({
         code: "not_found",
-        message: "Thread not found.",
+        message: "Task not found",
         status: 404,
       });
     for (const part of content) {
@@ -6846,10 +7099,17 @@ class MockHostState {
         },
       };
     this.connections = [...(options.connections ?? [])];
-    this.pendingConnectionConsent = options.connectionConsent ?? null;
+    this.channels = options.channels ?? null;
+    // The preview reaches the same stand-in provider the parity script compares, unless a test
+    // gives its own: what a person walks in the preview is the code that was compared.
+    this.#messagingProvider = options.messagingProvider ?? chatParityProvider;
+    for (const [connectionId, tokens] of Object.entries(options.channelTokens ?? {}))
+      this.#channelTokens.set(connectionId, tokens);
+    // The Home cleans a client's name where it registers; the preview's consent is that answer.
+    this.pendingConnectionConsent = mockConsent(options.connectionConsent);
     this.chromeTabs = options.chromeTabs ?? {};
     this.workPolicy = options.workPolicy ?? null;
-    this.#consentChange = options.connectionConsentChange ?? null;
+    this.#consentChange = mockConsent(options.connectionConsentChange);
     for (const p of options.agentPlugins ?? []) {
       const id = crypto.randomUUID();
       const at = new Date(0).toISOString();
@@ -6898,6 +7158,7 @@ class MockHostState {
       ]),
     ];
     this.grantsAvailable = options.grantsAvailable ?? true;
+    this.unreadable = options.unreadable === true;
     this.latencyMs = options.latencyMs ?? 420;
     this.replies = options.replies ?? "scripted";
     this.now = options.now ?? (() => new Date());
@@ -7129,6 +7390,7 @@ class MockHostState {
         }),
       ),
     };
+    this.seedChatTasks();
     this.snapshot = {
       ...this.snapshot,
       threads: this.snapshot.threads.map((thread) => ({
@@ -7161,6 +7423,65 @@ class MockHostState {
       );
   }
 
+  /**
+   * A chat's recent tasks are tasks of the person's, as on the Home: each a task in the task
+   * lists, a running one with the Run it is doing, so Stop ends it as it ends any task's Run.
+   */
+  private seedChatTasks() {
+    const template = this.snapshot.threads.find(
+      ({ listed, purpose }) => listed && purpose === "task",
+    );
+    if (!template) return;
+    const at = new Date(this.now().getTime() - 60_000).toISOString();
+    for (const connection of this.connections) {
+      const originEnded =
+        connection.revokedAt !== null ||
+        connection.state === "stopped" ||
+        connection.state === "stopping" ||
+        connection.state === "revoked" ||
+        connection.state === "expired";
+      const endedOrigin = originEnded ? (connection.bridge ? "chat" : "agent") : null;
+      for (const [index, task] of (connection.bridge?.tasks ?? []).entries()) {
+        this.#threadOriginConnection.set(task.id, connection.id);
+        if (this.snapshot.threads.some(({ id }) => id === task.id)) continue;
+        const updatedAt = new Date(Date.parse(at) - index * 60_000).toISOString();
+        this.#provisionalIcons.add(task.id);
+        this.snapshot = {
+          ...this.snapshot,
+          threads: [
+            ...this.snapshot.threads,
+            {
+              ...template,
+              agentSessionId: null,
+              endedOrigin,
+              externalWork: null,
+              createdAt: updatedAt,
+              icon: null,
+              id: task.id,
+              parentThreadId: null,
+              pendingRequests: 0,
+              status: task.running ? "running" : "idle",
+              title: task.title,
+              unread: false,
+              updatedAt,
+            },
+          ],
+          runQueue: task.running
+            ? [
+                ...this.snapshot.runQueue,
+                {
+                  createdAt: updatedAt,
+                  id: task.runId ?? `run_${task.id.slice("thr_".length)}`,
+                  runOrdinal: 0,
+                  status: "running",
+                  threadId: task.id,
+                },
+              ]
+            : this.snapshot.runQueue,
+        };
+      }
+    }
+  }
   private readonly acceptedCommands = new Map<
     string,
     { command: string; result: ReturnType<typeof executeMockCommand> }
@@ -8853,7 +9174,7 @@ class MockHostState {
         candidate.id === harnessInstanceId && candidate.environmentId === environmentId,
     );
     if (!current) throw new Error("AI engine not found.");
-    const harness = { ...current, name };
+    const harness = { ...current, name: outsideName(name, 120) || current.name };
     this.update({
       ...this.snapshot,
       harnesses: this.snapshot.harnesses.map((candidate) =>
@@ -9024,7 +9345,7 @@ class MockHostState {
       currentRevisionId: revision.id,
       id: triggerId,
       kind: input.source.kind,
-      name: input.name,
+      name: outsideName(input.name, 160) || "Automation",
       nextFireAt: triggerNextFireAt(input.source, now),
       pauseReason: null,
       status: "active",
@@ -9099,7 +9420,10 @@ class MockHostState {
         ? {}
         : { consecutiveFailures: 0 }),
       currentRevisionId: revision.id,
-      name: input.name ?? record.trigger.name,
+      name:
+        input.name === undefined
+          ? record.trigger.name
+          : outsideName(input.name, 160) || record.trigger.name,
       nextFireAt:
         input.source === undefined
           ? record.trigger.nextFireAt
@@ -10562,6 +10886,7 @@ class MockHostState {
     access?: import("@opensteer/protocol").DeviceInitialAccess,
     preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity,
   ) {
+    const cleanedName = outsideName(name, 120) || "Computer";
     const expiresAt = new Date(this.now().getTime() + 10 * 60_000).toISOString();
     const enrollmentId = `ren_${crypto.randomUUID()}`;
     if (preparedIdentity) this.preparedLocalRunners.set(enrollmentId, preparedIdentity.runnerId);
@@ -10605,7 +10930,7 @@ class MockHostState {
             messaging: { checkedAt: null, detail: null, readiness: "unavailable" },
             shell: { checkedAt: null, detail: null, readiness: "unavailable" },
           },
-          name,
+          name: cleanedName,
           ownership: "mine",
 
           revocable: false,
@@ -10734,10 +11059,11 @@ class MockHostState {
   }
 
   async renameMachine(machineId: string, name: string): Promise<void> {
+    const cleanedName = outsideName(name, 120) || "Computer";
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
-        machine.id === machineId ? { ...machine, name } : machine,
+        machine.id === machineId ? { ...machine, name: cleanedName } : machine,
       ),
     });
   }
@@ -10779,10 +11105,11 @@ class MockHostState {
     idempotencyKey: string,
     access?: import("@opensteer/protocol").DeviceInitialAccess,
   ) {
+    const cleanedName = outsideName(name, 120) || "Computer";
     const existing = this.phoneEnrollments.get(idempotencyKey);
     if (existing) {
       if (
-        existing.name !== name ||
+        existing.name !== cleanedName ||
         existing.profile !== (profile ?? null) ||
         JSON.stringify(existing.access) !== JSON.stringify(access)
       )
@@ -10829,7 +11156,7 @@ class MockHostState {
             browser: { checkedAt: null, detail: null, readiness: "unavailable" },
             integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
           },
-          name,
+          name: cleanedName,
           ownership: "mine",
 
           revocable: false,
@@ -10844,7 +11171,12 @@ class MockHostState {
       pairing: mockAgentPhonePairingTarget,
       token: `mock-phone-runner-enrollment-token-${enrollmentId}`,
     };
-    this.phoneEnrollments.set(idempotencyKey, { name, profile: profile ?? null, result, access });
+    this.phoneEnrollments.set(idempotencyKey, {
+      name: cleanedName,
+      profile: profile ?? null,
+      result,
+      access,
+    });
     return result;
   }
 
@@ -10928,14 +11260,124 @@ class MockHostState {
   }
 
   async loadChannels() {
-    return {
-      accessGrants: [],
+    // As the Home lists them: a removed account and its connection are not listed.
+    const channels = this.channels ?? {
       accounts: [],
-      bindings: [],
       connections: [],
       deliveriesNeedingAttention: 0,
       providers: [...channelProviderCatalog],
     };
+    return {
+      ...channels,
+      accounts: channels.accounts.filter(({ status }) => status !== "revoked"),
+      connections: channels.connections.filter(({ status }) => status !== "revoked"),
+    };
+  }
+
+  /**
+   * A chat added on a mock account, refused and placed as the Home does: who may speak and the
+   * grant by core's rule (`chatConsentRefusal`), a removed account and a conversation another
+   * chat answers in by the Home's words (`chatAddRefusals`), and its state by its account's.
+   */
+  createChat(input: {
+    readonly accountId: string;
+    readonly conversation: { readonly id: string; readonly name: string } | null;
+    readonly senders: "owner" | "anyone";
+    readonly accessMode: import("@opensteer/core").ThreadAccessMode;
+    readonly grant: import("@opensteer/core").AgentGrant;
+  }): import("@opensteer/protocol").AgentConnection {
+    const refusal = chatConsentRefusal(input.senders, input.conversation !== null, input.grant);
+    if (refusal)
+      throw new HostClientRequestError({
+        code: "bad_request",
+        ...(refusal.reason ? { reason: refusal.reason } : {}),
+        message: refusal.message,
+        status: 400,
+      });
+    const account = this.channels?.accounts.find(({ id }) => id === input.accountId);
+    if (!account || account.status === "revoked")
+      throw new HostClientRequestError({
+        code: "not_found",
+        message: chatAddRefusals.accountGone,
+        status: 404,
+      });
+    if (
+      this.connections.some(
+        (row) =>
+          row.bridge?.accountId === account.id &&
+          !row.revokedAt &&
+          (row.bridge.conversationId ?? "") === (input.conversation?.id ?? ""),
+      )
+    )
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: chatAddRefusals.conversationTaken,
+        status: 409,
+      });
+    const provider =
+      channelProviderCatalog.find((entry) => entry.provider === account.provider)?.label ??
+      account.provider;
+    const me = this.channels?.me?.find(({ accountId }) => accountId === account.id) ?? null;
+    const now = this.now().toISOString();
+    // As on the Home: a chat is live while its account is connected and its channel is on
+    // (connecting counts), and waits, saying why, while its account is paused or needs attention.
+    const connection = this.channels?.connections.find(({ id }) => id === account.connectionId);
+    const live =
+      account.status === "connected" &&
+      ["pending", "connected", "needs-attention"].includes(connection?.status ?? "");
+    const paused = live
+      ? {}
+      : {
+          pausedBy:
+            account.status === "needs-attention" ? ("needs-attention" as const) : ("you" as const),
+          pauseDetail:
+            account.status === "needs-attention" ? (connection?.statusDetail ?? null) : null,
+          pausedMessages:
+            channelProviderCatalog.find((entry) => entry.provider === account.provider)
+              ?.pausedMessages ?? ("lost" as const),
+        };
+    const conversationName = input.conversation
+      ? outsideName(input.conversation.name, 160) || null
+      : null;
+    const chat: import("@opensteer/protocol").AgentConnection = {
+      id: `mcn_${crypto.randomUUID()}`,
+      userId: this.snapshot.user!.id,
+      label:
+        outsideName(conversationName ? `${provider} · ${conversationName}` : provider, 120) ||
+        provider,
+      clientName: provider,
+      accessMode: input.accessMode,
+      grant: input.grant,
+      grantRevision: 1,
+      consentVersion: 2,
+      client: { fingerprint: null, redirectOrigin: null },
+      state: live ? "active" : "paused",
+      lastActionUncertain: false,
+      revokedAt: null,
+      createdAt: now,
+      lastUsedAt: null,
+      expiresAt: null,
+      bridge: {
+        accountId: account.id,
+        provider,
+        conversationId: input.conversation?.id ?? null,
+        senders: input.senders,
+        grantShape: {
+          ...chatGrantShape(input.senders),
+          resources: [...chatGrantShape(input.senders).resources],
+        },
+        accountName: account.displayName,
+        ...(account.handle ? { accountHandle: account.handle } : {}),
+        conversationName,
+        channelConnectionId: account.connectionId,
+        me: me ? { displayName: me.displayName, externalUserId: me.externalUserId } : null,
+        unknownReplies: 0,
+        tasks: [],
+        ...paused,
+      },
+    };
+    this.connections = [...this.connections, chat];
+    return chat;
   }
 
   async loadIntegrations(): Promise<RpcData<"integrations.get">> {
@@ -11006,43 +11448,246 @@ class MockHostState {
     );
   }
 
+  /**
+   * The preview has no messaging service to check tokens with, so it answers as a Home whose
+   * service has not started, in the Home's words; a provider set up another way is refused first,
+   * as there.
+   */
   async createChannelConnection(
-    _input: import("../host/client.js").CreateChannelConnectionInput,
+    input: import("../host/client.js").CreateChannelConnectionInput,
   ): Promise<import("../host/client.js").CreatedChannelConnection> {
-    throw new Error("The mock Host does not persist channel connections.");
+    const manifest: import("@opensteer/channel-core").ChannelProviderManifest | undefined =
+      channelProviderCatalog.find(({ provider }) => provider === input.provider);
+    if (!manifest)
+      throw mockConflict(`${input.provider} is not a messaging provider this Deployment knows`);
+    if (!manifest.connectionMethods.includes("bring-your-own"))
+      throw mockConflict(`${manifest.label} is not available for bring-your-own setup`);
+    const provider = this.#messagingProvider;
+    const credentials = mockProviderCredentials(manifest, input.credentials);
+    const inspection = provider.inspect({ credentials, provider: manifest.provider });
+    if (!inspection.ready || !inspection.identity) throw mockInspectionRefusal(inspection);
+    const identity = inspection.identity;
+    const now = this.now().toISOString();
+    const connectionId = `con_${crypto.randomUUID()}`;
+    const ownerUserId = this.snapshot.user!.id;
+    const connection = {
+      capabilities: [...inspection.capabilities],
+      connectionMethod: "bring-your-own",
+      createdAt: now,
+      displayName: outsideName(identity.connectionDisplayName, 160) || manifest.label,
+      externalIdentityId: identity.externalIdentityId,
+      externalTenantId: identity.externalAccountId,
+      id: connectionId,
+      ownerUserId,
+      provider: manifest.provider,
+      status: "pending",
+      statusDetail: "Checking messaging provider setup",
+      statusReason: null,
+      transportKind: manifest.defaultTransportKind,
+      updatedAt: now,
+    };
+    const account = {
+      connectionId,
+      createdAt: now,
+      displayName:
+        outsideName(identity.accountDisplayName, 160) ||
+        outsideName(identity.externalAccountId, 160) ||
+        "Account",
+      externalAccountId: identity.externalAccountId,
+      handle: identity.handle ? outsideName(identity.handle, 160) || null : null,
+      id: `cha_${crypto.randomUUID()}`,
+      metadata: identity.metadata,
+      provider: manifest.provider,
+      routingMode: input.routingMode,
+      status: "connected",
+      updatedAt: now,
+    };
+    const channels = await this.loadChannels();
+    const parsed = ChannelDashboardSchema.parse({
+      ...channels,
+      accounts: [...(this.channels?.accounts ?? []), account],
+      connections: [...(this.channels?.connections ?? []), connection],
+    });
+    this.channels = parsed;
+    this.#channelTokens.set(connectionId, credentials);
+    return {
+      account: parsed.accounts.find(({ id }) => id === account.id)!,
+      connection: parsed.connections.find(({ id }) => id === connectionId)!,
+    } as never;
   }
 
+  /** The preview has no computer carrying a messaging app: answered as the Home answers that. */
+  computerChannelRefusal(provider: string): HostClientRequestError {
+    const manifest: import("@opensteer/channel-core").ChannelProviderManifest | undefined =
+      channelProviderCatalog.find((entry) => entry.provider === provider);
+    if (!manifest)
+      return mockConflict(`${provider} is not a messaging provider this Deployment knows`);
+    if (!manifest.transportKinds.includes("computer") || !manifest.computerApp)
+      return mockConflict(`${manifest.label} is not reached through a computer`);
+    return mockConflict(
+      `That computer is not connected with ${manifest.label} yet. Try again once it is online.`,
+    );
+  }
+
+  /** An account that is gone, or one reached through a computer, has no tokens to replace. */
   async replaceChannelConnectionCredentials(
-    _connectionId: string,
-    _credentials: Readonly<Record<string, string>>,
-  ): Promise<void> {}
+    connectionId: string,
+    credentials: Readonly<Record<string, string>>,
+  ): Promise<void> {
+    const connection = this.channels?.connections.find(({ id }) => id === connectionId);
+    if (!connection || connection.status === "revoked" || connection.transportKind === "computer")
+      throw mockNotFound("This channel connection has no credentials to replace.");
+    const provider = this.#messagingProvider;
+    // As on the Home: the provider checks them, and they must be this same account's.
+    const manifest = channelProviderCatalog.find(
+      (entry) => entry.provider === connection.provider,
+    ) as import("@opensteer/channel-core").ChannelProviderManifest | undefined;
+    if (!manifest)
+      throw mockConflict(
+        `${connection.provider} is not a messaging provider this Deployment knows`,
+      );
+    const checked = mockProviderCredentials(manifest, credentials);
+    const inspection = provider.inspect({ credentials: checked, provider: connection.provider });
+    if (!inspection.ready || !inspection.identity) throw mockInspectionRefusal(inspection);
+    if (inspection.identity.externalAccountId !== connection.externalTenantId)
+      throw mockConflict(`These credentials belong to a different ${manifest.label} account`);
+    this.#channelTokens.set(connectionId, checked);
+    // As on the Home: the account reconnects with them, and says so until its provider answers.
+    this.channels = {
+      ...this.channels!,
+      connections: this.channels!.connections.map((row) =>
+        row.id === connectionId
+          ? {
+              ...row,
+              status: "pending",
+              statusDetail: "Checking updated messaging credentials",
+              statusReason: null,
+            }
+          : row,
+      ),
+    };
+  }
 
+  /** Whether a person may link who they are on this account: it is theirs and not removed. */
+  channelAccountLinkable(accountId: string): boolean {
+    const account = this.channels?.accounts.find(({ id }) => id === accountId);
+    return account !== undefined && account.status !== "revoked";
+  }
+
+  /** What checking an account finds: ready when connected, otherwise what it reports. */
   async checkChannelConnection(
-    _connectionId: string,
+    connectionId: string,
   ): Promise<import("@opensteer/channel-core").ChannelConnectionInspection> {
-    throw new Error("The mock Host does not persist channel connections.");
+    const connection = this.channels?.connections.find(({ id }) => id === connectionId);
+    const account = this.channels?.accounts.find((row) => row.connectionId === connectionId);
+    if (!connection || !account || account.status === "revoked")
+      throw mockNotFound(chatAddRefusals.accountGone);
+    const provider = this.#messagingProvider;
+    // As on the Home: the provider checks the tokens the account holds; whose they are must be
+    // this account's; a ready one is connected, any other needs attention.
+    const inspection = provider.inspect({
+      credentials: this.#channelTokens.get(connectionId) ?? {},
+      provider: connection.provider,
+      account: { externalAccountId: account.externalAccountId, displayName: account.displayName },
+    });
+    const label =
+      channelProviderCatalog.find((entry) => entry.provider === connection.provider)?.label ??
+      connection.provider;
+    const mismatch =
+      inspection.identity !== null &&
+      inspection.identity.externalAccountId !== connection.externalTenantId;
+    const issue = mismatch
+      ? {
+          code: `${connection.provider}.account_mismatch`,
+          kind: "credentials" as const,
+          message: `These credentials belong to a different ${label} account.`,
+          missing: [],
+        }
+      : inspection.issues[0];
+    const ready = inspection.ready && !mismatch;
+    this.channels = {
+      ...this.channels!,
+      connections: this.channels!.connections.map((row) =>
+        row.id !== connectionId
+          ? row
+          : ready
+            ? {
+                ...row,
+                status: "pending",
+                statusDetail: "Reconnecting to messaging provider",
+                statusReason: null,
+              }
+            : {
+                ...row,
+                status: "needs-attention",
+                statusDetail: issue?.message ?? "Provider setup is incomplete",
+                statusReason: issue?.kind ?? "configuration",
+              },
+      ),
+    };
+    return mismatch ? { ...inspection, issues: [issue!], ready: false } : inspection;
   }
 
-  async createChannelBinding(
-    _input: Omit<CommandInputOf<"channel.binding.create">, "idempotencyKey" | "type">,
-  ): Promise<CommandOutputOf<"channel.binding.create">["binding"]> {
-    throw new Error("The mock Host does not persist channel bindings.");
-  }
-
-  async revokeChannelBinding(_bindingId: string): Promise<void> {
-    throw new Error("The mock Host does not persist channel bindings.");
-  }
-
-  async linkChannelIdentity(
-    _code: string,
-  ): Promise<Omit<CommandOutputOf<"channel.identity.link">, "type">> {
-    throw new Error("The mock Host does not persist channel identities.");
-  }
-
+  /** Pausing or resuming an account pauses or resumes every chat that speaks through it. */
   async setChannelConnectionStatus(
-    _connectionId: string,
-    _status: "connected" | "paused" | "revoked",
-  ): Promise<void> {}
+    connectionId: string,
+    status: "connected" | "paused" | "revoked",
+  ): Promise<void> {
+    if (!this.channels) return;
+    const account = this.channels.accounts.find((row) => row.connectionId === connectionId);
+    if (!account || account.status === "revoked") throw mockNotFound(chatAddRefusals.accountGone);
+    const accountStatus = status === "revoked" ? "revoked" : status;
+    this.channels = {
+      ...this.channels,
+      accounts: this.channels.accounts.map((account) =>
+        account.connectionId === connectionId ? { ...account, status: accountStatus } : account,
+      ),
+      connections: this.channels.connections.map((connection) =>
+        connection.id === connectionId
+          ? {
+              ...connection,
+              // As on the Home: a resumed account connects again, and says so first.
+              status: status === "connected" ? "pending" : status,
+              statusDetail: status === "connected" ? "Reconnecting to messaging provider" : null,
+              statusReason: null,
+            }
+          : connection,
+      ),
+    };
+    const ended = new Date().toISOString();
+    this.connections = this.connections.map((row) => {
+      if (row.bridge?.channelConnectionId !== connectionId || row.revokedAt) return row;
+      const {
+        pausedBy: _by,
+        pauseDetail: _detail,
+        pausedMessages: _messages,
+        ...bridge
+      } = row.bridge;
+      // Ended with its account: it is no longer paused, so nothing says why it was.
+      if (status === "revoked")
+        return {
+          ...row,
+          state: "stopped",
+          revokedAt: ended,
+          grantRevision: (row.grantRevision ?? 1) + 1,
+          bridge: { ...bridge, endedBy: "account" },
+        };
+      return status === "paused"
+        ? {
+            ...row,
+            state: "paused",
+            bridge: {
+              ...bridge,
+              pausedBy: "you",
+              pauseDetail: null,
+              pausedMessages:
+                channelProviderCatalog.find(({ label }) => label === bridge.provider)
+                  ?.pausedMessages ?? "lost",
+            },
+          }
+        : { ...row, state: "active", bridge };
+    });
+  }
 
   /** A person included this page in a message to the conversation, which now uses it. */
   includeBrowserPage(page: BrowserPageContentPart, threadId: string): void {
@@ -11203,7 +11848,11 @@ class MockHostState {
         status: 409,
         message: "Choose a computer for this browser profile.",
       });
-    const profile = { homeRunnerId: home, id: createId("browserProfile"), name };
+    const profile = {
+      homeRunnerId: home,
+      id: createId("browserProfile"),
+      name: outsideName(name, 120) || "Browser profile",
+    };
     this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
     return profile;
   }
@@ -11261,7 +11910,9 @@ class MockHostState {
     const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
     if (!thread) throw new Error("Task not found.");
     this.#provisionalTitles.delete(threadId);
-    this.publishThreadName(thread, { title: ThreadTitleSchema.parse(title) });
+    this.publishThreadName(thread, {
+      title: outsideName(ThreadTitleSchema.parse(title), 240) || "Task",
+    });
     return this.snapshot.threads.find((thread) => thread.id === threadId)!;
   }
   setThreadIcon(threadId: string, icon: IconName | null): ThreadSummary {
@@ -11300,7 +11951,7 @@ class MockHostState {
     if (last?.data.tabId === tabId) return;
     const event = PlaceEnteredEventViewSchema.parse({
       createdAt: this.now().toISOString(),
-      data: { tabId, title: data.title, site: data.site },
+      data: { tabId, title: outsideName(data.title, 1024), site: data.site },
       environmentId: thread.environmentId,
       eventId: createId("event"),
       runId,
@@ -11443,7 +12094,7 @@ class MockHostState {
       pendingRequests: 0,
       purpose: "task",
       status: "idle",
-      title: input.title?.trim() || "New task",
+      title: (input.title ? outsideName(input.title, 240) : "") || "New task",
       icon: null,
       color: this.allocateMarkColor("thread"),
       unread: false,
@@ -12319,8 +12970,9 @@ class MockHostState {
     const runId =
       active?.id ??
       (thread ? threadStopTarget({ runQueue: this.snapshot.runQueue, thread })?.id : undefined);
-    if (runId === undefined || (expectedRunId && runId !== expectedRunId))
-      throw new Error("This Thread has nothing to stop.");
+    // As on the Home: a Stop of a Run that is no longer the one at work is refused as ended.
+    if (expectedRunId && runId !== expectedRunId) throw mockConflict("Run is already terminal");
+    if (runId === undefined) throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
     this.activeRuns.delete(threadId);
     this.stoppedRuns.add(runId);
@@ -12371,6 +13023,8 @@ class MockHostState {
                   status: runQueue.some((entry) => entry.threadId === threadId)
                     ? "running"
                     : "idle",
+                  // The Home records the Run it stopped as the task's latest ended one.
+                  latestRunCompletedAt: timestamp,
                   updatedAt: timestamp,
                 }
               : thread,
@@ -14756,4 +15410,11 @@ function mockPluginRequest(task: (typeof mockPluginTasks)[number]): Request {
       },
     },
   });
+}
+
+function mockConsent(
+  consent: import("@opensteer/protocol").AgentConnectionConsent | undefined,
+): import("@opensteer/protocol").AgentConnectionConsent | null {
+  if (!consent) return null;
+  return { ...consent, clientName: outsideName(consent.clientName, 100) || "Agent" };
 }

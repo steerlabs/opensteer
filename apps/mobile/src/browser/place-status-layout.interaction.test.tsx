@@ -168,6 +168,13 @@ describe("who is using a tab, and for what, with Answer beside Stop", () => {
               session={{
                 agent: { initial: "C", name: "Claude", providerId: "anthropic" } as never,
                 line,
+                lineParts: [
+                  { name: "Claude" },
+                  " is using this page for ",
+                  { name: "Find flights to Lisbon" },
+                ],
+                needsYouParts: [{ name: "Claude" }, " needs you"],
+                stopLabelParts: ["Stop ", { name: "Claude" }],
                 stop: { sessionId: "ses_1" },
                 threadId: "thr_1",
               }}
@@ -179,7 +186,7 @@ describe("who is using a tab, and for what, with Answer beside Stop", () => {
             container,
             frames,
             "Find flights to Lisbon",
-            ["Answer", "Stop Claude"],
+            ["Answer", "Stop “\u2068Claude\u2069”"],
             size,
           );
         });

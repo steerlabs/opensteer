@@ -49,6 +49,11 @@ import {
   applyBrowserPoolSessions,
 } from "./browser-pool-migration.js";
 import {
+  applyBridgeConnections,
+  bridgeConnectionsMigrationName,
+} from "./bridge-connections-migration.js";
+import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
+import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
   withPersonalStateStartupLock,
@@ -663,6 +668,8 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
+              [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
               "0114_thread_inputs_written_by_connection": {
                 /**
                  * Indexes connection-written inputs per task so `threadContextLineage` checks
@@ -671,9 +678,15 @@ export function migrationProvider(options?: {
                  */
                 async up(database: Kysely<unknown>) {
                   await sql`
-                    create index if not exists thread_inputs_written_by_connection
+                    create index thread_inputs_written_by_connection
                     on thread_inputs(thread_id)
-                    where connection_id is not null and state <> 'cancelled'
+                    where connection_id is not null
+                      and (
+                        state <> 'cancelled'
+                        or run_id is not null
+                        or steer_command_id is not null
+                        or delivered_at is not null
+                      )
                   `.execute(database);
                 },
               },
@@ -686,7 +699,7 @@ export function migrationProvider(options?: {
                 async up(database: Kysely<unknown>) {
                   await sql`
                     alter table provider_sessions
-                    add column if not exists person_lineage boolean not null default true
+                    add column person_lineage boolean not null default true
                   `.execute(database);
                 },
               },

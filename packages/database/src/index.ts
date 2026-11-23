@@ -6,6 +6,9 @@ export * from "./app-store.js";
 export * from "./automation-failure-store.js";
 export * from "./browser-source-store.js";
 export * from "./channel-store.js";
+export * from "./bridge-ingress.js";
+export * from "./bridge-admission.js";
+export * from "./task-reader.js";
 export * from "./command-delivery.js";
 export * from "./node-control.js";
 export * from "./connection.js";
@@ -37,6 +40,8 @@ export {
 } from "./operation-budget.js";
 
 export * from "./resource-access.js";
+export * from "./run-personal-context.js";
+export * from "./connection-liveness.js";
 export * from "./agent-grant-targets.js";
 
 export { readIntegrationAccountBinding } from "./integration-account-binding.js";
@@ -97,7 +102,6 @@ export {
 export * from "./personal-settings-store.js";
 export * from "./personal-transaction.js";
 export * from "./needs-you-store.js";
-export * from "./run-personal-context.js";
 export { readPersonalDetailSnapshot, readPersonalShellSnapshot } from "./snapshot-store.js";
 export { readTranscriptItem, readTranscriptPage } from "./personal-sync-store.js";
 export { readTranscriptOverlays } from "./personal-overlay-store.js";
@@ -126,7 +130,7 @@ export { readPersonalTaskPage, readTaskPageThreads } from "./personal-task-store
 export type { RequestResponseSendFence } from "./command-store.js";
 export { createRunFinishDrain, drainRunFinish } from "./run-finalization.js";
 export { transcriptIdentity, toolCallId } from "./transcript-store.js";
-export { getThreadForOwner } from "./thread-store.js";
+export { getThreadForOwner, wakeChatQueues } from "./thread-store.js";
 export { requestFromRow } from "./request-persistence.js";
 export { executionNodeFromRow } from "./thread-row-mappers.js";
 export { isEligibleBrowserRunner } from "./browser-home-store.js";

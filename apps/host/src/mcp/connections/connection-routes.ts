@@ -289,8 +289,13 @@ export function createConnectionRpcHandlers(
         input.includeRevoked
           ? { connections, endedConnections: [] }
           : {
-              connections: connections.filter((connection) => connection.state === "active"),
-              endedConnections: connections.filter((connection) => connection.state !== "active"),
+              // A paused chat is still connected: it waits, and comes back with what it holds.
+              connections: connections.filter(
+                (connection) => connection.state === "active" || connection.state === "paused",
+              ),
+              endedConnections: connections.filter(
+                (connection) => connection.state !== "active" && connection.state !== "paused",
+              ),
             },
       );
     },
@@ -387,10 +392,16 @@ export async function handleConnectionCommand(
         ...(command.grant !== undefined ? { grant: command.grant } : {}),
       });
       if (narrowed) await effects.stopLineage?.(session.user.id, command.connectionId, "narrowed");
-      return { type: "connection.update" as const, connection };
+      // The connection as the list draws it (a chat with its account, who is you, its tasks), so
+      // a screen that keeps this answer loses nothing until its next read.
+      const listed = (await oauth.store.list(session.user.id, { includeRevoked: true })).find(
+        ({ id }) => id === connection.id,
+      );
+      return { type: "connection.update" as const, connection: withIdentity(listed ?? connection) };
     }
     case "connection.remove":
       await oauth.store.remove(session.user.id, command.connectionId);
+      await effects.stopLineage?.(session.user.id, command.connectionId, "disconnect");
       return { type: "connection.remove" as const };
     case "connection.uncertain.acknowledge":
       await oauth.store.acknowledgeUncertain(session.user.id, command.connectionId);

@@ -103,9 +103,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     computer_use: async () => unavailable(),
     computer_apps: async () => unavailable(),
     computer_access_request: async () => unavailable(),
-    opensteer_messaging_bridge_list: async () => unavailable(),
-    opensteer_messaging_bridge_update: async () => unavailable(),
-    opensteer_messaging_bridge_remove: async () => unavailable(),
     opensteer_plugin_list: async () => unavailable(),
     opensteer_plugin_install: async () => unavailable(),
     opensteer_plugin_catalog: async () => unavailable(),
@@ -199,6 +196,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
               grantRevision,
               consentVersion: 1,
               accessMode: common.accessMode,
+              bridgeSenders: null,
             },
           };
         }
@@ -213,7 +211,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     },
     store: {
       requests: { get: async () => null },
-      getThreadForOwner: async (id) => ({ ...thread, id }),
+      readTask: async (_reader, id) => ({ ...thread, id }),
       threadOrigins: async () => new Map(),
     },
   });

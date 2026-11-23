@@ -217,7 +217,12 @@ describeStore("the person's own lineage", (it) => {
         select exists (
           select 1 from thread_inputs written
           where written.thread_id = ${fixture.threadId}
-            and written.state <> 'cancelled'
+            and (
+              written.state <> 'cancelled'
+              or written.run_id is not null
+              or written.steer_command_id is not null
+              or written.delivered_at is not null
+            )
             and written.connection_id is not null
         )
       `.execute(tx);
@@ -322,5 +327,94 @@ describeStore("the person's own lineage", (it) => {
       threadId: fixture.threadId,
     });
     expect(personAfter.run.providerSessionId).toBe(sent.run.providerSessionId);
+  });
+
+  it("still narrows lineage for a cancelled connected-agent input whose delivery may have started", async ({
+    storeFixture: f,
+  }) => {
+    const fixture = await f.createRunFixture("lineage-cancelled-unknown");
+    const agent = await connectedAgent(f, fixture.userId);
+    const own = await f.enqueueHumanTrigger({
+      content: [{ type: "text", text: "Start" }],
+      idempotencyKey: "cancelled-unknown-start",
+      requestedBy: fixture.userId,
+      threadId: fixture.threadId,
+    });
+    await finish(f, fixture, own.run);
+    const sent = await f.store.enqueueThreadInput({
+      content: [{ type: "text", text: "Steered from agent" }],
+      idempotencyKey: "cancelled-unknown-agent",
+      policy: "queue",
+      requestedBy: fixture.userId,
+      source: { connectionId: agent.id, kind: "connection" },
+      threadId: fixture.threadId,
+    });
+    // Cancelled before any Run claimed or steered it: never reached the model.
+    await f.database
+      .updateTable("threadInputs")
+      .set({
+        cancelReason: "cancelled-before-claim",
+        deliveredAt: null,
+        runId: null,
+        state: "cancelled",
+        steerCommandId: null,
+      })
+      .where("messageId", "=", sent.message.id)
+      .execute();
+    expect(
+      (await threadContextLineage(f.database, fixture.threadId, fixture.userId)).personLineage,
+    ).toBe(true);
+    // Cancelled after a Run claimed/steered it (delivery unknown): must narrow lineage.
+    await f.database
+      .updateTable("threadInputs")
+      .set({
+        cancelReason: "run-ended-delivery-unknown",
+        runId: sent.run?.id ?? own.run.id,
+        state: "cancelled",
+      })
+      .where("messageId", "=", sent.message.id)
+      .execute();
+    expect(
+      (await threadContextLineage(f.database, fixture.threadId, fixture.userId)).personLineage,
+    ).toBe(false);
+  });
+
+  it("treats a chat only the person speaks in as keeping personal context while still a chat, and an anyone chat as dropping both", async ({
+    storeFixture: f,
+  }) => {
+    const meBridge = await f.createBridgeFixture("lineage-me-chat", { senders: "owner" });
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: meBridge.bridge.id })
+      .where("id", "=", meBridge.fixture.thread.id)
+      .execute();
+    expect(
+      await threadContextLineage(f.database, meBridge.fixture.thread.id, meBridge.fixture.userId),
+    ).toEqual({
+      fromChat: true,
+      personLineage: false,
+      personalContext: true,
+    });
+
+    const anyoneBridge = await f.createBridgeFixture("lineage-anyone-chat", {
+      conversation: { id: "C-lineage-anyone", name: "#lineage-anyone" },
+      senders: "anyone",
+    });
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: anyoneBridge.bridge.id })
+      .where("id", "=", anyoneBridge.fixture.thread.id)
+      .execute();
+    expect(
+      await threadContextLineage(
+        f.database,
+        anyoneBridge.fixture.thread.id,
+        anyoneBridge.fixture.userId,
+      ),
+    ).toEqual({
+      fromChat: true,
+      personLineage: false,
+      personalContext: false,
+    });
   });
 });

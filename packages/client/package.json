@@ -23,6 +23,7 @@
     "./ai-sharing": "./src/ai-sharing/index.ts",
     "./references": "./src/references/index.ts",
     "./feedback": "./src/feedback/client-issue.ts",
+    "./failure-text": "./src/host/failure-text.ts",
     "./reads": "./src/reads/client-read.ts",
     "./actions": "./src/actions/client-action.ts"
   },

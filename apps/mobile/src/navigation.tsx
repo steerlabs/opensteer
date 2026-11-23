@@ -631,7 +631,8 @@ type OpensteerRootParamList = {
   };
   readonly FileViewer: FileViewerParams;
   readonly Deployments: undefined;
-  readonly DeploymentSwitcher: undefined;
+  /** `opening`: the Settings page a person was choosing a Home for, said on the picker. */
+  readonly DeploymentSwitcher: { readonly opening?: string } | undefined;
   readonly Home: { readonly deploymentId: string };
   readonly NotificationsIntro: undefined;
   readonly NewThread: {

@@ -10,7 +10,6 @@ import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
 import { refreshExecuteClaimProof } from "./personal-run-state.js";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
-import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import {
   admitThreadExecution,
   executionEnvironmentIsAvailableToUser,
@@ -102,7 +101,6 @@ export async function lockThreadRow(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
 ): Promise<void> {
-  await lockThreadChannelAuthorities(transaction, [threadId]);
   await transaction
     .selectFrom("threads")
     .select("id")

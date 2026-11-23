@@ -445,6 +445,8 @@ export const BrowserSessionStateSchema = z.strictObject({
   personUsed: z.array(BrowserSurfaceIdSchema),
   pinned: z.array(BrowserSurfaceIdSchema),
   keepAwake: z.boolean().optional(),
+  /** Tabs a live Run or connected agent's session works in: slept last, under pressure only. */
+  agentTabs: z.array(BrowserSurfaceIdSchema).optional(),
 });
 export type BrowserSessionState = z.infer<typeof BrowserSessionStateSchema>;
 

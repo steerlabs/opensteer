@@ -177,14 +177,12 @@ export const databaseLockOrder = [
   // Account authorization and Connection authority precede channel routing.
   "integration_auth_attempts",
   "integration_connections",
-  // Complete channel parents precede Binding, Identity, Grant and conversation state.
+  // Complete channel parents precede identity and conversation state.
   "channel_accounts",
-  "channel_bindings",
   "channel_identities",
   // A sender's new display name reaches its Principal before adoption locks the conversation.
   "principals",
-  "channel_access_grants",
-  "channel_conversations",
+  "bridge_conversations",
   // Threads precede Trigger/watch selection and provider-session projection.
   "threads",
   "triggers",
@@ -197,8 +195,8 @@ export const databaseLockOrder = [
   "apps",
   "app_versions",
   "app_servers",
-  "channel_deliveries",
-  "channel_link_codes",
+  "bridge_deliveries",
+  "bridge_link_codes",
   // Computer approvals and integration Grants precede Request settlement.
   "computer_app_setup_requests",
   // A server's secrets change under its locked server, inside or after its approval.

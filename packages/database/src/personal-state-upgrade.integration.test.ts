@@ -27,6 +27,8 @@ import {
   browserPoolMigrationName,
   browserPoolSessionsMigrationName,
 } from "./browser-pool-migration.js";
+import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
+import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -109,6 +111,8 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         workHomeMigrationName,
         browserPoolMigrationName,
         "0107_needs_you_counts_requests",
+        bridgeConnectionsMigrationName,
+        chatRoutesEndMigrationName,
         "0114_thread_inputs_written_by_connection",
         "0115_provider_session_person_lineage",
         browserPoolSessionsMigrationName,

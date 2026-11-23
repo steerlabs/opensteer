@@ -38,7 +38,6 @@ export async function handleChannelCommand(
     case "channel.connection.create":
       return {
         ...(await channels.createConnection({
-          accessPolicy: command.accessPolicy,
           credentials: command.credentials,
           createdBy: userId,
           provider: command.provider,
@@ -50,7 +49,6 @@ export async function handleChannelCommand(
       return {
         ...(await channels.createComputerConnection({
           createdBy: userId,
-          ownerHandles: command.ownerHandles,
           provider: command.provider,
           runnerId: command.runnerId,
         })),
@@ -63,43 +61,26 @@ export async function handleChannelCommand(
         ownerUserId: userId,
       });
       return { type: command.type };
-    case "channel.binding.create":
+    // A chat is made on its consent and is then a connection like any other: what it may reach
+    // and how freely are edited as a connection's, and who may speak never changes.
+    case "channel.chat.create":
       return {
-        binding: await channels.createBinding({
-          accessPolicy: command.accessPolicy,
+        connection: await channels.createChat({
+          userId,
           accountId: command.accountId,
-          createdBy: userId,
-          executionPolicy: command.executionPolicy,
-          selector: command.selector,
+          conversation: command.conversation,
+          senders: command.senders,
+          accessMode: command.accessMode,
+          grant: command.grant,
         }),
         type: command.type,
       };
-    case "channel.binding.update":
-      return {
-        binding: await channels.updateBinding({
-          bindingId: command.bindingId,
-          expectedRevision: command.expectedRevision,
-          accessPolicy: command.accessPolicy,
-          ownerUserId: userId,
-        }),
-        type: command.type,
-      };
-    case "channel.access.review":
-      return {
-        grant: await channels.reviewAccess({
-          bindingId: command.bindingId,
-          externalUserId: command.externalUserId,
-          expectedRevision: command.expectedRevision,
-          decision: command.decision,
-          ownerUserId: userId,
-        }),
-        type: command.type,
-      };
-    case "channel.binding.revoke":
-      await channels.revokeBinding(command.bindingId, userId);
-      return { type: command.type };
-    case "channel.identity.link":
-      return { ...(await channels.linkIdentity(command.code, userId)), type: command.type };
+    // "Me" is linked by a code the person sends from their own account; nothing is said in
+    // the chat, and linking another identity replaces the one before.
+    case "channel.me.link": {
+      const { code, expiresAt } = await channels.startOwnerLink(command.accountId, userId);
+      return { code, expiresAt: expiresAt.toISOString(), type: command.type };
+    }
     case "channel.connection.status.set":
       await channels.setConnectionStatus(command.connectionId, userId, command.status);
       return { type: command.type };

@@ -62,6 +62,7 @@ import {
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import {
   AgentConnectionSchema,
+  BridgeSendersSchema,
   AgentConnectionIdSchema,
   AgentConnectionConsentSchema,
 } from "./agent-connections.js";
@@ -76,15 +77,9 @@ import { CardApprovalSchema } from "./card-use.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
 import { ComputerUseResolvedAppSchema } from "./computer-use.js";
 import {
-  ChannelAccessGrantViewSchema,
-  ChannelAccessPolicySchema,
   ChannelAccountIdSchema,
   ChannelAccountViewSchema,
-  ChannelBindingIdSchema,
-  ChannelBindingViewSchema,
   ChannelDashboardViewSchema,
-  ChannelExecutionPolicySchema,
-  ChannelRouteSelectorSchema,
   IntegrationConnectionViewSchema,
 } from "@opensteer/channel-core";
 import {
@@ -1004,7 +999,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("integration.disconnect"),
   }),
   z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
     credentials: z.record(z.string(), z.string()),
     idempotencyKey: idempotencyKeySchema,
     provider: z.string().min(1),
@@ -1019,48 +1013,43 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   /**
    * A channel whose transport runs on one of the owner's computers — iMessage
-   * through that Mac — pinned there, using its app connection. `ownerHandles`
-   * are where the owner writes from, linked to them at once.
+   * through that Mac — pinned there, using its app connection. "Me" on it is
+   * linked as on any account: by sending, from the owner's phone, a code
+   * Opensteer shows.
    */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
-    ownerHandles: z.array(z.string().trim().min(3).max(320)).min(1).max(8),
     provider: z.string().min(1),
     runnerId: RunnerIdSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
+  /**
+   * A chat: a connection reached through a chat account, for its direct messages or for one
+   * named channel. Who may give it work is chosen here and never changes; "anyone" only for a
+   * named channel, holding tasks and plugins only.
+   */
   z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
     accountId: ChannelAccountIdSchema,
-    executionPolicy: ChannelExecutionPolicySchema,
+    conversation: z
+      .strictObject({
+        id: z.string().trim().min(1).max(512),
+        name: z.string().trim().min(1).max(160),
+      })
+      .nullable(),
+    senders: BridgeSendersSchema,
+    accessMode: ThreadAccessModeSchema,
+    grant: AgentGrantSchema,
     idempotencyKey: idempotencyKeySchema,
-    selector: ChannelRouteSelectorSchema,
-    type: z.literal("channel.binding.create"),
+    type: z.literal("channel.chat.create"),
   }),
+  /**
+   * A code the person sends from their own account on the chat account, to link it as "me".
+   * Linking another replaces the one linked before. Nothing is said in the chat.
+   */
   z.strictObject({
-    bindingId: ChannelBindingIdSchema,
+    accountId: ChannelAccountIdSchema,
     idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.binding.revoke"),
-  }),
-  z.strictObject({
-    accessPolicy: ChannelAccessPolicySchema,
-    bindingId: ChannelBindingIdSchema,
-    expectedRevision: z.number().int().positive(),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.binding.update"),
-  }),
-  z.strictObject({
-    bindingId: ChannelBindingIdSchema,
-    externalUserId: z.string().trim().min(1).max(512),
-    expectedRevision: z.number().int().positive(),
-    decision: z.enum(["approved", "declined", "revoked"]),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.access.review"),
-  }),
-  z.strictObject({
-    code: z.string().trim().min(8).max(32),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("channel.identity.link"),
+    type: z.literal("channel.me.link"),
   }),
   z.strictObject({
     connectionId: IntegrationConnectionIdSchema,
@@ -1438,28 +1427,20 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.create"),
   }),
   z.object({ type: z.literal("channel.connection.credentials.replace") }),
   z.object({
     account: ChannelAccountViewSchema,
-    binding: ChannelBindingViewSchema,
     connection: IntegrationConnectionViewSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
-  z.object({ binding: ChannelBindingViewSchema, type: z.literal("channel.binding.create") }),
-  z.object({ type: z.literal("channel.binding.revoke") }),
-  z.object({ binding: ChannelBindingViewSchema, type: z.literal("channel.binding.update") }),
-  z.object({ grant: ChannelAccessGrantViewSchema, type: z.literal("channel.access.review") }),
+  z.object({ connection: AgentConnectionSchema, type: z.literal("channel.chat.create") }),
   z.object({
-    account: ChannelAccountViewSchema,
-    identity: z.object({
-      displayName: z.string().min(1).max(160),
-      externalUserId: z.string().min(1).max(512),
-    }),
-    type: z.literal("channel.identity.link"),
+    code: z.string().min(8).max(32),
+    expiresAt: z.iso.datetime({ offset: true }),
+    type: z.literal("channel.me.link"),
   }),
   z.object({ type: z.literal("channel.connection.status.set") }),
   StartHostedBrowserResponseSchema.extend({ type: z.literal("browser.session.start") }),

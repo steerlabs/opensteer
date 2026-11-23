@@ -215,6 +215,28 @@ it("says once that a page reloaded, and the note leaves when seen", async () => 
   expect(document.querySelector(".browser-return-note")).toBeNull();
 });
 
+it("says once that a tab put to sleep by closing reloaded, on a Home with no pooled browser (TS7)", async () => {
+  await openPage();
+  expect(document.querySelector(".browser-return-note")).toBeNull();
+  await act(async () => client.setBrowserReopened(place.key, Date.parse("2026-11-22T10:00:00Z")));
+  await settle(60);
+  const note = element(".browser-return-note");
+  expect(note.getAttribute("role")).toBe("status");
+  expect(note.textContent).toBe("This page reloaded because it was closed to free memory.");
+  await click(element('.browser-return-note [aria-label="Dismiss"]'));
+  expect(document.querySelector(".browser-return-note")).toBeNull();
+  // The tab still says when it reopened; this device has shown it, so it does not come back.
+  await act(async () => client.setBrowserReopened(place.key, Date.parse("2026-11-22T10:00:00Z")));
+  await settle(60);
+  expect(document.querySelector(".browser-return-note")).toBeNull();
+  // A later reopening is a new note.
+  await act(async () => client.setBrowserReopened(place.key, Date.parse("2026-11-22T11:00:00Z")));
+  await settle(60);
+  expect(element(".browser-return-note").textContent).toBe(
+    "This page reloaded because it was closed to free memory.",
+  );
+});
+
 it("lets a first touch in the page put the note away", async () => {
   await openPage();
   await report("lost");

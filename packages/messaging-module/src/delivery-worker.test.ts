@@ -27,19 +27,6 @@ describe("ChannelDeliveryWorker", () => {
     await worker.close();
   });
 
-  it("sends when reconciliation cannot find the message", async () => {
-    const outbound = adapter({ reconcile: vi.fn(async () => ({ kind: "unknown" as const })) });
-    const client = host({ claim: claimed({ mayHaveBeenSent: true }) });
-
-    await run(client, outbound);
-
-    expect(outbound.outbound.reconcile).toHaveBeenCalledOnce();
-    expect(outbound.outbound.send).toHaveBeenCalledOnce();
-    expect(client.finishDelivery).toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: "sent", receipt: { ts: "2.2" } }),
-    );
-  });
-
   it("clamps a provider's retry delay to what the wire accepts", async () => {
     const outbound = adapter({
       send: vi.fn(async () => {
@@ -105,7 +92,6 @@ function adapter(outbound: Partial<ChannelAdapter["outbound"]> = {}): ChannelAda
     connection: { inspect: vi.fn(), run: vi.fn() },
     manifest: slackChannelProviderManifest,
     outbound: {
-      reconcile: vi.fn(async () => ({ kind: "unknown" as const })),
       send: vi.fn(async () => ({ receipt: { ts: "2.2" } })),
       ...outbound,
     },
@@ -142,7 +128,6 @@ function claimed(overrides: Partial<ClaimedChannelDelivery> = {}): ClaimedChanne
       purpose: "delivery",
       secrets: { botToken: "xoxb-test" },
     },
-    mayHaveBeenSent: false,
     provider: "slack",
     ...overrides,
   };

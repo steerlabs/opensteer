@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { commitPersonalMutation, installPersonalMutationHooks } from "./personal-mutation.js";
 
@@ -196,9 +197,7 @@ integration.sequential("automation failure notices", () => {
     }
     async function listed(fixture: Fixture) {
       return (
-        await triggers.listForOwner({
-          ownerId: fixture.userId,
-        })
+        await triggers.listForOwner({ reader: personTaskReader, ownerId: fixture.userId })
       ).map(({ id }) => id);
     }
     function fireManual(fixture: Fixture, triggerId: TriggerId) {
@@ -209,7 +208,7 @@ integration.sequential("automation failure notices", () => {
       });
     }
     async function detail(triggerId: TriggerId, userId: UserId) {
-      const value = await triggers.getForOwner(triggerId, userId, 25);
+      const value = await triggers.getForOwner(triggerId, userId, 25, personTaskReader);
       if (!value) throw new Error("Expected Trigger detail");
       return value;
     }
@@ -462,6 +461,7 @@ integration.sequential("automation failure notices", () => {
     const created = await createOneShotTrigger(fixture, "one-shot-retried");
     await complete(fixture, await fireOneShot(created.trigger.id), "failed", "retried-first");
     const [failed] = await triggers.listForOwner({
+      reader: personTaskReader,
       ownerId: fixture.userId,
     });
     expect(failed).toMatchObject({
@@ -528,6 +528,7 @@ integration.sequential("automation failure notices", () => {
       "summary",
     );
     const summaries = await triggers.listForOwner({
+      reader: personTaskReader,
       ownerId: fixture.userId,
     });
     const byId = Object.fromEntries(summaries.map((summary) => [summary.id, summary]));

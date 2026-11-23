@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { lockPersonalSyncState } from "./personal-transaction.js";
 
@@ -1384,6 +1385,7 @@ describeStore("PostgreSQL store", (it) => {
     const scope = { kind: "personal" } as const;
     const read = (input: { before?: string; query?: string; maxItems?: number } = {}) =>
       f.store.agentThreadPageForOwner({
+        reader: personTaskReader,
         ownerId: root.userId,
         scopeId: root.threadId,
         scope,
@@ -1394,6 +1396,7 @@ describeStore("PostgreSQL store", (it) => {
       new Set([root.threadId, child.id, sibling.id, grandchild.id, unrelated.id]),
     );
     const lineage = await f.store.agentThreadPageForOwner({
+      reader: personTaskReader,
       ownerId: root.userId,
       scopeId: grandchild.id,
       scope: { kind: "lineage", threadId: grandchild.id },
@@ -1419,7 +1422,12 @@ describeStore("PostgreSQL store", (it) => {
     await expect(read({ before: "invalid" })).rejects.toMatchObject({ code: "bad_request" });
     const outsider = await f.store.createUser("Other person");
     await expect(
-      f.store.agentThreadPageForOwner({ ownerId: outsider, scopeId: root.threadId, scope }),
+      f.store.agentThreadPageForOwner({
+        reader: personTaskReader,
+        ownerId: outsider,
+        scopeId: root.threadId,
+        scope,
+      }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
@@ -1526,6 +1534,7 @@ describeStore("PostgreSQL store", (it) => {
       } = {},
     ) =>
       f.store.agentThreadPageForOwner({
+        reader: personTaskReader,
         ownerId: root.userId,
         scopeId: root.threadId,
         scope: { kind: "personal" },
@@ -1566,6 +1575,7 @@ describeStore("PostgreSQL store", (it) => {
     const first = await read({ maxItems: 1 });
     await expect(
       f.store.agentThreadPageForOwner({
+        reader: personTaskReader,
         ownerId: root.userId,
         scopeId: root.threadId,
         scope: { kind: "personal" },
@@ -1578,6 +1588,7 @@ describeStore("PostgreSQL store", (it) => {
     const outsider = await f.store.createUser("Other person");
     await expect(
       f.store.agentThreadPageForOwner({
+        reader: personTaskReader,
         ownerId: outsider,
         scopeId: root.threadId,
         scope: { kind: "personal" },

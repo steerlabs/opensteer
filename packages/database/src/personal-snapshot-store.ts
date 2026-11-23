@@ -14,6 +14,7 @@ import { nodeSubjectView } from "./execution-nodes.js";
 import { clientSendKeyWireReserve } from "@opensteer/protocol/transcript";
 import type { PersonalMutationTransaction } from "./personal-mutation.js";
 import { readAttentionKeys } from "./personal-attention-store.js";
+import { readConnectionRowStanding } from "./resource-access.js";
 import {
   type authorizedSyncState,
   type PersonalReadScope,
@@ -118,6 +119,21 @@ export const returnHintResources: ReadonlySet<DurablePersonalResourceKind> = new
   "harness-catalog",
 ]);
 
+/**
+ * Whether the connection that originated a task has ended, read by the same rule as
+ * `assertPersonMayContinue`: zero queries for the person's own tasks (`originConnectionId === null`).
+ */
+export async function endedOriginForThread(
+  tx: Tx,
+  viewerId: UserId,
+  originConnectionId: string | null,
+): Promise<"chat" | "agent" | null> {
+  if (originConnectionId === null) return null;
+  const standing = await readConnectionRowStanding(tx, viewerId, originConnectionId);
+  if (standing.row || standing.waiting) return null;
+  return standing.chat ? "chat" : "agent";
+}
+
 /** A task's detail value: its row and full Thread view, return hint included. */
 export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: ThreadId) {
   // One read of the row serves both the task fields and the thread value derived from it.
@@ -133,7 +149,9 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .where("threads.removedAt", "is", null)
     .executeTakeFirst();
   const view = row && (await taskPageThreadsFromRows(tx, [row])).get(row.id);
-  return row && view ? { ...taskView(row), thread: view } : undefined;
+  const endedOrigin =
+    row && view ? await endedOriginForThread(tx, viewerId, row.originConnectionId) : null;
+  return row && view ? { ...taskView(row), thread: view, endedOrigin } : undefined;
 }
 
 /**

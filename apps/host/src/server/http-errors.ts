@@ -30,6 +30,8 @@ export function normalizeHostError(error: unknown): NormalizedHostError {
           error instanceof z.ZodError
             ? `Request is invalid: ${formatIssues(error.issues)}`
             : "Request contains invalid JSON",
+        // The report is for the caller that sent it; an app says something of its own.
+        reason: "invalid-request",
         retryable: false,
       },
       status: 400,

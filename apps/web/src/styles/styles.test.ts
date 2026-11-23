@@ -37,3 +37,35 @@ test("web CSS only references custom properties that exist", () => {
 
   expect([...new Set(missing)].sort()).toEqual([]);
 });
+
+/**
+ * A Messaging account's sentences (its paused note, what its connection reports) are read
+ * whole: the rule for its rows never cuts a line short.
+ */
+test("a Messaging account row never cuts its sentences", () => {
+  const css = readFileSync(fileURLToPath(new URL("settings.css", import.meta.url)), "utf8");
+  const rule = /\.settings-messaging-row \.card__row-detail \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).not.toBe("");
+  expect(rule).not.toMatch(/text-overflow:\s*ellipsis/);
+  expect(rule).not.toMatch(/white-space:\s*nowrap/);
+  expect(rule).toMatch(/white-space:\s*normal/);
+  // `anywhere` lets a row shrink to its narrowest part and split an address inside a word.
+  expect(rule).not.toMatch(/overflow-wrap:\s*anywhere/);
+});
+
+/** The link code's sentence is never squeezed beside its controls on a narrow screen. */
+test("the code that links me keeps its sentence's measure and puts its controls under it", () => {
+  const css = readFileSync(fileURLToPath(new URL("settings.css", import.meta.url)), "utf8");
+  expect(css).toMatch(/\.card__row\.messaging-me \{[^}]*flex-wrap:\s*wrap/u);
+  expect(css).toMatch(/\.messaging-me > \.card__row-body \{[^}]*flex:\s*1 1 18rem/u);
+});
+
+/** Where a person adds or links an account, its name is never cut with an ellipsis. */
+test("a Messaging account's name is drawn whole", () => {
+  const css = readFileSync(fileURLToPath(new URL("settings.css", import.meta.url)), "utf8");
+  const rule = /\.settings-messaging-row \.card__row-title > a \{([^}]*)\}/u.exec(css)?.[1] ?? "";
+  expect(rule).not.toBe("");
+  expect(rule).not.toMatch(/ellipsis|nowrap/u);
+  const address = readFileSync(fileURLToPath(new URL("address.css", import.meta.url)), "utf8");
+  expect(address).not.toMatch(/text-overflow:\s*ellipsis/u);
+});
