@@ -94,14 +94,21 @@ export class TriggerToolHandlers {
         },
       ),
     );
-    // The store already scoped the page; this keeps any other path honest.
+    const hasWebhook = (item: { readonly webhookRouteKey?: unknown; readonly webhook?: unknown }) =>
+      Boolean(item.webhookRouteKey) || Boolean(item.webhook);
+    const needsOrigins =
+      Boolean(lineage) ||
+      (output.trigger !== undefined &&
+        (hasWebhook(output.trigger) || Boolean("webhook" in output && output.webhook))) ||
+      (output.triggers?.some(hasWebhook) ?? false);
+    // The store already scoped the page; this keeps any other path honest and checks lineage for webhook addresses.
     const origins =
-      lineage && output.triggers
+      needsOrigins && output.triggers
         ? await this.lineage.triggerOrigins(
             caller.userId,
             output.triggers.map(({ id }) => id),
           )
-        : lineage && output.trigger
+        : needsOrigins && output.trigger
           ? await this.lineage.triggerOrigins(caller.userId, [output.trigger.id])
           : undefined;
     const liveAccessMode = this.lineage.admitExecution
@@ -118,7 +125,7 @@ export class TriggerToolHandlers {
       : null;
     const canSeeWebhook = (id: TriggerId): boolean => {
       if (liveAccessMode !== "full-access") return false;
-      if (!lineage) return true;
+      if (!lineage) return origins !== undefined && (origins.get(id) ?? null) === null;
       return origins?.get(id) === lineage.agentConnectionId;
     };
     const redactWebhookField = (webhook: unknown) => {

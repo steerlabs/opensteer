@@ -399,6 +399,64 @@ describe("TriggerService", () => {
     });
   });
 
+  it("redacts a connected agent's webhook address from your own full-access agent Run (AB7)", async () => {
+    const ownerId = createId("user");
+    const triggerId = createId("trigger");
+    const foreignConnectionId = createId("agentConnection");
+    const routeKey = "whk_foreign_lineage_key_0123456789abcdef0123";
+    const triggerRow = {
+      id: triggerId,
+      kind: "webhook" as const,
+      name: "Connected agent hook",
+      webhookRouteKey: routeKey,
+    };
+    const service = new TriggerService({
+      onOccurrenceQueued: vi.fn(),
+      publicUrl: new URL("https://home.opensteer.example"),
+      runnerStore: {} as never,
+      store: {
+        getForOwner: vi.fn(async () => ({ trigger: triggerRow })),
+        listForOwner: vi.fn(async () => [triggerRow]),
+      } as unknown as TriggerStore,
+      threads: {} as never,
+    });
+    const handlers = new TriggerToolHandlers(service, {
+      admitExecution: async () => ({ mode: "full-access" as const }),
+      triggerOrigins: async () => new Map([[triggerId, foreignConnectionId]]),
+    });
+    const personalFullCaller = {
+      accessMode: "full-access",
+      kind: "run",
+      key: "run:personal-full",
+      userId: ownerId,
+      thread: { id: createId("thread") },
+    } as unknown as RunCaller;
+
+    const readResult = (await handlers.read({
+      caller: personalFullCaller,
+      input: { automationId: triggerId, occurrenceLimit: 10 },
+      operationKey: "read-foreign-webhook",
+    })) as {
+      readonly trigger?: { readonly webhookRouteKey?: string | null };
+      readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+    };
+    expect(readResult.trigger?.webhookRouteKey).toBeNull();
+    expect(readResult.webhook).toEqual({ scope: "public", url: null });
+
+    const listResult = (await handlers.read({
+      caller: personalFullCaller,
+      input: { limit: 10 },
+      operationKey: "list-foreign-webhook",
+    })) as {
+      readonly triggers?: ReadonlyArray<{
+        readonly webhookRouteKey?: string | null;
+        readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+      }>;
+    };
+    expect(listResult.triggers?.[0]?.webhookRouteKey).toBeNull();
+    expect(listResult.triggers?.[0]?.webhook).toEqual({ scope: "public", url: null });
+  });
+
   it("redacts webhook url when live admitExecution mode is lowered after sign-in (AA14.2)", async () => {
     const ownerId = createId("user");
     const triggerId = createId("trigger");
