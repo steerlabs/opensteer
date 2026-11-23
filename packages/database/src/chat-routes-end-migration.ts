@@ -124,16 +124,25 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
       select owner.created_by as user_id, 'mcn_' || gen_random_uuid() as id
       from (select distinct created_by from chat_routes_reached) owner;
 
+    -- Removing a connection hides it; it never stops or skips its Disconnect cleanup.
+    alter table agent_connections drop constraint if exists agent_connections_cleanup;
+    alter table agent_connections add constraint agent_connections_cleanup check (
+      (cleanup_reason is null) = (cleanup_requested_at is null)
+      and (cleanup_completed_at is null or cleanup_requested_at is not null)
+      and ((cleanup_claim_token is null) = (cleanup_claim_expires_at is null))
+      and (removed_at is null or cleanup_requested_at is not null));
+
     -- Its sender rule is "anyone": the same rule that keeps work from an "anyone" bridge out of
-    -- the person's personal context keeps this work out of it, for ever. Ended and removed: it is
-    -- a chat that has ended, and no list draws it. Its cleanup is complete: no Run names it.
+    -- the person's personal context keeps this work out of it, for ever. Ended and hidden
+    -- (removed): no list draws it, and its cleanup stays open so the Home's ordinary Disconnect
+    -- interrupts any active Run, ends sessions, and cancels pending Requests and waiting work.
     insert into agent_connections (
       id, user_id, label, client_name, access_mode, resource, token_hash, created_at,
       expires_at, revoked_at, removed_at, "grant", grant_revision, consent_version,
       cleanup_reason, cleanup_requested_at, cleanup_completed_at, bridge_senders)
     select legacy.id, legacy.user_id, 'Chats from before the update', 'Messaging',
       'approval-required', 'opensteer:bridge', null, now(), now(), now(), now(),
-      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), now(),
+      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), null,
       'anyone'
     from chat_routes_ended legacy;
 
@@ -158,11 +167,18 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
     update thread_inputs i set
       authority_source = jsonb_build_object('kind', 'user-session', 'userId', i.requested_by)
     where i.authority_source->>'kind' = 'channel-ingress';
-    update runs r set connection_id = i.connection_id
-    from thread_inputs i
-    where r.seed_input_id = i.message_id and r.connection_id is null
-      and i.connection_id in (select id from chat_routes_ended)
+    -- Every unfinished Run on a task tied to the ended row names that connection (whatever seeded
+    -- it), and its open attempts do too, so ordinary Disconnect and command claim handle them.
+    update runs r set connection_id = t.origin_connection_id
+    from threads t
+    where r.thread_id = t.id and r.connection_id is null
+      and t.origin_connection_id in (select id from chat_routes_ended)
       and r.status in ('queued', 'starting', 'running', 'waiting');
+    update run_attempts a set connection_id = r.connection_id
+    from runs r
+    where a.run_id = r.id and a.connection_id is null
+      and a.terminal_evidence_at is null
+      and r.connection_id in (select id from chat_routes_ended);
     drop index if exists thread_inputs_channel_authority;
 
     -- "Me", once the work above was read against the identities as they were: the one each

@@ -1,8 +1,10 @@
 import { createChannelId, type ChannelConversationId } from "@opensteer/channel-core";
+import type { RequestPresentation } from "@opensteer/core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { agentEndedForPersonMessage, chatEndedMessage } from "./resource-access.js";
 import { describeStore, testMessagingRunnerId } from "./store.integration.test-support.js";
 
 describeStore("answers leave the Home only through a bridge's Disconnect set", (it) => {
@@ -299,5 +301,164 @@ describeStore("locks are taken in their stable order when many rows move at once
         .where("id", "in", ids as never)
         .execute(),
     ).toEqual([{ status: "pending" }, { status: "pending" }]);
+  });
+
+  it("hiding (removing) a connection never stops or skips its Disconnect cleanup", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const running = await storeFixture.startRunFixture("removed-cleanup");
+    const connections = new AgentConnectionStore(database);
+    const agent = await connections.create({
+      userId: running.userId,
+      label: "Hidden Agent",
+      clientName: "Hidden Agent",
+      accessMode: "approval-required",
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: agent.id })
+      .where("id", "=", running.thread.id)
+      .execute();
+    await database
+      .updateTable("runs")
+      .set({ connectionId: agent.id })
+      .where("id", "=", running.run.id)
+      .execute();
+    await database
+      .updateTable("runAttempts")
+      .set({ connectionId: agent.id })
+      .where("runId", "=", running.run.id)
+      .execute();
+    expect(await connections.revoke(running.userId, agent.id)).toBe(true);
+    // A person cannot remove while cleanup is outstanding, and even if a row is already hidden
+    // (removed_at set while cleanup_completed_at is null), cleanup still runs to completion.
+    await expect(connections.remove(running.userId, agent.id)).rejects.toMatchObject({
+      code: "conflict",
+      reason: "cleanup-outstanding",
+    });
+    await database
+      .updateTable("agentConnections")
+      .set({ removedAt: new Date() })
+      .where("id", "=", agent.id)
+      .execute();
+    expect(
+      (await connections.list(running.userId, { includeRevoked: true })).find(
+        ({ id }) => id === agent.id,
+      ),
+    ).toBeUndefined();
+    const retryAt = new Date(Date.now() + 5_000);
+    expect(await connections.nextMaintenance(retryAt)).not.toBeNull();
+    let stoppedRun = false;
+    const driven = await store.driveConnectionCleanups({
+      stopper: {
+        stop: async (attempt) => {
+          if (attempt.kind === "run-attempt" && attempt.runId === running.run.id) {
+            stoppedRun = true;
+            return "ended";
+          }
+          return undefined;
+        },
+      },
+    });
+    expect(driven.failures).toEqual([]);
+    expect(stoppedRun).toBe(true);
+    expect(driven.settled).toContain(agent.id);
+    expect(
+      (
+        await database
+          .selectFrom("agentConnections")
+          .select("cleanupCompletedAt")
+          .where("id", "=", agent.id)
+          .executeTakeFirstOrThrow()
+      ).cleanupCompletedAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it("refuses answering a Request once its task's connection has ended", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const running = await storeFixture.startRunFixture("ended-request");
+    const connections = new AgentConnectionStore(database);
+    const agent = await connections.create({
+      userId: running.userId,
+      label: "Ended Agent",
+      clientName: "Ended Agent",
+      accessMode: "approval-required",
+      resource: "https://home.example/mcp",
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: agent.id })
+      .where("id", "=", running.thread.id)
+      .execute();
+    const presentation: RequestPresentation = {
+      kind: "form",
+      title: "Continue?",
+      detail: "Choose.",
+      fields: [
+        {
+          choices: [{ label: "Yes", value: "Yes" }],
+          custom: false,
+          id: "q1",
+          multiSelect: false,
+          prompt: "Continue?",
+          secret: false,
+        },
+      ],
+    };
+    const { request } = await store.requests.create({
+      callId: "ended-request-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: running.run.id,
+      originatingThreadId: running.thread.id,
+      payload: { kind: "person.question" },
+      presentation,
+      requestedBy: running.userId,
+      requiredActor: "requester",
+    });
+    expect(await connections.revoke(running.userId, agent.id)).toBe(true);
+    await expect(
+      store.requests.answerPersonQuestion({
+        requestId: request.id,
+        expectedRevision: (await store.requests.revision(request.id))!,
+        resolvedBy: running.userId,
+        response: { kind: "form", answers: { q1: ["Yes"] } },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden", message: agentEndedForPersonMessage });
+
+    // Same for an ended chat's Request, using the chat's sentence.
+    const bridge = await storeFixture.createBridgeFixture("ended-chat-request");
+    const chatRun = await storeFixture.startRunFixture("ended-chat-request-run");
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: bridge.bridge.id })
+      .where("id", "=", chatRun.thread.id)
+      .execute();
+    const { request: chatRequest } = await store.requests.create({
+      callId: "ended-chat-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: chatRun.run.id,
+      originatingThreadId: chatRun.thread.id,
+      payload: { kind: "person.question" },
+      presentation,
+      requestedBy: chatRun.userId,
+      requiredActor: "requester",
+    });
+    expect(await connections.revoke(bridge.fixture.userId, bridge.bridge.id)).toBe(true);
+    await expect(
+      store.requests.answerPersonQuestion({
+        requestId: chatRequest.id,
+        expectedRevision: (await store.requests.revision(chatRequest.id))!,
+        resolvedBy: chatRun.userId,
+        response: { kind: "form", answers: { q1: ["Yes"] } },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden", message: chatEndedMessage });
   });
 });

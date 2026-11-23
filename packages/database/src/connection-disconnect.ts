@@ -226,6 +226,7 @@ export async function connectionAttempts(
       cross join floor f
       where q.status = 'pending' and (
         r.id is not null or o.id is not null or w.id is not null or s.connection_id = f.id
+        or (f.disconnected and t.origin_connection_id = f.id)
         or (q.originating_run_id is null and q.originating_occurrence_id is null
           and q.originating_watch_activation_id is null and q.originating_agent_session_id is null
           and t.origin_connection_id = f.id)
@@ -387,11 +388,12 @@ export async function requestExpiredCleanups(
 }
 
 export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<string[]> {
+  // Removing a connection hides it; it never stops or skips its Disconnect.
   const rows = await database
     .selectFrom("agentConnections")
     .select("id")
     .where("cleanupRequestedAt", "is not", null)
-    .where("removedAt", "is", null)
+    .where((eb) => eb.or([eb("removedAt", "is", null), eb("cleanupCompletedAt", "is", null)]))
     .orderBy("cleanupRequestedAt")
     .orderBy("id")
     .execute();
@@ -418,7 +420,6 @@ export async function claimConnectionCleanup(
       cleanupClaimExpiresAt: new Date(now.getTime() + cleanupClaimDurationMs),
     })
     .where("id", "=", connectionId)
-    .where("removedAt", "is", null)
     .where((eb) =>
       eb.or([eb("cleanupClaimExpiresAt", "is", null), eb("cleanupClaimExpiresAt", "<=", now)]),
     )

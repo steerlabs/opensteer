@@ -1,8 +1,11 @@
 import { createChannelId } from "@opensteer/channel-core";
+import { type RequestPresentation } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { expect } from "vitest";
+import { AgentConnectionStore } from "./agent-connection-store.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
+import type { LineageAttempt } from "./connection-disconnect.js";
 import { migrateToLatest } from "./migrations.js";
 import { chatEndedMessage, lineagePersonalContext } from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -487,5 +490,200 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         ).originConnectionId,
         id,
       ).toBeNull();
+  });
+
+  it("disconnects the ended row through ordinary cleanup: interrupts running work, cancels Requests, refuses human-seeded queued Runs, and stays hidden", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const running = await storeFixture.startRunFixture("routes-end-running");
+    const { configured } = await storeFixture.createChannelDeliveryFixture(
+      "routes-end-disconnect",
+      {
+        bridge: false,
+      },
+    );
+    // Re-home the running task and a second tied task under the same owner, tied to a non-personal route.
+    const { thread: humanQueuedTask } = await store.createThread({
+      createdBy: running.userId,
+      environmentId: running.environmentId,
+      harnessInstanceId: running.harnessInstance.id,
+      idempotencyKey: "routes-end-human-queued",
+      modelSelection: testModelSelection,
+      title: "human-queued-on-tied",
+      parentThreadId: running.thread.id,
+    });
+    const humanQueued = await store.enqueueThreadInput({
+      requestedBy: running.userId,
+      threadId: humanQueuedTask.id,
+      content: [{ type: "text", text: "Follow up from the person" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "routes-end-human-input",
+    });
+    expect(humanQueued.run?.status).toBe("queued");
+
+    // A pending durable Request opened by the running task before the update.
+    const questionPresentation: RequestPresentation = {
+      kind: "form",
+      title: "Proceed?",
+      detail: "Confirm action.",
+      fields: [
+        {
+          choices: [{ label: "Yes", value: "Yes" }],
+          custom: false,
+          id: "q1",
+          multiSelect: false,
+          prompt: "Proceed?",
+          secret: false,
+        },
+      ],
+    };
+    const { request: pendingQuestion } = await store.requests.create({
+      callId: "routes-end-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: running.run.id,
+      originatingThreadId: running.thread.id,
+      payload: { kind: "person.question" },
+      presentation: questionPresentation,
+      requestedBy: running.userId,
+      requiredActor: "requester",
+    });
+
+    await restoreRoutes(database);
+    const route = `chb_${crypto.randomUUID()}`;
+    await sql`insert into channel_bindings (id, account_id, created_by, selector, execution_policy,
+        access_policy, revision, status)
+      values (${route}, ${configured.account.id}, ${running.userId}, '{}'::jsonb, '{}'::jsonb,
+        ${JSON.stringify(testChannelAccessPolicy("anyone"))}::jsonb, 1, 'active')`.execute(
+      database,
+    );
+    const channel = createChannelId("conversation");
+    await sql`insert into channel_conversations (id, account_id, provider, external_account_id,
+        binding_id, binding_revision, external_conversation_id, conversation_type,
+        active_thread_id, provider_state, personal_context)
+      values (${channel}, ${configured.account.id}, 'slack', 'T-routes-disconnect', ${route}, 1,
+        ${channel}, 'channel', ${running.thread.id}, '{}'::jsonb, false)`.execute(database);
+
+    await migrateToLatest(database);
+
+    const ended = (
+      await database
+        .selectFrom("threads")
+        .select("originConnectionId")
+        .where("id", "=", running.thread.id)
+        .executeTakeFirstOrThrow()
+    ).originConnectionId;
+    expect(ended).not.toBeNull();
+    // Hidden (removed), with cleanup requested and NOT complete.
+    expect(
+      await database
+        .selectFrom("agentConnections")
+        .select(["removedAt", "cleanupRequestedAt", "cleanupCompletedAt", "cleanupReason"])
+        .where("id", "=", ended!)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({
+      removedAt: expect.any(Date),
+      cleanupRequestedAt: expect.any(Date),
+      cleanupCompletedAt: null,
+      cleanupReason: "revoked",
+    });
+    // The ended row appears in no list.
+    const connections = new AgentConnectionStore(database);
+    expect(
+      (await connections.list(running.userId, { includeRevoked: true })).find(
+        ({ id }) => id === ended,
+      ),
+    ).toBeUndefined();
+
+    // Every unfinished Run on a tied task (including one seeded by a human message) names the ended row.
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["id", "connectionId"])
+        .where("id", "in", [running.run.id, humanQueued.run!.id])
+        .orderBy("id")
+        .execute(),
+    ).toEqual(
+      [running.run.id, humanQueued.run!.id].sort().map((id) => ({ id, connectionId: ended })),
+    );
+    // Claiming the human-seeded queued Run refuses it with the chat's sentence (never authority mismatch).
+    const humanCommand = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", humanQueued.run!.id)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    const claimed = await store.claimCommand(humanCommand.id, "after-update-human-seeded");
+    expect(claimed?.terminalFailure).toBe(chatEndedMessage);
+    await store.failCommand(
+      humanCommand.id,
+      claimed!.terminalFailure!,
+      claimed!.terminalFailureInput ?? "authority-cohort",
+    );
+
+    // Even before cleanup finishes, answering the tied task's pending Request is refused.
+    await expect(
+      store.requests.answerPersonQuestion({
+        requestId: pendingQuestion.id,
+        expectedRevision: (await store.requests.revision(pendingQuestion.id))!,
+        resolvedBy: running.userId,
+        response: { kind: "form", answers: { q1: ["Yes"] } },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden", message: chatEndedMessage });
+
+    // Ordinary Disconnect cleanup sweeps the hidden row: interrupts the running Run with evidence
+    // and cancels the pending Request.
+    const stoppedAttempts: LineageAttempt[] = [];
+    const driven = await store.driveConnectionCleanups({
+      stopper: {
+        stop: async (attempt) => {
+          stoppedAttempts.push(attempt);
+          return "ended";
+        },
+      },
+    });
+    expect(driven.failures).toEqual([]);
+    expect(
+      stoppedAttempts.some((a) => a.kind === "run-attempt" && a.runId === running.run.id),
+    ).toBe(true);
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("type")
+        .where("runId", "=", running.run.id)
+        .where("type", "=", "run.interrupt")
+        .execute(),
+    ).toEqual([{ type: "run.interrupt" }]);
+    expect(
+      await database
+        .selectFrom("runAttempts")
+        .select(["connectionId", "terminalEvidenceAt"])
+        .where("runId", "=", running.run.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ connectionId: ended, terminalEvidenceAt: expect.any(Date) });
+    expect(
+      await database
+        .selectFrom("requests")
+        .select(["status", "cancellationReason"])
+        .where("id", "=", pendingQuestion.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "cancelled", cancellationReason: "authority-revoked" });
+    expect(
+      (
+        await database
+          .selectFrom("agentConnections")
+          .select("cleanupCompletedAt")
+          .where("id", "=", ended!)
+          .executeTakeFirstOrThrow()
+      ).cleanupCompletedAt,
+    ).toBeInstanceOf(Date);
+    // Still appears in no list after settling.
+    expect(
+      (await connections.list(running.userId, { includeRevoked: true })).find(
+        ({ id }) => id === ended,
+      ),
+    ).toBeUndefined();
   });
 });
