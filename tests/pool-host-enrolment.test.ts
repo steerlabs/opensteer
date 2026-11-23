@@ -1158,6 +1158,61 @@ esac
       expect(existsSync(ciUserData)).toBe(true);
     });
 
+    it("PH4: checks systemctl is-active --quiet for both units before scrubbing the bootstrap token and cloud-init user-data", () => {
+      const specDir = makeTempDir();
+      const specPath = join(specDir, "boot.json");
+      const tokenPath = join(specDir, "token");
+      writeFileSync(specPath, JSON.stringify(makeBootSpec({ everEnrolled: false }, true)), {
+        mode: 0o600,
+      });
+      writeFileSync(tokenPath, "t".repeat(43), { mode: 0o600 });
+
+      const h = createFakeHostEnv({
+        blkidRc: 2,
+        blkidOut: "",
+        wipefsRc: 0,
+        wipefsOut: "",
+        systemctlRc: 0,
+        tokenFile: tokenPath,
+        setupInstallStub: true,
+      });
+      // Type=simple units can exit immediately after `systemctl enable --now` returns 0:
+      // `enable --now` succeeds (rc 0), while `is-active` reports inactive/failed (rc 3) for the relay unit.
+      h.override(
+        "systemctl",
+        `  _osp_log_call systemctl "$@"
+  if [[ \${1:-} == is-active ]]; then
+    for _arg in "$@"; do
+      if [[ $_arg == opensteer-pool-relay.service ]]; then return 3; fi
+    done
+  fi
+  return 0`,
+      );
+      const ciUserData = join(h.cloudInitDir, "user-data.txt");
+      writeFileSync(ciUserData, "#cloud-config\nsecret-token", { mode: 0o600 });
+
+      const res = runScript(
+        h.bundledEnroll,
+        [
+          "--boot-spec",
+          specPath,
+          "--bootstrap-token-file",
+          tokenPath,
+          "--profiles-root",
+          join(h.stateDir, "profiles"),
+          "--credentials-root",
+          join(h.etcDir, "credentials"),
+        ],
+        h.env,
+        "y\ny\n",
+      );
+      expect(res.status).not.toBe(0);
+      const calls = h.readCalls().filter((c) => c.cmd === "systemctl");
+      expect(calls.some((c) => c.args.includes("is-active"))).toBe(true);
+      expect(existsSync(tokenPath)).toBe(true);
+      expect(existsSync(ciUserData)).toBe(true);
+    });
+
     const refusalHostA = "ph_11111111-1111-4111-8111-111111111111";
     const refusalLabelB = hostProfileDiskLabel("ph_22222222-2222-4222-8222-222222222222");
     it.each<readonly [string, boolean, FakeHostHarnessOptions]>([

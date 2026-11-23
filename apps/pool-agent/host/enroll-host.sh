@@ -965,6 +965,8 @@ run_enrolment() {
     # a crash or systemctl failure leaves the token for an idempotent retry (same keys -> HTTP 200).
     bash "$OPT/setup-host.sh" verify-profiles-mount
     systemctl enable --now opensteer-pool-agent.service opensteer-pool-relay.service >/dev/null
+    systemctl is-active --quiet opensteer-pool-agent.service || die "opensteer-pool-agent.service is not active after systemctl enable --now; keeping bootstrap token for retry"
+    systemctl is-active --quiet opensteer-pool-relay.service || die "opensteer-pool-relay.service is not active after systemctl enable --now; keeping bootstrap token for retry"
     rm -f "$token_file"
     # Y7: Scrub cloud-init's own copy of user-data once the token has been consumed and services are up.
     rm -f "$CLOUD_INIT_DIR/user-data.txt" "$CLOUD_INIT_DIR/user-data.txt.i" "$CLOUD_INIT_DIR/cloud-config.txt" 2>/dev/null || true
