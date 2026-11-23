@@ -245,6 +245,8 @@ interface ActiveTurn {
   readonly toolLifetime: AbortController;
   interruptPromise?: Promise<void>;
   interruptRequested: boolean;
+  /** True while the initial `turn/start` request is awaiting its reply. */
+  turnStartInFlight: boolean;
   providerTurnId?: string;
   /** Codex is running the root's turn: it started and has not completed. */
   providerTurnOpen: boolean;
@@ -1241,6 +1243,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   #codexThreadId: string | undefined;
   #providerSessionReference: string | undefined;
   #stopPromise: Promise<void> | undefined;
+  /**
+   * Every turn currently open on Codex for this session (`threadId -> turnId`),
+   * root and children alike. Lives on the session so `#unload` still interrupts
+   * a turn even after `execute()` has exited (e.g. on event-buffer overflow).
+   */
+  readonly #openTurns = new Map<string, string>();
+  /** `${threadId}\0${turnId}` keys already sent a `turn/interrupt`, so none is sent twice. */
+  readonly #interruptedTurns = new Set<string>();
 
   private constructor(
     config: CodexHarnessConfig,
@@ -1369,6 +1379,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       nodes: new SubagentNodes((event) => this.#publish(event)),
       nodeTokens: new Map(),
       interruptRequested: run.signal.aborted,
+      turnStartInFlight: false,
       providerTurnOpen: false,
       requestedBy: run.requestedBy,
       runId: run.runId,
@@ -1389,7 +1400,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (!run.signal.aborted) run.signal.addEventListener("abort", abort, { once: true });
 
     try {
-      if (run.signal.aborted) {
+      if (run.signal.aborted || this.#closed) {
         this.#publishTerminal(active, "interrupted");
         return;
       }
@@ -1397,10 +1408,16 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         await this.#executeVoice(active, run);
         return;
       }
-      const result = requireObject(
-        await this.#requireClient().request("turn/start", turnStart(input)),
-        "turn/start result",
-      );
+      active.turnStartInFlight = true;
+      let result: JsonObject;
+      try {
+        result = requireObject(
+          await this.#requireClient().request("turn/start", turnStart(input)),
+          "turn/start result",
+        );
+      } finally {
+        active.turnStartInFlight = false;
+      }
       const turnResult = requireObject(result.turn, "turn/start result.turn");
       this.#setActiveTurnId(active, requireString(turnResult.id, "turn/start result.turn.id"));
       this.#ensureRunStarted(active);
@@ -1412,6 +1429,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         else this.#publishFailure(active, toHarnessError(error, "Codex turn failed"));
       }
     } finally {
+      active.turnStartInFlight = false;
+      active.idReady.resolve();
       run.signal.removeEventListener("abort", abort);
       if (this.#activeTurn === active) this.#activeTurn = undefined;
     }
@@ -1600,7 +1619,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         code: "conflict",
         message: "Codex has no running child turn for this subagent",
       });
-    await this.#requireClient().request("turn/interrupt", { threadId, turnId });
+    const request = this.#interruptTurnOnce(this.#requireClient(), threadId, turnId);
+    if (request) await request;
   }
 
   async interrupt(): Promise<void> {
@@ -1703,7 +1723,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     active.root = "executing";
     active.providerTurnId = turnId;
     active.providerTurnOpen = true;
-    this.#ownTurn(active, this.#requireCodexThreadId(), turnId);
+    const rootThreadId = this.#requireCodexThreadId();
+    this.#openTurns.set(rootThreadId, turnId);
+    this.#ownTurn(active, rootThreadId, turnId);
     active.rootStart?.resolve();
     this.#publish({ data: { phase: "turn" }, type: "run.phase" });
   }
@@ -1903,6 +1925,21 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
   }
 
+  /** Sends `turn/interrupt` at most once per `(threadId, turnId)` in a session. */
+  #interruptTurnOnce(
+    client: CodexStdioClient,
+    threadId: string,
+    turnId: string,
+    timeoutMs?: number,
+  ): Promise<unknown> | undefined {
+    const key = `${threadId}\u0000${turnId}`;
+    if (this.#interruptedTurns.has(key)) return undefined;
+    this.#interruptedTurns.add(key);
+    return timeoutMs === undefined
+      ? client.request("turn/interrupt", { threadId, turnId })
+      : client.request("turn/interrupt", { threadId, turnId }, timeoutMs);
+  }
+
   async #interruptActive(active: ActiveTurn): Promise<void> {
     if (active.terminal) return;
     active.interruptPromise ??= this.#performInterrupt(active);
@@ -1913,13 +1950,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     await Promise.race([active.idReady.promise, active.completion.promise]);
     if (active.terminal || !active.providerTurnId) return;
     try {
+      const client = this.#requireClient();
       // Codex interrupts only the thread it is asked to; children keep running
       // unless each is stopped too.
-      await Promise.allSettled(
-        [...active.childTurns].map(([threadId, turnId]) =>
-          this.#requireClient().request("turn/interrupt", { threadId, turnId }),
-        ),
-      );
+      const childRequests = [...active.childTurns].flatMap(([threadId, turnId]) => {
+        const request = this.#interruptTurnOnce(client, threadId, turnId);
+        return request ? [request] : [];
+      });
+      if (childRequests.length > 0) await Promise.allSettled(childRequests);
       // A turn still starting is interrupted once it has an id to name.
       if (active.root === "starting") await active.rootStart?.promise;
       if (active.terminal) return;
@@ -1928,11 +1966,17 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         this.#publishTerminal(active, "interrupted");
         return;
       }
-      await this.#requireClient().request("turn/interrupt", {
-        threadId: this.#requireCodexThreadId(),
-        turnId: active.providerTurnId,
-      });
-      if (this.#closed || active.terminal) return;
+      if (active.providerTurnOpen && active.providerTurnId) {
+        const rootRequest = this.#interruptTurnOnce(
+          client,
+          this.#requireCodexThreadId(),
+          active.providerTurnId,
+        );
+        if (rootRequest) await rootRequest;
+      }
+      // On a shared server once stop is under way, `#unload` owns waiting for
+      // close; on a dedicated server `#stop` calls us to wait for completion first.
+      if ((this.#closed && this.#server?.dedicated === false) || active.terminal) return;
       await withTimeout(active.completion.promise, this.#config.requestTimeoutMs, {
         timeoutError: () =>
           new OpensteerError({
@@ -2020,21 +2064,35 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const closeTimeoutMs = Math.min(codexThreadCloseMaxMs, this.#config.requestTimeoutMs);
     const client = server.client;
     const root = this.#codexThreadId;
-    // The Run's own end does not stop a turn Codex still runs for it. A turn
-    // whose interrupt was already asked for is not asked again: its
-    // conversation's close is what ends it now.
-    if (active?.providerTurnId && active.providerTurnOpen && root && !active.interruptPromise) {
-      await Promise.allSettled([
-        ...[...active.childTurns].map(([threadId, turnId]) =>
-          client.request("turn/interrupt", { threadId, turnId }, closeTimeoutMs),
-        ),
-        client.request(
-          "turn/interrupt",
-          { threadId: root, turnId: active.providerTurnId },
+    // Codex does not close a thread with a turn in flight unless that turn was
+    // asked to interrupt. If a turn/start reply is still outstanding, wait
+    // boundedly for its id so it can be interrupted before thread/unsubscribe.
+    if (active && !active.terminal) {
+      if (active.turnStartInFlight && !active.providerTurnId) {
+        await withTimeout(
+          Promise.race([active.idReady.promise, active.completion.promise]),
           closeTimeoutMs,
-        ),
-      ]);
+          { timeoutError: () => new Error("Codex turn/start did not reply before unload") },
+        ).catch(() => undefined);
+      }
+      if (active.root === "starting" && active.rootStart) {
+        await withTimeout(
+          Promise.race([active.rootStart.promise, active.completion.promise]),
+          closeTimeoutMs,
+          {
+            timeoutError: () => new Error("Codex follow-up turn/start did not reply before unload"),
+          },
+        ).catch(() => undefined);
+      }
     }
+    const interruptBeforeUnsubscribe = (threadId: string) => {
+      const openTurnId = this.#openTurns.get(threadId);
+      if (openTurnId) {
+        void this.#interruptTurnOnce(client, threadId, openTurnId, closeTimeoutMs)?.catch(
+          () => undefined,
+        );
+      }
+    };
     // What the router gave this session, its subagents however they were found
     // included, and any a parent lookup still in flight gives it meanwhile.
     const unloaded = new Set<string>();
@@ -2043,12 +2101,16 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       await server.discoveries();
       const owned = server.threadsOf(this).filter((threadId) => !unloaded.has(threadId));
       if (owned.length === 0) break;
+      const ordered = [
+        ...owned.filter((threadId) => threadId !== root),
+        ...owned.filter((threadId) => threadId === root),
+      ];
       const results = await Promise.all(
-        [
-          ...owned.filter((threadId) => threadId !== root),
-          ...owned.filter((threadId) => threadId === root),
-        ].map(async (threadId) => {
+        ordered.map(async (threadId) => {
           unloaded.add(threadId);
+          // Send turn/interrupt ahead of thread/unsubscribe on the ordered pipe,
+          // without waiting for turn/interrupt's reply.
+          interruptBeforeUnsubscribe(threadId);
           return server.unload(threadId, this, closeTimeoutMs);
         }),
       );
@@ -2419,10 +2481,11 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (method === "turn/started" && turnId) {
       const alreadyRegistered = active.childTurns.get(childThreadId) === turnId;
       active.childTurns.set(childThreadId, turnId);
+      this.#openTurns.set(childThreadId, turnId);
       if (active.interruptRequested && !alreadyRegistered)
-        void this.#requireClient()
-          .request("turn/interrupt", { threadId: childThreadId, turnId })
-          .catch(() => undefined);
+        void this.#interruptTurnOnce(this.#requireClient(), childThreadId, turnId)?.catch(
+          () => undefined,
+        );
       active.nodes.update(childThreadId, { stopSupported: true });
       this.#childThreads.add(childThreadId);
       this.#ownTurn(active, childThreadId, turnId);
@@ -2482,6 +2545,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         if (nativeTurn) context.completedTurns.add(nativeTurn);
         if (active.childTurns.get(childThreadId) !== nativeTurn) return;
         active.childTurns.delete(childThreadId);
+        if (this.#openTurns.get(childThreadId) === nativeTurn) this.#openTurns.delete(childThreadId);
         active.nodes.complete(
           childThreadId,
           status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "completed",
@@ -2756,6 +2820,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#setActiveTurnId(active, turnId);
     const status = requireString(turn.status, "turn/completed params.turn.status");
     active.providerTurnOpen = false;
+    if (this.#codexThreadId && this.#openTurns.get(this.#codexThreadId) === turnId) {
+      this.#openTurns.delete(this.#codexThreadId);
+    }
     this.#restoreAdditionalContext();
     if (this.#context.voiceCall) {
       // A failed turn is one request that didn't go through, not the end of the call.
@@ -2966,7 +3033,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (!active.providerTurnId) {
       active.providerTurnId = turnId;
       active.providerTurnOpen = true;
-      this.#ownTurn(active, this.#requireCodexThreadId(), turnId);
+      const rootThreadId = this.#requireCodexThreadId();
+      this.#openTurns.set(rootThreadId, turnId);
+      this.#ownTurn(active, rootThreadId, turnId);
       active.idReady.resolve();
     }
   }

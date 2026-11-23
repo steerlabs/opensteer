@@ -141,6 +141,10 @@ const holdCloseFile = process.argv
 const holdMcpStatusFile = process.argv
   .find((argument) => argument.startsWith("--hold-mcp-status-file="))
   ?.slice("--hold-mcp-status-file=".length);
+// Opt-in: hold non-ephemeral turn/start reply until this file appears.
+const holdTurnStartFile = process.argv
+  .find((argument) => argument.startsWith("--hold-turn-start-file="))
+  ?.slice("--hold-turn-start-file=".length);
 // Opt-in: the first resume after an unsubscribe meets the thread still closing.
 const closingOnce = process.argv.includes("--closing-once");
 let closingOnceUsed = false;
@@ -179,6 +183,7 @@ const modelListDelayMs = Number(
     ?.slice("--model-list-delay-ms=".length) ?? 0,
 );
 const delayedModelLists = new WeakSet();
+const delayedTurnStarts = new WeakSet();
 // Codex's own default is a login shell; only the flag Opensteer passes turns it off.
 const allowLoginShell = !process.argv.includes("allow_login_shell=false");
 const shellEnvironmentPolicy = {
@@ -706,7 +711,9 @@ function handleClientMethod(message) {
       }
       thread.subscribed = false;
       send({ id: message.id, result: { status: "unsubscribed" } });
-      if (neverClose) break;
+      // Real Codex 0.162.0 does not close a thread whose turn is in flight
+      // unless that turn was asked to interrupt.
+      if (neverClose || (thread.inFlightTurn && !thread.turnInterrupted)) break;
       if (holdCloseFile && !existsSync(holdCloseFile)) {
         capture({ fakeCloseHeld: thread.id });
         thread.closing = setInterval(() => {
@@ -793,6 +800,21 @@ function handleClientMethod(message) {
       if (ephemeralThreads.has(message.params.threadId)) {
         handleTitleTurn(message);
         break;
+      }
+      if (!delayedTurnStarts.has(message)) {
+        current().inFlightTurn = true;
+        current().turnInterrupted = false;
+        if (holdTurnStartFile && !existsSync(holdTurnStartFile)) {
+          delayedTurnStarts.add(message);
+          const heldThread = current();
+          capture({ fakeTurnStartHeld: heldThread.id });
+          const timer = setInterval(() => {
+            if (!existsSync(holdTurnStartFile)) return;
+            clearInterval(timer);
+            threadScope.run(heldThread, () => handleClientMethod(message));
+          }, 10);
+          break;
+        }
       }
       // Opt-in: a command the model started that left the engine's process
       // group, as a daemonizing tool does; its Runner must still end it.
@@ -1016,7 +1038,9 @@ function handleClientMethod(message) {
       else answer();
       break;
     }
-    case "turn/interrupt":
+    case "turn/interrupt": {
+      const target = threads.get(message.params.threadId);
+      if (target) target.turnInterrupted = true;
       if (process.argv.includes("--reject-interrupt")) {
         send({
           id: message.id,
@@ -1031,7 +1055,9 @@ function handleClientMethod(message) {
       // A child agent's thread is interrupted on its own, as Codex requires.
       if (message.params.threadId !== threadId) {
         capture({ childInterrupted: message.params.threadId });
-        sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
+        if (!process.argv.includes("--ignore-interrupt")) {
+          sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
+        }
         const starting = current().followUpStart;
         current().followUpStart = undefined;
         if (starting) setTimeout(starting, 50);
@@ -1048,6 +1074,7 @@ function handleClientMethod(message) {
         sendTurnCompleted("interrupted", undefined, message.params.turnId ?? turnId);
       }
       break;
+    }
     default:
       send({
         id: message.id,
@@ -1171,6 +1198,8 @@ function newThread(id, parent) {
     settings: {},
     loaded: true,
     subscribed: true,
+    inFlightTurn: false,
+    turnInterrupted: false,
     /** A pending unload: its timer, or "held" under `--closing-once`. */
     closing: undefined,
     terminals: new Set(),
@@ -3570,9 +3599,16 @@ function send(message) {
     thread.serverRequestIds.set(message.id, wireId);
     message = { ...message, id: wireId };
   } else if (message.method !== undefined) {
+    const target = threads.get(message.params?.threadId);
+    if (target && message.method === "turn/started") {
+      target.inFlightTurn = true;
+      target.turnInterrupted = false;
+    } else if (target && message.method === "turn/completed") {
+      target.inFlightTurn = false;
+      target.turnInterrupted = false;
+    }
     if (optedOutNotifications.has(message.method)) return;
     // Codex sends nothing more about a thread this connection unsubscribed from.
-    const target = threads.get(message.params?.threadId);
     if (target && !target.subscribed && message.method !== "thread/closed") return;
     if (message.method === "serverRequest/resolved") {
       const wireId = thread.serverRequestIds.get(message.params.requestId);

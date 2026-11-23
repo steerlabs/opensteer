@@ -3385,6 +3385,148 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it("interrupts a running child turn before unsubscribing when Stop runs while the root is idle", async () => {
+    const neverReleased = join(await mkdtemp(join(tmpdir(), "opensteer-codex-bg-")), "release");
+    const fixture = await setup("background-children", {
+      requestTimeoutMs: 500,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate in background"));
+      await observer.waitFor("run.phase");
+      // Direct stop (without interrupt()) while root is idle and child turn is still running.
+      await stopping.stop();
+      await observer.done;
+      expect(normalizedTypes(observer.events)).toContain("run.interrupted");
+      expect(normalizedTypes(observer.events)).not.toContain("run.failed");
+      const captured = await fixture.capture();
+      const childThreadId = "codex-child-thread-1";
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      expect(childInterrupts).toHaveLength(1);
+      expect(captured).toContainEqual({ fakeThreadClosed: childThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("waits for an in-flight turn/start reply and interrupts it once before unsubscribing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-turn-start-"));
+    const turnStartRelease = join(dir, "turn-start-release");
+    const neverReleased = join(dir, "never-release");
+    const fixture = await setup("long-stream-held", {
+      requestTimeoutMs: 1_000,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--hold-turn-start-file=${turnStartRelease}`,
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Write at length"));
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({
+          fakeTurnStartHeld: stopping.providerSessionReference,
+        }),
+      );
+      void stopping.interrupt();
+      const stopPromise = stopping.stop();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await writeFile(turnStartRelease, "");
+      await stopPromise;
+      await observer.done;
+      const captured = await fixture.capture();
+      const threadId = stopping.providerSessionReference;
+      const interrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      expect(interrupts).toHaveLength(1);
+      const interruptIndex = captured.findIndex(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      const unsubscribeIndex = captured.findIndex(
+        (message) =>
+          message.method === "thread/unsubscribe" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      expect(interruptIndex).toBeGreaterThan(-1);
+      expect(unsubscribeIndex).toBeGreaterThan(interruptIndex);
+      expect(captured).toContainEqual({ fakeThreadClosed: threadId });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("sends only one turn/interrupt for a child turn when stopNode is followed by Stop", async () => {
+    const fixture = await setup("subagents-hold", {
+      requestTimeoutMs: 1_000,
+      serverArguments: ["--unique-threads", "--ignore-interrupt"],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate to a researcher"));
+      const nodeStarted = await observer.waitFor("node.started");
+      const childThreadId = nodeStarted.data.sessionRef!;
+      await stopping.stopNode!(nodeStarted.data.nodeId);
+      void stopping.interrupt();
+      await stopping.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      const childInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === childThreadId,
+      );
+      const rootInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === stopping.providerSessionReference,
+      );
+      expect(childInterrupts).toHaveLength(1);
+      expect(rootInterrupts).toHaveLength(1);
+      expect(captured).toContainEqual({ fakeThreadClosed: childThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
     const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {
