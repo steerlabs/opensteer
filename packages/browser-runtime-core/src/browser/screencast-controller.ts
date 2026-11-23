@@ -39,6 +39,8 @@ interface ActiveCast {
   repairAttempted: boolean;
   releaseRendering: (() => void) | null;
   geometryRevision: number;
+  /** The page size the running cast was started for, while one runs. */
+  castSize: PageSize | null;
   raster: PageSize | null;
   casting: boolean;
   awaitingNavigation: boolean;
@@ -283,6 +285,18 @@ export class ScreencastController {
         await this.castActive(active, "geometry");
         return;
       }
+      if (this.castStillFits(active)) {
+        // Nothing about the picture changed (a navigation bumps the revision at the same size;
+        // a capture let go comes back the same): the running cast is kept, and frames from here
+        // on are this revision's.
+        active.geometryRevision = this.ledger.binding(surfaceId)?.surface.geometryRevision ?? 0;
+        active.awaitingNavigation = false;
+        this.diagnose({ stage: "cast-kept", geometryRevision: active.geometryRevision });
+        return;
+      }
+      // A capture let go for a moment keeps the cast: its frames are set aside until it is back.
+      const port = this.ledger.binding(surfaceId)?.page.capture;
+      if (port && port.read() === null) return;
       // Chromium can apply device metrics without producing another frame for
       // an otherwise static page, and the raster bound follows the size.
       // Restarting the cast does both, so the viewer never stays on old pixels.
@@ -294,6 +308,20 @@ export class ScreencastController {
         .catch(() => undefined);
       await this.castActive(active, "geometry");
     });
+  }
+
+  /**
+   * Whether the running cast still pictures the page as it is: the same size, and the same capture
+   * revision where the page has one. Only the geometry revision may differ.
+   */
+  private castStillFits(active: ActiveCast): boolean {
+    const binding = this.ledger.binding(active.surfaceId);
+    const size = this.ledger.viewportOf(active.surfaceId);
+    if (!binding || !size || !active.castSize || !sameSize(size, active.castSize)) return false;
+    const port = binding.page.capture;
+    if (!port) return true;
+    const capture = port.read();
+    return capture !== null && capture.revision === active.capture?.revision;
   }
 
   async close(): Promise<void> {
@@ -414,6 +442,7 @@ export class ScreencastController {
     const active: ActiveCast = {
       releaseRendering: this.streaming ? (binding.cdp.retainRendering?.() ?? null) : null,
       geometryRevision: -1,
+      castSize: null,
       capture: null,
       castAbort: null,
       paintRetry: null,
@@ -744,6 +773,7 @@ export class ScreencastController {
       const start = async () => {
         if (canceled.aborted || this.closed || this.active !== active || !this.streaming) return;
         const size = this.ledger.viewportOf(active.surfaceId);
+        active.castSize = size ?? null;
         if (!size) return;
         const capture = page?.capture?.read() ?? null;
         if (

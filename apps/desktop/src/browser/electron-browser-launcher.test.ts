@@ -2952,9 +2952,11 @@ describe("Electron debugger teardown", () => {
     // The page finishes loading, and draws.
     Object.assign(surface, { loading: false });
     changed();
+    // The follow view has dealt with both: restarted its cast for each, or kept it.
     await vi.waitFor(() =>
       expect(
-        follow.diagnostics.filter(({ stage }) => stage === "cast-start").length,
+        follow.diagnostics.filter(({ stage }) => stage === "cast-start" || stage === "cast-kept")
+          .length,
       ).toBeGreaterThan(1),
     );
     // Chromium numbers each start's frames: the latest it answered.
