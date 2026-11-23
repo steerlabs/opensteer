@@ -364,7 +364,7 @@ describe("the next step", () => {
   });
 
   it("sends no start while one is prepared or with Chromium, or while the session's stop is", () => {
-    const stopping = { generation: 0, stops: 1, timedOut: 0 };
+    const stopping = { ...initialSessionCastState, stops: 1 };
     for (const [, now] of wants)
       for (const state of states) {
         expect(nextStep(now, "tab#1", state, stopping).kind).not.toMatch(
@@ -443,7 +443,7 @@ describe("what a frame is", () => {
   // Re-check 10, S1 and S6: whether a frame is no one's is the plan's to say, from the session's
   // stops and whether anything is streamed.
   it("is dropped on a session whose stop is with Chromium, and while nothing is streamed", () => {
-    const stopping = { generation: 0, stops: 1, timedOut: 0 };
+    const stopping = { ...initialSessionCastState, stops: 1 };
     for (const state of [sent, running])
       for (const now of [base, facts({ streaming: false })])
         expect(frameVerdict(state, stopping, measured(), now)).toBe("dropped");
@@ -660,7 +660,7 @@ describe("the state after each event", () => {
 
   it("finds a session's stop still with Chromium when the tab is bound again", () => {
     expect(
-      nextStep(base, "tab#1", initialTabCastState(), { generation: 0, stops: 1, timedOut: 0 }),
+      nextStep(base, "tab#1", initialTabCastState(), { ...initialSessionCastState, stops: 1 }),
     ).toEqual({
       kind: "wait",
       why: "a stop is with Chromium",
