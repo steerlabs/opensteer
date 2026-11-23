@@ -51,7 +51,7 @@ export interface EditingState {
   readonly pendingEcho: { readonly expected: EditingProxyState } | null;
   readonly replacement?: string | null;
   readonly nativeKey?: EditingKeyState | "choice" | null;
-  readonly compositionTail: "commit" | "discard" | null;
+  readonly compositionTail: "commit" | "cancel" | "discard" | "discard-cancel" | null;
   readonly suppressedInput: string | null;
   readonly down: readonly EditingKeyState[];
   readonly resetPending: boolean;
@@ -661,7 +661,13 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
       }
       state.composition = null;
       state.pendingEcho = null;
-      state.compositionTail = transaction.detached ? "discard" : "commit";
+      state.compositionTail = transaction.detached
+        ? event.data
+          ? "discard"
+          : "discard-cancel"
+        : event.data
+          ? "commit"
+          : "cancel";
       state.proxy = proxy;
       state.caret = proxy.selectionStart === proxy.selectionEnd ? proxy.selectionEnd : remoteCaret;
       if (transaction.detached || state.resetPending || !state.abilities.rangeEdits) reset();
@@ -844,16 +850,18 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         break;
       }
       // The input a composition's end carries is its own: a commit's, or the deletion that
-      // cancelled it (its beforeinput came while composing). A person's own Backspace after a
-      // commit has a beforeinput of its own first, which ends the tail (regime C, seeds 1605 and
-      // 2225: the cancel's input, read before the mirror was cleared, sent the field again).
+      // cancelled it (its beforeinput came while composing). A Backspace after a *commit* is never
+      // a composition tail, even when an adapter emits input without a preceding beforeinput; only
+      // a *cancelled* composition's trailing deleteContentBackward is consumed (regime C, seeds
+      // 1605 and 2225: the cancel's input, read before the mirror was cleared, sent the field again).
+      const tail = state.compositionTail;
+      const isCancelTail = tail === "cancel" || tail === "discard-cancel";
       if (
-        state.compositionTail &&
-        ["insertFromComposition", "insertCompositionText", "deleteContentBackward"].includes(
-          event.inputType,
-        )
+        tail &&
+        (["insertFromComposition", "insertCompositionText"].includes(event.inputType) ||
+          (event.inputType === "deleteContentBackward" && isCancelTail))
       ) {
-        const discard = state.compositionTail === "discard";
+        const discard = tail === "discard" || tail === "discard-cancel";
         state.compositionTail = null;
         if (!discard) {
           state.proxy = event.proxy;

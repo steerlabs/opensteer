@@ -1122,3 +1122,63 @@ it("sends a Backspace at the mirror's start to the page", () => {
   ]);
   expect(result.instruction.preventDefault).toBe(true);
 });
+
+it("never swallows a Backspace input after a composition commit when no beforeinput precedes it", () => {
+  const { operations, state } = replay([
+    { type: "compositionstart", proxy: proxy("") },
+    { type: "compositionupdate", data: "日本", proxy: proxy("日本", 2, 2, { start: 0, end: 2 }) },
+    input("日本", "insertCompositionText", true),
+    { type: "compositionend", data: "日本", proxy: proxy("日本") },
+    // An adapter or browser that emits input(deleteContentBackward) without a preceding
+    // beforeinput after a committed composition must still send deleteBackward.
+    input("日", "deleteContentBackward", false),
+  ]);
+  expect(operations).toEqual([
+    {
+      kind: "compose",
+      composition: {
+        contextId: context.contextId,
+        text: "日本",
+        selectionStart: 2,
+        selectionEnd: 2,
+        before: "",
+        after: "",
+      },
+    },
+    { kind: "edit", edit: { contextId: context.contextId, text: "日本", before: "", after: "" } },
+    { kind: "command", command: "deleteBackward", contextId: context.contextId },
+  ]);
+  expect(state.proxy.value).toBe("日");
+});
+
+it("still swallows a cancelled composition's trailing deleteContentBackward input", () => {
+  const { operations } = replay([
+    { type: "compositionstart", proxy: proxy("") },
+    { type: "compositionupdate", data: "に", proxy: proxy("に", 1, 1, { start: 0, end: 1 }) },
+    input("に", "insertCompositionText", true),
+    { type: "compositionend", data: "", proxy: proxy("") },
+    input("", "deleteContentBackward", false),
+  ]);
+  expect(operations).toEqual([
+    {
+      kind: "compose",
+      composition: {
+        contextId: context.contextId,
+        text: "に",
+        selectionStart: 1,
+        selectionEnd: 1,
+        before: "",
+        after: "",
+      },
+    },
+    {
+      kind: "compose",
+      composition: {
+        contextId: context.contextId,
+        text: "",
+        selectionStart: 0,
+        selectionEnd: 0,
+      },
+    },
+  ]);
+});
