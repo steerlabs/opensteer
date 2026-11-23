@@ -1,5 +1,6 @@
 import { personTaskReader } from "@opensteer/database";
 import { TriggerOccurrenceIdSchema, OpensteerError, type UserId } from "@opensteer/core";
+import { MAX_WEBHOOK_BODY_BYTES } from "@opensteer/triggers";
 import {
   hostApi,
   rpcSuccess,
@@ -9,13 +10,24 @@ import {
   type HostApiServerContext,
 } from "@opensteer/protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { z } from "zod";
 import type { TriggerService } from "./trigger-service.js";
 import type { HostAuthenticator } from "../identity/auth.js";
-const WebhookParamsSchema = z.strictObject({
-  routeKey: z.string().regex(/^wh_[A-Za-z0-9_-]{32}$/),
-});
+import { WebhookRateLimiter } from "./webhook-rate-limiter.js";
+const webhookRouteKeyPattern = /^whk?_[A-Za-z0-9_-]{32,64}$/u;
 const webhookRetryAfterSeconds = 300;
+const maxForwardedHeaders = 100;
+const maxForwardedHeaderValueLength = 8 * 1_024;
+const strippedWebhookHeaders = new Set([
+  "connection",
+  "cookie",
+  "host",
+  "keep-alive",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 export function createTriggerRpcHandlers(
   triggers: TriggerService,
 ): Pick<HostApiHandlers, "triggers.get" | "triggers.list"> {
@@ -153,44 +165,87 @@ export function registerTriggerRoutes(
   app: FastifyInstance,
   _authenticator: HostAuthenticator,
   triggers: TriggerService,
+  rateLimiter: WebhookRateLimiter = new WebhookRateLimiter(),
 ): void {
-  app.post("/hooks/v1/:routeKey", async (request, reply) => {
-    const { routeKey } = WebhookParamsSchema.parse(request.params);
-    const secret = bearerToken(request.headers.authorization);
-    const headers = selectedWebhookHeaders(request.headers);
-    const deliveryId = webhookDeliveryId(headers);
-    let result: Awaited<ReturnType<TriggerService["acceptWebhook"]>>;
-    try {
-      result = await triggers.acceptWebhook({
-        ...(deliveryId
-          ? {
-              deliveryId,
-            }
-          : {}),
-        headers,
-        method: request.method,
-        payload: normalizeWebhookPayload(request.body, request.headers["content-type"]),
-        routeKey,
-        secret,
-      });
-    } catch (error) {
-      // A full pending queue is backpressure, not a delivery failure: the
-      // sender's own retry is the overflow buffer this Trigger needs.
-      if (!(error instanceof OpensteerError) || error.code !== "resource_exhausted") throw error;
-      return reply
-        .header("retry-after", String(webhookRetryAfterSeconds))
-        .status(429)
-        .send({
-          error: {
-            code: error.code,
-            message: error.message,
-            retryable: true,
-          },
+  void app.register(async (webhooks) => {
+    // Capture the exact raw request bytes for every content type (for HMAC verification, Y2/Y15)
+    // without affecting JSON parsing on any other Host route.
+    webhooks.removeAllContentTypeParsers();
+    webhooks.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) =>
+      done(null, body),
+    );
+    webhooks.route<{ Params: { readonly routeKey: string } }>({
+      bodyLimit: MAX_WEBHOOK_BODY_BYTES,
+      method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+      url: "/hooks/v1/:routeKey",
+      handler: async (request, reply) => {
+        const routeKey = request.params.routeKey;
+        // Pre-DB in-memory rate limit (T7 / Y3): flooded or unknown hits never touch PostgreSQL.
+        const admitted = rateLimiter.consume(request.ip, routeKey);
+        if (!admitted.allowed) {
+          return reply
+            .header("retry-after", String(admitted.retryAfterSeconds))
+            .status(429)
+            .send({
+              error: {
+                code: "resource_exhausted",
+                message: "Too many webhook requests",
+                retryable: true,
+              },
+            });
+        }
+        if (!webhookRouteKeyPattern.test(routeKey)) {
+          return reply.status(404).send({
+            error: {
+              code: "not_found",
+              message: "Webhook not found",
+            },
+          });
+        }
+        const rawBody = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
+        const parsedUrl = new URL(request.url, "http://webhook.local");
+        const query = extractWebhookQuery(parsedUrl.searchParams);
+        const headers = filteredWebhookHeaders(request.headers);
+        let result: Awaited<ReturnType<TriggerService["acceptWebhook"]>>;
+        try {
+          result = await triggers.acceptWebhook({
+            headers,
+            method: request.method,
+            path: "/hooks/v1",
+            payload: null,
+            query,
+            rawBody,
+            routeKey,
+          });
+        } catch (error) {
+          if (error instanceof OpensteerError && error.code === "not_found") {
+            return reply.status(404).send({
+              error: {
+                code: "not_found",
+                message: "Webhook not found",
+              },
+            });
+          }
+          // A full pending queue (100 waiting, Y11) is backpressure, not a delivery failure.
+          if (!(error instanceof OpensteerError) || error.code !== "resource_exhausted") {
+            throw error;
+          }
+          return reply
+            .header("retry-after", String(webhookRetryAfterSeconds))
+            .status(429)
+            .send({
+              error: {
+                code: error.code,
+                message: error.message,
+                retryable: true,
+              },
+            });
+        }
+        return reply.status(202).send({
+          occurrenceId: TriggerOccurrenceIdSchema.parse(result.occurrence.id),
+          wasDuplicate: result.wasDuplicate,
         });
-    }
-    return reply.status(202).send({
-      occurrenceId: TriggerOccurrenceIdSchema.parse(result.occurrence.id),
-      wasDuplicate: result.wasDuplicate,
+      },
     });
   });
 }
@@ -203,56 +258,36 @@ function requireUserId(context: HostApiServerContext): UserId {
   }
   return context.session.user.id;
 }
-function bearerToken(value: string | undefined): string {
-  const match = /^Bearer ([^\s]{20,4096})$/u.exec(value ?? "");
-  if (!match?.[1]) {
-    throw new OpensteerError({
-      code: "not_found",
-      message: "Webhook not found",
-    });
-  }
-  return match[1];
-}
-function selectedWebhookHeaders(
+function filteredWebhookHeaders(
   headers: FastifyRequest["headers"],
 ): Readonly<Record<string, string>> {
-  const allowed = new Set([
-    "content-type",
-    "user-agent",
-    "webhook-id",
-    "x-github-delivery",
-    "x-github-event",
-    "x-gitlab-event",
-    "x-gitlab-event-uuid",
-    "x-request-id",
-    "x-webhook-id",
-  ]);
-  return Object.fromEntries(
-    Object.entries(headers).flatMap(([name, value]) => {
-      if (!allowed.has(name) || value === undefined) return [];
-      return [[name, Array.isArray(value) ? value.join(",") : value]];
-    }),
-  );
-}
-function webhookDeliveryId(headers: Readonly<Record<string, string>>): string | undefined {
-  return (
-    headers["x-github-delivery"] ??
-    headers["x-gitlab-event-uuid"] ??
-    headers["webhook-id"] ??
-    headers["x-webhook-id"] ??
-    headers["x-request-id"]
-  )?.slice(0, 512);
-}
-function normalizeWebhookPayload(body: unknown, contentType: string | undefined): unknown {
-  if (!Buffer.isBuffer(body)) return body ?? null;
-  const mediaType =
-    contentType?.split(";", 1)[0]?.trim().toLowerCase() ?? "application/octet-stream";
-  if (mediaType.startsWith("text/") || mediaType === "application/x-www-form-urlencoded") {
-    return body.toString("utf8");
+  const result: Record<string, string> = {};
+  let count = 0;
+  for (const [rawName, value] of Object.entries(headers)) {
+    if (value === undefined || count >= maxForwardedHeaders) continue;
+    const name = rawName.toLowerCase();
+    if (
+      strippedWebhookHeaders.has(name) ||
+      name.startsWith("x-forwarded-") ||
+      name.startsWith("x-opensteer-")
+    ) {
+      continue;
+    }
+    const text = Array.isArray(value) ? value.join(", ") : value;
+    result[name] = text.slice(0, maxForwardedHeaderValueLength);
+    count += 1;
   }
-  return {
-    contentType: mediaType,
-    data: body.toString("base64"),
-    encoding: "base64",
-  };
+  return result;
+}
+function extractWebhookQuery(
+  params: URLSearchParams,
+): Readonly<Record<string, string | readonly string[]>> {
+  const query: Record<string, string | string[]> = {};
+  for (const [key, value] of params.entries()) {
+    const existing = query[key];
+    if (existing === undefined) query[key] = value;
+    else if (Array.isArray(existing)) existing.push(value);
+    else query[key] = [existing, value];
+  }
+  return query;
 }

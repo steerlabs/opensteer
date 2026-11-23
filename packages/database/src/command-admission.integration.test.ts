@@ -960,16 +960,15 @@ describeStore("one admission for Home commands", (it) => {
       .set({ originConnectionId: connection.id })
       .where("id", "=", f.threadId)
       .execute();
-    const deliver = (deliveryId: string) =>
+    const deliver = () =>
       storeFixture.triggers.enqueueWebhook({
-        deliveryId,
         headers: {},
         method: "POST",
         payload: { ok: true },
         routeKey,
       });
     await connections.revoke(f.userId, connection.id);
-    await expect(deliver("after-disconnect")).rejects.toBeDefined();
+    await expect(deliver()).rejects.toBeDefined();
     expect(
       await database
         .selectFrom("triggerOccurrences")

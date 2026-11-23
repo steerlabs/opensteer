@@ -170,10 +170,13 @@ export const TriggerProgramEventSchema = z.strictObject({
       scheduledFor: IsoDateTimeSchema,
     }),
     z.strictObject({
+      bodyBytes: z.number().int().nonnegative().optional(),
       deliveryId: z.string().min(1).max(512).optional(),
       headers: z.record(z.string(), z.string()),
       kind: TriggerOccurrenceSourceKindSchema.extract(["webhook"]),
       method: z.string().min(1).max(16),
+      path: z.string().max(2_048).optional(),
+      query: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional(),
     }),
   ]),
   trigger: z.strictObject({

@@ -1221,8 +1221,8 @@ integration.sequential("Trigger failure auto-pause", () => {
         routeKey: created.trigger.webhookRouteKey ?? "",
       }),
     ).rejects.toMatchObject({
-      code: "conflict",
-      message: "Webhook automation is not active",
+      code: "not_found",
+      message: "Webhook not found",
     });
   });
   it("does not reset the count when a stale-Revision occurrence succeeds", async ({

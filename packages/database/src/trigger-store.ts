@@ -138,7 +138,9 @@ export interface TriggerDispatchContext {
   };
   readonly occurrence: TriggerOccurrence;
   readonly revision: TriggerRevision;
+  readonly script?: import("@opensteer/triggers").AutomationScript | null;
   readonly trigger: Trigger;
+  readonly webhookBody?: Buffer | null;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 
@@ -1496,10 +1498,12 @@ export class TriggerStore {
     };
   }
   enqueueWebhook(input: {
-    readonly deliveryId?: string;
     readonly headers: Readonly<Record<string, string>>;
     readonly method: string;
-    readonly payload: unknown;
+    readonly path?: string;
+    readonly payload?: unknown;
+    readonly query?: Readonly<Record<string, string | readonly string[]>>;
+    readonly rawBody?: Buffer | null;
     readonly routeKey: string;
   }): Promise<{
     readonly occurrence: TriggerOccurrence;
@@ -1513,27 +1517,70 @@ export class TriggerStore {
         .where("kind", "=", "webhook")
         .forNoKeyUpdate()
         .executeTakeFirst();
-      if (!trigger) throw notFound();
-      if (trigger.status !== "active") throw conflict("Webhook automation is not active");
+      // Unknown, paused, archived, or rotated keys return identical 404 (T7).
+      if (!trigger || trigger.status !== "active") throw notFound("Webhook not found");
       await requireTriggerExecutionAuthority(transaction, trigger);
-      const sourceKey = input.deliveryId
-        ? `webhook:${input.deliveryId}`
-        : `webhook:${globalThis.crypto.randomUUID()}`;
-      return enqueueOccurrence(transaction, trigger, sourceKey, {
-        payload: input.payload,
-        source: {
-          ...(input.deliveryId
-            ? {
-                deliveryId: input.deliveryId,
-              }
-            : {}),
-          headers: {
-            ...input.headers,
+      // Y11: Every webhook request queues in FIFO order (up to 100 pending, then 429).
+      const sourceKey = `webhook:${globalThis.crypto.randomUUID()}`;
+      const rawBody = input.rawBody && input.rawBody.byteLength > 0 ? input.rawBody : null;
+      const query: Record<string, string | string[]> | undefined = input.query
+        ? Object.fromEntries(
+            Object.entries(input.query).map(([k, v]) => [k, typeof v === "string" ? v : [...v]]),
+          )
+        : undefined;
+      return enqueueOccurrence(
+        transaction,
+        trigger,
+        sourceKey,
+        {
+          payload: input.payload ?? null,
+          source: {
+            ...(rawBody ? { bodyBytes: rawBody.byteLength } : { bodyBytes: 0 }),
+            headers: {
+              ...input.headers,
+            },
+            kind: "webhook",
+            method: input.method,
+            ...(input.path ? { path: input.path } : {}),
+            ...(query ? { query } : {}),
           },
-          kind: "webhook",
-          method: input.method,
         },
-      });
+        rawBody,
+      );
+    });
+  }
+  async rotateWebhookKey(input: {
+    readonly actorAccessMode?: ThreadAccessMode;
+    readonly actorConnectionId?: string;
+    readonly actorThreadId: ThreadId | null;
+    readonly ownerId: UserId;
+    readonly triggerId: TriggerId;
+    readonly webhookRouteKey: string;
+    readonly webhookSecretHash: string;
+  }): Promise<Trigger> {
+    return commitPersonalMutation(this.#database, async (transaction) => {
+      input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
+      const trigger = await lockTriggerForMutation(transaction, input, "define");
+      if (trigger.kind !== "webhook") {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Only webhook automations have a webhook address",
+        });
+      }
+      if (trigger.status === "archived") {
+        throw conflict("Archived automation cannot rotate its webhook address");
+      }
+      const updated = await transaction
+        .updateTable("triggers")
+        .set({
+          updatedAt: new Date(),
+          webhookRouteKey: input.webhookRouteKey,
+          webhookSecretHash: input.webhookSecretHash,
+        })
+        .where("id", "=", trigger.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return triggerFromRow(updated);
     });
   }
   enqueueManual(input: {
@@ -2788,6 +2835,7 @@ async function enqueueOccurrence(
   trigger: TriggerRow,
   sourceKey: string,
   input: Pick<TriggerProgramEvent, "payload" | "source">,
+  webhookBody: Buffer | null = null,
 ): Promise<{
   readonly occurrence: TriggerOccurrence;
   readonly wasDuplicate: boolean;
@@ -2888,6 +2936,7 @@ async function enqueueOccurrence(
       stdout: "",
       triggerId: trigger.id,
       updatedAt: now,
+      ...(webhookBody ? { webhookBody } : {}),
     })
     .returningAll()
     .executeTakeFirstOrThrow();
@@ -2943,12 +2992,17 @@ async function loadDispatchContext(
     .where("id", "=", occurrence.triggerId)
     .executeTakeFirstOrThrow();
   await requireTriggerLaunchAuthority(transaction, trigger);
-  const [revision, anchorThread] = await Promise.all([
+  const [revision, scriptRow, anchorThread] = await Promise.all([
     transaction
       .selectFrom("triggerRevisions")
       .selectAll()
       .where("id", "=", occurrence.revisionId)
       .executeTakeFirstOrThrow(),
+    transaction
+      .selectFrom("triggerRevisionScripts")
+      .select("script")
+      .where("revisionId", "=", occurrence.revisionId)
+      .executeTakeFirst(),
     transaction
       .selectFrom("threads")
       .select(["environmentId", "id"])
@@ -2959,7 +3013,11 @@ async function loadDispatchContext(
     anchorThread,
     occurrence: occurrenceFromRow(occurrence),
     revision: revisionFromRow(revision),
+    script: scriptRow
+      ? (scriptRow.script as import("@opensteer/triggers").AutomationScript)
+      : null,
     trigger: triggerFromRow(trigger),
+    webhookBody: occurrence.webhookBody ?? null,
     agentHome: (await personalSettings(transaction)).agentHome,
   };
 }

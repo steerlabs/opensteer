@@ -1639,33 +1639,63 @@ describeStore("PostgreSQL store", (it) => {
       webhookRouteKey: "wh_12345678901234567890123456789012",
       webhookSecretHash: "a".repeat(64),
     });
+    const firstBody = Buffer.from('{"ref":"main","seq":1}', "utf8");
+    const secondBody = Buffer.from('{"ref":"main","seq":2}', "utf8");
     const first = await triggers.enqueueWebhook({
-      deliveryId: "delivery-1",
       headers: {
         "x-github-event": "push",
+        "x-hub-signature-256": "sha256=first",
       },
       method: "POST",
-      payload: {
-        ref: "main",
-      },
+      path: "/hooks/v1",
+      query: { seq: "1" },
+      rawBody: firstBody,
       routeKey: created.trigger.webhookRouteKey ?? "",
     });
-    const duplicate = await triggers.enqueueWebhook({
-      deliveryId: "delivery-1",
+    const second = await triggers.enqueueWebhook({
       headers: {
         "x-github-event": "push",
+        "x-hub-signature-256": "sha256=second",
       },
       method: "POST",
-      payload: {
-        ref: "main",
-      },
+      path: "/hooks/v1",
+      query: { seq: "2" },
+      rawBody: secondBody,
       routeKey: created.trigger.webhookRouteKey ?? "",
     });
+    // Y11: Every webhook request queues in order (no deliveryId deduplication).
     expect(first.wasDuplicate).toBe(false);
-    expect(duplicate.wasDuplicate).toBe(true);
-    expect(duplicate.occurrence.id).toBe(first.occurrence.id);
+    expect(second.wasDuplicate).toBe(false);
+    expect(second.occurrence.id).not.toBe(first.occurrence.id);
+    // Raw body bytes are preserved for dispatch (Y2 / Y15).
+    const dispatchCtx = await triggers.loadDispatchContext(first.occurrence.commandId);
+    expect(dispatchCtx.webhookBody?.equals(firstBody)).toBe(true);
+
+    // Key rotation (T7): old URL returns identical 404 immediately; new URL accepts requests.
+    const rotatedKey = "whk_rotated012345678901234567890123456789012";
+    const rotated = await triggers.rotateWebhookKey({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+      webhookRouteKey: rotatedKey,
+      webhookSecretHash: "c".repeat(64),
+    });
+    expect(rotated.webhookRouteKey).toBe(rotatedKey);
+    await expect(
+      triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey: created.trigger.webhookRouteKey ?? "",
+      }),
+    ).rejects.toMatchObject({ code: "not_found", message: "Webhook not found" });
+    const afterRotate = await triggers.enqueueWebhook({
+      headers: {},
+      method: "POST",
+      routeKey: rotatedKey,
+    });
+    expect(afterRotate.wasDuplicate).toBe(false);
   });
-  it("caps the pending webhook backlog while still answering retries of admitted deliveries", async ({
+  it("caps the pending webhook backlog at 100 in order before refusing with resource_exhausted (Y11)", async ({
     storeFixture,
   }) => {
     const { createRunFixture, triggers } = storeFixture;
@@ -1690,22 +1720,18 @@ describeStore("PostgreSQL store", (it) => {
     const routeKey = created.trigger.webhookRouteKey ?? "";
     for (let index = 0; index < MAX_PENDING_TRIGGER_OCCURRENCES; index += 1) {
       const admitted = await triggers.enqueueWebhook({
-        deliveryId: `backlog-${index}`,
         headers: {},
         method: "POST",
-        payload: {
-          index,
-        },
+        rawBody: Buffer.from(JSON.stringify({ index }), "utf8"),
         routeKey,
       });
       expect(admitted.wasDuplicate).toBe(false);
     }
     await expect(
       triggers.enqueueWebhook({
-        deliveryId: "backlog-over-cap",
         headers: {},
         method: "POST",
-        payload: null,
+        rawBody: Buffer.from("over-cap", "utf8"),
         routeKey,
       }),
     ).rejects.toMatchObject({
@@ -1713,21 +1739,6 @@ describeStore("PostgreSQL store", (it) => {
       details: {
         pendingLimit: MAX_PENDING_TRIGGER_OCCURRENCES,
       },
-    });
-    // A sender retrying an already-admitted delivery must still see its answer:
-    // the cap gates new work, not the idempotent reply to accepted work.
-    await expect(
-      triggers.enqueueWebhook({
-        deliveryId: "backlog-0",
-        headers: {},
-        method: "POST",
-        payload: {
-          index: 0,
-        },
-        routeKey,
-      }),
-    ).resolves.toMatchObject({
-      wasDuplicate: true,
     });
     await expect(
       triggers.enqueueManual({
@@ -1832,7 +1843,6 @@ describeStore("PostgreSQL store", (it) => {
       delivered.push(
         (
           await triggers.enqueueWebhook({
-            deliveryId,
             headers: {},
             method: "POST",
             payload: {
@@ -2078,7 +2088,6 @@ describeStore("PostgreSQL store", (it) => {
       webhookSecretHash: "d".repeat(64),
     });
     const { occurrence } = await triggers.enqueueWebhook({
-      deliveryId: "admission-1",
       headers: {},
       method: "POST",
       payload: null,

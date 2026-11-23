@@ -523,7 +523,7 @@ export async function createHostServer(
           hasAppAuthority(request.headers) ||
           path.startsWith("/media/") ||
           path.startsWith(standardCdpConnectPrefix) ||
-          path.startsWith("/hooks/v1/plugins/") ||
+          path.startsWith("/hooks/v1/") ||
           path.startsWith("/v1/integration-authorizations/") ||
           path === "/v1/plugin-oauth/callback"
         );

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type {
   ThreadAccessMode,
   ThreadId,
@@ -6,7 +6,7 @@ import type {
   TriggerOccurrenceId,
   UserId,
 } from "@opensteer/core";
-import { OpensteerError, ThreadIdSchema } from "@opensteer/core";
+import { isLoopbackHostname, OpensteerError, ThreadIdSchema } from "@opensteer/core";
 import type { OpensteerStore, TaskReader, TriggerStore } from "@opensteer/database";
 import { personTaskReader } from "@opensteer/database";
 import {
@@ -27,6 +27,8 @@ interface TriggerServiceOptions {
   readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly onWatchChanged?: (triggerId: TriggerId) => void;
   readonly publicUrl: URL;
+  /** Live public tunnel/remote origin when Personal Remote Access is active (Y3). */
+  readonly remoteOrigin?: () => Promise<string | null>;
   readonly store: TriggerStore;
   readonly runnerStore: TriggerProgramRunnerStore;
   readonly threads: Pick<OpensteerStore, "readTask">;
@@ -37,6 +39,7 @@ export class TriggerService {
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
+  readonly #remoteOrigin: (() => Promise<string | null>) | undefined;
   readonly #store: TriggerStore;
   readonly #runnerStore: TriggerProgramRunnerStore;
   readonly #threads: TriggerServiceOptions["threads"];
@@ -46,10 +49,22 @@ export class TriggerService {
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
+    this.#remoteOrigin = options.remoteOrigin;
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#threads = options.threads;
     this.#tokens = options.tokens;
+  }
+  async resolveWebhookAddress(routeKey: string): Promise<{
+    readonly scope: "public" | "local";
+    readonly url: string;
+  }> {
+    const remote = await this.#remoteOrigin?.().catch(() => null);
+    const origin = remote ? new URL(remote) : this.#publicUrl;
+    return {
+      scope: isLoopbackHostname(origin.hostname) ? "local" : "public",
+      url: new URL(`/hooks/v1/${routeKey}`, origin).toString(),
+    };
   }
   async create(
     input: {
@@ -72,7 +87,7 @@ export class TriggerService {
       actorReader(actorThreadId),
     );
     const webhookRouteKey =
-      input.source.kind === "webhook" ? `wh_${randomBytes(24).toString("base64url")}` : undefined;
+      input.source.kind === "webhook" ? `whk_${randomBytes(32).toString("base64url")}` : undefined;
     const webhookSecret = webhookRouteKey ? this.#webhookSecret(webhookRouteKey) : undefined;
     const { trigger, revision, wasDuplicate } = await this.#store.create({
       actorThreadId,
@@ -97,11 +112,41 @@ export class TriggerService {
     if (result.trigger.kind === "watch") this.#onWatchChanged?.(result.trigger.id);
     if (result.trigger.kind !== "webhook") return result;
     const stableRouteKey = required(result.trigger.webhookRouteKey ?? undefined);
+    const address = await this.resolveWebhookAddress(stableRouteKey);
     return {
       ...result,
       webhook: {
+        scope: address.scope,
         secret: this.#webhookSecret(stableRouteKey),
-        url: new URL(`/hooks/v1/${stableRouteKey}`, this.#publicUrl).toString(),
+        url: address.url,
+      },
+    };
+  }
+  async rotateWebhookKey(
+    ownerId: UserId,
+    triggerId: TriggerId,
+    actorThreadId: ThreadId | null,
+    actorAccessMode?: ThreadAccessMode,
+    actorConnectionId?: string,
+  ) {
+    const webhookRouteKey = `whk_${randomBytes(32).toString("base64url")}`;
+    const webhookSecret = this.#webhookSecret(webhookRouteKey);
+    const trigger = await this.#store.rotateWebhookKey({
+      actorThreadId,
+      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(actorConnectionId ? { actorConnectionId } : {}),
+      ownerId,
+      triggerId,
+      webhookRouteKey,
+      webhookSecretHash: hashSecret(webhookSecret),
+    });
+    this.#onChanged?.();
+    const address = await this.resolveWebhookAddress(webhookRouteKey);
+    return {
+      trigger,
+      webhook: {
+        scope: address.scope,
+        url: address.url,
       },
     };
   }
@@ -235,20 +280,14 @@ export class TriggerService {
     return occurrence;
   }
   async acceptWebhook(input: {
-    readonly deliveryId?: string;
     readonly headers: Readonly<Record<string, string>>;
     readonly method: string;
-    readonly payload: unknown;
+    readonly path?: string;
+    readonly payload?: unknown;
+    readonly query?: Readonly<Record<string, string | readonly string[]>>;
+    readonly rawBody?: Buffer | null;
     readonly routeKey: string;
-    readonly secret: string;
   }) {
-    const route = await this.#store.webhookRoute(input.routeKey);
-    if (!route || !sameSecret(route.secretHash, input.secret)) {
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Webhook not found",
-      });
-    }
     const enqueued = await this.#store.enqueueWebhook(input);
     this.#onChanged?.();
     this.#onOccurrenceQueued(enqueued.occurrence);
@@ -474,11 +513,6 @@ export class TriggerScheduleLoop {
 }
 function hashSecret(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
-}
-function sameSecret(expectedHash: string, candidate: string): boolean {
-  const actual = Buffer.from(hashSecret(candidate), "hex");
-  const expected = Buffer.from(expectedHash, "hex");
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 function required(value: string | undefined): string {
   if (!value) throw new Error("Webhook identity is missing");

@@ -2,7 +2,6 @@ import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { opensteer_automation_control } from "@opensteer/agent-tools/tools";
 import type { RunCaller } from "../mcp/agent-caller.js";
 import { idempotencyKey, operationId } from "../mcp/operations.js";
-import { createHash } from "node:crypto";
 import { createId } from "@opensteer/core";
 import type { TriggerStore } from "@opensteer/database";
 import { TriggerRevisionSchema, TriggerSchema } from "@opensteer/triggers";
@@ -174,11 +173,12 @@ describe("TriggerService", () => {
     expect(result).toMatchObject({
       trigger: {
         id: triggerId,
-        webhookRouteKey: expect.stringMatching(/^wh_.{32}$/u),
+        webhookRouteKey: expect.stringMatching(/^whk_.{43}$/u),
       },
       webhook: {
-        secret: expect.stringMatching(/^oswh_derived_wh_/u),
-        url: expect.stringMatching(/^https:\/\/opensteer\.example\/hooks\/v1\/wh_/u),
+        scope: "public",
+        secret: expect.stringMatching(/^oswh_derived_whk_/u),
+        url: expect.stringMatching(/^https:\/\/opensteer\.example\/hooks\/v1\/whk_/u),
       },
     });
     if (!("webhook" in result)) throw new Error("Expected webhook creation result");
@@ -186,8 +186,50 @@ describe("TriggerService", () => {
     expect(persisted?.webhookSecretHash).toMatch(/^[0-9a-f]{64}$/u);
     expect(persisted?.webhookSecretHash).not.toContain(result.webhook.secret);
   });
-  it("authenticates a webhook before enqueueing it and wakes the dispatcher after commit", async () => {
-    const secret = "oswh_a_valid_webhook_secret_value";
+  it("resolves dynamic remoteOrigin as public and loopback canonicalOrigin as local, and rotates keys", async () => {
+    const ownerId = createId("user");
+    const triggerId = createId("trigger");
+    let liveRemote: string | null = null;
+    const rotateWebhookKey = vi.fn(async (input: { readonly webhookRouteKey: string }) =>
+      TriggerSchema.parse({
+        anchorThreadId: createId("thread"),
+        consecutiveFailures: 0,
+        createdAt: new Date().toISOString(),
+        createdBy: ownerId,
+        currentRevisionId: createId("triggerRevision"),
+        id: triggerId,
+        kind: "webhook",
+        name: "Hook",
+        nextFireAt: null,
+        pauseReason: null,
+        status: "active",
+        updatedAt: new Date().toISOString(),
+        webhookRouteKey: input.webhookRouteKey,
+      }),
+    );
+    const service = new TriggerService({
+      onOccurrenceQueued: vi.fn(),
+      publicUrl: new URL("http://127.0.0.1:4310"),
+      remoteOrigin: async () => liveRemote,
+      runnerStore: {} as never,
+      store: { rotateWebhookKey } as unknown as TriggerStore,
+      threads: {} as never,
+      tokens: { deriveSecret: (_p, key) => `derived_${key}` },
+    });
+
+    const local = await service.resolveWebhookAddress("whk_12345678901234567890123456789012");
+    expect(local).toEqual({
+      scope: "local",
+      url: "http://127.0.0.1:4310/hooks/v1/whk_12345678901234567890123456789012",
+    });
+
+    liveRemote = "https://home.opensteer.example";
+    const rotated = await service.rotateWebhookKey(ownerId, triggerId, null);
+    expect(rotated.webhook.scope).toBe("public");
+    expect(rotated.webhook.url).toMatch(/^https:\/\/home\.opensteer\.example\/hooks\/v1\/whk_/u);
+    expect(rotateWebhookKey).toHaveBeenCalledTimes(1);
+  });
+  it("accepts a webhook by key-in-path and wakes the dispatcher after commit (T7)", async () => {
     const occurrence = {
       id: createId("triggerOccurrence"),
     };
@@ -195,10 +237,6 @@ describe("TriggerService", () => {
     const enqueueWebhook = vi.fn(async () => ({
       occurrence,
       wasDuplicate: false,
-    }));
-    const webhookRoute = vi.fn(async () => ({
-      secretHash: createHash("sha256").update(secret).digest("hex"),
-      trigger: {},
     }));
     const service = new TriggerService({
       threads: {
@@ -212,36 +250,24 @@ describe("TriggerService", () => {
       publicUrl: new URL("https://opensteer.example"),
       store: {
         enqueueWebhook,
-        webhookRoute,
       } as unknown as TriggerStore,
       tokens: {
         deriveSecret: () => "unused",
       },
     });
+    const rawBody = Buffer.from('{"ref":"main"}', "utf8");
     await expect(
       service.acceptWebhook({
-        headers: {},
-        method: "POST",
-        payload: null,
-        routeKey: "wh_12345678901234567890123456789012",
-        secret: "wrong-secret",
-      }),
-    ).rejects.toMatchObject({
-      code: "not_found",
-    });
-    expect(enqueueWebhook).not.toHaveBeenCalled();
-    await expect(
-      service.acceptWebhook({
-        deliveryId: "delivery-1",
         headers: {
           "x-github-event": "push",
+          "x-hub-signature-256": "sha256=deadbeef",
         },
         method: "POST",
-        payload: {
-          ref: "main",
-        },
-        routeKey: "wh_12345678901234567890123456789012",
-        secret,
+        path: "/hooks/v1",
+        payload: null,
+        query: { env: "prod" },
+        rawBody,
+        routeKey: "whk_12345678901234567890123456789012",
       }),
     ).resolves.toEqual({
       occurrence,
@@ -249,6 +275,37 @@ describe("TriggerService", () => {
     });
     expect(enqueueWebhook).toHaveBeenCalledTimes(1);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
+  });
+  it("hides webhookRouteKey from agents lacking run authority (Y3)", async () => {
+    const triggerId = createId("trigger");
+    const routeKey = "whk_secret_route_key_0123456789abcdef0123456";
+    const service = {
+      manage: vi.fn(async () => ({
+        trigger: { id: triggerId, name: "Deploy hook", webhookRouteKey: routeKey },
+      })),
+    };
+    const handlers = new TriggerToolHandlers(service, { triggerOrigins: async () => new Map() });
+    const askCaller = {
+      accessMode: "ask",
+      kind: "run",
+      key: "run:ask",
+      userId: createId("user"),
+      thread: { id: createId("thread") },
+    } as unknown as RunCaller;
+    const askResult = await handlers.read({
+      caller: askCaller,
+      input: { automationId: triggerId, occurrenceLimit: 10 },
+      operationKey: "read-ask",
+    });
+    expect(askResult.trigger?.webhookRouteKey).toBeNull();
+
+    const fullCaller = { ...askCaller, accessMode: "full-access" } as RunCaller;
+    const fullResult = await handlers.read({
+      caller: fullCaller,
+      input: { automationId: triggerId, occurrenceLimit: 10 },
+      operationKey: "read-full",
+    });
+    expect(fullResult.trigger?.webhookRouteKey).toBe(routeKey);
   });
   it("fires schedules at their deadline or a wake, wakes dispatch only for new occurrences, and never polls", async () => {
     vi.useFakeTimers();

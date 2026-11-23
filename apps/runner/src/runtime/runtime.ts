@@ -4209,8 +4209,8 @@ function scriptEventFromTriggerEvent(
       request: {
         headers: event.source.headers,
         method: event.source.method,
-        path: "/hooks/v1",
-        query: {},
+        path: event.source.path ?? "/hooks/v1",
+        query: event.source.query ?? {},
       },
     };
   }

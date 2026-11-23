@@ -3019,6 +3019,8 @@ export async function createHostRuntime(
         void watchService?.triggerChanged(triggerId);
       },
       publicUrl: config.canonicalOrigin,
+      remoteOrigin: async () =>
+        (await personalRemoteAccess?.status())?.route?.document.route.origin ?? null,
       store: triggerStore,
       threads: store,
       tokens,

@@ -89,14 +89,40 @@ export class TriggerToolHandlers {
       ),
     );
     // The store already scoped the page; this keeps any other path honest.
-    if (lineage?.grant.scope !== "selected" || !output.triggers) return output;
-    const origins = await this.lineage.triggerOrigins(
-      caller.userId,
-      output.triggers.map(({ id }) => id),
-    );
+    const origins =
+      lineage && output.triggers
+        ? await this.lineage.triggerOrigins(
+            caller.userId,
+            output.triggers.map(({ id }) => id),
+          )
+        : lineage && output.trigger
+          ? await this.lineage.triggerOrigins(caller.userId, [output.trigger.id])
+          : undefined;
+    const canSeeWebhook = (id: TriggerId): boolean => {
+      if (caller.accessMode !== "full-access") return false;
+      if (!lineage) return true;
+      return origins?.get(id) === lineage.agentConnectionId;
+    };
+    const redactWebhook = <T extends { readonly id: TriggerId; readonly webhookRouteKey?: unknown }>(
+      item: T,
+    ): T =>
+      "webhookRouteKey" in item && item.webhookRouteKey && !canSeeWebhook(item.id)
+        ? { ...item, webhookRouteKey: null }
+        : item;
+    if (output.trigger) {
+      return {
+        ...output,
+        trigger: redactWebhook(output.trigger),
+      };
+    }
+    if (!output.triggers) return output;
+    const visible =
+      lineage?.grant.scope === "selected"
+        ? output.triggers.filter(({ id }) => origins?.get(id) === lineage.agentConnectionId)
+        : output.triggers;
     return {
       ...output,
-      triggers: output.triggers.filter(({ id }) => origins.get(id) === lineage.agentConnectionId),
+      triggers: visible.map(redactWebhook),
     };
   }
   async write(

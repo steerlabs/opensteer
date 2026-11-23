@@ -2131,7 +2131,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       .execute();
     const delivery = {
       routeKey: saved.trigger.webhookRouteKey,
-      secret: saved.webhook.secret,
       method: "POST",
       headers: {},
       payload: null,

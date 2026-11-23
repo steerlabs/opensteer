@@ -964,7 +964,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           occurrenceId: context.occurrence.id,
           program,
           revisionId: context.revision.id,
+          ...(context.script ? { script: context.script } : {}),
           triggerId: context.trigger.id,
+          ...(context.webhookBody
+            ? { webhookBodyBase64: context.webhookBody.toString("base64") }
+            : {}),
         },
         correlationId: CorrelationIdSchema.parse(attemptCommandId),
         environmentId: context.anchorThread.environmentId,
