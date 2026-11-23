@@ -1346,7 +1346,10 @@ export class BrowserService {
         },
         readSessionState: () => this.#sessionState(sessionId),
         onPageChanged: () => this.#announcePresence(sessionId),
-        onTabsChanged: () => this.#queueTabDescriptors(sessionId),
+        onTabsChanged: (structural) => {
+          if (structural) void this.#flushTabDescriptors(sessionId).catch(this.#onError);
+          else this.#queueTabDescriptors(sessionId);
+        },
         onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
         onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
         cdpBoundary: target.cdpBoundary === true,
@@ -7033,8 +7036,9 @@ export class BrowserService {
                   },
                 }
               : {}),
-            onTabsChanged: () => {
-              this.#queueTabDescriptors(sessionId);
+            onTabsChanged: (structural) => {
+              if (structural) void this.#flushTabDescriptors(sessionId).catch(this.#onError);
+              else this.#queueTabDescriptors(sessionId);
               this.#shadows.get(sessionId)?.inventoryChanged();
             },
             onRecordsChanged: (ids) => this.tabInventoryChanged(sessionId, ids),
@@ -8000,7 +8004,7 @@ interface HostedBrowserBrokerOptions {
     readonly favicon: string;
   };
   readonly personTabGeneration?: (surfaceId: BrowserSurfaceId) => Promise<number | null>;
-  readonly onTabsChanged: () => void;
+  readonly onTabsChanged: (structural?: boolean) => void;
   readonly onRecordsChanged: (ids: readonly string[]) => void;
   readonly onActivity: (activity: BrowserRuntimeActivity) => void;
   /** The active page's title or site changed; called at most once per `pageNoticeDelayMs`. */
@@ -8180,7 +8184,7 @@ export class HostedBrowserBroker {
     this.#storedTabStateRevision = changes.stateRevision;
   }
   readonly #personTabGeneration: HostedBrowserBrokerOptions["personTabGeneration"];
-  readonly #onTabsChanged: () => void;
+  readonly #onTabsChanged: (structural?: boolean) => void;
   readonly #onRecordsChanged: (ids: readonly string[]) => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
   readonly #runtimeTargets = new Map<string, boolean>();
@@ -9508,7 +9512,9 @@ export class HostedBrowserBroker {
         reconnectReady?.resolve();
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
-      this.#onTabsChanged();
+      this.#onTabsChanged(
+        changes.added.length > 0 || changes.removed.length > 0 || changes.structural,
+      );
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)
         this.#noticePage();

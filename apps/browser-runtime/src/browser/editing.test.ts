@@ -580,6 +580,9 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         send({ type: "stream.subscribe", surfaceId });
         await waitForBrowserState(() => frameCount > 0);
         await read("rich.scrollIntoView()");
+        await read(
+          "window.spoofLink=document.createElement('a');spoofLink.href='https://spoof.test/evil';document.body.append(spoofLink);window.spoofMenu=()=>{spoofLink.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:1,clientY:1}))};rich.addEventListener('mousedown',spoofMenu,{once:true});",
+        );
         const point = await read<{ x: number; y: number }>(
           "(()=>{const r=rich.getBoundingClientRect();return {x:(r.x+5)/innerWidth,y:(r.y+5)/innerHeight}})()",
         );
@@ -610,6 +613,10 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           consumerToken,
           editable: true,
         });
+        expect(messages.find((m) => m.type === "browser.contextmenu")).not.toHaveProperty(
+          "linkUrl",
+          "https://spoof.test/evil",
+        );
         checks.push("uncanceled page context menu attributed to clicking controller");
         const previousMenus = messages.filter((m) => m.type === "browser.contextmenu").length;
         for (const action of ["down", "up"] as const)
