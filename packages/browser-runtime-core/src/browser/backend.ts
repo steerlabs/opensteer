@@ -54,15 +54,21 @@ export interface PageCapturePort {
 }
 
 /**
- * The navigations a page's browser side has finished: from each one on, it takes commands for the
- * document it committed. Chromium reports a commit to the page's own session (Page.frameNavigated)
- * before its browser side takes commands for that document ("Not attached to an active page"), and
- * a tab opened with an address takes none until its first document commits there.
+ * A page's navigations as its browser side sees them. Chromium reports a commit to the page's own
+ * session (Page.frameNavigated) before its browser side takes commands for that document ("Not
+ * attached to an active page"), and a tab opened with an address takes none until its first
+ * document commits there.
  */
 export interface PageNavigationPort {
-  /** How many, since the page was opened: none while its first document has not committed. */
-  finished(): number;
-  /** Called after each one. */
+  read(): {
+    /** Navigations it finished since the page opened: after each, its document takes commands. */
+    readonly finished: number;
+    /** A main-frame navigation to another document started and has not ended. */
+    readonly pending: boolean;
+    /** The document it last finished is the blank one a page opens with, or there is none yet. */
+    readonly blankDocument: boolean;
+  };
+  /** Called after each change. */
   subscribe(listener: () => void): () => void;
 }
 

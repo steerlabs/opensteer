@@ -35,6 +35,7 @@ import {
   type LocalProfileEngine,
   type PageCapture,
   type PageGeometry,
+  type PageNavigationPort,
   type Viewport,
   type ViewportCapture,
   type ViewportCaptureRequest,
@@ -1189,22 +1190,28 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       return () => this.#captureListeners.delete(listener);
     },
   };
-  #navigationsFinished = 0;
+  #navigation: ReturnType<PageNavigationPort["read"]> = {
+    blankDocument: true,
+    finished: 0,
+    pending: false,
+  };
   readonly #navigationListeners = new Set<() => void>();
   /**
-   * Electron's main-frame `did-navigate` and `did-fail-load`, which it sends from the browser side's
-   * end of a navigation: the committed document is the frame's active one then, and takes commands.
-   * The page's own session hears of the commit (Page.frameNavigated) before that.
+   * The page's navigations as Electron's browser side reports them. A main-frame navigation to
+   * another document is pending from `did-start-navigation` until it ends: `did-navigate` and
+   * `did-fail-load` come from the browser side's end of it, when the committed document is the
+   * frame's active one and takes commands (the page's own session hears of the commit,
+   * Page.frameNavigated, before that); `did-stop-loading` ends one that committed nothing.
    */
   readonly navigations = {
-    finished: (): number => this.#navigationsFinished,
+    read: () => this.#navigation,
     subscribe: (listener: () => void): (() => void) => {
       this.#navigationListeners.add(listener);
       return () => this.#navigationListeners.delete(listener);
     },
   };
-  #navigationFinished(): void {
-    this.#navigationsFinished += 1;
+  #navigationChanged(next: Partial<ReturnType<PageNavigationPort["read"]>>): void {
+    this.#navigation = { ...this.#navigation, ...next };
     for (const listener of this.#navigationListeners) listener();
   }
   #frameSubscriptionRevision: number | null = null;
@@ -1433,11 +1440,30 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#mediaPlaying = false;
       this.#invalidateCursor();
       void this.invalidateSurface().catch(() => undefined);
-      this.#navigationFinished();
+    });
+    view.webContents.on("did-start-navigation", (details) => {
+      if (details.isMainFrame && !details.isSameDocument)
+        this.#navigationChanged({ pending: true });
+    });
+    view.webContents.on("did-navigate", (_event, url) => {
+      this.#navigationChanged({
+        blankDocument: url === "" || url === "about:blank",
+        finished: this.#navigation.finished + 1,
+        pending: false,
+      });
     });
     view.webContents.on("did-fail-load", (_event, code, _text, _url, mainFrame) => {
-      // An aborted navigation (ERR_ABORTED) gave way to another, whose own end follows.
-      if (mainFrame && code !== -3) this.#navigationFinished();
+      // An aborted navigation (ERR_ABORTED) gave way to another, whose own end follows, or to a
+      // stop, which did-stop-loading ends. Any other failure committed an error page.
+      if (mainFrame && code !== -3)
+        this.#navigationChanged({
+          blankDocument: false,
+          finished: this.#navigation.finished + 1,
+          pending: false,
+        });
+    });
+    view.webContents.on("did-stop-loading", () => {
+      if (this.#navigation.pending) this.#navigationChanged({ pending: false });
     });
     view.webContents.on("media-started-playing", () => {
       this.#mediaPlaying = true;

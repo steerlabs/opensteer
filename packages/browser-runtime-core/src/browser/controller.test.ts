@@ -2323,12 +2323,17 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  // The reader's finding 1 on 5ebc2cbbd: the person turned to B and straight back to A while A's
+  // start was being prepared, and A stayed blank until an unrelated event. This test used to need
+  // a capture change to see A pictured again. The tab in view is pictured with nothing else
+  // happening, and a flip the follow view never saw costs no restart.
   it.each([false, true])(
-    "restarts after A→B→A cancels a cast attempt (startup pending: %s)",
+    "pictures A after A→B→A with nothing else happening, and restarts it once for a new capture (startup pending: %s)",
     async (pending) => {
       let capture = { width: 1280, height: 720, rasterScale: 1, revision: 1 };
       const listeners = new Set<() => void>();
       const attempts: AbortSignal[] = [];
+      const painted = Promise.withResolvers<void>();
       Object.assign(page, {
         capture: {
           read: () => capture,
@@ -2340,12 +2345,17 @@ describe("BrowserController", () => {
         applyGeometry: async () => undefined,
         settleRendering: async (signal: AbortSignal) => {
           attempts.push(signal);
+          // A's first paint comes only when the test says so, unless the wait is given up.
           if (pending && attempts.length === 1)
-            await new Promise<void>((resolve) =>
-              signal.addEventListener("abort", () => resolve(), { once: true }),
-            );
+            await Promise.race([
+              painted.promise,
+              new Promise<void>((resolve) =>
+                signal.addEventListener("abort", () => resolve(), { once: true }),
+              ),
+            ]);
         },
       });
+      const starts = () => commandsNamed("Page.startScreencast", page).length;
       const controller = createController();
       await controller.start();
       const first = activeSurfaceId();
@@ -2353,18 +2363,31 @@ describe("BrowserController", () => {
       await flushMicrotasks();
       const subscription = controller.handle({ type: "stream.subscribe", captureRegion: true });
       await flushMicrotasks();
-      const starts = commandsNamed("Page.startScreencast", page).length;
       await Promise.all([ledger.activate(second.id), ledger.activate(first)]);
+      await flushMicrotasks();
+      if (pending) {
+        // A's paint is still waited for: the person never left it, as the follow view reads it.
+        expect(attempts[0]?.aborted).toBe(false);
+        expect(starts()).toBe(0);
+        painted.resolve();
+      }
       await subscription;
       await flushMicrotasks();
-      if (pending) expect(attempts[0]?.aborted).toBe(true);
+      expect(starts()).toBe(1);
+      page.cdpSession.emit("Page.screencastFrame", {
+        sessionId: 1,
+        data: jpeg(1280, 720).toString("base64"),
+        metadata: { deviceWidth: 1280, deviceHeight: 720 },
+      });
+      await flushMicrotasks();
+      expect(sink.frames.at(-1)?.header.capture).toEqual({ width: 1280, height: 720, revision: 1 });
       capture = { width: 800, height: 600, rasterScale: 1, revision: 2 };
       for (const listener of listeners) listener();
       await flushMicrotasks();
-      expect(commandsNamed("Page.startScreencast", page)).toHaveLength(starts + 1);
+      expect(starts()).toBe(2);
       expect(attempts.at(-1)?.aborted).toBe(false);
       page.cdpSession.emit("Page.screencastFrame", {
-        sessionId: 1,
+        sessionId: 2,
         data: jpeg(800, 600).toString("base64"),
         metadata: { deviceWidth: 800, deviceHeight: 600 },
       });
@@ -2374,7 +2397,7 @@ describe("BrowserController", () => {
       page.cdpSession.emit("Page.javascriptDialogClosed", {});
       await flushMicrotasks();
       await controller.handle({ type: "viewport.set", surfaceId: first, width: 1300, height: 800 });
-      expect(commandsNamed("Page.startScreencast", page).length).toBeGreaterThan(starts + 1);
+      expect(starts()).toBeGreaterThan(2);
       await controller.close();
       await ledger.close();
     },

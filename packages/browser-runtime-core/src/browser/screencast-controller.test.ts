@@ -356,8 +356,7 @@ describe("the follow view, when a tab it is shown is not attached to a page yet"
         taken: sent.filter(Boolean).length,
       }),
       /** The surface it has bound, if any. */
-      bound: () =>
-        (follow as unknown as { active: { surfaceId: string } | null }).active?.surfaceId,
+      bound: () => (follow as unknown as { bound: { id: string } | null }).bound?.id,
       /** Something about the loading page changed: its title, its address, its geometry. */
       changed: async () => {
         surface.geometryRevision += 1;
@@ -581,13 +580,16 @@ describe("the follow view, on a page that says when its browser side has finishe
       return {};
     });
     let finished = options.opened ? 1 : 0;
+    // A tab opened with an address is navigating to its first document from the start.
+    let pending = !options.opened;
+    let blankDocument = !options.opened;
     const navigationListeners = new Set<() => void>();
     const capture = { height: 600, rasterScale: 1, revision: 1, width: 800 };
     const page = {
       applyGeometry: async () => undefined,
       capture: { read: () => capture, subscribe: () => () => undefined },
       navigations: {
-        finished: () => finished,
+        read: () => ({ blankDocument, finished, pending }),
         subscribe: (listener: () => void) => {
           navigationListeners.add(listener);
           return () => navigationListeners.delete(listener);
@@ -629,6 +631,7 @@ describe("the follow view, on a page that says when its browser side has finishe
       /** The page's session hears of a new document; its browser side does not take it yet. */
       commit: async () => {
         active = false;
+        pending = true;
         surface.documentId += "+";
         surface.geometryRevision += 1;
         surface.url = "https://example.test/two";
@@ -638,6 +641,8 @@ describe("the follow view, on a page that says when its browser side has finishe
       /** The browser side's end of the navigation: the committed document takes commands. */
       navigated: async () => {
         active = true;
+        pending = false;
+        blankDocument = false;
         finished += 1;
         for (const listener of navigationListeners) listener();
         await settle();
@@ -683,4 +688,405 @@ describe("the follow view, on a page that says when its browser side has finishe
     );
     await tab.follow.close();
   });
+});
+
+/*
+ * The reader's re-check of e67033f5f..5ebc2cbbd, findings 1 to 3 and question D, each as its own
+ * sequence on a stand-in: two tabs, a start Chromium answers when the test says, a frame that
+ * comes with it before the answer, a page's paint the test releases.
+ */
+describe("the follow view, in the reader's sequences on 5ebc2cbbd", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 4; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const shown = { height: 600, width: 800 };
+
+  function stage(options: { readonly port?: boolean; readonly loadingB?: boolean } = {}) {
+    let frameId = 0;
+    const tab = (id: "a" | "b") => {
+      const cdp = new FakeCdpSession();
+      const answers: Array<() => void> = [];
+      const control = {
+        answerLater: false,
+        attached: true,
+        /** Chromium's frame for a start, sent before its answer: as it does, and a hub joining. */
+        frameWithStart: true,
+        starts: [] as Array<{ readonly refused: boolean }>,
+      };
+      const frame = () => ({
+        data: jpeg(shown.width, shown.height).toString("base64"),
+        metadata: { deviceHeight: shown.height, deviceWidth: shown.width },
+        sessionId: ++frameId,
+      });
+      cdp.responses.set("Page.startScreencast", async () => {
+        if (!control.attached) {
+          control.starts.push({ refused: true });
+          throw new Error("Not attached to an active page");
+        }
+        control.starts.push({ refused: false });
+        if (control.frameWithStart) cdp.emit("Page.screencastFrame", frame());
+        if (control.answerLater) await new Promise<void>((resolve) => answers.push(resolve));
+        return {};
+      });
+      let capture: { height: number; rasterScale: number; revision: number; width: number } | null =
+        { ...shown, rasterScale: 1, revision: 1 };
+      const captureListeners = new Set<() => void>();
+      let navigation = { blankDocument: false, finished: 1, pending: false };
+      const navigationListeners = new Set<() => void>();
+      let paint: Promise<void> | null = null;
+      const surface = {
+        active: id === "a",
+        documentId: `${id}1`,
+        geometryRevision: 1,
+        id,
+        loading: id === "b" && options.loadingB === true,
+      };
+      const page = {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => capture,
+          subscribe: (listener: () => void) => {
+            captureListeners.add(listener);
+            return () => captureListeners.delete(listener);
+          },
+        },
+        ...(options.port
+          ? {
+              navigations: {
+                read: () => navigation,
+                subscribe: (listener: () => void) => {
+                  navigationListeners.add(listener);
+                  return () => navigationListeners.delete(listener);
+                },
+              },
+            }
+          : {}),
+        settleRendering: (signal?: AbortSignal) =>
+          paint
+            ? Promise.race([
+                paint,
+                new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve())),
+              ])
+            : Promise.resolve(),
+      };
+      return {
+        answer: () => {
+          for (const resolve of answers.splice(0)) resolve();
+        },
+        captureListeners,
+        cdp,
+        control,
+        frame,
+        holdPaint: () => {
+          const painted = Promise.withResolvers<void>();
+          paint = painted.promise;
+          return () => {
+            paint = null;
+            painted.resolve();
+          };
+        },
+        navigate: (next: Partial<typeof navigation>) => {
+          navigation = { ...navigation, ...next };
+          for (const listener of navigationListeners) listener();
+        },
+        page,
+        setCapture: (next: typeof capture) => {
+          capture = next;
+          for (const listener of captureListeners) listener();
+        },
+        surface,
+      };
+    };
+    const a = tab("a");
+    const b = tab("b");
+    const tabs = { a, b };
+    let inView: "a" | "b" = "a";
+    const listeners = new Set<(event: unknown) => void>();
+    const emit = (event: unknown) => {
+      for (const listener of listeners) listener(event);
+    };
+    const bindingOf = (id: "a" | "b") => ({
+      cdp: tabs[id].cdp,
+      page: tabs[id].page,
+      surface: { ...tabs[id].surface, active: inView === id },
+    });
+    const ledger = {
+      active: () => bindingOf(inView),
+      binding: (id: "a" | "b") => bindingOf(id),
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: Array<{ header: { surfaceId: string } }> = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({
+        sendFrame: async (sent) => void delivered.push(sent as never),
+      }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    const snapshot = () =>
+      emit({ surfaces: [bindingOf("a").surface, bindingOf("b").surface], type: "snapshot" });
+    return {
+      a,
+      b,
+      delivered,
+      follow,
+      changed: (id: "a" | "b") =>
+        emit({ change: "updated", surface: bindingOf(id).surface, type: "changed" }),
+      pictured: (id: "a" | "b") =>
+        delivered.filter((frame) => frame.header.surfaceId === id).length,
+      turnTo: (id: "a" | "b") => {
+        inView = id;
+        snapshot();
+      },
+    };
+  }
+
+  it("finding 1: pictures A after the person turns to B and back while A's start is prepared, in one burst or two", async () => {
+    for (const bursts of [1, 2]) {
+      const view = stage();
+      const painted = view.a.holdPaint();
+      await view.follow.start();
+      void view.follow.setStreaming(true);
+      await settle();
+      view.turnTo("b");
+      if (bursts === 2) await settle();
+      view.turnTo("a");
+      painted();
+      await settle();
+      expect(view.pictured("a"), `${bursts} bursts`).toBeGreaterThan(0);
+      await view.follow.close();
+    }
+  });
+
+  it("finding 2.1: shows the new document's frame that came with a start a same-size commit overtook", async () => {
+    const view = stage();
+    view.a.control.answerLater = true;
+    await view.follow.start();
+    void view.follow.setStreaming(true);
+    await settle();
+    view.a.surface.documentId = "a2";
+    view.a.surface.geometryRevision = 2;
+    view.changed("a");
+    await settle();
+    view.a.answer();
+    await settle();
+    expect(view.pictured("a")).toBe(1);
+    await view.follow.close();
+  });
+
+  it("finding 2.2: shows the frame that came with a start while the capture was let go and came back the same", async () => {
+    const view = stage();
+    view.a.control.answerLater = true;
+    await view.follow.start();
+    void view.follow.setStreaming(true);
+    await settle();
+    view.a.setCapture(null);
+    view.a.setCapture({ ...shown, rasterScale: 1, revision: 1 });
+    await settle();
+    view.a.answer();
+    await settle();
+    expect(view.pictured("a")).toBe(1);
+    await view.follow.close();
+  });
+
+  it("finding 2.3: shows the frame that came with a start the person paused and resumed", async () => {
+    const view = stage();
+    view.a.control.answerLater = true;
+    await view.follow.start();
+    void view.follow.setStreaming(true);
+    await settle();
+    void view.follow.setStreaming(false);
+    void view.follow.setStreaming(true);
+    await settle();
+    view.a.answer();
+    await settle();
+    expect(view.pictured("a")).toBeGreaterThan(0);
+    await view.follow.close();
+  });
+
+  it("finding 3: a tab announced not yet loading, its first document pending, gets no start until it can take one, and stays bound after a refusal", async () => {
+    const view = stage({ loadingB: false, port: true });
+    view.b.control.attached = false;
+    view.b.navigate({ blankDocument: true, finished: 1, pending: true });
+    await view.follow.start();
+    void view.follow.setStreaming(true);
+    await settle();
+    view.turnTo("b");
+    await settle();
+    expect(view.b.control.starts).toEqual([]);
+    view.b.control.attached = true;
+    view.b.navigate({ blankDocument: false, finished: 2, pending: false });
+    await settle();
+    expect(view.b.control.starts).toEqual([{ refused: false }]);
+    expect(view.pictured("b")).toBe(1);
+    // A refusal outside any navigation, as the person turns to the tab, leaves it bound: the
+    // next navigation's end starts it, with nothing else happening.
+    view.turnTo("a");
+    await settle();
+    view.b.control.attached = false;
+    view.turnTo("b");
+    await settle();
+    expect(view.b.control.starts.at(-1)).toEqual({ refused: true });
+    expect((view.follow as unknown as { bound: { id: string } | null }).bound?.id).toBe("b");
+    view.b.control.attached = true;
+    view.b.navigate({ finished: 3 });
+    await settle();
+    expect(view.b.control.starts.at(-1)).toEqual({ refused: false });
+    expect(view.pictured("b")).toBe(2);
+    await view.follow.close();
+  });
+
+  it("question D: opening a tab with an address on the desktop sends one start; one refused at a commit costs one more", async () => {
+    const view = stage({ loadingB: true, port: true });
+    view.b.control.attached = false;
+    view.b.navigate({ blankDocument: true, finished: 1, pending: true });
+    await view.follow.start();
+    void view.follow.setStreaming(true);
+    await settle();
+    view.turnTo("b");
+    // The document commits; its page's session hears of it before the browser side takes it.
+    view.b.surface.documentId = "b2";
+    view.b.surface.geometryRevision = 2;
+    view.changed("b");
+    await settle();
+    view.b.control.attached = true;
+    view.b.navigate({ blankDocument: false, finished: 2, pending: false });
+    await settle();
+    expect(view.b.control.starts).toEqual([{ refused: false }]);
+    // A start refused while a later navigation commits goes out again at that navigation's end.
+    void view.follow.setStreaming(false);
+    await settle();
+    view.b.control.attached = false;
+    view.b.navigate({ pending: true });
+    void view.follow.setStreaming(true).catch(() => undefined);
+    await settle();
+    view.b.control.attached = true;
+    view.b.navigate({ finished: 3, pending: false });
+    await settle();
+    expect(view.b.control.starts.slice(1)).toEqual([{ refused: true }, { refused: false }]);
+    await view.follow.close();
+  });
+});
+
+/*
+ * Every restart has a bound. A page whose frames never fit the region they are cast for is repaired
+ * a few times with no picture shown (three; a page sized natively, once), then its cast stops, the
+ * person keeps the last picture they had, and the follow view says the capture does not match. It
+ * casts that page again only when what it would cast changes.
+ */
+describe("the follow view, on a page whose frames never fit", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const { unpicturedLimit } = await import("./screencast-plan.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  for (const native of [false, true])
+    it(`stops after its bound and says so (${native ? "sized natively" : "sized by command"})`, async () => {
+      const cdp = new FakeCdpSession();
+      let size = { height: 600, width: 800 };
+      let fitting = true;
+      let frameId = 0;
+      // Each start's one frame: of the page's size while it fits, of another size after.
+      cdp.responses.set("Page.startScreencast", () => {
+        const drawn = fitting ? size : { height: size.height + 50, width: size.width + 100 };
+        // Chromium's frame for a start, once its answer is handled.
+        setImmediate(() =>
+          cdp.emit("Page.screencastFrame", {
+            data: jpeg(drawn.width, drawn.height).toString("base64"),
+            metadata: { deviceHeight: drawn.height, deviceWidth: drawn.width },
+            sessionId: ++frameId,
+          }),
+        );
+        return {};
+      });
+      const surface = {
+        active: true,
+        documentId: "a",
+        geometryRevision: 1,
+        id: "tab",
+        loading: false,
+      };
+      const page = native
+        ? {
+            applyGeometry: async () => undefined,
+            capture: {
+              read: () => ({ ...size, rasterScale: 1, revision: surface.geometryRevision }),
+              subscribe: () => () => undefined,
+            },
+            invalidateSurface: async () => undefined,
+            settleRendering: async () => undefined,
+          }
+        : { invalidateSurface: async () => undefined, settleRendering: async () => undefined };
+      const binding = { cdp, page, surface };
+      const listeners = new Set<(event: unknown) => void>();
+      const errors: string[] = [];
+      const delivered: unknown[] = [];
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+        ledger: {
+          active: () => binding,
+          binding: () => binding,
+          dialogOf: () => null,
+          dialogOpen: () => false,
+          recordPageScale: () => undefined,
+          subscribe: (listener: (event: unknown) => void) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+          use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+          viewportOf: () => size,
+          withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        } as never,
+        onDialogChanged: () => undefined,
+        onError: (error) => errors.push(error.reason ?? error.message),
+      });
+      const starts = () =>
+        cdp.sent.filter(({ method }) => method === "Page.startScreencast").length;
+      await follow.start();
+      await follow.setStreaming(true);
+      await settle();
+      expect(delivered).toHaveLength(1);
+      // From here the view is not at the size it is cast at: every frame is of another.
+      fitting = false;
+      const before = starts();
+      cdp.emit("Page.screencastFrame", {
+        data: jpeg(900, 650).toString("base64"),
+        metadata: { deviceHeight: 650, deviceWidth: 900 },
+        sessionId: ++frameId,
+      });
+      await settle();
+      const repairs = native ? 1 : unpicturedLimit;
+      expect(starts() - before).toBe(repairs);
+      expect(errors).toEqual(["browser-capture-mismatch"]);
+      // The cast stopped, and the person kept the last picture they had.
+      expect(cdp.sent.at(-1)?.method).toBe("Page.stopScreencast");
+      expect(delivered).toHaveLength(1);
+      // Nothing more is tried for that cast; another size asks again.
+      await settle();
+      expect(starts() - before).toBe(repairs);
+      fitting = true;
+      size = { height: 700, width: 900 };
+      surface.geometryRevision += 1;
+      for (const listener of listeners)
+        listener({ change: "updated", surface: { ...surface }, type: "changed" });
+      await settle();
+      expect(starts() - before).toBe(repairs + 1);
+      expect(delivered).toHaveLength(2);
+      await follow.close();
+    });
 });

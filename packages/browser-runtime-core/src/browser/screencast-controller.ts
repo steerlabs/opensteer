@@ -1,15 +1,29 @@
 import { z } from "zod";
-import { browserFrameFits, browserFrameLimits } from "@opensteer/browser-core";
+import { browserFrameFits } from "@opensteer/browser-core";
 import type {
   BrowserCaptureDescriptor,
   BrowserDialog,
   BrowserSurfaceId,
 } from "@opensteer/protocol/browser";
-import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError } from "../errors.js";
 import type { LatestFrameStream } from "../stream/latest-frame-stream.js";
 import { rasterShowsSize, readImageDimensions } from "../stream/frame.js";
 import { BrowserPaintTimeoutError, type CdpSession, type PageCapture } from "./backend.js";
+import {
+  fits,
+  initialTabCastState,
+  nextStep,
+  canTakeStart,
+  refusalReleased,
+  sameSize,
+  wanted,
+  type CastFacts,
+  type CastKey,
+  type Refusal,
+  type Step,
+  type TabCastState,
+  type Told,
+} from "./screencast-plan.js";
 import type {
   PageSize,
   SurfaceBinding,
@@ -17,62 +31,55 @@ import type {
   SurfaceLedgerEvent,
 } from "./surface-ledger.js";
 
+export { screencastRaster } from "./screencast-plan.js";
+
 const paintRetryInitialMs = 1_000;
 const paintRetryMaxMs = 16_000;
+/**
+ * How long a start whose only frame was of another size waits for its own (F30): a page whose view
+ * is not at that size sends no other, and is repaired then.
+ */
+const ownFrameWaitMs = 1_000;
+/** Steps one pass may take before it is quiet: more is a loop between steps, and it stops. */
+const passStepLimit = 24;
+
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 interface CdpScreencastFrame {
-  data: string;
   geometry: PageSize | null;
   /** How far Chromium zooms the page into the picture, as for a mobile page with no viewport. */
   pageScale: number;
-  sessionId: number;
+  data: string;
 }
 
-interface ActiveCast {
-  capture: PageCapture | null;
-  castAbort: AbortController | null;
-  paintRetry: ReturnType<typeof setTimeout> | null;
-  paintRetryDelay: number;
-  castId: number;
-  unsubscribeCapture: (() => void) | null;
-  restartQueued: boolean;
-  repairAttempted: boolean;
-  releaseRendering: (() => void) | null;
-  geometryRevision: number;
-  /** The page size the running cast was started for, while one runs. */
-  castSize: PageSize | null;
-  /** The document the running cast was started for, or last kept across. */
-  castDocument: string | null;
-  /**
-   * Aborted, and made anew, each time the person leaves this tab, and when it is unbound: every
-   * wait begun for it while it was in view ends then. Work queued for it that runs after does
-   * nothing while another tab is in view (`inView`), and runs if the person came back.
-   */
-  leave: AbortController;
-  raster: PageSize | null;
-  casting: boolean;
-  awaitingNavigation: boolean;
-  /**
-   * A start held until the page can take one, while it loads: one refused for this document, or
-   * one for a tab whose first document has not committed. With the page's navigation port it goes
-   * out once a navigation finishes after `navigations` (one counted when it was sent); without one,
-   * once another document commits. Or when loading stops. Every start asked for before joins it.
-   */
-  deferred: { readonly document: string | null; readonly navigations: number } | null;
-  unsubscribeNavigations: (() => void) | null;
-  /**
-   * While a start is with Chromium: the latest frame that came with it (Chromium's first, or the
-   * one a hub holds for a cast it joins), kept unacknowledged. It is that start's picture, shown
-   * when the start is answered, and dropped when it fails or the person left meanwhile.
-   */
-  starting: { frame: unknown } | null;
-  cdp: CdpSession;
+/** A start, or a repair, under way for a bound tab. */
+interface Attempt {
+  readonly abandon: AbortController;
+}
+
+/** The tab the follow view is bound to, and what it told Chromium there. */
+interface Bound {
+  readonly id: BrowserSurfaceId;
+  readonly binding: string;
+  readonly cdp: CdpSession;
+  readonly page: SurfaceBinding["page"];
+  readonly state: Mutable<TabCastState>;
+  /** The latest frame that came with the start in flight, of what it asked for: not yet acked. */
+  held: unknown;
+  attempt: Attempt | null;
   /** The page zoom of the latest picture shown, which input on it undoes. */
   pageScale: number;
-  onFrame: (parameters: unknown) => void;
-  /** A repair of the view is queued and has not started. */
-  repairQueued: boolean;
-  surfaceId: BrowserSurfaceId;
+  paintDelay: number;
+  releaseRendering: (() => void) | null;
+  /** The last wait recorded, so each is recorded once. */
+  waiting: string | null;
+  /** Ends a paint wait. */
+  paintTimer: ReturnType<typeof setTimeout> | null;
+  /** Ends the wait for a start's own frame after one of another size. */
+  ownFrameTimer: ReturnType<typeof setTimeout> | null;
+  /** A frame of another size came with the start in flight. */
+  otherSizeWithStart: boolean;
+  readonly unbind: () => void;
 }
 
 interface ScreencastControllerOptions {
@@ -84,6 +91,13 @@ interface ScreencastControllerOptions {
   onError?(error: BrowserRuntimeError): void;
 }
 
+/**
+ * The follow view: the person's picture of the tab in view. Each trigger (a ledger event,
+ * streaming, raster demand, a capture or navigation change, a frame, a timer) only asks for a
+ * pass. A pass reads the facts afresh, compares them with what Chromium was told and what was
+ * shown, and takes one step (`nextStep`), until nothing is left to do or what is left waits on a
+ * fact it names.
+ */
 export class ScreencastController {
   readonly diagnostics: {
     stage: string;
@@ -97,14 +111,14 @@ export class ScreencastController {
     captureRevision?: number;
   }[] = [];
   private diagnose(record: (typeof this.diagnostics)[number]): void {
-    if (this.active) record.surfaceId = this.active.surfaceId;
+    if (this.bound) record.surfaceId = this.bound.id;
     if (this.diagnostics.length === 256) this.diagnostics.shift();
     this.diagnostics.push(record);
     if (process.env.OPENSTEER_BROWSER_DIAGNOSTICS === "1")
       console.info(JSON.stringify({ browserCapture: true, ...record }));
   }
   private readonly surfaceId: BrowserSurfaceId | undefined;
-  private active: ActiveCast | null = null;
+  private bound: Bound | null = null;
   private readonly lifecycle = new AbortController();
   private closed = false;
   private dialog: BrowserDialog | null = null;
@@ -128,7 +142,6 @@ export class ScreencastController {
     }
   >();
   private readonly ledger: SurfaceLedger;
-  private readonly mutex = new AsyncMutex();
   /** The page the latest surface list sent to viewers shows. */
   private shownToViewers: BrowserSurfaceId | null = null;
   private readonly onDialogChanged: (dialog: BrowserDialog | null) => void;
@@ -138,6 +151,16 @@ export class ScreencastController {
   private unsupportedCapture: number | null = null;
   private readonly onError: ScreencastControllerOptions["onError"];
   private unsubscribe: (() => void) | null = null;
+  /** A pass is asked for: the facts may have changed since the last one read them. */
+  private dirty = false;
+  private passing = false;
+  /** Ends the current wait on a step: the facts changed. */
+  private wake: (() => void) | null = null;
+  private quietWaiters: Array<() => void> = [];
+  /** A start refused outside any navigation, for the caller whose change led to it. */
+  private failure: unknown = null;
+  private readonly sessions = new WeakMap<CdpSession, number>();
+  private sessionCount = 0;
 
   constructor(options: ScreencastControllerOptions) {
     this.surfaceId = options.surfaceId;
@@ -154,7 +177,7 @@ export class ScreencastController {
   /** Viewers were sent a surface list that shows this page. */
   viewersShown(surfaceId: BrowserSurfaceId | null): void {
     this.shownToViewers = surfaceId;
-    if (this.active) this.showRetainedPicture(this.active);
+    if (this.bound) this.showRetainedPicture(this.bound);
   }
 
   /** The dialog open on the page the person sees, which they can answer. */
@@ -168,56 +191,35 @@ export class ScreencastController {
     if (!this.unsubscribe) {
       this.unsubscribe = this.ledger.subscribe((event) => this.handleLedgerEvent(event));
     }
-    await this.rebind(false);
+    await this.quiet();
     if (this.surfaceId) this.publishDialog();
   }
 
   /**
-   * Starts or pauses the picture of the page already bound. Pausing keeps the
-   * page bound, so a dialog open there stays the person's to answer. Neither
-   * waits for Chromium to stop: a page under a dialog answers nothing else.
+   * Starts or pauses the picture of the page in view. Pausing keeps the page bound, so a dialog
+   * open there stays the person's to answer. Neither waits for Chromium to stop: a page under a
+   * dialog answers nothing else. A start refused outside any navigation is the caller's to hear.
    */
-  setStreaming(streaming: boolean, captureRegions = this.captureRegions): Promise<void> {
+  async setStreaming(streaming: boolean, captureRegions = this.captureRegions): Promise<void> {
     this.captureRegions = captureRegions;
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser stream is closed.");
-    if (
-      this.streaming === streaming &&
-      (!streaming || !this.active || this.active.casting || this.active.castAbort)
-    )
-      return Promise.resolve();
     const previous = this.streaming;
     this.streaming = streaming;
-    if (!streaming && this.active) {
-      this.cancelPendingCast(this.active);
-      this.active.paintRetryDelay = paintRetryInitialMs;
+    // Asking for the picture again asks the page afresh: a cast given up, or a refusal, is not held.
+    if (streaming && !previous && this.bound) {
+      this.bound.state.refusal = null;
+      this.bound.state.failedFor = null;
+      if (this.bound.state.told.state === "none") this.bound.state.startWhy = "subscribe";
     }
-    return this.mutex.run(async () => {
-      const active = this.active;
-      if (this.closed || !active) return;
-      if (this.streaming) active.releaseRendering ??= active.cdp.retainRendering?.() ?? null;
-      else {
-        active.releaseRendering?.();
-        active.releaseRendering = null;
-      }
-      if (active.casting === this.streaming) return;
-      if (!this.streaming) {
-        active.casting = false;
-        void this.ledger
-          .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
-          .catch(() => undefined);
-        return;
-      }
-      try {
-        await this.castActive(active, "subscribe");
-      } catch (error) {
-        if (this.streaming === streaming) this.streaming = previous;
-        if (!this.streaming) {
-          active.releaseRendering?.();
-          active.releaseRendering = null;
-        }
-        throw error;
-      }
-    });
+    this.failure = null;
+    await this.quiet();
+    const failure = this.failure;
+    this.failure = null;
+    if (failure !== null && streaming) {
+      if (this.streaming === streaming) this.streaming = previous;
+      this.requestPass();
+      throw failure;
+    }
   }
 
   resolvePoint(
@@ -229,8 +231,10 @@ export class ScreencastController {
     captureRevision?: number,
     geometryRevision?: number,
   ): { readonly x: number; readonly y: number } | null {
-    const active = this.active;
-    if (!active || active.surfaceId !== surfaceId) return null;
+    const bound = this.bound;
+    if (!bound || bound.id !== surfaceId) return null;
+    const told = bound.state.told;
+    const key = told.state === "running" || told.state === "sent" ? told.key : null;
     const binding = this.ledger.binding(surfaceId);
     const geometry = this.ledger.viewportOf(surfaceId);
     const port = binding?.page.capture;
@@ -240,10 +244,10 @@ export class ScreencastController {
       (!capture ||
         (captureRevision === undefined
           ? !sameSize(capture, geometry)
-          : !active.capture ||
-            capture.revision !== active.capture.revision ||
+          : !key ||
+            capture.revision !== key.captureRevision ||
             captureRevision !== capture.revision ||
-            geometryRevision !== active.geometryRevision) ||
+            geometryRevision !== key.geometryRevision) ||
         (geometryRevision !== undefined && geometryRevision !== binding?.surface.geometryRevision))
     )
       return null;
@@ -254,123 +258,29 @@ export class ScreencastController {
     }
     // Image-local DIPs map through the recorded region; Input names CSS pixels.
     return {
-      x: (x * (capture?.width ?? geometry.width)) / active.pageScale,
-      y: (y * (capture?.height ?? geometry.height)) / active.pageScale,
+      x: (x * (capture?.width ?? geometry.width)) / bound.pageScale,
+      y: (y * (capture?.height ?? geometry.height)) / bound.pageScale,
     };
   }
 
   /** Changes capture resolution without changing the surface's input geometry. */
-  setRasterDemand(density: 0.75 | 1 | 1.25 | 1.5 | 2): Promise<void> {
+  async setRasterDemand(density: 0.75 | 1 | 1.25 | 1.5 | 2): Promise<void> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser stream is closed.");
-    if (this.rasterDemand === density) return Promise.resolve();
+    if (this.rasterDemand === density) return;
     this.rasterDemand = density;
-    this.cancelPendingCast(this.active);
-    return this.mutex.run(async () => {
-      const active = this.active;
-      if (this.closed || !active || !this.streaming) return;
-      this.cancelPendingCast(active);
-      if (active.casting) {
-        active.casting = false;
-        void this.ledger
-          .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
-          .catch(() => undefined);
-      }
-      await this.castActive(active, "raster-demand");
-    });
-  }
-
-  /**
-   * Shows a page's new size after a write changed it. Each page has its own
-   * size, so a write to a page the viewer is not watching changes nothing here.
-   */
-  viewportChanged(surfaceId: BrowserSurfaceId): Promise<void> {
-    const queued = this.active;
-    if (!queued || queued.surfaceId !== surfaceId || queued.restartQueued) return Promise.resolve();
-    this.clearPaintRetry(queued);
-    queued.restartQueued = true;
-    return this.mutex.run(async () => {
-      queued.restartQueued = false;
-      const active = this.active;
-      if (
-        !active ||
-        active !== queued ||
-        active.surfaceId !== surfaceId ||
-        !this.streaming ||
-        !this.ledger.binding(surfaceId) ||
-        (active.casting &&
-          active.geometryRevision === this.ledger.binding(surfaceId)?.surface.geometryRevision &&
-          active.capture?.revision ===
-            this.ledger.binding(surfaceId)?.page.capture?.read()?.revision)
-      )
-        return;
-      if (!active.casting) {
-        await this.castActive(active, "geometry");
-        return;
-      }
-      if (this.castStillFits(active)) {
-        // Nothing about the picture changed (a navigation bumps the revision at the same size;
-        // a capture let go comes back the same): the running cast is kept, and frames from here
-        // on are this revision's.
-        active.geometryRevision = this.ledger.binding(surfaceId)?.surface.geometryRevision ?? 0;
-        active.castDocument = this.ledger.binding(surfaceId)?.surface.documentId ?? null;
-        active.awaitingNavigation = false;
-        this.diagnose({ stage: "cast-kept", geometryRevision: active.geometryRevision });
-        return;
-      }
-      // A capture let go for a moment keeps the cast: its frames are set aside until it is back.
-      const port = this.ledger.binding(surfaceId)?.page.capture;
-      if (port && port.read() === null) return;
-      // Chromium can apply device metrics without producing another frame for
-      // an otherwise static page, and the raster bound follows the size.
-      // Restarting the cast does both, so the viewer never stays on old pixels.
-      active.casting = false;
-      // Chromium takes a session's commands in order, so the stop lands before
-      // the start without waiting on a page that may not answer.
-      void this.ledger
-        .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
-        .catch(() => undefined);
-      await this.castActive(active, "geometry");
-    });
-  }
-
-  /** Whether a frame of `geometry` pictures what the start in flight asked for. */
-  private picturesStart(active: ActiveCast, geometry: PageSize | null): boolean {
-    const region = active.capture ?? active.castSize;
-    return (
-      !!geometry &&
-      !!region &&
-      Math.abs(geometry.width - region.width) <= 1 &&
-      Math.abs(geometry.height - region.height) <= 1
-    );
-  }
-
-  /**
-   * Whether the running cast still pictures the page as it is, the revision bumped only because
-   * another document committed: the same size, and the same capture revision where the page has
-   * one. Any other bump (device metrics at the same size, a scale) restarts it: Chromium can apply
-   * those without sending another frame of a still page, and a restart sends one.
-   */
-  private castStillFits(active: ActiveCast): boolean {
-    const binding = this.ledger.binding(active.surfaceId);
-    const size = this.ledger.viewportOf(active.surfaceId);
-    if (!binding || !size || !active.castSize || !sameSize(size, active.castSize)) return false;
-    if (binding.surface.documentId === active.castDocument) return false;
-    const port = binding.page.capture;
-    if (!port) return true;
-    const capture = port.read();
-    return capture !== null && capture.revision === active.capture?.revision;
+    await this.quiet();
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     this.lifecycle.abort();
-    this.cancelPendingCast(this.active);
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.frames.close();
     this.lastPictures.clear();
-    await this.mutex.run(async () => this.stopActive());
+    // The pass unbinds the tab, stopping its cast.
+    await this.quiet();
   }
 
   /** Chromium is gone; release local listeners without asking its dead CDP transport to stop. */
@@ -382,7 +292,9 @@ export class ScreencastController {
     this.unsubscribe = null;
     this.frames.close();
     this.lastPictures.clear();
-    this.releaseActive();
+    const bound = this.bound;
+    this.bound = null;
+    if (bound) this.release(bound);
   }
 
   private handleLedgerEvent(event: SurfaceLedgerEvent): void {
@@ -390,56 +302,24 @@ export class ScreencastController {
       this.abort();
       return;
     }
+    if (event.type === "dialog-event" || event.type === "popup") return;
     if (
-      event.type === "dialog-event" ||
-      event.type === "geometry" ||
-      event.type === "navigation.committed" ||
-      event.type === "popup"
+      event.type !== "geometry" &&
+      event.type !== "navigation.committed" &&
+      event.type !== "resized"
     )
-      return;
-    const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
-    if (this.active && this.active.surfaceId !== binding?.surface.id) {
-      this.cancelPendingCast(this.active);
-      // What was queued for it, and is queued after this, does nothing (`inView`).
-      this.active.leave.abort();
-      this.active.leave = new AbortController();
-    }
-    if (event.type === "resized") {
-      void this.viewportChanged(event.surfaceId).catch(() => undefined);
-      return;
-    }
-    if (
-      event.type === "changed" &&
-      this.active?.surfaceId === event.surface.id &&
-      this.active.castAbort &&
-      event.surface.loading
-    )
-      this.active.awaitingNavigation = true;
-    // Published as the event arrives, before the surface list that follows
-    // it, so a viewer never shows one page's dialog over another page.
-    this.publishDialog();
-    if (
-      event.type === "changed" &&
-      event.change !== "closed" &&
-      this.active?.surfaceId === event.surface.id &&
-      (this.active.geometryRevision !== event.surface.geometryRevision ||
-        (this.active.awaitingNavigation && !event.surface.loading))
-    ) {
-      // Navigation can replace the only pending picture before its geometry
-      // notice lands; a fresh cast guarantees a frame for the new document.
-      void this.viewportChanged(event.surface.id).catch(() => undefined);
-    }
-    if (event.type === "dialog") {
-      const active = this.active;
-      if (active?.surfaceId === event.surfaceId && !this.ledger.dialogOpen(event.surfaceId)) {
-        void this.mutex
-          .run(() => this.castActive(active, "dialog-recovery"))
-          .catch(() => undefined);
-      }
-      return;
-    }
+      // Published as the event arrives, before the surface list that follows
+      // it, so a viewer never shows one page's dialog over another page.
+      this.publishDialog();
     if (event.type === "changed" && event.change === "closed") {
       this.lastPictures.delete(event.surface.id);
+      // When a tab closes, headless Chrome shows the tab that remains at its window's size again,
+      // whichever of the two the person was watching: the picture is to be made again.
+      const bound = this.bound;
+      if (bound && !bound.page.capture && bound.state.told.state === "running") {
+        bound.state.shown = false;
+        bound.state.redraw = true;
+      }
     }
     if (event.type === "snapshot") {
       for (const surfaceId of this.lastPictures.keys()) {
@@ -448,263 +328,639 @@ export class ScreencastController {
         }
       }
     }
-    if (
-      event.type === "snapshot" ||
-      event.surface.id === this.surfaceId ||
-      event.surface.active ||
-      event.change === "closed"
-    ) {
-      void this.rebind(false).catch(() => undefined);
-    }
-    // When a tab closes, headless Chrome shows the tab that remains at its
-    // window's size again, whichever of the two the person was watching.
-    if (
-      event.type === "changed" &&
-      event.change === "closed" &&
-      this.active &&
-      !this.ledger.binding(this.active.surfaceId)?.page.capture
-    ) {
-      this.resizeView(this.active);
-    }
+    this.requestPass();
   }
 
-  private rebind(force: boolean): Promise<void> {
-    return this.mutex.run(async () => {
-      if (this.closed) return;
-      const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
-      if (!force && binding && this.active?.surfaceId === binding.surface.id) return;
-      this.stopActive();
-      if (!binding || this.closed) return;
-      await this.startActive(binding);
+  /** Resolves once a pass is quiet: no step under way, and no start of the bound tab in flight. */
+  private quiet(): Promise<void> {
+    const quiet = new Promise<void>((resolve) => this.quietWaiters.push(resolve));
+    this.requestPass();
+    return quiet;
+  }
+
+  /**
+   * Asks for a pass. It starts once the current burst of events has been told (a microtask
+   * later), so it reads the facts they leave, not each one on the way: a tab left and returned to
+   * at once was never left.
+   */
+  private requestPass(): void {
+    this.dirty = true;
+    this.wake?.();
+    if (this.passing) return;
+    this.passing = true;
+    queueMicrotask(() => {
+      void this.runPasses().finally(() => {
+        this.passing = false;
+        if (this.dirty) this.requestPass();
+        else this.settleQuiet();
+      });
     });
   }
 
-  private async startActive(binding: SurfaceBinding): Promise<void> {
-    const active: ActiveCast = {
-      releaseRendering: this.streaming ? (binding.cdp.retainRendering?.() ?? null) : null,
-      geometryRevision: -1,
-      castSize: null,
-      castDocument: null,
-      leave: new AbortController(),
-      capture: null,
-      castAbort: null,
-      paintRetry: null,
-      paintRetryDelay: paintRetryInitialMs,
-      castId: 0,
-      unsubscribeCapture: null,
-      restartQueued: false,
-      repairAttempted: false,
-      raster: null,
-      casting: false,
-      awaitingNavigation: false,
-      deferred: null,
-      unsubscribeNavigations: null,
-      starting: null,
-      cdp: binding.cdp,
-      pageScale: 1,
-      onFrame: (parameters) => {
-        void this.handleFrame(binding.surface.id, binding.cdp, parameters).catch(
-          (error: unknown) => {
-            if (this.closed || this.active !== active || !active.casting) return;
-            this.diagnose({
-              stage: "capture-discard",
-              reason: error instanceof Error ? error.message : "Undecodable browser frame.",
-            });
-          },
-        );
-      },
-      repairQueued: false,
-      surfaceId: binding.surface.id,
-    };
-    this.active = active;
-    // A navigation's end is when a held start can go out; it asks for one as any trigger does.
-    active.unsubscribeNavigations =
-      binding.page.navigations?.subscribe(() => {
-        if (this.active !== active || active.casting) return;
-        void this.viewportChanged(active.surfaceId).catch(() => undefined);
-      }) ?? null;
-    active.unsubscribeCapture =
-      binding.page.capture?.subscribe(() => {
-        if (this.active !== active) return;
-        this.cancelPendingCast(active);
-        void this.viewportChanged(active.surfaceId).catch((error: unknown) => {
-          if (
-            this.closed ||
-            !this.streaming ||
-            this.active !== active ||
-            !this.ledger.binding(active.surfaceId) ||
-            (error instanceof BrowserRuntimeError && error.code === "not_found")
-          )
-            return;
-          const failure =
-            error instanceof BrowserRuntimeError
-              ? error
-              : new BrowserRuntimeError("internal", "The browser capture could not be updated.", {
-                  cause: error,
-                });
-          this.diagnose({
-            stage: "capture-update-error",
-            castId: active.castId,
-            ...(active.capture ? { captureRevision: active.capture.revision } : {}),
-            geometryRevision: active.geometryRevision,
-            reason: error instanceof Error ? (error.stack ?? error.message) : String(error),
-          });
-          this.onError?.(failure);
-        });
-      }) ?? null;
-    binding.cdp.on("Page.screencastFrame", active.onFrame);
-    try {
-      // The ledger enabled Page on this session when it registered the page.
-      await this.castActive(active, "rebind");
-    } catch (error) {
-      if (this.active === active) this.stopActive();
-      throw error;
+  private settleQuiet(): void {
+    if (this.passing || this.bound?.attempt) return;
+    const waiters = this.quietWaiters;
+    this.quietWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  private async runPasses(): Promise<void> {
+    let steps = 0;
+    while (this.dirty) {
+      this.dirty = false;
+      const facts = this.readFacts();
+      const bound = this.bound;
+      // A release seen is a release had, whatever is wanted now.
+      if (
+        bound?.state.refusal &&
+        facts.tab?.binding === bound.binding &&
+        refusalReleased(facts.tab, bound.state.refusal)
+      )
+        bound.state.refusal = null;
+      const step = nextStep(facts, bound?.binding ?? null, bound?.state ?? null);
+      this.keepRendering(facts);
+      if (step.kind === "idle" || step.kind === "wait") {
+        this.rest(step);
+        continue;
+      }
+      steps += 1;
+      if (steps > passStepLimit) {
+        this.diagnose({ stage: "pass-limit", reason: step.kind });
+        return;
+      }
+      await this.take(step);
+      this.dirty = true;
     }
   }
 
-  /** Unbinds the page. Its stop is not awaited: a page under a dialog answers nothing else. */
-  private stopActive(): void {
-    const active = this.releaseActive();
-    if (active?.casting)
+  private readFacts(): CastFacts {
+    const binding = this.closed
+      ? null
+      : this.surfaceId
+        ? this.ledger.binding(this.surfaceId)
+        : this.ledger.active();
+    const page = binding?.page;
+    let session = binding ? this.sessions.get(binding.cdp) : undefined;
+    if (binding && session === undefined) {
+      session = ++this.sessionCount;
+      this.sessions.set(binding.cdp, session);
+    }
+    const capture = page?.capture?.read() ?? null;
+    return {
+      closed: this.closed,
+      density: this.rasterDemand,
+      streaming: this.streaming,
+      tab:
+        binding && page
+          ? {
+              binding: `${binding.surface.id}#${String(session)}`,
+              capture: capture
+                ? {
+                    height: capture.height,
+                    rasterScale: capture.rasterScale,
+                    revision: capture.revision,
+                    width: capture.width,
+                  }
+                : null,
+              dialogOpen: this.ledger.dialogOpen(binding.surface.id),
+              document: binding.surface.documentId ?? null,
+              geometryRevision: binding.surface.geometryRevision ?? 0,
+              loading: binding.surface.loading === true,
+              native: !!page.capture,
+              navigation: page.navigations?.read() ?? null,
+              size: this.ledger.viewportOf(binding.surface.id),
+              sizesView: !page.capture && !page.applyGeometry,
+            }
+          : null,
+    };
+  }
+
+  /** A pass with nothing to do now: say what it waits on, once. */
+  private rest(step: Extract<Step, { kind: "idle" | "wait" }>): void {
+    const bound = this.bound;
+    if (!bound) return;
+    if (step.kind === "wait") {
+      if (bound.waiting !== step.why) {
+        bound.waiting = step.why;
+        this.diagnose({ stage: "cast-held", reason: step.why });
+      }
+      if (step.why === "a dialog is open") this.showRetainedPicture(bound);
+    } else bound.waiting = null;
+  }
+
+  private async take(step: Exclude<Step, { kind: "idle" | "wait" }>): Promise<void> {
+    if (step.kind === "bind") {
+      this.rebind();
+      return;
+    }
+    const bound = this.bound;
+    if (!bound) return;
+    bound.waiting = null;
+    const state = bound.state;
+    switch (step.kind) {
+      case "stop":
+        this.stopCast(bound, step.why);
+        return;
+      case "restart":
+        this.stopCast(bound, step.why);
+        return;
+      case "restamp": {
+        const told = state.told;
+        if (told.state !== "running") return;
+        state.told = {
+          key: { ...told.key, document: step.document, geometryRevision: step.geometryRevision },
+          state: "running",
+        };
+        // A frame set aside before is still a picture missed: the count stays.
+        state.shown = false;
+        this.diagnose({ stage: "cast-kept", geometryRevision: step.geometryRevision });
+        return;
+      }
+      case "start":
+        await this.untilChanged(this.beginStart(bound, step.why));
+        return;
+      case "repair":
+        await this.untilChanged(this.beginRepair(bound));
+        return;
+      case "fail": {
+        const told = state.told;
+        this.stopCast(bound, step.why);
+        if (told.state === "running") state.failedFor = told.key;
+        this.diagnose({ stage: "cast-failed", reason: step.why });
+        this.onError?.(
+          new BrowserRuntimeError(
+            "internal",
+            "The browser capture does not match its declared region.",
+            { reason: "browser-capture-mismatch" },
+          ),
+        );
+        return;
+      }
+    }
+  }
+
+  /** `work`, or the facts changing first: a pass never waits on a step the facts left behind. */
+  private untilChanged(work: Promise<void>): Promise<void> {
+    if (this.dirty) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        if (this.wake === done) this.wake = null;
+        resolve();
+      };
+      this.wake = done;
+      void work.then(done, done);
+    });
+  }
+
+  /** Unbinds the tab bound (its cast stops) and binds the one in view. */
+  private rebind(): void {
+    const previous = this.bound;
+    this.bound = null;
+    if (previous) {
+      this.stopCast(previous, "the tab left");
+      this.release(previous);
+    }
+    if (this.closed) return;
+    const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
+    if (!binding) return;
+    const session = this.sessions.get(binding.cdp);
+    const onFrame = (parameters: unknown) => this.onFrame(bound, parameters);
+    const offNavigations =
+      binding.page.navigations?.subscribe(() => this.requestPass()) ?? (() => undefined);
+    const offCapture =
+      binding.page.capture?.subscribe(() => this.requestPass()) ?? (() => undefined);
+    binding.cdp.on("Page.screencastFrame", onFrame);
+    const bound: Bound = {
+      attempt: null,
+      binding: `${binding.surface.id}#${String(session)}`,
+      cdp: binding.cdp,
+      held: null,
+      id: binding.surface.id,
+      page: binding.page,
+      pageScale: 1,
+      paintDelay: paintRetryInitialMs,
+      paintTimer: null,
+      ownFrameTimer: null,
+      otherSizeWithStart: false,
+      releaseRendering: null,
+      state: { ...initialTabCastState },
+      unbind: () => {
+        offNavigations();
+        offCapture();
+        binding.cdp.off("Page.screencastFrame", onFrame);
+      },
+      waiting: null,
+    };
+    this.bound = bound;
+  }
+
+  /** Lets go of a tab's listeners and its rendering, its start given up. */
+  private release(bound: Bound): void {
+    bound.attempt?.abandon.abort();
+    bound.attempt = null;
+    if (bound.held !== null) acknowledgeFrame(bound.cdp, bound.held);
+    bound.held = null;
+    bound.releaseRendering?.();
+    bound.releaseRendering = null;
+    this.endPaintWait(bound);
+    this.endOwnFrameWait(bound);
+    bound.unbind();
+  }
+
+  /**
+   * Stops what the tab was told. A start being prepared is given up before it reaches Chromium; a
+   * start sent, or a cast running, is stopped without waiting (a page under a dialog answers
+   * nothing else, and Chromium takes a session's commands in order).
+   */
+  private stopCast(bound: Bound, why: string): void {
+    const state = bound.state;
+    const told = state.told;
+    bound.attempt?.abandon.abort();
+    bound.attempt = null;
+    if (told.state === "sent" || told.state === "running") {
       void this.ledger
-        .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
+        .use(bound.id, () => bound.cdp.send("Page.stopScreencast"))
         .catch(() => undefined);
+      this.diagnose({ stage: "cast-stop", reason: why });
+    }
+    if (bound.held !== null) acknowledgeFrame(bound.cdp, bound.held);
+    bound.held = null;
+    state.told = { state: "none" };
+    state.shown = false;
+    state.setAside = 0;
+    state.misfit = false;
+    state.startWhy = why;
+    this.endOwnFrameWait(bound);
   }
 
-  private releaseActive(): ActiveCast | null {
-    const active = this.active;
-    this.active = null;
-    if (!active) return null;
-    this.cancelPendingCast(active);
-    active.leave.abort();
-    active.unsubscribeCapture?.();
-    active.unsubscribeNavigations?.();
-    active.releaseRendering?.();
-    active.releaseRendering = null;
-    active.cdp.off("Page.screencastFrame", active.onFrame);
-    return active;
+  private endOwnFrameWait(bound: Bound): void {
+    if (bound.ownFrameTimer) clearTimeout(bound.ownFrameTimer);
+    bound.ownFrameTimer = null;
+    bound.otherSizeWithStart = false;
+    bound.state.otherSizeFirst = false;
   }
 
-  private async handleFrame(
-    surfaceId: BrowserSurfaceId,
-    source: CdpSession,
-    parameters: unknown,
-  ): Promise<void> {
+  /**
+   * Keeps the tab drawing while it is streamed, except while its paint is waited out; a pause
+   * ends that wait, and the next stream starts its backoff afresh.
+   */
+  private keepRendering(facts: CastFacts): void {
+    const bound = this.bound;
+    if (!bound) return;
+    if (!facts.streaming || facts.closed) {
+      this.endPaintWait(bound);
+      bound.paintDelay = paintRetryInitialMs;
+    }
+    const keep = facts.streaming && !facts.closed && !bound.state.paint;
+    if (keep) bound.releaseRendering ??= bound.cdp.retainRendering?.() ?? null;
+    else {
+      bound.releaseRendering?.();
+      bound.releaseRendering = null;
+    }
+  }
+
+  private endPaintWait(bound: Bound): void {
+    if (bound.paintTimer) clearTimeout(bound.paintTimer);
+    bound.paintTimer = null;
+    bound.state.paint = null;
+  }
+
+  /**
+   * Prepares and sends a start: the page's paint first, then, inside the page's geometry lock, a
+   * look at the facts as they are (a start the facts no longer want is not sent), and the start.
+   * Resolves once the start is sent, or came to nothing: the pass waits for no answer, and goes
+   * on to wait on it as a fact.
+   */
+  private beginStart(bound: Bound, why: string): Promise<void> {
+    const attempt: Attempt = { abandon: new AbortController() };
+    const handedOff = Promise.withResolvers<void>();
+    bound.attempt = attempt;
+    bound.state.told = { state: "preparing" };
+    const signal = AbortSignal.any([this.lifecycle.signal, attempt.abandon.signal]);
+    const current = () => bound.attempt === attempt && this.bound === bound;
+    let sentAt: Refusal | null = null;
+    const send = async (): Promise<"answered" | "not-now"> => {
+      if (signal.aborted || !current()) return "not-now";
+      const facts = this.readFacts();
+      const want = wanted(facts);
+      if (
+        facts.tab?.binding !== bound.binding ||
+        want.kind !== "cast" ||
+        !canTakeStart(facts.tab, bound.state.refusal).ok
+      )
+        return "not-now";
+      const key = want.key;
+      // Chromium takes a session's commands in order: from here the start waits on Chromium.
+      handedOff.resolve();
+      if (key.sizesView) {
+        await bound.cdp.send("Emulation.setVisibleSize", {
+          height: key.size.height,
+          width: key.size.width,
+        });
+        if (signal.aborted || !current()) return "not-now";
+      }
+      const castId = ++this.castId;
+      sentAt = {
+        document: facts.tab.document,
+        finished: facts.tab.navigation?.finished ?? null,
+        loading: facts.tab.loading,
+        why: "",
+      };
+      this.diagnose({
+        stage: "cast-start",
+        reason: why,
+        castId,
+        geometryRevision: key.geometryRevision,
+        ...(key.captureRevision === null ? {} : { captureRevision: key.captureRevision }),
+      });
+      bound.held = null;
+      bound.otherSizeWithStart = false;
+      bound.state.told = { key, state: "sent" };
+      const answer = bound.cdp.send("Page.startScreencast", {
+        everyNthFrame: 1,
+        format: "jpeg",
+        maxHeight: key.raster.height,
+        maxWidth: key.raster.width,
+        quality: this.frameQuality,
+      });
+      handedOff.resolve();
+      await answer;
+      return "answered";
+    };
+    void this.ledger
+      .use(bound.id, async () => {
+        if (bound.page.settleRendering) await bound.page.settleRendering(signal);
+        if (signal.aborted) return "not-now" as const;
+        return bound.page.capture ? this.ledger.withGeometry(bound.id, send) : send();
+      })
+      .then(
+        (outcome) => {
+          if (!current()) return;
+          bound.attempt = null;
+          const state = bound.state;
+          const told = state.told;
+          if (outcome === "answered" && told.state === "sent") {
+            state.told = { key: told.key, state: "running" };
+            state.refusal = null;
+            this.endPaintWait(bound);
+            bound.paintDelay = paintRetryInitialMs;
+            const held = bound.held;
+            bound.held = null;
+            if (held !== null) this.onFrame(bound, held);
+            else if (bound.otherSizeWithStart && !state.shown) {
+              // Only a frame of another size came with it: its own gets a time, then a repair.
+              state.otherSizeFirst = true;
+              const timer = setTimeout(() => {
+                if (bound.ownFrameTimer !== timer) return;
+                bound.ownFrameTimer = null;
+                if (state.otherSizeFirst && !state.shown) {
+                  state.otherSizeFirst = false;
+                  state.misfit = true;
+                }
+                this.requestPass();
+              }, ownFrameWaitMs);
+              timer.unref();
+              bound.ownFrameTimer = timer;
+            }
+          } else {
+            state.told = { state: "none" };
+            if (bound.held !== null) acknowledgeFrame(bound.cdp, bound.held);
+            bound.held = null;
+          }
+        },
+        (error: unknown) => {
+          if (!current()) return;
+          bound.attempt = null;
+          const state = bound.state;
+          state.told = { state: "none" };
+          if (bound.held !== null) acknowledgeFrame(bound.cdp, bound.held);
+          bound.held = null;
+          if (signal.aborted) return;
+          if (error instanceof BrowserPaintTimeoutError) {
+            const want = wanted(this.readFacts());
+            if (want.kind === "cast") {
+              const paint = {
+                captureRevision: want.key.captureRevision,
+                geometryRevision: want.key.geometryRevision,
+                size: want.key.size,
+              };
+              state.paint = paint;
+              const timer = setTimeout(() => {
+                if (bound.paintTimer !== timer) return;
+                bound.paintTimer = null;
+                if (state.paint === paint) state.paint = null;
+                this.requestPass();
+              }, bound.paintDelay);
+              timer.unref();
+              bound.paintTimer = timer;
+            }
+            bound.paintDelay = Math.min(bound.paintDelay * 2, paintRetryMaxMs);
+            state.startWhy = "paint-retry";
+            this.diagnose({ stage: "cast-paint-timeout" });
+            this.showRetainedPicture(bound);
+            return;
+          }
+          this.refused(bound, error, sentAt);
+        },
+      )
+      .finally(() => {
+        handedOff.resolve();
+        this.requestPass();
+      });
+    return handedOff.promise;
+  }
+
+  /**
+   * Records what the page could not take a start for, from what it was when the start was sent:
+   * the next start waits for a fact that bears on it. A refusal outside any navigation is told to
+   * the caller whose change led to it; the tab stays bound either way.
+   */
+  private refused(bound: Bound, error: unknown, sentAt: Refusal | null): void {
+    const facts = this.readFacts();
+    const tab = facts.tab?.binding === bound.binding ? facts.tab : null;
+    const why = error instanceof Error ? error.message : String(error);
+    const at = sentAt ?? {
+      document: tab?.document ?? null,
+      finished: tab?.navigation?.finished ?? null,
+      loading: tab?.loading ?? false,
+      why,
+    };
+    bound.state.refusal = { ...at, why };
+    bound.state.startWhy = "refusal released";
+    const navigating =
+      !!tab &&
+      (at.loading ||
+        tab.loading ||
+        tab.navigation?.pending === true ||
+        tab.document !== at.document ||
+        (tab.navigation?.finished ?? 0) !== (at.finished ?? 0));
+    this.diagnose({ stage: navigating ? "cast-deferred" : "cast-refused", reason: why });
+    if (!navigating) this.failure = error;
+  }
+
+  /** Stops the cast, asks the page to draw its surface again, then lets the pass start it. */
+  private beginRepair(bound: Bound): Promise<void> {
+    const state = bound.state;
+    // A frame that did not fit counts against the cast; a view a closed tab may have moved does not.
+    const byFrame = state.misfit;
+    const why = state.redraw && !byFrame ? "a tab closed" : "raster-mismatch";
+    this.stopCast(bound, why);
+    state.redraw = false;
+    if (byFrame) {
+      if (bound.page.capture) state.repaired = true;
+      state.unpictured += 1;
+    }
+    const attempt: Attempt = { abandon: new AbortController() };
+    bound.attempt = attempt;
+    state.told = { state: "preparing" };
+    this.diagnose({ stage: "cast-repair", reason: `${state.unpictured}` });
+    return (bound.page.invalidateSurface?.() ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => {
+        if (bound.attempt !== attempt || this.bound !== bound) return;
+        bound.attempt = null;
+        state.told = { state: "none" };
+      })
+      .finally(() => this.requestPass());
+  }
+
+  private onFrame(bound: Bound, parameters: unknown): void {
     const session = screencastSessionSchema.safeParse(parameters);
     if (!session.success) return;
-    let held = false;
+    const event = parseScreencastFrame(parameters);
+    if (!event) {
+      this.diagnose({ stage: "capture-discard", reason: "Invalid screencast metadata." });
+      acknowledgeFrame(bound.cdp, parameters);
+      return;
+    }
+    const told = bound.state.told;
+    if (this.bound !== bound || this.closed) {
+      acknowledgeFrame(bound.cdp, parameters);
+      return;
+    }
+    if (told.state === "sent") {
+      // A frame that comes with a start, of what that start asked for, is its picture: it waits
+      // for the answer.
+      if (this.streaming && fitsRegion(event.geometry, told.key.region)) {
+        if (bound.held !== null) acknowledgeFrame(bound.cdp, bound.held);
+        bound.held = parameters;
+        this.diagnose({ stage: "capture-held" });
+        return;
+      }
+      // One of another size, on a page the follow view sized itself before this start, shows the
+      // view is not at that size: it asks for a repair. Elsewhere it is what the page last drew
+      // before it was shown, and the start's own frames follow it.
+      if (told.key.sizesView) this.misfit(bound, `viewport ${describe(event.geometry)}`, told.key);
+      else bound.otherSizeWithStart = true;
+      acknowledgeFrame(bound.cdp, parameters);
+      return;
+    }
+    if (told.state !== "running") {
+      acknowledgeFrame(bound.cdp, parameters);
+      return;
+    }
     try {
-      const event = parseScreencastFrame(parameters);
-      if (!event) {
-        this.diagnose({ stage: "capture-discard", reason: "Invalid screencast metadata." });
-        return;
-      }
-      const active = this.active;
-      if (
-        this.streaming &&
-        active?.starting &&
-        !active.casting &&
-        active.surfaceId === surfaceId &&
-        active.cdp === source &&
-        this.picturesStart(active, event.geometry)
-      ) {
-        // A frame that comes with a start, of what that start asked for, is its picture: it waits
-        // for the answer. One of another size (what the page last drew before it was shown) is set
-        // aside below, as any frame before the cast runs: the start's own frames follow it.
-        const replaced = active.starting.frame;
-        active.starting.frame = parameters;
-        held = true;
-        if (replaced !== null) acknowledgeFrame(source, replaced);
-        return;
-      }
-      if (
-        !this.streaming ||
-        !active?.casting ||
-        active.surfaceId !== surfaceId ||
-        active.cdp !== source
-      )
-        return;
-      const port = this.ledger.binding(surfaceId)?.page.capture;
-      if (port && (!active.capture || port.read()?.revision !== active.capture.revision)) return;
-      // A bounds change can paint at the new CSS size before its old cast
-      // has restarted with the new raster bound. Those pixels still belong
-      // to the previous geometry, even when their aspect ratio now matches.
-      if (active.geometryRevision !== this.ledger.binding(surfaceId)?.surface.geometryRevision)
-        return;
-      const geometry = this.ledger.viewportOf(surfaceId);
-      if (!geometry) return;
-      const region = active.capture ?? geometry;
-      // Chromium can deliver a picture of another size than the page's: one
-      // made before the latest resize, or the window's, when Chrome put the
-      // view back at that size as another tab closed. Old pixels never get new
-      // input geometry, and a page with nothing new to draw may send no other
-      // picture, so each such picture asks for the view to be sized again. The
-      // frame's device size is the whole viewport, a scrollbar included; one
-      // pixel more is the desktop app redrawing a page that sat undrawn.
-      if (!event.geometry) return;
-      if (
-        Math.abs(event.geometry.width - region.width) > 1 ||
-        Math.abs(event.geometry.height - region.height) > 1
-      ) {
-        this.diagnose({
-          stage: "capture-discard",
-          reason: `viewport ${event.geometry.width}x${event.geometry.height}, expected ${geometry.width}x${geometry.height}`,
-        });
-        this.resizeView(active);
-        return;
-      }
-      const received = performance.now();
-      const data = Buffer.from(event.data, "base64");
-      const raster = readImageDimensions(data, "jpeg");
-      if (!raster || !browserFrameFits(raster.width, raster.height)) {
-        throw new BrowserRuntimeError("internal", "Chromium returned an invalid browser frame.");
-      }
-      // Chromium can also label such a picture with the page's size; its
-      // shape gives it away.
-      if (
-        !rasterShowsSize(raster, region) ||
-        (active.raster &&
-          (Math.abs(raster.width - active.raster.width) > 1 ||
-            Math.abs(raster.height - active.raster.height) > 1))
-      ) {
-        this.diagnose({
-          stage: "capture-discard",
-          reason: `raster ${raster.width}x${raster.height}, expected ${active.raster?.width}x${active.raster?.height} for ${geometry.width}x${geometry.height}`,
-        });
-        this.resizeView(active);
-        return;
-      }
-      active.repairAttempted = false;
-      active.pageScale = event.pageScale;
-      this.ledger.recordPageScale(surfaceId, event.pageScale);
-      this.lastPictures.set(surfaceId, {
-        data,
-        geometry,
-        raster,
-        revision: active.geometryRevision,
-        capture: active.capture ? captureDescriptor(active.capture) : undefined,
-      });
-      this.enqueueFrame(
-        surfaceId,
-        data,
-        raster,
-        geometry,
-        active.geometryRevision,
-        active.capture ? captureDescriptor(active.capture) : undefined,
-      );
+      this.judge(bound, told, event);
+    } catch (error) {
       this.diagnose({
-        stage: "capture-admit",
-        frameId: this.frameId,
-        bytes: data.byteLength,
-        durationMs: performance.now() - received,
-        geometryRevision: active.geometryRevision,
+        stage: "capture-discard",
+        reason: error instanceof Error ? error.message : "Undecodable browser frame.",
       });
     } finally {
-      if (!held)
-        await source
-          .send("Page.screencastFrameAck", { sessionId: session.data.sessionId })
-          .catch(() => undefined);
+      acknowledgeFrame(bound.cdp, parameters);
     }
+  }
+
+  /** Shows a frame of the running cast, or sets it aside: a pass then decides what that asks for. */
+  private judge(
+    bound: Bound,
+    told: Extract<Told, { state: "running" }>,
+    event: CdpScreencastFrame,
+  ): void {
+    const state = bound.state;
+    const facts = this.readFacts();
+    const want = wanted(facts);
+    let key = told.key;
+    const fit =
+      want.kind === "cast" && facts.tab?.binding === bound.binding ? fits(key, want.key) : false;
+    if (!fit || want.kind !== "cast") {
+      state.setAside += 1;
+      this.requestPass();
+      return;
+    }
+    if (fit === "new-document") {
+      key = { ...key, document: want.key.document, geometryRevision: want.key.geometryRevision };
+      state.told = { key, state: "running" };
+      state.shown = false;
+      this.diagnose({ stage: "cast-kept", geometryRevision: key.geometryRevision });
+    }
+    // Chromium can deliver a picture of another size than the page's: one made before the latest
+    // resize, or the window's, when Chrome put the view back at that size as another tab closed.
+    // The frame's device size is the whole viewport, a scrollbar included; one pixel more is the
+    // desktop app redrawing a page that sat undrawn.
+    if (!fitsRegion(event.geometry, key.region)) {
+      this.misfit(bound, `viewport ${describe(event.geometry)}`, key);
+      return;
+    }
+    const received = performance.now();
+    const data = Buffer.from(event.data, "base64");
+    const raster = readImageDimensions(data, "jpeg");
+    if (!raster || !browserFrameFits(raster.width, raster.height)) {
+      throw new BrowserRuntimeError("internal", "Chromium returned an invalid browser frame.");
+    }
+    // Chromium can also label such a picture with the page's size; its shape gives it away.
+    if (
+      !rasterShowsSize(raster, key.region) ||
+      (key.expectedRaster &&
+        (Math.abs(raster.width - key.expectedRaster.width) > 1 ||
+          Math.abs(raster.height - key.expectedRaster.height) > 1))
+    ) {
+      this.misfit(bound, `raster ${raster.width}x${raster.height}`, key);
+      return;
+    }
+    state.shown = true;
+    state.misfit = false;
+    this.endOwnFrameWait(bound);
+    state.setAside = 0;
+    state.unpictured = 0;
+    state.repaired = false;
+    bound.pageScale = event.pageScale;
+    this.ledger.recordPageScale(bound.id, event.pageScale);
+    const capture = key.captureRevision === null ? undefined : this.captureOf(bound, key);
+    this.lastPictures.set(bound.id, {
+      capture,
+      data,
+      geometry: key.size,
+      raster,
+      revision: key.geometryRevision,
+    });
+    this.enqueueFrame(bound.id, data, raster, key.size, key.geometryRevision, capture);
+    this.diagnose({
+      stage: "capture-admit",
+      frameId: this.frameId,
+      bytes: data.byteLength,
+      durationMs: performance.now() - received,
+      geometryRevision: key.geometryRevision,
+    });
+  }
+
+  private captureOf(bound: Bound, key: CastKey): BrowserCaptureDescriptor | undefined {
+    const capture = bound.page.capture?.read();
+    return capture && capture.revision === key.captureRevision
+      ? captureDescriptor(capture)
+      : undefined;
+  }
+
+  /** A frame that does not picture the region it was cast for: the next pass repairs the view. */
+  private misfit(bound: Bound, what: string, key: CastKey): void {
+    this.diagnose({
+      stage: "capture-discard",
+      reason: `${what}, expected ${key.region.width}x${key.region.height}`,
+    });
+    // The view is not at the size it is cast at, whatever was shown before.
+    bound.state.misfit = true;
+    bound.state.shown = false;
+    this.requestPass();
   }
 
   private enqueueFrame(
@@ -759,270 +1015,30 @@ export class ScreencastController {
     this.onDialogChanged(dialog);
   }
 
-  private clearPaintRetry(active: ActiveCast): void {
-    if (!active.paintRetry) return;
-    clearTimeout(active.paintRetry);
-    active.paintRetry = null;
-  }
-
-  private cancelPendingCast(active: ActiveCast | null): void {
-    if (!active) return;
-    this.clearPaintRetry(active);
-    active.castAbort?.abort();
-  }
-
-  private schedulePaintRetry(active: ActiveCast): void {
-    if (this.closed || !this.streaming || this.active !== active || active.paintRetry) return;
-    const timer = setTimeout(() => {
-      void this.mutex
-        .run(async () => {
-          if (active.paintRetry !== timer) return;
-          active.paintRetry = null;
-          await this.castActive(active, "paint-retry");
-        })
-        .catch((cause: unknown) => {
-          if (
-            this.closed ||
-            !this.streaming ||
-            this.active !== active ||
-            !this.ledger.binding(active.surfaceId) ||
-            (cause instanceof BrowserRuntimeError && cause.code === "not_found")
-          )
-            return;
-          this.onError?.(
-            cause instanceof BrowserRuntimeError
-              ? cause
-              : new BrowserRuntimeError("internal", "The browser capture could not be restarted.", {
-                  cause,
-                }),
-          );
-        });
-    }, active.paintRetryDelay);
-    timer.unref();
-    active.paintRetry = timer;
-    active.paintRetryDelay = Math.min(active.paintRetryDelay * 2, paintRetryMaxMs);
-  }
-
-  /**
-   * Starts picturing the bound page while the person streams it. A page under
-   * a JavaScript dialog answers no command until the dialog closes, so its
-   * cast starts then and the stream never waits on it. Runs under the mutex.
-   */
-  /**
-   * Whether `active` is the tab in view: the follow view's lock is shared by every tab, and the
-   * tab it binds changes only when `rebind` gets the lock, so work queued for a tab the person has
-   * left can still find it bound. Checked on entry and after every wait.
-   */
-  private inView(active: ActiveCast): boolean {
-    if (this.closed || this.active !== active) return false;
-    const binding = this.surfaceId ? this.ledger.binding(this.surfaceId) : this.ledger.active();
-    return binding?.surface.id === active.surfaceId;
-  }
-
-  private castActive(active: ActiveCast, reason: string): Promise<void> {
-    if (!this.inView(active) || !this.streaming || active.casting) return Promise.resolve();
-    this.clearPaintRetry(active);
-    return this.ledger.use(active.surfaceId, () => this.castLive(active, reason));
-  }
-
-  private async castLive(active: ActiveCast, reason: string): Promise<void> {
-    if (!this.inView(active) || !this.streaming || active.casting) return;
-    {
-      const binding = this.ledger.binding(active.surfaceId);
-      const navigations = binding?.page.navigations;
-      // A tab opened with an address takes no command before its first document commits
-      // ("Not attached to an active page"): its start waits for that, as a refused one would.
-      if (active.deferred === null && binding?.surface.loading && navigations?.finished() === 0)
-        active.deferred = { document: binding.surface.documentId ?? null, navigations: 0 };
-      if (active.deferred !== null) {
-        // A start before the page can take one would be refused: this one joins the one held.
-        const deferred = active.deferred;
-        const held =
-          binding?.surface.loading === true &&
-          (navigations
-            ? navigations.finished() <= deferred.navigations
-            : binding.surface.documentId === deferred.document);
-        if (held) {
-          active.awaitingNavigation = true;
-          this.diagnose({ stage: "cast-held", reason, castId: active.castId });
-          return;
-        }
-        active.deferred = null;
-      }
-    }
-    if (this.ledger.dialogOpen(active.surfaceId)) {
-      this.showRetainedPicture(active);
-      return;
-    }
-    const page = this.ledger.binding(active.surfaceId)?.page;
-    if (page?.capture && !page.capture.read()) return;
-    active.releaseRendering ??= active.cdp.retainRendering?.() ?? null;
-    active.awaitingNavigation = false;
-    const castAbort = new AbortController();
-    active.castAbort = castAbort;
-    active.castId = ++this.castId;
-    const canceled = AbortSignal.any([
-      this.lifecycle.signal,
-      castAbort.signal,
-      active.leave.signal,
-    ]);
-    try {
-      try {
-        if (page?.settleRendering) await page.settleRendering(canceled);
-      } catch (error) {
-        if (canceled.aborted) return;
-        if (!(error instanceof BrowserPaintTimeoutError)) throw error;
-        active.releaseRendering?.();
-        active.releaseRendering = null;
-        active.awaitingNavigation = this.ledger.binding(active.surfaceId)?.surface.loading === true;
-        this.showRetainedPicture(active);
-        this.schedulePaintRetry(active);
-        return;
-      }
-      if (!this.inView(active) || !this.streaming || canceled.aborted) return;
-      const start = async () => {
-        if (canceled.aborted || !this.inView(active) || !this.streaming) return;
-        const size = this.ledger.viewportOf(active.surfaceId);
-        active.castSize = size ?? null;
-        active.castDocument = this.ledger.binding(active.surfaceId)?.surface.documentId ?? null;
-        if (!size) return;
-        const capture = page?.capture?.read() ?? null;
-        if (
-          page?.capture &&
-          (!capture || capture.width > size.width || capture.height > size.height)
-        )
-          return;
-        const surface = this.ledger.binding(active.surfaceId)?.surface;
-        const documentId = surface?.documentId;
-        // A navigation that finishes while this start is with Chromium ends a refusal's wait.
-        const navigationsAtStart = page?.navigations?.finished() ?? 0;
-        active.awaitingNavigation = surface?.loading === true;
-        active.capture = capture;
-        active.geometryRevision =
-          this.ledger.binding(active.surfaceId)?.surface.geometryRevision ?? 0;
-        const region = capture ?? size;
-        const raster = screencastRaster(
-          region,
-          Math.min(this.rasterDemand, capture?.rasterScale ?? 2),
-        );
-        this.diagnose({
-          stage: "cast-start",
-          reason,
-          geometryRevision: active.geometryRevision,
-          castId: active.castId,
-          ...(capture ? { captureRevision: capture.revision } : {}),
-        });
-        try {
-          // CDP aspect-fits within these integer limits. Rounding the limiting
-          // edge can shorten the other edge by several pixels on tall pages.
-          const scale = Math.min(raster.width / region.width, raster.height / region.height);
-          active.raster = capture
-            ? {
-                width: Math.max(1, Math.floor(region.width * scale)),
-                height: Math.max(1, Math.floor(region.height * scale)),
-              }
-            : null;
-          if (!capture && !page?.applyGeometry) {
-            active.casting = true;
-            await active.cdp.send("Emulation.setVisibleSize", {
-              height: size.height,
-              width: size.width,
-            });
-          }
-          const starting: { frame: unknown } = { frame: null };
-          active.starting = starting;
-          let answered = false;
-          try {
-            await active.cdp.send("Page.startScreencast", {
-              everyNthFrame: 1,
-              format: "jpeg",
-              maxHeight: raster.height,
-              maxWidth: raster.width,
-              quality: this.frameQuality,
-            });
-            answered = true;
-          } finally {
-            if (active.starting === starting) active.starting = null;
-            if (!answered && starting.frame !== null) acknowledgeFrame(active.cdp, starting.frame);
-          }
-          // Chromium casts now: the follow view says so, whatever moved meanwhile, so that leaving
-          // stops it and the next start is one of its own.
-          active.casting = true;
-          active.awaitingNavigation = false;
-          active.paintRetryDelay = paintRetryInitialMs;
-          if (page?.capture && page.capture.read()?.revision !== capture?.revision)
-            // The capture moved while the start was with Chromium: its frames are set aside (they
-            // are the old capture's), and the cast starts again for the capture as it is now.
-            void this.viewportChanged(active.surfaceId).catch(() => undefined);
-          if (starting.frame !== null) {
-            if (canceled.aborted || !this.inView(active))
-              acknowledgeFrame(active.cdp, starting.frame);
-            else
-              void this.handleFrame(active.surfaceId, active.cdp, starting.frame).catch(
-                () => undefined,
-              );
-          }
-        } catch (error) {
-          active.casting = false;
-          const surface = this.ledger.binding(active.surfaceId)?.surface;
-          if (
-            surface &&
-            (active.awaitingNavigation || surface.loading || surface.documentId !== documentId)
-          ) {
-            // Navigation can retire the renderer while its cast starts, and a tab opened with an
-            // address has none attached until its document commits. Keep demand until a
-            // document commits or its navigation stops.
-            active.awaitingNavigation = true;
-            active.deferred = { document: documentId ?? null, navigations: navigationsAtStart };
-            this.diagnose({
-              stage: "cast-deferred",
-              reason: "navigation",
-              castId: active.castId,
-              geometryRevision: active.geometryRevision,
-            });
-            return;
-          }
-          throw error;
-        }
-      };
-      if (page?.capture) await this.ledger.withGeometry(active.surfaceId, start);
-      else await start();
-    } catch (error) {
-      if (canceled.aborted || this.active !== active || active.castAbort !== castAbort) return;
-      throw error;
-    } finally {
-      if (active.castAbort === castAbort) active.castAbort = null;
-      if (!active.casting && (canceled.aborted || !active.awaitingNavigation)) {
-        active.releaseRendering?.();
-        active.releaseRendering = null;
-      }
-    }
-  }
-
   /**
    * Shows the bound page's latest picture again while its dialog keeps it
    * from drawing. Viewers take a picture only of the page a list told them
    * is shown, and input reaches only the page the stream is bound to, so it
    * waits for both: the list or the binding, whichever comes last, sends it.
    */
-  private showRetainedPicture(active: ActiveCast): void {
-    if (this.closed || !this.streaming || this.active !== active) return;
+  private showRetainedPicture(bound: Bound): void {
+    if (this.closed || !this.streaming || this.bound !== bound) return;
     if (
-      (!this.surfaceId && active.surfaceId !== this.shownToViewers) ||
-      !this.ledger.dialogOpen(active.surfaceId)
+      (!this.surfaceId && bound.id !== this.shownToViewers) ||
+      !this.ledger.dialogOpen(bound.id)
     ) {
       return;
     }
-    const last = this.lastPictures.get(active.surfaceId);
-    const size = this.ledger.viewportOf(active.surfaceId);
+    const last = this.lastPictures.get(bound.id);
+    const size = this.ledger.viewportOf(bound.id);
     if (
       last &&
       size &&
       sameSize(last.geometry, size) &&
-      last.revision === (this.ledger.binding(active.surfaceId)?.surface.geometryRevision ?? 0)
+      last.revision === (this.ledger.binding(bound.id)?.surface.geometryRevision ?? 0)
     ) {
       this.enqueueFrame(
-        active.surfaceId,
+        bound.id,
         last.data,
         last.raster,
         last.geometry,
@@ -1030,61 +1046,6 @@ export class ScreencastController {
         last.capture,
       );
     }
-  }
-
-  /**
-   * Chromium can reattach a surviving native view at the window size after
-   * another tab closes, independently of its emulated layout. No CDP event
-   * reports that compositor change: the frame's dimensions reveal it. A
-   * repair reconciles declared engine geometry and restarts the cast. Native
-   * discrepancies get one repair; a persistent mismatch is a capture error. Requests made
-   * while one is queued join it; the repair takes its request before sending
-   * anything, so a picture that still mismatches once it has started, even
-   * before Chromium answers its start, asks for the next one.
-   */
-  private resizeView(active: ActiveCast): void {
-    if (active.repairQueued) return;
-    const native = !!this.ledger.binding(active.surfaceId)?.page.capture;
-    if (native && active.repairAttempted) {
-      active.casting = false;
-      void this.ledger
-        .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
-        .catch(() => undefined);
-      this.onError?.(
-        new BrowserRuntimeError(
-          "internal",
-          "The browser capture does not match its declared region.",
-          {
-            reason: "browser-capture-mismatch",
-          },
-        ),
-      );
-      return;
-    }
-    if (native) active.repairAttempted = true;
-    active.repairQueued = true;
-    void this.mutex
-      .run(async () => {
-        active.repairQueued = false;
-        if (
-          !this.inView(active) ||
-          !this.streaming ||
-          !active.casting ||
-          !this.ledger.viewportOf(active.surfaceId)
-        ) {
-          return;
-        }
-        active.casting = false;
-        void this.ledger
-          .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
-          .catch(() => undefined);
-        const page = this.ledger.binding(active.surfaceId)?.page;
-        // The page's own wait takes no signal: leaving the tab ends this one's.
-        if (page?.invalidateSurface)
-          await untilAborted(page.invalidateSurface(), active.leave.signal);
-        await this.castActive(active, "raster-mismatch");
-      })
-      .catch(() => undefined);
   }
 }
 
@@ -1097,24 +1058,17 @@ function acknowledgeFrame(source: CdpSession, parameters: unknown): void {
       .catch(() => undefined);
 }
 
-/** `work`, or nothing once `signal` aborts: no one waits on work for a tab the person left. */
-function untilAborted(work: Promise<unknown>, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise<void>((resolve, reject) => {
-    const done = () => {
-      signal.removeEventListener("abort", done);
-      resolve();
-    };
-    signal.addEventListener("abort", done, { once: true });
-    work.then(done, (error: unknown) => {
-      signal.removeEventListener("abort", done);
-      reject(error instanceof Error ? error : new Error(String(error)));
-    });
-  });
+/** Whether a frame of `geometry` pictures `region`, within the pixel a scrollbar can add. */
+function fitsRegion(geometry: PageSize | null, region: PageSize): boolean {
+  return (
+    !!geometry &&
+    Math.abs(geometry.width - region.width) <= 1 &&
+    Math.abs(geometry.height - region.height) <= 1
+  );
 }
 
-function sameSize(left: PageSize, right: PageSize | null): boolean {
-  return left.width === right?.width && left.height === right.height;
+function describe(size: PageSize | null): string {
+  return size ? `${size.width}x${size.height}` : "unsized";
 }
 
 const screencastSessionSchema = z.object({
@@ -1132,10 +1086,9 @@ const screencastFrameSchema = screencastSessionSchema.extend({
 function parseScreencastFrame(value: unknown): CdpScreencastFrame | null {
   const parsed = screencastFrameSchema.safeParse(value);
   if (!parsed.success) return null;
-  const { data, sessionId, metadata } = parsed.data;
+  const { data, metadata } = parsed.data;
   return {
     data,
-    sessionId,
     geometry: { width: metadata.deviceWidth, height: metadata.deviceHeight },
     pageScale: metadata.pageScaleFactor ?? 1,
   };
@@ -1146,21 +1099,5 @@ function captureDescriptor(capture: PageCapture): BrowserCaptureDescriptor {
     width: capture.width,
     height: capture.height,
     revision: capture.revision,
-  };
-}
-
-/** At most two raster pixels per page DIP, reduced to the stream's resource bound. */
-export function screencastRaster(size: PageSize, density = 2): PageSize {
-  const width = size.width * Math.min(2, density);
-  const height = size.height * Math.min(2, density);
-  const shrink = Math.min(
-    1,
-    browserFrameLimits.maxWidth / width,
-    browserFrameLimits.maxHeight / height,
-    Math.sqrt(browserFrameLimits.maxPhysicalPixels / (width * height)),
-  );
-  return {
-    height: Math.max(1, Math.floor(height * shrink)),
-    width: Math.max(1, Math.floor(width * shrink)),
   };
 }

@@ -399,9 +399,10 @@ it("restores a Guest page before announcing without loading a blank", async () =
   }
 });
 
-// The follow view's sign that a page takes commands for the document it committed: Electron's
-// main-frame did-navigate and did-fail-load, sent from the browser side's end of a navigation.
-it("counts each navigation the page's browser side finished, and none that gave way to another", async () => {
+// The follow view's sign that a page takes commands for the document it committed: a main-frame
+// navigation is pending from did-start-navigation until Electron's did-navigate or did-fail-load,
+// sent from the browser side's end of it, or did-stop-loading for one that committed nothing.
+it("reports the page's navigations as its browser side starts and finishes them", async () => {
   const downloads = { accept: vi.fn(), active: vi.fn(() => false) };
   const launcher = new ElectronBrowserLauncher({ downloads, pagePolicyPreloadPath: "/policy.cjs" });
   const browser = await launcher.launch({
@@ -410,29 +411,54 @@ it("counts each navigation the page's browser side finished, and none that gave 
     storage: { kind: "guest" },
   });
   const page = browser.context.pages()[0]! as unknown as {
-    readonly navigations: { finished(): number; subscribe(listener: () => void): () => void };
+    readonly navigations: {
+      read(): {
+        readonly blankDocument: boolean;
+        readonly finished: number;
+        readonly pending: boolean;
+      };
+      subscribe(listener: () => void): () => void;
+    };
   };
   const emit = (event: string, ...parameters: unknown[]) => {
     for (const [name, listener] of electron.views.at(-1)!.webContents.on.mock.calls)
-      if (name === event) (listener as (...values: unknown[]) => void)({}, ...parameters);
+      if (name === event) (listener as (...values: unknown[]) => void)(...parameters);
   };
+  const start = (url: string, frame: { isMainFrame: boolean; isSameDocument: boolean }) =>
+    emit("did-start-navigation", { ...frame, url });
   try {
     const heard = vi.fn();
     const stop = page.navigations.subscribe(heard);
-    // Opened with an address, its first document has not committed.
-    expect(page.navigations.finished()).toBe(0);
-    emit("did-navigate", "https://site.test/", 200, "OK");
-    // A main-frame load that failed committed an error page; one aborted gave way to another; a
-    // subframe's is the frame's own.
-    emit("did-fail-load", -105, "ERR_NAME_NOT_RESOLVED", "https://gone.test/", true);
-    emit("did-fail-load", -3, "ERR_ABORTED", "https://site.test/next", true);
-    emit("did-fail-load", -105, "ERR_NAME_NOT_RESOLVED", "https://ad.test/", false);
-    expect(page.navigations.finished()).toBe(2);
-    expect(heard).toHaveBeenCalledTimes(2);
+    const baseline = page.navigations.read().finished;
+    start("https://site.test/", { isMainFrame: true, isSameDocument: false });
+    // A fragment and a subframe are no navigation of the page's document.
+    start("https://site.test/#a", { isMainFrame: true, isSameDocument: true });
+    start("https://ad.test/", { isMainFrame: false, isSameDocument: false });
+    expect(page.navigations.read()).toMatchObject({ finished: baseline, pending: true });
+    emit("did-navigate", {}, "https://site.test/", 200, "OK");
+    expect(page.navigations.read()).toEqual({
+      blankDocument: false,
+      finished: baseline + 1,
+      pending: false,
+    });
+    // An error page committed; one aborted gave way to another; a subframe's is its own.
+    start("https://gone.test/", { isMainFrame: true, isSameDocument: false });
+    emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://gone.test/", true);
+    expect(page.navigations.read()).toMatchObject({ finished: baseline + 1, pending: true });
+    emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://gone.test/", true);
+    emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://ad.test/", false);
+    expect(page.navigations.read()).toMatchObject({ finished: baseline + 2, pending: false });
+    // A navigation stopped before it committed ends without one.
+    start("https://site.test/slow", { isMainFrame: true, isSameDocument: false });
+    emit("did-stop-loading");
+    expect(page.navigations.read()).toMatchObject({ finished: baseline + 2, pending: false });
+    emit("did-navigate", {}, "about:blank", -1, "");
+    expect(page.navigations.read()).toMatchObject({ blankDocument: true, finished: baseline + 3 });
+    const heardBefore = heard.mock.calls.length;
     stop();
-    emit("did-navigate", "https://site.test/again", 200, "OK");
-    expect(page.navigations.finished()).toBe(3);
-    expect(heard).toHaveBeenCalledTimes(2);
+    emit("did-navigate", {}, "https://site.test/again", 200, "OK");
+    expect(page.navigations.read().finished).toBe(baseline + 4);
+    expect(heard).toHaveBeenCalledTimes(heardBefore);
   } finally {
     await browser.close();
     launcher.close();
