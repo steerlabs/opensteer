@@ -1,19 +1,11 @@
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { useEffect, type ReactNode } from "react";
-import {
-  Image,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  useWindowDimensions,
-  View,
-} from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Image, Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, displayFontScaleLimit, radius, space } from "../theme.js";
 import { useHostValue } from "../ui/mobile-client-context.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
+import { useFitSheetHeight } from "../ui/fit-sheet.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText, PrimaryButton } from "../ui/primitives.js";
 import { useGutter } from "../ui/screen.js";
@@ -50,8 +42,9 @@ export function useNotificationsIntro(hostClient: HostClient | null): void {
  * leads to its own prompt and leaves by the sheet's dismissal; Android offers
  * both answers, and asks only after Enable.
  *
- * The sheet sizes to what it holds, but never past the screen: at the largest
- * text sizes its words scroll and its answers stay in view below them. Its title
+ * The sheet sizes to what it holds, but never past `useFitSheetHeight`: at the
+ * largest text sizes its words, the iOS caption among them, scroll, and its
+ * answers stay in view below them, sized as controls are. Its title
  * grows as far as `displayFontScaleLimit`, where its widest word still fits the
  * narrowest phone, so it never breaks inside a word.
  */
@@ -60,9 +53,7 @@ export function NotificationsIntroScreen(): ReactNode {
   const { registration } = useMobileNotifications();
   const insets = useContentInsets();
   const gutter = useGutter();
-  const window = useWindowDimensions();
-  // The sheet stands below the status bar, with a margin above it, as iOS and Android draw one.
-  const tallest = window.height - useSafeAreaInsets().top - space[16];
+  const tallest = useFitSheetHeight();
   const ios = Platform.OS === "ios";
   const enable = (): void => {
     // The system's prompt is its own window, so the sheet can leave as it opens.
@@ -95,6 +86,11 @@ export function NotificationsIntroScreen(): ReactNode {
           </AppText>
         </View>
         <NotificationPreview />
+        {ios ? (
+          <AppText role="caption" style={styles.centred} tone="muted">
+            Next, iOS asks to allow notifications.
+          </AppText>
+        ) : null}
       </ScrollView>
       <View style={styles.actions}>
         <PrimaryButton
@@ -102,11 +98,7 @@ export function NotificationsIntroScreen(): ReactNode {
           onPress={enable}
           prominent
         />
-        {ios ? (
-          <AppText role="caption" style={styles.centred} tone="muted">
-            Next, iOS asks to allow notifications.
-          </AppText>
-        ) : (
+        {ios ? null : (
           <Pressable
             accessibilityRole="button"
             onPress={() => navigation.goBack()}
@@ -123,8 +115,9 @@ export function NotificationsIntroScreen(): ReactNode {
 }
 
 /**
- * What one arriving looks like: the app's icon at banner size, a task and its ask. A picture of a
- * banner (read as one image), its words grow only as far as the title's.
+ * What one arriving looks like: the app's icon at banner size, a task and its ask. It is a picture
+ * of a banner, read as one image by its label, so its words grow only as far as the title's: a
+ * person who needs them larger hears them whole.
  */
 function NotificationPreview(): ReactNode {
   return (
