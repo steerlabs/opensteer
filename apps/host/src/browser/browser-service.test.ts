@@ -8008,9 +8008,27 @@ it("admits paged listing and exact resume only inside an agent's own session", a
   await forward("Opensteer.listTabs", { cursor: "42" });
   await forward("Opensteer.resumeTab", { surfaceId: "page-1" });
   expect(await repository.countBrowserSessionAttachments(opened.session.id)).toBe(2);
-  await expect(
-    cdp.request({ method: "Opensteer.resumeTab", parameters: { surfaceId: "other-session-tab" } }),
-  ).rejects.toMatchObject({ code: "not_found" });
+  // A tab this session does not hold is the runtime's to refuse, never this Home's copy of the
+  // tab's state: it reads as not found, the same as one that never existed.
+  const before = runtime.receivedCommands().length;
+  const outside = cdp.request({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: "other-session-tab" },
+  });
+  const asked = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .slice(before)
+      .find((m) => m.type === "cdp.command");
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({
+    type: "cdp.error",
+    requestId: asked.requestId,
+    error: { code: "not_found", message: "The browser tab closed.", retryable: false },
+  });
+  await expect(outside).rejects.toMatchObject({ code: "not_found" });
   await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
     code: "forbidden",
   });

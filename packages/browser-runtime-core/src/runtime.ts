@@ -1744,7 +1744,7 @@ export class BrowserRuntime implements NativePresentationSource {
         // The pressure rule also runs as each page is created, not only on its timer (C9), and a
         // page Chromium opened (a popup, a new-tab link) counts as new growth like one we open (Q4).
         if (this.launcher.memoryPressure) {
-          browser.context.beforeCreatePage = () => this.sleeper.beforePageOpen();
+          browser.context.beforeCreatePage = (signal) => this.sleeper.beforePageOpen(signal);
           browser.context.onPage(() => this.sleeper.notePageArrived());
         }
         this.hosts.set(hostKey, host);
@@ -1823,23 +1823,28 @@ export class BrowserRuntime implements NativePresentationSource {
     }
     this.state = "closing";
     const operation = (async () => {
-      await this.lanes.drain();
-      await this.preparation?.catch(() => undefined);
-      const results = await Promise.allSettled(
-        [...this.hosts.values()].map((host) => this.cleanupHost(host, "runtime-shutdown")),
-      );
-      const failures = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      // Every page still held is asked again. Pages still unconfirmed are reported
-      // and stay owned, but never fail the shutdown: the engine's own teardown and a
-      // supervisor restart must still run after it.
-      await this.pages.shutdown(pageShutdownMs);
-      if (failures.length)
-        throw new AggregateError(failures, "Browser resources could not be closed.");
-      this.hosts.clear();
-      this.sessions.clear();
-      await this.localStore?.close();
+      try {
+        await this.lanes.drain();
+        await this.preparation?.catch(() => undefined);
+        const results = await Promise.allSettled(
+          [...this.hosts.values()].map((host) => this.cleanupHost(host, "runtime-shutdown")),
+        );
+        const failures = results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        // Every page still held is asked again. Pages still unconfirmed are reported
+        // and stay owned, but never fail the shutdown: the engine's own teardown and a
+        // supervisor restart must still run after it.
+        await this.pages.shutdown(pageShutdownMs);
+        if (failures.length)
+          throw new AggregateError(failures, "Browser resources could not be closed.");
+        this.hosts.clear();
+        this.sessions.clear();
+      } finally {
+        // A failed shutdown (Chromium died under it) still lets the profile go, so the same
+        // process can start a runtime on it again.
+        await this.localStore?.close();
+      }
       this.state = "closed";
     })();
     this.shutdownResult = withTimeout(operation, shutdownTimeoutMs, {

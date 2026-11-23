@@ -1378,6 +1378,7 @@ export class BrowserService {
         onTerminal: () => {
           if (this.#brokers.get(sessionId) === broker) {
             this.#brokers.delete(sessionId);
+            this.#boundTabs.delete(sessionId);
             this.#sessionProfiles.delete(sessionId);
           }
           this.#onTabsChanged();
@@ -5927,12 +5928,8 @@ export class BrowserService {
               code: "bad_request",
               message: "A tab surfaceId is required.",
             });
-          const { surfaceId } = parsed.data;
-          if (broker.surfaceStateOf(surfaceId) === undefined)
-            throw new OpensteerError({
-              code: "not_found",
-              message: "This tab is no longer available in this browser.",
-            });
+          // The runtime answers for the tab, not this Home's copy of its state: one this session
+          // does not hold reads as not found there, the same as one that never existed.
         } else if (Object.values(browserHostMethods).some((method) => method === command.method))
           throw new OpensteerError({
             code: "forbidden",
@@ -6770,6 +6767,7 @@ export class BrowserService {
     this.#endPersonUse(broker.groupId);
     this.#brokers.delete(sessionId);
     this.#taskPageOpens.delete(sessionId);
+    this.#boundTabs.delete(sessionId);
     void broker.stop().catch(() => undefined);
   }
 
@@ -7242,6 +7240,7 @@ export class BrowserService {
               this.#announcePresence(sessionId);
               this.#brokers.delete(sessionId);
               this.#taskPageOpens.delete(sessionId);
+              this.#boundTabs.delete(sessionId);
               this.#shadows.get(sessionId)?.stop();
               this.#shadows.delete(sessionId);
               this.#sessionProfiles.delete(sessionId);
@@ -7289,6 +7288,7 @@ export class BrowserService {
         } catch (error) {
           this.#brokers.delete(sessionId);
           this.#taskPageOpens.delete(sessionId);
+          this.#boundTabs.delete(sessionId);
           await broker.abort(`The session failed during ${stage}.`).catch(() => undefined);
           await this.#transitionBrowserSession({
             from: ["starting", "ready", "closing"],
