@@ -3759,9 +3759,10 @@ export class BrowserService {
         const session = await this.#restoreWorkspacePage(ownerId, row, undefined, signal);
         expectedSession = session.id;
         const broker = this.#brokers.get(session.id);
-        // TS10: always asked, never read from this Home's copy of the tab's state, which can be a
-        // sleep behind the runtime's; waking a tab that is awake is nothing there.
-        if (broker)
+        // TS10: always asked of a runtime that sleeps tabs, never read from this Home's copy of the
+        // tab's state, which can be a sleep behind the runtime's; waking a tab that is awake is
+        // nothing there. A runtime that did not negotiate surface state has no sleeping tabs.
+        if (broker?.surfaceState === 1)
           await broker.requestCdp(
             {
               type: "cdp.command",
