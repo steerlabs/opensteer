@@ -87,6 +87,7 @@ const claude = "mcn_00000000-0000-4000-8000-000000000002";
 const trips = "mcn_00000000-0000-4000-8000-000000000003";
 const shopHelper = "mcn_00000000-0000-4000-8000-000000000004";
 const oldNotes = "mcn_00000000-0000-4000-8000-000000000005";
+const oldSearch = "mcn_00000000-0000-4000-8000-000000000009";
 const shopping = "bpr_00000000-0000-4000-8000-000000000003";
 
 async function open(
@@ -401,6 +402,15 @@ describe("one connected agent on the phone", () => {
   it("offers Remove from list for a stopped agent", async () => {
     await open(oldNotes);
     expect(status()).toMatchObject({ label: "Disconnected", tone: "good" });
+    expect(row("end", "remove").label).toBe("Remove from list");
+  });
+
+  it("shows an expired agent with its quoted reconnect sentence and Remove from list", async () => {
+    await open(oldSearch);
+    expect(status()).toMatchObject({ label: "Expired", tone: "neutral" });
+    expect(readAsDrawn(section("status")?.footer?.text ?? "")).toContain(
+      "Connect it again from “Old search agent” to use it.",
+    );
     expect(row("end", "remove").label).toBe("Remove from list");
   });
 

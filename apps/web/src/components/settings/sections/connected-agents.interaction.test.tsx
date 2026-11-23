@@ -31,6 +31,7 @@ const claude = "mcn_00000000-0000-4000-8000-000000000002";
 const grok = "mcn_00000000-0000-4000-8000-000000000001";
 const shopHelper = "mcn_00000000-0000-4000-8000-000000000004";
 const oldNotes = "mcn_00000000-0000-4000-8000-000000000005";
+const oldSearch = "mcn_00000000-0000-4000-8000-000000000009";
 const base = "/settings/external-agents";
 let path = "";
 
@@ -108,6 +109,7 @@ describe("Connected agents list", () => {
     expect(rows(page, "Disconnected")).toEqual([
       ["Shop helper", "Check its last action"],
       ["Old notes agent", "Disconnected"],
+      ["Old search agent", "Expired"],
     ]);
     expect(page.querySelector(`a[href="${base}/${grok}"]`)).not.toBeNull();
     // A logo only for a platform the Home verified: Claude and ChatGPT, never Grok's domain.
@@ -397,6 +399,14 @@ describe("one connected agent", () => {
     const page = await mount(host, `${base}/${oldNotes}`);
     await vi.waitFor(() => expect(status(page)).toContain("Disconnected"));
     expect(page.querySelector(".connected-agent__uncertain")).toBeNull();
+    expect(buttonNamed(page, "Remove from list")).toBeTruthy();
+  });
+
+  it("shows an expired agent with its quoted reconnect sentence and Remove from list", async () => {
+    host = seeded();
+    const page = await mount(host, `${base}/${oldSearch}`);
+    await vi.waitFor(() => expect(status(page)).toContain("Expired"));
+    expect(status(page)).toContain("Connect it again from “Old search agent” to use it.");
     expect(buttonNamed(page, "Remove from list")).toBeTruthy();
   });
 
