@@ -1441,6 +1441,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     syncSelection();
     // An insertion goes in at the caret as it is now, whatever the page did since.
     if (!request.insertion && selectionRevision !== request.revision) return {ok:false,reason:"selection-changed"};
+    rewritten();
     if (composing && composing.element === element) return accept({ ok: true, composing: true });
     const before = request.before,
       after = request.after,
@@ -1538,6 +1539,24 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     if (!ownInput) selectionRevision++;
     schedule();
   });
+  // CY4: Blink ends a composition without a compositionend when the page rewrites the field's
+  // value under it (a mask): its text then is not what the composition's last input left, and
+  // the field composes no more.
+  let composedText = null;
+  const fieldText = (element) => {
+    const kind = mechanism(element);
+    return kind === "control" ? element.value : kind === "editcontext" ? element.editContext.text : element.textContent;
+  };
+  on(document, "compositionstart", () => {composedText = fieldText(active());});
+  on(document, "input", () => {if (composing) composedText = fieldText(composing.element);});
+  on(document, "compositionend", () => {composedText = null;});
+  /** Read wherever the script asks whether the field composes: no event says it. */
+  const rewritten = () => {
+    if (composing && composedText !== null && fieldText(composing.element) !== composedText) {
+      composing = null;
+      composedText = null;
+    }
+  };
   // The close's guard (CY3) sees the first beforeinput after it was armed: the close's own.
   on(window, "beforeinput", (event) => {
     const guard = closeGuard;
@@ -1613,10 +1632,14 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     },
     prepare,
     /** The marked text of the active field's open composition, or null. */
-    composition: () => (composing && composing.element === active() ? composing.text : null),
+    composition: () => {
+      rewritten();
+      return composing && composing.element === active() ? composing.text : null;
+    },
     /** The same, read for the close's send: arms its one-shot guard (CY3). */
     armClose: (fieldId) => {
       const element = active();
+      rewritten();
       if (!composing || composing.element !== element || fieldKey(element) !== fieldId) return null;
       closeGuard = { element, ended: false };
       return composing.text;
