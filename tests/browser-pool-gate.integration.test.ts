@@ -4225,26 +4225,24 @@ it("refuses to write a hold and still parks when device access is turned off dur
     const requestSent = Promise.withResolvers<void>();
     const releaseRequest = Promise.withResolvers<void>();
     const origSend = TestRuntimeConnection.prototype.send;
-    const sendSpy = vi
-      .spyOn(TestRuntimeConnection.prototype, "send")
-      .mockImplementation(function (
-        this: TestRuntimeConnection,
-        ...args: Parameters<TestRuntimeConnection["send"]>
+    const sendSpy = vi.spyOn(TestRuntimeConnection.prototype, "send").mockImplementation(function (
+      this: TestRuntimeConnection,
+      ...args: Parameters<TestRuntimeConnection["send"]>
+    ) {
+      const message = JSON.parse(args[0]) as {
+        type?: string;
+        command?: { method?: string };
+      };
+      if (
+        message.type === "cdp.command" &&
+        message.command?.method === browserHostMethods.openTab
       ) {
-        const message = JSON.parse(args[0]) as {
-          type?: string;
-          command?: { method?: string };
-        };
-        if (
-          message.type === "cdp.command" &&
-          message.command?.method === browserHostMethods.openTab
-        ) {
-          requestSent.resolve();
-          void releaseRequest.promise.then(() => origSend.apply(this, args));
-          return;
-        }
-        return origSend.apply(this, args);
-      });
+        requestSent.resolve();
+        void releaseRequest.promise.then(() => origSend.apply(this, args));
+        return;
+      }
+      return origSend.apply(this, args);
+    });
 
     try {
       const opening = home.service.openTab(
