@@ -1,6 +1,7 @@
 import { classifyClientFailure } from "@opensteer/client/connections";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { createId, DeploymentIdSchema } from "@opensteer/core";
+import { includeDeviceAccessRequests } from "@opensteer/protocol";
 import { desktopBridge } from "../../web/src/desktop/desktop-bridge.js";
 import { createDesktopHostFetch } from "../../web/src/desktop/desktop-host-transport.js";
 
@@ -9,7 +10,7 @@ declare global {
     hostTransportSmoke: (
       origin: string,
       deploymentId: string,
-      action: "rpc" | "abort-start" | "abort-finish" | "binary",
+      action: "rpc" | "abort-start" | "abort-finish" | "binary" | "attention",
     ) => Promise<unknown>;
   }
 }
@@ -50,6 +51,8 @@ window.hostTransportSmoke = async (origin, deploymentId, action) => {
     fetch,
     onAuthenticationRequired: () => undefined,
   });
+  // The switcher's summary read of a Home, pinned to that Home whether or not it is selected.
+  if (action === "attention") return client["attention.get"](includeDeviceAccessRequests);
   if (action === "binary") {
     const result = await client["attachment.content"]({ attachmentId: createId("attachment") });
     if (result.ok) throw new Error("Oversized binary response was accepted.");
