@@ -86,14 +86,15 @@ export async function applyChatRoutesEnd(database: Kysely<unknown>): Promise<voi
 
     -- Its sender rule is "anyone": the same rule that keeps work from an "anyone" bridge out of
     -- the person's personal context keeps this work out of it, for ever. Ended and removed: it is
-    -- a chat that has ended, and no list draws it.
+    -- a chat that has ended, and no list draws it. Its cleanup is complete: no Run names it.
     insert into agent_connections (
       id, user_id, label, client_name, access_mode, resource, token_hash, created_at,
       expires_at, revoked_at, removed_at, "grant", grant_revision, consent_version,
-      cleanup_reason, cleanup_requested_at, bridge_senders)
+      cleanup_reason, cleanup_requested_at, cleanup_completed_at, bridge_senders)
     select legacy.id, legacy.user_id, 'Chats from before the update', 'Messaging',
       'approval-required', 'opensteer:bridge', null, now(), now(), now(), now(),
-      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), 'anyone'
+      '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(), now(),
+      'anyone'
     from chat_routes_ended legacy;
 
     update threads t set origin_connection_id = legacy.id
