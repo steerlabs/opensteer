@@ -700,7 +700,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     ).toBeUndefined();
   });
 
-  it("cleans every stored name column and JSON place in 0053 with outsideName", async ({
+  it("cleans every stored name column and JSON place in 0109 with outsideName", async ({
     storeFixture,
   }) => {
     const { database, store } = storeFixture;
@@ -1361,7 +1361,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
   it("cleans every stored column Sol's entrances cover while leaving already-clean rows byte-for-byte unchanged", async ({
     storeFixture,
   }) => {
-    const { database, store } = storeFixture;
+    const { database } = storeFixture;
     const fixture = await storeFixture.createRunFixture("sol-stored-names");
     const deployment = await database
       .selectFrom("deployments")
@@ -1772,12 +1772,11 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       database,
     );
 
-    // Re-run 0053 directly on this populated database.
+    // Re-run 0109 directly on this populated database.
     await restoreRoutes(database);
-    await database
-      .deleteFrom("kyselyMigration")
-      .where("name", "=", chatRoutesEndMigrationName)
-      .execute();
+    await sql`delete from kysely_migration where name = ${chatRoutesEndMigrationName}`.execute(
+      database,
+    );
     await migrateToLatest(database);
 
     const readOne = async <T>(query: ReturnType<typeof sql<T>>) =>

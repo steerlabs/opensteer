@@ -13,6 +13,7 @@ import type {
   AssignmentSummary,
   AssignmentView,
   Attachment,
+  AuthSessionId,
   AuthenticatedUser,
   BrowserPageContentPart,
   ComputerAppContentPart,
@@ -242,6 +243,8 @@ export interface ThreadSummary {
   externalWork?: import("@opensteer/protocol/personal-sync").PersonalTaskExternalWork | null;
   /** The chat or connected agent that started this task ended, so it takes no new messages. */
   endedOrigin?: "chat" | "agent" | null | undefined;
+  /** Active provider retry on the task's executing Run, when retrying. */
+  retry?: import("@opensteer/core").RunRetry | null;
   id: string;
   inputQueuePaused: boolean;
   /** One of the person's tasks in navigation lists; see the Host's `Thread.listed`. */
@@ -509,6 +512,7 @@ export type RunEntryStatus =
 
 export interface RunEntry {
   compaction?: import("@opensteer/core").NativeCompactionActivity;
+  retry?: import("@opensteer/core").RunRetry;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
   startedAt?: string;
@@ -964,7 +968,7 @@ export interface HostSnapshot {
   /** The signed-in person's relation to this Home, as the Home says it. Absent from older Homes. */
   role?: "owner" | "member";
   /** Recovery can replace the session with no other visible change, ending what was bound to it. */
-  sessionId?: string;
+  sessionId?: AuthSessionId;
 }
 
 export interface TranscriptFixtureSnapshot extends HostSnapshot {
@@ -1455,7 +1459,7 @@ export interface HostClient extends TabsClient {
    */
   steerThreadInput(threadId: string, messageId: string): Promise<void>;
   /** Stops the task's current work: the Run under way when the Host receives it. */
-  stopRun(threadId: string): Promise<void>;
+  stopRun(threadId: string, expectedRunId?: string): Promise<void>;
   stopNode(threadId: string, nodeId: string): Promise<void>;
   subscribe(listener: () => void): () => void;
   /** Moves a Thread to another access mode; remembered once the Host accepts. */

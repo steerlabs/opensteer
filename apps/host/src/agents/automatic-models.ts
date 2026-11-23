@@ -24,7 +24,12 @@ import {
   type OpensteerStore,
 } from "@opensteer/database";
 import type { RunnerRegistry } from "@opensteer/orchestration";
-import type { AutomaticModelsView, HarnessInstanceCatalog } from "@opensteer/protocol";
+import {
+  usageWindowAppliesToProvider,
+  usageWindowIsAccountWide,
+  type AutomaticModelsView,
+  type HarnessInstanceCatalog,
+} from "@opensteer/protocol";
 export interface AutomaticModelDependencies {
   readonly store: Pick<
     OpensteerStore,
@@ -91,42 +96,54 @@ function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
     catalog.connections
       .filter(
         (connection) =>
-          connection.connectionSlot === "primary" || connection.connectionSlot === providerId,
+          connection.status === "connected" &&
+          (connection.connectionSlot === "primary" || connection.connectionSlot === providerId),
       )
       .flatMap(({ usage }): ModelUsageFact[] => {
         if (!usage) return [];
-        if (usage.windows.length === 0)
-          return usage.limitReached
-            ? [
-                {
-                  providerId,
-                  exhausted: true,
-                  resetsAt: null,
-                },
-              ]
-            : [];
-        return usage.windows.flatMap((window): ModelUsageFact[] => {
+        const applicable = usage.windows.filter((window) =>
+          usageWindowAppliesToProvider(window, providerId),
+        );
+        const exhaustedWindows = applicable.flatMap((window): ModelUsageFact[] => {
           if (window.usedPercent < 100) return [];
-          const resetsAt = window.resetsAt === null ? null : Date.parse(window.resetsAt);
-          if (window.scope?.kind !== "model")
+          const parsedReset = window.resetsAt === null ? null : Date.parse(window.resetsAt);
+          const resetsAt =
+            parsedReset !== null && Number.isFinite(parsedReset) ? parsedReset : null;
+          if (window.scope?.kind === "model") {
             return [
               {
                 providerId,
+                modelId: window.scope.modelId,
                 exhausted: true,
                 resetsAt,
               },
             ];
-          return window.scope.providerId === providerId
-            ? [
-                {
-                  providerId,
-                  modelId: window.scope.modelId,
-                  exhausted: true,
-                  resetsAt,
-                },
-              ]
-            : [];
+          }
+          return [
+            {
+              providerId,
+              exhausted: true,
+              resetsAt,
+            },
+          ];
         });
+        // Account-wide `limitReached` is explained by exhausted account-wide windows
+        // (whose reset timestamps age it out automatically). Only when no account-wide
+        // window is exhausted does the flag stand independently as a windowless block.
+        const hasExhaustedAccountWindow = usage.windows.some(
+          (window) => usageWindowIsAccountWide(window) && window.usedPercent >= 100,
+        );
+        if (usage.limitReached && !hasExhaustedAccountWindow) {
+          return [
+            ...exhaustedWindows,
+            {
+              providerId,
+              exhausted: true,
+              resetsAt: null,
+            },
+          ];
+        }
+        return exhaustedWindows;
       }),
   );
 }

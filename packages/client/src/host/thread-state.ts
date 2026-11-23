@@ -15,12 +15,14 @@ export type ThreadView = Pick<ThreadSummary, "title" | "icon"> &
       | "inputQueuePaused"
       | "returnHint"
       | "endedOrigin"
+      | "retry"
     >
   >;
 
 type ThreadState = {
   returnHint?: ThreadSummary["returnHint"];
   endedOrigin?: ThreadSummary["endedOrigin"];
+  retry?: ThreadSummary["retry"];
 } & Pick<ThreadSummary, "status" | "pendingRequests" | "updatedAt"> & {
     readonly inputQueuePaused?: boolean | undefined;
     readonly compact?: boolean | undefined;
@@ -84,6 +86,7 @@ export class ThreadStateProjection {
           : state.latestRunCompletedAt,
       status: state.status,
       inputQueuePaused: state.inputQueuePaused ?? summary.inputQueuePaused,
+      ...(state.retry !== undefined ? { retry: state.retry } : {}),
       pendingRequests: state.pendingRequests,
       updatedAt,
     };
@@ -107,6 +110,7 @@ export class ThreadStateProjection {
         inputQueuePaused: state.inputQueuePaused ?? thread.inputQueuePaused,
         returnHint: state.returnHint === undefined ? thread.returnHint : state.returnHint,
         endedOrigin: state.endedOrigin === undefined ? thread.endedOrigin : state.endedOrigin,
+        ...(state.retry !== undefined ? { retry: state.retry } : {}),
       }),
     };
   }
@@ -149,6 +153,7 @@ export class ThreadStateProjection {
       returnHint: incoming.returnHint === undefined ? previous?.returnHint : incoming.returnHint,
       endedOrigin:
         incoming.endedOrigin === undefined ? previous?.endedOrigin : incoming.endedOrigin,
+      retry: incoming.retry === undefined ? previous?.retry : incoming.retry,
       status: incoming.status,
       inputQueuePaused: incoming.inputQueuePaused ?? previous?.inputQueuePaused,
       compact: incoming.compact,

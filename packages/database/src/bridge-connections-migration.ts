@@ -1,6 +1,6 @@
 import { sql, type Kysely } from "kysely";
 
-export const bridgeConnectionsMigrationName = "0052_bridge_connections";
+export const bridgeConnectionsMigrationName = "0108_bridge_connections";
 
 /**
  * A messaging bridge is a connection: one `agent_connections` row reached through a chat instead
@@ -18,7 +18,7 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
         'computer', 'work-home')),
       add constraint agent_connections_bridge check (
         -- A bridge says who may speak. A sender rule without an account is only the ended row
-        -- that ties the tasks chats ran before the update to "anyone" (0053).
+        -- that ties the tasks chats ran before the update to "anyone" (0109).
         (bridge_account_id is null or bridge_senders is not null)
         and (bridge_senders is null or bridge_account_id is not null or revoked_at is not null)
         and (bridge_account_id is not null or bridge_conversation_id is null)

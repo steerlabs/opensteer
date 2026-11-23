@@ -1,4 +1,5 @@
 import {
+  formatPersonQuestionRecord,
   isPlaceContentPart,
   placeContentLabel,
   formatReferenceLink,
@@ -68,19 +69,33 @@ export function activityItem(
   const title =
     item.type === "place.entered" ? item.place.title : "title" in item ? item.title : null;
   const status =
-    "status" in item
-      ? item.status
-      : item.type === "node.message"
-        ? "published"
-        : item.type.split(".")[1]!;
+    "requestStatus" in item
+      ? item.requestStatus
+      : "status" in item
+        ? item.status
+        : item.type === "node.message"
+          ? "published"
+          : item.type.split(".")[1]!;
   const text =
     item.type === "place.entered"
       ? item.place.site
       : "requestKind" in item
-        ? item.requestKind
+        ? item.question
+          ? formatPersonQuestionRecord(item.question)
+          : item.questionOversized
+            ? "[Question exceeds the history read limit]"
+            : item.requestKind
         : "text" in item && (!tool || (title && !withheldTool(title)))
           ? item.text
           : null;
+  const isQuestion = "question" in item && item.question !== null;
+  const maxChars =
+    tool && !facts.named
+      ? Math.min(500, facts.maxChars)
+      : isQuestion && !facts.named
+        ? Math.min(4_096, facts.maxChars)
+        : facts.maxChars;
+  const rendered = itemText(text, maxChars, facts.offset);
   return {
     itemId: item.id,
     ...("requestId" in item ? { link: formatReferenceLink(item.requestId, item.title) } : {}),
@@ -88,11 +103,11 @@ export function activityItem(
     status,
     runId: item.runId,
     title,
-    ...itemText(
-      text,
-      tool && !facts.named ? Math.min(500, facts.maxChars) : facts.maxChars,
-      facts.offset,
-    ),
+    ...rendered,
+    ...((isQuestion && item.question!.truncated) ||
+    ("questionOversized" in item && item.questionOversized)
+      ? { textTruncated: true }
+      : {}),
     createdAt: item.createdAt,
   };
 }

@@ -102,7 +102,8 @@ describeStore("a connected agent's reads stay within their statement budgets", (
       childWait: () =>
         selected.client.callTool({
           name: "opensteer_task_wait",
-          arguments: { taskId: child.thread.id, timeoutMs: 1 },
+          // Give the settled child's first snapshot room to complete instead of racing a 1ms timer.
+          arguments: { taskId: child.thread.id, timeoutMs: 5_000 },
         }),
       taskRead: () =>
         selected.client.callTool({
@@ -114,13 +115,18 @@ describeStore("a connected agent's reads stay within their statement budgets", (
     for (const [name, call] of Object.entries(calls)) {
       const warm = await call();
       expect(warm.isError, JSON.stringify(warm.content)).not.toBe(true);
+      if (name === "childWait")
+        expect((warm.structuredContent as { status?: string }).status).toBe("settled");
       if (name === "taskRead")
         for (const id of requestIds) expect(JSON.stringify(warm.structuredContent)).toContain(id);
       counts[name] = (await statements(call)).length;
     }
-    // One live check per discover call; one read each for a child's delegation and for the
-    // Request items of a task read (27, about 60 and 47 before). A task read no longer reads
-    // its messages' team sources (33 before teams went).
-    expect(counts).toEqual({ discover: 22, childWait: 36, taskRead: 32 });
+    // Fixed per-call budgets:
+    // - discover: 22 (one live check per discover call; 27 before).
+    // - childWait: 89 (settled first snapshot with status === "settled"; previously 36/34 when
+    //   timeoutMs: 1 aborted mid-read and returned timed_out depending on machine speed).
+    // - taskRead: 28 (down from 32 after folding connectionRequests into recent/activity SQL
+    //   and removing post-hoc visibleConnectionRequestIds and duplicate owner reads).
+    expect(counts).toEqual({ discover: 22, childWait: 89, taskRead: 28 });
   });
 });

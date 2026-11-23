@@ -118,6 +118,7 @@ export * from "./needs-you.js";
 export * from "./thread-visits.js";
 
 export * from "./idle-compaction.js";
+export * from "./provider-retry.js";
 
 export * from "./asset-urls.js";
 

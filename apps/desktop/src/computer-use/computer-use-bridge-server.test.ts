@@ -1,7 +1,16 @@
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer as createUnixServer, type Socket } from "node:net";
 import { createId } from "@opensteer/core";
 import type { DesktopIphoneRunnerPort } from "../iphone/iphone-service.js";
 import { fixture as iphoneFixture, ownerA, ownerB } from "../iphone/test-support.js";
-import { MacOwnerSourceSchema, DisplayStreamIdSchema } from "@opensteer/protocol";
+import {
+  MacOwnerSourceSchema,
+  DisplayStreamIdSchema,
+  displayMaxEnvelopeBytes,
+  encodeDisplayMediaFrame,
+} from "@opensteer/protocol";
 import type {
   ComputerUseHelperEvent,
   ComputerUseHelperMethod,
@@ -1367,3 +1376,93 @@ it.each(["deadline", "disconnect"])("aborts an iPhone observation on %s", async 
   }
   await vi.waitFor(() => expect(signal.aborted).toBe(true));
 });
+
+it.skipIf(process.platform === "win32")(
+  "relays split and coalesced iPhone Unix frames, returns credit, and tears down on an oversize header",
+  async () => {
+    const dir = await mkdtemp("/tmp/opensteer-iphone-");
+    const socketPath = `${dir}/media.sock`;
+    const native = createUnixServer();
+    native.listen(socketPath);
+    await once(native, "listening");
+    const stop = vi.fn();
+    const abort = new AbortController();
+    const token = randomUUID();
+    let taken = false;
+    const h = await bridgeHarness({
+      iphone: {
+        connect() {
+          throw new Error("No control RPC expected.");
+        },
+        claimMediaAttachment(value) {
+          if (taken || value !== token) return;
+          taken = true;
+          return { socketPath, signal: abort.signal, close: stop };
+        },
+      },
+    });
+    const address = h.server.url;
+    const mediaUrl = new URL(address);
+    mediaUrl.pathname += `/display/${token}`;
+    const client = new WebSocket(mediaUrl, { headers: { authorization: `Bearer ${h.token}` } });
+    let unix: Socket | undefined;
+    try {
+      const [connected] = await once(native, "connection");
+      unix = connected as Socket;
+      if (client.readyState !== WebSocket.OPEN) await once(client, "open");
+      const streamId = DisplayStreamIdSchema.parse(`dsp_${randomUUID()}`);
+      const frame = (sequence: number) => {
+        const bytes = encodeDisplayMediaFrame(
+          {
+            streamId,
+            sequence,
+            generation: 1,
+            ptsUs: sequence,
+            key: false,
+            width: 100,
+            height: 200,
+          },
+          Uint8Array.from([0, 0, 0, 1, 0x41]),
+        );
+        const framed = Buffer.alloc(5 + bytes.length);
+        framed[0] = 0x01;
+        framed.writeUInt32BE(bytes.length, 1);
+        framed.set(bytes, 5);
+        return { framed, bytes: Buffer.from(bytes) };
+      };
+      const first = frame(0);
+      const second = frame(1);
+      const received: unknown[][] = [];
+      client.on("message", (...args) => received.push(args));
+      unix.write(first.framed.subarray(0, 3));
+      unix.write(first.framed.subarray(3, 9));
+      unix.write(Buffer.concat([first.framed.subarray(9), second.framed]));
+      await vi.waitFor(() =>
+        expect(received).toEqual([
+          [first.bytes, true],
+          [second.bytes, true],
+        ]),
+      );
+
+      const credit = once(unix, "data");
+      const ack = JSON.stringify({ type: "display.ack", sequence: 1 });
+      client.send(ack);
+      const [bytes] = await credit;
+      expect(bytes[0]).toBe(0x02);
+      expect(bytes.readUInt32BE(1)).toBe(Buffer.byteLength(ack));
+      expect(bytes.subarray(5).toString("utf8")).toBe(ack);
+
+      const closed = Promise.all([once(client, "close"), once(unix, "close")]);
+      const oversized = Buffer.alloc(5, 0x01);
+      oversized.writeUInt32BE(displayMaxEnvelopeBytes + 1, 1);
+      unix.write(oversized);
+      await closed;
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      client.terminate();
+      unix?.destroy();
+      await new Promise<void>((resolve) => native.close(() => resolve()));
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

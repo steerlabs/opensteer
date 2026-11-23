@@ -26,6 +26,7 @@ import {
   taskExternalWorkSelection,
   taskPageThreadSelections,
   taskPageThreadsFromRows,
+  threadProviderRetry,
   threadRunQueued,
   type TaskExternalWork,
 } from "./personal-task-store.js";
@@ -65,6 +66,7 @@ export function taskView(task: Task) {
       ? { agentSessionId: task.externalWork.sessionId }
       : {}),
     ...(task.externalWork ? { externalWork: externalWorkView(task.externalWork) } : {}),
+    retry: task.retry ?? null,
   };
 }
 
@@ -141,6 +143,7 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .select(taskPageThreadSelections())
     .select(threadRunQueued.as("runQueued"))
     .select(taskExternalWorkSelection)
+    .select(threadProviderRetry.as("retry"))
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)

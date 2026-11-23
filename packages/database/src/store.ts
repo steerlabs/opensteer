@@ -1408,6 +1408,13 @@ export class OpensteerStore {
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
     readonly reader: TaskReader;
+    readonly done?: boolean;
+    readonly hasPendingRequests?: boolean;
+    readonly omitPendingRequests?: boolean;
+    readonly connectionAuthority?: Extract<
+      import("./thread-caller.js").ThreadCallerAuthority,
+      { kind: "connection" }
+    >;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }

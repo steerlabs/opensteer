@@ -4,7 +4,7 @@ import { sql, type Kysely, type RawBuilder } from "kysely";
 import { storableText } from "./storable-json.js";
 
 /** A contract migration: it drops what a running previous Home still uses (`migrations.test.ts`). */
-export const chatRoutesEndMigrationName = "0053_chat_routes_end_contract";
+export const chatRoutesEndMigrationName = "0109_chat_routes_end_contract";
 
 const cleanBatchSize = 500;
 const needsCleanPattern = "[^ -~]|^ | $|  ";
@@ -882,15 +882,19 @@ async function cleanStoredNames(database: Kysely<unknown>): Promise<void> {
   let afterHistProfile: string | null = null;
   let afterHistUrl: string | null = null;
   for (;;) {
-    const rows = (
+    const cursorClause =
+      afterHistProfile === null
+        ? sql`true`
+        : sql`(profile_id, url) > (${afterHistProfile}, ${afterHistUrl})`;
+    const rows: readonly {
+      readonly profileId: string;
+      readonly url: string;
+      readonly title: string;
+    }[] = (
       await sql<{ readonly profileId: string; readonly url: string; readonly title: string }>`
         select profile_id as "profileId", url, title
         from browser_history_entries
-        where ${
-          afterHistProfile === null
-            ? sql`true`
-            : sql`(profile_id, url) > (${afterHistProfile}, ${afterHistUrl})`
-        }
+        where ${cursorClause}
           and ${needsCleanAllowEmpty(sql`title`, 200)}
         order by profile_id, url
         limit ${cleanBatchSize}

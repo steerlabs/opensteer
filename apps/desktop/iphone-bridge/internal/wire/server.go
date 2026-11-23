@@ -19,41 +19,71 @@ type outgoing struct {
 	ack   chan error
 }
 type Server struct {
-	Handler   Handler
-	BootID    string
-	mu        sync.Mutex
-	pending   map[uint64]context.CancelFunc
-	responses chan outgoing
-	events    chan Event
-	sequence  uint64
+	Handler    Handler
+	BootID     string
+	mu         sync.Mutex
+	pending    map[uint64]context.CancelFunc
+	responses  chan outgoing
+	events     []Event
+	eventReady chan struct{}
+	abort      context.CancelFunc
+	sequence   uint64
 }
 
 func (s *Server) Publish(roster Roster) {
+	s.publishEvent(Event{Event: "roster.changed", Roster: &roster})
+}
+func (s *Server) PublishDisplayState(state DisplayStateEvent) {
+	s.publishEvent(Event{Event: "display.state", DisplayState: &state})
+}
+func (s *Server) publishEvent(event Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.events == nil {
+	if s.eventReady == nil {
 		return
 	}
-	s.sequence++
-	event := Event{"event", s.BootID, s.sequence, "roster.changed", roster}
-	select {
-	case s.events <- event:
-	default:
-		select {
-		case <-s.events:
-		default:
-		}
-		select {
-		case s.events <- event:
-		default:
-		}
+	event.Kind, event.BootID = "event", s.BootID
+	n := len(s.events)
+	if n > 0 && s.events[n-1].Roster != nil && event.Roster != nil {
+		s.events[n-1] = event
+	} else if n >= MaxPending {
+		// Losing a privacy transition would leave a viewer on a stale state.
+		s.abort()
+	} else {
+		s.events = append(s.events, event)
 	}
+	select {
+	case s.eventReady <- struct{}{}:
+	default:
+	}
+}
+func (s *Server) nextEvent() Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// A publisher may have signaled again after the writer woke. The queue
+	// already includes that event, including a roster update coalesced in place.
+	select {
+	case <-s.eventReady:
+	default:
+	}
+	s.sequence++
+	event := s.events[0]
+	event.Sequence = s.sequence
+	s.events[0] = Event{}
+	s.events = s.events[1:]
+	if len(s.events) > 0 {
+		s.eventReady <- struct{}{}
+	}
+	return event
 }
 func (s *Server) Run(parent context.Context, input io.ReadCloser, output io.WriteCloser) error {
 	ctx, cancel := context.WithCancel(parent)
 	s.pending = make(map[uint64]context.CancelFunc)
 	s.responses = make(chan outgoing, MaxPending)
-	s.events = make(chan Event, 1)
+	s.mu.Lock()
+	s.eventReady = make(chan struct{}, 1)
+	s.abort = cancel
+	s.mu.Unlock()
 	var work sync.WaitGroup
 	var pumps sync.WaitGroup
 	defer func() {
@@ -88,8 +118,8 @@ func (s *Server) Run(parent context.Context, input io.ReadCloser, output io.Writ
 					writerDone <- ctx.Err()
 					return
 				case out = <-s.responses:
-				case event := <-s.events:
-					out = outgoing{event, MaxEventBytes, nil}
+				case <-s.eventReady:
+					out = outgoing{s.nextEvent(), MaxEventBytes, nil}
 				}
 			}
 			err := WriteFrame(output, out.value, out.limit)

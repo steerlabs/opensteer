@@ -100,7 +100,7 @@ func OpenPacketStream(parent context.Context, conn io.ReadWriteCloser, local, re
 	}
 	ctx, cancel := context.WithCancel(parent)
 	s := stack.New(stack.Options{NetworkProtocols: []stack.NetworkProtocolFactory{ipv6.NewProtocol}, TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol}})
-	link := channel.New(64, mtu, "")
+	link := channel.New(512, mtu, "")
 	t := &Userspace{LocalIP: l, RemoteIP: r, Stack: s, link: link, conn: conn, ctx: ctx, cancel: cancel}
 	if err := s.CreateNIC(1, link); err != nil {
 		t.Close()

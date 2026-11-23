@@ -276,6 +276,22 @@ export async function unreadTaskContribution(tx: Tx, threadId: ThreadId) {
   return Number(unread?.unread ?? false);
 }
 
+/**
+ * When the end of the Run aliased `run` is news to its task's owner, or null. A Run that completed
+ * or failed is news, as is one the Host, an agent or a teammate cut short after it started. One the
+ * person stopped themselves is not, nor one that ended before it started: there is nothing to see.
+ * A task's `latest_run_completed_at` is this for its latest Run, and unread compares it with the
+ * owner's visit.
+ */
+export function runNewsAt(run: string) {
+  const status = sql.ref(`${run}.status`);
+  return sql<Date | null>`case when ${status} in ('completed','failed') or (${status}='interrupted'
+    and ${sql.ref(`${run}.started_at`)} is not null
+    and not exists (select from commands where commands.run_id=${sql.ref(`${run}.id`)}
+      and commands.type='run.interrupt' and commands.authority_source->>'kind'='user-session'))
+    then ${sql.ref(`${run}.completed_at`)} end`;
+}
+
 export async function refreshLatestRunCompletion(
   tx: Tx,
   mutation: PersonalMutation,
@@ -284,7 +300,7 @@ export async function refreshLatestRunCompletion(
   /** The caller changed nothing else unread depends on, so an unchanged completion keeps it. */
   onlyCompletion = false,
 ): Promise<{ readonly latestRunCompletedAt: Date | null } | undefined> {
-  const completion = sql<Date | null>`(select case when status in ('completed','interrupted','failed') then completed_at end
+  const completion = sql<Date | null>`(select ${runNewsAt("runs")}
       from runs where thread_id=${threadId} and maintenance is null order by run_ordinal desc limit 1)`;
   const changed = await tx
     .updateTable("threads")

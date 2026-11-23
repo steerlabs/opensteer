@@ -212,7 +212,7 @@ describe("fresh personal/team lineage", () => {
       select ${own.id},${own.id},purpose,listed,'Own',icon_source,color,environment_id,harness_instance_id,
         model_selection,created_by,created_by_principal_id
       from threads where id = ${delegated.id}`.execute(database);
-    // Rows as a Host before 0044_agent_grants wrote them: the connection is named only in the input's source.
+    // Rows as a Host before 0100_agent_grants wrote them: the connection is named only in the input's source.
     const queued = async (threadId: string, key: string, source: object) => {
       const messageId = createId("message");
       const chainId = createId("causalChain");

@@ -4,12 +4,8 @@ import { createId, ThreadIdSchema } from "@opensteer/core";
 import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  agentWords,
-  HostClientRequestError,
-  HostTransportError,
-  mutationIdempotencyKey,
-} from "@opensteer/client/host";
+import { HostTransportError } from "@opensteer/client/connections";
+import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {

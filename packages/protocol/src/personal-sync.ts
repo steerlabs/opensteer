@@ -11,6 +11,7 @@ import {
   RequestIdSchema,
   RunAttemptIdSchema,
   RunIdSchema,
+  RunRetryViewSchema,
   TaskPurposeSchema,
   ThreadIdSchema,
   ThreadStatusSchema,
@@ -221,6 +222,8 @@ const task = z.object({
     })
     .nullable()
     .optional(),
+  /** Active provider retry on the earliest executing Run, when retrying. */
+  retry: RunRetryViewSchema.nullable().optional(),
 });
 export type PersonalTaskExternalWork = NonNullable<z.infer<typeof task>["externalWork"]>;
 /** A task row plus the full Thread detail view, return hint included. */
