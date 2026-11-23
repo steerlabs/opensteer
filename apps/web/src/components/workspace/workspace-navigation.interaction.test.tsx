@@ -168,6 +168,39 @@ describe("Settings returns to the workspace exactly as it was", () => {
   });
 });
 
+describe("a window opened again returns to the tab the person left", () => {
+  it("waits for the tab list before deciding the remembered tab is gone", async () => {
+    let tabId = "";
+    let arrives = (): boolean => false;
+    await mount((source) => {
+      const place = pageTab(source);
+      tabId = place.key;
+      const snapshot = source.getSnapshot();
+      const scope = { deploymentId: snapshot.deploymentId, userId: snapshot.user!.id };
+      rememberPlace(scope, place.destination);
+      // Connected, but the Home's tab list has not arrived yet, as on a fresh launch.
+      // The mock's snapshot carries its own tab store, as the session client's does.
+      const store = snapshot.tabs as unknown as {
+        readonly rows: ReadonlyMap<string, unknown>;
+        readonly layout: unknown;
+        clear(): void;
+        replaceCurrent(bootstrap: unknown): boolean;
+      };
+      const listed = { tabs: [...store.rows.values()], layout: store.layout, complete: true };
+      store.clear();
+      arrives = () => store.replaceCurrent(listed);
+      return "/";
+    });
+    expect(new URLSearchParams(history.at(-1)!.search).get("panel")).toBeNull();
+    await act(async () => {
+      arrives();
+    });
+    await until("The remembered tab never came back", () =>
+      expect(new URLSearchParams(history.at(-1)!.search).get("tab")).toBe(tabId),
+    );
+  });
+});
+
 describe("selection actions own exactly their axis, one history entry each", () => {
   it("task row: the conversation changes, the place stays, the middle is not remounted", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);

@@ -3697,6 +3697,7 @@ async function executeMockCommand(
     case "tab.organize":
     case "tab.group.update":
     case "tab.group.delete":
+    case "tab.group.close":
       return rpcSuccess(await client.tabCommand(command));
     case "app.rename":
     case "app.start":
@@ -4118,6 +4119,7 @@ export class MockHostClient implements HostClient {
   readonly organizeTabs: TabsClient["organizeTabs"];
   readonly updateTabGroup: TabsClient["updateTabGroup"];
   readonly deleteTabGroup: TabsClient["deleteTabGroup"];
+  readonly closeTabGroup: TabsClient["closeTabGroup"];
   readonly listApps: TabsClient["listApps"];
   readonly getApp: TabsClient["getApp"];
   readonly renameApp: TabsClient["renameApp"];
@@ -4351,6 +4353,7 @@ export class MockHostClient implements HostClient {
     this.organizeTabs = tabs.organizeTabs;
     this.updateTabGroup = tabs.updateTabGroup;
     this.deleteTabGroup = tabs.deleteTabGroup;
+    this.closeTabGroup = tabs.closeTabGroup;
     this.listApps = tabs.listApps;
     this.getApp = tabs.getApp;
     this.renameApp = tabs.renameApp;
@@ -5813,6 +5816,11 @@ class MockHostState {
         catalog.deleteGroup(command.groupId);
         republish();
         return { type: command.type, layout: catalog.layout() };
+      case "tab.group.close": {
+        const result = catalog.closeGroup(command.groupId);
+        republish();
+        return { type: command.type, ...result, layout: catalog.layout() };
+      }
     }
   }
   async #openTab(target: TabTarget, idempotencyKey: string, typed = false): Promise<TabId> {

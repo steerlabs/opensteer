@@ -2543,6 +2543,7 @@ export async function createHostServer(
       case "tab.organize":
       case "tab.group.update":
       case "tab.group.delete":
+      case "tab.group.close":
         return dependencies.tabs.executeCommand(userId, command);
       case "app.rename":
       case "app.start":
