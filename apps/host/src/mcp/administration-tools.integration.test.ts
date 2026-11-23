@@ -1,6 +1,5 @@
 import { createId, DeviceIdSchema, emptyExecutionPreferences, type Thread } from "@opensteer/core";
 import { type OpensteerStore } from "@opensteer/database";
-import { createIntegrationId } from "@opensteer/integration-core";
 import { machineAccessPolicyDefault } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -36,7 +35,6 @@ function fixture() {
     profileId = createId("browserProfile"),
     grantId = crypto.randomUUID();
   const deviceId = DeviceIdSchema.parse(machineId);
-  const connectionId = createIntegrationId("connection");
   const harness = {
     id: harnessInstanceId,
     environmentId,
@@ -177,7 +175,6 @@ function fixture() {
     },
     computer_update: { computerId: machineId, name: "Mac" },
     local_server_remove: { name: "tv" },
-    opensteer_messaging_bridge_update: { bridgeId: connectionId, paused: true },
     browser_profile_update: { profileId, name: "Work" },
   };
   const asNativeRun = () => {
@@ -210,7 +207,6 @@ const mutations = [
   "opensteer_ai_account_update",
   "computer_update",
   "local_server_remove",
-  "opensteer_messaging_bridge_update",
   "browser_profile_update",
 ] as const;
 const reads = ["computer_list", "browser_profile_list", "local_server_list"] as const;
@@ -252,7 +248,7 @@ describe("administration through the MCP service", () => {
     f.setCaller({ ...f.caller(), accessMode: "approval-required" });
     expect(await f.mcp.callTool("token", name, {}, { operationKey: "read" })).toBeDefined();
   });
-  it.each(["opensteer_defaults_read", "opensteer_messaging_bridge_list"])(
+  it.each(["opensteer_defaults_read"])(
     "keeps the person's settings read %s available to Runs only",
     async (name) => {
       const f = fixture();

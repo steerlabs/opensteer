@@ -20,9 +20,8 @@ import {
 import {
   OpensteerStore,
   TriggerStore,
-  threadAllowsPersonalContext,
   resolveResourceAccess,
-  runAllowsPersonalContext,
+  lineageAllowsPersonalContext,
   type AppAuthorization,
   type AppRecord,
   type AppStore,
@@ -748,26 +747,14 @@ export class AppService {
     return async (database) => {
       lifetime.signal?.throwIfAborted();
       await lifetime.checkLive?.();
-      if (actor.kind === "run") {
-        await new OpensteerStore(database).assertActiveGrant(actor.claims);
-        if (!(await runAllowsPersonalContext(database, actor.claims.runId))) throw missing();
-        await this.#options.apps.authorizeRun(runScope(actor.claims), fullAccess, database);
-      }
+      if (actor.kind === "run") await new OpensteerStore(database).assertActiveGrant(actor.claims);
       if (actor.kind === "program") {
         const triggers = new TriggerStore(database);
         if (actor.caller.program.kind === "trigger")
           await triggers.assertActiveExecutionBinding(actor.caller.program);
         else await triggers.assertActiveWatchBinding(actor.caller.program);
-        if (
-          !(await threadAllowsPersonalContext(
-            database,
-            actor.caller.anchor.id,
-            actor.caller.userId,
-          ))
-        )
-          throw missing();
       }
-      const { access } = await resolveResourceAccess(database, {
+      const { access, execution } = await resolveResourceAccess(database, {
         ownerUserId: ownerOf(actor),
         explicitAccess: "read-write",
         // Mini-apps have no selected resource kind; only unlimited lineage reaches them.
@@ -780,6 +767,15 @@ export class AppService {
               ? { agentBindingId: actor.caller.key }
               : { kind: "person" }),
       });
+      // Work from a bridge anyone may speak to has no apps of the person's: as if none existed.
+      // Read from the connection row the admission just read; the person's own Run reads nothing.
+      if (
+        (actor.kind === "run" || actor.kind === "program") &&
+        !lineageAllowsPersonalContext(execution.agentConnection)
+      )
+        throw missing();
+      if (actor.kind === "run")
+        await this.#options.apps.authorizeRun(runScope(actor.claims), fullAccess, database);
       if (!access || (required === "read-write" && access !== "read-write"))
         throw new OpensteerError({
           code: "forbidden",

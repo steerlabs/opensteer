@@ -14,6 +14,7 @@ import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HostRelayAuthenticator } from "../passkeys/host-relay.js";
+import { BrowserRuntimeError } from "../errors.js";
 import {
   PublicKeyCredentialRequestOptionsJSONSchema,
   serializeClientData,
@@ -302,6 +303,302 @@ describe("BrowserController", () => {
     }
   });
 
+  it("binds a viewer that subscribes while its tab wakes to the tab it wakes into, never not_found (V7)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      await ledger.sleep(id, () => null);
+      // The wake is held while its new page is made.
+      const made = Promise.withResolvers<void>();
+      const createPage = context.createPage.bind(context);
+      vi.spyOn(context, "createPage").mockImplementation(async (...args) => {
+        await made.promise;
+        return createPage(...args);
+      });
+      const waking = ledger.wake(id);
+      await vi.waitFor(() => expect(ledger.waking(id)).not.toBeNull());
+      const before = sink.messages.length;
+      const subscribed = controller.handle({ type: "stream.subscribe", surfaceId: id });
+      made.resolve();
+      await waking;
+      await subscribed;
+      expect(
+        sink.messages
+          .slice(before)
+          .filter((message) => message.type === "browser.error")
+          .map((message) => JSON.stringify(message)),
+      ).toEqual([]);
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("waits for the page's load on every try of an agent's resume, and ends the wait with its operation (V3)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    const resume = async (extra: Record<string, unknown> = {}) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        ...extra,
+        command: {
+          method: browserHostMethods.resumeTab,
+          parameters: { surfaceId: id, loaded: true },
+        },
+      } as never);
+      return reply(requestId);
+    };
+    /** The woken page's main frame starts and stops loading, as Chromium reports it. */
+    const finishLoad = async () => {
+      const woken = ledger.binding(id)!.page as unknown as FakePage;
+      const frameId = await woken.targetId();
+      woken.cdpSession.emit("Page.frameNavigated", {
+        frame: { id: frameId, url: "https://example.test/", loaderId: "woken" },
+      });
+      woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+      woken.cdpSession.emit("Page.frameStoppedLoading", { frameId });
+      await flushMicrotasks();
+    };
+    try {
+      // First try wakes the sleeping tab: its page is still loading at the bound, and it is said.
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const loaded = vi.spyOn(ledger, "documentLoaded").mockResolvedValueOnce("loading");
+      expect(await resume()).toMatchObject({
+        type: "cdp.error",
+        error: { message: "This tab is awake, but its page is still loading. Try again shortly." },
+      });
+      // Z1: the retry waits for that same load, though the tab is awake now: the runtime
+      // remembers the wake, whatever anyone last heard of the tab. It is told the page reloaded.
+      expect(ledger.stateOf(id)).toBe("live");
+      expect(ledger.wakeUnfinished(id)).toBe(true);
+      // The woken page's load finishes while the retry waits, as its page says.
+      loaded.mockImplementationOnce(async () => {
+        await finishLoad();
+        return "loaded";
+      });
+      expect(await resume()).toMatchObject({
+        type: "cdp.result",
+        result: { surfaceId: id, reloaded: true },
+      });
+      expect(ledger.wakeUnfinished(id)).toBe(false);
+      expect(loaded).toHaveBeenCalledTimes(2);
+      // Once its load was seen, the awake tab is handed over as it is, with no wait.
+      expect(await resume()).toMatchObject({
+        type: "cdp.result",
+        result: { surfaceId: id, reloaded: false },
+      });
+      expect(loaded).toHaveBeenCalledTimes(2);
+      // A tab that went back to sleep under the wait is said, never handed over stale.
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      loaded.mockResolvedValueOnce("asleep");
+      expect(await resume()).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "target-suspended" },
+      });
+      // Stop or Disconnect cancels the wait: it ends at once with the operation.
+      loaded.mockImplementationOnce(
+        (_id, _bound, signal) =>
+          new Promise((_resolve, reject) =>
+            signal?.addEventListener("abort", () =>
+              reject(
+                new BrowserRuntimeError("conflict", "The browser command was cancelled.", {
+                  reason: "browser-command-cancelled",
+                }),
+              ),
+            ),
+          ),
+      );
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const requestId = randomUUID();
+      const waiting = controller.handle({
+        type: "cdp.command",
+        requestId,
+        replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 },
+        command: {
+          method: browserHostMethods.resumeTab,
+          parameters: { surfaceId: id, loaded: true },
+        },
+      });
+      await vi.waitFor(() => expect(loaded).toHaveBeenCalledTimes(4));
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command: {
+          method: browserHostMethods.cancelScriptCommand,
+          parameters: { requestId },
+        },
+      });
+      await waiting;
+      expect(reply(requestId)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "browser-command-cancelled" },
+      });
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  /*
+   * Z4: whether a wake's load is unfinished belongs to the ledger, set when the wake begins and
+   * ended by the events that end it. (A) a person's wake, its load seen to finish, then the tab
+   * navigated elsewhere: an agent's bind later waits for nothing and is told nothing reloaded.
+   * (B) an agent's wake cancelled during the wake: the next agent's bind still waits for that
+   * wake's load, and is told the page reloaded.
+   */
+  it.each(["a person's wake that loaded long ago", "an agent's wake cancelled under it"] as const)(
+    "decides an agent's load wait from the wake itself: %s (Z4)",
+    async (sequence) => {
+      const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+      await controller.start();
+      const id = ledger.snapshot()[0]!.id;
+      const reply = (requestId: string) =>
+        sink.messages.findLast(
+          (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+        );
+      const resume = (requestId: string, loaded: boolean) =>
+        controller.handle({
+          type: "cdp.command",
+          requestId,
+          replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 },
+          command: {
+            method: browserHostMethods.resumeTab,
+            parameters: { surfaceId: id, ...(loaded ? { loaded: true } : {}) },
+          },
+        });
+      const frame = async () => {
+        const woken = ledger.binding(id)!.page as unknown as FakePage;
+        return { woken, frameId: await woken.targetId() };
+      };
+      try {
+        expect(await ledger.sleep(id, () => null)).toBe(true);
+        const loaded = vi.spyOn(ledger, "documentLoaded");
+        if (sequence === "a person's wake that loaded long ago") {
+          await resume(randomUUID(), false);
+          const { woken, frameId } = await frame();
+          woken.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: frameId, url: "https://example.test/", loaderId: "woken" },
+          });
+          woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+          woken.cdpSession.emit("Page.frameStoppedLoading", { frameId });
+          // Minutes later the person navigates it elsewhere; that page is still loading.
+          woken.cdpSession.emit("Page.frameNavigated", {
+            frame: { id: frameId, url: "https://example.test/other", loaderId: "other" },
+          });
+          woken.cdpSession.emit("Page.frameStartedLoading", { frameId });
+          await flushMicrotasks();
+          const requestId = randomUUID();
+          await resume(requestId, true);
+          expect(reply(requestId)).toMatchObject({
+            type: "cdp.result",
+            result: { surfaceId: id, reloaded: false },
+          });
+          expect(loaded).not.toHaveBeenCalled();
+          return;
+        }
+        const wake = ledger.wake.bind(ledger);
+        const held = Promise.withResolvers<void>();
+        const waking = vi.spyOn(ledger, "wake").mockImplementationOnce(async (surfaceId) => {
+          await held.promise;
+          return wake(surfaceId);
+        });
+        const first = randomUUID();
+        const answered = resume(first, true);
+        await vi.waitFor(() => expect(waking).toHaveBeenCalledOnce());
+        await controller.handle({
+          type: "cdp.command",
+          requestId: randomUUID(),
+          command: {
+            method: browserHostMethods.cancelScriptCommand,
+            parameters: { requestId: first },
+          },
+        });
+        await answered;
+        expect(reply(first)).toMatchObject({ error: { reason: "browser-command-cancelled" } });
+        held.resolve();
+        await vi.waitFor(() => expect(ledger.stateOf(id)).toBe("live"));
+        // The next agent's bind waits for that wake's load, and is told the page reloaded.
+        loaded.mockResolvedValueOnce("loaded");
+        const second = randomUUID();
+        await resume(second, true);
+        expect(loaded).toHaveBeenCalledOnce();
+        expect(reply(second)).toMatchObject({
+          type: "cdp.result",
+          result: { surfaceId: id, reloaded: true },
+        });
+      } finally {
+        await controller.close();
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
+
+  it("ends an agent's resume at once when its operation is cancelled during the wake, and starts no load wait after it (Z2)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const reply = (requestId: string) =>
+      sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const wake = ledger.wake.bind(ledger);
+      const held = Promise.withResolvers<void>();
+      const waking = vi.spyOn(ledger, "wake").mockImplementationOnce(async (surfaceId) => {
+        await held.promise;
+        return wake(surfaceId);
+      });
+      const loaded = vi.spyOn(ledger, "documentLoaded");
+      const requestId = randomUUID();
+      const answered = controller.handle({
+        type: "cdp.command",
+        requestId,
+        replyBudget: { maxBytes: 4096, maxDepth: 8, maxEntries: 64 },
+        command: {
+          method: browserHostMethods.resumeTab,
+          parameters: { surfaceId: id, loaded: true },
+        },
+      });
+      await vi.waitFor(() => expect(waking).toHaveBeenCalledOnce());
+      // Stop or Disconnect while the tab wakes.
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command: { method: browserHostMethods.cancelScriptCommand, parameters: { requestId } },
+      });
+      await vi.waitFor(
+        () =>
+          expect(reply(requestId)).toMatchObject({
+            type: "cdp.error",
+            error: { reason: "browser-command-cancelled" },
+          }),
+        { timeout: 1_000, interval: 10 },
+      );
+      await answered;
+      // The wake goes on for anyone else; nothing of this command starts after it.
+      held.resolve();
+      await vi.waitFor(() => expect(ledger.stateOf(id)).toBe("live"));
+      await flushMicrotasks();
+      expect(loaded).not.toHaveBeenCalled();
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("lists suspended tabs within a byte budget, resumes explicitly, and closes by their old target", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
@@ -343,9 +640,10 @@ describe("BrowserController", () => {
         type: "cdp.result",
         result: { tabs: [{ surfaceId: id, targetId: null, state: "suspended" }], nextCursor: null },
       });
+      // V4: this tab slept by closing, so its wake opened it again at its address, and says so.
       expect(await command(browserHostMethods.resumeTab, { surfaceId: id })).toMatchObject({
         type: "cdp.result",
-        result: { surfaceId: id, targetId: expect.any(String), reloaded: true },
+        result: { surfaceId: id, targetId: expect.any(String), reloaded: true, reopened: true },
       });
       expect(create).toHaveBeenCalledTimes(1);
       expect(await command("Target.attachToTarget", { targetId, flatten: true })).toMatchObject({

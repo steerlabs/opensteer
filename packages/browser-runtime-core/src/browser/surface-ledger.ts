@@ -14,6 +14,7 @@ import {
 } from "@opensteer/protocol/browser";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { lastResortOnly } from "./page-ownership.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncMutex } from "../async.js";
@@ -80,8 +81,17 @@ interface SurfaceLedgerOptions {
    * Makes a page this ledger registers reachable by the session's agents. It
    * runs before the page is announced; throwing refuses the page.
    */
-  claimTarget?: (targetId: string, openerId?: string) => string | undefined | void;
-  releaseTarget?: (targetId: string) => void;
+  claimTarget?: (
+    targetId: string,
+    openerId?: string,
+    /**
+     * Only for this ledger's own wake of a tab it put to sleep, from its own record: the slept
+     * target, and whether the tab itself woke (not a fresh page opened at its address).
+     */
+    woke?: { readonly from: string; readonly itself: boolean },
+  ) => string | undefined | void;
+  /** `asleep`: the ledger put the tab to sleep; its target ends, the tab does not. */
+  releaseTarget?: (targetId: string, asleep?: boolean) => void;
   /** The size the session starts at, until the person's view gives it one. */
   initialViewport?: Viewport;
   rootPages?: readonly BrowserPage[];
@@ -173,6 +183,19 @@ export interface TabRecord {
   lastPolicyTouchAt?: number;
   unrestorable: boolean;
   restore: { url: string; engine: unknown | null; bytes: number } | null;
+  /** V1: why the last sleep of this tab was refused, for the last resort to weigh. */
+  lastRefusal?: SleepBlocker;
+  /**
+   * TS7: when the last wake opened this tab again at its address, so what it held is gone; the
+   * person is told, as after a browser restart. Cleared when the tab next sleeps.
+   */
+  reopenedAt?: number;
+  /**
+   * Z4: a wake began and its page has not been seen to finish loading. Set when the wake begins,
+   * before any caller can give up; ended by the tab's next finished load at its address (its
+   * woken document, or one it navigated to since), a sleep, or the tab's close.
+   */
+  wakeLoad?: true;
 }
 
 export interface LivePage {
@@ -448,6 +471,10 @@ export class SurfaceLedger {
   faviconOf(id: BrowserSurfaceId): string | null {
     return this.records.get(id)?.favicon ?? null;
   }
+  /** V7: the tab's wake in flight, for a viewer to be bound to the tab it wakes into. */
+  waking(id: BrowserSurfaceId): Promise<void> | null {
+    return this.records.get(id)?.lease.waking ?? null;
+  }
   demand(id: BrowserSurfaceId): void {
     this.records.get(id)?.lease.demand();
   }
@@ -494,6 +521,15 @@ export class SurfaceLedger {
   untabbedPages(): number {
     return this.pages.untabbed(this.session);
   }
+  releaseRestore(record: TabRecord): void {
+    if (!record.restore || record.restore.engine == null) return;
+    const engine = record.restore.engine;
+    record.restore.engine = null;
+    record.restore.bytes = 0;
+    // It can no longer wake as itself: its place in any lineage ends (run 12).
+    if (!record.live) this.releaseTarget?.(record.lastTargetId);
+    void Promise.resolve(this.context.releaseRestore?.(engine)).catch(() => undefined);
+  }
   /** The sleeper's reason for skipping a due page, or null when nothing blocks it. */
   noteSleepBlocker(id: BrowserSurfaceId, reason: SleepBlocker | null): void {
     const page = this.records.get(id)?.live?.page;
@@ -508,6 +544,8 @@ export class SurfaceLedger {
   async sleep(
     id: BrowserSurfaceId,
     blocked: (record: TabRecord) => SleepBlocker | null,
+    /** V1: the out-of-memory last resort, where a last-resort protection gives way. */
+    options: { readonly lastResort?: boolean } = {},
   ): Promise<boolean> {
     const record = this.liveRecord(id);
     if (!record) {
@@ -517,8 +555,14 @@ export class SurfaceLedger {
     const live = record.live;
     const refused = (reason: SleepBlocker) => {
       this.pages.noteSleepRefusal(live.page, reason);
+      record.lastRefusal = reason;
       return false;
     };
+    // V1: a page's own protection, as this sleep weighs it (a last-resort one gives way only to
+    // the last resort).
+    const holds = (reason: SleepBlocker | null) =>
+      reason && !(options.lastResort && lastResortOnly(reason)) ? reason : null;
+    let thaw: (() => Promise<void>) | undefined;
     if (this.closing) return refused("closing");
     const precheck = blocked(record);
     if (precheck) return refused(precheck);
@@ -527,7 +571,7 @@ export class SurfaceLedger {
     let stage: "protection" | "capture" = "protection";
     let slept = false;
     try {
-      const protection = await this.engineProtection(record);
+      const protection = holds(await this.engineProtection(record));
       if (protection) return refused(protection);
       stage = "capture";
       const engine = await withTimeout(
@@ -542,8 +586,13 @@ export class SurfaceLedger {
         record.documentId === documentId
       )
         record.unrestorable = true;
+      // V1: decided on a page that can no longer change: frozen first, then every protection is
+      // read again on it; a sleep that does not go ahead thaws it.
+      thaw = await withTimeout(live.page.freeze?.() ?? Promise.resolve(undefined), 2_000, {
+        timeoutError: () => new Error("Tab freeze timed out."),
+      });
       stage = "protection";
-      const finalProtection = await this.engineProtection(record);
+      const finalProtection = holds(await this.engineProtection(record));
       const late = record.lease.demanded
         ? "demanded"
         : record.lease.state !== "sleeping"
@@ -557,14 +606,22 @@ export class SurfaceLedger {
                 : (blocked(record) ??
                   finalProtection ??
                   (record.unrestorable ? "unrestorable" : null));
-      if (late) return refused(late);
+      if (late) {
+        await thaw?.().catch(() => undefined);
+        return refused(late);
+      }
+      delete record.lastRefusal;
       this.pages.noteSleepRefusal(live.page, null);
       record.restore = {
         url: record.url,
         engine,
         bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
       };
-      this.detachLive(record);
+      delete record.reopenedAt;
+      delete record.wakeLoad;
+      // Only a tab that can wake as itself keeps its place in a lineage (run 12); without the
+      // helper a sleep closes the tab, and its closed target is kept nowhere (finding 10).
+      this.detachLive(record, engine != null && live.page.sleepsAsItself?.() !== false);
       record.lease.endSleep(true);
       this.pages.destroy(live.page, "slept");
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
@@ -574,6 +631,7 @@ export class SurfaceLedger {
         record.unrestorable = true;
         if (record.restore) record.restore = { url: record.url, engine: null, bytes: 0 };
       }
+      await thaw?.().catch(() => undefined);
       return refused(`${stage}-failed`);
     } finally {
       if (record.lease.state === "sleeping") record.lease.endSleep(false);
@@ -602,90 +660,166 @@ export class SurfaceLedger {
   async wake(id: BrowserSurfaceId): Promise<SurfaceBinding> {
     const record = this.records.get(id);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-    let resumed = false;
-    await record.lease.resume(async () => {
-      // No new page while an earlier one may live; asking again drives its cleanup.
-      if (!(await this.pages.tabSettled(this.session, id, "wake-failed", pageCloseWaitMs)))
-        throw stillClosing();
-      return this.creationLock.run(async () => {
-        if (this.records.get(id) !== record || record.lease.state === "closing")
-          throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-        const restore = record.restore;
-        if (!restore || this.closing)
-          throw new BrowserRuntimeError("not_found", "The browser session closed.");
-        await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
-          timeoutError: () =>
-            new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
-              retryable: true,
+    if (!record.live && (record.lease.state === "suspended" || record.lease.state === "sleeping"))
+      record.wakeLoad = true;
+    await record.lease.resume(
+      async () => {
+        // No new page while an earlier one may live; asking again drives its cleanup.
+        if (!(await this.pages.tabSettled(this.session, id, "wake-failed", pageCloseWaitMs)))
+          throw stillClosing();
+        return this.creationLock.run(async () => {
+          if (this.records.get(id) !== record || record.lease.state === "closing")
+            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+          const restore = record.restore;
+          if (!restore || this.closing)
+            throw new BrowserRuntimeError("not_found", "The browser session closed.");
+          await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
+            timeoutError: () =>
+              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                retryable: true,
+              }),
+          });
+          const created = Promise.withResolvers<void>();
+          this.creatingPage = created.promise;
+          let page: BrowserPage | undefined;
+          const creation = this.pages.create(this.session, id, "wake-failed", (own, signal) =>
+            this.context.createPage({
+              ...(restore.engine === null ? {} : { restore: restore.engine }),
+              own,
+              signal,
             }),
-        });
-        const created = Promise.withResolvers<void>();
-        this.creatingPage = created.promise;
-        let page: BrowserPage | undefined;
-        const creation = this.pages.create(this.session, id, "wake-failed", (own) =>
-          this.context.createPage({
-            ...(restore.engine === null ? {} : { restore: restore.engine }),
-            own,
-          }),
-        );
-        try {
-          page = await withTimeout(creation.page, 18_000, {
-            timeoutError: () =>
-              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
-                retryable: true,
-              }),
-          });
-          await withTimeout(this.registerOnce(page, false, undefined, id, record), 18_000, {
-            timeoutError: () =>
-              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
-                retryable: true,
-              }),
-          });
-          if (this.records.get(id) !== record || this.closing)
-            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-          if (restore.engine === null && isLive(record))
-            await this.navigateLive(record, restore.url);
-          if (this.records.get(id) !== record || !record.live)
-            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-          record.restore = null;
-          record.usedAt = Date.now();
-          resumed = true;
-        } catch (error) {
-          // The tab lets go first, so the failed page's confirmation finds no binding.
-          if (isLive(record)) this.detachLive(record);
-          else this.releaseTarget?.(record.lastTargetId);
-          creation.abandon();
-          if (record.restore) {
-            record.restore.engine = null;
-            record.restore.bytes = 0;
-          }
-          if (error instanceof BrowserRuntimeError) throw error;
-          throw new BrowserRuntimeError(
-            "conflict",
-            "Resuming this tab failed. Retry to reopen its address.",
-            { cause: error, retryable: true },
           );
-        } finally {
-          this.creatingPage = null;
-          created.resolve();
-        }
-      });
-    });
+          try {
+            page = await withTimeout(creation.page, 18_000, {
+              timeoutError: () =>
+                new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                  retryable: true,
+                }),
+            });
+            await withTimeout(this.registerOnce(page, false, undefined, id, record), 18_000, {
+              timeoutError: () =>
+                new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                  retryable: true,
+                }),
+            });
+            if (this.records.get(id) !== record || this.closing)
+              throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+            if ((restore.engine === null || page.openedFresh) && isLive(record)) {
+              await this.navigateLive(record, restore.url);
+              record.reopenedAt = Date.now();
+            }
+            if (this.records.get(id) !== record || !record.live)
+              throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+            record.restore = null;
+            record.usedAt = Date.now();
+          } catch (error) {
+            // The tab lets go first, so the failed page's confirmation finds no binding.
+            if (isLive(record)) this.detachLive(record);
+            else this.releaseTarget?.(record.lastTargetId);
+            creation.abandon();
+            if (record.restore) {
+              const stale = record.restore.engine;
+              record.restore.engine = null;
+              record.restore.bytes = 0;
+              if (stale != null) {
+                void Promise.resolve(this.context.releaseRestore?.(stale)).catch(() => undefined);
+              }
+            }
+            if (error instanceof BrowserRuntimeError) throw error;
+            throw new BrowserRuntimeError(
+              "conflict",
+              "Resuming this tab failed. Retry to reopen its address.",
+              { cause: error, retryable: true },
+            );
+          } finally {
+            this.creatingPage = null;
+            created.resolve();
+          }
+        });
+      },
+      () => {
+        // V2: announced once the lease is live, inside the one resume every caller waits on: the
+        // announcement says live, and each caller returns after it.
+        const woke = this.binding(id);
+        if (woke) this.emit({ type: "changed", change: "updated", surface: woke.surface });
+      },
+    );
     const binding = this.binding(id);
     if (!binding || record.lease.state === "closing")
       throw new BrowserRuntimeError("not_found", "The browser tab closed.");
-    if (resumed) this.emit({ type: "changed", change: "updated", surface: binding.surface });
     return binding;
+  }
+
+  /**
+   * TS11: true once the tab's own document has loaded (its main frame is not loading, no
+   * navigation is pending, and the document is complete at an address other than the blank one a
+   * new page starts at); false past `boundMs`. A tab that closes meanwhile throws.
+   */
+  async documentLoaded(
+    id: BrowserSurfaceId,
+    boundMs: number,
+    signal?: AbortSignal,
+  ): Promise<"loaded" | "loading" | "asleep"> {
+    const deadline = Date.now() + boundMs;
+    while (Date.now() < deadline) {
+      // V3: the wait ends with the operation it was started for.
+      if (signal?.aborted)
+        throw new BrowserRuntimeError("conflict", "The browser command was cancelled.", {
+          reason: "browser-command-cancelled",
+        });
+      const record = this.records.get(id);
+      if (!record || record.lease.state === "closing")
+        throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+      const live = record.live;
+      // V3: a tab that went back to sleep is not waited for: it is said at once.
+      if (!live && (record.lease.state === "suspended" || record.lease.state === "sleeping"))
+        return "asleep";
+      // A page showing a dialog is a running document, and its scripts wait on the answer: it
+      // cannot say its ready state until the dialog closes, and the agent must see it to answer.
+      if (live?.dialog) return "loaded";
+      if (live && !live.loading && live.pendingNavigations.size === 0) {
+        const read = (await withTimeout(
+          live.cdp.send("Runtime.evaluate", {
+            expression: "[document.readyState, location.href]",
+            returnByValue: true,
+          }),
+          1_000,
+          { timeoutError: () => new Error("The page did not answer in time.") },
+        ).catch(() => null)) as { result?: { value?: unknown } } | null;
+        const [readyState, href] = Array.isArray(read?.result?.value) ? read.result.value : [];
+        if (
+          readyState === "complete" &&
+          (href !== "about:blank" || record.url === "about:blank") &&
+          record.live === live
+        ) {
+          delete record.wakeLoad;
+          return "loaded";
+        }
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 100);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+    }
+    return "loading";
   }
 
   /**
    * The tab lets go of its live page now: no lookup, operation or event
    * reaches it again. Native cleanup of the page is its owner's.
    */
-  private detachLive(record: SurfaceRecord): void {
+  private detachLive(record: SurfaceRecord, asleep = false): void {
     const live = record.live;
     this.pageIds.delete(live.page);
-    this.releaseTarget?.(live.targetId);
+    if (asleep) this.releaseTarget?.(live.targetId, true);
+    else this.releaseTarget?.(live.targetId);
     (record as TabRecord).live = null;
     void this.disposeLive(live).catch(() => undefined);
   }
@@ -713,6 +847,7 @@ export class SurfaceLedger {
       canGoBack: record.live?.navigation?.canGoBack ?? false,
       canGoForward: record.live?.navigation?.canGoForward ?? false,
       sizedByAgent: record.agentMetrics !== null,
+      ...(record.reopenedAt ? { reopenedAt: record.reopenedAt } : {}),
     };
   }
 
@@ -953,6 +1088,11 @@ export class SurfaceLedger {
   }
 
   /** The JavaScript dialog open on one page, if any, until it is answered. */
+  /** Z4: whether a wake of this tab began and its page has not yet been seen to load. */
+  wakeUnfinished(surfaceId: BrowserSurfaceId): boolean {
+    return this.records.get(surfaceId)?.wakeLoad === true;
+  }
+
   dialogOf(surfaceId: BrowserSurfaceId): BrowserDialog | null {
     const dialog = this.liveRecord(surfaceId)?.live.dialog;
     if (!dialog || dialog.answering) return null;
@@ -1272,7 +1412,7 @@ export class SurfaceLedger {
       this.session,
       options.surfaceId ?? null,
       "open-failed",
-      (own) => this.context.createPage({ own }),
+      (own, signal) => this.context.createPage({ own, signal }),
     );
     try {
       page = await withTimeout(creation.page, 18_000, {
@@ -1351,6 +1491,8 @@ export class SurfaceLedger {
       !(await this.pages.tabSettled(this.session, surfaceId, "host-closed", tabCloseWaitMs, true))
     )
       throw stillClosing("This tab is still closing.");
+    if (record && !(await this.releaseSleepingRestore(record, tabCloseWaitMs)))
+      throw stillClosing("This tab is still closing.");
     if (record) await this.remove(record);
   }
 
@@ -1367,11 +1509,15 @@ export class SurfaceLedger {
     const record = this.records.get(surfaceId);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
     record.lease.close();
+    // As a durable close: its place in any lineage ends now, not once the close is confirmed.
+    this.releaseTarget?.(record.lastTargetId);
     const live = record.live;
     // The row stays listed until confirmation; no binding, lookup or attach reaches the page.
     for (const page of this.pages.tabPages(this.session, surfaceId))
       this.pages.destroy(page, reason);
     if (live && !(await this.pages.confirmed(live.page, tabCloseWaitMs)))
+      throw stillClosing("This tab is still closing.");
+    if (!(await this.releaseSleepingRestore(record, tabCloseWaitMs)))
       throw stillClosing("This tab is still closing.");
     await this.remove(record);
   }
@@ -1424,6 +1570,46 @@ export class SurfaceLedger {
     this.agentCommandListeners.clear();
   }
 
+  private async releaseSleepingRestore(record: TabRecord, timeoutMs: number): Promise<boolean> {
+    const engine = record.restore?.engine;
+    if (engine == null) return true;
+    const release = this.context.releaseRestore;
+    if (!release) {
+      if (record.restore) {
+        record.restore.engine = null;
+        record.restore.bytes = 0;
+      }
+      return true;
+    }
+    try {
+      const outcome = await withTimeout(
+        Promise.resolve(release.call(this.context, engine)),
+        timeoutMs,
+        { timeoutError: () => new Error("Restore cleanup is still running.") },
+      );
+      const released = outcome !== false;
+      if (released && record.restore?.engine === engine) {
+        record.restore.engine = null;
+        record.restore.bytes = 0;
+      }
+      return released;
+    } catch {
+      return false;
+    }
+  }
+
+  private async releaseSleepingRestores(
+    records: readonly TabRecord[],
+    confirm: boolean,
+  ): Promise<boolean> {
+    const pending = records.filter((record) => record.restore?.engine != null);
+    if (pending.length === 0) return true;
+    const results = await Promise.all(
+      pending.map((record) => this.releaseSleepingRestore(record, pageCloseWaitMs)),
+    );
+    return confirm ? results.every(Boolean) : true;
+  }
+
   /**
    * Ends every page this session holds, tabs and pages not yet admitted alike;
    * pages the engine has not confirmed by the bound stay owned and retried.
@@ -1433,13 +1619,17 @@ export class SurfaceLedger {
     const ended = withTimeout(this.pages.endSession(this.session, reason), pageCloseWaitMs, {
       timeoutError: () => new Error("Pages are still closing."),
     });
+    const restores = this.releaseSleepingRestores([...this.records.values()], confirm);
     if (confirm) {
-      const [_, confirmed] = await Promise.all([
+      const [_, confirmed, restoresConfirmed] = await Promise.all([
         ended,
         this.pages.endOtherPages(this.session, new Set(), pageCloseWaitMs, reason),
+        restores,
       ]);
-      if (!confirmed) throw new Error("Pages are still closing.");
-    } else await ended.catch(() => undefined);
+      if (!confirmed || !restoresConfirmed) throw new Error("Pages are still closing.");
+    } else {
+      await Promise.all([ended.catch(() => undefined), restores.catch(() => undefined)]);
+    }
   }
 
   /** A pooled park keeps every page; a page this session opens meanwhile is ended and reported. */
@@ -1450,16 +1640,20 @@ export class SurfaceLedger {
 
   async suspendForRelayRestart(): Promise<void> {
     this.tearingDown = true;
+    const records = [...this.records.values()];
     const keep = new Set(
-      [...this.records.values()]
+      records
         .filter((record): record is SurfaceRecord => isLive(record) && record.origin === "person")
         .map((record) => record.live.page),
     );
-    if (!(await this.pages.endOtherPages(this.session, keep, pageCloseWaitMs)))
-      throw new Error("Agent pages are still closing.");
+    const agentRecords = records.filter((record) => record.origin === "agent");
+    const [confirmed, restoresConfirmed] = await Promise.all([
+      this.pages.endOtherPages(this.session, keep, pageCloseWaitMs),
+      this.releaseSleepingRestores(agentRecords, true),
+    ]);
+    if (!confirmed || !restoresConfirmed) throw new Error("Agent pages are still closing.");
     // A copy: removing a record awaits, and records can be added meanwhile.
-    const records = [...this.records.values()];
-    for (const record of records) if (record.origin === "agent") await this.remove(record);
+    for (const record of agentRecords) await this.remove(record);
   }
 
   resumeAfterRelayRestart(): string[] {
@@ -1575,7 +1769,22 @@ export class SurfaceLedger {
         const size = requestedViewport ?? this.startingSize(opener);
         const openerId = opener ? this.pageIds.get(opener) : undefined;
         const openerRecord = openerId ? this.liveRecord(openerId) : undefined;
-        const creatorAttachmentId = this.claimTarget?.(targetId, openerRecord?.lastTargetId);
+        // A wake of a tab this ledger put to sleep: the woken target follows the slept one, by
+        // this record alone, only when the tab itself woke with its state; a page opened at its
+        // address instead is a new page (run 12). A Mac restore from the state the runtime
+        // captured (history and session storage into a view it made) is the tab itself, on purpose.
+        const woke =
+          waking && waking.restore
+            ? {
+                from: waking.lastTargetId,
+                itself: waking.restore.engine != null && page.openedFresh !== true,
+              }
+            : undefined;
+        const creatorAttachmentId = this.claimTarget?.(
+          targetId,
+          openerRecord?.lastTargetId,
+          ...(woke ? [woke] : []),
+        );
         const answersPerson =
           openerRecord?.userActivity?.kind === "click" &&
           openerRecord.userActivitySequence > openerRecord.agentSequence;
@@ -2146,6 +2355,7 @@ export class SurfaceLedger {
 
   private async removeOnce(record: TabRecord): Promise<void> {
     let disposing: LivePage | null = null;
+    let releasedRestore: unknown = null;
     await this.viewportMutex.run(async () => {
       if (!this.records.delete(record.id)) return;
       this.surfaceIdsByTarget.delete(record.lastTargetId);
@@ -2153,6 +2363,11 @@ export class SurfaceLedger {
       this.adoptedTargetIds.delete(record.lastTargetId);
       this.releaseTarget?.(record.lastTargetId);
       if (record.live) this.pageIds.delete(record.live.page);
+      if (!this.tearingDown && record.restore?.engine != null) {
+        releasedRestore = record.restore.engine;
+        record.restore.engine = null;
+        record.restore.bytes = 0;
+      }
       const wasActive = this.activeId === record.id;
       if (wasActive) this.activeId = null;
       disposing = record.live;
@@ -2176,6 +2391,15 @@ export class SurfaceLedger {
       await withTimeout(this.disposeLive(disposing), pageCloseWaitMs, {
         timeoutError: () => new Error("Page cleanup is still running."),
       }).catch(() => undefined);
+    if (releasedRestore != null) {
+      await withTimeout(
+        Promise.resolve(this.context.releaseRestore?.(releasedRestore)),
+        pageCloseWaitMs,
+        {
+          timeoutError: () => new Error("Restore cleanup is still running."),
+        },
+      ).catch(() => undefined);
+    }
   }
 
   /** The engine confirmed an incarnation gone; only the tab's current one ends the tab. */
@@ -2238,6 +2462,10 @@ export class SurfaceLedger {
     )
       return;
     record.live.loading = loading;
+    // Z4: a finished load at the tab's address ends its wake's wait (the blank page a fresh wake
+    // starts on is not it).
+    if (!loading && record.wakeLoad && !record.live.committedUrl.startsWith("about:blank"))
+      delete record.wakeLoad;
     if (!loading) {
       this.touch(record.id);
       void this.refreshNavigation(record).catch(() => undefined);

@@ -25,7 +25,7 @@ describe("Channel connection supervisor", () => {
         },
       },
       manifest: slackChannelProviderManifest,
-      outbound: { reconcile: vi.fn(), send: vi.fn() },
+      outbound: { send: vi.fn() },
     };
     const supervisor = new ChannelConnectionSupervisor(
       host(),
@@ -83,7 +83,7 @@ it("forgets earlier failures once a connection proves itself", async () => {
       },
     },
     manifest: slackChannelProviderManifest,
-    outbound: { reconcile: vi.fn(), send: vi.fn() },
+    outbound: { send: vi.fn() },
   };
   const supervisor = new ChannelConnectionSupervisor(host(), new ChannelAdapterRegistry([adapter]));
   await supervisor.opened(1);

@@ -31,7 +31,7 @@ export function recordThreadVisit(
       .where("removedAt", "is", null)
       .limit(1)
       .executeTakeFirst();
-    if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+    if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
     const before = await unreadTaskContribution(tx, thread.id);
     const now = executionDate(tx);
     const visitedAt = new Date(Math.min(Date.parse(input.visitedAt), now.getTime()));

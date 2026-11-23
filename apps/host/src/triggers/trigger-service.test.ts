@@ -63,7 +63,7 @@ describe("TriggerService", () => {
     const anchorThreadId = createId("thread");
     const service = new TriggerService({
       threads: {
-        getThreadForOwner: async () => ({
+        readTask: async () => ({
           environmentId: createId("environment"),
         }),
       } as never,
@@ -139,7 +139,7 @@ describe("TriggerService", () => {
     }));
     const service = new TriggerService({
       threads: {
-        getThreadForOwner: async () => ({ environmentId: createId("environment") }) as never,
+        readTask: async () => ({ environmentId: createId("environment") }) as never,
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
@@ -202,7 +202,7 @@ describe("TriggerService", () => {
     }));
     const service = new TriggerService({
       threads: {
-        getThreadForOwner: async () => ({ environmentId: createId("environment") }) as never,
+        readTask: async () => ({ environmentId: createId("environment") }) as never,
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,

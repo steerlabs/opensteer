@@ -158,7 +158,8 @@ describe("startHarnessAuthentication", () => {
 
     await harness.settle();
 
-    expect(harness.error).toHaveBeenCalledWith(expect.stringContaining("Host unreachable"));
+    // A transport failure's own text is never shown: the app says it in its words.
+    expect(harness.error).toHaveBeenCalledWith("Opensteer couldn’t complete that action.");
   });
 
   it("goes quiet after stop, so a closed dialog stops touching the Host", async () => {

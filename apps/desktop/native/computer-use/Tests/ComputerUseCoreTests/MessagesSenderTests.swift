@@ -244,6 +244,22 @@ final class MessagesSenderTests: XCTestCase {
       messagesSendOutcome(OsascriptOutcome(exitCode: 1, stderr: "(-1701)"))?.message.contains("-1701") ?? false)
   }
 
+  /// The error text quotes the script's values, the body included: a number in the body is never
+  /// the error. Only the number that ends the text is.
+  func testAnErrorNumberQuotedInTheMessageIsNeverTheError() {
+    for quoted in ["(-1728)", "(-1743)", "( -1728 )"] {
+      let ending = OsascriptOutcome(
+        exitCode: 1,
+        stderr: "execution error: Messages got an error: Can’t send \"see \(quoted) here\". (-1712)\n")
+      XCTAssertEqual(messagesSendOutcome(ending)?.code, .outcomeUnknown, quoted)
+    }
+    XCTAssertEqual(
+      messagesSendOutcome(
+        OsascriptOutcome(
+          exitCode: 1, stderr: "execution error: Messages got an error: \"(-1712)\" (-1728)\n"))?.code,
+      .failed)
+  }
+
   func testAcceptedIsExitStatusZeroAndNothingElse() {
     XCTAssertNil(messagesSendOutcome(OsascriptOutcome(exitCode: 0)))
   }

@@ -1,48 +1,93 @@
-import { useMemo, useState } from "react";
-import type { StaticScreenProps } from "@react-navigation/native";
-import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
-import type { ClientCommandInput } from "@opensteer/client/host";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  agentText,
+  agentWords,
+  chatsOfAccount,
+  connectedAgentRow,
+  connectionsRead,
+  messagingAccountView,
+  mutationIdempotencyKey,
+  unwrapRpcResult,
+  type HostClient,
+} from "@opensteer/client/host";
+import {
+  chatScreenHost,
+  messagingAccountPart,
+  phoneSentence,
+  sentenceWith,
+  type ChatScreenCommand,
+} from "@opensteer/client/host";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
+import { readGateSections } from "./read-gate-sections.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
-import { useClientRead } from "@opensteer/client/react";
+import { useClientRead, useConnectedAgents } from "@opensteer/client/react";
 import { createClientRead } from "@opensteer/client/reads";
 import { notDone, readLine, settingsFooter, useScreenAction } from "../ui/client-feedback.js";
 import type { SettingsRpcData } from "./settings-rpc.js";
 
 type Dashboard = SettingsRpcData<"channels.get">;
-type Policy = Dashboard["bindings"][number]["accessPolicy"];
-const policy = (): Policy => ({
-  channels: {
-    scope: "selected",
-    conversationIds: [],
-    sender: { mode: "approved", allowedExternalUserIds: [] },
-  },
-  directMessages: { mode: "owner", allowedExternalUserIds: [] },
-});
 export function SettingsMessagingScreen({
   route,
 }: StaticScreenProps<{ readonly deploymentId: string }>) {
   const host = useAttachedHost(route.params.deploymentId);
   return host ? (
-    <Messaging key={route.params.deploymentId} host={host} />
+    <Messaging
+      deploymentId={route.params.deploymentId}
+      key={route.params.deploymentId}
+      host={host}
+    />
   ) : (
     <DeploymentGate deploymentId={route.params.deploymentId} />
   );
 }
-function Messaging({ host }: { readonly host: HostClient }) {
+/**
+ * Messaging on the phone: each account, its state in words, who "me" is on it and the code that
+ * links it, and its chats, each opening as the connected agent it is (Stop, Disconnect). A chat
+ * is added from Opensteer on a computer, where its channel and who may speak are chosen.
+ */
+function Messaging({
+  deploymentId,
+  host,
+}: {
+  readonly deploymentId: string;
+  readonly host: HostClient;
+}) {
+  const navigation = useNavigation();
+  const agents = useConnectedAgents(host);
+  // What this screen sends and reads is what the chat parity script covers.
+  const chatHost = chatScreenHost(host);
+  const [shownCode, setShownCode] = useState<{
+    readonly accountId: string;
+    readonly code: string;
+    readonly expiresAt: string;
+  } | null>(null);
   const resource = useMemo(
     () =>
       createClientRead(host, {
         key: "channels",
         label: "messaging",
-        read: async () => unwrapRpcResult(await host.rpc["channels.get"]({})),
+        read: async () => unwrapRpcResult(await chatHost.rpc["channels.get"]({})),
       }),
-    [host],
+    [chatHost, host],
   );
   const dashboard = useClientRead(resource);
+  // While a code is shown, read again every ten seconds, as the web does, so the account shows
+  // once it is linked; until the code expires.
+  useEffect(() => {
+    if (shownCode === null) return;
+    const left = Date.parse(shownCode.expiresAt) - Date.now();
+    if (!(left > 0)) return;
+    const timer = setInterval(() => void resource.refresh(), 10_000);
+    const expiry = setTimeout(() => clearInterval(timer), left);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(expiry);
+    };
+  }, [resource, shownCode]);
   const [actedOn, setActedOn] = useState<string | null>(null);
   const [note, setNote] = useState<{ readonly section: string; readonly text: string } | null>(
     null,
@@ -50,17 +95,37 @@ function Messaging({ host }: { readonly host: HostClient }) {
   const [providerId, setProvider] = useState<string | null>(null);
   const [repair, setRepair] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
-  const [runnerId, setRunner] = useState("");
-  const [handles, setHandles] = useState("");
-  const [conversation, setConversation] = useState("");
-  const [code, setCode] = useState("");
-  const [shared, setShared] = useState(false);
+  // The last read of either thing this page shows (its accounts, their chats) failed: what is
+  // shown is the answer before it, never as current, and nothing on it changes anything; one
+  // Try again reads both again (`readGateSections`, the one rule for every phone page drawn from
+  // a read). A sheet open when it fails closes without keeping what it held.
+  const loaded = readLine(dashboard, dashboard.refresh);
+  const readFailed =
+    (loaded !== null && dashboard.data !== null) ||
+    (agents.readFailed && agents.connections !== null);
+  useEffect(() => {
+    if (!readFailed) return;
+    setCredentials({});
+    setProvider(null);
+    setRepair(null);
+  }, [readFailed]);
   const change = useScreenAction(host, "channel-change", {
     label: "save the change",
     done: "saved",
     happened: "the change was saved",
-    execute: async (command: ClientCommandInput) => {
-      await host.dispatch(command);
+    execute: async (command: ChatScreenCommand) => {
+      const result = (await chatHost.dispatch(command)) as {
+        readonly type: string;
+        readonly code?: string;
+        readonly expiresAt?: string;
+      };
+      // The code that links "me" is shown with what to send, from where, and until when.
+      if (command.type === "channel.me.link" && result.code && result.expiresAt)
+        setShownCode({
+          accountId: String(command.accountId),
+          code: result.code,
+          expiresAt: result.expiresAt,
+        });
     },
     // Read the messaging settings again; where they show the change's effect, that settles it.
     reconcile: async (command) => {
@@ -80,14 +145,15 @@ function Messaging({ host }: { readonly host: HostClient }) {
     done: "checked",
     happened: "the connection was checked",
     execute: async (connectionId: string) =>
-      unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+      unwrapRpcResult(await chatHost.rpc["channel.connection.check"]({ connectionId })).ready,
     reconcile: async (connectionId) => ({
       kind: "confirmed",
-      value: unwrapRpcResult(await host.rpc["channel.connection.check"]({ connectionId })).ready,
+      value: unwrapRpcResult(await chatHost.rpc["channel.connection.check"]({ connectionId }))
+        .ready,
     }),
   });
   const pending = change.running || check.running;
-  const dispatch = (command: ClientCommandInput, section: string) => {
+  const dispatch = (command: ChatScreenCommand, section: string) => {
     if (pending) return;
     setActedOn(section);
     setNote(null);
@@ -95,10 +161,11 @@ function Messaging({ host }: { readonly host: HostClient }) {
     void change.run(command).then((outcome) => {
       if (outcome.kind !== "confirmed") return;
       setCredentials({});
-      setCode("");
       setProvider(null);
       setRepair(null);
       resource.invalidate();
+      // Pausing, resuming or removing an account changes its chats: read them again.
+      if (command.type === "channel.connection.status.set") void agents.refresh?.();
     });
   };
   const checkConnection = (connectionId: string, section: string) => {
@@ -123,7 +190,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
     label: string,
     onPress: () => void,
     destructive = false,
-  ): NativeSettingsRow => ({
+  ): Extract<NativeSettingsRow, { kind: "button" }> => ({
     key,
     kind: "button",
     label,
@@ -140,12 +207,15 @@ function Messaging({ host }: { readonly host: HostClient }) {
     secure = false,
   ): NativeSettingsRow => ({ key, kind: "input", label, value, onChange, secure });
   const sections: NativeSettingsSection[] = [];
-  const loaded = readLine(dashboard, dashboard.refresh);
   sections.push({
     key: "refresh",
     title: "Messaging",
     rows: [
       button("refresh", "Refresh", dashboard.refresh),
+      // Only a read answer says there is no account.
+      ...(dashboard.data?.accounts.length === 0
+        ? [text("empty", agentWords("messaging.empty"))]
+        : []),
       ...(dashboard.data === null && loaded === null
         ? [0, 1, 2].map((index) => ({
             key: `placeholder:${index}`,
@@ -154,22 +224,41 @@ function Messaging({ host }: { readonly host: HostClient }) {
           }))
         : []),
     ],
-    ...(loaded ? { footer: settingsFooter(loaded)! } : {}),
+    // A read that failed says so in the web's words; a refusal keeps the Home's own. Once the
+    // page was read, the gate below says it with its one Try again.
+    ...(loaded && !readFailed
+      ? {
+          footer: settingsFooter(
+            loaded.tone === "danger"
+              ? loaded
+              : { ...loaded, text: agentWords("messaging.readFailed") },
+          )!,
+        }
+      : {}),
   });
   if (dashboard.data) {
     const data = dashboard.data;
     const provider = data.providers.find((p) => p.provider === providerId);
     sections.push({
       key: "providers",
-      title: "Add messaging",
+      title: agentWords("messaging.add"),
+      // One rule for every provider: the phone opens a setup only it can finish here (an app's
+      // tokens). One added through a computer (iMessage, on a Mac) says where to add it instead.
       rows: data.providers
         .filter((p) => p.availability === "available")
-        .map((p) =>
-          button(p.provider, p.label, () => {
-            setCredentials({});
-            setRepair(null);
-            setProvider(p.provider);
-          }),
+        .map((p): NativeSettingsRow =>
+          p.connectionMethods.includes("bring-your-own")
+            ? button(p.provider, p.label, () => {
+                setCredentials({});
+                setRepair(null);
+                setProvider(p.provider);
+              })
+            : {
+                key: p.provider,
+                kind: "text",
+                label: p.label,
+                detail: agentWords("messaging.phone.computer", { provider: p.label }),
+              },
         ),
     });
     if (provider) {
@@ -182,69 +271,34 @@ function Messaging({ host }: { readonly host: HostClient }) {
           field.secret,
         ),
       );
-      const computer = provider.transportKinds.includes("computer");
-      if (computer) {
-        rows.push(
-          input("handles", "Your iMessage addresses, separated by commas", handles, setHandles),
-        );
-        rows.push(
-          ...host
-            .getSnapshot()
-            .machines.filter((m) => m.allowedModules.includes("messaging"))
-            .map((m) =>
-              button(m.id, `${m.id === runnerId ? "✓ " : ""}${m.name}`, () => setRunner(m.id)),
-            ),
-        );
-      } else
-        rows.push({
-          key: "shared",
-          kind: "toggle",
-          label: "Shared bot",
-          value: shared,
-          onChange: setShared,
-        });
-      rows.push(
-        button("save", repair ? "Replace credentials" : "Connect", () => {
-          const idempotencyKey = mutationIdempotencyKey("channel-connect");
-          const section = `setup:${provider.provider}:${repair ?? "new"}`;
-          if (repair)
-            dispatch(
-              {
-                type: "channel.connection.credentials.replace",
-                connectionId: repair,
-                credentials,
-                idempotencyKey,
-              },
-              section,
-            );
-          else if (computer)
-            dispatch(
-              {
-                type: "channel.connection.computer.create",
-                provider: provider.provider,
-                runnerId,
-                ownerHandles: handles
-                  .split(",")
-                  .map((v) => v.trim())
-                  .filter(Boolean),
-                idempotencyKey,
-              },
-              section,
-            );
-          else
-            dispatch(
-              {
-                type: "channel.connection.create",
-                provider: provider.provider,
-                credentials,
-                routingMode: shared ? "shared" : "dedicated",
-                accessPolicy: policy(),
-                idempotencyKey,
-              },
-              section,
-            );
-        }),
-      );
+      // The phone sets up only an app's tokens (adding one, or replacing them on one that needs
+      // it); an account added through a computer is added and fixed on that computer.
+      const connect = button("save", repair ? "Replace credentials" : "Connect", () => {
+        const idempotencyKey = mutationIdempotencyKey("channel-connect");
+        const section = `setup:${provider.provider}:${repair ?? "new"}`;
+        if (repair)
+          dispatch(
+            {
+              type: "channel.connection.credentials.replace",
+              connectionId: repair,
+              credentials,
+              idempotencyKey,
+            },
+            section,
+          );
+        else
+          dispatch(
+            {
+              type: "channel.connection.create",
+              provider: provider.provider,
+              credentials,
+              routingMode: "dedicated",
+              idempotencyKey,
+            },
+            section,
+          );
+      });
+      rows.push(connect);
       rows.push(
         button("cancel", "Cancel", () => {
           setCredentials({});
@@ -257,61 +311,123 @@ function Messaging({ host }: { readonly host: HostClient }) {
       sections.push({ key: section, title: provider.label, rows, ...(footer ? { footer } : {}) });
     }
     for (const account of data.accounts) {
+      const manifest = data.providers.find((p) => p.provider === account.provider);
+      const providerLabel = manifest?.label ?? account.provider;
+      const me = data.me?.find((row) => row.accountId === account.id) ?? null;
+      const code = shownCode?.accountId === account.id ? shownCode : null;
+      // The account's connection, as the web reads it: its status, what it reports, and what the
+      // Home accepts for it.
+      const connection = data.connections.find((row) => row.id === account.connectionId);
+      const view = connection ? messagingAccountView(connection, manifest) : null;
       const rows: NativeSettingsRow[] = [
-        text("status", account.status),
-        button("check", "Check connection", () =>
+        {
+          key: "status",
+          kind: "status",
+          tone: view?.tone ?? "attention",
+          label: view?.label ?? agentWords("messaging.status.unknown"),
+        },
+        ...(view?.detail ? [text("detail", view.detail)] : []),
+        ...(view?.pausedNote ? [text("paused", view.pausedNote)] : []),
+        button("check", agentWords("messaging.check"), () =>
           checkConnection(account.connectionId, account.id),
         ),
-        button("repair", "Repair", () => {
-          setCredentials({});
-          setProvider(account.provider);
-          setRepair(account.connectionId);
-        }),
-        button("pause", account.status === "paused" ? "Resume" : "Pause", () =>
-          dispatch(
-            {
-              type: "channel.connection.status.set",
-              connectionId: account.connectionId,
-              status: account.status === "paused" ? "connected" : "paused",
-              idempotencyKey: mutationIdempotencyKey("channel-status"),
-            },
-            account.id,
-          ),
-        ),
-      ];
-      rows.push(input("conversation", "Conversation ID", conversation, setConversation));
-      rows.push(
-        button("bind", "Add route", () =>
-          dispatch(
-            {
-              type: "channel.binding.create",
-              accountId: account.id,
-              selector: {
-                conversationId: conversation.trim(),
-                conversationType: null,
-                scopeId: null,
-                threadId: null,
+        ...(view?.canFix
+          ? [
+              button("repair", agentWords("messaging.fix"), () => {
+                setCredentials({});
+                setProvider(account.provider);
+                setRepair(account.connectionId);
+              }),
+            ]
+          : []),
+        ...(view?.canPause || view?.canResume
+          ? [
+              button(
+                "pause",
+                view.canResume ? agentWords("messaging.resume") : agentWords("messaging.pause"),
+                () =>
+                  dispatch(
+                    {
+                      type: "channel.connection.status.set",
+                      connectionId: account.connectionId,
+                      status: view.canResume ? "connected" : "paused",
+                      idempotencyKey: mutationIdempotencyKey("channel-status"),
+                    },
+                    account.id,
+                  ),
+              ),
+            ]
+          : []),
+        {
+          key: "me",
+          kind: "text",
+          label: agentWords("messaging.me.title", { provider: providerLabel }),
+          detail: me
+            ? phoneSentence([
+                ...sentenceWith(
+                  (slot) => agentWords("messaging.me.linked", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
+                ),
+                " ",
+                ...sentenceWith(
+                  (slot) => agentWords("messaging.me.replaces", { identity: slot("me") }),
+                  { me: { name: me.displayName } },
+                ),
+              ])
+            : agentWords("messaging.me.none", { provider: providerLabel }),
+        },
+        ...(code
+          ? [
+              text(
+                "code",
+                phoneSentence(
+                  sentenceWith(
+                    (slot) =>
+                      agentWords("messaging.me.code", {
+                        code: code.code,
+                        account: slot("account"),
+                        provider: providerLabel,
+                        time: new Date(code.expiresAt).toLocaleTimeString(undefined, {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        }),
+                      }),
+                    { account: messagingAccountPart(account) },
+                  ),
+                ),
+              ),
+              ...(view?.canResume
+                ? [text("whenResumed", agentWords("messaging.me.whenResumed"))]
+                : []),
+              ...(connection?.status === "needs-attention"
+                ? [text("whenFixed", agentWords("messaging.me.whenFixed"))]
+                : []),
+            ]
+          : []),
+        button(
+          "link",
+          me ? agentWords("messaging.me.relink") : agentWords("messaging.me.link"),
+          () =>
+            dispatch(
+              {
+                type: "channel.me.link",
+                accountId: account.id,
+                idempotencyKey: mutationIdempotencyKey("channel-me-link"),
               },
-              accessPolicy: policy(),
-              executionPolicy: { harness: "default", harnessInstanceId: null },
-              idempotencyKey: mutationIdempotencyKey("channel-route"),
-            },
-            account.id,
-          ),
+              account.id,
+            ),
         ),
-      );
-      rows.push(
         button(
           "remove",
-          "Remove",
+          agentWords("messaging.remove"),
           () =>
             Alert.alert(
-              `Remove ${account.displayName}?`,
-              "This stops messaging through this account.",
+              agentText("messaging.remove.title", { account: { name: account.displayName } }),
+              agentWords("messaging.remove.body"),
               [
-                { text: "Cancel", style: "cancel" },
+                { text: agentWords("common.cancel"), style: "cancel" },
                 {
-                  text: "Remove",
+                  text: agentWords("messaging.remove"),
                   style: "destructive",
                   onPress: () =>
                     dispatch(
@@ -328,183 +444,76 @@ function Messaging({ host }: { readonly host: HostClient }) {
             ),
           true,
         ),
-      );
+      ];
       const footer = footerFor(account.id);
       sections.push({
         key: account.id,
-        title: account.displayName,
+        // Its handle an address (never cut or hyphenated inside a part), else its name.
+        title: phoneSentence([messagingAccountPart(account)]),
         rows,
         ...(footer ? { footer } : {}),
       });
-    }
-    for (const binding of data.bindings) {
-      const rows: NativeSettingsRow[] = [
-        text(
-          "status",
-          `${binding.selector.conversationId ?? "All conversations"} · ${binding.status}`,
-        ),
-      ];
-      for (const mode of ["off", "owner", "approved", "anyone"] as const)
-        rows.push(
-          button(
-            mode,
-            `${binding.accessPolicy.directMessages.mode === mode ? "✓ " : ""}Direct messages: ${mode}`,
-            () =>
-              dispatch(
-                {
-                  type: "channel.binding.update",
-                  bindingId: binding.id,
-                  expectedRevision: binding.revision,
-                  accessPolicy: {
-                    ...binding.accessPolicy,
-                    directMessages: { ...binding.accessPolicy.directMessages, mode },
-                  },
-                  idempotencyKey: mutationIdempotencyKey("channel-policy"),
-                },
-                binding.id,
-              ),
-          ),
-        );
-      for (const mode of ["off", "owner", "approved", "anyone"] as const)
-        rows.push(
-          button(
-            `channels:${mode}`,
-            `${binding.accessPolicy.channels.sender.mode === mode ? "✓ " : ""}Channel senders: ${mode}`,
-            () =>
-              dispatch(
-                {
-                  type: "channel.binding.update",
-                  bindingId: binding.id,
-                  expectedRevision: binding.revision,
-                  accessPolicy: {
-                    ...binding.accessPolicy,
-                    channels: {
-                      ...binding.accessPolicy.channels,
-                      sender: { ...binding.accessPolicy.channels.sender, mode },
-                    },
-                  },
-                  idempotencyKey: mutationIdempotencyKey("channel-policy"),
-                },
-                binding.id,
-              ),
-          ),
-        );
-      for (const scope of ["off", "selected", "all"] as const)
-        rows.push(
-          button(
-            `scope:${scope}`,
-            `${binding.accessPolicy.channels.scope === scope ? "✓ " : ""}Channels: ${scope}`,
-            () =>
-              dispatch(
-                {
-                  type: "channel.binding.update",
-                  bindingId: binding.id,
-                  expectedRevision: binding.revision,
-                  accessPolicy: {
-                    ...binding.accessPolicy,
-                    channels: {
-                      ...binding.accessPolicy.channels,
-                      scope,
-                      conversationIds:
-                        scope === "selected"
-                          ? conversation
-                              .split(",")
-                              .map((value) => value.trim())
-                              .filter(Boolean)
-                          : binding.accessPolicy.channels.conversationIds,
-                    },
-                  },
-                  idempotencyKey: mutationIdempotencyKey("channel-policy"),
-                },
-                binding.id,
-              ),
-          ),
-        );
-      rows.push(
-        input(
-          `channels:${binding.id}`,
-          "Selected conversation IDs, separated by commas",
-          conversation,
-          setConversation,
-        ),
-      );
-      rows.push(
-        button(
-          "revoke",
-          "Remove route",
-          () =>
-            dispatch(
-              {
-                type: "channel.binding.revoke",
-                bindingId: binding.id,
-                idempotencyKey: mutationIdempotencyKey("channel-route-revoke"),
-              },
-              binding.id,
-            ),
-          true,
-        ),
-      );
-      const footer = footerFor(binding.id);
-      sections.push({ key: binding.id, title: "Route", rows, ...(footer ? { footer } : {}) });
-    }
-    for (const grant of data.accessGrants) {
-      const key = `${grant.bindingId}:${grant.externalUserId}`;
-      const footer = footerFor(key);
+      // Only a read answer says an account has no chat.
+      const read = connectionsRead(agents);
+      const chats = chatsOfAccount(agents.connections, account.id);
       sections.push({
-        key,
-        title: grant.displayName,
-        ...(footer ? { footer } : {}),
-        rows: [
-          text("status", grant.status === "pending" ? "Waiting for approval" : grant.status),
-          ...(["approved", "declined", "revoked"] as const).map((decision) =>
-            button(
-              decision,
-              decision === "approved" ? "Approve" : decision === "declined" ? "Decline" : "Revoke",
-              () =>
-                dispatch(
-                  {
-                    type: "channel.access.review",
-                    bindingId: grant.bindingId,
-                    externalUserId: grant.externalUserId,
-                    expectedRevision: grant.revision,
-                    decision,
-                    idempotencyKey: mutationIdempotencyKey("channel-sender"),
-                  },
-                  key,
-                ),
-            ),
-          ),
-        ],
+        key: `${account.id}:chats`,
+        title: agentWords("messaging.chats.title"),
+        rows:
+          read === "loading"
+            ? [
+                {
+                  key: "loading",
+                  kind: "placeholder",
+                  label: agentWords("messaging.chats.loading"),
+                },
+              ]
+            : read === "failed"
+              ? [
+                  text("unreadable", agentWords("messaging.chats.readFailed")),
+                  button("retry", agentWords("common.tryAgain"), () => void agents.refresh?.()),
+                ]
+              : chats.length === 0
+                ? [text("none", agentWords("messaging.chats.empty"))]
+                : chats.map((chat): NativeSettingsRow => ({
+                    key: chat.id,
+                    kind: "button",
+                    label: chat.label,
+                    detail: phoneSentence(
+                      connectedAgentRow(chat, {
+                        profiles: host.getSnapshot().browserProfiles,
+                      }).lineParts,
+                    ),
+                    opens: true,
+                    onPress: () =>
+                      navigation.navigate("ConnectedAgent", {
+                        deploymentId,
+                        connectionId: chat.id,
+                      }),
+                  })),
+        footer: { text: agentWords("messaging.phone") },
       });
     }
   }
-  const linkFooter = footerFor("link");
-  sections.push({
-    key: "link",
-    title: "Link your messaging account",
-    ...(linkFooter ? { footer: linkFooter } : {}),
-    rows: [
-      input("code", "Link code", code, setCode, true),
-      button("link", "Link account", () =>
-        dispatch(
-          {
-            type: "channel.identity.link",
-            code,
-            idempotencyKey: mutationIdempotencyKey("channel-link"),
-          },
-          "link",
-        ),
-      ),
-    ],
-  });
-  const setup = sections.filter((section) => section.key.startsWith("setup:"));
+  const drawn = readGateSections(sections, {
+    failed: readFailed,
+    retry: {
+      message: agentWords("messaging.readFailed"),
+      onRetry: () => {
+        dashboard.refresh();
+        void agents.refresh?.();
+      },
+    },
+  }).filter(
+    (section) =>
+      (section.key === "refresh" && !readFailed) || section.rows.length > 0 || section.footer,
+  );
+  const setup = drawn.filter((section) => section.key.startsWith("setup:"));
   return (
     <>
-      <NativeSettingsPage
-        sections={sections.filter((section) => !section.key.startsWith("setup:"))}
-      />
+      <NativeSettingsPage sections={drawn.filter((section) => !section.key.startsWith("setup:"))} />
       <Sheet
-        open={providerId !== null}
+        open={providerId !== null && !readFailed}
         title={
           dashboard.data?.providers.find((provider) => provider.provider === providerId)?.label ??
           "Messaging"
@@ -522,25 +531,12 @@ function Messaging({ host }: { readonly host: HostClient }) {
 }
 
 /** Whether the messaging settings show a change took: null where they can't tell. */
-function changeSettled(data: Dashboard, command: ClientCommandInput): boolean | null {
+function changeSettled(data: Dashboard, command: ChatScreenCommand): boolean | null {
   switch (command.type) {
     case "channel.connection.status.set": {
       const account = data.accounts.find((row) => row.connectionId === command.connectionId);
       if (account === undefined) return command.status === "revoked" ? true : null;
       return account.status === command.status;
-    }
-    case "channel.binding.revoke":
-      return !data.bindings.some((binding) => binding.id === command.bindingId);
-    case "channel.binding.update": {
-      const binding = data.bindings.find((row) => row.id === command.bindingId);
-      return binding === undefined ? null : binding.revision > command.expectedRevision;
-    }
-    case "channel.access.review": {
-      const grant = data.accessGrants.find(
-        (row) =>
-          row.bindingId === command.bindingId && row.externalUserId === command.externalUserId,
-      );
-      return grant === undefined ? null : grant.revision > command.expectedRevision;
     }
     default:
       return null;

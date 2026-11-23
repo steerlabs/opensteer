@@ -493,6 +493,11 @@ export const BrowserAgentEventSchema = z.strictObject({
 
 export const BrowserResumeTabParametersSchema = z.strictObject({
   surfaceId: BrowserSurfaceIdSchema,
+  /**
+   * TS11: a tab this call wakes is answered only once its document has loaded, within a bound;
+   * past it the call is refused. An agent's wake asks for it; a person's view does not wait.
+   */
+  loaded: z.literal(true).optional(),
 });
 
 export const BrowserListTabsParametersSchema = z.strictObject(tabPage);
@@ -576,5 +581,10 @@ export const BrowserResumeTabResultSchema = z.strictObject({
   targetId: identifier,
   documentId: z.string().min(1).max(255),
   reloaded: z.boolean(),
+  /**
+   * V4: this wake opened the tab again at its address, not as itself: its typed text, scroll and
+   * page state are gone.
+   */
+  reopened: z.boolean().optional(),
 });
 export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;

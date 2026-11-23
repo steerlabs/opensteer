@@ -16,9 +16,11 @@ import { z } from "zod";
 import type { Kysely, SelectQueryBuilder, Transaction } from "kysely";
 import "./connection.js";
 import { assertRequestRevision, requestFromRow } from "./request-persistence.js";
+import { connectionState } from "./connection-liveness.js";
 import { connectionTaskRequestScope } from "./resource-access.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { threadCallerLineageId } from "./thread-caller.js";
+import { callerTaskReader, threadCallerLineageId } from "./thread-caller.js";
+import { readerSees } from "./task-reader.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { threadExecutionAdmitted } from "./execution-authority.js";
@@ -124,6 +126,21 @@ async function connectionRequestsQuery(
     .where(threadExecutionAdmitted(tx, authority.userId))
     .$if(scope === "selected", (query) =>
       query.where("threads.originConnectionId", "=", authority.connectionId),
+    )
+    .$if(scope !== "selected", (query) =>
+      query.where((eb) =>
+        eb.or([
+          eb("threads.originConnectionId", "is", null),
+          eb("threads.originConnectionId", "=", authority.connectionId),
+          eb.exists(
+            eb
+              .selectFrom("agentConnections")
+              .select("agentConnections.id")
+              .whereRef("agentConnections.id", "=", "threads.originConnectionId")
+              .where(connectionState(tx), "!=", "ended"),
+          ),
+        ]),
+      ),
     )
     .where((eb) => {
       const asker = eb
@@ -284,10 +301,16 @@ export function readAgentRequest(
       });
       return read;
     }
+    // A Request a memory pass's lineage may not read reads as one that does not exist.
+    const taskReader = callerTaskReader(authority);
     const row = await transaction
       .selectFrom("requests")
-      .selectAll()
-      .where("id", "=", parsedRequestId)
+      .innerJoin("threads", "threads.id", "requests.originatingThreadId")
+      .selectAll("requests")
+      .where("requests.id", "=", parsedRequestId)
+      .$if(taskReader.kind === "work", (query) =>
+        query.where(readerSees(taskReader, sql.ref("threads.origin_connection_id"))),
+      )
       .executeTakeFirst();
     if (!row)
       throw new OpensteerError({

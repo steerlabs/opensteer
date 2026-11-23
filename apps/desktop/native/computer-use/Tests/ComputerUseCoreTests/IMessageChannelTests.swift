@@ -501,6 +501,32 @@ final class IMessageChannelTests: XCTestCase {
     XCTAssertEqual(sent.value, 1)
   }
 
+  /// Anything other than a refusal that proves nothing was sent leaves the attempt on record:
+  /// the same delivery is never sent again, even by a helper that restarted.
+  func testAnUnexpectedErrorAfterTheScriptStartedIsNeverRetried() async throws {
+    let database = try MessagesFixture.create()
+    let records = database.deletingLastPathComponent().appendingPathComponent("records.json")
+    let sent = Box(0)
+    let channel = IMessageChannel(
+      databasePath: database.path, clock: clock, account: { self.bot },
+      outbox: MessagesOutbox(runWithBudget: { _, _ in
+        sent.value += 1
+        throw CancellationError()
+      }),
+      sendRecords: records)
+    for _ in 0..<2 {
+      do {
+        _ = try await channel.send(
+          owner: "cha_one", accountId: bot.id, key: "cdl_one", to: "+15551230000", text: "hi",
+          budget: .unlimited)
+        XCTFail("The send's outcome is not known")
+      } catch {
+        XCTAssertEqual((error as? HelperError)?.code, .deliveryUnconfirmed)
+      }
+    }
+    XCTAssertEqual(sent.value, 1)
+  }
+
   func testADefiniteRefusalCanBeRetriedAfterRestart() async throws {
     for outcome in [
       OsascriptOutcome(exitCode: nil, spawnFailed: true, started: false),

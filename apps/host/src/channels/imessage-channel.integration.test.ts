@@ -40,6 +40,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createId, type MessageId } from "@opensteer/core";
+import { AgentConnectionStore, ChannelStore, startBridgeOwnerLink } from "@opensteer/database";
 import type { ComputerUseBridgeRequest, IMessagePosition, IMessageRow } from "@opensteer/protocol";
 
 import { prepareIntegrationsModule, prepareMessagingModule } from "@opensteer/runner";
@@ -106,7 +107,7 @@ integration("iMessage channel", () => {
           .select(["connectionKind", "id", "status", "statusDetail", "transportKind"])
           .execute(),
         deliveries: await host.store.database
-          .selectFrom("channelDeliveries")
+          .selectFrom("bridgeDeliveries")
           .select(["attempts", "id", "kind", "lastError", "status"])
           .orderBy("createdAt", "asc")
           .execute(),
@@ -182,7 +183,6 @@ integration("iMessage channel", () => {
           "commands.dispatch",
           {
             idempotencyKey: key,
-            ownerHandles: ["+1 (555) 123-4567", "Owner@Example.com"],
             provider: "imessage",
             runnerId: computer.runnerId,
             type: "channel.connection.computer.create",
@@ -245,16 +245,6 @@ integration("iMessage channel", () => {
         handle: messages.account.handle,
       });
       expect(created.account.metadata).toEqual({ initialCursor: "40:G40" });
-      const linked = await host.store.database
-        .selectFrom("channelIdentities")
-        .select(["externalUserId", "linkedUserId"])
-        .where("accountId", "=", accountId)
-        .orderBy("externalUserId", "asc")
-        .execute();
-      expect(linked).toEqual([
-        { externalUserId: ownerPhone, linkedUserId: host.ownerId },
-        { externalUserId: ownerEmail, linkedUserId: host.ownerId },
-      ]);
       await waitForCondition(async () => (await channelStatus()) === "connected");
       // The next poll starts only after the Mac's connected report is acknowledged.
       await messages.secondPoll;
@@ -270,7 +260,41 @@ integration("iMessage channel", () => {
       expect(messages.polls[0]?.after).toEqual({ guid: "G40", rowId: 40 });
       expect(await ingressCount()).toBe(0);
 
-      // 5 and 6. The owner, however their handle is written, gets their reply.
+      // "Me" is whoever sends, from their own phone, the code Opensteer shows the person, and
+      // one handle at a time: linking another unlinks the first. Nothing is said back in
+      // Messages; Opensteer shows who is linked.
+      const sendsBeforeLinking = messages.sends.length;
+      for (const handle of ["OWNER@example.com", ownerPhone]) {
+        const { code } = await startBridgeOwnerLink(host.store.database, {
+          userId: host.ownerId,
+          accountId,
+        });
+        const sent = messages.receive(handle, code);
+        await waitForCondition(async () => (await ingressStatus(sent.guid)) === "ignored");
+      }
+      expect(messages.sends.length).toBe(sendsBeforeLinking);
+      const linked = await host.store.database
+        .selectFrom("channelIdentities")
+        .select(["externalUserId", "linkedUserId"])
+        .where("accountId", "=", accountId)
+        .orderBy("externalUserId", "asc")
+        .execute();
+      expect(linked).toEqual([
+        { externalUserId: ownerPhone, linkedUserId: host.ownerId },
+        { externalUserId: ownerEmail, linkedUserId: null },
+      ]);
+      // The bridge for direct messages, on the consent a connected agent gets.
+      const bridge = await new AgentConnectionStore(host.store.database).createBridge({
+        userId: host.ownerId,
+        accountId: accountId as never,
+        senders: "owner",
+        accessMode: "approval-required",
+        grant: { scope: "selected", tasks: true, resources: [] },
+      });
+      record("linked by code, bridge made", { bridge: bridge.id, linked });
+
+      // 5 and 6. The owner, from the handle they linked, gets their reply; the handle they
+      // linked before, however it is written, is nobody now.
       const phoneReply = await converse(caller, messages, {
         from: ownerPhone,
         reply: "Three meetings, the first at nine.",
@@ -283,14 +307,11 @@ integration("iMessage channel", () => {
         to: ownerPhone,
       });
       await expectSentDelivery(phoneReply.send.key);
-      const emailReply = await converse(caller, messages, {
-        from: "OWNER@example.com",
-        reply: "Done.",
-        text: "Remind me to call Sam",
-      });
-      expect(emailReply.send).toMatchObject({ text: "Done.", to: ownerEmail });
-      await expectSentDelivery(emailReply.send.key);
-      record("owner answered", { email: emailReply.send, phone: phoneReply.send });
+      const sendsBeforeEmail = messages.sends.length;
+      const fromEmail = messages.receive("OWNER@example.com", "Remind me to call Sam");
+      await waitForCondition(async () => (await ingressStatus(fromEmail.guid)) === "ignored");
+      expect(messages.sends.length).toBe(sendsBeforeEmail);
+      record("owner answered", { phone: phoneReply.send, unlinkedEmail: "ignored" });
 
       // A long code answer must survive the real delivery queue, adapter,
       // bridge schema and per-part receipts without losing code or exceeding
@@ -323,82 +344,56 @@ integration("iMessage channel", () => {
       const beforeUncertain = messages.sends.length;
       messages.loseNextConfirmation();
       const uncertainReply = await uncertainRun.reply("This reply may have arrived.");
-      await waitForCondition(async () => (await deliveryStatus(uncertainReply)) === "dead");
+      // The helper cannot confirm it: it may have been sent, so it is unknown (Disconnect shows
+      // it, nothing prunes it) and it is never sent again.
+      await waitForCondition(async () => (await deliveryStatus(uncertainReply)) === "unknown");
       const stopped = await host.store.database
-        .selectFrom("channelDeliveries")
+        .selectFrom("bridgeDeliveries")
         .select(["lastError", "status", "attempts"])
         .where("messageId", "=", uncertainReply)
         .executeTakeFirstOrThrow();
       expect(stopped).toMatchObject({
-        status: "dead",
+        status: "unknown",
         attempts: 1,
         lastError: expect.stringContaining("Check Messages"),
       });
       expect(messages.sends.slice(beforeUncertain)).toHaveLength(1);
-      record("unconfirmed reply stopped for attention without a repeat", stopped);
+      record("unconfirmed reply unknown, without a repeat", stopped);
 
       const lostExecution = waitForExecute(caller.primary.socket);
       messages.receive(ownerPhone, "Recover the lost bridge answer");
       const lostRun = await startRun(caller, await lostExecution);
       const beforeLost = messages.sends.length;
       messages.loseNextBridgeAnswer();
-      const recoveredReply = await lostRun.reply("Sent once, receipt recovered.");
-      await waitForCondition(async () => (await deliveryStatus(recoveredReply)) === "unknown");
-      // Queue tests cover retry delays; this journey checks receipt reconciliation.
+      const uncertainSend = await lostRun.reply("Sent once, its answer lost.");
+      await waitForCondition(async () => (await deliveryStatus(uncertainSend)) === "unknown");
+      // It may have arrived: it is never sent again, however long the Home waits.
       await host.store.database
-        .updateTable("channelDeliveries")
+        .updateTable("bridgeDeliveries")
         .set({ nextAttemptAt: new Date(0) })
-        .where("messageId", "=", recoveredReply)
-        .where("status", "=", "unknown")
+        .where("messageId", "=", uncertainSend)
         .execute();
-      await waitForCondition(async () => (await deliveryStatus(recoveredReply)) === "sent");
-      const recovered = await host.store.database
-        .selectFrom("channelDeliveries")
+      expect(
+        await new ChannelStore(host.store.database).claimDelivery(computer.runnerId),
+      ).toBeNull();
+      const kept = await host.store.database
+        .selectFrom("bridgeDeliveries")
         .select(["attempts", "status"])
-        .where("messageId", "=", recoveredReply)
+        .where("messageId", "=", uncertainSend)
         .executeTakeFirstOrThrow();
-      expect(recovered).toEqual({ attempts: 2, status: "sent" });
+      expect(kept).toEqual({ attempts: 1, status: "unknown" });
       expect(messages.sends.slice(beforeLost)).toHaveLength(1);
-      record("lost bridge answer reconciled without a repeated send", recovered);
+      record("lost bridge answer stays unknown, never sent again", kept);
 
-      // 7. A stranger waits in silence for the owner, then is answered.
+      // 7. A stranger is never answered: no task, nothing said, nothing to approve.
       const deliveriesBeforeStranger = await deliveryCount();
+      const tasksBeforeStranger = await bridgeTaskCount();
       const strangerRow = messages.receive(strangerPhone, "hey, who is this?");
       await waitForCondition(async () => (await ingressStatus(strangerRow.guid)) === "ignored");
-      const grant = await host.store.database
-        .selectFrom("channelAccessGrants")
-        .select(["bindingId", "externalUserId", "revision", "status"])
-        .where("accountId", "=", accountId)
-        .executeTakeFirstOrThrow();
-      expect(grant).toMatchObject({ externalUserId: strangerPhone, status: "pending" });
-      // Whatever the Host would say is written with the ignore, so none now is none ever.
       expect(await deliveryCount()).toBe(deliveriesBeforeStranger);
-      await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          bindingId: grant.bindingId,
-          decision: "approved",
-          expectedRevision: grant.revision,
-          externalUserId: strangerPhone,
-          idempotencyKey: "imessage-approve-stranger",
-          type: "channel.access.review",
-        },
-        { headers: host.ownerHeaders },
-      );
-      // Approved, they are spoken to: first told so, then answered.
-      await waitForCondition(async () => messages.sends.some(({ to }) => to === strangerPhone));
-      expect(messages.sends.filter(({ to }) => to === strangerPhone)).toMatchObject([
-        { text: "Your access was approved. Send your message again to start work." },
-      ]);
-      const strangerReply = await converse(caller, messages, {
-        from: strangerPhone,
-        reply: "I'm the owner's assistant.",
-        text: "hey again",
-      });
-      expect(strangerReply.send).toMatchObject({ to: strangerPhone });
-      expect(messages.sends.filter(({ to }) => to === strangerPhone)).toHaveLength(2);
-      record("stranger silent until approved", { grant, reply: strangerReply.send });
+      expect(await bridgeTaskCount()).toBe(tasksBeforeStranger);
+      expect(messages.sends.filter(({ to }) => to === strangerPhone)).toEqual([]);
+      record("stranger never answered", { guid: strangerRow.guid });
 
       // 8. A restart continues from the last text the Host recorded.
       const handled = messages.rows.at(-1);
@@ -450,25 +445,47 @@ integration("iMessage channel", () => {
       );
       record("permission lost and regained", attention);
 
-      // 10. Reading only: a reply on its way is not sent, and texts are dropped.
+      // 9b. The person pauses the chat: the Mac stops reading Messages, and a text sent
+      // meanwhile is read and answered once they resume, from where the Mac had stopped.
+      const setStatus = (status: "paused" | "connected", key: string) =>
+        testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            connectionId,
+            idempotencyKey: key,
+            status,
+            type: "channel.connection.status.set",
+          },
+          { headers: host.ownerHeaders },
+        );
+      await setStatus("paused", "imessage-pause");
+      const pollsAtPause = messages.polls.length;
+      const sentWhilePaused = messages.receive(ownerPhone, "Sent while it was paused");
+      expect(await ingressStatus(sentWhilePaused.guid)).toBeUndefined();
+      const executedAfterResume = waitForExecute(caller.primary.socket);
+      await setStatus("connected", "imessage-resume");
+      await waitForCondition(async () => (await ingressStatus(sentWhilePaused.guid)) === "adopted");
+      expect(messages.polls.length).toBeGreaterThan(pollsAtPause);
+      const resumedRun = await startRun(caller, await executedAfterResume);
+      await resumedRun.reply("Got the one from the pause.");
+      await waitForCondition(async () =>
+        messages.sends.some(({ text }) => text === "Got the one from the pause."),
+      );
+      record("paused, then resumed with what was sent meanwhile", { guid: sentWhilePaused.guid });
+
+      // 10. Reading only: the bridge ends with the approval it spoke through. A reply on its
+      // way is never sent, texts start nothing, and allowing sending again does not revive it.
       const executed = waitForExecute(caller.primary.socket);
       messages.receive(ownerPhone, "Draft a note to Sam");
       const run = await startRun(caller, await executed);
       await setMessagesAccess("read", "imessage-narrow");
       const withheld = await run.reply("Here is the draft.");
-      await waitForCondition(async () => (await deliveryStatus(withheld)) === "dead");
+      await waitForCondition(async () => (await bridgeState()) === "stopped", 45_000);
+      expect(await deliveryStatus(withheld)).not.toBe("sent");
       expect(messages.sends.map(({ text }) => text)).not.toContain("Here is the draft.");
       const dropped = messages.receive(ownerPhone, "Anything else?");
       await waitForCondition(async () => (await ingressStatus(dropped.guid)) === "ignored");
-      const droppedRow = await host.store.database
-        .selectFrom("channelIngressEvents")
-        .select(["lastError", "runId"])
-        .where("providerEventId", "=", dropped.guid)
-        .executeTakeFirstOrThrow();
-      expect(droppedRow).toEqual({
-        lastError: "The computer's app connection no longer allows this channel",
-        runId: null,
-      });
       const widen = await requestComputerAppSetup(
         host,
         computer.runnerId,
@@ -476,13 +493,10 @@ integration("iMessage channel", () => {
         "imessage-widen",
       );
       await setComputerApp(host, computer, widen, widen.id);
-      const restored = await converse(caller, messages, {
-        from: ownerPhone,
-        reply: "Back.",
-        text: "And now?",
-      });
-      expect(restored.send.text).toBe("Back.");
-      record("narrowed then widened", { dropped: dropped.guid, withheld });
+      const afterWiden = messages.receive(ownerPhone, "And now?");
+      await waitForCondition(async () => (await ingressStatus(afterWiden.guid)) === "ignored");
+      expect(messages.sends.map(({ text }) => text)).not.toContain("Here is the draft.");
+      record("narrowing ended the bridge", { dropped: dropped.guid, withheld });
 
       // 11. Removing Messages ends the channel, on the Host and on the Mac.
       await testRpcData(
@@ -531,9 +545,25 @@ integration("iMessage channel", () => {
         return ingress?.status;
       }
 
+      async function bridgeTaskCount() {
+        const rows = await host.store.database
+          .selectFrom("threads")
+          .select("id")
+          .where("originConnectionId", "=", bridge.id)
+          .execute();
+        return rows.length;
+      }
+
+      async function bridgeState() {
+        const listed = await new AgentConnectionStore(host.store.database).list(host.ownerId, {
+          includeRevoked: true,
+        });
+        return listed.find(({ id }) => id === bridge.id)?.state;
+      }
+
       async function deliveryCount() {
         const rows = await host.store.database
-          .selectFrom("channelDeliveries")
+          .selectFrom("bridgeDeliveries")
           .select("id")
           .where("accountId", "=", accountId)
           .execute();
@@ -542,7 +572,7 @@ integration("iMessage channel", () => {
 
       async function deliveryStatus(messageId: MessageId) {
         const delivery = await host.store.database
-          .selectFrom("channelDeliveries")
+          .selectFrom("bridgeDeliveries")
           .select("status")
           .where("messageId", "=", messageId)
           .executeTakeFirst();
@@ -553,14 +583,14 @@ integration("iMessage channel", () => {
         // The fake Mac records the send before the Host commits its delivery receipt.
         await waitForCondition(async () => {
           const delivery = await host.store.database
-            .selectFrom("channelDeliveries")
+            .selectFrom("bridgeDeliveries")
             .select("status")
             .where("id", "=", key as never)
             .executeTakeFirstOrThrow();
           return delivery.status === "sent";
         });
         const delivery = await host.store.database
-          .selectFrom("channelDeliveries")
+          .selectFrom("bridgeDeliveries")
           .select(["accountId", "status"])
           .where("id", "=", key as never)
           .executeTakeFirstOrThrow();

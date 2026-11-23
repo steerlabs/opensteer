@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import {
   OpensteerError,
@@ -255,8 +256,14 @@ export async function startPersonalToolCall(
 ) {
   const run = await lockToolScope(tx, input, locked);
   const tool = ToolIdentitySchema.parse(input.tool);
-  const integration = input.integration
-    ? IntegrationCallSubjectSchema.parse(input.integration)
+  const subject = input.integration;
+  const app = subject?.computerApp;
+  const integration = subject
+    ? IntegrationCallSubjectSchema.parse(
+        app
+          ? { ...subject, computerApp: { ...app, app: outsideName(app.app, 240) || "App" } }
+          : subject,
+      )
     : null;
   const id = toolCallId(input);
   const existing = await currentCall(tx, id);

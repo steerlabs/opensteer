@@ -2288,22 +2288,19 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     },
   ],
 
-  [
-    "opensteer_messaging_bridge_list",
-    said(["Looking up messaging bridges", "Looked up messaging bridges"], "share"),
-  ],
+  ["opensteer_messaging_bridge_list", said(["Looking up chats", "Looked up chats"], "share")],
   [
     "opensteer_messaging_bridge_update",
     saidByFlag(
       "paused",
-      ["Pausing a messaging bridge", "Paused a messaging bridge"],
-      ["Resuming a messaging bridge", "Resumed a messaging bridge"],
+      ["Pausing a chat", "Paused a chat"],
+      ["Resuming a chat", "Resumed a chat"],
       "share",
     ),
   ],
   [
     "opensteer_messaging_bridge_remove",
-    said(["Removing a messaging bridge", "Removed a messaging bridge"], "share"),
+    said(["Disconnecting a chat", "Disconnected a chat"], "share"),
   ],
 
   ["opensteer_plugin_list", said(["Looking up plugins", "Looked up plugins"], "puzzle")],

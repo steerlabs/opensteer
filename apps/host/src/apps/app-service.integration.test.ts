@@ -1,6 +1,6 @@
 import { DeviceIdSchema } from "@opensteer/core";
 import Fastify from "fastify";
-import { createChannelId, slackChannelProviderManifest } from "@opensteer/channel-core";
+import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { Readable } from "node:stream";
@@ -27,6 +27,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
+  AgentConnectionStore,
   AppStore,
   TabStore,
   ChannelStore,
@@ -568,14 +569,6 @@ describeStore("published app HTML", (it) => {
       .execute();
     const configured = await new ChannelStore(f.database).createConnection({
       createdBy: run.userId,
-      accessPolicy: {
-        directMessages: { mode: "anyone", allowedExternalUserIds: [] },
-        channels: {
-          conversationIds: [],
-          scope: "all",
-          sender: { mode: "anyone", allowedExternalUserIds: [] },
-        },
-      },
       account: {
         displayName: "Restricted",
         externalAccountId: "restricted-app-context",
@@ -598,30 +591,29 @@ describeStore("published app HTML", (it) => {
         ownerId: run.userId,
         provider: "channel:slack",
       },
-      executionPolicy: { harness: "specific", harnessInstanceId: run.harnessInstance.id },
-      selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
     });
-    const conversationId = createChannelId("conversation");
-    await f.database
-      .insertInto("channelConversations")
-      .values({
-        id: conversationId,
-        accountId: configured.account.id,
-        provider: "slack",
-        externalAccountId: "restricted-app-context",
-        bindingId: configured.binding.id,
-        bindingRevision: 1,
-        externalScopeId: null,
-        externalConversationId: "group",
-        externalThreadId: null,
-        conversationType: "group",
-        displayName: "Group",
-        activeThreadId: run.threadId,
-        providerState: {},
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .execute();
+    // Work for a bridge anyone in a group may speak to has no personal context.
+    const bridge = await new AgentConnectionStore(f.database).createBridge({
+      userId: run.userId,
+      accountId: configured.account.id,
+      conversation: { id: "group", name: "Group" },
+      senders: "anyone",
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const lineage = async (connectionId: string | null) => {
+      await f.database
+        .updateTable("threads")
+        .set({ originConnectionId: connectionId })
+        .where("id", "=", run.threadId)
+        .execute();
+      await f.database
+        .updateTable("runs")
+        .set({ connectionId })
+        .where("id", "=", run.runId)
+        .execute();
+    };
+    await lineage(bridge.id);
     for (const call of [
       () => service.list(actor),
       () => service.stop(actor, reservation.appId),
@@ -629,7 +621,7 @@ describeStore("published app HTML", (it) => {
       () => service.publish(scope, "restricted-html", { path: "index.html", name: "Denied" }),
     ])
       await expect(call()).rejects.toMatchObject({ code: "not_found" });
-    await f.database.deleteFrom("channelConversations").where("id", "=", conversationId).execute();
+    await lineage(null);
     const aborted = new AbortController();
     aborted.abort();
     await expect(

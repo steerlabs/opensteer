@@ -26,6 +26,7 @@ import {
 import { integrationAccessCovers } from "@opensteer/integration-core/access";
 import { computerAppApprovalChangedReason } from "@opensteer/integration-core/computer-app-setup";
 import { OpensteerError, createId, type RequestId, type UserId } from "@opensteer/core";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { type Selectable, type Transaction, sql } from "kysely";
 import type { DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 import {
@@ -503,13 +504,13 @@ export async function writeComputerConnectionInTransaction(
   },
 ): Promise<Selectable<IntegrationConnectionTable>> {
   const { current, definition, installed, scope } = input.target;
+  const appName = input.app ? outsideName(input.app.displayName, 255) || "App" : null;
   const values = {
     computerAccess: input.access,
     computerApp: input.app === null ? null : jsonValue(input.app),
     computerAppKey: scope.appKey,
     computerBlockedAt: null,
-    displayName:
-      input.app === null ? input.runner.name : `${input.app.displayName} on ${input.runner.name}`,
+    displayName: appName === null ? input.runner.name : `${appName} on ${input.runner.name}`,
     integrationServerId: installed.serverId,
     provider: definition.provider,
     status: "connected" as const,
@@ -637,7 +638,7 @@ export async function finishComputerConnectionChangeInTransaction(
     ...(grantAccess ? { alsoGrant: { access: grantAccess } } : {}),
     connection: {
       access: input.connectionAccess,
-      alias: app?.displayName ?? input.row.displayName,
+      alias: app ? outsideName(app.displayName, 80) || "App" : input.row.displayName,
       app,
       definitionDigest: input.definitionDigest,
       connectionId,

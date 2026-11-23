@@ -1,3 +1,4 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { requireNoBrowserStandardCdpLease } from "./browser-standard-cdp-lease.js";
 import {
   BrowserPoolAdmissionClosed,
@@ -168,7 +169,7 @@ export async function insertBrowserProfileOnLockedHome(
       .values({
         archivedAt: null,
         id: createId("browserProfile"),
-        name: input.name,
+        name: outsideName(input.name, 120) || "Browser profile",
         ownerId: input.ownerId,
         homeRunnerId: input.homeRunnerId,
         purpose: input.purpose ?? "person",
@@ -302,7 +303,7 @@ export async function renameBrowserProfile(
       await assertPersonalOwner(transaction, input.ownerId);
       const row = await transaction
         .updateTable("browserProfiles")
-        .set({ name: input.name, updatedAt: new Date() })
+        .set({ name: outsideName(input.name, 120) || "Browser profile", updatedAt: new Date() })
         .where("id", "=", input.profileId)
         .where("ownerId", "=", input.ownerId)
         .where("archivedAt", "is", null)
@@ -1261,7 +1262,7 @@ async function upsertBrowserSessionUseRow(
   id: string,
   input: BrowserSessionUseWrite,
 ): Promise<boolean> {
-  const pageTitle = input.page ? input.page.title.slice(0, 256) : null;
+  const pageTitle = input.page ? outsideName(input.page.title, 256) : null;
   const pageSite = input.page ? input.page.site.slice(0, 2048) : null;
   const row = await database
     .insertInto("browserSessionUses")
@@ -1357,7 +1358,7 @@ export async function recordIncludedBrowserPages(
   const pages = input.content.flatMap((part) => (part.type === "browser-page" ? [part] : []));
   if (pages.length === 0) return [];
   const threadId = await personBrowserThread(transaction, input);
-  if (!threadId) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+  if (!threadId) throw new OpensteerError({ code: "not_found", message: "Task not found" });
   for (const page of pages) {
     if (await getBrowserSessionForOwner(transaction, page.sessionId, input.ownerId)) continue;
     throw new OpensteerError({
@@ -2037,7 +2038,7 @@ export function recordRunTabPlace(
 ): Promise<boolean> {
   const place = eventDataSchemas["place.entered"].parse({
     ...input.data,
-    title: utf8Prefix(storableText(input.data.title), 1024),
+    title: utf8Prefix(outsideName(storableText(input.data.title), 1024), 1024),
   });
   return commitPersonalMutation(database, async (tx, mutation) => {
     const owner = await tx

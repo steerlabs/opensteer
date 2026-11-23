@@ -447,6 +447,23 @@ Pages are separated by lineage; signed-in state is not. The isolation boundary f
 sign-ins is the browser profile. A connected agent works only in profiles granted to it, never in
 Guest. Two agents granted the same profile share its signed-in state.
 
+On a Linux Home or a Cloud Computer, tabs nobody is using sleep, and wake with their state while
+the browser keeps running, which makes it unlikely that a Home with many tabs on a small machine
+runs out of memory (not impossible: when every tab is in use, a new tab still opens, and a storm of
+pages that a page opens can outrun sleeping, so background tabs can then be lost to the system). A sleeping tab is discarded in Chromium (freeing its renderer while keeping its tab
+state, driven by container working set or host memory pressure with 70%/60% hysteresis, also
+checked before each new page opens) and named, only while it sleeps, through a minimal internal
+helper extension that is never visible to tab lists, session CDP or connected agents; it is removed
+with confirmation and bounded retries when the tab closes or its session ends. When the browser
+itself restarts (a Home update, a crash, a cold start), each tab reopens at its address: what was
+typed and not sent, its scroll position and its back history are not kept across that restart;
+sign-ins are kept, since they live in the profile, except that a sign-in made in the last half
+minute before the browser is killed may not be (Chromium writes its cookies to disk on its own
+timer). The launcher deletes the last session's
+records in the profile directory it owns before launch, and refuses a launch that finds a page. On a
+Cloud Computer the browser pool keeps the exact state through idle time, so a restart is the rare
+case there.
+
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with
 `tab_list` and works in them through `browser_use` or `browser_connect`. Stop, Disconnect and a
@@ -489,6 +506,80 @@ approval protects which login or card is released, to which site, each time.
 Where fills work: only in the browser of the person's own Mac that hosts the Home. The standard
 CDP endpoint refuses both fill commands. A Home whose hosting device has no Passwords broker (an
 Opensteer Cloud Computer, a self-hosted Linux Home) does not list the two tools.
+
+## Chats: Slack and iMessage
+
+A chat is a connected agent reached through one of the person's messaging accounts: its direct
+messages, or one named channel. It is an `agent_connections` row with a grant like any other
+(`bridge_account_id`, `bridge_conversation_id`, `bridge_senders`), listed, edited and disconnected
+in the same places (`packages/database/src/agent-connection-store.ts`, `createBridge`). Its caller
+is the chat identity of whoever wrote the message: the Home resolves it for each message
+(`apps/host/src/channels/bridge-caller.ts`) and every task tool asks again whether that sender may
+speak, at the moment it acts (`admitBridgeSender`, `packages/database/src/bridge-admission.ts`).
+
+Who may speak is chosen when the chat is added and never changes on that row: **me** (the one
+identity linked to the person on that account, by a code the person sends from their own account;
+linking another replaces it, and nothing is said in the chat), or **anyone** who can write in that
+one channel, whose tasks run without the person's personal context (`lineageHasPersonalContext`).
+
+What a chat may hold follows from who may speak, in one rule: `chatGrantShape` and
+`chatGrantRefusal` (`packages/core/src/agent-grants.ts`). A chat always holds tasks; an anyone chat
+holds no more than tasks and plugins, never everything. The Home refuses any other grant
+(`assertBridgeGrant`) and sends the shape with each chat (`bridge.grantShape`, optional), so the
+grant editors offer only what it allows and check it before they create anything.
+
+### Three states, one function
+
+`connectionState` (`packages/database/src/connection-liveness.ts`) answers live, waiting or ended
+in the statement that reads the row. A chat has ended when it is revoked, its grant holds no tasks,
+its account or channel is gone or belongs to someone else, its Mac lost Messages or was removed,
+or the work Home is closing; it is waiting while its account is paused or needs attention, or its
+channel is paused (`chatAccountState`). The person reads them as active, paused and ended.
+
+| Layer                                                                        | live                                 | waiting (paused)                                                                                        | ended                                        |
+| ---------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| A message arriving (`claimIngress`, `ingressWaiting`)                        | decided                              | left pending, not claimed                                                                               | decided and ignored                          |
+| Deciding it, resolving its caller, the task tools                            | runs                                 | given back to pending, attempt refunded (`chatWaitingError`)                                            | ignored, nothing said                        |
+| A code to link "me"                                                          | linked                               | given back, redeemed when back                                                                          | ignored                                      |
+| Queued messages (`ensureQueuedRun`, `claimFollowUps`)                        | run, if their sender may still speak | kept in order                                                                                           | cancelled                                    |
+| A Run (listing, claim, first check, hand-off)                                | sent                                 | held: pending and queued, not listed, no error, no timer                                                | failed                                       |
+| An automation of the chat (its own lineage, `triggers.origin_connection_id`) | runs                                 | does not fire (nothing created, nothing moved); fires once, late, when back; a tick from before is held | ended with the chat                          |
+| Replies and notices (`claimDelivery`, `startDeliveryAttempt`)                | sent                                 | kept, sent in order when back                                                                           | cancelled; one that may have left is unknown |
+| A standard CDP attempt                                                       | opens                                | refused                                                                                                 | refused                                      |
+| The list and the page                                                        | active                               | paused, with why and what becomes of messages                                                           | stopping, then stopped, with why             |
+
+One wake brings everything back (`ChannelService #wakeHeld`: `wakeChatQueues`, then the ingress
+drain): the person's resume, a successful check of the account, and the runtime reporting the
+account healthy again each call it, and its commit wakes the dispatcher and the schedule loop.
+"Held" is only ever read from the chat's state before anything reaches a Runner; once the send has
+passed, an end the Home cannot confirm stays unknown.
+
+### What a pause does to a message sent meanwhile
+
+It depends on the transport, and the provider's manifest says which (`pausedMessages`,
+`packages/channel-core/src/catalog.ts`); the screens say it in those words. iMessage keeps it: the
+Mac's cursor in Messages history reads on from where it stopped, and a message more than an hour
+old is answered that it came too late. Slack does not deliver it: Socket Mode holds nothing for a
+closed connection, and nothing reads history on reconnect.
+
+### What a memory pass reads
+
+A memory pass reads tasks as the person's own conversations, and a chat others can speak in is not
+that. So a memory worker's own task tree (a task whose lineage root is the task a memory automation
+is anchored to: the pass and the workers it delegates to) sees, of tasks and of what derives from
+them, only what has personal context; the rest reads exactly like what does not exist
+(`readerSees`, `packages/database/src/task-reader.ts`, used by every agent-side read of a task, a
+delegation, a Request or an automation). This keeps other people's words from being taken as the
+person's. It is not a wall: a pass still reads the person's mail and messages, which other people
+write, a task it creates for the person is an ordinary task of theirs, and its tab list may name a
+task it cannot read.
+
+### What Disconnect ends
+
+Disconnecting a chat is the Disconnect above: its Runs, queued messages (the person's own on its
+tasks included, since they take the task's lineage), automations and replies not yet sent. A reply
+that may have been sent is kept as unknown and shown as "may have been sent", never sent again.
+Removing a messaging account ends every chat on it.
 
 ## Organizations and work Homes
 

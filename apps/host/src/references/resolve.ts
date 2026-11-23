@@ -54,7 +54,7 @@ export function createThreadRequestHandler(
       return withPersonalSyncRead(store.database, async (tx) => {
         await authorizedSyncState(tx, ownerId);
         if (!(await authorizedDetail(tx, ownerId, { kind: "thread", threadId: input.threadId })))
-          throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+          throw new OpensteerError({ code: "not_found", message: "Task not found" });
         const rows = await tx
           .selectFrom("requests")
           .selectAll()
@@ -96,7 +96,7 @@ export function createThreadRequestHandler(
         message: "A targeted Request read cannot page",
       });
     const thread = await store.getThreadForOwner(input.threadId, ownerId);
-    if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+    if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
     const reference = input.requestId
       ? await store.requests.referenceForOwner({
           ownerId,
