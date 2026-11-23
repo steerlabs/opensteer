@@ -21,9 +21,9 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import { threadCallerLineageId } from "./thread-caller.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
+import { threadExecutionAdmitted } from "./execution-authority.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
 export const AgentRequestResponderSchema = z.object({
   expectedRevision: PersonalRevisionSchema,
   authority: z.object({
@@ -118,32 +118,7 @@ async function connectionRequestsQuery(
     .leftJoin("agentSessions", "agentSessions.id", "requests.originatingAgentSessionId")
     .selectAll("requests")
     .where("threads.createdBy", "=", authority.userId)
-    .$if(isWorkHomeDatabase(tx), (query) =>
-      query.where((eb) =>
-        eb.exists(
-          eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"),
-        ),
-      ),
-    )
-    .where((eb) =>
-      eb.exists(
-        eb
-          .selectFrom("personalSettings")
-          .innerJoin("users", "users.id", "personalSettings.ownerId")
-          .innerJoin(
-            "executionEnvironments",
-            "executionEnvironments.runnerId",
-            "personalSettings.agentHomeComputerId",
-          )
-          .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
-          .select("executionEnvironments.id")
-          .where("personalSettings.singletonKey", "=", "personal")
-          .where("personalSettings.ownerId", "=", authority.userId)
-          .where("users.disabledAt", "is", null)
-          .whereRef("executionEnvironments.id", "=", "threads.environmentId")
-          .where("runners.revokedAt", "is", null),
-      ),
-    )
+    .where(threadExecutionAdmitted(tx, authority.userId))
     .$if(scope === "selected", (query) =>
       query.where("threads.originConnectionId", "=", authority.connectionId),
     )

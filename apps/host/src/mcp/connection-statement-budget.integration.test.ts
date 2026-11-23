@@ -123,10 +123,12 @@ describeStore("a connected agent's reads stay within their statement budgets", (
     }
     // Fixed per-call budgets:
     // - discover: 22 (one live check per discover call; 27 before).
-    // - childWait: 89 (settled first snapshot with status === "settled"; previously 36/34 when
-    //   timeoutMs: 1 aborted mid-read and returned timed_out depending on machine speed).
+    // - childWait: 88 (settled first snapshot with status === "settled"; down from 89 after
+    //   unifying admitThreadExecution onto the single-query threadExecutionAdmitted predicate;
+    //   previously 36/34 when timeoutMs: 1 aborted mid-read and returned timed_out depending on
+    //   machine speed).
     // - taskRead: 28 (down from 32 after folding connectionRequests into recent/activity SQL
     //   and removing post-hoc visibleConnectionRequestIds and duplicate owner reads).
-    expect(counts).toEqual({ discover: 22, childWait: 89, taskRead: 28 });
+    expect(counts).toEqual({ discover: 22, childWait: 88, taskRead: 28 });
   });
 });
