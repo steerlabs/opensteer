@@ -970,11 +970,6 @@ export class DesktopHostTransport extends HostTransport {
       JSON.stringify(BrowserClientMessageSchema.parse(message)),
     );
   }
-  openBrowserSurface(ownerId: number, connectionId: string, url: string): void {
-    this.#ownedSocket(ownerId, connectionId).network.send(
-      JSON.stringify(BrowserClientMessageSchema.parse({ type: "surface.open", url })),
-    );
-  }
 
   #ownedSocket(ownerId: number, connectionId: string): OwnedSocket {
     const socket = this.#sockets.get(connectionId);

@@ -738,6 +738,10 @@ function observeContext(
         const opener = await page.opener();
         return opener ? wrap(opener) : null;
       },
+      ...(page.hasOpenerAccess ? { hasOpenerAccess: () => page.hasOpenerAccess!() } : {}),
+      get openedInBackground() {
+        return page.openedInBackground === true;
+      },
       targetId: () => page.targetId(),
       title: () => page.title(),
       url: () => page.url(),
@@ -756,7 +760,9 @@ function observeContext(
       );
     },
     handOff: (listener) =>
-      context.handOff((page, opener) => listener(wrap(page), opener ? wrap(opener) : null)),
+      context.handOff((page, opener, inferred) =>
+        listener(wrap(page), opener ? wrap(opener) : null, inferred),
+      ),
     offPage: (listener) => {
       const observed = listeners.get(listener);
       if (!observed) return;

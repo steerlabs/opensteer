@@ -186,6 +186,11 @@ export class PageEditingObserver {
   #generation = 0;
   #geometrySequence = 0;
   #rootFrame: string | null = null;
+  #remoteEditing: boolean;
+  #appliedRemote = false;
+  #started = false;
+  #remoteSync: Promise<void> | null = null;
+  #focusEmulated = false;
 
   constructor(
     cdp: CdpSession,
@@ -197,11 +202,13 @@ export class PageEditingObserver {
     ) => Promise<EditingContext["caret"]>,
     person?: (event: PersonFillObservation) => void,
     save?: (event: PersonSaveObservation) => void,
+    remoteEditing = true,
   ) {
     this.#cdp = cdp;
     this.#mapGeometry = geometry;
     this.#person = person;
     this.#save = save;
+    this.#remoteEditing = remoteEditing;
     this.#frames = new FrameCdpSessions(
       cdp,
       (session) => {
@@ -221,6 +228,7 @@ export class PageEditingObserver {
           (frame, caret) => this.#geometry(frame, caret),
           this.#person,
           this.#save,
+          this.#remoteEditing,
         );
         child.#root = this.#root ?? this;
         this.#children.set(session, child);
@@ -271,13 +279,17 @@ export class PageEditingObserver {
   }
 
   async start(): Promise<void> {
+    const initialRemote = this.#remoteEditing;
     const tree = await this.#cdp.send<{ frameTree: { frame: { id: string } } }>(
       "Page.getFrameTree",
     );
     this.#rootFrame = tree.frameTree.frame.id;
-    // A streamed page has DOM focus without owning a native foreground window.
-    if (!this.#mapGeometry)
+    // A streamed page has DOM focus without owning a native foreground window;
+    // native Electron pages own real window focus and must not run focus emulation.
+    if (!this.#mapGeometry && initialRemote) {
       await this.#cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+      this.#focusEmulated = true;
+    }
     await this.#cdp.send("Runtime.enable");
     await this.#cdp.send("Runtime.addBinding", {
       name: this.#binding,
@@ -290,13 +302,87 @@ export class PageEditingObserver {
           this.#binding,
           this.#person !== undefined,
           this.#save !== undefined,
+          initialRemote,
         ),
         worldName: this.#world,
         runImmediately: true,
       },
     );
     this.#script = result.identifier;
+    this.#appliedRemote = initialRemote;
+    this.#started = true;
     await this.#frames.start();
+    if (!this.#closed && this.#appliedRemote !== this.#remoteEditing) this.#scheduleRemoteSync();
+  }
+
+  /**
+   * Enables or disables remote caret/selection tracking and focus emulation.
+   * Native Electron pages with no remote frame viewer keep password fill/save
+   * active while skipping caret mirror layout reflows and CDP geometry chatter.
+   */
+  setRemoteEditing(enabled: boolean): void {
+    if (this.#closed || this.#remoteEditing === enabled) return;
+    this.#remoteEditing = enabled;
+    for (const child of this.#children.values()) child.setRemoteEditing(enabled);
+    if (this.#started) this.#scheduleRemoteSync();
+  }
+
+  #scheduleRemoteSync(): void {
+    if (this.#remoteSync) return;
+    const sync = (async () => {
+      while (!this.#closed && this.#started && this.#appliedRemote !== this.#remoteEditing) {
+        const target = this.#remoteEditing;
+        if (!this.#mapGeometry && this.#focusEmulated !== target) {
+          this.#focusEmulated = target;
+          await this.#cdp
+            .send("Emulation.setFocusEmulationEnabled", { enabled: target })
+            .catch(() => undefined);
+        }
+        if (this.#closed) break;
+        if (this.#script) {
+          const previous = this.#script;
+          this.#script = null;
+          await this.#cdp
+            .send("Page.removeScriptToEvaluateOnNewDocument", { identifier: previous })
+            .catch(() => undefined);
+          if (this.#closed) break;
+          const next = await this.#cdp
+            .send<{ identifier: string }>("Page.addScriptToEvaluateOnNewDocument", {
+              source: editingObserverSource(
+                this.#binding,
+                this.#person !== undefined,
+                this.#save !== undefined,
+                target,
+              ),
+              worldName: this.#world,
+              runImmediately: false,
+            })
+            .catch(() => null);
+          if (next) {
+            if (this.#closed)
+              void this.#cdp
+                .send("Page.removeScriptToEvaluateOnNewDocument", { identifier: next.identifier })
+                .catch(() => undefined);
+            else this.#script = next.identifier;
+          }
+        }
+        if (this.#closed) break;
+        for (const contextId of this.#contexts.keys())
+          void this.#cdp
+            .send("Runtime.evaluate", {
+              contextId,
+              expression: `globalThis.editingOwner?.setRemote(${target ? "true" : "false"})`,
+              silent: true,
+            })
+            .catch(() => undefined);
+        this.#appliedRemote = target;
+      }
+    })();
+    this.#remoteSync = sync.finally(() => {
+      if (this.#remoteSync === sync) this.#remoteSync = null;
+      if (!this.#closed && this.#started && this.#appliedRemote !== this.#remoteEditing)
+        this.#scheduleRemoteSync();
+    });
   }
 
   refresh(): void {
@@ -387,7 +473,7 @@ export class PageEditingObserver {
       }
       return true;
     } finally {
-      await this.#finishInput(focus.context);
+      await this.#finishInput(focus.context, true);
     }
   }
 
@@ -403,15 +489,15 @@ export class PageEditingObserver {
     try {
       return await action();
     } finally {
-      await this.#finishInput(context);
+      await this.#finishInput(context, false);
     }
   }
 
-  async #finishInput(contextId: number): Promise<void> {
+  async #finishInput(contextId: number, immediate = true): Promise<void> {
     await this.#cdp
       .send("Runtime.evaluate", {
         contextId,
-        expression: "globalThis.editingOwner?.finishInput()",
+        expression: `globalThis.editingOwner?.finishInput(${immediate ? "true" : "false"})`,
         silent: true,
       })
       .catch(() => undefined);
@@ -767,20 +853,36 @@ export class PageEditingObserver {
         .catch(() => undefined);
     void this.#cdp.send("Runtime.removeBinding", { name: this.#binding }).catch(() => undefined);
     this.#contexts.clear();
-    if (!this.#mapGeometry)
+    if (!this.#mapGeometry && this.#focusEmulated) {
+      this.#focusEmulated = false;
       void this.#cdp
         .send("Emulation.setFocusEmulationEnabled", { enabled: false })
         .catch(() => undefined);
+    }
   }
 }
 
-function editingObserverSource(binding: string, personFill: boolean, personSave: boolean): string {
+function editingObserverSource(
+  binding: string,
+  personFill: boolean,
+  personSave: boolean,
+  initialRemote = true,
+): string {
   return `(() => {
   if (globalThis.editingOwner) return;
   const listeners = [],
     ids = new WeakMap();
+  const mirrorStyleProps = [
+    "direction", "box-sizing", "font-family", "font-size", "font-style",
+    "font-variant", "font-weight", "font-stretch", "letter-spacing", "line-height",
+    "tab-size", "text-align", "text-indent", "text-rendering", "text-transform",
+    "word-spacing", "word-break", "overflow-wrap", "writing-mode",
+    "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+    "padding-top", "padding-right", "padding-bottom", "padding-left",
+  ];
   let next = 0,
     scheduled = 0,
+    remote = ${initialRemote ? "true" : "false"},
     last = null,
     anchor = null,
     selectionRevision = 0,
@@ -789,6 +891,12 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     mirrorPrefix = null,
     mirrorSuffix = null,
     mirrorMarker = null,
+    mirrorStyledEl = null,
+    mirrorStyledSize = "",
+    lastCaretEl = null,
+    lastCaretKey = "",
+    lastCaretRect = null,
+    lastPersonKey = "",
     observedEditContext = null,
     stopEditContext = () => {};
   const on = (target, type, fn, options = true) => {
@@ -838,7 +946,12 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     anchor = current;
   };
   const beginInput = () => {syncSelection();ownInput++;};
-  const finishInput = () => {anchor = selectionAnchor();ownInput = Math.max(0, ownInput - 1);publish();};
+  const finishInput = (immediate = true) => {
+    anchor = selectionAnchor();
+    ownInput = Math.max(0, ownInput - 1);
+    if (immediate) publish();
+    else schedule();
+  };
   const accept = (result = {ok:true}) => {ownInput++;return result;};
   const rect = (range) => {
     const boxes = range.getClientRects();
@@ -860,6 +973,11 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     }
     const position = element.selectionEnd;
     if (position === null) return null;
+    const box = element.getBoundingClientRect();
+    const value = element.value;
+    const cacheKey = position + "|" + element.scrollLeft + "|" + element.scrollTop + "|" +
+      box.left + "|" + box.top + "|" + box.width + "|" + box.height + "|" + value;
+    if (lastCaretEl === element && lastCaretKey === cacheKey && lastCaretRect) return lastCaretRect;
     // Removing even an unrelated node closes Blink's native typing command.
     // Keep the measurement tree and update CharacterData without replacing nodes.
     if (!mirror) {
@@ -870,25 +988,29 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       mirrorMarker.textContent = "​";
       mirror.append(mirrorPrefix, mirrorMarker, mirrorSuffix);
     }
-    const style = getComputedStyle(element);
-    // The mirror is connected: interleaved style reads/writes would recalculate per property.
-    const properties = Array.from(style, name => [name, style.getPropertyValue(name)]);
-    const box = element.getBoundingClientRect();
-    for (const [name, value] of properties) mirror.style.setProperty(name, value);
-    Object.assign(mirror.style, {
-      position: "fixed",
-      left: box.left + "px",
-      top: box.top + "px",
-      width: box.width + "px",
-      height: box.height + "px",
-      visibility: "hidden",
-      pointerEvents: "none",
-      boxSizing: "border-box",
-      margin: "0",
-      whiteSpace: element.tagName === "TEXTAREA" ? "pre-wrap" : "pre",
-      overflow: "hidden",
-    });
-    const prefix = element.value.slice(0, position), suffix = element.value.slice(position);
+    const sizeKey = box.width + "x" + box.height;
+    if (mirrorStyledEl !== element || mirrorStyledSize !== sizeKey) {
+      const style = getComputedStyle(element);
+      // Copy only text-layout properties (27 vs ~380 computed styles) and cache per field/size.
+      const properties = mirrorStyleProps.map(name => [name, style.getPropertyValue(name)]);
+      for (const [name, propValue] of properties) mirror.style.setProperty(name, propValue);
+      Object.assign(mirror.style, {
+        position: "fixed",
+        visibility: "hidden",
+        pointerEvents: "none",
+        boxSizing: "border-box",
+        margin: "0",
+        whiteSpace: element.tagName === "TEXTAREA" ? "pre-wrap" : "pre",
+        overflow: "hidden",
+      });
+      mirrorStyledEl = element;
+      mirrorStyledSize = sizeKey;
+    }
+    mirror.style.left = box.left + "px";
+    mirror.style.top = box.top + "px";
+    mirror.style.width = box.width + "px";
+    mirror.style.height = box.height + "px";
+    const prefix = value.slice(0, position), suffix = value.slice(position);
     if (mirrorPrefix.data !== prefix) mirrorPrefix.data = prefix;
     if (mirrorSuffix.data !== suffix) mirrorSuffix.data = suffix;
     if (!mirror.isConnected) document.documentElement.append(mirror);
@@ -897,7 +1019,10 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     const result = mirrorMarker.getBoundingClientRect();
     if (mirrorPrefix.data) mirrorPrefix.data = "";
     if (mirrorSuffix.data) mirrorSuffix.data = "";
-    return result;
+    lastCaretEl = element;
+    lastCaretKey = cacheKey;
+    lastCaretRect = result ? { x: result.x, y: result.y, height: result.height } : null;
+    return lastCaretRect;
   };
   const personBindings = new Map(),
     inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
@@ -932,7 +1057,10 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
   };
   const release = (id) => {
     personBindings.delete(id);
-    if (personBinding === id) personBinding = null;
+    if (personBinding === id) {
+      personBinding = null;
+      lastPersonKey = "";
+    }
   };
   const publishPerson = (activated = false) => {
     const bound = personBindings.get(personBinding), target = bound?.target.deref();
@@ -943,6 +1071,9 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       return;
     }
     const box = target.getBoundingClientRect();
+    const key = personBinding + "|" + box.x + "|" + box.y + "|" + box.width + "|" + box.height;
+    if (!activated && key === lastPersonKey) return;
+    lastPersonKey = key;
     globalThis[${JSON.stringify(binding)}](JSON.stringify({kind:"person-fill",bindingId:personBinding,role:bound.role,activated,
       box:{x:box.x,y:box.y,width:box.width,height:box.height},slots:{partner:!!bound.partner,group:!!bound.group}}));
   };
@@ -1102,9 +1233,10 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
   }
   const publish = () => {
     publishPerson();
-    syncSelection();
     if (scheduled) cancelAnimationFrame(scheduled);
     scheduled = 0;
+    if (!remote) return;
+    syncSelection();
     const element = active(),
       kind = mechanism(element);
     if (!document.hasFocus() || !kind || element.disabled || element.readOnly) {
@@ -1305,12 +1437,25 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     );
   const sensitive = () => document.hasFocus() && isSensitive(active());
   on(document, "contextmenu", (event) => {
+    if (!event.isTrusted) return;
+    const xlinkNs = "http://www.w3.org/1999/xlink";
     const path = event.composedPath(),
       element = path.find((node) => node instanceof HTMLElement),
-      link = path.find((node) => node instanceof Element && node.matches("a[href],area[href]"));
+      link = path.find(
+        (node) =>
+          node instanceof Element &&
+          (node.matches("a[href],area[href]") ||
+            (node.localName === "a" &&
+              (node.hasAttributeNS(xlinkNs, "href") || node.hasAttribute("xlink:href")))),
+      );
     let linkUrl;
     try {
-      if (link) linkUrl = new URL(link.getAttribute("href"), link.baseURI).href;
+      const href = link
+        ? (link.getAttribute("href") ??
+          link.getAttributeNS(xlinkNs, "href") ??
+          link.getAttribute("xlink:href"))
+        : null;
+      if (link && href !== null) linkUrl = new URL(href, link.baseURI).href;
     } catch {}
     const facts = {
       kind: "menu",
@@ -1337,8 +1482,20 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     passwordShown,
     beginInput,
     finishInput,
+    setRemote: (enabled) => {
+      if (remote === enabled) return;
+      remote = enabled;
+      if (enabled) {
+        last = null;
+        lastCaretKey = "";
+        schedule();
+      }
+    },
     publish: () => {
       last = null;
+      lastCaretKey = "";
+      mirrorStyledEl = null;
+      lastPersonKey = "";
       schedule();
     },
     prepare,

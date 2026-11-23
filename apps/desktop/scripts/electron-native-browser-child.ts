@@ -826,8 +826,6 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     quit: () => app.quit(),
     transport: {
       closeSocketsForOwner: (id) => transport.closeSocketsForOwner(id),
-      openBrowserSurface: (id, connection, url) =>
-        transport.openBrowserSurface(id, connection, url),
       passkeyConsumerToken: (ownerId, connectionId, surfaceId) =>
         transport.passkeyConsumerToken(ownerId, connectionId, surfaceId),
       viewerConsumerToken: (ownerId, connectionId, surfaceId) =>

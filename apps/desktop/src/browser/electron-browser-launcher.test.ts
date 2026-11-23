@@ -81,6 +81,8 @@ vi.mock("electron", () => {
       restore: vi.fn(async () => electron.restore?.()),
       getAllEntries: vi.fn(() => [{ url: "https://restore.test/", title: "Saved" }]),
       getActiveIndex: vi.fn(() => 0),
+      canGoBack: vi.fn(() => false),
+      canGoForward: vi.fn(() => false),
     };
     readonly isCurrentlyAudible = vi.fn(() => false);
     readonly isBeingCaptured = vi.fn(() => false);
@@ -2203,12 +2205,88 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       const opened: { readonly openedInBackground?: boolean }[] = [];
       browser.context.onPage((page) => opened.push(page));
       const open = electron.views.at(-1)!.webContents.setWindowOpenHandler.mock.calls[0]![0];
+      const beforeViews = electron.views.length;
+      const referrer = {
+        url: "https://origin.test/page",
+        policy: "strict-origin-when-cross-origin",
+      };
       for (const disposition of ["background-tab", "foreground-tab", "new-window"])
-        open({ url: "https://example.test/", disposition }).createWindow({});
-      await vi.waitFor(() => expect(opened).toHaveLength(3));
-      expect(opened.map((page) => page.openedInBackground)).toEqual([true, false, false]);
+        open({ url: `https://example.test/${disposition}`, disposition, referrer }).createWindow(
+          {},
+        );
+      // Electron 44.10.2 supplies a pre-created WebContents for OpenURLInNewWebContents
+      // and starts navigation itself; wrapping it must not call loadURL redundantly.
+      const { WebContentsView } = await import("electron");
+      const precreated = new WebContentsView({}).webContents;
+      open({
+        url: "https://example.test/precreated-bg",
+        disposition: "background-tab",
+        referrer,
+      }).createWindow({ webContents: precreated });
+      await vi.waitFor(() => expect(opened).toHaveLength(4));
+      expect(opened.map((page) => page.openedInBackground)).toEqual([true, false, false, true]);
+      const created = electron.views.slice(beforeViews, beforeViews + 3);
+      expect(created.map((view) => view.webContents.loadURL.mock.calls)).toEqual([
+        [["https://example.test/background-tab", { httpReferrer: referrer }]],
+        [["https://example.test/foreground-tab", { httpReferrer: referrer }]],
+        [["https://example.test/new-window", { httpReferrer: referrer }]],
+      ]);
+      expect(precreated.loadURL).not.toHaveBeenCalled();
     } finally {
       await browser.close();
+    }
+  });
+  it("opens context-menu links as opener-attributed background tabs and refuses disallowed schemes", async () => {
+    const launcher = new ElectronBrowserLauncher({
+      downloads: { accept: () => undefined },
+      pagePolicyPreloadPath: "/policy.cjs",
+    });
+    const browser = await launcher.launch({
+      initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+      partitionKey: "session:context-open",
+      sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
+      storage: { kind: "guest" },
+    });
+    try {
+      const root = browser.context.pages()[0]!;
+      const native = electronPagePresentation(root)!;
+      const opened: Array<{ opener(): Promise<unknown>; readonly openedInBackground?: boolean }> =
+        [];
+      browser.context.onPage((page) => opened.push(page));
+      const beforeViews = electron.views.length;
+
+      native.openInNewTab("javascript:alert(1)");
+      native.openInNewTab("file:///etc/passwd");
+      expect(electron.views.length).toBe(beforeViews);
+
+      native.openInNewTab("https://example.test/from-menu", {
+        background: true,
+        referrer: "https://origin.test/page",
+      });
+      await vi.waitFor(() => expect(opened).toHaveLength(1));
+      expect(opened[0]!.openedInBackground).toBe(true);
+      await expect(opened[0]!.opener()).resolves.toBe(root);
+      expect(electron.views.at(-1)!.webContents.loadURL).toHaveBeenCalledWith(
+        "https://example.test/from-menu",
+        { httpReferrer: "https://origin.test/page" },
+      );
+      const history = (
+        electron.views.at(-1)!.webContents as unknown as {
+          navigationHistory: {
+            canGoBack: ReturnType<typeof vi.fn>;
+            canGoForward: ReturnType<typeof vi.fn>;
+          };
+        }
+      ).navigationHistory;
+      history.canGoBack.mockReturnValue(true);
+      history.canGoForward.mockReturnValue(false);
+      expect(browser.context.pages().at(-1)!.navigationState?.()).toEqual({
+        canGoBack: true,
+        canGoForward: false,
+      });
+    } finally {
+      await browser.close();
+      launcher.close();
     }
   });
   it("binds different partition identities to different Electron sessions (Sec01)", async () => {
@@ -2352,6 +2430,27 @@ describe("native page security formerly exercised by Sec01, I and C", () => {
       expect(native.takeContextMenuTrigger()).toBe(null);
       listener("input-event")({}, { type: "mouseDown" });
       expect(native.takeContextMenuTrigger()).toBe(null);
+      // Control+left-click triggers a context menu on macOS only (on Linux/Windows it opens a link in a new tab).
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+      try {
+        Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+        listener("before-mouse-event")(
+          {},
+          { type: "mouseDown", button: "left", modifiers: ["control"], x: 1, y: 2 },
+        );
+        listener("input-event")({}, { type: "mouseDown" });
+        expect(native.takeContextMenuTrigger()).toBe("person");
+
+        Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+        listener("before-mouse-event")(
+          {},
+          { type: "mouseDown", button: "left", modifiers: ["control"], x: 1, y: 2 },
+        );
+        listener("input-event")({}, { type: "mouseDown" });
+        expect(native.takeContextMenuTrigger()).toBe(null);
+      } finally {
+        if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+      }
       const pending = Promise.withResolvers<unknown>();
       contents.debugger.sendCommand.mockImplementation((method) =>
         method.startsWith("Input.") ? pending.promise : Promise.resolve({}),
