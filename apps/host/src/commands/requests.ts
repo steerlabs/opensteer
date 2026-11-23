@@ -10,6 +10,7 @@ import {
   type RequestId,
   type RequestPresentation,
   type RequestResponse,
+  type HostHomeKind,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
@@ -35,6 +36,7 @@ import {
   commandEditor,
   commandGives,
   commandSentence,
+  type CommandScriptPlace,
 } from "@opensteer/protocol/command-words";
 import { sql, type Kysely } from "kysely";
 import type { AgentCaller } from "../mcp/agent-caller.js";
@@ -126,6 +128,11 @@ export const commandDecisionFieldId = "decision";
 const maxResultBytes = 64 * 1_024;
 /** A name inside the Home's sentence is cut, so the sentence itself always fits whole. */
 const maxNameLength = 80;
+/** A name from outside the Home, as every approval sentence carries one: quoted and bounded. */
+const quotedName = (value: string | null | undefined) =>
+  value
+    ? `“${value.length > maxNameLength ? `${value.slice(0, maxNameLength - 1)}…` : value}”`
+    : null;
 /** What the proposer is told of a refusal: the Home's words, never the handler's. */
 export const commandRefusedWords = "The Home refused it, so nothing changed.";
 
@@ -154,14 +161,18 @@ export class CommandRequestService {
   readonly #store: CommandRequestStore;
   readonly #database: Kysely<DatabaseSchema>;
   readonly #requests: { get(id: RequestId): Promise<Request | null> };
+  readonly #homeKind: HostHomeKind | undefined;
   constructor(options: {
     readonly store: CommandRequestStore;
     readonly database: Kysely<DatabaseSchema>;
     readonly requests: { get(id: RequestId): Promise<Request | null> };
+    /** What this Home's own computer is (its configuration): where its own work runs. */
+    readonly homeKind?: HostHomeKind | undefined;
   }) {
     this.#store = options.store;
     this.#database = options.database;
     this.#requests = options.requests;
+    this.#homeKind = options.homeKind;
   }
 
   /** Opens the person's Request for a command the door put to the person. */
@@ -185,7 +196,11 @@ export class CommandRequestService {
     const named = commandSentence(input.command, () => names).slice(0, requestTitleMaxLength);
     const asker = askedBy(input.proposer);
     const summary = titleFirst(named, ` · ${asker}`);
-    const gives = commandGives(input.command, face);
+    const gives = commandGives(
+      input.command,
+      face,
+      await this.#scriptPlace(input.command, input.ownerUserId),
+    );
     const reason = input.reason?.trim().slice(0, 500) || null;
     const part: CommandRequestPart = {
       type: input.command.type,
@@ -417,14 +432,66 @@ export class CommandRequestService {
     }
   }
 
+  /**
+   * Where an automation's script would run, and as whom (T4): on the anchor task's device. The
+   * Home's own computer is what this Home is; another computer is its device, by its own name,
+   * quoted as every outside name is. Null for every other command.
+   */
+  async #scriptPlace(command: HostApiCommand, owner: UserId): Promise<CommandScriptPlace | null> {
+    if (!["trigger.create", "trigger.update", "trigger.run"].includes(command.type)) return null;
+    const input = command as unknown as {
+      readonly triggerId?: string;
+      readonly input?: { readonly anchorThreadId?: string };
+    };
+    const anchor =
+      command.type === "trigger.create"
+        ? (input.input?.anchorThreadId ?? null)
+        : ((
+            await this.#database
+              .selectFrom("triggers")
+              .select("anchorThreadId")
+              .where("id", "=", (input.triggerId ?? "") as never)
+              .where("createdBy", "=", owner)
+              .executeTakeFirst()
+          )?.anchorThreadId ?? null);
+    if (anchor === null) return null;
+    const device = await this.#database
+      .selectFrom("threads")
+      .innerJoin("executionEnvironments", "executionEnvironments.id", "threads.environmentId")
+      .leftJoin("runners", "runners.id", "executionEnvironments.runnerId")
+      .leftJoin("deviceDrivers", (join) =>
+        join
+          .onRef("deviceDrivers.runnerId", "=", "runners.id")
+          .on("deviceDrivers.role", "=", "self")
+          .on("deviceDrivers.detachedAt", "is", null),
+      )
+      .leftJoin("devices", "devices.id", "deviceDrivers.deviceId")
+      .select(["runners.kind as runnerKind", "devices.platform", "devices.name"])
+      .where("threads.id", "=", anchor as ThreadId)
+      .where("threads.createdBy", "=", owner)
+      .executeTakeFirst();
+    if (!device) return null;
+    if (device.runnerKind === "main" || device.runnerKind === null)
+      switch (this.#homeKind) {
+        case "mac":
+          return { where: "on your Mac", name: null, as: "you" };
+        case "cloud-computer":
+          return { where: "on this Cloud Computer", name: null, as: "its user" };
+        case "server":
+          return { where: "on this server", name: null, as: "its user" };
+        default:
+          return { where: "on this Home's computer", name: null, as: "its user" };
+      }
+    return device.platform === "macos"
+      ? { where: "on your Mac", name: quotedName(device.name), as: "you" }
+      : { where: "on the computer", name: quotedName(device.name), as: "its user" };
+  }
+
   /** The governed thing as the person's apps name it, where the Home can tell cheaply. */
   async name(resource: CommandResource, owner: UserId): Promise<string | null> {
     const id = resource.id;
     const database = this.#database;
-    const quoted = (value: string | null | undefined) =>
-      value
-        ? `“${value.length > maxNameLength ? `${value.slice(0, maxNameLength - 1)}…` : value}”`
-        : null;
+    const quoted = quotedName;
     if (id === null) return null;
     switch (resource.kind) {
       case "task":
