@@ -178,7 +178,17 @@ export function sameEditingField(
  */
 export class EditingContexts {
   static readonly kept = 64;
+  static readonly tailWindow = 16;
   static readonly namedTextWaitSeconds = editingNamedTextWaitSeconds;
+
+  static trimmedTail(text: string): string | null {
+    if (text.length <= EditingContexts.tailWindow) return text;
+    const suffix = text.slice(text.length - EditingContexts.tailWindow);
+    const first = suffix.charCodeAt(0);
+    // Avoid splitting a surrogate pair at the left boundary of the tail window.
+    if (first >= 0xdc00 && first <= 0xdfff) return null;
+    return suffix;
+  }
 
   readonly #nextId: () => string;
   #current: string;
@@ -227,6 +237,34 @@ export class EditingContexts {
     if (this.#field === null) return;
     this.#expected.push(state);
     if (this.#expected.length > EditingContexts.kept) this.#expected.shift();
+  }
+
+  /** Predicts the state after a `moveForward` command using text read after the caret (A1). */
+  expectMoveForward(nextText: string | null = null, selectionEndTail: string | null = null): void {
+    const base = this.predictedState;
+    if (!base) return;
+    if (base.length > 0) {
+      this.expectOwnEffect({
+        location: base.location + base.length,
+        length: 0,
+        text: selectionEndTail,
+      });
+      return;
+    }
+    if (nextText === null) {
+      this.expectOwnEffect({ location: base.location + 1, length: 0, text: null });
+      return;
+    }
+    if (nextText.length === 0) return;
+    const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    const first = segmenter.segment(nextText)[Symbol.iterator]().next().value?.segment;
+    if (!first) return;
+    const nextTail = base.text != null ? EditingContexts.trimmedTail(base.text + first) : null;
+    this.expectOwnEffect({
+      location: base.location + first.length,
+      length: 0,
+      text: nextTail,
+    });
   }
 
   /**

@@ -27,6 +27,7 @@ type Step =
       expectChanged?: boolean;
     }
   | { expectOwnEffect: EditingObservedState }
+  | { expectMoveForward: { nextText?: string | null; selectionEndTail?: string | null } }
   | { publish: true }
   | {
       admits: {
@@ -113,6 +114,11 @@ describe("editing admission rule (shared fixture)", () => {
           if (step.save) saved.set(step.save, contexts.current);
         } else if ("expectOwnEffect" in step) {
           contexts.expectOwnEffect(step.expectOwnEffect);
+        } else if ("expectMoveForward" in step) {
+          contexts.expectMoveForward(
+            step.expectMoveForward.nextText ?? null,
+            step.expectMoveForward.selectionEndTail ?? null,
+          );
         } else if ("publish" in step) {
           contexts.markPublished();
         } else if ("admits" in step) {

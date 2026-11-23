@@ -56,6 +56,9 @@ struct OwnerEditingContexts: Sendable {
   /// FIFO bound on earlier published contexts kept for the currently focused field.
   static let kept = 64
 
+  /// Number of UTF-16 code units kept before the caret for own-effect attribution.
+  static let tailWindow = 16
+
   /// Maximum wait for an app (such as Electron) to render a prior keystroke before a
   /// text-naming edit is refused as stale.
   static let namedTextWait: TimeInterval = 0.5
@@ -72,6 +75,20 @@ struct OwnerEditingContexts: Sendable {
     expected.last ?? baseline
   }
 
+  /// Whether any predicted own-edit effects are still waiting to be observed.
+  var hasPendingExpected: Bool {
+    !expected.isEmpty
+  }
+
+  static func trimmedTail(_ text: String) -> String? {
+    let units = Array(text.utf16)
+    if units.count <= tailWindow { return text }
+    let suffix = units.suffix(tailWindow)
+    // Avoid splitting a surrogate pair at the left boundary of the tail window.
+    if let first = suffix.first, (0xDC00...0xDFFF).contains(first) { return nil }
+    return String(decoding: suffix, as: UTF16.self)
+  }
+
   /// Marks `current` as published to the viewer. Only published contexts enter `earlier` on
   /// same-field rotation (P4(c)), so unpublished rotations while batches are pending never evict
   /// the viewer's published context.
@@ -86,6 +103,42 @@ struct OwnerEditingContexts: Sendable {
     if expected.count > Self.kept {
       expected.removeFirst(expected.count - Self.kept)
     }
+  }
+
+  /// Predicts the state after a `moveForward` command using text read after the caret (A1).
+  mutating func expectMoveForward(nextText: String? = nil, selectionEndTail: String? = nil) {
+    guard let base = predictedState else { return }
+    if base.length > 0 {
+      expectOwnEffect(
+        ObservedState(location: base.location + base.length, length: 0, text: selectionEndTail))
+      return
+    }
+    guard let nextText else {
+      expectOwnEffect(ObservedState(location: base.location + 1, length: 0, text: nil))
+      return
+    }
+    guard let first = nextText.first else { return }
+    let step = String(first)
+    let nextTail = base.text.flatMap { Self.trimmedTail($0 + step) }
+    expectOwnEffect(
+      ObservedState(location: base.location + step.utf16.count, length: 0, text: nextTail))
+  }
+
+  /// Predicts the state after a verified text-naming replacement using the prefix read before it (A1).
+  mutating func expectNamedReplacement(
+    replaceStart: Int,
+    text: String,
+    prefixBeforeReplacement: String?
+  ) {
+    let textUnits = text.utf16.count
+    let nextLocation = replaceStart + textUnits
+    let nextTail: String?
+    if textUnits >= Self.tailWindow {
+      nextTail = Self.trimmedTail(text)
+    } else {
+      nextTail = prefixBeforeReplacement.flatMap { Self.trimmedTail($0 + text) }
+    }
+    expectOwnEffect(ObservedState(location: nextLocation, length: 0, text: nextTail))
   }
 
   /// Observes the live focused field. Rotates only when the field identity changes (clearing

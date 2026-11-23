@@ -260,6 +260,9 @@ final class MacOwnerInputWorker {
   private var nextFieldID = 0
   private var selection: CFRange?
   private var contextUnpublished = false
+  /// True while an unconfirmed text-mutating edit is in flight, so AX offsets at `predictedState`
+  /// may not match live document offsets yet (A1).
+  private var pendingTextMutation = false
   private let shortcutPolicy = OwnerShortcutPolicy()
 
   nonisolated init() {}
@@ -269,6 +272,7 @@ final class MacOwnerInputWorker {
     self.keys.removeAll(); self.buttons.removeAll()
     if forgetField {
       focusedField = nil; selection = nil
+      pendingTextMutation = false
       contexts.reset()
     }
     lease.heldDeadline.withLock { $0 = nil }
@@ -436,9 +440,10 @@ final class MacOwnerInputWorker {
         guard contexts.admits(event.contextId!, kind: kind, collapsed: selection?.length == 0) else {
           throw MacOwnerInput.Refusal("stale")
         }
+        let prepared = prepareCommandPrediction(event.command!, focused: focused)
         let combo = try KeyComboParser.parse(MacOwnerInput.commands[event.command!]!)
         try await chord(combo, target: focused.target, lease: lease, map: map, proceed: proceed)
-        predictCommand(event.command!)
+        predictCommand(event.command!, prepared: prepared)
       case "edit": try await edit(event.edit!, lease: lease, map: map, proceed: proceed)
       case "paste":
         let focused = try keyboard(lease, map: map)
@@ -545,7 +550,7 @@ final class MacOwnerInputWorker {
       keys[identity] = HeldKey(code: code, target: target, token: focused.token, menuHandled: true)
       return
     }
-    if let text = event.text, modifiers.isEmpty {
+    if event.text != nil, modifiers.isEmpty {
       refresh(focused, agentRevision: lease.mutations.agentRevision)
     }
     try await SyntheticEvents.ownerKey(down: true, virtualKey: code, flags: event.flags,
@@ -630,7 +635,56 @@ final class MacOwnerInputWorker {
     return OwnerEditingContexts.FieldIdentity(
       id: id, kind: focused.role, sensitive: focused.secure, editable: true)
   }
-  private static let tailWindow = 16
+  private static let tailWindow = OwnerEditingContexts.tailWindow
+
+  private func numberOfCharacters(_ field: AXUIElement) -> Int? {
+    guard let value = AXValueReader.copy(field, kAXNumberOfCharactersAttribute) as? NSNumber else {
+      return nil
+    }
+    let count = value.intValue
+    return count >= 0 ? count : nil
+  }
+
+  private func stringSlice(_ field: AXUIElement, location: Int, length: Int) -> String? {
+    guard location >= 0, length >= 0 else { return nil }
+    if length == 0 { return "" }
+    var slice = CFRange(location: location, length: length)
+    guard let parameter = AXValueCreate(.cfRange, &slice) else { return nil }
+    var value: CFTypeRef?
+    guard AXUIElementCopyParameterizedAttributeValue(
+      field,
+      kAXStringForRangeParameterizedAttribute as CFString,
+      parameter,
+      &value
+    ) == .success, let text = value as? String, text.utf16.count == length else {
+      return nil
+    }
+    return text
+  }
+
+  /// Reads the bounded lookahead text starting at `location` from AX so `moveForward` predicts
+  /// only from what was read, never from what was assumed (A1). Returns `nil` when unreadable.
+  private func readNextText(_ field: AXUIElement, from location: Int) -> String? {
+    if let total = numberOfCharacters(field) {
+      guard location <= total else { return nil }
+      if location == total { return "" }
+      let count = min(Self.tailWindow, total - location)
+      guard let slice = stringSlice(field, location: location, length: count) else { return nil }
+      // If a single grapheme cluster fills the entire lookahead window while more text follows,
+      // we cannot know its true boundary without assuming; return nil so it rotates safely.
+      if let first = slice.first, first.utf16.count == slice.utf16.count, location + count < total {
+        return nil
+      }
+      return slice
+    }
+    // Fallback when AXNumberOfCharacters is unavailable: require at least 2 UTF-16 units where
+    // the first grapheme cluster ends strictly inside the slice so we never split a cluster.
+    if let two = stringSlice(field, location: location, length: 2),
+       let first = two.first, first.utf16.count < two.utf16.count {
+      return two
+    }
+    return nil
+  }
 
   private func observedState(for focused: Focused) -> OwnerEditingContexts.ObservedState? {
     guard !focused.secure, let selected = range(focused.element) else { return nil }
@@ -639,22 +693,7 @@ final class MacOwnerInputWorker {
       tail = ""
     } else {
       let count = min(selected.location, Self.tailWindow)
-      var slice = CFRange(location: selected.location - count, length: count)
-      if let parameter = AXValueCreate(.cfRange, &slice) {
-        var value: CFTypeRef?
-        if AXUIElementCopyParameterizedAttributeValue(
-          focused.element,
-          kAXStringForRangeParameterizedAttribute as CFString,
-          parameter,
-          &value
-        ) == .success, let text = value as? String, text.utf16.count == count {
-          tail = text
-        } else {
-          tail = nil
-        }
-      } else {
-        tail = nil
-      }
+      tail = stringSlice(focused.element, location: selected.location - count, length: count)
     }
     return OwnerEditingContexts.ObservedState(
       location: selected.location,
@@ -662,41 +701,54 @@ final class MacOwnerInputWorker {
       text: tail)
   }
 
-  private static func trimmedTail(_ text: String) -> String? {
-    let units = Array(text.utf16)
-    if units.count <= tailWindow { return text }
-    let suffix = units.suffix(tailWindow)
-    // Avoid splitting a surrogate pair at the left boundary of the tail window.
-    if let first = suffix.first, (0xDC00...0xDFFF).contains(first) { return nil }
-    return String(decoding: suffix, as: UTF16.self)
-  }
-
   private func predictInsertion(_ text: String) {
     guard let base = contexts.predictedState else { return }
     let nextLocation = base.location + text.utf16.count
-    let nextTail = base.text.flatMap { Self.trimmedTail($0 + text) }
+    let nextTail = base.text.flatMap { OwnerEditingContexts.trimmedTail($0 + text) }
     contexts.expectOwnEffect(
       OwnerEditingContexts.ObservedState(location: nextLocation, length: 0, text: nextTail))
+    pendingTextMutation = true
   }
 
-  private func predictEdit(_ edit: MacOwnerInput.Edit) {
-    guard let base = contexts.predictedState else { return }
-    let beforeUnits = edit.before.utf16.count
-    let nextLocation = max(0, base.location - beforeUnits) + edit.text.utf16.count
-    let nextTail: String?
-    if edit.before.isEmpty {
-      nextTail = base.text.flatMap { Self.trimmedTail($0 + edit.text) }
-    } else if let prior = base.text, base.location <= Self.tailWindow, prior.hasSuffix(edit.before) {
-      let dropped = String(prior.dropLast(edit.before.count))
-      nextTail = Self.trimmedTail(dropped + edit.text)
-    } else {
-      nextTail = nil
+  private struct PreparedCommandPrediction {
+    let nextText: String?
+    let selectionEndTail: String?
+    let shiftedBackTail: String?
+  }
+
+  private func prepareCommandPrediction(
+    _ command: String,
+    focused: Focused
+  ) -> PreparedCommandPrediction {
+    guard !focused.secure, !pendingTextMutation, let base = contexts.predictedState else {
+      return PreparedCommandPrediction(nextText: nil, selectionEndTail: nil, shiftedBackTail: nil)
     }
-    contexts.expectOwnEffect(
-      OwnerEditingContexts.ObservedState(location: nextLocation, length: 0, text: nextTail))
+    switch command {
+    case "moveForward":
+      if base.length > 0 {
+        let end = base.location + base.length
+        let count = min(end, Self.tailWindow)
+        let tail = stringSlice(focused.element, location: end - count, length: count)
+        return PreparedCommandPrediction(nextText: nil, selectionEndTail: tail, shiftedBackTail: nil)
+      }
+      return PreparedCommandPrediction(
+        nextText: readNextText(focused.element, from: base.location),
+        selectionEndTail: nil,
+        shiftedBackTail: nil)
+    case "moveBackward", "deleteBackward":
+      if base.length == 0, base.location > Self.tailWindow, let prior = base.text, let last = prior.last {
+        let nextLocation = max(0, base.location - last.utf16.count)
+        let count = min(nextLocation, Self.tailWindow)
+        let tail = stringSlice(focused.element, location: nextLocation - count, length: count)
+        return PreparedCommandPrediction(nextText: nil, selectionEndTail: nil, shiftedBackTail: tail)
+      }
+      return PreparedCommandPrediction(nextText: nil, selectionEndTail: nil, shiftedBackTail: nil)
+    default:
+      return PreparedCommandPrediction(nextText: nil, selectionEndTail: nil, shiftedBackTail: nil)
+    }
   }
 
-  private func predictCommand(_ command: String) {
+  private func predictCommand(_ command: String, prepared: PreparedCommandPrediction) {
     guard let base = contexts.predictedState else { return }
     switch command {
     case "deleteBackward":
@@ -706,7 +758,7 @@ final class MacOwnerInputWorker {
       } else if base.location > 0 {
         if let prior = base.text, let last = prior.last {
           let removed = last.utf16.count
-          let nextTail = base.location <= Self.tailWindow ? String(prior.dropLast()) : nil
+          let nextTail = base.location <= Self.tailWindow ? String(prior.dropLast()) : prepared.shiftedBackTail
           contexts.expectOwnEffect(
             OwnerEditingContexts.ObservedState(
               location: max(0, base.location - removed), length: 0, text: nextTail))
@@ -715,6 +767,7 @@ final class MacOwnerInputWorker {
             OwnerEditingContexts.ObservedState(location: base.location - 1, length: 0, text: nil))
         }
       }
+      pendingTextMutation = true
     case "moveBackward":
       if base.length > 0 {
         contexts.expectOwnEffect(
@@ -722,7 +775,7 @@ final class MacOwnerInputWorker {
       } else if base.location > 0 {
         if let prior = base.text, let last = prior.last {
           let removed = last.utf16.count
-          let nextTail = base.location <= Self.tailWindow ? String(prior.dropLast()) : nil
+          let nextTail = base.location <= Self.tailWindow ? String(prior.dropLast()) : prepared.shiftedBackTail
           contexts.expectOwnEffect(
             OwnerEditingContexts.ObservedState(
               location: max(0, base.location - removed), length: 0, text: nextTail))
@@ -732,9 +785,9 @@ final class MacOwnerInputWorker {
         }
       }
     case "moveForward":
-      let nextLocation = base.length > 0 ? base.location + base.length : base.location + 1
-      contexts.expectOwnEffect(
-        OwnerEditingContexts.ObservedState(location: nextLocation, length: 0, text: nil))
+      contexts.expectMoveForward(
+        nextText: prepared.nextText,
+        selectionEndTail: prepared.selectionEndTail)
     default:
       break
     }
@@ -748,6 +801,7 @@ final class MacOwnerInputWorker {
     // effects, key-up, mouse button, scroll, or refusal.
     let agentChanged = contextRevision >= 0 && agentRevision != contextRevision
     contexts.observeState(field: identity, state: observed, forceChanged: agentChanged)
+    if !contexts.hasPendingExpected { pendingTextMutation = false }
     contextRevision = agentRevision
     focusedField = (focused.element, focused.role, focused.secure, identity.id)
     selection = observed.map { CFRange(location: $0.location, length: $0.length) }
@@ -789,7 +843,7 @@ final class MacOwnerInputWorker {
             ? .init(kind: focused.role == "AXWebArea" ? "rich" : "text", multiline: focused.role == "AXTextArea", sensitive: focused.secure) : nil,
           caret: caret)))
     } catch {
-      focusedField = nil; selection = nil; contexts.observeState(field: nil, state: nil)
+      focusedField = nil; selection = nil; pendingTextMutation = false; contexts.observeState(field: nil, state: nil)
       contexts.markPublished()
       lease.emit(.init(type: "display.editing", generation: map.generation,
         context: .init(contextId: contextID, field: nil, caret: nil)))
@@ -876,10 +930,11 @@ final class MacOwnerInputWorker {
     ) else {
       throw MacOwnerInput.Refusal("stale")
     }
+    var namedPrediction: (replaceStart: Int, prefix: String?)?
     if namedText {
       let before = edit.before.utf16.count, after = edit.after.utf16.count
       let expected = Array((edit.before + edit.after).utf16)
-      let matchedParameter: AXValue = try await Self.waitForNamedText(
+      let matched: (parameter: AXValue, location: Int) = try await Self.waitForNamedText(
         checkGate: { try proceed(); try lease.check(map) },
         probe: {
           let sameField = (try? self.verifyFocus(focused, lease: lease, map: map)) != nil
@@ -891,22 +946,46 @@ final class MacOwnerInputWorker {
                 let actual = value as? String, Array(actual.utf16) == expected,
                 self.range(focused.element)?.location == selected.location,
                 self.range(focused.element)?.length == 0 {
-                return (sameField: true, match: parameter)
+                return (sameField: true, match: (parameter: parameter, location: selected.location))
               }
             }
           }
           return (sameField: sameField, match: nil)
         },
-        onMismatch: { self.contexts.mismatch() }
+        onMismatch: {
+          self.pendingTextMutation = false
+          self.contexts.mismatch()
+        }
       )
       try verifyFocus(focused, lease: lease, map: map); try proceed(); try lease.check(map)
-      guard AXUIElementSetAttributeValue(focused.element, kAXSelectedTextRangeAttribute as CFString, matchedParameter) == .success else {
+      // A1: read the prefix needed to predict the post-replacement tail directly from AX before
+      // modifying the field, so verified replacements past the 16-unit tail window keep context.
+      let replaceStart = matched.location - before
+      let textUnits = edit.text.utf16.count
+      let prefix: String?
+      if textUnits >= Self.tailWindow {
+        prefix = ""
+      } else {
+        let prefixCount = min(replaceStart, Self.tailWindow - textUnits)
+        prefix = stringSlice(focused.element, location: replaceStart - prefixCount, length: prefixCount)
+      }
+      namedPrediction = (replaceStart: replaceStart, prefix: prefix)
+      guard AXUIElementSetAttributeValue(focused.element, kAXSelectedTextRangeAttribute as CFString, matched.parameter) == .success else {
+        pendingTextMutation = false
         contexts.mismatch()
         throw MacOwnerInput.Refusal("stale")
       }
     }
     try await insert(edit.text, focused: focused, lease: lease, map: map, route: route, proceed: proceed)
-    predictEdit(edit)
+    if let namedPrediction {
+      contexts.expectNamedReplacement(
+        replaceStart: namedPrediction.replaceStart,
+        text: edit.text,
+        prefixBeforeReplacement: namedPrediction.prefix)
+      pendingTextMutation = true
+    } else {
+      predictInsertion(edit.text)
+    }
   }
   private func copy(contextId: String, sequence: Int, lease: MacOwnerAttachment, map: MacOwnerInputMap) throws {
     let focused = try keyboard(lease, map: map)

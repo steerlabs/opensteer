@@ -382,7 +382,7 @@ extension WireJourney {
     var cases: [String: String] = [:]
     var active: String?
     let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
-      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "other-field-insertion-refused", "verified-replacement", "earlier-context-replacement", "replacement-text-gone", "stale-replacement", "own-burst-keeps-context", "app-rewrite-rotates", "rich-paste-refusal",
+      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "other-field-insertion-refused", "verified-replacement", "earlier-context-replacement", "replacement-text-gone", "stale-replacement", "own-burst-keeps-context", "move-forward-keeps-context", "app-rewrite-rotates", "rich-paste-refusal",
       "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
@@ -765,6 +765,40 @@ extension WireJourney {
     try require(settledAfterBurst == burstContext, "Own burst of five insertions rotated the published context")
     let burstSelectAll = try await input([["kind": "command", "command": "selectAll", "contextId": burstContext]])
     try require(burstSelectAll["outcome"] as? String == "dispatched", "Exact selectAll under burst context was refused")
+    try await Contracts.command(out, "owner-end")
+    passed()
+    start("move-forward-keeps-context")
+    // A1: move the caret right five times in a row under one context (from index 2 in "qé!abcde"
+    // across "!abcd" to before "e"), confirm the context did not rotate, then perform an exact
+    // edit (deleteForward) under that same context and verify "e" is deleted.
+    let beforeMoveText = try await note()
+    try await Contracts.command(out, "owner-middle")
+    let moveStartMark = editingMark
+    let moveContext = try await settledEditingContext(streamA, after: moveStartMark)
+    for step in 1...5 {
+      let reply = try await input([["kind": "command", "command": "moveForward", "contextId": moveContext]])
+      try require(reply["outcome"] as? String == "dispatched", "moveForward step \(step) was refused")
+    }
+    let afterMoveMark = editingMark
+    let settledAfterMoves = try await settledEditingContext(streamA, after: afterMoveMark)
+    try require(settledAfterMoves == moveContext, "Five moveForward steps rotated the published context")
+    let exactDeleteForward = try await input([["kind": "command", "command": "deleteForward", "contextId": moveContext]])
+    let expectedAfterDelete = String(beforeMoveText.dropLast())
+    let deleteDeadline = Date().addingTimeInterval(3)
+    while try await note() != expectedAfterDelete, Date() < deleteDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterDeleteText = try await note()
+    try require(exactDeleteForward["outcome"] as? String == "dispatched" && afterDeleteText == expectedAfterDelete,
+      "Exact deleteForward after five moveForward steps was refused or landed at the wrong caret")
+    let restoreAfterMove = try await input([["kind": "edit", "edit": ["contextId": try await context(sensitive: false), "text": String(beforeMoveText.suffix(1)), "before": "", "after": ""]]])
+    let restoreDeadline = Date().addingTimeInterval(3)
+    while try await note() != beforeMoveText, Date() < restoreDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterRestoreMove = try await note()
+    try require(restoreAfterMove["outcome"] as? String == "dispatched" && afterRestoreMove == beforeMoveText,
+      "Restoring text after move-forward-keeps-context failed")
     try await Contracts.command(out, "owner-end")
     passed()
     start("app-rewrite-rotates")

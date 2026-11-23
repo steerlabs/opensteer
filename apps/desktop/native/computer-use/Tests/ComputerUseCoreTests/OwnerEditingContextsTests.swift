@@ -79,6 +79,10 @@ final class OwnerEditingContextsTests: XCTestCase {
         } else if let expectOwn = step["expectOwnEffect"] as? [String: Any] {
           let state = try XCTUnwrap(parseState(expectOwn, name), name)
           contexts.expectOwnEffect(state)
+        } else if let moveForward = step["expectMoveForward"] as? [String: Any] {
+          contexts.expectMoveForward(
+            nextText: moveForward["nextText"] as? String,
+            selectionEndTail: moveForward["selectionEndTail"] as? String)
         } else if step["publish"] as? Bool == true {
           contexts.markPublished()
         } else if let admits = step["admits"] as? [String: Any] {
@@ -236,6 +240,41 @@ final class OwnerEditingContextsTests: XCTestCase {
     }
     XCTAssertEqual(timeoutMismatch, 1)
     XCTAssertGreaterThanOrEqual(clock - 100.0, OwnerEditingContexts.namedTextWait)
+  }
+
+  /// A1: a verified replacement past the 16-unit tail window keeps the context when the prefix
+  /// before the replacement was read from AX, and rotates when it could not be read.
+  func testNamedReplacementBeyondTailWindowKeepsContextWhenPrefixKnownAndRotatesWhenUnknown() {
+    let field = OwnerEditingContexts.FieldIdentity(id: "el-1", kind: "AXTextArea", sensitive: false, editable: true)
+    var contexts = OwnerEditingContexts()
+    XCTAssertTrue(contexts.observeState(
+      field: field,
+      state: .init(location: 33, length: 0, text: "7890123456789teh")))
+    contexts.markPublished()
+    let c1 = contexts.current
+
+    // Replace "teh" at [30..<33] with "the"; AX read the 13-unit prefix before 30.
+    contexts.expectNamedReplacement(
+      replaceStart: 30,
+      text: "the",
+      prefixBeforeReplacement: "7890123456789")
+    XCTAssertFalse(contexts.observeState(
+      field: field,
+      state: .init(location: 33, length: 0, text: "7890123456789the")))
+    XCTAssertEqual(contexts.current, c1)
+    XCTAssertTrue(contexts.admits(c1, kind: .exact))
+
+    // When the prefix could not be read (nil), the prediction is unknown and rotates.
+    contexts.expectNamedReplacement(
+      replaceStart: 30,
+      text: "THE",
+      prefixBeforeReplacement: nil)
+    XCTAssertTrue(contexts.observeState(
+      field: field,
+      state: .init(location: 33, length: 0, text: "7890123456789THE")))
+    XCTAssertNotEqual(contexts.current, c1)
+    XCTAssertFalse(contexts.admits(c1, kind: .exact))
+    XCTAssertTrue(contexts.admits(c1, kind: .relative))
   }
 
   func testCommandAndPasteRequireContextId() throws {

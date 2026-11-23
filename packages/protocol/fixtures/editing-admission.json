@@ -511,6 +511,81 @@
         { "admits": { "context": "c2", "kind": "exact" }, "is": false },
         { "admits": { "context": "c3", "kind": "exact" }, "is": true }
       ]
+    },
+    {
+      "name": "move forward with the next character known keeps the context",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "qé" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectMoveForward": { "nextText": "!abcde" } },
+        { "expectMoveForward": { "nextText": "abcde" } },
+        { "expectMoveForward": { "nextText": "bcde" } },
+        { "expectMoveForward": { "nextText": "cde" } },
+        { "expectMoveForward": { "nextText": "de" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 4, "length": 0, "text": "qé!a" }
+          },
+          "expectChanged": false
+        },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 7, "length": 0, "text": "qé!abcd" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": true },
+        {
+          "observeState": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 16, "length": 0, "text": "0123456789abcdef" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "expectMoveForward": { "nextText": "gh" } },
+        {
+          "observeState": {
+            "field": { "id": "el-2", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 17, "length": 0, "text": "123456789abcdefg" }
+          },
+          "expectChanged": false
+        },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true }
+      ]
+    },
+    {
+      "name": "move forward with the next character unknown rotates",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "qé" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectMoveForward": { "nextText": null } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 3, "length": 0, "text": "qé!" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true }
+      ]
     }
   ]
 }
