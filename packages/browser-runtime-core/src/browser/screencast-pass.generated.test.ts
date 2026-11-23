@@ -721,6 +721,7 @@ function actions(
           finished: tab.navigation.finished + 1,
           pending: false,
         };
+        if (!tab.loading) world.afresh(tab.id, false);
         world.navigated(tab.id);
         world.changed(tab.id);
         world.paints(tab.id);
@@ -957,11 +958,6 @@ function check(world: World, follow: InstanceType<typeof ScreencastController>):
         holding) ||
       // A frame Chromium has painted is on its way.
       (why === "its first frame" && chromium.framesDue > 0) ||
-      // It loads: its first frame comes as it paints, and the time for it is given once it ends.
-      (why === "its document's first frame, as it loads" &&
-        told.state === "running" &&
-        (holding || chromium.casting) &&
-        (tab.loading || (world.port && tab.navigation.pending))) ||
       (why === "its first document has not committed" &&
         world.port &&
         tab.navigation.pending &&

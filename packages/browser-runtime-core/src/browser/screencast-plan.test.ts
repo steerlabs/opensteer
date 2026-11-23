@@ -8,6 +8,7 @@ import {
   frameVerdict,
   initialSessionCastState,
   initialTabCastState,
+  loadingFirstFrameWaitMs,
   nextStep,
   otherSizeWaitMs,
   pictureLimit,
@@ -346,6 +347,11 @@ describe("the next step", () => {
             if (step.why === "its first frame") {
               expect(state.trouble === null && !state.redraw && !state.shown, at).toBe(true);
               expect(step.timer, at).toBe(firstFrameWaitMs * 2 ** Math.min(state.unpictured, 2));
+            } else if (step.why === "its document's first frame, as it loads") {
+              expect(state.trouble === null && !state.redraw && !state.shown, at).toBe(true);
+              expect(step.timer, at).toBe(
+                loadingFirstFrameWaitMs * 2 ** Math.min(state.unpictured, 2),
+              );
             } else if (step.why === "its own frame, after one of another size") {
               expect(state.trouble, at).toBe("other-size");
               expect(step.timer, at).toBe(otherSizeWaitMs);
@@ -618,11 +624,22 @@ describe("the state after each event", () => {
       const shown = { ...awaiting, shown: true };
       expect(after(shown, { kind: "first-frame-timeout" }, base)).toBe(shown);
     }
-    // Not while its document loads, which sends its first frame as it paints: the start's own
-    // frame after one of another size is given its time all the same, as before.
-    expect(after(running, { kind: "first-frame-timeout" }, facts({}, { loading: true }))).toBe(
-      running,
+    // Re-check 11, finding 5.2 (U6): a page still loading (or with a pending navigation) gets a
+    // longer limit (10 s, 20 s, 40 s) rather than waiting forever.
+    const loadingNow = facts({}, { loading: true });
+    const pendingNow = facts(
+      {},
+      { navigation: { blankDocument: false, finished: 1, pending: true } },
     );
+    for (const slow of [loadingNow, pendingNow]) {
+      const slowSteps = [0, 1, 2, 3].map((unpictured) =>
+        nextStep(slow, "tab#1", { ...running, unpictured }),
+      );
+      expect(slowSteps.map((step) => (step.kind === "wait" ? step.timer : null))).toEqual([
+        10_000, 20_000, 40_000, 40_000,
+      ]);
+      expect(after(running, { kind: "first-frame-timeout" }, slow).trouble).toBe("no-picture");
+    }
     // Three seconds, then six, then twelve as it is retried; given up at the bound, saying so.
     const steps = [0, 1, 2, 3].map((unpictured) =>
       nextStep(base, "tab#1", { ...running, unpictured }),

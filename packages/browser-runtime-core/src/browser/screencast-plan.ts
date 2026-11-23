@@ -261,10 +261,12 @@ export function initialTabCastState(): TabCastState {
 
 /**
  * The time a running cast is given for its first picture, counted from Chromium's answer (R10):
- * three seconds, then six, then twelve as it is retried with none; one second after a frame of
- * another size came with the start, as its own follows at once if it comes at all.
+ * three seconds, then six, then twelve as it is retried with none; ten seconds (then twenty, then
+ * forty) while its document still loads or has a pending navigation (U6); one second after a frame
+ * of another size came with the start, as its own follows at once if it comes at all.
  */
 export const firstFrameWaitMs = 3_000;
+export const loadingFirstFrameWaitMs = 10_000;
 export const otherSizeWaitMs = 1_000;
 
 /**
@@ -553,9 +555,15 @@ export function nextStep(
         timer: otherSizeWaitMs,
         why: "its own frame, after one of another size",
       };
-    // A document still loading, or still with the browser side, sends its first frame as it paints.
+    // A document still loading, or still with the browser side, sends its first frame as it paints,
+    // with a longer limit so a page that loads forever and never paints still repairs and gives up
+    // at the bound (U6).
     if (tab.loading || tab.navigation?.pending)
-      return { kind: "wait", why: "its document's first frame, as it loads" };
+      return {
+        kind: "wait",
+        timer: loadingFirstFrameWaitMs * 2 ** Math.min(state.unpictured, 2),
+        why: "its document's first frame, as it loads",
+      };
     return {
       kind: "wait",
       timer: firstFrameWaitMs * 2 ** Math.min(state.unpictured, 2),

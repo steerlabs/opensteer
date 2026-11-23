@@ -1815,6 +1815,132 @@ describe("the follow view, on preparation refusal during load and synchronous ab
 });
 
 /*
+ * Re-check 11, finding 5.2 (U6): a page that stays loading forever and never paints is given 10 s
+ * (then 20 s, 40 s) to paint, repairs, and gives up at the bound instead of waiting forever; if a
+ * slow page eventually finishes loading, it clears the loading-time failure and pictures.
+ */
+describe("the follow view, when a page loads forever and never paints (U6)", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const settle = async () => {
+    for (let turn = 0; turn < 6; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  for (const native of [true, false] as const)
+    it(`repairs at 10 s and gives up at the bound without looping (${native ? "native" : "command-sized"})`, async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const cdp = new FakeCdpSession();
+        const size = { height: 600, width: 800 };
+        const surface = {
+          active: true,
+          documentId: "d1",
+          geometryRevision: 1,
+          id: "tab",
+          loading: true,
+        };
+        let invalidations = 0;
+        let paintNow = false;
+        let frameId = 0;
+        cdp.responses.set("Page.startScreencast", () => {
+          if (paintNow) {
+            setImmediate(() =>
+              cdp.emit("Page.screencastFrame", {
+                data: jpeg(size.width, size.height).toString("base64"),
+                metadata: { deviceHeight: size.height, deviceWidth: size.width },
+                sessionId: ++frameId,
+              }),
+            );
+          }
+          return {};
+        });
+        const page = {
+          ...(native
+            ? {
+                applyGeometry: async () => undefined,
+                capture: {
+                  read: () => ({ ...size, rasterScale: 1, revision: 1 }),
+                  subscribe: () => () => undefined,
+                },
+                settleRendering: async () => undefined,
+              }
+            : {}),
+          invalidateSurface: async () => {
+            invalidations += 1;
+          },
+        };
+        const listeners = new Set<(event: unknown) => void>();
+        const delivered: unknown[] = [];
+        const errors: string[] = [];
+        const follow = new ScreencastController({
+          frames: new LatestFrameStream({ sendFrame: async (frame) => void delivered.push(frame) }),
+          ledger: {
+            active: () => ({ cdp, page, surface: { ...surface } }),
+            binding: () => ({ cdp, page, surface: { ...surface } }),
+            dialogOf: () => null,
+            dialogOpen: () => false,
+            recordPageScale: () => undefined,
+            subscribe: (listener: (event: unknown) => void) => {
+              listeners.add(listener);
+              return () => listeners.delete(listener);
+            },
+            use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+            viewportOf: () => size,
+            withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+          } as never,
+          onDialogChanged: () => undefined,
+          onError: (error) => errors.push(error.reason ?? error.message),
+        });
+        await follow.start();
+        await follow.setStreaming(true);
+        await settle();
+        const starts = () =>
+          cdp.sent.filter(({ method }) => method === "Page.startScreencast").length;
+        expect(starts()).toBe(1);
+        expect(vi.getTimerCount()).toBe(1);
+        // 9.9 s: still waiting, no repair yet.
+        await vi.advanceTimersByTimeAsync(9_900);
+        await settle();
+        expect(starts()).toBe(1);
+        expect(invalidations).toBe(0);
+        expect(errors).toEqual([]);
+        // 10 s: first timeout triggers repair #1 and restart.
+        await vi.advanceTimersByTimeAsync(100);
+        await settle();
+        expect(invalidations).toBe(1);
+        expect(starts()).toBe(2);
+        expect(errors).toEqual([]);
+        // Advance through the remaining backoff limits (native: +20 s; command-sized: +20 s +40 s +40 s).
+        const remainingWaits = native ? [20_000] : [20_000, 40_000, 40_000];
+        for (const ms of remainingWaits) {
+          await vi.advanceTimersByTimeAsync(ms);
+          await settle();
+        }
+        expect(errors).toEqual(["browser-capture-mismatch"]);
+        expect(starts()).toBe(native ? 2 : 4);
+        expect(invalidations).toBe(native ? 1 : 3);
+        expect(vi.getTimerCount()).toBe(0);
+        // Further time passes while still loading forever: no loop, no extra start or error.
+        await vi.advanceTimersByTimeAsync(60_000);
+        await settle();
+        expect(starts()).toBe(native ? 2 : 4);
+        expect(errors).toEqual(["browser-capture-mismatch"]);
+        // If that slow page eventually finishes loading and paints, it recovers cleanly.
+        paintNow = true;
+        surface.loading = false;
+        for (const listener of listeners)
+          listener({ change: "updated", surface: { ...surface }, type: "changed" });
+        await settle();
+        expect(delivered).toHaveLength(1);
+        await follow.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+});
+
+/*
  * Re-check 9, R1 and re-check 11, finding 6.6 (U5): the state of a bound tab has one writer, the
  * pure `after` in screencast-plan.ts, and session state has one writer, `afterSession`.
  */
