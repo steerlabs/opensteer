@@ -6387,7 +6387,8 @@ export class BrowserService {
     const record = sessionId
       ? await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId)
       : null;
-    if (!record || this.#ended(record)) return null;
+    if (!record) return null;
+    const ended = this.#ended(record);
     if (
       input.agentBindingId !== undefined &&
       !(await this.agentMayAccessSession(
@@ -6410,14 +6411,14 @@ export class BrowserService {
     const broker = this.#brokers.get(record.id);
     let tabId =
       input.tabId ?? (input.surfaceId ? BrowserSurfaceIdSchema.parse(input.surfaceId) : undefined);
-    if (tabId && !broker?.pageOf(tabId)) {
+    if (tabId && (ended || !broker?.pageOf(tabId))) {
       if (input.tabId && input.agentBindingId === undefined) return null;
       throw new OpensteerError({
         code: "not_found",
         message: "The sign-in page is no longer available.",
       });
     }
-    if (input.targetId && broker?.live) {
+    if (input.targetId && !ended && broker?.live) {
       const response = await broker.requestCdp({
         type: "cdp.command",
         requestId: randomUUID(),
@@ -6439,6 +6440,7 @@ export class BrowserService {
         !latest ||
         latest.id !== record.id ||
         (workspaceRow && currentWorkspace?.generation !== workspaceRow.generation) ||
+        ended ||
         !broker?.pageOf(input.tabId)
       ) {
         if (input.agentBindingId === undefined) return null;
@@ -6458,7 +6460,7 @@ export class BrowserService {
           }
         : {}),
       ...(input.agentBindingId ? { agentBindingId: input.agentBindingId } : {}),
-      live: record.state === "ready" && broker?.live === true,
+      live: !ended && record.state === "ready" && broker?.live === true,
       profileId: record.profileId,
       profileName: profile?.name ?? null,
       sessionId: record.id,
@@ -9751,9 +9753,10 @@ export class HostedBrowserBroker {
   async #waitUntilReady(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       let ready = false;
+      let settled = false;
       const abortReady = (error: Error) => {
-        if (ready) return;
-        ready = true;
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         this.#rejectReady = null;
         reject(error);
@@ -9788,11 +9791,12 @@ export class HostedBrowserBroker {
         );
         void handled
           .then((becameReady) => {
-            if (!becameReady || ready) return;
+            if (!becameReady || settled) return;
             if (this.#stopping || this.#detaching || !this.#runtimeReady) {
               abortReady(new Error(this.#failure ?? "Browser Runtime detached during attach."));
               return;
             }
+            settled = true;
             ready = true;
             clearTimeout(timeout);
             this.#rejectReady = null;
