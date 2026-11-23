@@ -157,6 +157,8 @@ export async function journey(
     readonly statusEveryMs?: number;
     /** The guest's page probe during a retire; a retire waits for it. */
     readonly probePage?: (page: unknown, phase: "active" | "frozen") => Promise<readonly string[]>;
+    readonly requireAgentAccess?: ConstructorParameters<typeof BrowserService>[0]["requireAgentAccess"];
+    readonly detachRunnerAgents?: ConstructorParameters<typeof BrowserService>[0]["detachRunnerAgents"];
   } = {},
 ) {
   const real = options.chromium !== false;
@@ -184,7 +186,15 @@ export async function journey(
         executablePath: chromium.executablePath(),
         headless: true,
       })
-    : new FakeIsolatingLauncher();
+    : options.profile
+      ? Object.assign(new FakeIsolatingLauncher(), {
+          localProfiles: {
+            engine: "chromium" as const,
+            createFiles: async () => {},
+            release: async () => "released" as const,
+          },
+        })
+      : new FakeIsolatingLauncher();
   if (real) {
     const launch = launcher.launch.bind(launcher);
     vi.spyOn(launcher, "launch").mockImplementation(async (request) => {
@@ -306,6 +316,8 @@ export async function journey(
       tabs,
       tabPlaces: { write: async () => false, notice: () => {} },
       repository: personalBrowserRepository(store),
+      ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
+      ...(options.detachRunnerAgents ? { detachRunnerAgents: options.detachRunnerAgents } : {}),
       ...(profile
         ? {
             localProfiles: new BrowserLocalProfiles({

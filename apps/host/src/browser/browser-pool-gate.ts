@@ -13,6 +13,8 @@ export type BrowserPoolHold = "restart" | "released" | "over";
 
 export interface BrowserPoolReservation {
   release(): void;
+  /** True when the caller actually suspended before the gate opened (a wake, park, or hold). */
+  readonly waited?: boolean;
   /** Aborted when a restart or a removal needs every holder gone: the holder stops and settles. */
   readonly ended?: AbortSignal;
   /**
@@ -232,6 +234,7 @@ export class BrowserPoolGate {
   async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
     if (demand) this.#waiting++;
     let asked = false;
+    let waited = false;
     try {
       for (;;) {
         if (signal.aborted)
@@ -247,7 +250,7 @@ export class BrowserPoolGate {
           throw new BrowserPoolAdmissionClosed("This browser is not ready. Nothing was sent.");
         if (this.#hold === "released")
           throw new BrowserPoolAdmissionClosed("This device was removed. Nothing was sent.");
-        if (this.admits) return this.#take(demand);
+        if (this.admits) return this.#take(demand, waited);
         if (this.#preparing && (demand || !this.#repairing)) this.#demanded = true;
         // Demand asks the loop once, as it begins to wait: the loop keeps a change that came
         // during a step for the turn after it, so asking again at every change of the gate
@@ -256,6 +259,7 @@ export class BrowserPoolGate {
           asked = true;
           this.onChange();
         }
+        waited = true;
         await waitForChange(this.#changed.signal, signal);
       }
     } finally {
@@ -263,12 +267,13 @@ export class BrowserPoolGate {
     }
   }
 
-  #take(command: boolean): BrowserPoolReservation {
+  #take(command: boolean, waited = false): BrowserPoolReservation {
     this.#active++;
     if (command) this.#commands++;
     let released = false;
     let settler: (() => Promise<void>) | undefined;
     return {
+      ...(waited ? { waited: true } : {}),
       ended: this.#ended.signal,
       onForcedEnd: (settle) => {
         if (released) return;

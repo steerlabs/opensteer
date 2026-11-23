@@ -983,6 +983,8 @@ export class BrowserService {
   /** What each session's viewers were last told, so a repeat is not sent. */
   readonly #announcedPresence = new Map<BrowserSessionId, string>();
   readonly #agentAdmissions = new KeyedMutationQueue();
+  readonly #runnerAccessGeneration = new Map<RunnerId, number>();
+  readonly #deviceAccessDisabled = new Error("This device's browser access was turned off.");
   readonly #requireAgentAccess: (runnerId: RunnerId) => Promise<void>;
   readonly #requireAgentVisibility: (runnerId: RunnerId) => Promise<void>;
   readonly #detachRunnerAgents: BrowserServiceOptions["detachRunnerAgents"];
@@ -1003,6 +1005,10 @@ export class BrowserService {
    * after the lane is released. Without an agent the command is the person's.
    */
   async disableAgentAccess(runnerId: RunnerId): Promise<void> {
+    this.#runnerAccessGeneration.set(runnerId, (this.#runnerAccessGeneration.get(runnerId) ?? 0) + 1);
+    for (const waiters of this.#poolAgentWaiters.values())
+      for (const waiter of waiters)
+        if (waiter.runnerId === runnerId) waiter.controller.abort(this.#deviceAccessDisabled);
     for (const attachment of this.#deviceAttachments.values())
       if (attachment.runnerId === runnerId) attachment.close();
     const detached = await this.#detachRunnerAgents?.(runnerId);
@@ -1030,7 +1036,10 @@ export class BrowserService {
   readonly #pooledRunner: RunnerId | undefined;
   readonly #newSessionId: () => BrowserSessionId;
   readonly #poolWaiters = new Map<BrowserSessionId, Set<AbortController>>();
-  readonly #poolAgentWaiters = new Map<string, Set<AbortController>>();
+  readonly #poolAgentWaiters = new Map<
+    string,
+    Set<{ readonly controller: AbortController; readonly runnerId?: RunnerId }>
+  >();
   readonly #closing = new AbortController();
   #closed = false;
   #closePromise: Promise<void> | null = null;
@@ -2479,16 +2488,37 @@ export class BrowserService {
           )
             throw unavailable("The pooled browser changed before opening the page.");
           if (pooled) {
+            const openRecheck = agent
+              ? async () => {
+                  await this.admitAgentBrowser(
+                    agent,
+                    "read-write",
+                    record ? [record] : [],
+                    this.#repository,
+                    false,
+                    record
+                      ? undefined
+                      : {
+                          profileId:
+                            opening && "profileId" in opening ? (opening.profileId ?? null) : null,
+                        },
+                  );
+                  await this.#requireAgentAccess(runnerId);
+                }
+              : undefined;
             const reservation = agent
               ? await this.#reserveAgentPool(
                   pooled.gate,
                   agent.agentBindingId,
                   record?.id,
                   budget.signal,
+                  runnerId,
+                  openRecheck,
                 )
               : await this.#reservePool(pooled.gate, budget.signal, record?.id);
             budget.pool = { target: pooled, reservation };
             budget.signal.throwIfAborted();
+            if (openRecheck && reservation.waited) await openRecheck();
             if (record) {
               const current = await this.#repository.getBrowserSessionForOwner(record.id, ownerId);
               if (
@@ -4334,7 +4364,17 @@ export class BrowserService {
     }
     const reservation =
       pool && existing
-        ? await this.#reserveAgentPool(pool.gate, agent.agentBindingId, existing.id, signal)
+        ? await this.#reserveAgentPool(
+            pool.gate,
+            agent.agentBindingId,
+            existing.id,
+            signal,
+            existing.runnerId,
+            async () => {
+              await this.admitAgentBrowser(agent, "read-write", [existing]);
+              await this.#requireAgentAccess(existing.runnerId);
+            },
+          )
         : undefined;
     try {
       if (reservation) {
@@ -4691,16 +4731,24 @@ export class BrowserService {
           message: "That tab is not available to this task.",
         });
       }
+      const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
       const pool = this.#pool(record.runnerId);
       if (pool) await this.#requireAgentAccess(record.runnerId);
       const reservation = pool
-        ? await this.#reserveAgentPool(pool.gate, input.agentBindingId, record.id, input.signal)
+        ? await this.#reserveAgentPool(
+            pool.gate,
+            input.agentBindingId,
+            record.id,
+            input.signal,
+            record.runnerId,
+            () => this.#admitAgentSession(input, record.id, false),
+          )
         : undefined;
       try {
-        await this.withRunnerAdmission(record.runnerId, async () => {
-          await this.#requireAgentAccess(record.runnerId);
-          if (pool) await this.#usableAgentSession(input, record.id);
-          await this.#holdForAgent(input, record);
+        await this.#holdForAgent(input, record, {
+          recheck: Boolean(pool && reservation?.waited),
+          requireAccess: true,
+          accessGeneration,
         });
         return {
           session: await this.#agentSessionSummary(input, record.id),
@@ -4759,10 +4807,7 @@ export class BrowserService {
           message: "The browser became unavailable to this task while it was opening.",
         });
       }
-      await this.withRunnerAdmission(openedRecord.runnerId, async () => {
-        await this.#requireAgentAccess(openedRecord.runnerId);
-        await this.#holdForAgent(input, openedRecord);
-      });
+      await this.#holdForAgent(input, openedRecord, { requireAccess: true });
       return {
         session: await this.#agentSessionSummary(input, opened.session.id),
         wasExisting: false,
@@ -4932,9 +4977,7 @@ export class BrowserService {
     const record = await this.#usableAgentSession(input, input.sessionId, false);
     if (this.#pool(record.runnerId))
       throw new BrowserCdpConnectionEnded("This browser action transport has no detach receipt.");
-    return this.withRunnerAdmission(record.runnerId, () =>
-      this.#attachActionsForAgent(input, onEvent, onClosed),
-    );
+    return this.#attachActionsForAgent(input, onEvent, onClosed);
   }
 
   async #attachActionsForAgent(
@@ -4967,28 +5010,30 @@ export class BrowserService {
         .catch(() => undefined);
       onClosed?.();
     };
-    this.#deviceAttachments.set(attachmentId, { runnerId: record.runnerId, close });
-    this.#actionAttachments.set(attachmentId, {
-      binding: input.agentBindingId,
-      profileId: record.profileId,
-      ownerId: input.ownerId,
-      close,
-    });
-    try {
-      await this.#admitAgentBackend(input, "actions");
-      assertOpen();
-      await broker.sendHostCommand({
-        type: "agent.attach",
-        sessionId: record.id,
-        attachmentId,
-        actorToken,
-        backend: "actions",
+    await this.withRunnerAdmission(record.runnerId, async () => {
+      this.#deviceAttachments.set(attachmentId, { runnerId: record.runnerId, close });
+      this.#actionAttachments.set(attachmentId, {
+        binding: input.agentBindingId,
+        profileId: record.profileId,
+        ownerId: input.ownerId,
+        close,
       });
-      assertOpen();
-    } catch (error) {
-      close();
-      throw error;
-    }
+      try {
+        await this.#admitAgentBackend(input, "actions");
+        assertOpen();
+        await broker.sendHostCommand({
+          type: "agent.attach",
+          sessionId: record.id,
+          attachmentId,
+          actorToken,
+          backend: "actions",
+        });
+        assertOpen();
+      } catch (error) {
+        close();
+        throw error;
+      }
+    });
     return {
       session: publicSession(record),
       close,
@@ -5728,23 +5773,21 @@ export class BrowserService {
         input.agentBindingId,
         record.id,
         input.signal,
+        record.runnerId,
+        () => this.#admitAgentSession(input, record.id, false),
       );
       let relay: PooledBrowserRelay | undefined;
       try {
         relay = await PooledBrowserRelay.open(this.#repository.database, pool.identity(), gate);
         const admitted = relay;
-        return await this.withRunnerAdmission(record.runnerId, () =>
-          this.#attachCdpForAgent(input, onEvent, onClosed, admitted),
-        );
+        return await this.#attachCdpForAgent(input, onEvent, onClosed, admitted);
       } catch (error) {
         if (relay) await relay.close();
         else gate.release();
         throw error;
       }
     }
-    return this.withRunnerAdmission(record.runnerId, () =>
-      this.#attachCdpForAgent(input, onEvent, onClosed),
-    );
+    return this.#attachCdpForAgent(input, onEvent, onClosed);
   }
 
   async #attachCdpForAgent(
@@ -5789,6 +5832,7 @@ export class BrowserService {
         if (facts.agentConnectionId !== null) connectionWork = true;
       },
     );
+    const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
     // A runtime that says it can hold the rules itself is told the work is a connection's, so a
     // command it unpacks is checked where it is unpacked; the Home's gate stays for any other.
     const runtimeHoldsConnection =
@@ -5861,33 +5905,48 @@ export class BrowserService {
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId === scriptAttachmentId) onEvent(event);
     }, close);
-    this.#deviceAttachments.set(deviceAttachmentId, {
-      runnerId: record.runnerId,
-      close,
-      ...(scriptAttachmentId || pooledRelay ? { binding: input.agentBindingId } : {}),
-    });
-    if (nativeAttachment) {
-      this.#actionAttachments.set(nativeAttachment.attachmentId, {
-        binding: input.agentBindingId,
-        profileId: record.profileId,
-        ownerId: input.ownerId,
-        close,
-      });
-      try {
-        await this.#admitAgentBackend(input, "cdp");
-        assertAttached(false);
-        await broker.sendHostCommand({
-          type: "agent.attach",
-          sessionId: record.id,
-          backend: "cdp",
-          ...nativeAttachment,
-        });
-        assertAttached(false);
-      } catch (error) {
-        close();
-        throw error;
+    const admissionWaited = this.#agentAdmissions.busy(record.runnerId);
+    await this.withRunnerAdmission(record.runnerId, async () => {
+      if (
+        !nativeAttachment &&
+        (admissionWaited ||
+          (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration)
+      ) {
+        try {
+          await this.#admitAgentSession(input, record.id, false);
+        } catch (error) {
+          close();
+          throw error;
+        }
       }
-    }
+      this.#deviceAttachments.set(deviceAttachmentId, {
+        runnerId: record.runnerId,
+        close,
+        ...(scriptAttachmentId || pooledRelay ? { binding: input.agentBindingId } : {}),
+      });
+      if (nativeAttachment) {
+        this.#actionAttachments.set(nativeAttachment.attachmentId, {
+          binding: input.agentBindingId,
+          profileId: record.profileId,
+          ownerId: input.ownerId,
+          close,
+        });
+        try {
+          await this.#admitAgentBackend(input, "cdp");
+          assertAttached(false);
+          await broker.sendHostCommand({
+            type: "agent.attach",
+            sessionId: record.id,
+            backend: "cdp",
+            ...nativeAttachment,
+          });
+          assertAttached(false);
+        } catch (error) {
+          close();
+          throw error;
+        }
+      }
+    });
     const expired = { result: Promise.resolve({ status: "expired" }) };
     // Admission is everything before the command is handed to the browser; its
     // fences apply until then. The answer arrives on `result`.
@@ -7049,6 +7108,18 @@ export class BrowserService {
             input.agentBindingId,
             undefined,
             poolStart.signal,
+            placement.runnerId,
+            async () => {
+              await this.admitAgentBrowser(
+                { ownerId: input.ownerId, agentBindingId: input.agentBindingId! },
+                "read-write",
+                [],
+                this.#repository,
+                false,
+                { profileId: profile?.id ?? null },
+              );
+              await this.#requireAgentAccess(placement.runnerId);
+            },
           )
         : await this.#reservePool(pooled.gate, poolStart.signal);
       poolStart.pool = { target: pooled, reservation };
@@ -7473,11 +7544,16 @@ export class BrowserService {
     binding: string,
     sessionId?: BrowserSessionId,
     upstream?: AbortSignal,
+    runnerId?: RunnerId,
+    onDisabled?: () => Promise<unknown>,
   ) {
     if (this.browserBindingEnded(binding)) throw new BrowserCdpConnectionEnded();
-    const waiters = this.#poolAgentWaiters.get(binding) ?? new Set<AbortController>();
+    const waiters =
+      this.#poolAgentWaiters.get(binding) ??
+      new Set<{ readonly controller: AbortController; readonly runnerId?: RunnerId }>();
     const waiter = new AbortController();
-    waiters.add(waiter);
+    const entry = { controller: waiter, ...(runnerId ? { runnerId } : {}) };
+    waiters.add(entry);
     this.#poolAgentWaiters.set(binding, waiters);
     try {
       return await this.#reservePool(
@@ -7489,8 +7565,17 @@ export class BrowserService {
         ]),
         sessionId,
       );
+    } catch (error) {
+      if (runnerId && waiter.signal.aborted && waiter.signal.reason === this.#deviceAccessDisabled) {
+        await this.withRunnerAdmission(runnerId, async () => {
+          if (onDisabled) await onDisabled();
+          else await this.#requireAgentAccess(runnerId);
+        });
+        throw new BrowserCdpConnectionEnded("This device's browser access was turned off.");
+      }
+      throw error;
     } finally {
-      waiters.delete(waiter);
+      waiters.delete(entry);
       if (!waiters.size) this.#poolAgentWaiters.delete(binding);
     }
   }
@@ -7852,8 +7937,15 @@ export class BrowserService {
       readonly ownerId: UserId;
     },
     record: BrowserSessionRecord,
+    options?: {
+      readonly recheck?: boolean;
+      readonly requireAccess?: boolean;
+      readonly accessGeneration?: number;
+    },
   ): Promise<void> {
-    return this.#standardCdpProfiles.run(record.profileId, async () => {
+    const accessGeneration =
+      options?.accessGeneration ?? (this.#runnerAccessGeneration.get(record.runnerId) ?? 0);
+    return this.#standardCdpProfiles.run(record.profileId, async (profileWaited) => {
       const held = record.profileId ? this.#standardCdpProfiles.held(record.profileId) : undefined;
       if (held && held.bindingId !== input.agentBindingId)
         throw new BrowserCdpConnectionEnded(
@@ -7861,36 +7953,56 @@ export class BrowserService {
         );
       const pool = this.#pool(record.runnerId);
       const reservation = pool
-        ? await pool.gate.reserve(
-            AbortSignal.any([this.#closing.signal, AbortSignal.timeout(browserOpenWorkMs)]),
+        ? await this.#reserveAgentPool(
+            pool.gate,
+            input.agentBindingId,
+            record.id,
+            undefined,
+            record.runnerId,
+            () => this.#admitAgentSession(input, record.id, false),
           )
         : undefined;
       try {
-        // Run attachment and usage sequentially so they never contend on client_sync_state,
-        // and skip repeat session-only usage writes only when this binding's last recorded
-        // session and this session's last recorded binding are both unchanged.
-        const attached = await this.#repository.attachBrowserSession({
-          agentBindingId: input.agentBindingId,
-          ownerId: input.ownerId,
-          sessionId: record.id,
-          ...(pool ? { pool: pool.identity() } : {}),
-        });
-        if (attached) this.#onSessionsChanged([record.id]);
-        if (
-          attached ||
-          this.#lastHeldSessionByBinding.get(input.agentBindingId) !== record.id ||
-          this.#lastHeldBindingBySession.get(record.id) !== input.agentBindingId
-        ) {
-          const credits = await this.#repository.recordAgentBrowserUse({
+        const admissionWaited = this.#agentAdmissions.busy(record.runnerId);
+        await this.withRunnerAdmission(record.runnerId, async () => {
+          if (this.#closed || this.#endedBindings.has(input.agentBindingId))
+            throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+          const mustRecheck = Boolean(
+            options?.recheck ||
+              profileWaited ||
+              reservation?.waited ||
+              admissionWaited ||
+              (this.#runnerAccessGeneration.get(record.runnerId) ?? 0) !== accessGeneration,
+          );
+          if (mustRecheck) await this.#admitAgentSession(input, record.id, false);
+          else if (options?.requireAccess) await this.#requireAgentAccess(record.runnerId);
+          // Run attachment and usage sequentially so they never contend on client_sync_state,
+          // and skip repeat session-only usage writes only when this binding's last recorded
+          // session and this session's last recorded binding are both unchanged.
+          const attached = await this.#repository.attachBrowserSession({
             agentBindingId: input.agentBindingId,
             ownerId: input.ownerId,
-            page: null,
             sessionId: record.id,
-            tabId: null,
+            ...(pool ? { pool: pool.identity() } : {}),
           });
-          this.#noteLastHeldSession(record.id, input.agentBindingId);
-          this.announceUsage(credits);
-        }
+          if (!attached && (this.#closed || this.#endedBindings.has(input.agentBindingId))) return;
+          if (attached) this.#onSessionsChanged([record.id]);
+          if (
+            attached ||
+            this.#lastHeldSessionByBinding.get(input.agentBindingId) !== record.id ||
+            this.#lastHeldBindingBySession.get(record.id) !== input.agentBindingId
+          ) {
+            const credits = await this.#repository.recordAgentBrowserUse({
+              agentBindingId: input.agentBindingId,
+              ownerId: input.ownerId,
+              page: null,
+              sessionId: record.id,
+              tabId: null,
+            });
+            this.#noteLastHeldSession(record.id, input.agentBindingId);
+            this.announceUsage(credits);
+          }
+        });
       } finally {
         reservation?.release();
       }
@@ -7970,7 +8082,7 @@ export class BrowserService {
   #forgetAgentBinding(agentBindingId: string): void {
     this.#lastHeldSessionByBinding.delete(agentBindingId);
     for (const waiter of this.#poolAgentWaiters.get(agentBindingId) ?? [])
-      waiter.abort(new BrowserCdpConnectionEnded("The browser task ended."));
+      waiter.controller.abort(new BrowserCdpConnectionEnded("The browser task ended."));
     this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");
     for (const attachment of this.#deviceAttachments.values())
       if (attachment.binding === agentBindingId) attachment.close();

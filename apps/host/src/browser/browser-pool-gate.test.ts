@@ -215,3 +215,20 @@ it("lets only a command in flight hold a repair: a send with no demand neither k
   subject.endPark();
   (await late).release();
 });
+
+it("marks waited on a reservation only when the caller actually suspended", async () => {
+  const g = gate();
+  const immediate = await g.subject.reserve(new AbortController().signal);
+  expect(immediate.waited).toBeUndefined();
+  immediate.release();
+
+  g.beforeCheck.resolve();
+  g.commit.resolve();
+  expect(await g.tryPark()).toBe("parked");
+  const waiting = g.subject.reserve(new AbortController().signal);
+  await vi.waitFor(() => expect(g.subject.phase).toBe("waking"));
+  g.wake.resolve();
+  const resumed = await waiting;
+  expect(resumed.waited).toBe(true);
+  resumed.release();
+});

@@ -8,10 +8,12 @@ import {
   decideAgentOperation,
   handOffAgentOperation,
   installBrowserPoolSlot,
+  lineageEndedMessage,
   listBrowserPoolDocumentLosses,
   readBrowserPoolSlot,
   retireBrowserPoolTarget,
   settleBrowserPoolRelay,
+  TabStore,
   browserPoolRelayDeadlineMs,
   pruneBrowserPoolBookkeeping,
   type BrowserPoolTargetIdentity,
@@ -25,19 +27,28 @@ import {
   BrowserSurfaceIdSchema,
   decodeBrowserFrameEnvelope,
 } from "../packages/protocol/src/browser.js";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { sql } from "kysely";
 import { expect, it, vi } from "vitest";
 import { createId } from "../packages/core/src/index.js";
 import { PooledBrowserRelay } from "../apps/host/src/browser/browser-pool-relay.js";
-import { HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
+import { BrowserService, HostedBrowserBroker } from "../apps/host/src/browser/browser-service.js";
+import { BrowserAttachTicketSigner } from "../apps/host/src/browser/browser-ticket.js";
+import { requireRunnerDeviceAccess } from "../apps/host/src/administration/device-access.js";
+import {
+  BrowserRuntime,
+  BrowserRuntimeServer,
+  Ed25519AttachTicketVerifier,
+  type BrowserPoolEndAnswer,
+  type BrowserPoolRuntimeState,
+} from "../packages/browser-runtime-core/src/index.js";
+import { FakeIsolatingLauncher } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import { loopbackPoolChannel } from "../apps/host/src/browser/browser-pool-coordinator.js";
 import { BrowserPoolAgentSlotDeleted } from "../packages/browser-runtime-core/src/browser-pool-agent-wire.js";
-import type {
-  BrowserPoolEndAnswer,
-  BrowserPoolRuntimeState,
-} from "../packages/browser-runtime-core/src/index.js";
 import type { BrowserSessionId } from "../packages/core/src/index.js";
 import { removeDevice } from "../apps/host/src/administration/device-removal.js";
 import {
@@ -2924,5 +2935,397 @@ it("never writes a pooled row the runtime ended on its own while the Home detach
     ]);
   } finally {
     await j.close();
+  }
+});
+
+for (const revoke of ["device-off", "grant-narrowed", "disconnect"] as const)
+  it(`re-checks authority after #holdForAgent waits on a wake (${revoke}): no attachment row, same refusal (X1)`, async () => {
+    let j: Awaited<ReturnType<typeof journey>> | undefined;
+    j = await journey(`x1-wake-${revoke}`, {
+      chromium: false,
+      profile: true,
+      requireAgentAccess: (runnerId) => requireRunnerDeviceAccess(j!.database, runnerId, "browser", true),
+      detachRunnerAgents: async (runnerId) => {
+        const rows = await j!.database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .execute();
+        if (!rows.length) return [];
+        const ids = rows.map(({ id }) => id);
+        await j!.database
+          .deleteFrom("browserSessionAttachments")
+          .where("sessionId", "in", ids)
+          .execute();
+        return ids;
+      },
+    });
+    try {
+      const home = await j.startHome();
+      const profile = j.profile!;
+      // Use the self Device already attached to this runner so requireRunnerDeviceAccess reads its switch.
+      const driverRow = await j.database
+        .selectFrom("deviceDrivers")
+        .select("deviceId")
+        .where("runnerId", "=", j.task.runnerId)
+        .where("role", "=", "self")
+        .where("detachedAt", "is", null)
+        .executeTakeFirstOrThrow();
+      const deviceId = driverRow.deviceId;
+      await j.database
+        .updateTable("devices")
+        .set({
+          kind: "computer",
+          ownerKind: "user",
+          ownerUserId: j.task.userId,
+          accessPolicy: { browser: true, apps: true, files: true },
+          accessPolicyRevision: 1,
+        })
+        .where("id", "=", deviceId)
+        .execute();
+
+      const connections = new AgentConnectionStore(j.database);
+      const connection = await connections.create({
+        userId: j.task.userId,
+        label: "Pooled agent",
+        clientName: "Pooled agent",
+        accessMode: "full-access",
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: profile.id }],
+        },
+        resource: "https://pooled.test/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+      const { session: agentSession } = await beginAgentSession(j.database, {
+        userId: j.task.userId,
+        agentConnectionId: connection.id,
+      });
+      const agent = {
+        agentBindingId: `session:${agentSession.id}`,
+        ownerId: j.task.userId,
+        environmentId: j.task.environmentId,
+        threadId: agentSession.threadId,
+      };
+
+      // Open the profile session as the person first so the tab exists before the agent holds it.
+      const personTab = await home.service.openTab(j.task.userId, {
+        type: "browser.tab.open",
+        identity: { kind: "profile", profileId: profile.id },
+        placement: { kind: "runner", runnerId: j.task.runnerId },
+        idempotencyKey: `x1-person-${revoke}`,
+      });
+
+      // Let openAgentTab proceed directly to #admitAgentBackend -> #holdForAgent on personTab
+      // (which has runs === 0 so it can park), then park the real host right as #holdForAgent
+      // calls pool.gate.reserve so it suspends on a real wake.
+      const resume = holdResume(j.controller);
+      const realReserve = home.coordinator.gate.reserve.bind(home.coordinator.gate);
+      let parkNextReserve = false;
+      vi.spyOn(home.service, "openTab").mockImplementationOnce(async () => {
+        parkNextReserve = true;
+        return personTab;
+      });
+      vi.spyOn(home.coordinator.gate, "reserve").mockImplementation(async (...args) => {
+        if (parkNextReserve) {
+          parkNextReserve = false;
+          await until(() => expect(home.coordinator.gate.held).toBe(0));
+          expect(await home.coordinator.tryPark()).toBe("parked");
+        }
+        return realReserve(...args);
+      });
+
+      const opening = home.service.openAgentTab(agent, {
+        identity: { kind: "profile", profile: profile.id },
+        operationKey: `x1-agent-${revoke}`,
+      });
+      try {
+        await before(resume.seen, opening, "Agent hold during wake");
+        expect(
+          await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId),
+        ).toEqual([]);
+
+        if (revoke === "device-off") {
+          await home.service.withRunnerAdmission(j.task.runnerId, async () => {
+            const updated = await j!.store.updateDeviceAccessPolicy({
+              deviceId,
+              ownerId: j!.task.userId,
+              allowDeployment: true,
+              expectedRevision: 1,
+              policy: { browser: false, apps: true, files: true },
+              idempotency: { key: `x1-off-${revoke}`, requestedBy: j!.task.userId },
+            });
+            expect(updated.outcome).toBe("updated");
+            await home.service.disableAgentAccess(j!.task.runnerId);
+          });
+        } else if (revoke === "grant-narrowed") {
+          const updated = await connections.update(j.task.userId, {
+            connectionId: connection.id,
+            expectedRevision: connection.grantRevision,
+            grant: { scope: "selected", tasks: false, resources: [] },
+          });
+          expect(updated.narrowed).toBe(true);
+        } else {
+          const revoked = await connections.revoke(j.task.userId, connection.id);
+          expect(revoked?.revokedAt).not.toBeNull();
+        }
+
+        resume.allow();
+        const refused = await opening.then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        // Must match the first admission's refusal verbatim, and write no attachment row.
+        const firstAdmissionRefusal = await home.service
+          .agentBackend({
+            agentBindingId: agent.agentBindingId,
+            ownerId: agent.ownerId,
+            sessionId: personTab.sessionId,
+          })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        expect(refused).toBeDefined();
+        expect(firstAdmissionRefusal).toBeDefined();
+        expect(refused).toMatchObject({
+          code: (firstAdmissionRefusal as { code?: string }).code,
+          message: (firstAdmissionRefusal as { message?: string }).message,
+          ...(revoke === "device-off" ? { reason: "device-access-off" } : {}),
+        });
+        if (revoke === "disconnect")
+          expect((refused as Error).message).toBe(lineageEndedMessage);
+        expect(
+          await j.store.listBrowserSessionAttachmentBindings(personTab.sessionId),
+        ).toEqual([]);
+      } finally {
+        resume.allow();
+        await opening.catch(() => undefined);
+      }
+    } finally {
+      await j.close();
+    }
+  });
+
+it("re-checks authority after #holdForAgent waits in the profile queue on a personal Home (X1)", async () => {
+  const fixture = await createStoreFixture();
+  const root = await mkdtemp(join(tmpdir(), "opensteer-personal-queue-"));
+  const runtimeServerRef: { server?: BrowserRuntimeServer } = {};
+  try {
+    const task = await fixture.startRunFixture("x1-personal-profile-queue");
+    const { database, store } = fixture;
+    await database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", task.runnerId)
+      .execute();
+    const profile = await store.createBrowserProfile({
+      name: "Personal saved browser",
+      ownerId: task.userId,
+      homeRunnerId: task.runnerId,
+      idempotencyKey: "x1-personal-profile",
+    });
+    const tickets = generateKeyPairSync("ed25519");
+    const runtime = new BrowserRuntime({
+      runtimeId: "personal-runtime",
+      launcher: Object.assign(new FakeIsolatingLauncher(), {
+        localProfiles: {
+          engine: "chromium" as const,
+          createFiles: async () => {},
+          release: async () => "released" as const,
+        },
+      }),
+      sessionFilesRoot: join(root, "sessions"),
+      localProfiles: { root: join(root, "profiles") },
+      ticketVerifier: await Ed25519AttachTicketVerifier.create({
+        replayLedgerPath: join(root, "private", "tickets.json"),
+        resolvePublicKey: (id) => (id === "test" ? tickets.publicKey : null),
+      }),
+    });
+    const bridgeToken = randomUUID();
+    const server = new BrowserRuntimeServer({
+      runtime,
+      port: 0,
+      relayBridge: {
+        token: bridgeToken,
+        updateAttachKeys: () => {},
+      },
+    });
+    runtimeServerRef.server = server;
+    const address = await server.start();
+    const bridge = new LocalBrowserRuntimeBridge({
+      bridgeToken,
+      runtimeId: "personal-runtime",
+      url: new URL(`http://${address.host}:${address.port}`),
+    });
+    bridge.setAttachPublicKeys([
+      {
+        keyId: "test",
+        publicKeyPem: tickets.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      },
+    ]);
+    const baseRepository = personalBrowserRepository(store);
+    const realCreate = baseRepository.createBrowserSession.bind(baseRepository);
+    let pauseNextCreate:
+      | { entered: () => void; release: Promise<void> }
+      | undefined;
+    const personal = new BrowserService({
+      deploymentId: task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      personal: true,
+      tabs: new TabStore(database),
+      tabPlaces: { write: async () => false, notice: () => {} },
+      repository: Object.assign(baseRepository, {
+        createBrowserSession: async (
+          input: Parameters<typeof baseRepository.createBrowserSession>[0],
+        ) => {
+          const pause = pauseNextCreate;
+          if (pause) {
+            pauseNextCreate = undefined;
+            pause.entered();
+            await pause.release;
+          }
+          return realCreate(input);
+        },
+      }),
+      localProfiles: new BrowserLocalProfiles({
+        deploymentId: task.deploymentId,
+        repository: store,
+        baseUrl: new URL("http://127.0.0.1"),
+      }),
+      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: tickets.privateKey }),
+      onError: () => {},
+      onSessionsChanged: () => {},
+      targetResolver: {
+        placements: () => [
+          {
+            kind: "runner" as const,
+            runnerId: task.runnerId,
+            label: "Personal test browser",
+            runtimeId: "personal-runtime",
+            environmentIds: [task.environmentId],
+            available: true,
+          },
+        ],
+        resolve: () => ({
+          runtimeId: "personal-runtime",
+          placementKey: "personal-test",
+          main: true,
+          surfaceState: 1,
+          tabRestoreVersion: true,
+          sharedControl: true,
+          cdpBoundary: true,
+          ...(runtime.localProfileStorage
+            ? { localProfileStorage: runtime.localProfileStorage }
+            : {}),
+          connect: (ticket) => new TestRuntimeConnection(bridge, ticket),
+          connectionCommands: true,
+          targetControl: true,
+        }),
+      },
+    });
+    try {
+      await personal.initialize();
+
+      const personTab = await personal.openTab(task.userId, {
+        type: "browser.tab.open",
+        identity: { kind: "profile", profileId: profile.id },
+        placement: { kind: "runner", runnerId: task.runnerId },
+        idempotencyKey: "x1-personal-person",
+      });
+
+      const connections = new AgentConnectionStore(database);
+      const connection = await connections.create({
+        userId: task.userId,
+        label: "Personal agent",
+        clientName: "Personal agent",
+        accessMode: "full-access",
+        grant: {
+          scope: "selected",
+          tasks: false,
+          resources: [{ kind: "browser-profile", profileId: profile.id }],
+        },
+        resource: "https://personal.test/mcp",
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      expect(await connections.activate(connection.id, randomUUID())).toBe(true);
+      const { session: agentSession } = await beginAgentSession(database, {
+        userId: task.userId,
+        agentConnectionId: connection.id,
+      });
+      const agent = {
+        agentBindingId: `session:${agentSession.id}`,
+        ownerId: task.userId,
+      };
+
+      // Hold the profile queue (without holding withRunnerAdmission) via a person start on the
+      // same profile paused inside createBrowserSession.
+      const enteredQueue = Promise.withResolvers<void>();
+      const releaseQueue = Promise.withResolvers<void>();
+      pauseNextCreate = { entered: () => enteredQueue.resolve(), release: releaseQueue.promise };
+      const blocker = personal
+        .start({
+          origin: "person",
+          ownerId: task.userId,
+          profileId: profile.id,
+          placement: { kind: "runner", runnerId: task.runnerId },
+          reuseExisting: false,
+        })
+        .catch(() => undefined);
+      try {
+        await enteredQueue.promise;
+
+        // Agent attaches while the profile queue is held: first admission passes, then
+        // #holdForAgent suspends behind `blocker` in the profile queue.
+        const attaching = personal.attachCdpForAgent(
+          { ...agent, sessionId: personTab.sessionId },
+          () => {},
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        // Narrow the grant while #holdForAgent is waiting in the profile queue.
+        const updated = await connections.update(task.userId, {
+          connectionId: connection.id,
+          expectedRevision: connection.grantRevision,
+          grant: { scope: "selected", tasks: false, resources: [] },
+        });
+        expect(updated.narrowed).toBe(true);
+
+        releaseQueue.resolve();
+        const refused = await attaching.then(
+          (attached) => {
+            attached.close();
+            return undefined;
+          },
+          (error: unknown) => error,
+        );
+        await blocker;
+
+        const firstAdmissionRefusal = await personal
+          .agentBackend({ ...agent, sessionId: personTab.sessionId })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        expect(refused).toBeDefined();
+        expect(firstAdmissionRefusal).toBeDefined();
+        expect(refused).toMatchObject({
+          code: (firstAdmissionRefusal as { code?: string }).code,
+          message: (firstAdmissionRefusal as { message?: string }).message,
+        });
+        expect(await store.listBrowserSessionAttachmentBindings(personTab.sessionId)).toEqual([]);
+      } finally {
+        releaseQueue.resolve();
+        await blocker;
+      }
+    } finally {
+      await personal.close().catch(() => undefined);
+    }
+  } finally {
+    await runtimeServerRef.server?.close().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+    await fixture.close();
   }
 });
