@@ -110,12 +110,13 @@ import { probeFullDiskAccess, type FullDiskAccessProbeOptions } from "../shell/f
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
 
-/** Maximum Runner control WebSocket frame size; accommodates worst-case JSON-escaped trigger.execute (AA14.6). */
+/** Maximum inbound Host->Runner control WebSocket frame size; accommodates worst-case JSON-escaped trigger.execute (AA14.6). */
 export const runnerControlMaxFrameBytes = 4 * 1024 * 1024;
 const maximumFrameBytes = runnerControlMaxFrameBytes;
+const maximumOutboundFrameBytes = 1024 * 1024;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
 const maximumQueuedInboundItems = 64;
-const maximumBufferedOutboundBytes = Math.max(8 * 1024 * 1024, 2 * maximumFrameBytes);
+const maximumBufferedOutboundBytes = 8 * 1024 * 1024;
 const handshakeTimeoutMs = 15_000;
 const connectionOperationStopWaitMs = 15_000;
 const maximumReconnectDelayMs = 30_000;
@@ -2804,7 +2805,7 @@ export class WebSocketMessageSink implements RunnerMessageSink {
       frame = serializeJsonFrame(parsed);
       if (
         parsed.type === "runner.harness-catalog" &&
-        Buffer.byteLength(frame, "utf8") > maximumFrameBytes
+        Buffer.byteLength(frame, "utf8") > maximumOutboundFrameBytes
       ) {
         parsed = fitHarnessCatalogFrame(parsed);
         frame = serializeJsonFrame(parsed);
@@ -2814,7 +2815,7 @@ export class WebSocketMessageSink implements RunnerMessageSink {
       return Promise.reject(error);
     }
     const bytes = Buffer.byteLength(frame, "utf8");
-    if (bytes > maximumFrameBytes) {
+    if (bytes > maximumOutboundFrameBytes) {
       this.#socket.close(1009, "Runner frame exceeded size limit");
       return Promise.reject(new Error("Runner frame exceeded size limit"));
     }
@@ -2891,7 +2892,7 @@ function fitHarnessCatalogFrame(
     .toSorted((left, right) => right.savedBytes - left.savedBytes);
 
   for (const candidate of replacements) {
-    if (frameBytes <= maximumFrameBytes) break;
+    if (frameBytes <= maximumOutboundFrameBytes) break;
     catalogs[candidate.index] = candidate.replacement;
     frameBytes -= candidate.savedBytes;
   }
@@ -3025,7 +3026,7 @@ async function sendWireMessage(socket: WebSocket, message: RunnerToHostMessage):
       ? RunnerWireProofSchema.parse(message)
       : RunnerToHostMessageSchema.parse(message);
   const frame = serializeJsonFrame(parsed);
-  if (Buffer.byteLength(frame, "utf8") > maximumFrameBytes) {
+  if (Buffer.byteLength(frame, "utf8") > maximumOutboundFrameBytes) {
     throw new Error("Runner authentication frame exceeded size limit");
   }
   await new Promise<void>((resolvePromise, reject) => {

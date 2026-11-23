@@ -485,6 +485,7 @@
     "apps/host/src/triggers/automation-failure-service.ts",
     "apps/host/src/triggers/automation-script-compatibility.ts",
     "apps/host/src/triggers/automation-secrets.ts",
+    "apps/host/src/triggers/firing-interrupt-loop.ts",
     "apps/host/src/triggers/trigger-control-service.ts",
     "apps/host/src/triggers/trigger-routes.ts",
     "apps/host/src/triggers/trigger-service.ts",
