@@ -125,7 +125,7 @@ describe("Opensteer tool registry", () => {
       }).success,
     ).toBe(false);
   });
-  it("retains safe Trigger details and cancellation receipts", () => {
+  it("retains safe Trigger details, cancellation receipts, and pending Request outcomes", () => {
     const detail = {
       activation: null,
       taskTitle: "Anchor",
@@ -137,6 +137,14 @@ describe("Opensteer tool registry", () => {
     expect(
       opensteer_automation_create.output.parse({ ...detail, unnamedSecret: "hidden" }),
     ).toEqual(detail);
+    const pending = {
+      status: "pending",
+      requestId: "req_11111111-1111-4111-8111-111111111111",
+      next: "Wait for the person to review this Request.",
+    };
+    expect(
+      opensteer_automation_create.output.parse({ ...pending, unnamedSecret: "hidden" }),
+    ).toEqual(pending);
   });
   it("preserves the image detail hint while stripping unnamed metadata", () => {
     const image = {

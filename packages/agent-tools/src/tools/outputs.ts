@@ -468,14 +468,14 @@ export const TriggerOutputSchema = z.object({
 });
 
 export const TriggerWriteOutputSchema = z.union([
-  TriggerOutputSchema.extend({
-    webhook: z.object({ scope: z.enum(["public", "local"]), url: z.url() }).optional(),
-  }),
   z.object({
     status: z.enum(["pending", "declined", "withdrawn", "closed", "answered"]),
     requestId: RequestIdSchema,
     next: z.string().optional(),
     outcome: z.unknown().optional(),
+  }),
+  TriggerOutputSchema.extend({
+    webhook: z.object({ scope: z.enum(["public", "local"]), url: z.url() }).optional(),
   }),
 ]);
 
