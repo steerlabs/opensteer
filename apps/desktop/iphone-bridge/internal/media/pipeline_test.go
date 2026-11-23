@@ -52,8 +52,12 @@ func (s *stubDisplayService) StartVideoStreamWithOffer(ctx context.Context, req 
 	id := uuid.New()
 	select {
 	case s.started <- negotiatedSession{id, req}:
-	case <-ctx.Done():
-		return uuid.Nil, nil, ctx.Err()
+	default:
+		select {
+		case s.started <- negotiatedSession{id, req}:
+		case <-ctx.Done():
+			return uuid.Nil, nil, ctx.Err()
+		}
 	}
 	return id, map[string]interface{}{
 		"senderPort": uint64(s.port), "localSSRC": uint64(42), "remoteSSRC": uint64(43),
@@ -693,6 +697,7 @@ func TestPipelineSurvivesScopedStopFailureOnPrivacyHide(t *testing.T) {
 	if !f1.Key || f1.Generation != 3 {
 		t.Fatalf("expected recovered keyframe at gen 3, got %+v", f1)
 	}
+	writeTestACK(t, view, f1.Sequence)
 	if e := receiveTestValue(t, events); e.State != "live" || e.Generation != 3 {
 		t.Fatalf("expected live at gen 3, got %+v", e)
 	}
@@ -729,6 +734,79 @@ func TestPipelineSurvivesScopedStopFailureOnPrivacyHide(t *testing.T) {
 	f2, _ := readTestFrame(t, view)
 	if !f2.Key || f2.Generation < 7 {
 		t.Fatalf("expected recovered keyframe after superseded open, got %+v", f2)
+	}
+	writeTestACK(t, view, f2.Sequence)
+	_ = receiveTestValue(t, events) // live
+
+	// Race 1: pause cancels an in-flight reopen, then resume clears demandPaused BEFORE
+	// the canceled openStream returns. Pipeline must retry rather than stopping with capture-failed.
+	p.SetPrivacyHidden("protected", "locked-screen")
+	_ = receiveTestValue(t, events)
+	_ = receiveTestValue(t, svc.stopped)
+	releaseCanceledOpen := make(chan struct{})
+	openEntered2 := make(chan struct{}, 1)
+	pauseResumeHook := func(ctx context.Context, _ display.VideoStreamRequest) error {
+		openEntered2 <- struct{}{}
+		<-ctx.Done()
+		<-releaseCanceledOpen
+		return ctx.Err()
+	}
+	svc.startHook.Store(&pauseResumeHook)
+	p.ResumeVisible(1, 0)
+	_ = receiveTestValue(t, events) // starting
+	receiveTestValue(t, openEntered2)
+	p.SetDemandActive(false)
+	_ = receiveTestValue(t, events) // protected/paused
+	svc.startHook.Store(nil)
+	p.SetDemandActive(true)
+	_ = receiveTestValue(t, events) // starting
+	close(releaseCanceledOpen)
+	fourth := receiveTestValue(t, svc.started)
+	dest4 := &net.UDPAddr{IP: transport.LocalIP(), Port: fourth.request.ReceiverPort}
+	if _, err := phone.WriteTo(testRTP(1, 1500, 42, 123, true, keyPayload), dest4); err != nil {
+		t.Fatal(err)
+	}
+	f3, _ := readTestFrame(t, view)
+	if !f3.Key {
+		t.Fatalf("expected keyframe after quick pause/resume during reopen, got %+v", f3)
+	}
+	writeTestACK(t, view, f3.Sequence)
+	_ = receiveTestValue(t, events) // live
+
+	// Race 2: openStream succeeds just as demand pauses (ignoring cancellation).
+	// Pipeline must stop the superseded remote stream, clear stream=nil, stay paused, and later resume.
+	p.SetPrivacyHidden("protected", "locked-screen")
+	_ = receiveTestValue(t, events)
+	_ = receiveTestValue(t, svc.stopped)
+	openEntered3 := make(chan struct{}, 1)
+	releaseSuccessOpen := make(chan struct{})
+	raceSuccessHook := func(_ context.Context, _ display.VideoStreamRequest) error {
+		openEntered3 <- struct{}{}
+		<-releaseSuccessOpen
+		return nil
+	}
+	svc.startHook.Store(&raceSuccessHook)
+	p.ResumeVisible(1, 0)
+	_ = receiveTestValue(t, events) // starting
+	receiveTestValue(t, openEntered3)
+	p.SetDemandActive(false)
+	_ = receiveTestValue(t, events) // protected/paused
+	svc.startHook.Store(nil)
+	close(releaseSuccessOpen)
+	raced := receiveTestValue(t, svc.started)
+	if stopped := receiveTestValue(t, svc.stopped); stopped != raced.id {
+		t.Fatalf("expected superseded open stream %v to be stopped, got %v", raced.id, stopped)
+	}
+	p.SetDemandActive(true)
+	_ = receiveTestValue(t, events) // starting
+	fifth := receiveTestValue(t, svc.started)
+	dest5 := &net.UDPAddr{IP: transport.LocalIP(), Port: fifth.request.ReceiverPort}
+	if _, err := phone.WriteTo(testRTP(1, 1500, 42, 123, true, keyPayload), dest5); err != nil {
+		t.Fatal(err)
+	}
+	f4, _ := readTestFrame(t, view)
+	if !f4.Key {
+		t.Fatalf("expected keyframe after resuming from superseded open success, got %+v", f4)
 	}
 }
 

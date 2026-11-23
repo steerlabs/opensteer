@@ -474,9 +474,11 @@ func (p *Pipeline) runIngress(ctx context.Context, stream *phoneStream, epoch ui
 			p.cancelOpen = cancelOpen
 			p.mu.Unlock()
 			stream, err = p.openStream(openCtx, cfg)
+			canceled := openCtx.Err() != nil && ctx.Err() == nil
 			p.mu.Lock()
 			p.cancelOpen = nil
-			superseded := p.stopping || p.hidden || p.demandPaused || p.epoch != epoch
+			stopping := p.stopping
+			superseded := canceled || stopping || p.hidden || p.demandPaused || p.epoch != epoch
 			if err == nil && !superseded {
 				p.stream = stream
 			}
@@ -489,11 +491,15 @@ func (p *Pipeline) runIngress(ctx context.Context, stream *phoneStream, epoch ui
 				}
 				return
 			}
+			if stopping {
+				return
+			}
 			if superseded && stream != nil {
-				_ = stream.conn.Close()
-				if stream.audioConn != nil {
-					_ = stream.audioConn.Close()
+				if closeErr := p.closeStream(stream); closeErr != nil {
+					slog.Debug("bridge.display-stop-failed", "error", closeErr)
+					recordOrphan(stream.id)
 				}
+				stream = nil
 			}
 			continue
 		}
