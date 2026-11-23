@@ -27,6 +27,7 @@ import {
   OpensteerStore,
   TriggerStore,
   admitWatchControlRequest,
+  commandAdmission,
   createDatabase,
 } from "./index.js";
 import "./connection.js";
@@ -443,9 +444,31 @@ integration.sequential("Trigger failure auto-pause", () => {
       modelSelection,
       title: "Lower caller",
     });
+    const { run: lowerRun } = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Lower caller work" }],
+      idempotencyKey: "own-task-lower-run",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: lower.id,
+    });
     const input = {
       actorThreadId: lower.id,
       anchorThreadId: f.threadId,
+      commandIdentity: commandAdmission({
+        ownerUserId: f.userId,
+        callerKey: `run:${lowerRun!.id}`,
+        command: {
+          type: "trigger.create",
+          idempotencyKey: "own-task-refused",
+          input: {
+            anchorThreadId: f.threadId,
+            name: "Refused monitor",
+            script: { interpreter: null, text: "console.log('ok')" },
+            source: { kind: "watch" },
+          },
+        },
+      }),
       createdBy: f.userId,
       idempotencyKey: "own-task-refused",
       name: "Refused monitor",
@@ -469,8 +492,13 @@ integration.sequential("Trigger failure auto-pause", () => {
       .set({ doneAt: new Date() })
       .where("id", "=", f.threadId)
       .execute();
+    const { commandIdentity: _commandIdentity, ...personInput } = input;
     await expect(
-      triggers.create({ ...input, actorThreadId: null, idempotencyKey: "own-task-done" }),
+      triggers.create({
+        ...personInput,
+        actorThreadId: null,
+        idempotencyKey: "own-task-done",
+      }),
     ).rejects.toMatchObject({ code: "bad_request" });
     expect(await counts()).toEqual(before);
   });
@@ -2890,7 +2918,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     await triggers.setStatus({
-      actorAccessMode: "full-access",
       actorThreadId: fixture.threadId,
       ownerId: fixture.userId,
       status: "paused",
@@ -2931,7 +2958,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     await triggers.setStatus({
-      actorAccessMode: "full-access",
       actorConnectionId: connectionId,
       actorThreadId: null,
       ownerId: fixture.userId,

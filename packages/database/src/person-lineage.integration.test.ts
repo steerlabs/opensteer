@@ -65,10 +65,9 @@ describeStore("the person's own lineage", (it) => {
       createdBy: fixture.userId,
       idempotencyKey: "memory-job",
       name: "Memory light pass",
-      program: {
-        language: "javascript",
-        source: "export default () => {}",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -163,10 +162,9 @@ describeStore("the person's own lineage", (it) => {
         createdBy: fixture.userId,
         idempotencyKey: key,
         name: key,
-        program: {
-          language: "javascript",
-          source: "export default () => {}",
-          toolContractVersion: 5,
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",

@@ -1,13 +1,8 @@
 import { randomBytes } from "node:crypto";
-import type {
-  ThreadAccessMode,
-  ThreadId,
-  TriggerId,
-  TriggerOccurrenceId,
-  UserId,
-} from "@opensteer/core";
+import type { ThreadId, TriggerId, TriggerOccurrenceId, UserId } from "@opensteer/core";
 import { isLoopbackHostname, OpensteerError, ThreadIdSchema } from "@opensteer/core";
 import type {
+  CommandIdentity,
   OpensteerStore,
   RunningFiringRef,
   TaskReader,
@@ -92,7 +87,7 @@ export class TriggerService {
       readonly source: TriggerSource;
     },
     actorThreadId: ThreadId | null,
-    actorAccessMode?: ThreadAccessMode,
+    commandIdentity?: Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ) {
     await this.#assertScriptCompatible(
@@ -104,7 +99,7 @@ export class TriggerService {
       input.source.kind === "webhook" ? `whk_${randomBytes(32).toString("base64url")}` : undefined;
     const { trigger, revision, wasDuplicate } = await this.#store.create({
       actorThreadId,
-      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
       anchorThreadId: input.anchorThreadId,
       createdBy: input.ownerId,
@@ -177,8 +172,20 @@ export class TriggerService {
       return { ...item, webhook };
     });
   }
-  async get(ownerId: UserId, triggerId: TriggerId, occurrenceLimit: number, reader: TaskReader) {
-    const detail = await this.#store.getForOwner(triggerId, ownerId, occurrenceLimit, reader);
+  async get(
+    ownerId: UserId,
+    triggerId: TriggerId,
+    occurrenceLimit: number,
+    reader: TaskReader,
+    originConnectionId?: string,
+  ) {
+    const detail = await this.#store.getForOwner(
+      triggerId,
+      ownerId,
+      occurrenceLimit,
+      reader,
+      originConnectionId,
+    );
     if (!detail)
       throw new OpensteerError({
         code: "not_found",
@@ -196,7 +203,7 @@ export class TriggerService {
     ownerId: UserId,
     input: Omit<Parameters<TriggerStore["update"]>[0], "ownerId" | "actorThreadId">,
     actorThreadId: ThreadId | null,
-    actorAccessMode?: ThreadAccessMode,
+    commandIdentity?: Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ) {
     const current = await this.get(ownerId, input.triggerId, 1, actorReader(actorThreadId));
@@ -209,7 +216,7 @@ export class TriggerService {
       ...input,
       ownerId,
       actorThreadId,
-      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     this.#onChanged?.();
@@ -220,14 +227,14 @@ export class TriggerService {
     ownerId: UserId,
     input: Omit<Parameters<TriggerStore["setStatus"]>[0], "ownerId" | "actorThreadId">,
     actorThreadId: ThreadId | null,
-    actorAccessMode?: ThreadAccessMode,
+    commandIdentity?: Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ) {
     const result = await this.#store.setStatusWithEffects({
       ...input,
       ownerId,
       actorThreadId,
-      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     const { trigger } = result;
@@ -242,14 +249,14 @@ export class TriggerService {
     ownerId: UserId,
     input: Omit<Parameters<TriggerStore["setNextFire"]>[0], "ownerId" | "actorThreadId">,
     actorThreadId: ThreadId | null,
-    actorAccessMode?: ThreadAccessMode,
+    commandIdentity?: Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ) {
     const trigger = await this.#store.setNextFire({
       ...input,
       ownerId,
       actorThreadId,
-      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     this.#onChanged?.();
@@ -261,7 +268,7 @@ export class TriggerService {
     payload: unknown,
     actorThreadId: ThreadId | null,
     idempotencyKey?: string,
-    actorAccessMode?: ThreadAccessMode,
+    commandIdentity?: Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ) {
     const occurrence = await this.#store.enqueueManual({
@@ -274,7 +281,7 @@ export class TriggerService {
       payload,
       triggerId,
       actorThreadId,
-      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     this.#onChanged?.();
@@ -302,13 +309,13 @@ export class TriggerService {
       readonly triggerId: TriggerId;
     },
     actorThreadId: ThreadId | null,
-    actorAccessMode?: ThreadAccessMode,
+    commandIdentity?: Pick<CommandIdentity, "admit">,
     actorConnectionId?: string,
   ) {
     const result = await this.#store.cancelPendingOccurrences(ownerId, {
       ...input,
       actorThreadId,
-      ...(actorAccessMode ? { actorAccessMode } : {}),
+      ...(commandIdentity ? { commandIdentity } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
     });
     if (result.canceledOccurrenceIds.length > 0 && this.#onChanged) {
@@ -321,7 +328,7 @@ export class TriggerService {
     value: TriggerControlInput,
     actorThreadId: ThreadId | null,
     context?: {
-      readonly accessMode: ThreadAccessMode;
+      readonly commandIdentity?: Pick<CommandIdentity, "admit">;
       readonly operationKey?: string;
       /** A selected grant lists only its own lineage's automations. */
       readonly originConnectionId?: string;
@@ -340,7 +347,7 @@ export class TriggerService {
             ownerId,
           },
           actorThreadId,
-          context?.accessMode,
+          context?.commandIdentity,
           context?.agentConnectionId,
         );
       }
@@ -360,6 +367,7 @@ export class TriggerService {
           input.triggerId,
           input.occurrenceLimit,
           actorReader(actorThreadId),
+          context?.originConnectionId,
         );
       case "update":
         return this.update(
@@ -384,7 +392,7 @@ export class TriggerService {
             triggerId: input.triggerId,
           },
           actorThreadId,
-          context?.accessMode,
+          context?.commandIdentity,
           context?.agentConnectionId,
         );
       case "set_status":
@@ -392,7 +400,7 @@ export class TriggerService {
           ownerId,
           input,
           actorThreadId,
-          context?.accessMode,
+          context?.commandIdentity,
           context?.agentConnectionId,
         );
       case "set_next_fire":
@@ -403,7 +411,7 @@ export class TriggerService {
             nextFireAt: input.nextFireAt,
           },
           actorThreadId,
-          context?.accessMode,
+          context?.commandIdentity,
           context?.agentConnectionId,
         );
       case "run":
@@ -414,7 +422,7 @@ export class TriggerService {
             input.payload,
             actorThreadId,
             context?.operationKey,
-            context?.accessMode,
+            context?.commandIdentity,
             context?.agentConnectionId,
           ),
         };
@@ -430,7 +438,7 @@ export class TriggerService {
             triggerId: input.triggerId,
           },
           actorThreadId,
-          context?.accessMode,
+          context?.commandIdentity,
           context?.agentConnectionId,
         );
     }

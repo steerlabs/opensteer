@@ -29,7 +29,17 @@ describe("TriggerService", () => {
         id: createId("thread"),
       },
     } as RunCaller;
-    const handlers = new TriggerToolHandlers(service, { triggerOrigins: async () => new Map() });
+    const handlers = new TriggerToolHandlers(
+      service,
+      { triggerOrigins: async () => new Map() },
+      {
+        door: (_caller, registry) => ({
+          registry,
+          scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+          admit: async () => ({ answer: "now", face: 0, execution: null }),
+        }),
+      },
+    );
     const input = opensteer_automation_control.input.parse({
       action: "run_now",
       automationId: createId("trigger"),
@@ -330,10 +340,26 @@ describe("TriggerService", () => {
     });
 
     let liveMode: "ask" | "full-access" = "ask";
-    const handlers = new TriggerToolHandlers(service, {
-      admitExecution: async () => ({ mode: liveMode as never }),
-      triggerOrigins: async () => new Map(),
-    });
+    const handlers = new TriggerToolHandlers(
+      service,
+      { triggerOrigins: async () => new Map() },
+      {
+        door: (_caller, registry) => ({
+          registry,
+          scope: async () => ({
+            scope: null,
+            grant: null,
+            mode: liveMode === "full-access" ? "full-access" : "approval-required",
+          }),
+          admit: async (_c, cmd) =>
+            cmd.type === "trigger.run"
+              ? liveMode === "full-access"
+                ? { answer: "now", face: 0, execution: null }
+                : { answer: "ask", face: 0, reason: "mode", execution: null }
+              : { answer: "now", face: 0, execution: null },
+        }),
+      },
+    );
     const askCaller = {
       accessMode: "ask",
       kind: "run",
@@ -403,10 +429,17 @@ describe("TriggerService", () => {
       } as unknown as TriggerStore,
       threads: {} as never,
     });
-    const handlers = new TriggerToolHandlers(service, {
-      admitExecution: async () => ({ mode: "full-access" as const }),
-      triggerOrigins: async () => new Map([[triggerId, foreignConnectionId]]),
-    });
+    const handlers = new TriggerToolHandlers(
+      service,
+      { triggerOrigins: async () => new Map([[triggerId, foreignConnectionId]]) },
+      {
+        door: (_caller, registry) => ({
+          registry,
+          scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+          admit: async () => ({ answer: "now", face: 0, execution: null }),
+        }),
+      },
+    );
     const personalFullCaller = {
       accessMode: "full-access",
       kind: "run",
@@ -486,11 +519,22 @@ describe("TriggerService", () => {
       } as unknown as TriggerStore,
       threads: {} as never,
     });
-    const admitExecution = vi.fn(async () => ({ mode: "auto" as const }));
-    const handlers = new TriggerToolHandlers(service, {
-      admitExecution,
-      triggerOrigins: async () => new Map(),
-    });
+    const admit = vi.fn(async (_c: unknown, cmd: { type: string }) =>
+      cmd.type === "trigger.run"
+        ? ({ answer: "ask", face: 0, reason: "mode", execution: null } as const)
+        : ({ answer: "now", face: 0, execution: null } as const),
+    );
+    const handlers = new TriggerToolHandlers(
+      service,
+      { triggerOrigins: async () => new Map() },
+      {
+        door: (_caller, registry) => ({
+          registry,
+          scope: async () => ({ scope: null, grant: null, mode: "auto" }),
+          admit,
+        }),
+      },
+    );
     const staleFullCaller = {
       accessMode: "full-access",
       kind: "run",
@@ -506,10 +550,10 @@ describe("TriggerService", () => {
       readonly trigger?: { readonly webhookRouteKey?: string | null };
       readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
     };
-    expect(admitExecution).toHaveBeenCalledWith({
-      ownerUserId: ownerId,
-      subject: { kind: "binding", bindingId: "run:stale-full" },
-    });
+    expect(admit).toHaveBeenCalledWith(
+      staleFullCaller,
+      expect.objectContaining({ type: "trigger.run", triggerId }),
+    );
     expect(result.trigger?.webhookRouteKey).toBeNull();
     expect(result.webhook).toEqual({ scope: "public", url: null });
   });

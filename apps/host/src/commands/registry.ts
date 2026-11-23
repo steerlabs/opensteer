@@ -153,8 +153,8 @@ function familyHandler(
         context,
       );
   if (type.startsWith("trigger."))
-    return (_actor, command, context) =>
-      handleTriggerCommand(families.triggers, command as TriggerCommand, context);
+    return (actor, command, context) =>
+      handleTriggerCommand(families.triggers, command as TriggerCommand, context, actor);
   if (isDeviceCommand(type))
     return (_actor, command, context) =>
       handleDeviceCommand(families.devices, command as DeviceCommand, context);

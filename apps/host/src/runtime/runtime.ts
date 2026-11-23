@@ -3476,7 +3476,9 @@ export async function createHostRuntime(
           access: accessRequests,
           sessions: agentSessions,
         }),
-        triggers: new TriggerToolHandlers(triggers, store),
+        triggers: new TriggerToolHandlers(triggers, store, {
+          requests: () => commandRequestsForTools,
+        }),
       }),
     }));
     const transcriptFileServices = createTranscriptFileServices({

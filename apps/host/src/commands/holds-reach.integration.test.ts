@@ -284,10 +284,9 @@ describeStore("what a caller is shown is what it can send (G2)", (test) => {
         createdBy: owner,
         idempotencyKey: `holds-reach-${name}`,
         name,
-        program: {
-          toolContractVersion: 5,
-          language: "javascript",
-          source: "export default async () => null",
+        script: {
+          interpreter: null,
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",

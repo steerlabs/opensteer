@@ -223,17 +223,16 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
   // Clean any pre-existing dirty triggers.name rows using the single TypeScript cleaner (ruling N2).
   let afterId: string | null = null;
   for (;;) {
-    const after = afterId === null ? sql`true` : sql`id > ${afterId}`;
-    const rows = (
-      await sql<{ readonly id: string; readonly name: string }>`
-        select id, name
-        from triggers
-        where ${after}
-          and (name ~ ${needsCleanPattern} or length(name) > 160 or name = '')
-        order by id
-        limit ${cleanBatchSize}
-      `.execute(database)
-    ).rows;
+    const after: ReturnType<typeof sql> = afterId === null ? sql`true` : sql`id > ${afterId}`;
+    const result = await sql<{ readonly id: string; readonly name: string }>`
+      select id, name
+      from triggers
+      where ${after}
+        and (name ~ ${needsCleanPattern} or length(name) > 160 or name = '')
+      order by id
+      limit ${cleanBatchSize}
+    `.execute(database);
+    const { rows } = result;
     if (rows.length === 0) break;
     const ids: string[] = [];
     const names: string[] = [];

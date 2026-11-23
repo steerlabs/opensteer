@@ -12,6 +12,7 @@ import {
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { TriggerService } from "./trigger-service.js";
 import type { HostAuthenticator } from "../identity/auth.js";
+import type { PersonActor } from "../commands/actor.js";
 import { WebhookRateLimiter } from "./webhook-rate-limiter.js";
 const webhookRouteKeyPattern = /^whk?_[A-Za-z0-9_-]{32,64}$/u;
 const webhookRetryAfterSeconds = 300;
@@ -74,8 +75,15 @@ export async function handleTriggerCommand(
   triggers: TriggerService,
   command: TriggerCommand,
   context: HostApiServerContext,
+  actor?: PersonActor,
 ): Promise<HostApiCommandOutput> {
   const ownerId = requireUserId(context);
+  // Brief T11: approving an agent's proposal runs the command in the proposing lineage,
+  // never lending the person's own authority to what it creates.
+  const proposedConnectionId =
+    typeof actor?.proposal?.proposedBy?.connectionId === "string"
+      ? actor.proposal.proposedBy.connectionId
+      : undefined;
   switch (command.type) {
     case "trigger.create":
       return {
@@ -86,6 +94,8 @@ export async function handleTriggerCommand(
             ownerId,
           },
           null,
+          undefined,
+          proposedConnectionId,
         )),
         type: command.type,
       };

@@ -11,8 +11,6 @@ import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { createHash } from "node:crypto";
 import {
   minThreadAccessMode,
-  threadAccessModeAtMost,
-  type ThreadAccessMode,
   CommandIdSchema,
   IsoDateTimeSchema,
   ModelSelectionSchema,
@@ -22,6 +20,7 @@ import {
   type EnvironmentId,
   type RunnerId,
   type Run,
+  type ThreadAccessMode,
   type ThreadId,
   type TriggerId,
   type TriggerOccurrenceId,
@@ -48,7 +47,6 @@ import {
   firstTriggerFireAt,
   nextTriggerFireAfter,
   triggerOccurrenceErrorMessage,
-  triggerAccess,
   validateTriggerSchedule,
   type AutomationPausedBy,
   type AutomationScript,
@@ -60,8 +58,6 @@ import {
   type TriggerSource,
   type TriggerSummary,
   type TriggerWatchActivation,
-  type AuthorityThread,
-  type TriggerAccess,
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import {
@@ -87,6 +83,7 @@ import { personTaskReader, readerSees, type TaskReader } from "./task-reader.js"
 import { connectionState } from "./connection-liveness.js";
 import { assertDelegationDepth } from "./thread-lineage.js";
 import type { Thread } from "@opensteer/core";
+import type { CommandIdentity } from "./administration-command.js";
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
 type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
@@ -98,7 +95,7 @@ const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
 interface CreateTriggerInput {
   readonly actorThreadId: ThreadId | null;
-  readonly actorAccessMode?: ThreadAccessMode;
+  readonly commandIdentity?: Pick<CommandIdentity, "admit">;
   /** The external agent connection the actor works for, checked under this mutation's fence. */
   readonly actorConnectionId?: string;
   readonly anchorThreadId: ThreadId;
@@ -387,16 +384,11 @@ export async function createTriggerInTransaction(
     .executeTakeFirst();
   if (existing) {
     await lockWatchAnchorPlacementForTrigger(transaction, existing.id);
-    const trigger = await lockTriggerForMutation(
-      transaction,
-      {
-        actorThreadId: input.actorThreadId,
-        ...(input.actorAccessMode ? { actorAccessMode: input.actorAccessMode } : {}),
-        ownerId: input.createdBy,
-        triggerId: existing.id,
-      },
-      "define",
-    );
+    const trigger = await lockTriggerForMutation(transaction, {
+      actorThreadId: input.actorThreadId,
+      ownerId: input.createdBy,
+      triggerId: existing.id,
+    });
     await assertAnchorScope(trigger.anchorThreadId);
     if (trigger.requestFingerprint !== requestFingerprint) throw idempotencyConflict();
     await requireTriggerExecutionAuthority(transaction, trigger);
@@ -424,13 +416,12 @@ export async function createTriggerInTransaction(
     if (!anchor) throw notFound();
     await lockWatchAnchorPlacement(transaction, anchorThreadId);
   }
-  const authority = await lockTriggerAuthorityThreads(
-    transaction,
-    input.actorThreadId,
-    anchorThreadId,
-    input.actorAccessMode,
-  );
-  assertTriggerAccess(authority, "define");
+  await transaction
+    .selectFrom("threads")
+    .select("id")
+    .where("id", "=", anchorThreadId)
+    .forShare()
+    .execute();
   const anchor = await requireAnchorThread(
     transaction,
     anchorThreadId,
@@ -568,21 +559,7 @@ async function assertOwnTaskParent(
   input: CreateTriggerInput,
   locked: boolean,
 ): Promise<void> {
-  const authority = locked
-    ? await lockTriggerAuthorityThreads(
-        transaction,
-        input.actorThreadId,
-        input.anchorThreadId,
-        input.actorAccessMode,
-      )
-    : await readTriggerAuthorityThreads(
-        transaction,
-        input.actorThreadId,
-        input.anchorThreadId,
-        input.actorAccessMode,
-      );
-  assertTriggerAccess(authority, "define");
-  if (locked && authority === null)
+  if (locked)
     await transaction
       .selectFrom("threads")
       .select("id")
@@ -611,7 +588,7 @@ export class TriggerStore {
   }
   async update(input: {
     readonly actorThreadId: ThreadId | null;
-    readonly actorAccessMode?: ThreadAccessMode;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
     /** The external agent connection the actor works for, checked under this mutation's fence. */
     readonly actorConnectionId?: string;
     readonly expectedRevisionId: TriggerRevisionId;
@@ -642,18 +619,7 @@ export class TriggerStore {
     return commitPersonalMutation(this.#database, async (transaction) => {
       input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
-      const trigger = await lockTriggerForMutation(transaction, input, "define");
-      // Another lineage's script, or the person's, would run with authority this actor lacks.
-      if (
-        input.actorConnectionId &&
-        (input.script !== undefined || input.source !== undefined) &&
-        trigger.originConnectionId !== input.actorConnectionId
-      )
-        throw new OpensteerError({
-          code: "forbidden",
-          message:
-            "A connected agent cannot replace the program of an automation it did not create.",
-        });
+      const trigger = await lockTriggerForMutation(transaction, input);
       // Its program would run in the person's Agent home: nothing of it is set, or made to run
       // again, from such a lineage.
       if (
@@ -784,7 +750,7 @@ export class TriggerStore {
   }
   async setStatus(input: {
     readonly actorThreadId: ThreadId | null;
-    readonly actorAccessMode?: ThreadAccessMode;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
     /** The external agent connection the actor works for, checked under this mutation's fence. */
     readonly actorConnectionId?: string;
     readonly ownerId: UserId;
@@ -795,7 +761,7 @@ export class TriggerStore {
   }
   async setStatusWithEffects(input: {
     readonly actorThreadId: ThreadId | null;
-    readonly actorAccessMode?: ThreadAccessMode;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
     /** The external agent connection the actor works for, checked under this mutation's fence. */
     readonly actorConnectionId?: string;
     readonly ownerId: UserId;
@@ -823,11 +789,7 @@ export class TriggerStore {
           : [];
         const heldOccurrences = new Set(observedActive.map(({ id }) => id));
         await lockWatchAnchorPlacementForTrigger(transaction, input.triggerId);
-        const trigger = await lockTriggerForMutation(
-          transaction,
-          input,
-          input.status === "archived" ? "define" : "control",
-        );
+        const trigger = await lockTriggerForMutation(transaction, input);
         await requireTriggerExecutionAuthority(transaction, trigger);
         // Resumed, it would launch in the person's Agent home: refused now, in the launch's words.
         if (
@@ -1083,7 +1045,7 @@ export class TriggerStore {
   }
   async setNextFire(input: {
     readonly actorThreadId: ThreadId | null;
-    readonly actorAccessMode?: ThreadAccessMode;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
     /** The external agent connection the actor works for, checked under this mutation's fence. */
     readonly actorConnectionId?: string;
     readonly nextFireAt: string;
@@ -1100,7 +1062,7 @@ export class TriggerStore {
     const nextFireAt = new Date(parsed.data);
     return commitPersonalMutation(this.#database, async (transaction) => {
       input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
-      const trigger = await lockTriggerForMutation(transaction, input, "control");
+      const trigger = await lockTriggerForMutation(transaction, input);
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (
         trigger.originConnectionId !== null &&
@@ -1583,7 +1545,7 @@ export class TriggerStore {
     return row.encryptedSecrets ?? null;
   }
   async updateEncryptedSecrets<Result>(input: {
-    readonly actorAccessMode?: ThreadAccessMode;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
     readonly actorConnectionId?: string;
     readonly actorThreadId: ThreadId | null;
     readonly ownerId: UserId;
@@ -1595,7 +1557,7 @@ export class TriggerStore {
   }): Promise<{ readonly result: Result; readonly trigger: Trigger }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const admitted = await admitTriggerActor(transaction, input.ownerId, input);
-      const trigger = await lockTriggerForMutation(transaction, admitted.input, "define");
+      const trigger = await lockTriggerForMutation(transaction, admitted.input);
       if (
         admitted.connection?.grant.scope === "selected" &&
         trigger.originConnectionId !== admitted.input.actorConnectionId
@@ -1776,6 +1738,7 @@ export class TriggerStore {
     occurrenceLimit: number,
     /** Who reads: one a memory worker's own task tree may not read is null, as a missing one. */
     reader: TaskReader,
+    originConnectionId?: string,
   ): Promise<TriggerDetail | null> {
     await requirePersonalOwner(this.#database, ownerId);
     let query = this.#database
@@ -1791,6 +1754,9 @@ export class TriggerStore {
       .select(["threads.title as anchorThreadTitle", "authorThread.title as createdByThreadTitle"])
       .where("triggers.id", "=", triggerId)
       .where("triggers.createdBy", "=", ownerId)
+      .$if(originConnectionId !== undefined, (q) =>
+        q.where("triggers.originConnectionId", "=", originConnectionId!),
+      )
       .$if(reader.kind === "work", (q) => q.where(automationReaderSees(reader)));
     const row = await query.executeTakeFirst();
     if (!row) return null;
@@ -1968,7 +1934,7 @@ export class TriggerStore {
     });
   }
   async rotateWebhookKey(input: {
-    readonly actorAccessMode?: ThreadAccessMode;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
     readonly actorConnectionId?: string;
     readonly actorThreadId: ThreadId | null;
     readonly ownerId: UserId;
@@ -1977,7 +1943,7 @@ export class TriggerStore {
   }): Promise<Trigger> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       const admitted = await admitTriggerActor(transaction, input.ownerId, input);
-      const trigger = await lockTriggerForMutation(transaction, admitted.input, "define");
+      const trigger = await lockTriggerForMutation(transaction, admitted.input);
       if (
         admitted.connection?.grant.scope === "selected" &&
         trigger.originConnectionId !== admitted.input.actorConnectionId
@@ -2017,7 +1983,7 @@ export class TriggerStore {
   }
   enqueueManual(input: {
     readonly actorThreadId: ThreadId | null;
-    readonly actorAccessMode?: ThreadAccessMode;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit">;
     /** The external agent connection the actor works for, checked under this mutation's fence. */
     readonly actorConnectionId?: string;
     readonly ownerId: UserId;
@@ -2027,7 +1993,7 @@ export class TriggerStore {
   }): Promise<TriggerOccurrence> {
     return commitPersonalMutation(this.#database, async (transaction) => {
       input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
-      const trigger = await lockTriggerForMutation(transaction, input, "define");
+      const trigger = await lockTriggerForMutation(transaction, input);
       if (trigger.status === "archived") throw conflict("Archived automation cannot run");
       if (trigger.kind === "watch") {
         throw conflict("Watch automations run continuously and cannot create occurrences");
@@ -2079,7 +2045,7 @@ export class TriggerStore {
     ownerId: UserId,
     input: {
       readonly actorThreadId: ThreadId | null;
-      readonly actorAccessMode?: ThreadAccessMode;
+      readonly commandIdentity?: Pick<CommandIdentity, "admit">;
       /** The external agent connection the actor works for, checked under this mutation's fence. */
       readonly actorConnectionId?: string;
       readonly occurrenceId?: TriggerOccurrenceId;
@@ -2115,14 +2081,10 @@ export class TriggerStore {
           .forNoKeyUpdate()
           .execute();
         const heldOccurrences = new Set(observedCancelable.map(({ id }) => id));
-        const trigger = await lockTriggerForMutation(
-          transaction,
-          {
-            ...input,
-            ownerId,
-          },
-          "control",
-        );
+        const trigger = await lockTriggerForMutation(transaction, {
+          ...input,
+          ownerId,
+        });
         if (input.occurrenceId) {
           const target = await transaction
             .selectFrom("triggerOccurrences")
@@ -3731,53 +3693,15 @@ async function requireAnchorThread(
     originConnectionId: anchor.originConnectionId,
   };
 }
-type LockedTriggerAuthority = {
-  readonly actor: AuthorityThread;
-  readonly anchor: AuthorityThread;
-} | null;
-function lockTriggerAuthorityThreads(
-  transaction: Transaction<DatabaseSchema>,
-  actorThreadId: ThreadId | null,
-  anchorThreadId: ThreadId,
-  ceiling?: ThreadAccessMode,
-): Promise<LockedTriggerAuthority> {
-  return readTriggerAuthorityThreads(transaction, actorThreadId, anchorThreadId, ceiling, true);
-}
-async function readTriggerAuthorityThreads(
-  transaction: Transaction<DatabaseSchema>,
-  actorThreadId: ThreadId | null,
-  anchorThreadId: ThreadId,
-  ceiling?: ThreadAccessMode,
-  lock = false,
-): Promise<LockedTriggerAuthority> {
-  if (actorThreadId === null && ceiling === undefined) return null;
-  const query = transaction
-    .selectFrom("threads")
-    .select(["id", "accessMode"])
-    .where("id", "in", actorThreadId ? [actorThreadId, anchorThreadId] : [anchorThreadId])
-    .orderBy("id");
-  const rows = await (lock ? query.forShare() : query).execute();
-  const actor = rows.find((row) => row.id === actorThreadId);
-  const anchor = rows.find((row) => row.id === anchorThreadId);
-  if (!anchor || (actorThreadId !== null && !actor)) throw notFound();
-  if (actor && ceiling && !threadAccessModeAtMost(ceiling, actor.accessMode))
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "The calling task's access was reduced.",
-    });
-  return { actor: { accessMode: ceiling ?? actor!.accessMode }, anchor };
-}
 async function lockTriggerForMutation(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly actorThreadId: ThreadId | null;
-    readonly actorAccessMode?: ThreadAccessMode;
     /** The external agent connection the actor works for, checked under this mutation's fence. */
     readonly actorConnectionId?: string;
     readonly ownerId: UserId;
     readonly triggerId: TriggerId;
   },
-  requiredAccess: "control" | "define",
 ): Promise<TriggerRow> {
   // Work acting from a task reads its automations as it reads them anywhere: one it may not
   // read (a memory worker's own task tree, an automation without personal context) is missing.
@@ -3794,12 +3718,12 @@ async function lockTriggerForMutation(
     .$if(reader.kind === "work", (q) => q.where(automationReaderSees(reader)))
     .executeTakeFirst();
   if (!observed) throw notFound();
-  const authority = await lockTriggerAuthorityThreads(
-    transaction,
-    input.actorThreadId,
-    observed.anchorThreadId,
-    input.actorAccessMode,
-  );
+  await transaction
+    .selectFrom("threads")
+    .select("id")
+    .where("id", "=", observed.anchorThreadId)
+    .forShare()
+    .execute();
   const trigger = await transaction
     .selectFrom("triggers")
     .selectAll()
@@ -3809,26 +3733,7 @@ async function lockTriggerForMutation(
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!trigger) throw notFound();
-  assertTriggerAccess(authority, requiredAccess);
   return trigger;
-}
-function assertTriggerAccess(
-  authority: LockedTriggerAuthority,
-  requiredAccess: "control" | "define",
-): void {
-  if (authority === null) return;
-  const access = triggerAccess(authority.actor, authority.anchor);
-  if (access === "none") throw notFound();
-  if (access === "define" || (access === "control" && requiredAccess === "control")) return;
-  const messages: Record<Exclude<TriggerAccess, "none" | "define">, string> = {
-    see: "This task can read this Trigger. Controlling it requires an access mode at least as high as its anchor; changing its program requires full access.",
-    control:
-      "This task can pause, resume, cancel pending runs or reschedule this Trigger. Changing its program requires full access.",
-  };
-  throw new OpensteerError({
-    code: "forbidden",
-    message: messages[access],
-  });
 }
 
 /** The Deployment fence keeps anchor placement stable while capacity is reserved. */
@@ -3943,9 +3848,7 @@ async function automationHandoffWitness(
   return {
     connectionId: connection.agentConnectionId,
     admittedGrantRevision: connection.grantRevision,
-    admittedAccessMode: threadAccessModeAtMost(thread.accessMode, connection.accessMode)
-      ? thread.accessMode
-      : connection.accessMode,
+    admittedAccessMode: minThreadAccessMode(thread.accessMode, connection.accessMode),
   };
 }
 /**
@@ -4243,22 +4146,24 @@ export async function pauseTriggerInTransaction(
   return updated;
 }
 
-/** A lineaged actor's connection, locked ahead of every trigger row and checked live. */
 /**
- * The actor as it stands inside this mutation's fence. Its connection is held and must still
- * delegate; the mode the caller was admitted with is capped by the connection's mode now, so a
- * lowering committed after the MCP check still applies.
+ * Rechecks the door's admission (`admitCommand` under the connection's `FOR SHARE` lock) inside
+ * this mutation's transaction when called by an agent, or locks and verifies a delegating
+ * connection for direct store calls without a command identity.
  */
 async function admitTriggerActor<
   Input extends {
     readonly actorConnectionId?: string | undefined;
-    readonly actorAccessMode?: ThreadAccessMode | undefined;
+    readonly commandIdentity?: Pick<CommandIdentity, "admit"> | undefined;
   },
 >(
   transaction: Transaction<DatabaseSchema>,
   ownerId: UserId,
   input: Input,
 ): Promise<{ readonly input: Input; readonly connection: AgentConnectionAuthority | null }> {
+  if (input.commandIdentity?.admit) {
+    await input.commandIdentity.admit(transaction);
+  }
   if (!input.actorConnectionId) return { input, connection: null };
   await transaction
     .selectFrom("agentConnections")
@@ -4267,10 +4172,7 @@ async function admitTriggerActor<
     .forShare()
     .executeTakeFirst();
   const connection = await liveDelegatingConnection(transaction, ownerId, input.actorConnectionId);
-  const actorAccessMode = input.actorAccessMode
-    ? minThreadAccessMode(input.actorAccessMode, connection.accessMode)
-    : connection.accessMode;
-  return { input: { ...input, actorAccessMode }, connection };
+  return { input, connection };
 }
 
 /** An automation as a reader may see it: by its anchor task's lineage and its own. */

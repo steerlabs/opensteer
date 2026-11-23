@@ -218,7 +218,7 @@
   },
   "trigger.create": {
     "own-full": "allowed",
-    "own-supervised": "refused:access_denied",
+    "own-supervised": "asked",
     "everything": "refused:not_offered",
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
@@ -232,14 +232,14 @@
   },
   "trigger.update (name)": {
     "own-full": "allowed",
-    "own-supervised": "refused:access_denied",
+    "own-supervised": "asked",
     "everything": "refused:not_offered",
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
-  "trigger.update (program)": {
+  "trigger.update (script)": {
     "own-full": "allowed",
-    "own-supervised": "refused:access_denied",
+    "own-supervised": "asked",
     "everything": "refused:not_offered",
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
@@ -253,14 +253,14 @@
   },
   "trigger.status.set (archive)": {
     "own-full": "allowed",
-    "own-supervised": "refused:access_denied",
+    "own-supervised": "asked",
     "everything": "refused:not_offered",
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
   "trigger.run": {
     "own-full": "allowed",
-    "own-supervised": "refused:access_denied",
+    "own-supervised": "asked",
     "everything": "refused:not_offered",
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"

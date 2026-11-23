@@ -786,16 +786,13 @@ describeStore("a connected agent's authority at the send", (it) => {
         ...input,
       });
     // Its program would run as the person, in their Agent home.
-    await expect(
-      make({ actorConnectionId: anyone.chat.id, actorAccessMode: "full-access" }),
-    ).rejects.toMatchObject(refusal);
+    await expect(make({ actorConnectionId: anyone.chat.id })).rejects.toMatchObject(refusal);
     await expect(make({})).rejects.toMatchObject(refusal);
     // One of an owner chat whose lineage is then the anyone chat's can't be given a program.
     const owner = await chatWithTask(storeFixture, "auto-owner");
     const { trigger, revision } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: owner.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: owner.thread.id,
       createdBy: owner.fixture.userId,
       idempotencyKey: "auto-owner",
@@ -973,7 +970,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: owner.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: owner.thread.id,
       createdBy: owner.fixture.userId,
       idempotencyKey: "change-anyone",
@@ -1034,7 +1030,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: owner.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: owner.thread.id,
       createdBy: owner.fixture.userId,
       idempotencyKey: "existing-anyone",
@@ -1092,9 +1087,7 @@ describeStore("a connected agent's authority at the send", (it) => {
       const triggers = new TriggerStore(database);
       const { trigger } = await triggers.create({
         actorThreadId: null,
-        ...(who === "made by the chat's own agent"
-          ? { actorConnectionId: chat.id, actorAccessMode: "full-access" as const }
-          : {}),
+        ...(who === "made by the chat's own agent" ? { actorConnectionId: chat.id } : {}),
         anchorThreadId: thread.id,
         createdBy: fixture.userId,
         idempotencyKey: `auto-${who}`,
@@ -1182,7 +1175,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: thread.id,
       createdBy: fixture.userId,
       idempotencyKey: "auto-race",
@@ -1231,7 +1223,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: chat.thread.id,
       createdBy: chat.fixture.userId,
       idempotencyKey: suffix,
@@ -1317,7 +1308,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: chat.thread.id,
       createdBy: chat.fixture.userId,
       idempotencyKey: suffix,
@@ -1540,7 +1530,6 @@ describeStore("a connected agent's authority at the send", (it) => {
     const { trigger } = await triggers.create({
       actorThreadId: null,
       actorConnectionId: chat.id,
-      actorAccessMode: "full-access",
       anchorThreadId: thread.id,
       createdBy: fixture.userId,
       idempotencyKey: "auto-uncertain",

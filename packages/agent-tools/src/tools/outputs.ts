@@ -469,6 +469,10 @@ export const TriggerOutputSchema = z.object({
 
 export const TriggerWriteOutputSchema = TriggerOutputSchema.extend({
   webhook: z.object({ scope: z.enum(["public", "local"]), url: z.url() }).optional(),
+  status: z.enum(["pending", "declined", "withdrawn", "closed", "answered"]).optional(),
+  requestId: RequestIdSchema.optional(),
+  next: z.string().optional(),
+  outcome: z.unknown().optional(),
 });
 
 export { AgentMediaContentSchema, ComputerUseOutputSchema } from "./computer-outputs.js";

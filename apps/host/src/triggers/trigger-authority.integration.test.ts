@@ -27,7 +27,13 @@ import {
   type ThreadId,
   type TriggerId,
 } from "@opensteer/core";
-import { createDatabase, migrateToLatest, OpensteerStore, TriggerStore } from "@opensteer/database";
+import {
+  commandAdmission,
+  createDatabase,
+  migrateToLatest,
+  OpensteerStore,
+  TriggerStore,
+} from "@opensteer/database";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { commitPersonalMutation } from "@opensteer/database/personal-mutation";
 import { recordedTransactionConflicts } from "@opensteer/database/test-support/lock-order";
@@ -1244,7 +1250,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const input =
         change === "actor-downgrade"
           ? {
-              operation: "update",
+              operation: "update" as const,
               triggerId: created.trigger.id,
               expectedRevisionId: created.revision.id,
               script: {
@@ -1253,15 +1259,42 @@ integration.sequential("Trigger authority through real Host services and Postgre
               },
             }
           : {
-              operation: "set_next_fire",
+              operation: "set_next_fire" as const,
               triggerId: created.trigger.id,
               nextFireAt: plusThirty,
             };
+      const admitCommandPayload =
+        change === "actor-downgrade"
+          ? ({
+              type: "trigger.update",
+              idempotencyKey: `race-${change}`,
+              triggerId: created.trigger.id,
+              input: {
+                expectedRevisionId: created.revision.id,
+                script: {
+                  ...script,
+                  text: "console.log('raced')",
+                },
+              },
+            } as const)
+          : ({
+              type: "trigger.status.set",
+              idempotencyKey: `race-${change}`,
+              triggerId: created.trigger.id,
+              status: "active",
+            } as const);
       const downgrade = commitPersonalMutation(database, async (transaction) => {
         fence.resolve();
         await withTimeout(release.promise, 5_000, {
           timeoutError: () => new Error("Authority race did not release the personal event fence"),
         });
+        if (change === "actor-downgrade") {
+          await transaction
+            .updateTable("runs")
+            .set({ accessMode: "auto" })
+            .where("threadId", "=", actor.id)
+            .execute();
+        }
         await new OpensteerStore(transaction).updateThreadAccessMode({
           accessMode: change === "actor-downgrade" ? "auto" : "full-access",
           requestedBy: f.ownerId,
@@ -1271,7 +1304,13 @@ integration.sequential("Trigger authority through real Host services and Postgre
       await withTimeout(fence.promise, 5_000, {
         timeoutError: () => new Error("Authority change did not acquire the personal event fence"),
       });
-      const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id);
+      const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id, {
+        commandIdentity: commandAdmission({
+          ownerUserId: f.ownerId,
+          callerKey: `thread:${actor.id}`,
+          command: admitCommandPayload,
+        }),
+      });
       void mutation.catch(() => undefined);
       try {
         await blockedQuery("client_sync_state", mutation);

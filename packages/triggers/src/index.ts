@@ -1,4 +1,3 @@
-export * from "./authority.js";
 export * from "./bounds.js";
 export * from "./limits.js";
 export * from "./memory-wake.js";

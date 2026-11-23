@@ -643,10 +643,9 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       createdBy: f.userId,
       idempotencyKey: "person-automation-on-b-task",
       name: "Person automation on B task",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -906,10 +905,9 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       createdBy: f.userId,
       idempotencyKey: "r5-person-automation-on-b",
       name: "Person automation on B",
-      program: {
-        language: "javascript",
-        source: "export default async () => null",
-        toolContractVersion: 5,
+      script: {
+        interpreter: null,
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",

@@ -1121,7 +1121,6 @@ export default defineApp({}, { tools: router({ tick }),
           taskId: callers[c].task,
           name: "Parity reminder",
           script: {
-            interpreter: null,
             text: "console.log('ok')",
           },
           source: { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" },
@@ -1131,10 +1130,9 @@ export default defineApp({}, { tools: router({ tick }),
           input: {
             anchorThreadId: callers[c].task,
             name: "Parity reminder",
-            program: {
-              language: "javascript",
-              source: "export default async () => null",
-              toolContractVersion: 5,
+            script: {
+              interpreter: null,
+              text: "console.log('ok')",
             },
             source: {
               kind: "schedule",
@@ -1223,7 +1221,6 @@ export default defineApp({}, { tools: router({ tick }),
             automationId: made.id,
             expectedRevisionId: made.revision,
             script: {
-              interpreter: null,
               text: "console.log(1)",
             },
           };
