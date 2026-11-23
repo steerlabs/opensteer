@@ -58,10 +58,13 @@ export type TabAuthorization = (
   tx: TabTransaction,
   rows: readonly TabRecord[],
   layout: TabLayout,
+  replayedTabIds?: readonly TabId[],
 ) => Promise<void>;
 export interface TabMutation {
   tabIds: TabId[];
   layout: TabLayout;
+  replayed?: boolean;
+  currentLayout?: TabLayout;
 }
 const resultSchema = z.object({ tabIds: z.array(TabIdSchema), layout: TabLayoutSchema });
 const replaySchema = z.object({ request: z.string(), result: resultSchema });
@@ -426,12 +429,19 @@ export class TabStore {
         .where("requestedBy", "=", ownerId)
         .where("idempotencyKey", "=", key)
         .executeTakeFirst(databaseOperationOptions());
-      await authorize?.(tx, state.rows, state.layout);
+      const parsedReplay = replay ? replaySchema.safeParse(replay.payload) : null;
+      const matchingReplay =
+        replay &&
+        replay.type === type &&
+        parsedReplay?.success &&
+        parsedReplay.data.request === request
+          ? parsedReplay.data.result
+          : null;
+      await authorize?.(tx, state.rows, state.layout, matchingReplay?.tabIds);
       if (replay) {
-        const payload = replaySchema.safeParse(replay.payload);
-        if (replay.type !== type || !payload.success || payload.data.request !== request)
+        if (!matchingReplay)
           failure("conflict", "This operation key was already used for another command.");
-        return payload.data.result;
+        return { ...matchingReplay, replayed: true, currentLayout: state.layout };
       }
       const before = JSON.stringify(state.layout.items);
       const tabIds = await action(tx, state);

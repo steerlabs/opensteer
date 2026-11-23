@@ -340,3 +340,785 @@ it("refreshes only the matching window tab on windowChanged()", async () => {
   ]);
   f.service.dispose();
 });
+
+describe("targeted tab mutations, single-tab reads, and projection batching", () => {
+  it("closes, opens, reopens, organizes, updates, and deletes groups via executeCommand without full-catalog projection", async () => {
+    const a = row("window");
+    const b = row("window");
+    const c = row("window");
+    const rows = [a, b, c];
+    let layout: TabLayout = {
+      revision: 1,
+      items: rows.map((item) => ({ kind: "tab", tabId: item.id })),
+    };
+    const f = fixture(rows);
+    const closedRows = new Map<string, TabRecord>();
+    const openRow = (id: TabRecord["id"], title: string): TabRecord => ({
+      ...row("window"),
+      id,
+      title,
+    });
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.resourceLayout = vi.fn(async () => ({
+      revision: layout.revision,
+      entries: [],
+    }));
+    storeMock.resourceTabGroups = vi.fn(async (_db: unknown, _owner: unknown, ids: string[]) => {
+      const map = new Map<string, string>();
+      for (const item of layout.items) {
+        if (item.kind === "group") {
+          for (const id of item.group.tabIds) {
+            if (ids.includes(id)) map.set(id, item.group.groupId);
+          }
+        }
+      }
+      return map;
+    });
+    storeMock.open = vi.fn(async (write: { id: TabRecord["id"]; title: string }) => {
+      const created = openRow(write.id, write.title);
+      rows.push(created);
+      layout = {
+        revision: layout.revision + 1,
+        items: [...layout.items, { kind: "tab", tabId: created.id }],
+      };
+      return { tabIds: [created.id], layout: structuredClone(layout) };
+    });
+    storeMock.close = vi.fn(
+      async (
+        _owner: unknown,
+        tabIds: string[],
+        _key: string,
+        authorize: (tx: unknown, all: TabRecord[], current: TabLayout) => Promise<void>,
+      ) => {
+        await authorize(f.options.store.database, rows, layout);
+        for (const id of tabIds) {
+          const found = rows.find((item) => item.id === id && !item.closedAt);
+          if (found) {
+            found.closedAt = new Date();
+            closedRows.set(id, found);
+          }
+        }
+        layout = {
+          revision: layout.revision + 1,
+          items: layout.items.filter((item) => item.kind !== "tab" || !tabIds.includes(item.tabId)),
+        };
+        return { tabIds, layout: structuredClone(layout) };
+      },
+    );
+    storeMock.reopen = vi.fn(async (_owner: unknown, targetId?: string) => {
+      const found = targetId ? closedRows.get(targetId) : [...closedRows.values()].at(-1);
+      if (!found) throw new Error("missing closed row");
+      found.closedAt = null;
+      found.generation += 1;
+      closedRows.delete(found.id);
+      layout = {
+        revision: layout.revision + 1,
+        items: [...layout.items, { kind: "tab", tabId: found.id }],
+      };
+      return { tabIds: [found.id], layout: structuredClone(layout) };
+    });
+    const groupId = TabGroupIdSchema.parse(`tgp_${randomUUID()}`);
+    storeMock.organize = vi.fn(async (_owner: unknown, input: { tabIds: TabRecord["id"][] }) => {
+      layout = {
+        revision: layout.revision + 1,
+        items: [
+          {
+            kind: "group",
+            group: {
+              groupId,
+              name: "Work",
+              color: "blue",
+              collapsed: false,
+              tabIds: [...input.tabIds],
+            },
+          },
+          ...layout.items.filter(
+            (item) => item.kind !== "tab" || !input.tabIds.includes(item.tabId),
+          ),
+        ],
+      };
+      return { tabIds: input.tabIds, layout: structuredClone(layout) };
+    });
+    storeMock.updateGroup = vi.fn(async (_owner: unknown, input: { name?: string }) => {
+      layout = {
+        revision: layout.revision + 1,
+        items: layout.items.map((item) =>
+          item.kind === "group" && item.group.groupId === groupId
+            ? {
+                kind: "group",
+                group: { ...item.group, name: input.name ?? item.group.name },
+              }
+            : item,
+        ),
+      };
+      return { tabIds: [a.id], layout: structuredClone(layout) };
+    });
+    storeMock.deleteGroup = vi.fn(async () => {
+      layout = {
+        revision: layout.revision + 1,
+        items: layout.items.flatMap((item) =>
+          item.kind === "group" && item.group.groupId === groupId
+            ? item.group.tabIds.map((id) => ({ kind: "tab" as const, tabId: id }))
+            : [item],
+        ),
+      };
+      return { tabIds: [a.id], layout: structuredClone(layout) };
+    });
+
+    // Warm the owner catalog once.
+    await f.service.project(actor);
+
+    const snapshots = vi.spyOn(f.options.store, "snapshot");
+    const windowStates = vi.spyOn(f.native, "windowState");
+    snapshots.mockClear();
+    windowStates.mockClear();
+
+    // Close does ZERO snapshot reads and ZERO windowState probes, and updates the cache.
+    const closed = await f.service.executeCommand(ownerId, {
+      type: "tab.close",
+      idempotencyKey: "close-b",
+      tabIds: [b.id],
+    });
+    expect(closed).toMatchObject({
+      type: "tab.close",
+      closed: [b.id],
+      failed: [],
+      layout: { revision: 2 },
+    });
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).not.toHaveBeenCalled();
+    expect((await f.service.project(actor)).tabs.map((tab) => tab.tabId)).toEqual([a.id, c.id]);
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).not.toHaveBeenCalled();
+
+    // Reopen projects ONLY the reopened tab (1 windowState call, 0 snapshots).
+    const reopened = await f.service.executeCommand(ownerId, {
+      type: "tab.reopen",
+      idempotencyKey: "reopen-b",
+      tabId: b.id,
+    });
+    expect(reopened).toMatchObject({
+      type: "tab.reopen",
+      tab: { tabId: b.id },
+      layout: { revision: 3 },
+    });
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).toHaveBeenCalledTimes(1);
+    windowStates.mockClear();
+
+    // Organize projects ONLY the moved tab(s), updates groupId on cache cleanly.
+    const organized = await f.service.executeCommand(ownerId, {
+      type: "tab.organize",
+      idempotencyKey: "org-a",
+      tabIds: [a.id],
+      group: { name: "Work", color: "blue" },
+    });
+    expect(organized).toMatchObject({
+      type: "tab.organize",
+      tabs: [{ tabId: a.id, groupId }],
+      layout: { revision: 4 },
+    });
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).toHaveBeenCalledTimes(1);
+    windowStates.mockClear();
+
+    // Update group does ZERO tab projections and updates cached layout.
+    const updatedGroup = await f.service.executeCommand(ownerId, {
+      type: "tab.group.update",
+      idempotencyKey: "rename-group",
+      groupId,
+      name: "Focus",
+    });
+    expect(updatedGroup).toMatchObject({
+      type: "tab.group.update",
+      group: { groupId, name: "Focus" },
+      layout: { revision: 5 },
+    });
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).not.toHaveBeenCalled();
+
+    // Delete group does ZERO tab projections and clears cached groupId.
+    const deletedGroup = await f.service.executeCommand(ownerId, {
+      type: "tab.group.delete",
+      idempotencyKey: "delete-group",
+      groupId,
+    });
+    expect(deletedGroup).toMatchObject({
+      type: "tab.group.delete",
+      layout: { revision: 6 },
+    });
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).not.toHaveBeenCalled();
+    const afterDelete = await f.service.project(actor);
+    expect(afterDelete.tabs.find((tab) => tab.tabId === a.id)?.groupId).toBeNull();
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).not.toHaveBeenCalled();
+
+    // Open projects ONLY the newly opened tab.
+    f.native.resolveWindow = vi.fn(async () => ({
+      windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+      app: { bundleId: "test.app", displayName: "Test", teamId: null },
+      appName: "Test",
+      bundleId: "test.app",
+      title: "Opened",
+    }));
+    const opened = await f.service.executeCommand(ownerId, {
+      type: "tab.open",
+      idempotencyKey: "open-d",
+      target: { kind: "window", computerId: a.computerId, bundleId: "test.app" },
+    });
+    expect(opened).toMatchObject({
+      type: "tab.open",
+      layout: { revision: 7 },
+    });
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).toHaveBeenCalledTimes(1);
+
+    // Idempotent replay returning an older layout revision must NOT regress cached layout
+    // and must NOT terminate viewers for a reopened tab or return stale historical layout.
+    const staleLayout: TabLayout = {
+      revision: 2,
+      items: [{ kind: "tab", tabId: a.id }],
+    };
+    const closeOwnerViews = vi.spyOn(f.native, "closeOwnerViews");
+    closeOwnerViews.mockClear();
+    (storeMock.close as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (
+        _owner: unknown,
+        _tabIds: string[],
+        _key: string,
+        authorize: (tx: unknown, all: TabRecord[], current: TabLayout) => Promise<void>,
+      ) => {
+        // Real TabStore runs authorize against current open rows before returning the replay receipt.
+        await authorize(f.options.store.database, rows, layout);
+        return {
+          tabIds: [b.id],
+          layout: staleLayout,
+          replayed: true,
+          currentLayout: structuredClone(layout),
+        };
+      },
+    );
+    const replayedClose = await f.service.executeCommand(ownerId, {
+      type: "tab.close",
+      idempotencyKey: "close-b",
+      tabIds: [b.id],
+    });
+    expect(closeOwnerViews).not.toHaveBeenCalled();
+    expect(replayedClose).toMatchObject({
+      type: "tab.close",
+      layout: { revision: 7 },
+    });
+    const current = await f.service.project(actor);
+    expect(current.layout.revision).toBe(7);
+    expect(current.tabs).toHaveLength(4);
+    f.service.dispose();
+  });
+
+  it("invalidates warm catalog when post-commit projection fails after open/reopen/organize", async () => {
+    const a = row("window");
+    const rows = [a];
+    let layout: TabLayout = {
+      revision: 1,
+      items: [{ kind: "tab", tabId: a.id }],
+    };
+    const f = fixture(rows);
+    f.setLayout(layout);
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.resourceLayout = vi.fn(async () => ({ revision: layout.revision, entries: [] }));
+    storeMock.open = vi.fn(async (write: { id: TabRecord["id"]; title: string }) => {
+      const created = { ...row("window"), id: write.id, title: write.title };
+      rows.push(created);
+      layout = {
+        revision: layout.revision + 1,
+        items: [...layout.items, { kind: "tab", tabId: created.id }],
+      };
+      f.setLayout(layout);
+      return { tabIds: [created.id], layout: structuredClone(layout) };
+    });
+    f.native.resolveWindow = vi.fn(async () => ({
+      windowId: WindowIdSchema.parse(`win_${randomUUID()}`),
+      app: { bundleId: "test.app", displayName: "Test", teamId: null },
+      appName: "Test",
+      bundleId: "test.app",
+      title: "Opened",
+    }));
+
+    // Warm catalog at revision 1.
+    expect((await f.service.project(actor)).tabs).toHaveLength(1);
+
+    // Simulate post-commit projection failure during open.
+    const windowState = vi.spyOn(f.native, "windowState");
+    windowState.mockRejectedValueOnce(new Error("transient projection failure"));
+    await expect(
+      f.service.executeCommand(ownerId, {
+        type: "tab.open",
+        idempotencyKey: "open-fail-proj",
+        target: { kind: "window", computerId: a.computerId, bundleId: "test.app" },
+      }),
+    ).rejects.toThrow("transient projection failure");
+
+    // Warm catalog must have been invalidated so next project() sees the committed revision 2.
+    const afterFailure = await f.service.project(actor);
+    expect(afterFailure.layout.revision).toBe(2);
+    expect(afterFailure.tabs).toHaveLength(2);
+    f.service.dispose();
+  });
+
+  it("preserves mid-projection invalidations during organize and open without erasing newer updates", async () => {
+    const a = row("window");
+    const b = row("window");
+    const rows = [a, b];
+    let layout: TabLayout = {
+      revision: 1,
+      items: rows.map((item) => ({ kind: "tab", tabId: item.id })),
+    };
+    const f = fixture(rows);
+    f.setLayout(layout);
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.resourceLayout = vi.fn(async () => ({ revision: layout.revision, entries: [] }));
+    storeMock.organize = vi.fn(async () => {
+      layout = {
+        revision: layout.revision + 1,
+        items: [
+          { kind: "tab", tabId: b.id },
+          { kind: "tab", tabId: a.id },
+        ],
+      };
+      f.setLayout(layout);
+      return { tabIds: [b.id], layout: structuredClone(layout) };
+    });
+
+    await f.service.project(actor);
+
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    f.native.windowState = vi.fn(async () => {
+      started.resolve();
+      await finish.promise;
+      return { state: "asleep" as const, usedBy: [] };
+    });
+
+    const organizing = f.service.executeCommand(ownerId, {
+      type: "tab.organize",
+      idempotencyKey: "move-b",
+      tabIds: [b.id],
+      group: null,
+      beforeTabId: a.id,
+    });
+    await started.promise;
+
+    // A title update + invalidation arrives while organize's projection is still in flight.
+    b.title = "Fresh Title After Move";
+    f.service.changed(ownerId, [b.id]);
+
+    finish.resolve();
+    await organizing;
+
+    // Reset windowState for the follow-up refresh.
+    f.native.windowState = vi.fn(async () => ({ state: "asleep" as const, usedBy: [] }));
+    const projected = await f.service.project(actor);
+    expect(projected.tabs.map((tab) => tab.tabId)).toEqual([b.id, a.id]);
+    expect(projected.tabs[0]?.title).toBe("Fresh Title After Move");
+    f.service.dispose();
+  });
+
+  it("does not overwrite a newer groupId when organize runs concurrently with activate", async () => {
+    const a = row("window");
+    const rows = [a];
+    const groupId = TabGroupIdSchema.parse(`tgp_${randomUUID()}`);
+    let layout: TabLayout = {
+      revision: 1,
+      items: [{ kind: "tab", tabId: a.id }],
+    };
+    const f = fixture(rows);
+    f.setLayout(layout);
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.resourceTabGroups = vi.fn(async () => new Map());
+    storeMock.organize = vi.fn(async () => {
+      layout = {
+        revision: layout.revision + 1,
+        items: [
+          {
+            kind: "group",
+            group: {
+              groupId,
+              name: "Grouped",
+              color: "blue",
+              collapsed: false,
+              tabIds: [a.id],
+            },
+          },
+        ],
+      };
+      f.setLayout(layout);
+      return { tabIds: [a.id], layout: structuredClone(layout) };
+    });
+    f.native.openOwnerView = vi.fn(async () => ({}) as ComputerView);
+
+    await f.service.project(actor);
+
+    const fenceStarted = Promise.withResolvers<void>();
+    const finishFence = Promise.withResolvers<void>();
+    const originalGet = f.options.store.get.bind(f.options.store);
+    let getCalls = 0;
+    f.options.store.get = vi.fn(async (owner, id) => {
+      getCalls += 1;
+      // 1st get: activate #row, 2nd get: activate this.get, 3rd get: activate #fence
+      if (getCalls === 3) {
+        fenceStarted.resolve();
+        await finishFence.promise;
+      }
+      return originalGet(owner, id);
+    });
+
+    const activating = f.service.activate(ownerId, a.id, "act-1");
+    await fenceStarted.promise;
+
+    // Organize moves `a` into `groupId` while activate is paused at #fence.
+    await f.service.executeCommand(ownerId, {
+      type: "tab.organize",
+      idempotencyKey: "group-a",
+      tabIds: [a.id],
+      group: { name: "Grouped", color: "blue" },
+    });
+
+    finishFence.resolve();
+    await activating;
+
+    // Catalog must retain `groupId` from organize rather than being overwritten with null.
+    const after = await f.service.project(actor);
+    expect(after.tabs[0]?.groupId).toBe(groupId);
+    f.service.dispose();
+  });
+
+  it("uses currentLayout on replayed group.update so a deleted group throws not_found", async () => {
+    const a = row("window");
+    const groupId = TabGroupIdSchema.parse(`tgp_${randomUUID()}`);
+    const historicalLayout: TabLayout = {
+      revision: 2,
+      items: [
+        {
+          kind: "group",
+          group: {
+            groupId,
+            name: "Renamed",
+            color: "blue",
+            collapsed: false,
+            tabIds: [a.id],
+          },
+        },
+      ],
+    };
+    const currentLayout: TabLayout = {
+      revision: 3,
+      items: [{ kind: "tab", tabId: a.id }],
+    };
+    const f = fixture([a]);
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.updateGroup = vi.fn(async () => ({
+      tabIds: [a.id],
+      layout: historicalLayout,
+      replayed: true,
+      currentLayout,
+    }));
+
+    await expect(
+      f.service.executeCommand(ownerId, {
+        type: "tab.group.update",
+        idempotencyKey: "rename-old",
+        groupId,
+        name: "Renamed",
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    f.service.dispose();
+  });
+
+  it("does not let an older organize overwrite a refresh that already completed while paused", async () => {
+    const a = row("window");
+    const b = row("window");
+    b.title = "Original";
+    const rows = [a, b];
+    let layout: TabLayout = {
+      revision: 1,
+      items: rows.map((item) => ({ kind: "tab", tabId: item.id })),
+    };
+    const f = fixture(rows);
+    f.setLayout(layout);
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.organize = vi.fn(async () => {
+      layout = {
+        revision: layout.revision + 1,
+        items: [
+          { kind: "tab", tabId: b.id },
+          { kind: "tab", tabId: a.id },
+        ],
+      };
+      f.setLayout(layout);
+      return { tabIds: [b.id], layout: structuredClone(layout) };
+    });
+
+    await f.service.project(actor);
+
+    const organizePaused = Promise.withResolvers<void>();
+    const resumeOrganize = Promise.withResolvers<void>();
+    let calls = 0;
+    f.native.windowState = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        organizePaused.resolve();
+        await resumeOrganize.promise;
+      }
+      return { state: "asleep" as const, usedBy: [] };
+    });
+
+    const organizing = f.service.executeCommand(ownerId, {
+      type: "tab.organize",
+      idempotencyKey: "org-raced",
+      tabIds: [b.id],
+      group: null,
+      beforeTabId: a.id,
+    });
+    await organizePaused.promise;
+
+    // While organize is paused, b changes AND project() completes its refresh, consuming dirty.
+    b.title = "Updated";
+    f.service.changed(ownerId, [b.id]);
+    const refreshed = await f.service.project(actor);
+    expect(refreshed.tabs.find((tab) => tab.tabId === b.id)?.title).toBe("Updated");
+
+    // Resume the older organize; it must keep the newer refreshed row instead of overwriting with Original.
+    resumeOrganize.resolve();
+    await organizing;
+
+    const after = await f.service.project(actor);
+    expect(after.tabs.map((tab) => tab.tabId)).toEqual([b.id, a.id]);
+    expect(after.tabs[0]?.title).toBe("Updated");
+    f.service.dispose();
+  });
+
+  it("still calls pages.admitted on replayed page open and authorizes replayed reopen-latest against replayedTabIds", async () => {
+    const pageRow: TabRecord = {
+      ...row("phone"),
+      kind: "page",
+      url: "https://example.com",
+      title: "Example",
+      generation: 3,
+      pageBinding: {
+        lineageId: "lin_1" as NonNullable<TabRecord["pageBinding"]>["lineageId"],
+        sessionId: "bsn_1" as NonNullable<TabRecord["pageBinding"]>["sessionId"],
+        surfaceId: tabId(),
+      },
+    };
+    pageRow.id = pageRow.pageBinding!.surfaceId;
+    const f = fixture([pageRow]);
+    const layout: TabLayout = {
+      revision: 3,
+      items: [{ kind: "tab", tabId: pageRow.id }],
+    };
+    f.setLayout(layout);
+    const admitted = vi.fn(async () => {});
+    f.options.pages.admitted = admitted;
+    f.options.pages.open = vi.fn(async () => ({
+      id: pageRow.id,
+      ownerId,
+      kind: "page" as const,
+      computerId: pageRow.computerId,
+      title: "Example",
+      url: "https://example.com",
+      openedBy: "person" as const,
+      pageBinding: pageRow.pageBinding!,
+    }));
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.resourceLayout = vi.fn(async () => ({ revision: layout.revision, entries: [] }));
+    storeMock.open = vi.fn(async () => ({
+      tabIds: [pageRow.id],
+      layout: { revision: 1, items: [{ kind: "tab", tabId: pageRow.id }] },
+      replayed: true,
+      currentLayout: structuredClone(layout),
+    }));
+
+    await f.service.executeCommand(ownerId, {
+      type: "tab.open",
+      idempotencyKey: "open-page-replay",
+      target: {
+        kind: "page",
+        computerId: pageRow.computerId,
+        guest: true,
+        url: "https://example.com",
+      },
+    });
+    expect(admitted).toHaveBeenCalledTimes(1);
+
+    // Replaying reopen without tabId when no closed rows remain must authorize against replayedTabIds.
+    storeMock.reopen = vi.fn(
+      async (
+        _owner: unknown,
+        _target: unknown,
+        _key: string,
+        authorize: (
+          tx: unknown,
+          all: TabRecord[],
+          current: TabLayout,
+          replayedTabIds?: readonly TabRecord["id"][],
+        ) => Promise<void>,
+      ) => {
+        await authorize(f.options.store.database, [pageRow], layout, [pageRow.id]);
+        return {
+          tabIds: [pageRow.id],
+          layout: structuredClone(layout),
+          replayed: true,
+          currentLayout: structuredClone(layout),
+        };
+      },
+    );
+    const reopened = await f.service.executeCommand(ownerId, {
+      type: "tab.reopen",
+      idempotencyKey: "reopen-latest-replay",
+    });
+    expect(reopened).toMatchObject({ type: "tab.reopen", tab: { tabId: pageRow.id } });
+    f.service.dispose();
+  });
+
+  it("does not let a paused organize overwrite a completed activation in the warm catalog", async () => {
+    const a = row("window");
+    const b = row("window");
+    const rows = [a, b];
+    let layout: TabLayout = {
+      revision: 1,
+      items: rows.map((item) => ({ kind: "tab", tabId: item.id })),
+    };
+    const f = fixture(rows);
+    f.setLayout(layout);
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.resourceTabGroups = vi.fn(async () => new Map());
+    storeMock.organize = vi.fn(async () => {
+      layout = {
+        revision: layout.revision + 1,
+        items: [
+          { kind: "tab", tabId: b.id },
+          { kind: "tab", tabId: a.id },
+        ],
+      };
+      f.setLayout(layout);
+      return { tabIds: [b.id], layout: structuredClone(layout) };
+    });
+    f.native.openOwnerView = vi.fn(async () => ({}) as ComputerView);
+
+    await f.service.project(actor);
+
+    const organizePaused = Promise.withResolvers<void>();
+    const resumeOrganize = Promise.withResolvers<void>();
+    let stateCalls = 0;
+    f.native.windowState = vi.fn(async () => {
+      stateCalls += 1;
+      if (stateCalls === 1) {
+        organizePaused.resolve();
+        await resumeOrganize.promise;
+        return { state: "asleep" as const, usedBy: [] };
+      }
+      return { state: "open" as const, usedBy: [] };
+    });
+
+    const organizing = f.service.executeCommand(ownerId, {
+      type: "tab.organize",
+      idempotencyKey: "org-vs-activate",
+      tabIds: [b.id],
+      group: null,
+      beforeTabId: a.id,
+    });
+    await organizePaused.promise;
+
+    // Activate b while organize is paused -> completes and records b as "open".
+    const activated = await f.service.activate(ownerId, b.id, "act-b");
+    expect(activated.tab.state).toBe("open");
+
+    // Resume the older organize; it must not overwrite "open" with its stale "asleep" projection.
+    resumeOrganize.resolve();
+    await organizing;
+
+    const after = await f.service.project(actor);
+    expect(after.tabs.find((tab) => tab.tabId === b.id)?.state).toBe("open");
+    f.service.dispose();
+  });
+
+  it("projects only the single target tab for get() and authorizeShow()", async () => {
+    const rows = Array.from({ length: 10 }, () => row("window"));
+    const f = fixture(rows);
+    const storeMock = f.options.store as unknown as Record<string, unknown>;
+    storeMock.resourceTabGroups = vi.fn(async () => new Map());
+    const snapshots = vi.spyOn(f.options.store, "snapshot");
+    const windowStates = vi.spyOn(f.native, "windowState");
+
+    const single = await f.service.get(ownerId, rows[3]!.id);
+    expect(single.tabId).toBe(rows[3]!.id);
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).toHaveBeenCalledTimes(1);
+
+    windowStates.mockClear();
+    await f.service.authorizeShow(
+      {
+        aud: "opensteer-run-tools",
+        bindingGeneration: 1,
+        environmentId: createId("environment"),
+        requestedBy: ownerId,
+        runId: createId("run"),
+        runnerBootId: "boot",
+        runnerId: computerId,
+        threadId: taskId,
+        exp: 100,
+        iat: 1,
+        iss: "opensteer-host",
+        jti: "token",
+      },
+      rows[5]!.id,
+    );
+    expect(snapshots).not.toHaveBeenCalled();
+    expect(windowStates).toHaveBeenCalledTimes(1);
+    f.service.dispose();
+  });
+
+  it("batches windowStates, deduplicates apps.get, and reuses computer.selfRunnerId", async () => {
+    const appId = `app_${randomUUID()}`;
+    const win1 = row("window");
+    const win2 = row("window");
+    const app1 = { ...row(), kind: "app" as const, appId };
+    const app2 = { ...row(), kind: "app" as const, appId };
+    const f = fixture([win1, win2, app1, app2]);
+    const selfRunnerId = RunnerIdSchema.parse(computerId);
+    f.options.computer = async () => ({
+      name: "Computer",
+      connected: true,
+      removed: false,
+      selfRunnerId,
+    });
+    const requireRunner = vi.spyOn(f.options.devices, "requireDeviceSelfRunnerId");
+    const appsGet = vi.fn(async () => ({
+      appId,
+      computerId: win1.computerId,
+      name: "Dashboard",
+      kind: "html" as const,
+      state: "running" as const,
+      version: 1,
+      server: null,
+    }));
+    f.options.apps.get = appsGet as unknown as TabServiceOptions["apps"]["get"];
+    const windowStatesBatch = vi.fn(
+      async (_owner: unknown, windows: readonly { readonly tabId: TabRecord["id"] }[]) =>
+        new Map(
+          windows.map((entry) => [entry.tabId, { state: "asleep" as const, usedBy: [{ taskId }] }]),
+        ),
+    );
+    f.native.windowStates = windowStatesBatch;
+    const singleWindowState = vi.spyOn(f.native, "windowState");
+
+    const projected = await f.service.project(actor);
+    expect(projected.tabs).toHaveLength(4);
+    expect(requireRunner).not.toHaveBeenCalled();
+    expect(appsGet).toHaveBeenCalledTimes(1);
+    expect(windowStatesBatch).toHaveBeenCalledTimes(1);
+    expect(windowStatesBatch.mock.calls[0]?.[1]).toHaveLength(2);
+    expect(singleWindowState).not.toHaveBeenCalled();
+    f.service.dispose();
+  });
+});

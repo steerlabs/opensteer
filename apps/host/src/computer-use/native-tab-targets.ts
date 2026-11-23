@@ -47,6 +47,8 @@ export interface NativeTabTargetsOptions {
   ): "paused" | "protected" | "locked" | "unsupported" | null;
   readonly now?: () => number;
   readonly windowRefreshTtlMs?: number;
+  readonly maxObservedWindows?: number;
+  readonly maxConcurrentWindowProbesPerComputer?: number;
   readonly onWindowStateChanged?: (
     ownerId: UserId,
     computerId: ComputerTargetId,
@@ -76,6 +78,8 @@ type ObservedWindow =
       readonly revision: number;
     };
 const defaultWindowRefreshTtlMs = 30_000;
+const defaultMaxObservedWindows = 2048;
+const defaultMaxConcurrentWindowProbesPerComputer = 8;
 const unavailable = (
   unavailableCode: WindowUnavailableCode,
   unavailableReason: string,
@@ -116,9 +120,23 @@ export class NativeTabTargets implements NativeTabTargetsPort {
   readonly #options: NativeTabTargetsOptions;
   readonly #now: () => number;
   readonly #refreshTtlMs: number;
+  readonly #maxObservedWindows: number;
+  readonly #maxConcurrentWindowProbesPerComputer: number;
   readonly #generations = new Map<ComputerTargetId, number>();
   readonly #observed = new Map<string, ObservedWindow>();
-  readonly #inFlight = new Map<string, Promise<void>>();
+  readonly #evictedUnavailable = new Map<string, ComputerTargetId>();
+  readonly #evictedUnavailableOverflow = new Set<ComputerTargetId>();
+  readonly #inFlight = new Map<string, { readonly promise: Promise<void>; superseded: boolean }>();
+  readonly #activeProbesByComputer = new Map<ComputerTargetId, number>();
+  readonly #queuedProbes = new Map<
+    string,
+    {
+      readonly ownerId: UserId;
+      readonly computerId: ComputerTargetId;
+      readonly windowId: WindowId;
+      readonly generation: number;
+    }
+  >();
   #revision = 0;
   #acquired: NativeTargetAcquiredHandler | undefined;
   #capture: ((ownerId: UserId) => Promise<number>) | undefined;
@@ -126,12 +144,48 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     this.#options = options;
     this.#now = options.now ?? Date.now;
     this.#refreshTtlMs = options.windowRefreshTtlMs ?? defaultWindowRefreshTtlMs;
+    this.#maxObservedWindows = Math.max(1, options.maxObservedWindows ?? defaultMaxObservedWindows);
+    this.#maxConcurrentWindowProbesPerComputer = Math.max(
+      1,
+      options.maxConcurrentWindowProbesPerComputer ?? defaultMaxConcurrentWindowProbesPerComputer,
+    );
   }
   #generation(computerId: ComputerTargetId): number {
     return this.#generations.get(computerId) ?? 0;
   }
   #windowKey(computerId: ComputerTargetId, windowId: WindowId): string {
     return `${computerId}:${windowId}`;
+  }
+  #rememberObserved(
+    key: string,
+    entry: ObservedWindow,
+    activeFlight?: { readonly promise: Promise<void>; superseded: boolean },
+  ): void {
+    const active = this.#inFlight.get(key);
+    if (active && active !== activeFlight) active.superseded = true;
+    this.#evictedUnavailable.delete(key);
+    this.#observed.delete(key);
+    this.#observed.set(key, entry);
+    while (this.#observed.size > this.#maxObservedWindows) {
+      const oldest = this.#observed.keys().next().value;
+      if (oldest === undefined) break;
+      const evicted = this.#observed.get(oldest);
+      this.#observed.delete(oldest);
+      if (evicted?.kind === "unavailable") {
+        this.#evictedUnavailable.delete(oldest);
+        this.#evictedUnavailable.set(oldest, evicted.computerId);
+        while (this.#evictedUnavailable.size > this.#maxObservedWindows * 4) {
+          const stale = this.#evictedUnavailable.entries().next().value;
+          if (stale === undefined) break;
+          this.#evictedUnavailable.delete(stale[0]);
+          this.#evictedUnavailableOverflow.add(stale[1]);
+        }
+      }
+    }
+  }
+  #touchObserved(key: string, entry: ObservedWindow): void {
+    this.#observed.delete(key);
+    this.#observed.set(key, entry);
   }
   #hasApprovedApp(
     connections: readonly DeviceComputerConnection[],
@@ -141,14 +195,35 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       (entry) => entry.computer?.app && computerAppIdentitiesEqual(entry.computer.app, app),
     );
   }
+  #filterComputerConnections(
+    connections: readonly DeviceComputerConnection[],
+    computerId: ComputerTargetId,
+  ): DeviceComputerConnection[] {
+    return connections.filter(
+      (entry) =>
+        entry.computer &&
+        computerConnectionDeviceId(entry) === computerId &&
+        !entry.computer.blockedAt,
+    );
+  }
   forgetComputer(computerId: ComputerTargetId): void {
     this.#generations.set(computerId, this.#generation(computerId) + 1);
     for (const [key, entry] of this.#observed) {
       if (entry.computerId === computerId) this.#observed.delete(key);
     }
     const prefix = `${computerId}:`;
-    for (const key of this.#inFlight.keys()) {
-      if (key.startsWith(prefix)) this.#inFlight.delete(key);
+    for (const [key, evictedComputerId] of this.#evictedUnavailable) {
+      if (evictedComputerId === computerId) this.#evictedUnavailable.delete(key);
+    }
+    this.#evictedUnavailableOverflow.delete(computerId);
+    for (const [key, active] of this.#inFlight) {
+      if (key.startsWith(prefix)) {
+        active.superseded = true;
+        this.#inFlight.delete(key);
+      }
+    }
+    for (const [key, queued] of this.#queuedProbes) {
+      if (queued.computerId === computerId) this.#queuedProbes.delete(key);
     }
   }
   observeView(view: ComputerView): boolean {
@@ -189,8 +264,11 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       };
     }
     if (!next) return false;
-    this.#observed.set(key, next);
-    return !sameObservedProjection(previous, next);
+    const hadEvictedUnavailable =
+      this.#evictedUnavailable.delete(key) ||
+      (!previous && this.#evictedUnavailableOverflow.has(computerId) && next.kind === "live");
+    this.#rememberObserved(key, next);
+    return hadEvictedUnavailable || !sameObservedProjection(previous, next);
   }
   #observeQueryResult(
     computerId: ComputerTargetId,
@@ -239,24 +317,42 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     generation: number,
   ): void {
     const key = this.#windowKey(computerId, windowId);
-    if (this.#inFlight.has(key)) return;
-    const startRevision = this.#observed.get(key)?.revision ?? 0;
-    const probe = (async () => {
+    if (this.#inFlight.has(key) || this.#queuedProbes.has(key)) return;
+    const active = this.#activeProbesByComputer.get(computerId) ?? 0;
+    if (active >= this.#maxConcurrentWindowProbesPerComputer) {
+      this.#queuedProbes.set(key, { ownerId, computerId, windowId, generation });
+      return;
+    }
+    this.#startWindowProbe(key, ownerId, computerId, windowId, generation);
+  }
+  #startWindowProbe(
+    key: string,
+    ownerId: UserId,
+    computerId: ComputerTargetId,
+    windowId: WindowId,
+    generation: number,
+  ): void {
+    this.#activeProbesByComputer.set(
+      computerId,
+      (this.#activeProbesByComputer.get(computerId) ?? 0) + 1,
+    );
+    const flight = { promise: Promise.resolve(), superseded: false };
+    const promise = (async () => {
       let next: ObservedWindow;
       try {
         const result = await this.#options.queryWindow(computerId, { windowId });
         if (
+          flight.superseded ||
           this.#generation(computerId) !== generation ||
-          !this.#options.connected(computerId) ||
-          (this.#observed.get(key)?.revision ?? 0) !== startRevision
+          !this.#options.connected(computerId)
         )
           return;
         next = this.#observeQueryResult(computerId, windowId, result, generation);
       } catch {
         if (
+          flight.superseded ||
           this.#generation(computerId) !== generation ||
-          !this.#options.connected(computerId) ||
-          (this.#observed.get(key)?.revision ?? 0) !== startRevision
+          !this.#options.connected(computerId)
         )
           return;
         next = {
@@ -270,24 +366,57 @@ export class NativeTabTargets implements NativeTabTargetsPort {
         };
       }
       const previous = this.#observed.get(key);
-      this.#observed.set(key, next);
-      if (!sameObservedProjection(previous, next)) {
+      const hadEvictedUnavailable =
+        this.#evictedUnavailable.delete(key) ||
+        (!previous && this.#evictedUnavailableOverflow.has(computerId) && next.kind === "live");
+      this.#rememberObserved(key, next, flight);
+      if (hadEvictedUnavailable || !sameObservedProjection(previous, next)) {
         this.#options.onWindowStateChanged?.(ownerId, computerId, windowId);
       }
     })().finally(() => {
-      if (this.#inFlight.get(key) === probe) this.#inFlight.delete(key);
+      if (this.#inFlight.get(key) === flight) this.#inFlight.delete(key);
+      const remaining = (this.#activeProbesByComputer.get(computerId) ?? 1) - 1;
+      if (remaining <= 0) this.#activeProbesByComputer.delete(computerId);
+      else this.#activeProbesByComputer.set(computerId, remaining);
+      this.#drainQueuedProbes(computerId);
     });
-    this.#inFlight.set(key, probe);
+    (flight as { promise: Promise<void> }).promise = promise;
+    this.#inFlight.set(key, flight);
+  }
+  #drainQueuedProbes(computerId: ComputerTargetId): void {
+    while (
+      (this.#activeProbesByComputer.get(computerId) ?? 0) <
+      this.#maxConcurrentWindowProbesPerComputer
+    ) {
+      let nextKey: string | undefined;
+      for (const [key, queued] of this.#queuedProbes) {
+        if (queued.computerId === computerId) {
+          nextKey = key;
+          break;
+        }
+      }
+      if (!nextKey) return;
+      const queued = this.#queuedProbes.get(nextKey)!;
+      this.#queuedProbes.delete(nextKey);
+      if (
+        this.#generation(computerId) !== queued.generation ||
+        !this.#options.connected(computerId) ||
+        this.#inFlight.has(nextKey)
+      )
+        continue;
+      this.#startWindowProbe(
+        nextKey,
+        queued.ownerId,
+        queued.computerId,
+        queued.windowId,
+        queued.generation,
+      );
+    }
   }
   async #connections(ownerId: UserId, computerId: ComputerTargetId) {
     if (!(await this.#options.owns(ownerId, computerId)))
       throw refused("not_found", "This computer is unavailable.");
-    return (await this.#options.connections(ownerId)).filter(
-      (entry) =>
-        entry.computer &&
-        computerConnectionDeviceId(entry) === computerId &&
-        !entry.computer.blockedAt,
-    );
+    return this.#filterComputerConnections(await this.#options.connections(ownerId), computerId);
   }
   async resolveWindow(
     ownerId: UserId,
@@ -325,7 +454,7 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       );
     const windowId = WindowIdSchema.parse(result.windowId);
     if (this.#generation(computerId) === generation) {
-      this.#observed.set(this.#windowKey(computerId, windowId), {
+      this.#rememberObserved(this.#windowKey(computerId, windowId), {
         kind: "live",
         computerId,
         app: result.app,
@@ -342,24 +471,17 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       title: result.title ?? "",
     };
   }
-  async windowState(
+  #evaluateWindowState(
     ownerId: UserId,
     computerId: ComputerTargetId,
     windowId: WindowId,
-    app?: ComputerAppIdentity | null,
-  ): Promise<NativeTabTargetState> {
-    let connections: readonly DeviceComputerConnection[];
-    try {
-      connections = await this.#connections(ownerId, computerId);
-    } catch {
-      return unavailable("access-denied", "This computer is unavailable.");
-    }
-    if (!this.#options.connected(computerId))
-      return unavailable("computer-offline", "This computer is offline.");
+    app: ComputerAppIdentity | null | undefined,
+    connections: readonly DeviceComputerConnection[],
+    views: readonly ComputerView[],
+  ): NativeTabTargetState {
     if (app && !this.#hasApprovedApp(connections, app))
       return unavailable("access-denied", "This app is unavailable.");
     const usedBy = this.#options.users(ownerId, computerId, windowId);
-    const views = await this.#options.views.list(ownerId, computerId);
     const viewed = views.some(
       (view) =>
         view.state === "ready" && view.target.kind === "app" && view.target.windowId === windowId,
@@ -367,6 +489,9 @@ export class NativeTabTargets implements NativeTabTargetsPort {
     const generation = this.#generation(computerId);
     const key = this.#windowKey(computerId, windowId);
     const observed = this.#observed.get(key);
+    if (observed && observed.generation === generation) {
+      this.#touchObserved(key, observed);
+    }
     const fresh =
       observed !== undefined &&
       observed.generation === generation &&
@@ -383,6 +508,114 @@ export class NativeTabTargets implements NativeTabTargetsPort {
       }
     }
     return { state: usedBy.length || viewed ? "open" : "asleep", usedBy };
+  }
+  async windowState(
+    ownerId: UserId,
+    computerId: ComputerTargetId,
+    windowId: WindowId,
+    app?: ComputerAppIdentity | null,
+  ): Promise<NativeTabTargetState> {
+    const sentinel = "tab_single" as TabId;
+    const states = await this.windowStates(ownerId, [
+      { tabId: sentinel, computerId, windowId, app },
+    ]);
+    return states.get(sentinel)!;
+  }
+  async windowStates(
+    ownerId: UserId,
+    windows: readonly {
+      readonly tabId: TabId;
+      readonly computerId: ComputerTargetId;
+      readonly windowId: WindowId;
+      readonly app?: ComputerAppIdentity | null | undefined;
+    }[],
+  ): Promise<Map<TabId, NativeTabTargetState>> {
+    const states = new Map<TabId, NativeTabTargetState>();
+    if (!windows.length) return states;
+    const byComputer = new Map<ComputerTargetId, (typeof windows)[number][]>();
+    for (const entry of windows) {
+      let group = byComputer.get(entry.computerId);
+      if (!group) {
+        group = [];
+        byComputer.set(entry.computerId, group);
+      }
+      group.push(entry);
+    }
+    const computers = [...byComputer.keys()];
+    const owned = new Map(
+      await Promise.all(
+        computers.map(async (computerId) => {
+          try {
+            return [computerId, await this.#options.owns(ownerId, computerId)] as const;
+          } catch {
+            return [computerId, false] as const;
+          }
+        }),
+      ),
+    );
+    const ownedComputers = computers.filter((computerId) => owned.get(computerId));
+    let allConnections: readonly DeviceComputerConnection[] | null = null;
+    if (ownedComputers.length) {
+      try {
+        allConnections = await this.#options.connections(ownerId);
+      } catch {
+        allConnections = null;
+      }
+    }
+    // Take one consistent connectivity cut after loading connection approvals.
+    const connectedComputers = new Set(
+      ownedComputers.filter((computerId) => this.#options.connected(computerId)),
+    );
+    const connectionsByComputer = new Map<ComputerTargetId, DeviceComputerConnection[]>();
+    const computersNeedingViews: ComputerTargetId[] = [];
+    if (allConnections) {
+      for (const computerId of connectedComputers) {
+        const filtered = this.#filterComputerConnections(allConnections, computerId);
+        connectionsByComputer.set(computerId, filtered);
+        const group = byComputer.get(computerId)!;
+        if (group.some((entry) => !entry.app || this.#hasApprovedApp(filtered, entry.app))) {
+          computersNeedingViews.push(computerId);
+        }
+      }
+    }
+    const viewsByComputer = new Map<ComputerTargetId, readonly ComputerView[]>(
+      computersNeedingViews.length
+        ? await Promise.all(
+            computersNeedingViews.map(
+              async (computerId) =>
+                [computerId, await this.#options.views.list(ownerId, computerId)] as const,
+            ),
+          )
+        : [],
+    );
+    for (const [computerId, group] of byComputer) {
+      if (!owned.get(computerId) || !allConnections) {
+        for (const entry of group)
+          states.set(entry.tabId, unavailable("access-denied", "This computer is unavailable."));
+        continue;
+      }
+      if (!connectedComputers.has(computerId)) {
+        for (const entry of group)
+          states.set(entry.tabId, unavailable("computer-offline", "This computer is offline."));
+        continue;
+      }
+      const connections = connectionsByComputer.get(computerId) ?? [];
+      const views = viewsByComputer.get(computerId) ?? [];
+      for (const entry of group) {
+        states.set(
+          entry.tabId,
+          this.#evaluateWindowState(
+            ownerId,
+            computerId,
+            entry.windowId,
+            entry.app,
+            connections,
+            views,
+          ),
+        );
+      }
+    }
+    return states;
   }
   async phoneState(ownerId: UserId, computerId: ComputerTargetId): Promise<NativeTabTargetState> {
     let connections: readonly DeviceComputerConnection[];
