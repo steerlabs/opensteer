@@ -963,8 +963,35 @@ export function listBrowserPoolRetiredTargets(
 /** A replaced target none of whose Stops waits any more: the Home stops asking it. */
 export async function forgetBrowserPoolRetiredTarget(
   database: Kysely<DatabaseSchema>,
-  target: BrowserPoolSessionTarget,
+  target: BrowserPoolSessionTarget & { readonly runnerId?: RunnerId },
 ): Promise<void> {
+  // Any open stop call of this retired target whose host answered slot-deleted/fenced or whose
+  // sessions ended another way is closed as unknown before the target is forgotten, so no open
+  // journal row outlives the drain coordinator.
+  await commitPersonalMutation(
+    database,
+    async (tx) => {
+      let query = tx
+        .selectFrom("browserPoolControllerCalls")
+        .select("id")
+        .where("slotId", "=", target.slotId)
+        .where("term", "=", target.term)
+        .where("settledAt", "is", null);
+      if (target.runnerId) query = query.where("runnerId", "=", target.runnerId);
+      const open = await query.orderBy("id").forNoKeyUpdate().execute(databaseOperationOptions());
+      for (const { id } of open)
+        await tx
+          .updateTable("browserPoolControllerCalls")
+          .set({
+            result: { id, outcome: "unknown", reason: "target-retired" },
+            settledAt: new Date(),
+          })
+          .where("id", "=", id)
+          .execute(databaseOperationOptions());
+    },
+    undefined,
+    "once-bounded",
+  );
   await database
     .deleteFrom("browserPoolRetiredTargets")
     .where("slotId", "=", target.slotId)
@@ -1458,6 +1485,16 @@ export async function retireBrowserPoolTarget(
     database,
     async (tx, mutation) => {
       mutation.bumpResource("browser-placement");
+      // Retired targets already draining before this retirement keep their own open calls
+      // (their drain coordinators settle them by id; PH3). Every other open call for this
+      // runner belonged to the retiring target — including one that never installed a slot row —
+      // and is closed as unknown so it is never sent to or orphaned past the new target.
+      const draining = await tx
+        .selectFrom("browserPoolRetiredTargets")
+        .select(["slotId", "term"])
+        .where("runnerId", "=", runnerId)
+        .execute(databaseOperationOptions());
+      const drainingKeys = new Set(draining.map((row) => `${row.slotId}\0${row.term}`));
       const slot = await tx
         .deleteFrom("browserPoolSlots")
         .where("runnerId", "=", runnerId)
@@ -1487,26 +1524,24 @@ export async function retireBrowserPoolTarget(
             .onConflict((conflict) => conflict.columns(["slotId", "term"]).doNothing())
             .execute(databaseOperationOptions());
       }
-      if (slot) {
-        const open = await tx
-          .selectFrom("browserPoolControllerCalls")
-          .select("id")
-          .where("runnerId", "=", runnerId)
-          .where("slotId", "=", slot.slotId)
-          .where("term", "=", slot.term)
-          .where("settledAt", "is", null)
-          .orderBy("id")
-          .forNoKeyUpdate()
+      const open = await tx
+        .selectFrom("browserPoolControllerCalls")
+        .select(["id", "slotId", "term"])
+        .where("runnerId", "=", runnerId)
+        .where("settledAt", "is", null)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute(databaseOperationOptions());
+      for (const row of open) {
+        if (drainingKeys.has(`${row.slotId}\0${row.term}`)) continue;
+        await tx
+          .updateTable("browserPoolControllerCalls")
+          .set({
+            result: { id: row.id, outcome: "unknown", reason: "target-replaced" },
+            settledAt: new Date(),
+          })
+          .where("id", "=", row.id)
           .execute(databaseOperationOptions());
-        for (const { id } of open)
-          await tx
-            .updateTable("browserPoolControllerCalls")
-            .set({
-              result: { id, outcome: "unknown", reason: "target-replaced" },
-              settledAt: new Date(),
-            })
-            .where("id", "=", id)
-            .execute(databaseOperationOptions());
       }
       const relays = await tx
         .selectFrom("browserPoolRelays")
