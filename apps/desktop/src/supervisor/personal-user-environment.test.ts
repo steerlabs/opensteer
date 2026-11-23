@@ -24,6 +24,15 @@ afterEach(async () => {
 });
 
 describe("Personal user environment", () => {
+  it("keeps both spellings of the HTTPS proxy on macOS and Linux", () => {
+    const source = {
+      HTTPS_PROXY: "http://proxy-upper.invalid:8080",
+      https_proxy: "http://proxy-lower.invalid:8080",
+    };
+    expect(filterUserEnvironment(source, "darwin")).toEqual(source);
+    expect(filterUserEnvironment(source, "linux")).toEqual(source);
+  });
+
   it("parses only bounded path/config fields after the login-shell sentinel", () => {
     const output = Buffer.from(
       [
@@ -35,10 +44,17 @@ describe("Personal user environment", () => {
         "OPENSTEER_CLAUDE_EXECUTABLE=/opt/claude/claude",
         "OPENAI_API_KEY=must-not-cross",
         "CUSTOM_SECRET=must-not-cross",
+        "HTTPS_PROXY=http://person:fake-proxy-password@proxy.example.test:8080",
+        "NO_PROXY=localhost",
+        "NODE_EXTRA_CA_CERTS=/etc/company/ca.pem",
         "",
       ].join("\0"),
     );
     expect(parseLoginShellEnvironment(output)).toEqual({
+      // How engines reach the network, as in the person's own terminal.
+      HTTPS_PROXY: "http://person:fake-proxy-password@proxy.example.test:8080",
+      NO_PROXY: "localhost",
+      NODE_EXTRA_CA_CERTS: "/etc/company/ca.pem",
       CODEX_HOME: "/Users/person/.codex",
       OPENSTEER_CLAUDE_EXECUTABLE: "/opt/claude/claude",
       HOME: "/attacker-override",

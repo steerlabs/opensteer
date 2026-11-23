@@ -15,8 +15,11 @@ lines.on("line", (line) => {
   if (scenario !== "exit" && request.method !== "test/diagnostic") return;
   process.stderr.write(`HEAD-${"x".repeat(2_048)}\n`);
   process.stderr.write(`${process.env.OPENSTEER_AGENT_TOOLS_TOKEN}\n`);
+  if (process.env.FAKE_CODEX_PROXY_DIAGNOSTIC === "1") {
+    process.stderr.write(`proxy ${process.env.HTTPS_PROXY}; password p@ss-word\n`);
+  }
   process.stderr.write(
-    `Codex provider startup blocked; Bearer bearer-secret; os_secret_session; api key ${process.env.OPENSTEER_TEST_API_KEY}\n`,
+    `Codex provider startup blocked; proxy http://person:fake-proxy-password@proxy.example.test:8080; Bearer bearer-secret; os_secret_session; api key ${process.env.OPENSTEER_TEST_API_KEY}\n`,
   );
   if (scenario === "exit") setTimeout(() => process.exit(23), 10);
 });

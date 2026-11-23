@@ -1764,6 +1764,7 @@ export class OpensteerStore {
   }
   async acquireExecutionBinding(input: {
     readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
     readonly bindingLeaseExpiresAt: Date;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;

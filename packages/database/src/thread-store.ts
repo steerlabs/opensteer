@@ -114,6 +114,7 @@ import {
   threadVisitSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
+  threadStartedByOtherSelection,
   threadFromRow,
   threadsFromRows,
   assignmentFromRow,
@@ -1129,6 +1130,7 @@ export async function readTask(
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("threads.id", "=", threadId)
       .where("threads.createdBy", "=", ownerId)
@@ -1186,6 +1188,7 @@ export async function readThreadForOwner(
           threadVisitSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
+          threadStartedByOtherSelection,
         ])
         .where("threads.id", "=", threadId)
         .where("threads.removedAt", "is", null)
@@ -1289,6 +1292,7 @@ export async function createThreadInTransaction(
   // Work in a lineage without the person's personal context never has a personal session.
   await ensureSelectedProviderSession(transaction, thread, {
     personalContext: await lineagePersonalContext(transaction, originConnectionId),
+    personLineage: originConnectionId === null,
   });
   if (purpose === "voice")
     await transaction
@@ -1661,10 +1665,13 @@ export async function updateThreadExecutionSelection(
             id: providerSessionId,
             leaseExpiresAt: null,
             leaseTokenHash: null,
+            // Whether it may use the person's personal context and own lineage, from its first
+            // row: never widen past the previous session or the task's own origin.
+            personalContext:
+              (selected?.personalContext ?? true) &&
+              (await lineagePersonalContext(transaction, thread.originConnectionId)),
+            personLineage: (selected?.personLineage ?? true) && thread.originConnectionId === null,
             providerSessionReference: null,
-            // Whether it may use the person's personal context, from its first row: from the
-            // task's lineage, never the column's default until a Run binds it.
-            personalContext: await lineagePersonalContext(transaction, thread.originConnectionId),
             runnerBootId: null,
             runnerId: null,
             status: "starting",
@@ -2248,6 +2255,7 @@ export async function updateThreadAccessMode(
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("id", "=", input.threadId)
       .forNoKeyUpdate()
