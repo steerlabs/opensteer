@@ -61,8 +61,10 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
           { headers: host.ownerHeaders },
         )) as { thread: { id: ThreadId } }
       ).thread.id;
+    const clients: Client[] = [];
     const mcp = async (url: URL, bearer: string) => {
       const client = new Client({ name: "command-tools", version: "1" });
+      clients.push(client);
       close.unshift(() => client.close());
       await client.connect(
         new StreamableHTTPClientTransport(url, {
@@ -669,6 +671,9 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       ["thread.browserUsage.get", { threadId: readTask, runIds: [] }],
       ["thread.messages.list", { threadId: readTask }],
     ];
+    // Every agent's MCP client is done before the reads are traced: one still listening signs in
+    // again on its own (its connection's last use), which is not the read's write.
+    await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
     const statements: string[] = [];
     let tracing = false;
     const clientQuery = pg.Client.prototype.query;
@@ -1162,10 +1167,6 @@ const doorRoutes = new Map<string, DoorRoute>([
       kind: "not a Home command",
       why: "the person’s own live voice call on their signed-in session, as the table’s person-view rows",
     },
-  ],
-  [
-    "POST /v1/runner/enrollment/preview",
-    { kind: "not a Home command", why: "a read: what an enrollment would be" },
   ],
   [
     "PUT /v1/runner/file-transfers/:id",
