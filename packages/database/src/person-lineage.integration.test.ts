@@ -204,4 +204,24 @@ describeStore("the person's own lineage", (it) => {
       (await threadContextLineage(f.database, untouched.threadId, fixture.userId)).personLineage,
     ).toBe(true);
   });
+
+  it("indexes connection-written inputs so the lineage walk never scans thread_inputs", async ({
+    storeFixture: f,
+  }) => {
+    const fixture = await f.createRunFixture("lineage-index");
+    const plan = await f.database.transaction().execute(async (tx) => {
+      await sql`set local enable_seqscan = off`.execute(tx);
+      const result = await sql<{ "QUERY PLAN": unknown }>`
+        explain (format json)
+        select exists (
+          select 1 from thread_inputs written
+          where written.thread_id = ${fixture.threadId}
+            and written.state <> 'cancelled'
+            and written.connection_id is not null
+        )
+      `.execute(tx);
+      return JSON.stringify(result.rows[0]?.["QUERY PLAN"] ?? null);
+    });
+    expect(plan).toContain("thread_inputs_written_by_connection");
+  });
 });

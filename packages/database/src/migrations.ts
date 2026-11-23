@@ -649,6 +649,20 @@ export function migrationProvider(options?: {
                   );
                 },
               },
+              "0114_thread_inputs_written_by_connection": {
+                /**
+                 * Indexes connection-written inputs per task so `threadContextLineage` checks
+                 * whether any ancestor task was written into by a connected agent without
+                 * scanning `thread_inputs` per ancestor.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    create index thread_inputs_written_by_connection
+                    on thread_inputs(thread_id)
+                    where connection_id is not null and state <> 'cancelled'
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };
