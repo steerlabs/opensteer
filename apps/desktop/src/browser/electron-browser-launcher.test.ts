@@ -2636,6 +2636,32 @@ describe("Electron debugger teardown", () => {
 
   // Finding 8: a page runs a few casts at most, and equal settings are one cast.
   describe("how many casts a page runs", () => {
+    // Run on 963f808d0, follow-never-shown-tab: a tab the person opened recorded four starts in
+    // equal settings. Every caller that asks while a start for the tab is unanswered waits for it
+    // (the ownership queue) and joins the cast it makes: one start, whoever and however many ask.
+    it("sends one start for a never-shown tab that several callers ask for at once", async () => {
+      const hub = await hubPage("64");
+      const settings = {
+        everyNthFrame: 1,
+        format: "jpeg",
+        maxHeight: 900,
+        maxWidth: 1_400,
+        quality: 72,
+      };
+      const person = await hub.page.cdp();
+      const agents = await Promise.all([1, 2].map(() => hub.page.agentCdp()));
+      const start = hub.hold("Page.startScreencast");
+      const asking = [person, person, ...agents, person].map((channel) =>
+        channel.send("Page.startScreencast", settings),
+      );
+      await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+      start.release();
+      start.replies[0]!.resolve({});
+      await Promise.all(asking);
+      expect(hub.sent("Page.startScreencast")).toHaveLength(1);
+      await hub.browser.close();
+    });
+
     it("takes settings that differ only by Chromium's defaults for one cast", async () => {
       const hub = await hubPage("61");
       const person = await hub.page.cdp();

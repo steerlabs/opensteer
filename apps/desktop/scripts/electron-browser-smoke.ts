@@ -1598,18 +1598,44 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     readonly cast?: Record<string, unknown>;
     readonly target: Debugger;
     readonly width: unknown;
+    /** When Chromium's answer came back, for a cast start or stop. */
+    answeredAt?: number;
+    readonly sessionId?: string;
+  }> = [];
+  /** Every frame each page's debugger sent: its id, the size it says, and when. */
+  const debuggerFrames: Array<{
+    readonly at: number;
+    readonly frame: unknown;
+    readonly height: unknown;
+    readonly sessionId?: string;
+    readonly target: Debugger;
+    readonly width: unknown;
   }> = [];
   const watchDebugger = (target: Debugger) => {
     const send = target.sendCommand.bind(target);
+    target.on("message", (_event, method, parameters, sessionId) => {
+      if (method !== "Page.screencastFrame") return;
+      const record = asRecord(parameters);
+      const metadata = asRecord(record.metadata);
+      debuggerFrames.push({
+        at: performance.now(),
+        frame: record.sessionId,
+        height: metadata.deviceHeight,
+        ...(typeof sessionId === "string" && sessionId ? { sessionId } : {}),
+        target,
+        width: metadata.deviceWidth,
+      });
+    });
     target.sendCommand = (method: string, parameters?: unknown, sessionId?: string) => {
       if (
         method === "Emulation.setVisibleSize" ||
         method === "Emulation.setDeviceMetricsOverride" ||
         method === "Emulation.clearDeviceMetricsOverride" ||
-        method === "Page.startScreencast"
+        method === "Page.startScreencast" ||
+        method === "Page.stopScreencast"
       ) {
         const { height, width } = asRecord(parameters);
-        debuggerCommands.push({
+        const entry: (typeof debuggerCommands)[number] = {
           at: performance.now(),
           height,
           method,
@@ -1622,13 +1648,51 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
                   .map((frame) => frame.trim()),
               }
             : {}),
+          ...(sessionId ? { sessionId } : {}),
           target,
           width,
-        });
+        };
+        debuggerCommands.push(entry);
+        const response = send(method, parameters, sessionId) as Promise<unknown>;
+        void response.then(
+          () => {
+            entry.answeredAt = performance.now();
+          },
+          () => undefined,
+        );
+        return response;
       }
       return send(method, parameters, sessionId);
     };
   };
+  /**
+   * One page's casts as its debugger saw them since `since`, in order: each start and stop with
+   * when Chromium answered it, each size set, and each frame with its id and the size it says.
+   */
+  const castTimeline = (target: Debugger | undefined, since: number) =>
+    [
+      ...debuggerCommands
+        .filter((command) => command.target === target && command.at >= since)
+        .map((command) => ({
+          at: command.at,
+          entry: `${command.method}${command.sessionId ? ` in ${command.sessionId}` : ""}${
+            command.width === undefined ? "" : ` ${String(command.width)}x${String(command.height)}`
+          }${command.cast ? ` ${String(command.cast.maxWidth)}x${String(command.cast.maxHeight)}` : ""}${
+            command.answeredAt === undefined
+              ? " (unanswered)"
+              : ` (answered +${Math.round(command.answeredAt - command.at)}ms)`
+          }`,
+        })),
+      ...debuggerFrames
+        .filter((frame) => frame.target === target && frame.at >= since)
+        .map((frame) => ({
+          at: frame.at,
+          entry: `frame ${String(frame.frame)}${frame.sessionId ? ` in ${frame.sessionId}` : ""} ${String(frame.width)}x${String(frame.height)}`,
+        })),
+    ]
+      .sort((a, b) => a.at - b.at)
+      .slice(0, 120)
+      .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`);
   for (const contents of webContents.getAllWebContents()) watchDebugger(contents.debugger);
   const onContentsCreated = (_event: Electron.Event, contents: Electron.WebContents) =>
     watchDebugger(contents.debugger);
@@ -2854,6 +2918,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     const personTabCasts = {
       castStarts: castStartsOn(personTabDebugger, openSince, performance.now()),
       redraws: redrawsBetween(openSince, performance.now(), personTabDebugger),
+      // What the tab's debugger saw, start to stop, so a count over the bound shows why.
+      timeline: castTimeline(personTabDebugger, openSince),
       // Who started each cast, so a count over the bound names its senders.
       senders: debuggerCommands
         .filter(
