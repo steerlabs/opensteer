@@ -8,7 +8,7 @@ import { noFollowFlag, readBounded } from "@opensteer/shared/privateFiles";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, rename, type FileHandle, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, type FileHandle, unlink } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { AsyncMutex } from "../async.js";
@@ -107,7 +107,11 @@ export class DurableAttachTicketReplayLedger {
         state = await this.#read();
       } catch (error) {
         if (!hasCode(error, "ENOENT")) throw error;
-        if (directoryExisted) {
+        // A ledger is lost only where the runtime has used its state since: an empty directory,
+        // or one holding only this ledger's own unfinished write or a profile's staging, is a
+        // ledger never written (a stop or a full disk between the directory and the first
+        // write), and starts empty. Refusing it would keep the browser from starting for good.
+        if (directoryExisted && (await usedSinceLedger(path.dirname(this.#filePath)))) {
           throw new Error("Replay ledger is missing from existing Runtime state", { cause: error });
         }
         await this.#write([], now);
@@ -227,6 +231,16 @@ async function ensureReplayDirectory(directory: string): Promise<boolean> {
     throw new Error("Replay ledger directory permissions are unsafe");
   }
   return existed;
+}
+
+/** Whether the runtime state directory holds what the runtime writes only once its ledger exists. */
+async function usedSinceLedger(directory: string): Promise<boolean> {
+  const entries = await readdir(directory);
+  return entries.some(
+    (entry) =>
+      !(entry.startsWith(".attach-ticket-replay-") && entry.endsWith(".tmp")) &&
+      !entry.startsWith("profile-"),
+  );
 }
 
 async function writeAtomic(filePath: string, content: Buffer): Promise<void> {
