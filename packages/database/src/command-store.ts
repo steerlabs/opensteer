@@ -101,6 +101,7 @@ import {
   finalizeRunTransaction,
 } from "./run-finalization.js";
 import {
+  chatEndedWithTheUpdate,
   connectionIsWaiting,
   liveAgentConnection,
   meetsConnectionFloor,
@@ -318,10 +319,12 @@ async function claimObservedCommand(
       .where("id", "=", run.threadId)
       .executeTakeFirstOrThrow();
     let waiting = false;
+    let endedWithTheUpdate = false;
     const connection = await liveAgentConnection(transaction, observed.requestedBy, lineage).catch(
       (error: unknown) => {
         if (error instanceof OpensteerError && error.code === "forbidden") {
           waiting = connectionIsWaiting(error);
+          endedWithTheUpdate = error.message === chatEndedWithTheUpdate;
           return null;
         }
         throw error;
@@ -338,7 +341,9 @@ async function claimObservedCommand(
       ((observed.type === "run.steer" || run.admittedGrantRevision !== null) &&
         !meetsConnectionFloor(connection, run.admittedGrantRevision, run.admittedAccessMode))
     ) {
-      terminalFailure = "The connected agent's access ended before this work could be delivered.";
+      terminalFailure = endedWithTheUpdate
+        ? chatEndedWithTheUpdate
+        : "The connected agent's access ended before this work could be delivered.";
       if (observed.type === "run.execute") terminalFailureInput = "seed-input";
     }
   }

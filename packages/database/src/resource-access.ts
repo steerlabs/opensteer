@@ -397,6 +397,21 @@ export function sendEligible(
   return taskOriginConnectionId === null && connection.grant.scope === "everything";
 }
 
+/**
+ * The person's own message to a task of a connection. They may type in any task of theirs; one
+ * that a chat from before the update ran (0053) takes no new work, and says why in the sentence
+ * that chat's tasks give (`chatEndedWithTheUpdate`). One read, only for a task a connection made.
+ */
+export async function assertPersonMayContinue(
+  database: Kysely<DatabaseSchema>,
+  ownerUserId: UserId,
+  taskOriginConnectionId: string | null,
+): Promise<void> {
+  if (taskOriginConnectionId === null) return;
+  const standing = await readConnectionRowStanding(database, ownerUserId, taskOriginConnectionId);
+  if (standing.endedWithTheUpdate) throw forbidden(chatEndedWithTheUpdate);
+}
+
 /** The send rule against the connection as it stands now; refuses as an unknown task would. */
 export async function assertSendEligible(
   database: Kysely<DatabaseSchema>,

@@ -66,6 +66,7 @@ import {
 } from "@opensteer/triggers";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import {
+  connectionIsWaiting,
   lineagePersonalContext,
   liveDelegatingConnection,
   meetsConnectionFloor,
@@ -192,21 +193,24 @@ export async function assertActiveTriggerExecutionBinding(
     .where("triggers.anchorThreadId", "=", input.threadId)
     .where("triggers.createdBy", "=", input.requestedBy)
     .executeTakeFirst();
+  const ended = () =>
+    new OpensteerError({ code: "forbidden", message: "Automation execution is no longer active" });
+  if (!row) throw ended();
+  // Its chat's standing, read once: one that waits holds the automation (`triggerChatIsWaiting`),
+  // anything else that is not live ends it.
+  const connection = row.originConnectionId
+    ? await liveDelegatingConnection(database, row.createdBy, row.originConnectionId).catch(
+        (error: unknown) => {
+          throw connectionIsWaiting(error) ? new TriggerChatWaiting() : ended();
+        },
+      )
+    : null;
   if (
-    !row ||
-    !(await triggerExecutionAuthorityAvailable(database, row)) ||
-    (row.originConnectionId &&
-      !meetsConnectionFloor(
-        await liveDelegatingConnection(database, row.createdBy, row.originConnectionId),
-        row.admittedGrantRevision,
-        row.admittedAccessMode,
-      ))
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Automation execution is no longer active",
-    });
-  }
+    !(await admitThreadExecution(database, row.anchorThreadId, row.createdBy)) ||
+    (connection &&
+      !meetsConnectionFloor(connection, row.admittedGrantRevision, row.admittedAccessMode))
+  )
+    throw ended();
 }
 
 /** Validates every fact carried by a continuously running watch capability. */
@@ -2717,17 +2721,6 @@ function triggerChatHeld(database: object) {
     where agent_connections.id = triggers.origin_connection_id
       and agent_connections.bridge_account_id is not null
       and ${connectionState(database)} = 'waiting')`;
-}
-async function triggerExecutionAuthorityAvailable(
-  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "originConnectionId">,
-): Promise<boolean> {
-  const admission = await admitLineageExecution(database, {
-    threadId: trigger.anchorThreadId,
-    userId: trigger.createdBy,
-    agentConnectionId: trigger.originConnectionId,
-  });
-  return admission !== null;
 }
 /** The refusal of a program for a lineage without personal context. */
 function noProgramWithoutPersonalContext(): OpensteerError {

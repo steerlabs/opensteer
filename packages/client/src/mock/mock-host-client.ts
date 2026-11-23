@@ -12831,8 +12831,9 @@ class MockHostState {
     const runId =
       active?.id ??
       (thread ? threadStopTarget({ runQueue: this.snapshot.runQueue, thread })?.id : undefined);
-    if (runId === undefined || (expectedRunId && runId !== expectedRunId))
-      throw new Error("This Thread has nothing to stop.");
+    // As on the Home: a Stop of a Run that is no longer the one at work is refused as ended.
+    if (expectedRunId && runId !== expectedRunId) throw mockConflict("Run is already terminal");
+    if (runId === undefined) throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
     this.activeRuns.delete(threadId);
 
