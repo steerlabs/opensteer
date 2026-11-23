@@ -2613,6 +2613,131 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
+  describe("whose configuration Codex starts with", () => {
+    const threadStartOf = async (fixture: Fixture) => {
+      const captured = await fixture.capture();
+      const process = captured.find((message) => "fakeCodexProcess" in message)
+        ?.fakeCodexProcess as { argv?: string[] } | undefined;
+      const threadStart = captured.find((message) => message.method === "thread/start");
+      const turnStart = captured.find((message) => message.method === "turn/start");
+      return {
+        argv: process?.argv ?? [],
+        config: ((threadStart?.params ?? {}) as { config?: Record<string, unknown> }).config ?? {},
+        turn: turnStart?.params as Record<string, unknown> | undefined,
+      };
+    };
+
+    /** The first turn's parameters, from a scenario whose turns complete. */
+    const firstTurnOf = async (personalContext: boolean) => {
+      const fixture = await setup("reasoning", {
+        accessMode: "approval-required",
+        personalContext,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      await session.execute(fixture.turn("Hello"));
+      await session.stop();
+      const { turn } = await threadStartOf(fixture);
+      await fixture.adapter.close();
+      return turn;
+    };
+
+    it("starts a Run without personal context with none of the person's configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: false,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      const turn = await firstTurnOf(false);
+      expect(argv).toEqual(
+        expect.arrayContaining(["tools.update_plan.enabled=false", 'web_search="disabled"']),
+      );
+      // No project instruction file, Codex skill, plan tool or web search.
+      expect(config).toMatchObject({
+        "skills.bundled.enabled": false,
+        "tools.update_plan.enabled": false,
+        project_doc_max_bytes: 0,
+        web_search: "disabled",
+      });
+      // No MCP server but Opensteer's: the person's are switched off.
+      expect(config).toMatchObject({
+        'mcp_servers."company.docs".enabled': false,
+        "mcp_servers.github.enabled": false,
+        "mcp_servers.opensteer.enabled": true,
+      });
+      // The instruction file it gets is what it got before: the Run's own.
+      expect(JSON.stringify(turn?.additionalContext)).toContain(
+        "Follow the workspace instructions.",
+      );
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("starts a Run with personal context with Codex's own configuration", async () => {
+      const fixture = await setup("ambient-extensions", {
+        accessMode: "approval-required",
+        personalContext: true,
+      });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { argv, config } = await threadStartOf(fixture);
+      const turn = await firstTurnOf(true);
+      expect(argv).not.toContain("tools.update_plan.enabled=false");
+      expect(argv).not.toContain('web_search="disabled"');
+      // Only the features Opensteer needs are set; the rest are the person's.
+      expect(argv).toContain('features={"multi_agent"=false,"multi_agent_v2"=true}');
+      for (const key of [
+        "project_doc_max_bytes",
+        "web_search",
+        "tools.update_plan.enabled",
+        "skills.bundled.enabled",
+        "skills.config",
+      ]) {
+        expect(config).not.toHaveProperty(key);
+      }
+      expect(config.features).toEqual({ multi_agent: false, multi_agent_v2: true });
+      expect(config.allow_login_shell).toBe(false);
+      // The person's servers stay on, and in Supervised each of their tools asks.
+      expect(config).not.toHaveProperty('mcp_servers."company.docs".enabled');
+      expect(config).toMatchObject({
+        'mcp_servers."company.docs".default_tools_approval_mode': "prompt",
+        "mcp_servers.github.default_tools_approval_mode": "prompt",
+      });
+      // Opensteer's own server, exactly as without personal context.
+      expect(config).toMatchObject({
+        "mcp_servers.opensteer.default_tools_approval_mode": "approve",
+        "mcp_servers.opensteer.enabled": true,
+        "mcp_servers.opensteer.http_headers": {
+          Authorization: `Bearer ${fixture.context.agentTools.token}`,
+        },
+        "mcp_servers.opensteer.url": fixture.context.agentTools.url,
+      });
+      expect(config).not.toHaveProperty("mcp_servers.opensteer.disabled_tools");
+      // Codex reads Agent home's AGENTS.md itself; Opensteer does not repeat it.
+      expect(JSON.stringify(turn?.additionalContext)).not.toContain(
+        "Follow the workspace instructions.",
+      );
+      expect(JSON.stringify(turn?.additionalContext)).not.toContain(
+        "There are no current task instructions",
+      );
+      // The task's mode, on every turn, whatever the person's config.toml says.
+      expect(turn).toMatchObject({
+        approvalPolicy: "untrusted",
+        sandboxPolicy: { networkAccess: false, type: "readOnly" },
+      });
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
+    it("leaves the person's servers' approvals alone in Full access", async () => {
+      const fixture = await setup("ambient-extensions", { personalContext: true });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { config } = await threadStartOf(fixture);
+      expect(config).not.toHaveProperty("mcp_servers.github.default_tools_approval_mode");
+      await session.stop();
+      await fixture.adapter.close();
+    });
+  });
+
   it("refuses startup when the required computer_use tool is missing", async () => {
     const fixture = await setup("previous-host");
     try {
@@ -3805,6 +3930,7 @@ interface SetupOptions {
   readonly maxStderrBytes?: number;
   readonly maxWriteBufferBytes?: number;
   readonly machineAccessNotice?: string;
+  readonly personalContext?: boolean;
   readonly requestTimeoutMs?: number;
   readonly providerStateKind?: "ambient" | "isolated";
   readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
@@ -3863,6 +3989,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     instanceId: harnessInstanceId,
   });
   const context: HarnessSessionContext = {
+    personalContext: options.personalContext ?? false,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

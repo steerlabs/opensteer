@@ -709,6 +709,7 @@ async function setup(scenario: string) {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Workspace instructions.",
+    personalContext: false,
     machineAccessNotice: "No other computers are reachable.",
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

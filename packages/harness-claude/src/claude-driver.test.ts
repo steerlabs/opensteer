@@ -54,6 +54,7 @@ import {
   type ClaudeAuthenticationProcessOptions,
   claudeAccessModeConfiguration,
   claudeShellApprovalHook,
+  claudeModeGuard,
   managedClaudeSettings,
   type ClaudeAgentSdk,
   type ClaudeQueryHandle,
@@ -4375,6 +4376,7 @@ async function openSession(
     readonly machineAccessPlatform?: "darwin" | "linux";
     readonly machineAccessRelaySocket?: string;
     readonly modelSelection?: HarnessSessionContext["modelSelection"];
+    readonly personalContext?: boolean;
     readonly runtimeBoundary?: HarnessRuntimeBoundary;
     readonly sourceId?: string;
     readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
@@ -4408,6 +4410,7 @@ async function openSession(
     machineAccessPlatform: overrides.machineAccessPlatform,
     machineAccessRelaySocket: overrides.machineAccessRelaySocket,
     modelSelection: overrides.modelSelection ?? baseContext.modelSelection,
+    personalContext: overrides.personalContext ?? baseContext.personalContext,
     wrapProcessLaunch: overrides.wrapProcessLaunch ?? baseContext.wrapProcessLaunch,
   };
   const session = await adapter.startSession(sessionContext);
@@ -4433,6 +4436,7 @@ async function context(
   await mkdir(threadStateDirectory, { recursive: true });
   return {
     accessMode: "full-access",
+    personalContext: false,
     machineAccessNotice: noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
@@ -5081,4 +5085,236 @@ it("retains Claude tool-result images", async () => {
     await session.stop();
     await adapter.close();
   }
+});
+
+describe("whose configuration Claude Code starts with", () => {
+  const doneSdk = () =>
+    new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options)),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+
+  it("starts a Run without personal context with none of the person's configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: false,
+    });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    const options = sdk.calls[0]!.options;
+    // No user, project or local settings: only Opensteer's private skill root.
+    expect(options.settingSources).toEqual(["project"]);
+    expect(options.projectConfigRoot?.startsWith(fixture.context.threadStateDirectory)).toBe(true);
+    expect(options.skills).toEqual(["opensteer:projects"]);
+    // No MCP server but Opensteer's, and none of the person's.
+    expect(options.strictMcpConfig).toBe(true);
+    expect(Object.keys(options.mcpServers ?? {})).toEqual(["opensteer"]);
+    expect(options.tools).not.toContain("WebSearch");
+    expect(options.tools).not.toContain("WebFetch");
+    expect(options.managedSettings).toEqual({
+      disableAllHooks: true,
+      disableBundledSkills: true,
+      disableClaudeAiConnectors: true,
+      disableRemoteControl: true,
+    });
+    expect(options.env).toMatchObject({
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+      CLAUDE_CODE_DISABLE_WORKFLOWS: "1",
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+    });
+    // The instruction file it gets is what it got before: the Run's own.
+    expect(options.systemPrompt).toMatchObject({
+      append: "Opensteer platform guide.\n\nFollow workspace policy.",
+    });
+    // Today's shell approval hook, and nothing else.
+    expect(options.hooks?.PreToolUse).toHaveLength(1);
+    expect(options.hooks?.PreToolUse?.[0]?.matcher).toBe("Bash");
+    await fixture.adapter.close();
+  });
+
+  it("starts a Run with personal context with Claude Code's own configuration", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, {
+      accessMode: "approval-required",
+      personalContext: true,
+    });
+    await fixture.session.stop();
+    const skills = await collisionSkills(fixture.context.workspacePath);
+    const session = await fixture.adapter.startSession({ ...fixture.context, skills });
+    await send(session, "Hello");
+    await session.stop();
+    const options = sdk.calls.at(-1)!.options;
+    expect(options.settingSources).toEqual(["user", "project", "local"]);
+    expect(options.projectConfigRoot).toBeUndefined();
+    expect(options.strictMcpConfig).toBe(false);
+    expect(options.tools).toEqual({ preset: "claude_code", type: "preset" });
+    // No skill filter: the person's own skills stay beside Opensteer's.
+    expect(options).not.toHaveProperty("skills");
+    expect(options.plugins).toHaveLength(2);
+    // Agent home's loose skills arrive in an added directory.
+    const added = options.additionalDirectories?.at(-1);
+    expect(await realpath(join(added!, ".claude", "skills", "review"))).toBe(
+      await realpath(skills.skills[2]!.path),
+    );
+    expect(options.mcpServers?.opensteer).toMatchObject({ url: fixture.context.agentTools.url });
+    expect(options.managedSettings).toEqual({ disableRemoteControl: true });
+    expect(options.env?.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_WORKFLOWS).toBeUndefined();
+    expect(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBeUndefined();
+    expect(options.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect(options.env?.DISABLE_LOGIN_COMMAND).toBe("1");
+    expect(options.permissionMode).toBe("default");
+    expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+    // Agent home's AGENTS.md is still appended: Claude Code reads a project's
+    // AGENTS.md only when it has no CLAUDE.md.
+    expect(options.systemPrompt).toMatchObject({
+      append: "Opensteer platform guide.\n\nFollow workspace policy.",
+    });
+    const guard = options.hooks?.PreToolUse?.[0]?.hooks[0];
+    expect(
+      await guard?.(
+        {
+          cwd: fixture.context.workspacePath,
+          hook_event_name: "PreToolUse",
+          permission_mode: "default",
+          session_id: "test",
+          tool_input: { command: "true" },
+          tool_name: "Bash",
+          tool_use_id: "tool-1",
+          transcript_path: "/transcript.jsonl",
+        },
+        "tool-1",
+        { signal: new AbortController().signal },
+      ),
+    ).toMatchObject({ hookSpecificOutput: { permissionDecision: "ask" } });
+    await fixture.adapter.close();
+  });
+
+  it("adds no mode guard in Full access, where nothing is asked", async () => {
+    const sdk = doneSdk();
+    const fixture = await openSession(sdk, { accessMode: "full-access", personalContext: true });
+    await send(fixture.session, "Hello");
+    await fixture.session.stop();
+    expect(sdk.calls[0]!.options.hooks).toBeUndefined();
+    expect(sdk.calls[0]!.options.permissionMode).toBe("bypassPermissions");
+    await fixture.adapter.close();
+  });
+
+  it("accepts the person's own servers and tools, but not one replacing Opensteer's", async () => {
+    const own = (source: string) =>
+      new FakeSdk((parameters) =>
+        scriptedQuery([
+          initMessage(providerSessionId(parameters.options), {
+            mcp_servers: [
+              { name: "opensteer", source, status: "connected" },
+              { name: "person-server", source: "user", status: "connected" },
+            ],
+            tools: ["Bash", "WebSearch", "WebFetch", "mcp__person-server__lookup"],
+          }),
+          successMessage(providerSessionId(parameters.options), "Done."),
+        ]),
+      );
+    for (const [source, failed] of [
+      ["dynamic", false],
+      ["user", true],
+    ] as const) {
+      const fixture = await openSession(own(source), { personalContext: true });
+      const observer = observe(fixture.session.events);
+      await send(fixture.session, "Hello").catch(() => undefined);
+      await fixture.session.stop();
+      await observer.done;
+      const failure = observer.events.find((event) => event.type === "run.failed");
+      if (failed) {
+        expect(JSON.stringify(failure)).toContain(
+          "loaded an MCP server named opensteer from user settings",
+        );
+      } else expect(failure).toBeUndefined();
+      await fixture.adapter.close();
+    }
+  });
+});
+
+describe("the mode guard for Claude Code's own configuration", () => {
+  const workspace = "/agent-home";
+  const decide = async (
+    accessMode: HarnessSessionContext["accessMode"],
+    tool: string,
+    input: Readonly<Record<string, unknown>> = {},
+    extra: Readonly<Record<string, unknown>> = {},
+  ) => {
+    const result = await claudeModeGuard({
+      accessMode,
+      workspacePath: workspace,
+      writableRoots: [workspace, "/attached"],
+    }).hooks[0]?.(
+      {
+        cwd: workspace,
+        hook_event_name: "PreToolUse",
+        session_id: "test",
+        tool_input: input,
+        tool_name: tool,
+        tool_use_id: "tool-1",
+        transcript_path: "/transcript.jsonl",
+        ...extra,
+      } as Parameters<NonNullable<ReturnType<typeof claudeModeGuard>["hooks"][0]>>[0],
+      "tool-1",
+      { signal: new AbortController().signal },
+    );
+    return (result as { hookSpecificOutput?: { permissionDecision?: string } })?.hookSpecificOutput
+      ?.permissionDecision;
+  };
+
+  it("asks in Supervised before anything that acts, whatever the person's settings allow", async () => {
+    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "Monitor", "mcp__person__send"]) {
+      expect(await decide("approval-required", tool, { file_path: "/agent-home/a" })).toBe("ask");
+    }
+    for (const tool of ["Read", "Grep", "WebSearch", "TodoWrite", "Agent", "Skill"]) {
+      expect(await decide("approval-required", tool)).toBeUndefined();
+    }
+  });
+
+  it("lets only Opensteer's own server through, never a server of the person's named like it", async () => {
+    const own = { mcp_server: { name: "opensteer", source: "dynamic" } };
+    const person = { mcp_server: { name: "opensteer", source: "user" } };
+    expect(await decide("approval-required", "mcp__opensteer__task_read", {}, own)).toBeUndefined();
+    expect(await decide("approval-required", "mcp__opensteer__task_read", {}, person)).toBe("ask");
+  });
+
+  it("accepts edits inside the task's folders in Auto-accept edits and asks for the rest", async () => {
+    expect(
+      await decide("auto-accept-edits", "Edit", { file_path: "/agent-home/notes.md" }),
+    ).toBeUndefined();
+    expect(await decide("auto-accept-edits", "Write", { file_path: "notes.md" })).toBeUndefined();
+    expect(
+      await decide("auto-accept-edits", "NotebookEdit", { notebook_path: "/attached/a.ipynb" }),
+    ).toBeUndefined();
+    expect(await decide("auto-accept-edits", "Edit", { file_path: "/etc/hosts" })).toBe("ask");
+    expect(await decide("auto-accept-edits", "Edit", { file_path: "../outside.md" })).toBe("ask");
+    expect(await decide("auto-accept-edits", "Bash", { command: "true" })).toBe("ask");
+  });
+
+  it("holds a call to the stricter of the task's mode and the one Claude Code reports", async () => {
+    // A subagent file declaring a wider mode does not widen Supervised.
+    expect(
+      await decide(
+        "approval-required",
+        "Edit",
+        { file_path: "/agent-home/a" },
+        {
+          permission_mode: "acceptEdits",
+        },
+      ),
+    ).toBe("ask");
+    // An Auto that Claude Code could not start runs as default, and asks as Supervised.
+    expect(await decide("auto", "Bash", {}, { permission_mode: "default" })).toBe("ask");
+    expect(await decide("auto", "Bash", {}, { permission_mode: "auto" })).toBeUndefined();
+    expect(await decide("full-access", "Bash", {}, { permission_mode: "bypassPermissions" })).toBe(
+      undefined,
+    );
+  });
 });

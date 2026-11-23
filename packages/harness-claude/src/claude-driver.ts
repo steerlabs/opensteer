@@ -16,7 +16,7 @@ import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import {
   query as anthropicQuery,
   startup as anthropicStartup,
@@ -110,6 +110,7 @@ import {
   type HarnessProviderState,
   type HarnessProviderStoreScope,
   profileHarnessProviderStoreScope,
+  engineConfiguration,
   spawnSupervised,
   type HarnessInput,
   type HarnessSession,
@@ -118,6 +119,7 @@ import {
   type HarnessSteerInput,
   type HarnessRunInput,
   type ResolvedAttachment,
+  type HarnessEngineConfiguration,
 } from "@opensteer/harness";
 import {
   ClaudeHarnessConfigSchema,
@@ -162,6 +164,143 @@ export function claudeShellApprovalHook(
     ],
   };
 }
+/**
+ * Claude Code tools that read, plan or talk and change nothing themselves.
+ * Starting a subagent or a workflow is here too: each tool call it makes passes
+ * this guard on its own.
+ */
+const claudeToolsWithoutEffect = new Set([
+  "Agent",
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "Glob",
+  "Grep",
+  "LS",
+  "ListMcpResourcesTool",
+  "NotebookRead",
+  "Read",
+  "ReadMcpResourceTool",
+  "Skill",
+  "Task",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+  "TodoWrite",
+  "ToolSearch",
+  "WebSearch",
+  "Workflow",
+]);
+/** Claude Code's file-changing tools and the input field naming the file each changes. */
+const claudeEditTools: ReadonlyMap<string, string> = new Map([
+  ["Edit", "file_path"],
+  ["MultiEdit", "file_path"],
+  ["NotebookEdit", "notebook_path"],
+  ["Write", "file_path"],
+]);
+const claudeModeGuardReason = "Opensteer asks before this in the task's mode";
+const accessModeStrictness: Readonly<Record<ThreadAccessMode, number>> = {
+  "approval-required": 0,
+  "auto-accept-edits": 1,
+  auto: 2,
+  "full-access": 3,
+};
+
+/** The Opensteer mode a Claude Code permission mode is at least as strict as. */
+function claudeReportedAccessMode(mode: string | undefined): ThreadAccessMode | undefined {
+  switch (mode) {
+    case undefined:
+      return undefined;
+    case "acceptEdits":
+      return "auto-accept-edits";
+    case "auto":
+      return "auto";
+    case "bypassPermissions":
+      return "full-access";
+    // default, manual, dontAsk, plan and any mode added later ask the most.
+    default:
+      return "approval-required";
+  }
+}
+
+/**
+ * Keeps a task's mode from being loosened by the person's own Claude Code
+ * configuration. A Run with the engine's own configuration loads the person's
+ * settings, hooks, skills and agents, and each of those can approve a tool call
+ * on its own: a `permissions.allow` rule, a hook answering "allow", a skill's
+ * `allowed-tools`, an agent file's `permissionMode`. Claude Code combines
+ * PreToolUse decisions as deny over ask over allow and asks whenever any hook
+ * asks, whatever a rule allows, so this hook asking is what makes Supervised
+ * and Auto-accept edits mean what they say. The mode it applies is the stricter
+ * of the task's and the one Claude Code reports for the call, so a subagent
+ * declaring a wider mode, or an Auto that Claude Code could not start and ran as
+ * `default`, is held to the stricter one. Auto and Full access add nothing:
+ * there Claude Code's own classifier, or no check, is the mode.
+ */
+export function claudeModeGuard(input: {
+  readonly accessMode: ThreadAccessMode;
+  readonly workspacePath: string;
+  readonly writableRoots: readonly string[];
+}): HookCallbackMatcher {
+  const roots = [...new Set([input.workspacePath, ...input.writableRoots])].map((root) =>
+    resolve(root),
+  );
+  const inside = (path: unknown) => {
+    if (typeof path !== "string" || path.length === 0) return false;
+    const target = resolve(input.workspacePath, path);
+    return roots.some((root) => {
+      const rest = relative(root, target);
+      return rest === "" || (!rest.startsWith("..") && !isAbsolute(rest));
+    });
+  };
+  return {
+    hooks: [
+      async (hookInput) => {
+        if (hookInput.hook_event_name !== "PreToolUse") return {};
+        const reported = claudeReportedAccessMode(hookInput.permission_mode);
+        const mode =
+          reported && accessModeStrictness[reported] < accessModeStrictness[input.accessMode]
+            ? reported
+            : input.accessMode;
+        if (mode === "auto" || mode === "full-access") return {};
+        const tool = hookInput.tool_name;
+        if (claudeToolsWithoutEffect.has(tool)) return {};
+        // The Host authorizes every call of its own server against the Run. A
+        // server of the person's that is named `opensteer` is not it: Claude
+        // Code reports where a server's definition came from, and Opensteer's
+        // arrives on the command line (`dynamic`).
+        if (
+          tool.startsWith("mcp__opensteer__") &&
+          (hookInput.mcp_server === undefined ||
+            (hookInput.mcp_server.name === "opensteer" &&
+              hookInput.mcp_server.source === "dynamic"))
+        ) {
+          return {};
+        }
+        const pathField = claudeEditTools.get(tool);
+        if (
+          mode === "auto-accept-edits" &&
+          pathField !== undefined &&
+          typeof hookInput.tool_input === "object" &&
+          hookInput.tool_input !== null &&
+          inside((hookInput.tool_input as Record<string, unknown>)[pathField])
+        ) {
+          return {};
+        }
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse" as const,
+            permissionDecision: "ask" as const,
+            permissionDecisionReason: claudeModeGuardReason,
+          },
+        };
+      },
+    ],
+  };
+}
 const claudeDelegationTools = ["Agent", "Task", "Workflow"] as const;
 /** The subagent tool Claude Code runs in the foreground; `Task` is its older name. */
 const claudeSubagentTool = "Agent";
@@ -193,6 +332,15 @@ const claudeManagedBoundarySettings = Object.freeze({
   disableClaudeAiConnectors: true,
   disableRemoteControl: true,
 }) satisfies NonNullable<Options["managedSettings"]>;
+/**
+ * With the engine's own configuration the person's hooks, bundled skills and
+ * claude.ai connectors stay. Remote Control does not: it would let claude.ai
+ * drive the Run from outside the task, where Opensteer can neither show nor
+ * stop what it does.
+ */
+const claudeManagedOwnSettings = Object.freeze({
+  disableRemoteControl: true,
+}) satisfies NonNullable<Options["managedSettings"]>;
 
 export function managedClaudeSettings(
   context: Pick<
@@ -200,8 +348,10 @@ export function managedClaudeSettings(
     "machineAccessPlatform" | "machineAccessRelaySocket" | "runtimeBoundary" | "providerState"
   > &
     Pick<Partial<HarnessSessionContext>, "attachmentDirectory" | "attachmentRoot">,
+  configuration: HarnessEngineConfiguration = "stripped",
 ): NonNullable<Options["managedSettings"]> {
-  if (context.runtimeBoundary.kind === "native-user") return claudeManagedBoundarySettings;
+  const base = configuration === "own" ? claudeManagedOwnSettings : claudeManagedBoundarySettings;
+  if (context.runtimeBoundary.kind === "native-user") return base;
   // The denied root is the Runner's whole data directory — its identity keys
   // and every profile's provider state, not merely this harness's own files —
   // so nothing the model runs may read or write any part of it.
@@ -212,7 +362,7 @@ export function managedClaudeSettings(
     privateStateRoot: privateRoot,
   });
   return {
-    ...claudeManagedBoundarySettings,
+    ...base,
     permissions: {
       deny: [`Read(${privateRoot}/**)`, `Edit(${privateRoot}/**)`],
     },
@@ -1964,6 +2114,7 @@ class ClaudeHarnessSession implements HarnessSession {
         active.environment,
         this.#config.provider,
         this.#context.providerState,
+        engineConfiguration(this.#context),
       );
       const profile =
         environment.CLAUDE_CONFIG_DIR ??
@@ -2219,6 +2370,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #queryOptions(environment: Record<string, string | undefined>, active: ActiveTurn): Options {
     const access = claudeAccessModeConfiguration(this.#context.accessMode);
+    const own = engineConfiguration(this.#context) === "own";
     const systemAppend = this.#systemPromptAppend();
     const opensteerTools = this.#context.agentTools.tools.map((name) => `mcp__opensteer__${name}`);
     const { options: selectedOptions } = this.#context.modelSelection;
@@ -2242,14 +2394,33 @@ class ClaudeHarnessSession implements HarnessSession {
       // Native safe-command rules can allow Bash before canUseTool is consulted.
       // SDK hooks remain active while our settings suppress ordinary ambient hooks.
       // Organization-managed policy and hooks can override these settings.
-      ...(this.#context.accessMode === "approval-required" ||
-      this.#context.accessMode === "auto-accept-edits"
-        ? { hooks: { PreToolUse: [claudeShellApprovalHook()] } }
-        : {}),
+      // With the engine's own configuration the person's rules, hooks, skills
+      // and agents can approve calls too, so the mode guard covers every tool.
+      ...(own
+        ? this.#context.accessMode === "full-access"
+          ? {}
+          : {
+              hooks: {
+                PreToolUse: [
+                  claudeModeGuard({
+                    accessMode: this.#context.accessMode,
+                    workspacePath: this.#context.workspacePath,
+                    writableRoots: this.#context.writableRoots,
+                  }),
+                ],
+              },
+            }
+        : this.#context.accessMode === "approval-required" ||
+            this.#context.accessMode === "auto-accept-edits"
+          ? { hooks: { PreToolUse: [claudeShellApprovalHook()] } }
+          : {}),
       cwd: this.#context.workspacePath,
       additionalDirectories: [
         ...this.#context.writableRoots.filter((root) => root !== this.#context.workspacePath),
         ...(this.#context.attachmentDirectory ? [this.#context.attachmentDirectory] : []),
+        // Agent home's own skills. Claude Code loads `.claude/skills` from an
+        // added directory; the project's own configuration stays the project's.
+        ...(own && this.#skillPlugin ? [this.#skillPlugin.projectRoot] : []),
       ],
       env: {
         ...environment,
@@ -2262,7 +2433,11 @@ class ClaudeHarnessSession implements HarnessSession {
       promptSuggestions: false,
       includePartialMessages: true,
       maxTurns: this.#config.maxTurns,
-      managedSettings: managedClaudeSettings(this.#context),
+      managedSettings: managedClaudeSettings(this.#context, own ? "own" : "stripped"),
+      // Beside the person's own servers when the engine has its own
+      // configuration. A server of theirs named `opensteer` (Opensteer's own
+      // connection instructions name it so) is replaced by this one, which
+      // Claude Code gives precedence as a command-line server.
       mcpServers: {
         opensteer: {
           alwaysLoad: false,
@@ -2286,26 +2461,30 @@ class ClaudeHarnessSession implements HarnessSession {
               skipMcpDiscovery: true,
               type: "local" as const,
             })),
-            skills: [...this.#skillPlugin.skills],
           }
-        : { skills: [] }),
+        : {}),
+      // A skill list hides every skill it does not name; the person's own
+      // skills stay visible when the engine has its own configuration.
+      ...(own ? {} : { skills: this.#skillPlugin ? [...this.#skillPlugin.skills] : [] }),
       persistSession: true,
-      ...(this.#skillPlugin ? { projectConfigRoot: this.#skillPlugin.projectRoot } : {}),
-      settingSources: this.#skillPlugin ? ["project"] : [],
-      strictMcpConfig: true,
+      ...(!own && this.#skillPlugin ? { projectConfigRoot: this.#skillPlugin.projectRoot } : {}),
+      settingSources: own ? ["user", "project", "local"] : this.#skillPlugin ? ["project"] : [],
+      strictMcpConfig: !own,
       systemPrompt: {
         append: systemAppend,
         excludeDynamicSections: true,
         preset: "claude_code",
         type: "preset",
       },
-      tools: [
-        ...claudeBuiltinTools,
-        ...claudeShellTools(),
-        claudeSubagentTool,
-        "Workflow",
-        claudeTaskStopTool,
-      ],
+      tools: own
+        ? { preset: "claude_code", type: "preset" }
+        : [
+            ...claudeBuiltinTools,
+            ...claudeShellTools(),
+            claudeSubagentTool,
+            "Workflow",
+            claudeTaskStopTool,
+          ],
       stderr: (chunk) => this.#activeTurn?.stderr.append(chunk),
       // The Runner's sandbox and the process supervisor have to enclose the
       // whole harness process tree, and a custom spawn is the SDK's only seam
@@ -2458,7 +2637,13 @@ class ClaudeHarnessSession implements HarnessSession {
     const requestOptions: Extract<PendingRequest["presentation"], { kind: "choice" }>["options"] = [
       { hint: "allow-once", id: "allow-once", label: "Allow once" },
     ];
-    if (options.suggestions && options.suggestions.length > 0) {
+    // The mode guard asks again on every such call, so a rule kept for the Run
+    // would never be consulted; only Claude Code's own asks offer one.
+    if (
+      options.suggestions &&
+      options.suggestions.length > 0 &&
+      options.decisionReason !== claudeModeGuardReason
+    ) {
       responses.set("allow-run", {
         behavior: "allow",
         decisionClassification: "user_permanent",
@@ -3419,27 +3604,38 @@ class ClaudeHarnessSession implements HarnessSession {
         `Claude Code ${message.claude_code_version} is older than Opensteer supports; update it to ${MINIMUM_CLAUDE_CODE_VERSION} or newer`,
       );
     }
-    const unexpectedMcpServers = message.mcp_servers
-      .map(({ name }) => name)
-      .filter((name) => !opensteerMcpServerNames.has(name));
-    if (unexpectedMcpServers.length > 0) {
-      this.#markUnusable(
-        `Claude exposed MCP servers outside the Opensteer runtime boundary: ${unexpectedMcpServers.join(", ")}`,
+    if (engineConfiguration(this.#context) === "own") {
+      // The person's own servers and Claude Code's own tools belong here; only
+      // Opensteer's server has to be the one Opensteer started.
+      const opensteer = message.mcp_servers.find(({ name }) => name === "opensteer");
+      if (opensteer?.source !== undefined && opensteer.source !== "dynamic") {
+        this.#markUnusable(
+          `Claude Code loaded an MCP server named opensteer from ${opensteer.source} settings in place of Opensteer's own`,
+        );
+      }
+    } else {
+      const unexpectedMcpServers = message.mcp_servers
+        .map(({ name }) => name)
+        .filter((name) => !opensteerMcpServerNames.has(name));
+      if (unexpectedMcpServers.length > 0) {
+        this.#markUnusable(
+          `Claude exposed MCP servers outside the Opensteer runtime boundary: ${unexpectedMcpServers.join(", ")}`,
+        );
+      }
+      const builtinTools = new Set<string>([
+        ...claudeBuiltinTools,
+        ...claudeShellTools(),
+        ...claudeDelegationTools,
+        claudeTaskStopTool,
+      ]);
+      const unexpectedTools = message.tools.filter(
+        (name) => !builtinTools.has(name) && !name.startsWith("mcp__opensteer__"),
       );
-    }
-    const builtinTools = new Set<string>([
-      ...claudeBuiltinTools,
-      ...claudeShellTools(),
-      ...claudeDelegationTools,
-      claudeTaskStopTool,
-    ]);
-    const unexpectedTools = message.tools.filter(
-      (name) => !builtinTools.has(name) && !name.startsWith("mcp__opensteer__"),
-    );
-    if (unexpectedTools.length > 0) {
-      this.#markUnusable(
-        `Claude exposed tools outside the Opensteer runtime boundary: ${unexpectedTools.join(", ")}`,
-      );
+      if (unexpectedTools.length > 0) {
+        this.#markUnusable(
+          `Claude exposed tools outside the Opensteer runtime boundary: ${unexpectedTools.join(", ")}`,
+        );
+      }
     }
     // Other plugins belong to the CLI, but none may impersonate the skills
     // supplied from this Thread's synthetic plugin directories.
@@ -3630,6 +3826,7 @@ async function claudeProviderEnvironment(
   supplied: Readonly<Record<string, string>>,
   provider: ClaudeHarnessConfig["provider"],
   providerState: HarnessProviderState,
+  configuration: HarnessEngineConfiguration = "stripped",
 ): Promise<Record<string, string | undefined>> {
   const providerHome = providerState.providerHomeDirectory;
   if (providerState.kind === "isolated" && !providerHome) {
@@ -3639,6 +3836,7 @@ async function claudeProviderEnvironment(
     const environment = buildClaudeEnvironment(
       { ...supplied, CLAUDE_CONFIG_DIR: providerHome! },
       provider,
+      configuration,
     );
     if (provider === "anthropic") {
       const apiKey = await claudeProfileApiKey(providerState).read();
@@ -3646,7 +3844,7 @@ async function claudeProviderEnvironment(
     }
     return environment;
   }
-  return buildClaudeEnvironment(supplied, provider);
+  return buildClaudeEnvironment(supplied, provider, configuration);
 }
 
 const claudeProfileApiKeyFileName = ".opensteer-anthropic-api-key";
@@ -3672,6 +3870,7 @@ async function removeClaudeProfileApiKey(providerState: HarnessProviderState): P
 function buildClaudeEnvironment(
   supplied: Readonly<Record<string, string>>,
   provider: ClaudeHarnessConfig["provider"],
+  configuration: HarnessEngineConfiguration,
 ): Record<string, string | undefined> {
   assertProviderConfiguration(supplied, provider);
   const inherited: Record<string, string> = {};
@@ -3692,17 +3891,21 @@ function buildClaudeEnvironment(
   if (provider === "vertex") environment.CLAUDE_CODE_USE_VERTEX = "1";
   if (provider === "foundry") environment.CLAUDE_CODE_USE_FOUNDRY = "1";
 
-  environment.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
-  environment.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = "1";
+  if (configuration === "stripped") {
+    environment.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
+    environment.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS = "1";
+    environment.CLAUDE_CODE_DISABLE_WORKFLOWS = "1";
+    environment.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
+  }
+  // An engine that updates or reports on its own while a Run uses it can end
+  // that Run; Opensteer updates the engines it runs itself.
   environment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-  environment.CLAUDE_CODE_DISABLE_WORKFLOWS = "1";
   environment.CLAUDE_AGENT_SDK_CLIENT_APP = "opensteer/0.0.0";
   // A model-executed session must never sign this profile — or the machine's
   // own ambient Claude configuration — in or out.
   environment.DISABLE_LOGIN_COMMAND = "1";
   environment.DISABLE_LOGOUT_COMMAND = "1";
   environment.DISABLE_UPGRADE_COMMAND = "1";
-  environment.ENABLE_CLAUDEAI_MCP_SERVERS = "false";
   return environment;
 }
 

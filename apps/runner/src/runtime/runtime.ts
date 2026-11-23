@@ -3096,6 +3096,7 @@ export class RunnerRuntime {
         machineAccessPlatform: launch?.machineAccessPlatform,
         machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
+        personalContext: context.personalContext,
         imageStore: this.#imageStore,
         platformGuide: [
           context.agentTools.instructions,

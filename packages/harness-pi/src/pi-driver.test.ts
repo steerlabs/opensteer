@@ -1844,6 +1844,7 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
       itemCount: options.history?.length ?? 0,
     },
     instructions: "Follow the workspace instructions.",
+    personalContext: false,
     machineAccessNotice: noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,

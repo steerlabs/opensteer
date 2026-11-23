@@ -137,6 +137,7 @@ console.log(JSON.stringify({ hookSpecificOutput: {
       historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
       instructions: "",
       platformGuide: "",
+      personalContext: false,
       machineAccessNotice: "No other computers are reachable.",
       machineAccessPlatform: undefined,
       machineAccessRelaySocket: undefined,

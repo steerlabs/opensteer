@@ -130,6 +130,8 @@ import {
   type SupervisedProcess,
   linkDirectory,
   linkNames,
+  engineConfiguration,
+  type HarnessEngineConfiguration,
 } from "@opensteer/harness";
 import { z } from "zod";
 import { CodexHarnessConfigSchema, type CodexHarnessConfig } from "./config.js";
@@ -137,6 +139,7 @@ import {
   assertCodexFeatureBoundary,
   codexFeatureBoundary,
   codexFeatureBoundaryArgument,
+  codexOwnFeatureOverrides,
   type CodexFeatureBoundary,
 } from "./features.js";
 import {
@@ -1119,6 +1122,9 @@ class CodexHarnessAdapter implements HarnessAdapter {
       shared.workingDirectory,
       context.providerState.providerHomeDirectory ?? null,
       context.providerState.kind,
+      // A process runs one kind of configuration: its flags and the settings
+      // it loaded are the person's own, or none of theirs.
+      engineConfiguration(context),
     ]);
     const current = this.#shared;
     if (current?.key === key) {
@@ -1159,7 +1165,9 @@ class CodexHarnessAdapter implements HarnessAdapter {
     shared: HarnessSharedEngineLaunch | undefined,
     lifetime: AbortSignal,
   ): Promise<CodexAppServer> {
-    const features = await codexFeatureBoundary(this.#launch);
+    const configuration = engineConfiguration(context);
+    const boundary = await codexFeatureBoundary(this.#launch);
+    const features = configuration === "own" ? codexOwnFeatureOverrides(boundary) : boundary;
     const workingDirectory = shared?.workingDirectory ?? context.workspacePath;
     if (shared) await mkdir(shared.workingDirectory, { recursive: true, mode: 0o700 });
     const environment = await codexProcessEnvironment(
@@ -1182,6 +1190,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
           environment,
           context.writableRoots,
           context,
+          configuration,
         ),
         // A conversation no session holds unloads at once, so its next load
         // takes that Run's configuration and nothing it ran outlives it.
@@ -1193,6 +1202,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
       cwd: workingDirectory,
       environment,
       features,
+      featureScope: configuration === "own" ? "named" : "every",
       launch: this.#launch,
       ...(this.#log ? { log: this.#log } : {}),
       onEnded: (ended) => this.#servers.delete(ended),
@@ -1428,11 +1438,17 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const families: Record<string, string> = {
       opensteer_computers: this.#context.machineAccessNotice,
       opensteer_current_instructions: [
-        "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
+        // With its own configuration Codex reads the task's instructions,
+        // Agent home's AGENTS.md, itself; only Opensteer's follow here.
+        engineConfiguration(this.#context) === "own"
+          ? "Current Opensteer instructions for this Run follow. They replace their counterparts from earlier Runs."
+          : "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
         this.#context.platformGuide,
-        this.#context.instructions?.trim()
-          ? this.#context.instructions
-          : "(There are no current task instructions.)",
+        engineConfiguration(this.#context) === "own"
+          ? undefined
+          : this.#context.instructions?.trim()
+            ? this.#context.instructions
+            : "(There are no current task instructions.)",
         durableHistoryWindowNotice(this.#context),
       ]
         .filter(Boolean)
@@ -3652,14 +3668,16 @@ function codexProcessBoundaryArgs(
   environment: Readonly<Record<string, string>>,
   writableRoots: readonly string[],
   attachments?: Pick<HarnessSessionContext, "attachmentDirectory" | "attachmentRoot">,
+  configuration: HarnessEngineConfiguration = "stripped",
 ): string[] {
   const args = [
     "-c",
     codexFeatureBoundaryArgument(features),
-    "-c",
-    "tools.update_plan.enabled=false",
-    "-c",
-    'web_search="disabled"',
+    // Codex's own plan tool and web search stay with its own configuration.
+    ...(configuration === "own"
+      ? []
+      : ["-c", "tools.update_plan.enabled=false", "-c", 'web_search="disabled"']),
+    // An engine that updates itself while a Run uses it can end that Run.
     "-c",
     "check_for_update_on_startup=false",
     // The Runner owns the command environment. A login shell would replay the
@@ -4215,7 +4233,8 @@ async function codexThreadRuntimeConfig(
     "config/read result",
   );
   const effectiveConfig = requireObject(configRead.config, "config/read result.config");
-  assertCodexProcessBoundary(configRead, effectiveConfig);
+  const own = engineConfiguration(context) === "own";
+  assertCodexProcessBoundary(configRead, effectiveConfig, own ? "own" : "stripped");
   const configuredMcpServers = requireObject(
     effectiveConfig.mcp_servers,
     "config/read result.config.mcp_servers",
@@ -4230,6 +4249,7 @@ async function codexThreadRuntimeConfig(
     }
   }
 
+  if (own) return codexOwnThreadRuntimeConfig(context, features, configuredMcpServers);
   const runtimeConfig: JsonObject = {
     allow_login_shell: false,
     project_doc_max_bytes: 0,
@@ -4244,6 +4264,63 @@ async function codexThreadRuntimeConfig(
   for (const name of ambientMcpNames) {
     runtimeConfig[codexMcpConfigPath(name, "enabled")] = false;
   }
+  setOpensteerMcpServers(runtimeConfig, context);
+  return runtimeConfig;
+}
+
+/**
+ * A conversation with Codex's own configuration: the person's settings, the
+ * project's `AGENTS.md`, Codex's own skills, plan tool and web search, and the
+ * person's MCP servers all stay. Opensteer sets only what it needs.
+ */
+function codexOwnThreadRuntimeConfig(
+  context: HarnessSessionContext,
+  features: CodexFeatureBoundary,
+  configuredMcpServers: JsonObject,
+): JsonObject {
+  const runtimeConfig: JsonObject = {
+    // The Runner owns the command environment; see codexProcessBoundaryArgs.
+    allow_login_shell: false,
+    // The Run's browser endpoint, Agent home and machine-access variables;
+    // Codex applies them after its exclusions, and none is a credential.
+    "shell_environment_policy.set": { ...context.commandEnvironment },
+    features: { ...features },
+  };
+  // In Supervised and Auto-accept edits every tool of the person's own MCP
+  // servers asks, whatever their configuration approves on its own: the
+  // task's mode decides, not a setting made for another use.
+  if (context.accessMode === "approval-required" || context.accessMode === "auto-accept-edits") {
+    const opensteerServers = new Set(codexMcpTools(context.agentTools.tools).keys());
+    for (const [name, value] of Object.entries(configuredMcpServers)) {
+      if (opensteerServers.has(name)) continue;
+      runtimeConfig[codexMcpConfigPath(name, "default_tools_approval_mode")] = "prompt";
+      const tools =
+        typeof value === "object" && value !== null && !Array.isArray(value)
+          ? (value as JsonObject).tools
+          : undefined;
+      if (typeof tools !== "object" || tools === null || Array.isArray(tools)) continue;
+      for (const tool of Object.keys(tools)) {
+        runtimeConfig[codexMcpConfigPath(name, `tools.${codexConfigSegment(tool)}.approval_mode`)] =
+          "prompt";
+      }
+    }
+  }
+  // Codex merges these into a server of the person's with the same name
+  // (Opensteer's own connection instructions name one `opensteer`): every
+  // field set here wins, and a field only theirs sets stays, since a thread's
+  // configuration can neither replace nor remove it (Codex 0.162.0). If what
+  // stays keeps Opensteer's server from connecting, the Run fails closed.
+  setOpensteerMcpServers(runtimeConfig, context);
+  for (const name of codexMcpTools(context.agentTools.tools).keys()) {
+    if (name in configuredMcpServers) {
+      runtimeConfig[codexMcpConfigPath(name, "disabled_tools")] = [];
+    }
+  }
+  return runtimeConfig;
+}
+
+/** Opensteer's own MCP servers for this conversation, whichever configuration it has. */
+function setOpensteerMcpServers(runtimeConfig: JsonObject, context: HarnessSessionContext): void {
   for (const [name, tools] of codexMcpTools(context.agentTools.tools)) {
     runtimeConfig[codexMcpConfigPath(name, "url")] = context.agentTools.url;
     // Codex reads a bearer variable from its own process, which other Runs
@@ -4262,10 +4339,13 @@ async function codexThreadRuntimeConfig(
   }
   runtimeConfig[codexMcpConfigPath("opensteer", "tools.computer_use.output_token_limit")] =
     codexComputerUseOutputTokenLimit;
-  return runtimeConfig;
 }
 
-function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject): void {
+function assertCodexProcessBoundary(
+  configRead: JsonObject,
+  config: JsonObject,
+  configuration: HarnessEngineConfiguration,
+): void {
   if (!Array.isArray(configRead.layers)) {
     throw protocolError("Codex config/read did not return configuration layers");
   }
@@ -4279,6 +4359,17 @@ function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject):
     throw protocolError("Codex config/read did not return its session override layer");
   }
   const sessionConfig = requireObject(sessionLayer.config, "Codex session override config");
+  if (configuration === "own") {
+    if (
+      sessionConfig.check_for_update_on_startup !== false ||
+      sessionConfig.allow_login_shell !== false ||
+      !codexShellEnvironmentPolicyApplied(sessionConfig.shell_environment_policy)
+    ) {
+      throw protocolError("Codex did not apply the complete Opensteer process boundary");
+    }
+    assertCodexCommandEnvironment(config);
+    return;
+  }
   const sessionTools = requireObject(sessionConfig.tools, "Codex session override config.tools");
   const sessionUpdatePlan = requireObject(
     sessionTools.update_plan,
@@ -4301,6 +4392,21 @@ function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject):
       message: "Local Codex policy prevents Opensteer from disabling native web search",
     });
   }
+  assertCodexCommandEnvironment(config);
+  if (
+    typeof config.instructions === "string" ||
+    typeof config.model_instructions_file === "string"
+  ) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message:
+        "Local Codex configuration contains native model instructions that Opensteer cannot isolate",
+    });
+  }
+}
+
+/** What a model's commands start with is the Runner's, whichever configuration the Run has. */
+function assertCodexCommandEnvironment(config: JsonObject): void {
   if (config.allow_login_shell !== false) {
     throw new OpensteerError({
       code: "forbidden",
@@ -4312,16 +4418,6 @@ function assertCodexProcessBoundary(configRead: JsonObject, config: JsonObject):
       code: "forbidden",
       message:
         "Local Codex policy prevents Opensteer from keeping credentials out of the shell environment",
-    });
-  }
-  if (
-    typeof config.instructions === "string" ||
-    typeof config.model_instructions_file === "string"
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message:
-        "Local Codex configuration contains native model instructions that Opensteer cannot isolate",
     });
   }
 }
@@ -4455,7 +4551,8 @@ async function assertCodexMcpBoundary(
       details: { missingServers },
     });
   }
-  if (unexpected.length > 0) {
+  // With Codex's own configuration the person's servers are expected.
+  if (unexpected.length > 0 && engineConfiguration(context) === "stripped") {
     throw new OpensteerError({
       code: "forbidden",
       message: `Codex exposed unmanaged MCP servers inside the Opensteer runtime boundary: ${unexpected.join(", ")}`,
@@ -4464,8 +4561,11 @@ async function assertCodexMcpBoundary(
 }
 
 function codexMcpConfigPath(name: string, property: string): string {
-  const segment = /^[A-Za-z0-9_-]+$/u.test(name) ? name : JSON.stringify(name);
-  return `mcp_servers.${segment}.${property}`;
+  return `mcp_servers.${codexConfigSegment(name)}.${property}`;
+}
+
+function codexConfigSegment(name: string): string {
+  return /^[A-Za-z0-9_-]+$/u.test(name) ? name : JSON.stringify(name);
 }
 
 /**
@@ -4478,11 +4578,20 @@ function harnessModelId(selection: ModelSelection): string {
   return selection.nativeModelId ?? selection.modelId;
 }
 
+/**
+ * Agent home's `AGENTS.md`, unless Codex reads it itself: with its own
+ * configuration Codex starts in Agent home and reads that file as the
+ * project's, so Opensteer does not hand it over a second time.
+ */
+function codexAgentHomeInstructions(context: HarnessSessionContext): string | undefined {
+  return engineConfiguration(context) === "own" ? undefined : context.instructions;
+}
+
 function threadStartupOptions(context: HarnessSessionContext): JsonObject {
   const access = codexAccessModeConfiguration(context.accessMode, context.writableRoots);
   const developerInstructions = [
     context.platformGuide,
-    context.instructions,
+    codexAgentHomeInstructions(context),
     durableHistoryWindowNotice(context),
     ...(context.voiceCall ? [context.machineAccessNotice] : []),
   ]

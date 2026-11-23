@@ -248,6 +248,27 @@ no operation variant, by design.
 
 For the agent builder's view of this contract, see [connecting-an-agent.md](connecting-an-agent.md).
 
+## How your own agents start
+
+A task of the person's own starts its engine with the engine's own configuration, as if the person
+had started it in Agent home themselves: their user, project and local settings, the folder's
+`CLAUDE.md` or `AGENTS.md`, the engine's own tools (web search included), and their own MCP
+servers, hooks and skills. Opensteer adds its MCP server, its instructions and its skills, and
+overrides only what it needs, each with its reason beside it in the driver. A server of theirs named
+`opensteer` is replaced by Opensteer's in Claude Code; Codex merges the two, Opensteer's fields
+winning. A task that works for someone who holds less than the person (a connected
+agent's lineage, or a conversation others can speak in) gets none of the person's configuration.
+`engineConfiguration` (`packages/harness/src/engine-configuration.ts`) decides which, from the
+Run's personal context. Today Claude Code and Codex follow it; the other six engines still start
+with none of the person's configuration.
+
+The task's mode wins over the person's settings. Claude Code receives the permission mode on the
+command line, and in Supervised and Auto-accept edits an Opensteer PreToolUse hook asks before
+every call the mode would ask for (`claudeModeGuard`): Claude Code asks whenever any hook asks,
+whatever a settings rule, another hook, a skill or an agent file allows. Codex receives the
+approval policy and sandbox on every turn, and in those two modes each tool of the person's own MCP
+servers asks.
+
 ## Stop and Disconnect
 
 ### Stop on a task or a tab

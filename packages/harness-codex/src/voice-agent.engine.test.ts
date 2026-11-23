@@ -234,6 +234,7 @@ describe.skipIf(!qualify).each([
         instructions: "Answer in one or two short sentences.",
         // The Runner delivers the Host's Run plan instructions as the platform guide.
         platformGuide: guide,
+        personalContext: false,
         machineAccessNotice: "No other computers are reachable.",
         machineAccessPlatform: undefined,
         machineAccessRelaySocket: undefined,

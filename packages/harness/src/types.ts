@@ -324,6 +324,12 @@ export interface HarnessSessionContext {
   readonly skills: HarnessSkillPlan | undefined;
   /** Exact provider/model/options snapshot chosen for this Run. */
   readonly modelSelection: ModelSelection;
+  /**
+   * The task works for the person themselves, not for a connected agent's
+   * lineage or a conversation others can speak in. A driver reads it only
+   * through `engineConfiguration`.
+   */
+  readonly personalContext: boolean;
   /** Runner-owned storage for this profile. */
   readonly providerState: HarnessProviderState;
   readonly runtimeBoundary: HarnessRuntimeBoundary;
