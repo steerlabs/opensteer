@@ -3394,6 +3394,61 @@ describe("routing to a Home that is not selected", () => {
     }
   });
 
+  it("lets a pinned read of a Home that is not selected finish while the selection moves, and fences the selected Home's own", async () => {
+    const home = deployment("Home", "https://home.example.test", "personal");
+    const work = deployment("Work", "https://work.example.test", "personal");
+    const other = deployment("Other", "https://other.example.test", "personal");
+    const homeId = home.authority.document.deploymentId;
+    const workId = work.authority.document.deploymentId;
+    const catalog = catalogStore([home, work, other], homeId);
+    const bodies = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
+    const started = new Map<string, PromiseWithResolvers<void>>([
+      ["home", Promise.withResolvers<void>()],
+      ["work", Promise.withResolvers<void>()],
+    ]);
+    const network = {
+      request: vi.fn(async ({ url }: HostNetworkRequest) => {
+        const host = new URL(String(url)).hostname.split(".")[0]!;
+        const body = new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            bodies.set(host, controller);
+          },
+        });
+        started.get(host)?.resolve();
+        return new Response(body, { headers: { "content-type": "application/json" } });
+      }),
+      openWebSocket: vi.fn(() => socket()),
+    };
+    const transport = desktopHostTransport({ catalog, network });
+    const text = new TextEncoder();
+    try {
+      // Work is pinned for its summary read; Home is the selection's own.
+      const pinned = send(transport, workId, "/v1/rpc/attention.get", {
+        method: "POST",
+        body: "{}",
+        headers: { "content-type": "application/json" },
+      });
+      const selected = send(transport, homeId, "/v1/rpc/tasks.list");
+      void selected.catch(() => undefined);
+      await started.get("work")!.promise;
+      await started.get("home")!.promise;
+      bodies.get("work")!.enqueue(text.encode('{"ok":true,"data":'));
+      bodies.get("home")!.enqueue(text.encode('{"ok":true,"data":'));
+      // The selection moves to a third Home while both bodies are under way.
+      catalog.replace([home, work, other], other.authority.document.deploymentId);
+      await transport.selection();
+      bodies.get("work")!.enqueue(text.encode('{"needsYou":2,"unread":false}}'));
+      bodies.get("work")!.close();
+      await expect(pinned).resolves.toMatchObject({
+        status: 200,
+        body: '{"ok":true,"data":{"needsYou":2,"unread":false}}',
+      });
+      await expect(selected).rejects.toMatchObject({ code: "deployment-changed" });
+    } finally {
+      transport.dispose();
+    }
+  });
+
   it("answers main's own calls to a Home that is not selected only when main asks for that Home", async () => {
     const first = deployment("Work", "https://work.example.test", "personal");
     const second = deployment("This Mac", "http://127.0.0.1:4310", "personal");

@@ -79,8 +79,8 @@ async function run(): Promise<void> {
   );
   const pending = new Set<string>();
   const counts = new Map<string, number>();
-  let rpcMode: "large" | "stall" | "hold-normal" | "unreachable" | "normal" = "large";
-  let heldTeamResponse: import("node:http").ServerResponse | null = null;
+  let rpcMode: "large" | "stall" | "unreachable" | "normal" = "large";
+  let heldAttention: import("node:http").ServerResponse | null = null;
   let sessionStatus = 200;
   const handleRequest: RequestListener = (request, response) => {
     const target = request.url ?? "/";
@@ -105,11 +105,12 @@ async function run(): Promise<void> {
     const session = url.pathname === "/v1/auth/session-exchange";
     // No headers at all, so only the renderer's cancel can end it.
     if (url.pathname === "/v1/withheld") return;
-    if (rpc && rpcMode === "hold-normal") {
+    // A summary read whose body stops halfway, until the smoke finishes it.
+    if (url.pathname === "/v1/rpc/attention.get") {
       response.statusCode = 200;
       response.setHeader("content-type", "application/json");
-      response.write('{"ok":false,"error":{"code":"forbidden","message":');
-      heldTeamResponse = response;
+      response.write('{"ok":true,"data":');
+      heldAttention = response;
       return;
     }
     const stall =
@@ -196,7 +197,8 @@ async function run(): Promise<void> {
     source: { kind: "manual" },
     updatedAt: now,
   });
-  const personalConnection = DeploymentConnectionSchema.parse({
+  // A second personal Home, never selected here: the switcher reads it through its own pin.
+  const otherHome = DeploymentConnectionSchema.parse({
     authority: testDiscoveryEnvelope({
       canonicalOrigin: origin,
       deploymentId: createId("deployment"),
@@ -209,13 +211,13 @@ async function run(): Promise<void> {
     endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
     kind: "personal",
     lastUsedAt: null,
-    name: "Transport smoke personal",
+    name: "Transport smoke, not selected",
     reachability: "canonical",
     source: { kind: "manual" },
     updatedAt: now,
   });
   let catalog: DeploymentCatalog = DeploymentCatalogSchema.parse({
-    deployments: [connection, personalConnection],
+    deployments: [connection, otherHome],
     revision: 1,
     schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: connection.authority.document.deploymentId,
@@ -603,7 +605,7 @@ async function run(): Promise<void> {
         ),
       );
       const execute = (
-        action: "rpc" | "abort-start" | "abort-finish" | "binary",
+        action: "rpc" | "abort-start" | "abort-finish" | "binary" | "attention",
         deploymentId = connection.authority.document.deploymentId,
       ): Promise<unknown> =>
         window.webContents.executeJavaScript(
@@ -622,39 +624,37 @@ async function run(): Promise<void> {
         assert.equal(result.error.message, new HostTransportError(code).message);
         cases.push({ case: `renderer-rpc-${mode}`, ...result });
       }
-      // Team requests are pinned to their own transport, so moving the Personal selection mid-body does not cut them.
-      rpcMode = "hold-normal";
-      heldTeamResponse = null;
-      const teamMidBody = execute("rpc", connection.authority.document.deploymentId);
-      await waitUntil(() => heldTeamResponse !== null);
+      // A summary read of a Home that is not selected is pinned to that Home: the selection
+      // moving mid-body does not cut it.
+      heldAttention = null;
+      const pinnedMidBody = execute("attention", otherHome.authority.document.deploymentId);
+      await waitUntil(() => heldAttention !== null);
+      catalog = { ...catalog, revision: 4, selectedDeploymentId: null };
+      await transport.selection();
+      assert(!heldAttention!.destroyed, "A selection move cut a pinned read of another Home.");
+      heldAttention!.end('{"needsYou":2,"unread":false}}');
+      heldAttention = null;
+      const pinned = z
+        .strictObject({
+          ok: z.literal(true),
+          data: z.strictObject({ needsYou: z.literal(2), unread: z.literal(false) }),
+        })
+        .parse(await pinnedMidBody);
+      cases.push({ case: "renderer-unselected-home-unaffected-by-selection-move", ...pinned });
       catalog = {
         ...catalog,
-        revision: 4,
-        selectedDeploymentId: personalConnection.authority.document.deploymentId,
+        revision: 5,
+        selectedDeploymentId: connection.authority.document.deploymentId,
       };
       await transport.selection();
-      assert(
-        !heldTeamResponse!.destroyed,
-        "Personal selection move cut an in-flight team request.",
-      );
-      heldTeamResponse!.end('"Normal response arrived.","retryable":false}}');
-      heldTeamResponse = null;
-      const teamUnaffected = z
-        .strictObject({ ok: z.literal(false), error: HostApiErrorSchema })
-        .parse(await teamMidBody);
-      assert.equal(teamUnaffected.error.message, "Normal response arrived.");
-      await waitUntil(
-        () => ![...pending].some((target) => target.startsWith("/v1/rpc/auth.config")),
-      );
-      cases.push({ case: "renderer-team-unaffected-by-selection-move", ...teamUnaffected });
 
-      // Personal selection moves cut in-flight requests to that personal connection with deployment-changed.
+      // The selected Home's own in-flight request is cut by the selection moving, with deployment-changed.
       rpcMode = "stall";
-      const moved = execute("rpc", personalConnection.authority.document.deploymentId);
+      const moved = execute("rpc");
       await waitUntil(() =>
         [...pending].some((target) => target.startsWith("/v1/rpc/auth.config")),
       );
-      catalog = { ...catalog, revision: 5, selectedDeploymentId: null };
+      catalog = { ...catalog, revision: 6, selectedDeploymentId: null };
       await transport.selection();
       const movedResult = z
         .object({
@@ -667,7 +667,7 @@ async function run(): Promise<void> {
       cases.push({ case: "renderer-deployment-changed", ...movedResult.rejected });
       catalog = {
         ...catalog,
-        revision: 6,
+        revision: 7,
         selectedDeploymentId: connection.authority.document.deploymentId,
       };
       await transport.selection();

@@ -616,18 +616,7 @@ export class TabStore {
         const open = rows.filter(
           (row) => !row.closedAt && tabIds.includes(row.id) && (!canClose || canClose(row)),
         );
-        for (const row of open)
-          await tx
-            .updateTable("personalTabs")
-            .set({
-              closedAt: new Date(),
-              updatedAt: new Date(),
-              generation: row.generation + 1,
-              closedPosition: sql`${JSON.stringify(position(layout, row.id))}::jsonb`,
-            })
-            .where("id", "=", row.id)
-            .execute(databaseOperationOptions());
-        removeIds(layout, new Set(open.map((row) => row.id)));
+        await this.#closeRows(tx, open, layout);
         return open.map((row) => row.id);
       },
       tabIds,
@@ -808,6 +797,43 @@ export class TabStore {
       },
     );
   }
+  /**
+   * Closing a group, decided once here: the members the group has now close, and the group goes
+   * once it has none left. A member that may not close keeps the group, with the members that
+   * remain. A group already empty is removed. A single tab's close keeps its group (Undo needs it).
+   */
+  closeGroup(
+    ownerId: UserId,
+    groupId: TabGroupId,
+    key: string,
+    authorize?: TabAuthorization,
+    canClose?: (row: TabRecord) => boolean,
+  ): Promise<TabMutation> {
+    return this.#mutate(
+      ownerId,
+      key,
+      "tab.group.close",
+      { groupId },
+      authorize,
+      async (tx, { rows, layout }) => {
+        const item = layout.items.find(
+          (item) => item.kind === "group" && item.group.groupId === groupId,
+        );
+        if (item?.kind !== "group") failure("not_found", "Tab group not found.");
+        const members = new Set(item.group.tabIds);
+        const open = rows.filter(
+          (row) => !row.closedAt && members.has(row.id) && (!canClose || canClose(row)),
+        );
+        await this.#closeRows(tx, open, layout);
+        const remaining = layout.items.find(
+          (item) => item.kind === "group" && item.group.groupId === groupId,
+        );
+        if (remaining?.kind === "group" && remaining.group.tabIds.length === 0)
+          layout.items = layout.items.filter((item) => item !== remaining);
+        return open.map((row) => row.id);
+      },
+    );
+  }
   deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string, authorize?: TabAuthorization) {
     return this.#mutate(
       ownerId,
@@ -829,6 +855,21 @@ export class TabStore {
         return item.group.tabIds;
       },
     );
+  }
+  /** Marks the rows closed where the layout holds them, then takes them out of it. */
+  async #closeRows(tx: TabTransaction, open: readonly TabRecord[], layout: TabLayout) {
+    for (const row of open)
+      await tx
+        .updateTable("personalTabs")
+        .set({
+          closedAt: new Date(),
+          updatedAt: new Date(),
+          generation: row.generation + 1,
+          closedPosition: sql`${JSON.stringify(position(layout, row.id))}::jsonb`,
+        })
+        .where("id", "=", row.id)
+        .execute(databaseOperationOptions());
+    removeIds(layout, new Set(open.map((row) => row.id)));
   }
   async #latest(tx: TabTransaction, binding: PageBinding) {
     const latest = await tx
@@ -873,11 +914,11 @@ export class TabStore {
     generation: number,
     previous: PageBinding | null,
     binding: PageBinding,
-  ): Promise<boolean> {
+  ): Promise<TabRecord | null> {
     PageBindingSchema.parse(binding);
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
-      if (!(await this.#latest(tx, binding))) return false;
+      if (!(await this.#latest(tx, binding))) return null;
       const row = await this.get(ownerId, tabId, false, tx);
       if (
         !row ||
@@ -886,7 +927,7 @@ export class TabStore {
         canonicalJson(row.pageBinding) !== canonicalJson(previous) ||
         tabId !== binding.surfaceId
       )
-        return false;
+        return null;
       await tx
         .updateTable("personalTabs")
         .set({ pageBinding: sql`${JSON.stringify(binding)}::jsonb`, updatedAt: new Date() })
@@ -894,7 +935,8 @@ export class TabStore {
         .execute(databaseOperationOptions());
       mutation.bumpResource("tab");
       mutation.changeTabs([tabId]);
-      return true;
+      // The row as this bind left it: the witness anything later acting on this binding checks.
+      return await this.get(ownerId, tabId, false, tx);
     });
   }
   async updatePage(
