@@ -3,7 +3,7 @@ import { sql, type Kysely } from "kysely";
 import { expect } from "vitest";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
-import { migrateToLatest } from "./migrations.js";
+import { migrateToLatest, migrationProvider } from "./migrations.js";
 import { chatEndedMessage, lineagePersonalContext } from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -50,6 +50,29 @@ async function restoreRoutes(database: Kysely<DatabaseSchema>): Promise<void> {
   await sql`delete from kysely_migration where name = ${chatRoutesEndMigrationName}`.execute(
     database,
   );
+}
+
+/**
+ * Re-runs `chatRoutesEndMigrationName` through `migrateToLatest` without tripping Kysely's order
+ * check on migrations that land after it (such as `0054_command_requests` or `0113_automations_contract`).
+ */
+async function runChatRoutesEndMigration(database: Kysely<DatabaseSchema>): Promise<void> {
+  const later = await sql<{ name: string; timestamp: string }>`
+    delete from kysely_migration where name > ${chatRoutesEndMigrationName} returning name, timestamp
+  `.execute(database);
+  const all = await migrationProvider().getMigrations();
+  const upToRoutesEnd = Object.fromEntries(
+    Object.entries(all).filter(([name]) => name <= chatRoutesEndMigrationName),
+  );
+  try {
+    await migrateToLatest(database, { getMigrations: async () => upToRoutesEnd });
+  } finally {
+    for (const row of later.rows) {
+      await sql`insert into kysely_migration (name, timestamp) values (${row.name}, ${row.timestamp}) on conflict do nothing`.execute(
+        database,
+      );
+    }
+  }
 }
 
 describeStore("the update ends chat routes, and the work they ran keeps what it had", (it) => {
@@ -214,7 +237,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       .where("id", "=", under.id)
       .execute();
 
-    await migrateToLatest(database);
+    await runChatRoutesEndMigration(database);
 
     expect(
       (
@@ -464,7 +487,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         active_thread_id, provider_state, personal_context)
       values (${direct}, ${configured.account.id}, 'slack', 'T-routes-me', ${route}, 1, ${direct},
         'dm', ${fromPhone}, '{}'::jsonb, true)`.execute(database);
-    await migrateToLatest(database);
+    await runChatRoutesEndMigration(database);
     // The phone, used last, stays "me".
     expect(
       await database
