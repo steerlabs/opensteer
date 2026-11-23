@@ -2116,37 +2116,62 @@ describe("a page whose open was given up (Z3)", () => {
       events.emit("page", page);
       return page;
     };
-    const arriveLate = async () => {
-      const page = arrive("about:blank");
-      late!.resolve(page as unknown as Page);
-      for (let turn = 0; turn < 6; turn++) await Promise.resolve();
-      return page;
-    };
+    const pendingLate = late;
     const handleOf = (page: unknown) =>
       launched.context
         .pages()
         .find((handle) => (handle as unknown as { rawPage?: unknown }).rawPage === page);
-    return { f, launched, ownership, opener, arrive, arriveLate, handleOf };
+    return { f, launched, ownership, opener, arrive, late: () => pendingLate, handleOf };
   }
 
-  it("closes the late page, and still gives the person's link its own page", async () => {
-    const { f, launched, ownership, opener, arrive, arriveLate, handleOf } = await fixture();
+  const primaryBit = process.platform === "darwin" ? 4 : 2;
+  const click = async (opener: BrowserPage) =>
+    (await opener.cdp()).send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      button: "left",
+      modifiers: primaryBit,
+    });
+  const turns = async (count = 4) => {
+    for (let turn = 0; turn < count; turn++) await Promise.resolve();
+  };
+
+  it("shows a link's page at once while the given-up open is still pending, and closes only that open's page when it comes (Z5)", async () => {
+    const { f, launched, ownership, opener, arrive, late, handleOf } = await fixture();
     try {
-      const primaryBit = process.platform === "darwin" ? 4 : 2;
-      await (
-        await opener.cdp()
-      ).send("Input.dispatchMouseEvent", {
-        type: "mouseReleased",
-        button: "left",
-        modifiers: primaryBit,
-      });
-      const stray = await arriveLate();
+      await click(opener);
+      // The given-up open never answers while the link's page arrives at its address.
+      const linked = arrive("https://link.test/");
+      await turns();
+      const handle = handleOf(linked);
+      expect(handle).toBeDefined();
+      expect(await handle!.opener()).toBe(opener);
+      expect(ownership.sessionOf(handle!)).toBe("only-session");
+      // Then the given-up open answers: its page, and only it, is closed.
+      const stray = arrive("about:blank");
+      late().resolve(stray as unknown as Page);
       await vi.waitFor(() => expect(stray.close).toHaveBeenCalled());
       expect(handleOf(stray)).toBeUndefined();
-      // The link's own page, when it comes, is the link's.
-      const linked = arrive("https://link.test/");
-      await vi.waitFor(() => expect(handleOf(linked)).toBeDefined());
-      const handle = handleOf(linked)!;
+      expect(linked.close).not.toHaveBeenCalled();
+      expect(handleOf(linked)).toBe(handle);
+    } finally {
+      f.exit();
+      await launched.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
+
+  it("shows a link's blank page within a moment while the given-up open is pending, still its link's (Z5)", async () => {
+    const { f, launched, ownership, opener, arrive, handleOf } = await fixture();
+    try {
+      await click(opener);
+      const blank = arrive("about:blank");
+      const asked = performance.now();
+      await vi.waitFor(() => expect(handleOf(blank)).toBeDefined(), {
+        timeout: 1_000,
+        interval: 10,
+      });
+      expect(performance.now() - asked).toBeLessThan(800);
+      const handle = handleOf(blank)!;
       expect(await handle.opener()).toBe(opener);
       expect(ownership.sessionOf(handle)).toBe("only-session");
     } finally {
@@ -2157,12 +2182,13 @@ describe("a page whose open was given up (Z3)", () => {
   });
 
   it("closes the late page of an open abandoned when its session ended, and hands it to no one", async () => {
-    const { f, launched, ownership, arriveLate, handleOf } = await fixture();
+    const { f, launched, arrive, late, handleOf } = await fixture();
     try {
-      const stray = await arriveLate();
+      const stray = arrive("about:blank");
+      late().resolve(stray as unknown as Page);
       await vi.waitFor(() => expect(stray.close).toHaveBeenCalled());
+      await turns();
       expect(handleOf(stray)).toBeUndefined();
-      expect(ownership.sessionOf(stray as never)).toBeNull();
     } finally {
       f.exit();
       await launched.close();

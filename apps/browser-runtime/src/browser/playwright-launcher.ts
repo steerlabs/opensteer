@@ -80,6 +80,13 @@ import {
 import type { PasskeyAuthenticator } from "@opensteer/browser-runtime-core/passkeys";
 
 const linkOpenAttributionMs = 1_000;
+/** Z5: the longest a blank page may wait to be told apart from the runtime's own open. */
+const blankArrivalHoldMs = 300;
+/** Z5: the runtime's own open starts at about:blank; nothing else it makes does. */
+function isBlankArrival(page: Page): boolean {
+  const url = typeof page.url === "function" ? page.url() : "";
+  return url === "" || url === "about:blank";
+}
 const maxPendingLinkOpens = 16;
 const modifierKeys = new Set(["Alt", "AltGraph", "Control", "Meta", "OS", "Shift"]);
 
@@ -1479,29 +1486,35 @@ class PlaywrightContextHandle implements BrowserContext {
       });
       return;
     }
-    // main #725: a page without an opener that arrives while the runtime's own opens are in
-    // flight, while a link gesture waits to be attributed, is handed off once those opens
-    // settle: the runtime's own page is then known by identity (its open's answer publishes it)
-    // and is never taken for the page that link opened. Any other page is handed off at once,
-    // never waiting on an unrelated open (Q3): a popup names its opener, and with no gesture
-    // waiting nothing is inferred.
-    // Z3: while an open the runtime gave up on may still deliver its page, a page without an
-    // opener waits for it, gesture or not: that page is closed, never handed out.
-    if (!creationsSettled && !handle.openerHandle) this.prunePendingLinkOpens();
+    // main #725, Z5: identity decides, never timing. The runtime's own open always starts at
+    // about:blank, so a page without an opener that arrives anywhere else is handed off at once.
+    // One at about:blank, while an open is in flight or given up, is held only briefly (well
+    // under a link gesture's window), and the hold never makes its link gesture expire: the
+    // runtime's own page is published by its open's answer, and any other page is handed off at
+    // the bound as the person's. The gesture stays where any page at a real address finds it. A given-up open's own page is closed
+    // when its answer names it, whatever was done with it meanwhile.
     if (
       !creationsSettled &&
       !handle.openerHandle &&
       !this.explicitPages.has(page) &&
-      (this.lateCreations.size > 0 ||
-        (this.pendingLinkOpens.length > 0 && this.inFlightCreations.size > 0))
+      (this.inFlightCreations.size > 0 || this.lateCreations.size > 0) &&
+      isBlankArrival(page)
     ) {
       this.identifyingPages.add(page);
-      void Promise.allSettled([...this.inFlightCreations, ...this.lateCreations]).then(() =>
+      const arrived = Date.now();
+      let bound: NodeJS.Timeout | undefined;
+      void Promise.race([
+        Promise.allSettled([...this.inFlightCreations, ...this.lateCreations]),
+        new Promise<void>((resolve) => {
+          bound = setTimeout(resolve, blankArrivalHoldMs);
+        }),
+      ]).then(() =>
         queueMicrotask(() => {
-          if (!this.identifyingPages.delete(page)) return;
-          // A late open's own page: its creator closes it.
-          if (this.explicitPages.has(page)) return;
-          this.handOutOrdinary(page, true);
+          clearTimeout(bound);
+          // The runtime's own page is its open's to publish.
+          if (!this.identifyingPages.delete(page) || this.explicitPages.has(page)) return;
+          this.published.add(page);
+          this.announce(handle, page, true, Date.now() - arrived);
         }),
       );
       return;
@@ -1517,13 +1530,19 @@ class PlaywrightContextHandle implements BrowserContext {
    * one, which Chromium opened from a link (OpenURLFromTab sends no popup event), is attributed to
    * the one recent link gesture. The runtime's own pages and a woken tab are never inferred.
    */
-  private announce(handle: PlaywrightPageHandle, page: Page, infer: boolean): void {
+  private announce(
+    handle: PlaywrightPageHandle,
+    page: Page,
+    infer: boolean,
+    /** Z5: how long the page was held before this: its gesture's window is that much longer. */
+    heldMs = 0,
+  ): void {
     let inferred = false;
     if (handle.openerHandle) {
       const match = this.takeLinkOpenGesture(handle.openerHandle);
       if (match) handle.openedInBackground = match.disposition === "background-tab";
     } else if (infer && !this.explicitPages.has(page)) {
-      const match = this.takeLinkOpenGesture();
+      const match = this.takeLinkOpenGesture(undefined, heldMs);
       if (match) {
         handle.openerHandle = match.opener;
         handle.openedInBackground = match.disposition === "background-tab";
@@ -2240,10 +2259,10 @@ class PlaywrightContextHandle implements BrowserContext {
     if (clearsStale) this.clearLinkOpenGestures(opener);
   }
 
-  private prunePendingLinkOpens(now = Date.now()): void {
+  private prunePendingLinkOpens(now = Date.now(), heldMs = 0): void {
     for (let index = this.pendingLinkOpens.length - 1; index >= 0; index -= 1) {
       const entry = this.pendingLinkOpens[index]!;
-      if (now - entry.at > linkOpenAttributionMs || entry.opener.isClosed())
+      if (now - entry.at > linkOpenAttributionMs + heldMs || entry.opener.isClosed())
         this.pendingLinkOpens.splice(index, 1);
     }
   }
@@ -2256,8 +2275,9 @@ class PlaywrightContextHandle implements BrowserContext {
 
   private takeLinkOpenGesture(
     opener?: PlaywrightPageHandle,
+    heldMs = 0,
   ): { readonly opener: PlaywrightPageHandle; readonly disposition: LinkOpenDisposition } | null {
-    this.prunePendingLinkOpens();
+    this.prunePendingLinkOpens(Date.now(), heldMs);
     if (!opener) {
       // Never guess across distinct openers: if multiple pages have pending
       // link-open gestures, leave an openerless target unattributed.
@@ -2322,30 +2342,20 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 
   /**
-   * Z3: an open that timed out or was abandoned: its page, if Chromium still makes it, is closed
-   * with evidence when it arrives, never ordinary and never unowned. Pages without an opener wait
-   * on it until it settles or its bound passes.
+   * Z3, Z5: an open that timed out or was abandoned: the page its answer names, if Chromium still
+   * makes it, is the runtime's and is closed with evidence, whatever was done with it meanwhile.
    */
   private closeWhenItArrives(raw: Promise<Page>): void {
-    const late = raw.then(
-      (page) => {
-        this.explicitPages.add(page);
-        if (!this.closed) void this.closePageWithEvidence(page);
-      },
-      () => undefined,
-    );
-    let bound: NodeJS.Timeout | undefined;
-    const held = Promise.race([
-      late,
-      new Promise<void>((resolve) => {
-        bound = setTimeout(resolve, openPageMs);
-        bound.unref?.();
-      }),
-    ]).finally(() => {
-      clearTimeout(bound);
-      this.lateCreations.delete(held);
-    });
-    this.lateCreations.add(held);
+    const late: Promise<void> = raw
+      .then(
+        (page) => {
+          this.explicitPages.add(page);
+          if (!this.closed) void this.closePageWithEvidence(page);
+        },
+        () => undefined,
+      )
+      .finally(() => this.lateCreations.delete(late));
+    this.lateCreations.add(late);
   }
 
   async createPage(options?: {
