@@ -71,7 +71,10 @@ try {
       url: request.url(),
     });
   });
-  // Nothing leaves the machine: anything outside the app answers here.
+  // Nothing leaves the machine: anything outside the app answers here, and app assets are fulfilled
+  // directly from the build so Docker `veth` churn on Linux cannot abort loopback dynamic imports
+  // with `net::ERR_NETWORK_CHANGED`.
+  await web.routeBuild(context);
   await context.route(
     (url) => url.origin !== origin,
     (route) =>
@@ -86,17 +89,15 @@ try {
   /** A fresh copy of the app on `route`, with the reply on screen and its document tagged. */
   const open = async (route: string, replyText: string) => {
     // Expand the task before reloading: restoration runs after the transcript
-    // appears. Use the chrome control because a live page can own the keyboard:
-    // a phone's sheet has Hide computer, and a docked task has Expand under its name.
+    // appears. Use the chrome control matching the target viewport width so a
+    // resize does not race the previous layout's control before it hides.
     if (
       page.url().startsWith(`${origin}/`) &&
       (await page.locator(".workspace--work").isVisible())
     ) {
-      const hide = page.getByRole("button", { name: "Hide computer" });
-      // A resize settles into the phone sheet or the docked task; wait for whichever it becomes.
-      await hide.or(page.locator(".workspace--work .conv-header__menu")).first().waitFor();
-      if (await hide.isVisible()) await hide.click();
-      else {
+      if ((page.viewportSize()?.width ?? 1280) < 768) {
+        await page.getByRole("button", { name: "Hide computer" }).click();
+      } else {
         await page.locator(".workspace--work .conv-header__menu").click();
         await page.getByRole("button", { name: "Expand", exact: true }).click();
       }

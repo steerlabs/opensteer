@@ -2191,6 +2191,7 @@ export async function createHostRuntime(
     let dispatchingRunIds = (): readonly RunId[] => [];
     let watchService: WatchService | undefined;
     const registeringRunners = new Set<string>();
+    const catalogResetCompleted = new Set<string>();
     const runnerAuthenticator = new RunnerAuthenticator({
       issuancePrivateKey: keys.privateKey,
       store,
@@ -2490,6 +2491,7 @@ export async function createHostRuntime(
             .catch((error) => app.log.warn({ err: error }, "App state report failed"));
         },
         onDisconnect: async (identity, scope) => {
+          catalogResetCompleted.delete(identity.connectionId);
           if (scope.reason !== "superseded" && scope.reason !== "shutdown")
             await store.markConnectionAttemptsContactLost({
               runnerId: identity.runnerId,
@@ -2649,6 +2651,7 @@ export async function createHostRuntime(
                   );
                 }
               }
+              if (current()) catalogResetCompleted.add(identity.connectionId);
               // Managed AI-engine sign-in attempts survive reconnects, so a
               // managed Runner replays them when it registers again.
               if (identity.runnerKind === "managed") {
@@ -2736,7 +2739,7 @@ export async function createHostRuntime(
             identity,
             environmentId,
             catalogs,
-            !afterRegistrationReset && registeringRunners.has(identity.connectionId),
+            !afterRegistrationReset && !catalogResetCompleted.has(identity.connectionId),
           ),
         ).catch(() => undefined);
       } catch {
