@@ -248,9 +248,9 @@ describe("one connected agent", () => {
     expect(page.textContent).toContain("Calls itself");
     expect(page.textContent).toContain("TravelBot Agent");
     expect(page.textContent).toContain("trips.example");
-    expect(page.textContent).toContain(
-      "This Opensteer doesn’t keep a list of what connected agents did yet.",
-    );
+    // Its Recent activity is what the Home reports for it (connections.activity): nothing yet.
+    expect(page.textContent).toContain("Recent activityNothing yet.");
+    expect(page.textContent).not.toContain("doesn’t keep a list");
     expect(
       page.querySelector<HTMLInputElement>('[aria-labelledby="agent-grant-tasks"]')!.checked,
     ).toBe(true);
