@@ -464,6 +464,10 @@ export class SurfaceLedger {
   faviconOf(id: BrowserSurfaceId): string | null {
     return this.records.get(id)?.favicon ?? null;
   }
+  /** V7: the tab's wake in flight, for a viewer to be bound to the tab it wakes into. */
+  waking(id: BrowserSurfaceId): Promise<void> | null {
+    return this.records.get(id)?.lease.waking ?? null;
+  }
   demand(id: BrowserSurfaceId): void {
     this.records.get(id)?.lease.demand();
   }

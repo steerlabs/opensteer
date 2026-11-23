@@ -12,6 +12,11 @@ export class TabLease {
     this.changed = changed;
   }
 
+  /** V7: the wake in flight, if any. */
+  get waking(): Promise<void> | null {
+    return this.resuming;
+  }
+
   get busy(): boolean {
     return this.operations > 0;
   }

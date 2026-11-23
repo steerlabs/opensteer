@@ -303,6 +303,39 @@ describe("BrowserController", () => {
     }
   });
 
+  it("binds a viewer that subscribes while its tab wakes to the tab it wakes into, never not_found (V7)", async () => {
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      await ledger.sleep(id, () => null);
+      // The wake is held while its new page is made.
+      const made = Promise.withResolvers<void>();
+      const createPage = context.createPage.bind(context);
+      vi.spyOn(context, "createPage").mockImplementation(async (...args) => {
+        await made.promise;
+        return createPage(...args);
+      });
+      const waking = ledger.wake(id);
+      await vi.waitFor(() => expect(ledger.waking(id)).not.toBeNull());
+      const before = sink.messages.length;
+      const subscribed = controller.handle({ type: "stream.subscribe", surfaceId: id });
+      made.resolve();
+      await waking;
+      await subscribed;
+      expect(
+        sink.messages
+          .slice(before)
+          .filter((message) => message.type === "browser.error")
+          .map((message) => JSON.stringify(message)),
+      ).toEqual([]);
+    } finally {
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("waits for the page's load on every try of an agent's resume, and ends the wait with its operation (V3)", async () => {
     const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();

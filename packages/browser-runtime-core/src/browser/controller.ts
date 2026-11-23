@@ -1803,6 +1803,8 @@ export class BrowserController {
           await target?.cast.close();
           return;
         }
+        // V7: a viewer of a tab that is waking is bound to the tab it wakes into, not refused.
+        if (!this.ledger.binding(surfaceId)) await this.ledger.waking(surfaceId)?.catch(() => {});
         if (!this.ledger.binding(surfaceId))
           throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
         const subscription = message.frames === false ? "control" : "frames";
