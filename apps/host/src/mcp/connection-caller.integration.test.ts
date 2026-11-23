@@ -41,6 +41,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, vi } from "vitest";
 import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
+import { readableTabTasks } from "../tabs/tab-authority.js";
 import { connectionCredentialPrefix } from "./connections/connection-authenticator.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import {
@@ -176,6 +177,30 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(await steer(bold)).toEqual(idle);
     expect(await steer(cautious)).toEqual(idle);
     expect(JSON.stringify(idle)).not.toContain("access mode");
+  });
+
+  it("shows a disconnected agent no task in a tab's users, not even its own task's", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("tab-users-ended");
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const own = await createTask(agent, f, "tab-users-own");
+    const actor = {
+      kind: "connection",
+      caller: { connectionId: agent.id, userId: f.userId },
+    } as never;
+    expect(await readableTabTasks(actor, [own, f.threadId], storeFixture.database)).toEqual(
+      new Set([own]),
+    );
+    await agent.revoke();
+    expect(await readableTabTasks(actor, [own, f.threadId], storeFixture.database)).toEqual(
+      new Set(),
+    );
   });
 
   it("keeps an approval-required connection out of full-access changes", async ({

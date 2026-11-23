@@ -101,7 +101,7 @@ import {
   finalizeRunTransaction,
 } from "./run-finalization.js";
 import {
-  connectionWaiting,
+  connectionIsWaiting,
   liveAgentConnection,
   meetsConnectionFloor,
   sendEligible,
@@ -317,20 +317,20 @@ async function claimObservedCommand(
       .select("originConnectionId")
       .where("id", "=", run.threadId)
       .executeTakeFirstOrThrow();
+    let waiting = false;
     const connection = await liveAgentConnection(transaction, observed.requestedBy, lineage).catch(
       (error: unknown) => {
-        if (error instanceof OpensteerError && error.code === "forbidden") return null;
+        if (error instanceof OpensteerError && error.code === "forbidden") {
+          waiting = connectionIsWaiting(error);
+          return null;
+        }
         throw error;
       },
     );
     // A chat paused after this command was listed: its Run is held, pending and queued, with its
-    // message kept, and is listed again when the chat is back. Only an end is terminal.
-    if (
-      !connection &&
-      observed.type === "run.execute" &&
-      (await connectionWaiting(transaction, observed.requestedBy, lineage))
-    )
-      return null;
+    // message kept, and is listed again when the chat is back. Only an end is terminal. The one
+    // read that found it not live said which.
+    if (!connection && observed.type === "run.execute" && waiting) return null;
     if (
       !connection ||
       !agentGrantAllowsTasks(connection.grant) ||
