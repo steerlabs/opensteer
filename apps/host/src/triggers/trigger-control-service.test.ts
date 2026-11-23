@@ -211,7 +211,7 @@ describe("TriggerControlService", () => {
       }),
       threadId,
       {
-        accessMode: "full-access",
+        commandIdentity: expect.anything(),
         operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "opensteer_automation_create")}:trigger.write`,
       },
     );
@@ -241,7 +241,7 @@ describe("TriggerControlService", () => {
         systemRole: "memory-light",
       },
       threadId,
-      expect.anything(),
+      undefined,
     );
   });
 });

@@ -32,6 +32,7 @@ import {
   AgentConnectionStore,
   assertLineageCompatibleReuse,
   beginAgentSession,
+  commandAdmission,
   type OpensteerStore,
 } from "@opensteer/database";
 import {
@@ -1654,10 +1655,25 @@ describeStore("connection grants and lineage", (it) => {
     expect(
       await access({ kind: "plugin", target: { kind: "installed", pluginId: "gmail" } }),
     ).toBeNull();
+    const afterLowering = scheduled(own, f.userId, "lineage-made-after-lowering");
     await expect(
       triggers.create({
-        ...scheduled(own, f.userId, "lineage-made-after-lowering"),
+        ...afterLowering,
         actorConnectionId: agent.id,
+        commandIdentity: commandAdmission({
+          ownerUserId: f.userId,
+          callerKey: `connection:${agent.id}`,
+          command: {
+            type: "trigger.create",
+            idempotencyKey: afterLowering.idempotencyKey,
+            input: {
+              anchorThreadId: afterLowering.anchorThreadId,
+              name: afterLowering.name,
+              script: afterLowering.script,
+              source: afterLowering.source,
+            },
+          },
+        }),
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(made.trigger.id).toBeTruthy();

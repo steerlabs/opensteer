@@ -684,11 +684,6 @@ integration.sequential("Thread title lifecycle", () => {
         const task = "Check   inventory " + "with detailed instructions ".repeat(14);
         const request = {
           requestId: randomUUID(),
-          ...(kind === "watch"
-            ? {
-                observationId: randomUUID(),
-              }
-            : {}),
           type: "thread.delegate",
           message: task,
           ...(title === undefined
@@ -709,14 +704,7 @@ integration.sequential("Thread title lifecycle", () => {
           icon: null,
           iconSource: "provisional",
         });
-        const retry =
-          kind === "watch"
-            ? {
-                ...request,
-                requestId: randomUUID(),
-              }
-            : request;
-        expect(await handle(retry)).toMatchObject({
+        expect(await handle(request)).toMatchObject({
           type: "thread.delegate.result",
           result: {
             taskId: worker.id,
@@ -733,7 +721,7 @@ integration.sequential("Thread title lifecycle", () => {
         ]) {
           await expect(
             handle({
-              ...retry,
+              ...request,
               ...changed,
             }),
           ).rejects.toMatchObject({

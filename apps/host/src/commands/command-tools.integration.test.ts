@@ -939,7 +939,28 @@ const doorRoutes = new Map<string, DoorRoute>([
     },
   ],
   [
+    "DELETE /hooks/v1/:routeKey",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an automation’s webhook trigger, which starts work the person set up",
+    },
+  ],
+  [
+    "PATCH /hooks/v1/:routeKey",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an automation’s webhook trigger, which starts work the person set up",
+    },
+  ],
+  [
     "POST /hooks/v1/:routeKey",
+    {
+      kind: "not a Home command",
+      why: "an outside service’s event for an automation’s webhook trigger, which starts work the person set up",
+    },
+  ],
+  [
+    "PUT /hooks/v1/:routeKey",
     {
       kind: "not a Home command",
       why: "an outside service’s event for an automation’s webhook trigger, which starts work the person set up",

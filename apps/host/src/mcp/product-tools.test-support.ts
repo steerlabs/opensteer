@@ -328,6 +328,15 @@ export class ProductToolsTestClient {
       triggers: new TriggerToolHandlers(
         options.triggers ?? (unavailable as AgentTriggerManager),
         options.store,
+        options.store.database
+          ? undefined
+          : {
+              door: (_caller, registry) => ({
+                registry,
+                scope: async () => ({ scope: null, grant: null, mode: "full-access" }),
+                admit: async () => ({ answer: "now", face: 0, execution: null }),
+              }),
+            },
       ),
     });
     this.service = new OpensteerMcpService({

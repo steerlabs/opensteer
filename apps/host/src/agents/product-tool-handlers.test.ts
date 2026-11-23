@@ -913,9 +913,7 @@ describe("Product tool handlers", () => {
         operation: "list",
       },
       current.id,
-      {
-        accessMode: current.accessMode,
-      },
+      undefined,
     );
   });
 });

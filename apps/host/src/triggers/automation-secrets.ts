@@ -43,14 +43,14 @@ export class AutomationSecrets {
       if (!parsedName.success) {
         throw new OpensteerError({
           code: "bad_request",
-          message: `${name}: ${parsedName.error.issues[0]?.message ?? "Invalid secret name."}`,
+          message: `${name}: Invalid secret name.`,
         });
       }
       const parsedValue = AutomationSecretValueSchema.safeParse(value);
       if (!parsedValue.success) {
         throw new OpensteerError({
           code: "bad_request",
-          message: `${name}: ${parsedValue.error.issues[0]?.message ?? "Invalid secret value."}`,
+          message: `${name}: Invalid secret value.`,
         });
       }
     }

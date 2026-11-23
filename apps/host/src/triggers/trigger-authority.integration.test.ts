@@ -598,10 +598,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const replayed = await ownTask(f.fullChildToken, f.fullChild, requestId);
     if (created.type !== "trigger.control.result" || replayed.type !== "trigger.control.result")
       throw new Error("Expected Trigger creation");
-    const trigger = opensteer_automation_create.output.parse(created.result).automation!;
-    expect(opensteer_automation_create.output.parse(replayed.result).automation!.id).toBe(
-      trigger.id,
-    );
+    const createdOutput = opensteer_automation_create.output.parse(created.result);
+    const replayedOutput = opensteer_automation_create.output.parse(replayed.result);
+    if (!("automation" in createdOutput) || !("automation" in replayedOutput))
+      throw new Error("Expected automation creation output");
+    const trigger = createdOutput.automation!;
+    expect(replayedOutput.automation!.id).toBe(trigger.id);
     expect(await children(f.fullChild.id)).toMatchObject([
       {
         id: trigger.taskId,
@@ -2067,6 +2069,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       occurrences: [],
       failures: [],
     });
+    if (!("revision" in repaired)) throw new Error("Expected automation revision");
     expect((await triggerStore.claimDueSchedules(new Date(next))).occurrences).toEqual([
       expect.objectContaining({ triggerId, revisionId: repaired.revision!.id }),
     ]);
@@ -2326,6 +2329,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         });
         expect(mcp.isError).not.toBe(true);
         const saved = opensteer_automation_create.output.parse(mcp.structuredContent);
+        if (!("automation" in saved)) throw new Error("Expected automation creation output");
         const changed = await client.callTool({
           name: "opensteer_automation_update",
           arguments: {
@@ -2337,9 +2341,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
           },
         });
         expect(changed.isError).not.toBe(true);
-        expect(
-          opensteer_automation_update.output.parse(changed.structuredContent).revision!.script,
-        ).toEqual({
+        const changedOutput = opensteer_automation_update.output.parse(changed.structuredContent);
+        if (!("revision" in changedOutput)) throw new Error("Expected automation revision");
+        expect(changedOutput.revision!.script).toEqual({
           interpreter: null,
           text: "console.log('MCP current')",
         });
