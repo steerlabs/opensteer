@@ -2541,7 +2541,7 @@ describe("Electron debugger teardown", () => {
       heldStart.replies[0]!.resolve({});
       await vi.waitFor(() => expect(hub.sent("Page.stopScreencast")).toHaveLength(stopsBefore + 1));
       const lastStop = hub.sent("Page.stopScreencast").at(-1)!;
-      expect(lastStop.sessionId).toBeUndefined();
+      expect(lastStop[2]).toBeUndefined();
 
       // Bystander's cast on private session "cast-2" is untouched and keeps delivering frames.
       expect(own.detached).not.toContain("cast-2");
