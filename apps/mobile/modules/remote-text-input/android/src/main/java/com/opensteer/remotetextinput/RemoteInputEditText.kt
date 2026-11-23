@@ -65,10 +65,10 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
     gate.apply = { instruction -> applyInstruction(instruction) }
     addTextChangedListener(object : TextWatcher {
-      // A text change outside the gate (an accessibility set-text, a multi-character key) is
+      // A text change outside the gate (a source the view does not route through it) is
       // reported as the edit it is: its own caret goes with it, never undone half.
       override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
-        if (initialized) outside.changing(byGate = mutating || gate.inTurn)
+        if (initialized) outside.changing(byGate = mutating || gate.inTurn) { post(it) }
       }
       override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
       override fun afterTextChanged(s: Editable?) {
@@ -118,7 +118,9 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     // CW4: an accessibility set-text goes through the gate whole: its text and the caret it puts
     // at the end are one edit, sent with a beforeinput like any other.
     // CY10: only where the field is editable, as a person's typing is.
-    if (action == AccessibilityNodeInfo.ACTION_SET_TEXT && isEditable()) {
+    // CZ1: anywhere else it is refused, nothing changed (never TextView's own, outside the gate).
+    if (action == AccessibilityNodeInfo.ACTION_SET_TEXT) {
+      if (RemoteInputSetText.of(isEditable()) == RemoteInputSetText.REFUSED) return false
       val text = arguments?.getCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE)?.toString() ?: ""
       change("insertReplacementText", text) { super.performAccessibilityAction(action, arguments) }
       return true
@@ -145,6 +147,11 @@ class RemoteInputEditText(context: Context) : EditText(context) {
     menu.show()
   }
   private fun isEditable() = editableField && isEnabled
+  /** CZ4: an outside change still settling when the view goes gives its place in the gate back. */
+  override fun onDetachedFromWindow() {
+    outside.abandon()
+    super.onDetachedFromWindow()
+  }
   override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
     super.onWindowFocusChanged(hasWindowFocus)
     if (initialized && hasWindowFocus) showKeyboard()
