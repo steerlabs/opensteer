@@ -148,11 +148,6 @@ const withoutTool: Readonly<Record<string, string>> = {
  * owed before this branch is trial-merged (the lead's item 2). The list only shrinks.
  */
 const owed: Readonly<Record<string, string>> = {
-  "thread.inputQueue.resume": "opensteer_task_queue (resume)",
-  "thread.input.steer": "opensteer_task_queue (steer)",
-  "thread.input.cancel": "opensteer_task_queue (cancel)",
-  "thread.input.move": "opensteer_task_queue (move)",
-  "run.interrupt": "opensteer_task_interrupt",
   "node.stop": "opensteer_subagent_stop (a subagent)",
   "assignment.cancel": "opensteer_delegation_cancel",
   "request.respond": "opensteer_request_answer",
@@ -190,6 +185,8 @@ it("records what today's tools let each caller do, and the door answers the same
       name: "Parity computer",
       token: host.hostingRunnerEnrollmentToken,
       modelSettings: true,
+      // Two callers' own Runs, three busy tasks' and the Runs callers may not stop run at once.
+      maxConcurrentRuns: 16,
       browser: {
         runtimeId: "browser-runtime-integration",
         wireVersion: 2,
@@ -335,6 +332,30 @@ it("records what today's tools let each caller do, and the door answers the same
       "selected-not": lineage,
     };
 
+    // A task with a Run in progress, per caller, where the person's messages wait their turn:
+    // what the queue tools act on. The covered connection's is in its lineage.
+    const busyTask = async (key: string, accessMode: ThreadAccessMode, origin?: string) => {
+      const threadId = await task(key, accessMode);
+      if (origin)
+        await host.store.database
+          .updateTable("threads")
+          .set({ originConnectionId: origin })
+          .where("id", "=", threadId)
+          .execute();
+      const run = await dispatchCallerRun(host, machine, { key, title: key, threadId });
+      return { threadId, runId: run.runId };
+    };
+    const busyFull = await busyTask("parity-busy", "full-access");
+    const busySupervised = await busyTask("parity-busy-supervised", "approval-required");
+    const busyLineage = await busyTask("parity-busy-lineage", "full-access", covering.id);
+    const busy: Record<Caller, { readonly threadId: ThreadId; readonly runId: string }> = {
+      "own-full": busyFull,
+      "own-supervised": busySupervised,
+      everything: busyFull,
+      "selected-covering": busyLineage,
+      "selected-not": busyLineage,
+    };
+
     /** The person's own command, as the apps send it. */
     const asPerson = (command: Record<string, unknown>) =>
       testRpcData(
@@ -343,6 +364,27 @@ it("records what today's tools let each caller do, and the door answers the same
         { idempotencyKey: randomUUID(), ...command } as never,
         { headers: host.ownerHeaders },
       );
+    /** The person's message, waiting behind the busy task's Run. */
+    const waiting = async (caller: Caller, text: string) => {
+      const sent = (await asPerson({
+        type: "thread.sendMessage",
+        threadId: busy[caller].threadId,
+        content: [{ type: "text", text }],
+        delivery: "queue",
+      })) as { message: { id: string }; run: unknown };
+      return sent.message.id;
+    };
+    /** A Run each caller may stop, fresh for each: never the caller's own. */
+    const stoppable = {} as Record<Caller, { threadId: ThreadId; runId: string }>;
+    let stoppableCount = 0;
+    const stoppableRun = async (caller: Caller) =>
+      (stoppable[caller] = await busyTask(
+        `parity-stoppable-${(stoppableCount += 1)}`,
+        caller === "own-supervised" ? "approval-required" : "full-access",
+        caller.startsWith("selected-") ? covering.id : undefined,
+      ));
+    /** The messages each caller's queue scenario acts on, made as its arguments are. */
+    const queued = {} as Record<Caller, { first: string; second?: string }>;
     const callerNames = Object.keys(callers) as Caller[];
     const each = async <T>(make: (caller: Caller) => Promise<T>) => {
       const made = {} as Record<Caller, T>;
@@ -478,6 +520,93 @@ it("records what today's tools let each caller do, and the door answers the same
           threadId: others[c],
           harnessInstanceId: machine.harnessInstanceId,
           modelSelection: modelChoice,
+        }),
+      },
+      {
+        name: "thread.input.cancel",
+        tool: "opensteer_task_queue",
+        args: async (c) => {
+          queued[c] = { first: await waiting(c, `Cancel me ${c}`) };
+          return { taskId: busy[c].threadId, action: "cancel", messageId: queued[c].first };
+        },
+        command: (c) => ({
+          type: "thread.input.cancel",
+          threadId: busy[c].threadId,
+          messageId: queued[c].first,
+        }),
+      },
+      {
+        name: "thread.input.move",
+        tool: "opensteer_task_queue",
+        args: async (c) => {
+          queued[c] = {
+            first: await waiting(c, `Waiting first ${c}`),
+            second: await waiting(c, `Moved ahead ${c}`),
+          };
+          return {
+            taskId: busy[c].threadId,
+            action: "move",
+            messageId: queued[c].second,
+            beforeMessageId: queued[c].first,
+          };
+        },
+        command: (c) => ({
+          type: "thread.input.move",
+          threadId: busy[c].threadId,
+          messageId: queued[c].second,
+          beforeMessageId: queued[c].first,
+        }),
+      },
+      {
+        name: "thread.input.steer",
+        tool: "opensteer_task_queue",
+        args: async (c) => {
+          queued[c] = { first: await waiting(c, `Steer with me ${c}`) };
+          return {
+            taskId: busy[c].threadId,
+            action: "steer",
+            messageId: queued[c].first,
+            expectedRunId: busy[c].runId,
+          };
+        },
+        command: (c) => ({
+          type: "thread.input.steer",
+          threadId: busy[c].threadId,
+          messageId: queued[c].first,
+          expectedRunId: busy[c].runId,
+        }),
+      },
+      {
+        name: "thread.inputQueue.resume",
+        tool: "opensteer_task_queue",
+        // The person paused the other task's queue (as stopping its Run does); nothing waits in
+        // it, so resuming releases nothing.
+        before: async () => {
+          for (const threadId of new Set(Object.values(others)))
+            await host.store.database
+              .updateTable("threads")
+              .set({ inputQueuePaused: true, inputQueuePausedBy: owner })
+              .where("id", "=", threadId)
+              .execute();
+        },
+        after: async () => {
+          await host.store.database
+            .updateTable("threads")
+            .set({ inputQueuePaused: false, inputQueuePausedBy: null })
+            .where("id", "in", [...new Set(Object.values(others))])
+            .execute();
+        },
+        args: (c) => ({ taskId: others[c], action: "resume" }),
+        command: (c) => ({ type: "thread.inputQueue.resume", threadId: others[c] }),
+      },
+      {
+        name: "run.interrupt",
+        tool: "opensteer_task_interrupt",
+        args: async (c) => ({ taskId: (await stoppableRun(c)).threadId }),
+        command: (c) => ({
+          type: "run.interrupt",
+          threadId: stoppable[c].threadId,
+          runId: stoppable[c].runId,
         }),
       },
       {
@@ -1024,6 +1153,11 @@ it("records what today's tools let each caller do, and the door answers the same
       } = command as Record<string, unknown>;
       return rest;
     });
+    for (const method of ["cancel", "move", "steer", "resume", "interrupt"])
+      intercept(ThreadService.prototype, method, ([, command]) => {
+        const { idempotencyKey: _key, ...rest } = command as Record<string, unknown>;
+        return rest;
+      });
     intercept(ThreadService.prototype, "sendInput", ([, input]) => {
       const i = input as { threadId: string; content: unknown; policy: string };
       return {
