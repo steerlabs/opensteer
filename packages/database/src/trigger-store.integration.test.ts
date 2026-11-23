@@ -3172,6 +3172,84 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(requeued.provenNotStartedAt).not.toBeNull();
   });
 
+  it("halts a watch instead of spawning a second copy when a new boot lacks earlier-boots-contained-v1 (AB8)", async () => {
+    const fixture = await seedFixture("/tmp/opensteer-ab8-uncontained-watch");
+    const task = await createTask(fixture, "Watch containment anchor");
+    const created = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: task.id,
+      createdBy: fixture.userId,
+      idempotencyKey: `ab8-watch-${randomUUID()}`,
+      name: "Uncontained boot watch",
+      script: { interpreter: null, text: "setInterval(() => {}, 1000);" },
+      source: { kind: "watch" },
+    });
+
+    const firstBoot = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+    });
+    expect(firstBoot.activations).toHaveLength(1);
+    const activation = firstBoot.activations[0]!.activation;
+    await triggers.applyWatchStatus({
+      activationId: activation.id,
+      executionGeneration: activation.executionGeneration,
+      healthySince: new Date(),
+      lastError: null,
+      lastExitCode: null,
+      observed: "running",
+      restartCount: 0,
+      runnerBootId: "boot-1",
+      runnerConnectionGeneration: 1,
+      runnerId: fixture.runnerId,
+      stderrTail: "",
+      stdoutTail: "",
+      verifiedContainment: true,
+    });
+
+    // Boot 2 connects without earlier-boots-contained-v1: must halt instead of spawning a duplicate.
+    const secondBoot = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: false,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "boot-2",
+      runnerConnectionGeneration: 2,
+      runnerId: fixture.runnerId,
+    });
+    expect(secondBoot.activations).toEqual([]);
+    expect(secondBoot.halted).toBe(true);
+
+    const row = await database
+      .selectFrom("triggerWatchActivations")
+      .select(["lastError", "observed"])
+      .where("id", "=", activation.id)
+      .executeTakeFirstOrThrow();
+    expect(row.observed).toBe("halted");
+    expect(row.lastError).toContain("earlier-boot process containment");
+
+    const notice = await database
+      .selectFrom("automationFailureNotices")
+      .select(["reason", "detail"])
+      .where("triggerId", "=", created.trigger.id)
+      .executeTakeFirst();
+    expect(notice?.reason).toBe("watch-halted");
+
+    // Reconnecting again (even with earlierBootsContained: true) must NOT auto-restart a halted watch.
+    const thirdBoot = await triggers.reconcileWatchesForRunner({
+      earlierBootsContained: true,
+      environmentId: fixture.environmentId,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      runnerBootId: "boot-3",
+      runnerConnectionGeneration: 3,
+      runnerId: fixture.runnerId,
+    });
+    expect(thirdBoot.activations).toEqual([]);
+  });
+
   /**
    * Marks a Run running without dispatching it, with the grant a dispatched
    * Run holds: only a Run whose authority stands takes a steer.

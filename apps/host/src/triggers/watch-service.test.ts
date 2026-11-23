@@ -197,6 +197,42 @@ describe("WatchService", () => {
     });
     await service.close();
   });
+
+  it("passes earlierBootsContained=false when a Runner lacks earlier-boots-contained-v1 and notifies on halted watches (AB8)", async () => {
+    const fixture = watchFixture();
+    const reconcileWatchesForRunner = vi.fn<
+      WatchServiceOptions["store"]["reconcileWatchesForRunner"]
+    >(async () => ({ activations: [], halted: true, reconcileGeneration: 1 }));
+    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
+      async () => undefined,
+    );
+    const onChanged = vi.fn();
+    const service = new WatchService(
+      options(fixture, {
+        identityForEnvironment: () => ({
+          ...fixture.identity,
+          capabilities: fixture.identity.capabilities.filter(
+            (capability) => capability !== "earlier-boots-contained-v1",
+          ),
+        }),
+        onChanged,
+        reconcileWatches,
+        reconcileWatchesForRunner,
+      }),
+    );
+    try {
+      await service.reconcile(fixture.context.activation.environmentId);
+      expect(reconcileWatchesForRunner).toHaveBeenCalledWith(
+        expect.objectContaining({
+          earlierBootsContained: false,
+        }),
+      );
+      expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
+      expect(onChanged).toHaveBeenCalledOnce();
+    } finally {
+      await service.close();
+    }
+  });
   it("retries a failed reconciliation until the desired state converges", async () => {
     vi.useFakeTimers();
     const fixture = watchFixture();

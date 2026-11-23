@@ -168,6 +168,7 @@ export class WatchService {
       (await automationScriptCompatibilityReason(this.#runnerStore, environmentId));
     const snapshot = await this.#store.reconcileWatchesForRunner({
       ...(unavailableReason !== null ? { unavailableReason } : {}),
+      earlierBootsContained: identity.capabilities.includes("earlier-boots-contained-v1"),
       environmentId,
       leaseExpiresAt,
       runnerBootId: identity.bootId,
@@ -214,7 +215,7 @@ export class WatchService {
         agentHome: context.agentHome,
       });
     }
-    if (snapshot.unavailable) this.#onChanged();
+    if (snapshot.unavailable || snapshot.halted) this.#onChanged();
     await this.#runners.reconcileWatches(
       environmentId,
       snapshot.reconcileGeneration,

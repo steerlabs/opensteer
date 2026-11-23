@@ -1247,6 +1247,7 @@ export class TriggerStore {
     return rows.map(({ environmentId }) => environmentId);
   }
   async reconcileWatchesForRunner(input: {
+    readonly earlierBootsContained?: boolean;
     readonly environmentId: EnvironmentId;
     readonly unavailableReason?: string;
     readonly leaseExpiresAt: Date;
@@ -1255,10 +1256,36 @@ export class TriggerStore {
     readonly runnerId: RunnerId;
   }): Promise<{
     readonly activations: readonly WatchActivationContext[];
+    readonly halted?: true;
     readonly reconcileGeneration: number;
     readonly unavailable?: true;
   }> {
     return commitPersonalMutation(this.#database, async (transaction) => {
+      if (input.earlierBootsContained === false) {
+        // Lock candidate triggers before trigger_watch_activations so halting an uncontained
+        // prior-boot watch respects triggers (189) -> trigger_watch_activations (190) lock order.
+        const candidateTriggerIds = (
+          await transaction
+            .selectFrom("triggerWatchActivations")
+            .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+            .select("triggers.id")
+            .distinct()
+            .where("triggerWatchActivations.environmentId", "=", input.environmentId)
+            .where("triggerWatchActivations.desired", "=", "active")
+            .where("triggers.kind", "=", "watch")
+            .orderBy("triggers.id", "asc")
+            .execute()
+        ).map(({ id }) => id);
+        if (candidateTriggerIds.length > 0) {
+          await transaction
+            .selectFrom("triggers")
+            .select("id")
+            .where("id", "in", candidateTriggerIds)
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
+            .execute();
+        }
+      }
       const rows = await transaction
         .selectFrom("triggerWatchActivations")
         .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
@@ -1273,6 +1300,7 @@ export class TriggerStore {
         .execute();
       const activations: WatchActivationContext[] = [];
       let unavailable = false;
+      let halted = false;
       for (const row of rows) {
         const trigger = await transaction
           .selectFrom("triggers")
@@ -1303,6 +1331,9 @@ export class TriggerStore {
             .execute();
           continue;
         }
+        if (row.observed === "halted") {
+          continue;
+        }
         if (input.unavailableReason !== undefined) {
           await transaction
             .updateTable("triggerWatchActivations")
@@ -1325,6 +1356,49 @@ export class TriggerStore {
           !row.terminalEvidenceAt &&
           row.observed !== "stopped" &&
           row.observed !== "expired";
+        const priorBootUncontained =
+          !sameExecution &&
+          input.earlierBootsContained === false &&
+          row.runnerBootId !== null &&
+          row.runnerBootId !== input.runnerBootId &&
+          !row.terminalEvidenceAt &&
+          row.observed !== "stopped" &&
+          row.observed !== "expired";
+        if (priorBootUncontained) {
+          const now = new Date();
+          const detail =
+            "Watch did not start on the new boot because earlier-boot process containment could not be verified.";
+          await transaction
+            .updateTable("triggers")
+            .set({
+              failingSince: trigger.failingSince ?? now,
+              watchCrashNotifiedAt: trigger.watchCrashNotifiedAt ?? now,
+              updatedAt: now,
+            })
+            .where("id", "=", trigger.id)
+            .execute();
+          await transaction
+            .updateTable("triggerWatchActivations")
+            .set({
+              healthySince: null,
+              lastError: detail,
+              leaseExpiresAt: null,
+              observed: "halted",
+              updatedAt: now,
+            })
+            .where("id", "=", row.id)
+            .execute();
+          if (!trigger.watchCrashNotifiedAt) {
+            await recordAutomationFailure(transaction, {
+              activationId: row.id,
+              detail,
+              reason: "watch-halted",
+              triggerId: trigger.id,
+            });
+          }
+          halted = true;
+          continue;
+        }
         const nextExecutionGeneration = sameExecution
           ? Number(row.executionGeneration)
           : Number(row.executionGeneration) + 1;
@@ -1409,6 +1483,7 @@ export class TriggerStore {
       }
       return {
         activations,
+        ...(halted ? { halted: true } : {}),
         reconcileGeneration,
         ...(unavailable ? { unavailable: true } : {}),
       };
