@@ -622,6 +622,18 @@ export async function admitExecution(
     readonly threadId?: ThreadId | undefined;
   },
 ): Promise<ExecutionAuthority> {
+  return admitExecutionWith(database, input, undefined);
+}
+
+/**
+ * The admission, given the binding's row when the caller already read it in this transaction,
+ * so a command's admission reads its Run once.
+ */
+async function admitExecutionWith(
+  database: Kysely<DatabaseSchema>,
+  input: Parameters<typeof admitExecution>[1],
+  known: BindingFacts | null | undefined,
+): Promise<ExecutionAuthority> {
   await assertPersonalOwner(database, input.ownerUserId);
   const { subject, ownerUserId } = input;
   const base = { ownerUserId, subject, runId: null, runMode: null } as const;
@@ -662,7 +674,7 @@ export async function admitExecution(
       mode: connection.accessMode,
     };
   }
-  const facts = await bindingFacts(database, subject.bindingId);
+  const facts = known === undefined ? await bindingFacts(database, subject.bindingId) : known;
   // Owner means a known owner: an unknown, ended or inconsistent execution is refused.
   if (
     !facts ||
@@ -1000,13 +1012,18 @@ export async function admitCommand(
   const face = commandFaceFor(row, input);
   if (input.subject.kind === "person") return { answer: "now", face, execution: null };
   const admit = async (transaction: Kysely<DatabaseSchema>) => {
+    // A Run's row is read once: it names the connection to hold, and admission reads the rest of
+    // it. The connection itself is read after the hold, so a Disconnect meanwhile is seen.
+    const binding =
+      input.subject.kind === "binding"
+        ? await bindingFacts(transaction, input.subject.bindingId)
+        : undefined;
     const connectionId =
       input.subject.kind === "connection"
         ? input.subject.agentConnectionId
-        : await bindingAgentConnectionId(
-            transaction,
-            (input.subject as Extract<AuthoritySubject, { kind: "binding" }>).bindingId,
-          );
+        : binding && !binding.inconsistent
+          ? binding.agentConnectionId
+          : null;
     if (connectionId)
       await transaction
         .selectFrom("agentConnections")
@@ -1014,10 +1031,11 @@ export async function admitCommand(
         .where("id", "=", connectionId)
         .forShare()
         .executeTakeFirst();
-    const execution = await admitExecution(transaction, {
-      ownerUserId: input.ownerUserId,
-      subject: input.subject,
-    });
+    const execution = await admitExecutionWith(
+      transaction,
+      { ownerUserId: input.ownerUserId, subject: input.subject },
+      binding,
+    );
     const reach = await commandReach(
       transaction,
       execution,

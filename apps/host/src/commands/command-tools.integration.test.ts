@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { AgentGrant, ThreadAccessMode, ThreadId } from "@opensteer/core";
-import { AgentConnectionStore } from "@opensteer/database";
+import { AgentConnectionStore, admitCommand } from "@opensteer/database";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { expect, it, vi } from "vitest";
 import {
@@ -135,6 +135,41 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       area: "settings",
       view: expect.objectContaining({ accessMode: expect.any(String) }),
     });
+
+    // A door command's admission from a Run reads that Run's row once, in a counted number of
+    // statements (rule 7: your own agents' paths stay as cheap as before).
+    const counted = await dispatchCallerRun(host, machine, {
+      key: "commands-counted",
+      title: "commands-counted",
+      threadId: await task("commands-counted", "full-access"),
+    });
+    const admission: string[] = [];
+    const query = pg.Client.prototype.query;
+    const counting = vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (
+      this: pg.Client,
+      ...args: unknown[]
+    ) {
+      const first = args[0] as string | { readonly text?: string } | undefined;
+      admission.push(typeof first === "string" ? first : (first?.text ?? "<unknown>"));
+      return Reflect.apply(query, this, args) as never;
+    });
+    try {
+      await admitCommand(host.store.database, {
+        ownerUserId: owner,
+        subject: { kind: "binding", bindingId: `run:${counted.runId}` },
+        command: rename("Counted").command as never,
+      });
+    } finally {
+      counting.mockRestore();
+    }
+    // Its slot is the computer's: the Runs below need it.
+    await counted.complete();
+    expect(
+      admission.filter((statement) => /from "runs" inner join "threads"/u.test(statement)),
+      admission.join("\n"),
+    ).toHaveLength(1);
+    // begin, the Run's row, the owner, the Home's settings, commit: the Run read once, not twice.
+    expect(admission, admission.join("\n")).toHaveLength(5);
 
     // Supervised: the same command waits for the person; a Run's call is held for the answer.
     const supervised = await runFor("approval-required", "commands-supervised");
