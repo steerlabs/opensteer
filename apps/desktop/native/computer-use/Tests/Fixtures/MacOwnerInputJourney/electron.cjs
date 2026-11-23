@@ -33,6 +33,8 @@ for (const [name, type] of [['keydown', 10], ['keyup', 11]]) {
     key: event.key, trusted: event.isTrusted, shift: event.shiftKey}));
 }
 </script>`;
+// Electron's state stays in the journey's work directory, removed with it.
+app.setPath("userData", config.userData);
 app.commandLine.appendSwitch("force-renderer-accessibility");
 void app.whenReady().then(async () => {
   fs.mkdirSync(out, { recursive: true });
