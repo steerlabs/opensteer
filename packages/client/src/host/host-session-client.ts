@@ -597,6 +597,7 @@ export class HttpHostClient {
   readonly organizeTabs = this.#tabsClient.organizeTabs;
   readonly updateTabGroup = this.#tabsClient.updateTabGroup;
   readonly deleteTabGroup = this.#tabsClient.deleteTabGroup;
+  readonly closeTabGroup = this.#tabsClient.closeTabGroup;
   readonly listApps = this.#tabsClient.listApps;
   readonly getApp = this.#tabsClient.getApp;
   readonly renameApp = this.#tabsClient.renameApp;

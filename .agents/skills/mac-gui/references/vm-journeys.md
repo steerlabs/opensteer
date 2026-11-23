@@ -19,6 +19,18 @@ then runs at 2x, which is the density its capture steps need to show a page shri
 `/Volumes/My Shared Files/inputs`; it must be a real path without symlinks or `:`, and files are
 copied to guest APFS before modification.
 
+**Fixture keychain.** The runner guarantees every guest job a keychain of its own
+([fixture-keychain.sh](../../../../scripts/test-vm/fixture-keychain.sh)), with a constant test
+password, no auto-lock, the user's default and first in the search list, so Electron's protected
+storage works in the suite. It is unlocked again in the suite's own SSH connection, because an
+unlock does not carry between SSH connections: in another connection it reads as locked, and
+Electron there gets errSecInteractionNotAllowed (-25308). Cleanup restores the previous default
+and search list and deletes it. The login keychain is never unlocked, read or changed, and the step
+cannot run outside the guest: it refuses unless macOS reports a hypervisor and the clone's
+`~/opensteer-job/guest-job` marker (written at staging) names the job's VM.
+`pnpm exec tsx scripts/test-vm/guest-contract-journey.ts` holds it to that. To see what a suite's
+session can do with it, run `pnpm test:vm -- bash ../../scripts/test-vm/keychain-diagnostic.sh`.
+
 **Run records.** Inspect the printed `~/.local/state/opensteer/vm-runs/<run-id>` record, phase logs
 and guest artifacts, and confirm the selected cases passed and the clone was deleted. After an
 uncatchable crash, stop or delete only the Tart clone `job.json` records. Read retention receipts
