@@ -10,6 +10,8 @@ import {
   commandHolds,
   commandNotFoundMessage,
   commandRule,
+  connectionRequests,
+  withDatabaseTransaction,
   type CommandRequestOrigin,
   type DatabaseSchema,
 } from "@opensteer/database";
@@ -296,16 +298,25 @@ export class CommandTools {
         // a connected agent's, the task tree it works in, or the automation's own task.
         if (!connectionId && mode === "full-access")
           return { area: input.area, view: { requests } };
+        // A connection's lineage sees what the one predicate gives it (connectionRequests): the
+        // same Requests its task tools count and read, and nothing a hidden one changes (K5).
         const mine = new Set(
           connectionId
-            ? (
-                await this.#database
-                  .selectFrom("requests")
-                  .innerJoin("threads", "threads.id", "requests.originatingThreadId")
-                  .select("requests.id")
-                  .where("threads.originConnectionId", "=", connectionId as never)
-                  .execute()
-              ).map(({ id }) => id as string)
+            ? await withDatabaseTransaction(this.#database, async (transaction) =>
+                (
+                  await (
+                    await connectionRequests(transaction, {
+                      kind: "connection",
+                      userId: caller.userId,
+                      connectionId,
+                      accessMode: mode,
+                    })
+                  )
+                    .clearSelect()
+                    .select("requests.id")
+                    .execute()
+                ).map(({ id }) => id as string),
+              )
             : await lineageRequests(
                 this.#database,
                 caller.kind === "run"
