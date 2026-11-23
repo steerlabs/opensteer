@@ -160,7 +160,7 @@ export class ExecutionCoordinator {
     return this.#stopping;
   }
   async #stop(): Promise<void> {
-    this.#controller?.abort(new Error("Coordinator stopped"));
+    this.#controller?.abort(new CoordinatorStoppedError());
     this.#cancelPoll?.();
     this.#cancelPoll = undefined;
     await this.#reads.stop();
@@ -352,11 +352,11 @@ export class ExecutionCoordinator {
         dispatchError.disposition === "uncertain" && isResendableControlCommand(command.type);
       if (dispatchError.disposition === "retry" || resendable) {
         await this.#settle(command.id, async () => {
-          await this.#store.retryCommand(
-            command.id,
-            dispatchError,
-            dispatchError.provenNotStarted ? { provenNotStarted: true } : undefined,
-          );
+          if (dispatchError.provenNotStarted) {
+            await this.#store.retryCommand(command.id, dispatchError, { provenNotStarted: true });
+          } else {
+            await this.#store.retryCommand(command.id, dispatchError);
+          }
           // Recorded once the retry has committed: a listing read before then
           // misses the command, and must not take it for one that left.
           this.#backOff(command.id, command.environmentId ?? null);
@@ -428,11 +428,23 @@ export class ExecutionCoordinator {
     }, at - now);
   }
 }
+class CoordinatorStoppedError extends Error {
+  override readonly name = "CoordinatorStoppedError";
+
+  constructor() {
+    super("Coordinator stopped");
+  }
+}
+
 function normalizeDispatchError(error: unknown): CommandDispatchError {
   if (error instanceof CommandDispatchError) return error;
-  if (error instanceof Error && error.name === "AbortError") {
+  if (
+    error instanceof CoordinatorStoppedError ||
+    (error instanceof Error && error.name === "AbortError")
+  ) {
     return new CommandDispatchError("Dispatch was aborted before sending.", "retry", {
       cause: error,
+      provenNotStarted: true,
     });
   }
   if (error instanceof OpensteerError && error.code !== "internal") {

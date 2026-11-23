@@ -833,6 +833,79 @@ describe("ExecutionCoordinator", () => {
     await waitFor(() => dispatch.mock.calls.length === 2);
     await coordinator.stop();
   });
+
+  it("retries an unsent firing when coordinator.stop() aborts pre-send setup and preserves uncertain dispatches (Z8)", async () => {
+    const command = pendingCommand({
+      payload: { type: "trigger.execute" },
+      runId: null,
+      type: "trigger.execute",
+    });
+    const store = fakeStore(command);
+    let dispatchEntered = false;
+    const coordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async (_command, signal) => {
+          dispatchEntered = true;
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          signal.throwIfAborted();
+        },
+      },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      pollIntervalMs: 10_000,
+      store: store.value,
+    });
+    coordinator.start();
+    await waitFor(() => dispatchEntered);
+    await coordinator.stop();
+    expect(store.retryCommand).toHaveBeenCalledWith(
+      command.id,
+      expect.objectContaining({ disposition: "retry", provenNotStarted: true }),
+      { provenNotStarted: true },
+    );
+    expect(store.failCommand).not.toHaveBeenCalled();
+
+    // If bytes may already have left (uncertain), coordinator shutdown must NEVER retry it.
+    const sentCommand = pendingCommand({
+      payload: { type: "trigger.execute" },
+      runId: null,
+      type: "trigger.execute",
+    });
+    const sentStore = fakeStore(sentCommand);
+    let sentEntered = false;
+    const sentCoordinator = new ExecutionCoordinator({
+      dispatcher: {
+        isAvailable: () => true,
+        dispatch: async (_command, signal) => {
+          sentEntered = true;
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          throw new CommandDispatchError("Lost connection after frame left", "uncertain");
+        },
+      },
+      dispatcherId: "test-dispatcher",
+      maxConcurrentRuns: 1,
+      maxConcurrentTriggerPrograms: 1,
+      maxQueuedBytes: 10_000,
+      maxQueuedCommands: 10,
+      pollIntervalMs: 10_000,
+      store: sentStore.value,
+    });
+    sentCoordinator.start();
+    await waitFor(() => sentEntered);
+    await sentCoordinator.stop();
+    expect(sentStore.retryCommand).not.toHaveBeenCalled();
+    expect(sentStore.failCommand).not.toHaveBeenCalled();
+  });
 });
 function backoffStore(pending: () => readonly PendingCommandRow[]) {
   const claimCommand = vi.fn(async (id: CommandId) => {
