@@ -149,7 +149,7 @@ export function NativeEditingProxy({
    * after it goes, and the person sees the refusal.
    */
   const send = (
-    operations: EditingOperation[],
+    operations: readonly EditingOperation[],
     refused: (operation: EditingOperation) => void,
   ): boolean => {
     for (const operation of operations)
