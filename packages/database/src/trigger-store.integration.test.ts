@@ -18,11 +18,7 @@ import {
   type TriggerId,
 } from "@opensteer/core";
 import type { RunnerDescriptor } from "@opensteer/protocol";
-import {
-  MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
-  WATCH_OBSERVATIONS_PER_HOUR,
-  type TriggerOccurrence,
-} from "@opensteer/triggers";
+import type { TriggerOccurrence } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import {
@@ -2274,18 +2270,11 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(row.watchCrashNotifiedAt).not.toBeNull();
     expect(row.failingSince).not.toBeNull();
   });
-  it("enforces FIFO one-firing-at-a-time for webhooks, schedule overruns, wake fuse, 100-firing output pruning, per-computer watch limit, and runner removal pause (T8/T10/Y6/Y11/Y14)", async ({
+  it("enforces FIFO one-firing-at-a-time for webhooks, schedule overruns, 100-firing output pruning, and runner removal pause (T8/T10/Y6/Y11)", async ({
     storeFixture,
   }) => {
-    const {
-      createFixture,
-      createScheduleTrigger,
-      createWatchTrigger,
-      triggers,
-      store,
-      database,
-      complete,
-    } = storeFixture;
+    const { createFixture, createScheduleTrigger, triggers, store, database, complete } =
+      storeFixture;
     const fixture = await createFixture("commit5-fuses");
 
     // 1. Webhooks queue FIFO and only the head firing appears in listPendingCommands (Y11)
@@ -2408,41 +2397,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerId: fixture.runnerId,
     });
 
-    // 3. Wake fuse (T10): respects wakeLimitPerHour and emits one 'wake-limit-reached' notice
-    await database
-      .updateTable("triggers")
-      .set({ wakeLimitPerHour: 2 })
-      .where("id", "=", sched.trigger.id)
-      .execute();
-    await triggers.recordAutomationWake({
-      toolName: "opensteer_task_send",
-      triggerId: sched.trigger.id,
-    });
-    await triggers.recordAutomationWake({
-      toolName: "send_to_person",
-      triggerId: sched.trigger.id,
-    });
-    await expect(
-      triggers.recordAutomationWake({
-        toolName: "send_to_person",
-        triggerId: sched.trigger.id,
-      }),
-    ).rejects.toMatchObject({ code: "resource_exhausted" });
-    await expect(
-      triggers.recordAutomationWake({
-        toolName: "send_to_person",
-        triggerId: sched.trigger.id,
-      }),
-    ).rejects.toMatchObject({ code: "resource_exhausted" });
-    const wakeNotices = await database
-      .selectFrom("automationFailureNotices")
-      .select(["reason"])
-      .where("triggerId", "=", sched.trigger.id)
-      .where("reason", "=", "wake-limit-reached")
-      .execute();
-    expect(wakeNotices).toHaveLength(1);
-
-    // 4. 100-firing output pruning (T10): keep 100 most recent outputs, prune older without deleting rows
+    // 3. 100-firing output pruning (T10): keep 100 most recent outputs, prune older without deleting rows
     const principal = await database
       .selectFrom("principals")
       .select("id")
@@ -2538,19 +2493,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       expect(row.webhookBody).toBeNull();
     }
 
-    // 5. Per-computer watch limit (Y14)
-    await database
-      .updateTable("executionEnvironments")
-      .set({ maxActiveWatches: 2 })
-      .where("id", "=", fixture.environmentId)
-      .execute();
-    await createWatchTrigger(fixture, "watch-cap-1");
-    await createWatchTrigger(fixture, "watch-cap-2");
-    await expect(createWatchTrigger(fixture, "watch-cap-3")).rejects.toMatchObject({
-      code: "resource_exhausted",
-    });
-
-    // 6. Removing a computer pauses its automations and settles running firings to unknown (Y6)
+    // 4. Removing a computer pauses its automations and settles running firings to unknown (Y6)
     await database
       .updateTable("runners")
       .set({ kind: "local", ownerKind: "user", ownerUserId: fixture.userId })
@@ -2678,41 +2621,11 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect(duplicateInput.message.id).toBe(firstInput.message.id);
     expect(duplicateInput.input.causalChainId).toBe(firstInput.input.causalChainId);
-    for (let index = 1; index < WATCH_OBSERVATIONS_PER_HOUR; index += 1) {
-      await admitWatchControlRequest(
-        database,
-        request(firstActivation, `stable-${index + 1}`, `request-${index + 2}`),
-      );
-    }
-    await expect(
-      admitWatchControlRequest(
-        database,
-        request(firstActivation, "over-limit", "request-over-limit"),
-      ),
-    ).rejects.toMatchObject({
-      code: "resource_exhausted",
-      details: {
-        limit: WATCH_OBSERVATIONS_PER_HOUR,
-      },
-    });
     const secondActivation = activations.get(second.trigger.id)!;
     await expect(
       admitWatchControlRequest(database, request(secondActivation, "independent", "other-watch")),
     ).resolves.toEqual({
       wasDuplicate: false,
-    });
-  });
-  it("enforces the active watch limit per environment", async ({ storeFixture }) => {
-    const { createFixture, createWatchTrigger } = storeFixture;
-    const fixture = await createFixture("watch-limit");
-    for (let index = 0; index < MAX_ACTIVE_WATCHES_PER_ENVIRONMENT; index += 1) {
-      await createWatchTrigger(fixture, `watch-limit-${index}`);
-    }
-    await expect(createWatchTrigger(fixture, "watch-limit-overflow")).rejects.toMatchObject({
-      code: "resource_exhausted",
-      details: {
-        limit: MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
-      },
     });
   });
 

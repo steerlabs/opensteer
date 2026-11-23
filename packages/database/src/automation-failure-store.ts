@@ -19,7 +19,6 @@ export type AutomationFailureReason =
   | "started-failing"
   | "overran-schedule"
   | "watch-crash-loop"
-  | "wake-limit-reached"
   | "outcome-unknown";
 
 /**

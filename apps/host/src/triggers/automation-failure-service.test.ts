@@ -119,7 +119,7 @@ it("describes outcome-unknown notices as lost contact rather than interrupted (Z
   }
 });
 
-it("describes started-failing, overran-schedule, watch-crash-loop, and wake-limit-reached without claiming the automation was paused (T8/T9/T10/Y10)", async () => {
+it("describes started-failing, overran-schedule, and watch-crash-loop without claiming the automation was paused (T8/T9/Y10)", async () => {
   vi.useFakeTimers();
   const threadId = createId("thread");
   const triggerId = createId("trigger");
@@ -131,7 +131,6 @@ it("describes started-failing, overran-schedule, watch-crash-loop, and wake-limi
     { reason: "started-failing", detail: "exit 1", match: /started failing/iu },
     { reason: "overran-schedule", detail: "still running", match: /still running/iu },
     { reason: "watch-crash-loop", detail: "exit 137", match: /keeps stopping/iu },
-    { reason: "wake-limit-reached", detail: "120/hr", match: /wake limit/iu },
   ];
   try {
     for (const item of cases) {

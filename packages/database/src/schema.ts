@@ -613,7 +613,6 @@ interface ExecutionEnvironmentTable {
   kind: "main" | "local" | "managed";
   runnerId: RunnerId | null;
   capabilities: JsonColumn<readonly string[]>;
-  maxActiveWatches: Generated<number | null>;
   createdAt: Timestamp;
 }
 
@@ -1159,7 +1158,6 @@ interface TriggerTable {
   failureNotifiedAt: Generated<Date | null>;
   overrunNotifiedAt: Generated<Date | null>;
   watchCrashNotifiedAt: Generated<Date | null>;
-  wakeLimitPerHour: Generated<number | null>;
   encryptedSecrets: Generated<Buffer | null>;
   secretsKeyVersion: Generated<number | null>;
   waitingReason: Generated<string | null>;
@@ -1216,16 +1214,6 @@ export interface TriggerWatchActivationTable {
   leaseExpiresAt: NullableTimestamp;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-}
-
-export interface AutomationWakeTable {
-  id: string;
-  triggerId: TriggerId;
-  occurrenceId: TriggerOccurrenceId | null;
-  activationId: TriggerWatchActivationId | null;
-  toolName: string;
-  requestId: string | null;
-  createdAt: Generated<Date>;
 }
 
 export interface TriggerOccurrenceTable {
@@ -1406,7 +1394,6 @@ export interface AutomationFailureNoticeTable {
     | "started-failing"
     | "overran-schedule"
     | "watch-crash-loop"
-    | "wake-limit-reached"
     | "outcome-unknown";
   detail: string;
   attempts: Generated<number>;
@@ -2354,7 +2341,6 @@ export interface DatabaseSchema {
   triggerRevisions: TriggerRevisionTable;
   triggerWatchActivations: TriggerWatchActivationTable;
   watchControlRequests: WatchControlRequestTable;
-  automationWakes: AutomationWakeTable;
   triggerOccurrences: TriggerOccurrenceTable;
   triggerOccurrenceAttempts: TriggerOccurrenceAttemptTable;
   providerSessions: ProviderSessionTable;

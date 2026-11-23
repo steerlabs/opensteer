@@ -6,7 +6,7 @@ import {
 } from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   minThreadAccessMode,
   threadAccessModeAtMost,
@@ -29,8 +29,6 @@ import {
 } from "@opensteer/core";
 import {
   AutomationScriptSchema,
-  DEFAULT_MAX_WATCHES_PER_COMPUTER,
-  DEFAULT_WAKES_PER_HOUR,
   MANAGED_MEMORY_REFUSAL,
   type TriggerSystemRole,
   MAX_PENDING_TRIGGER_OCCURRENCES,
@@ -3083,77 +3081,6 @@ export class TriggerStore {
     }
     return unknownRows.length;
   }
-
-  /**
-   * T10 rolling-hour wake/ping fuse per automation (120/hr default, overridable via
-   * `triggers.wake_limit_per_hour`). Admits the wake by inserting a row into `automation_wakes`,
-   * or commits a one-per-hour `'wake-limit-reached'` notice and throws `resource_exhausted`.
-   */
-  async recordAutomationWake(input: {
-    readonly activationId?: TriggerWatchActivationId;
-    readonly occurrenceId?: TriggerOccurrenceId;
-    readonly requestId?: string;
-    readonly toolName: string;
-    readonly triggerId: TriggerId;
-  }): Promise<void> {
-    const decision = await commitPersonalMutation(this.#database, async (transaction) => {
-      const trigger = await transaction
-        .selectFrom("triggers")
-        .select(["id", "wakeLimitPerHour"])
-        .where("id", "=", input.triggerId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!trigger) throw notFound("Trigger not found");
-      const now = new Date();
-      const windowStart = new Date(now.getTime() - 3_600_000);
-      const limit = trigger.wakeLimitPerHour ?? DEFAULT_WAKES_PER_HOUR;
-      const counted = await transaction
-        .selectFrom("automationWakes")
-        .select(({ fn }) => fn.countAll<string>().as("count"))
-        .where("triggerId", "=", trigger.id)
-        .where("createdAt", ">=", windowStart)
-        .executeTakeFirstOrThrow();
-      const count = Number(counted.count);
-      if (count >= limit) {
-        const recentNotice = await transaction
-          .selectFrom("automationFailureNotices")
-          .select("id")
-          .where("triggerId", "=", trigger.id)
-          .where("reason", "=", "wake-limit-reached")
-          .where("createdAt", ">=", windowStart)
-          .executeTakeFirst();
-        if (!recentNotice) {
-          await recordAutomationFailure(transaction, {
-            ...(input.activationId ? { activationId: input.activationId } : {}),
-            detail: `Reached ${limit} wakes in the last hour via ${input.toolName}.`,
-            reason: "wake-limit-reached",
-            triggerId: trigger.id,
-          });
-        }
-        return { admitted: false as const, limit };
-      }
-      await transaction
-        .insertInto("automationWakes")
-        .values({
-          activationId: input.activationId ?? null,
-          createdAt: now,
-          id: randomUUID(),
-          occurrenceId: input.occurrenceId ?? null,
-          requestId: input.requestId ?? null,
-          toolName: input.toolName,
-          triggerId: trigger.id,
-        })
-        .execute();
-      return { admitted: true as const, limit };
-    });
-    if (!decision.admitted) {
-      throw new OpensteerError({
-        code: "resource_exhausted",
-        details: { limit: decision.limit, triggerId: input.triggerId },
-        message: `This automation reached its hourly wake limit (${decision.limit}/hr).`,
-      });
-    }
-  }
 }
 
 /**
@@ -3619,31 +3546,12 @@ async function createWatchActivation(
     readonly triggerId: TriggerId;
   },
 ): Promise<TriggerWatchActivation> {
-  const environment = await transaction
+  await transaction
     .selectFrom("executionEnvironments")
-    .select(["id", "maxActiveWatches"])
+    .select("id")
     .where("id", "=", input.environmentId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  const active = await transaction
-    .selectFrom("triggerWatchActivations")
-    .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerWatchActivations.revisionId")
-    .select(({ fn }) => fn.countAll<string>().as("count"))
-    .where("environmentId", "=", input.environmentId)
-    .where("desired", "=", "active")
-    .where(executableProgram)
-    .executeTakeFirstOrThrow();
-  const maxActiveWatches = environment.maxActiveWatches ?? DEFAULT_MAX_WATCHES_PER_COMPUTER;
-  if (Number(active.count) >= maxActiveWatches) {
-    throw new OpensteerError({
-      code: "resource_exhausted",
-      details: {
-        environmentId: input.environmentId,
-        limit: maxActiveWatches,
-      },
-      message: `This computer already has ${maxActiveWatches} active watches, its concurrent limit`,
-    });
-  }
   const now = new Date();
   const row = await transaction
     .insertInto("triggerWatchActivations")

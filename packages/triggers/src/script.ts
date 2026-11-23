@@ -4,7 +4,7 @@ import {
   MAX_AUTOMATION_SECRET_VALUE_BYTES,
   MAX_AUTOMATION_SECRETS_TOTAL_BYTES,
   MAX_SCRIPT_BYTES,
-} from "./fuses.js";
+} from "./bounds.js";
 
 const InterpreterArgSchema = z
   .string()

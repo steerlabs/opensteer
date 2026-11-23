@@ -125,9 +125,6 @@ function noticeText(notice: PendingAutomationFailure): string {
   if (notice.reason === "watch-crash-loop") {
     return `${automation} keeps stopping and restarting. It is still active and retrying with backoff.\n\nLatest exit and error: ${JSON.stringify(notice.detail)}`;
   }
-  if (notice.reason === "wake-limit-reached") {
-    return `${automation} reached its hourly wake limit, so additional wakes are being refused until the rolling hour clears. It is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;
-  }
   const ended =
     notice.reason === "final-occurrence-failed"
       ? `${automation} failed on its only scheduled run, so it will not run again.`

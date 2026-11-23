@@ -20,6 +20,7 @@ import { agentDirectoryMigrationName } from "./agent-directory-migration.js";
 import { automationScriptsMigrationName } from "./automation-scripts-migration.js";
 import { pauseLegacyV5AutomationsMigrationName } from "./pause-legacy-v5-automations-migration.js";
 import { simplifyAutomationsSchemaMigrationName } from "./simplify-automations-schema-migration.js";
+import { removeAutomationFusesMigrationName } from "./remove-automation-fuses-migration.js";
 it("exposes the fresh, uniquely named Host baseline and the migrations after it", async () => {
   const names = Object.keys(await migrationProvider().getMigrations());
   expect(names).toEqual([
@@ -79,6 +80,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     automationScriptsMigrationName,
     pauseLegacyV5AutomationsMigrationName,
     simplifyAutomationsSchemaMigrationName,
+    removeAutomationFusesMigrationName,
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

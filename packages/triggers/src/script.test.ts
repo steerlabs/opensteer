@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SCRIPT_BYTES } from "./fuses.js";
+import { MAX_SCRIPT_BYTES } from "./bounds.js";
 import {
   AutomationOutcomeSchema,
   AutomationPausedBySchema,

@@ -1651,8 +1651,30 @@ it("applies 0055_automation_scripts expand-only without breaking legacy v5 rows"
       .rows,
   ).toHaveLength(1);
 
-  // Fresh catalog matches upgraded catalog.
+  // Fresh catalog matches upgraded catalog, and 0058 drops the removed T10 fuses cleanly.
   await migrateToLatest(database);
+  expect(
+    (
+      await sql<{
+        exists: boolean;
+      }>`select to_regclass('public.automation_wakes') is not null as exists`.execute(database)
+    ).rows[0]?.exists,
+  ).toBe(false);
+  const droppedColumns = (
+    await sql<{ tableName: string; columnName: string }>`
+      select table_name, column_name from information_schema.columns
+      where table_schema = 'public'
+        and ((table_name = 'triggers' and column_name = 'wake_limit_per_hour')
+          or (table_name = 'execution_environments' and column_name = 'max_active_watches'))
+    `.execute(database)
+  ).rows;
+  expect(droppedColumns).toEqual([]);
+  await expect(
+    sql`insert into automation_failure_notices(id, trigger_id, reason, detail)
+      values (${crypto.randomUUID()}, ${triggerId}, 'wake-limit-reached', 'nope')`.execute(
+      database,
+    ),
+  ).rejects.toThrow(/check constraint/u);
   const upgraded = await catalog();
   await sql`drop schema public cascade;create schema public`.execute(database);
   await migrateToLatest(database);

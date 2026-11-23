@@ -237,7 +237,6 @@ export const databaseLockOrder = [
   "machine_access_sessions",
   "advisory:personal-remote-access",
   "automation_failure_notices",
-  "automation_wakes",
   "task_question_notices",
   "owner_enrollments",
   "personal_remote_access",
