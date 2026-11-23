@@ -387,7 +387,6 @@
       "select *, clock_timestamp() as \"now\" from \"client_sync_state\" limit $1 for no key update",
       "select *, clock_timestamp() as \"now\" from \"client_sync_state\" limit $1 for no key update",
       "select count(*) as \"count\" from \"browser_session_attachments\" where \"session_id\" = $1",
-      "select count(*) as \"count\" from \"browser_session_attachments\" where \"session_id\" = $1",
       "set local statement_timeout = <ms>",
       "set local statement_timeout = <ms>",
       "set local statement_timeout = <ms>",

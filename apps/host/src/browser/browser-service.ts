@@ -9499,14 +9499,26 @@ export class HostedBrowserBroker {
       });
       assertBrowserDialogSurface(this.#snapshot?.dialog ?? null, this.#surfaces);
       this.#reconcileHistory(this.#surfaces);
-      if (!this.#runtimeReady) {
+      const becameReady = !this.#runtimeReady;
+      if (becameReady) {
         if (!this.#reconnecting) {
           if (!this.#adoptedFromPool) await this.#sendSavedTabs();
           await this.#onState("ready");
         }
         this.#reconnecting = false;
         this.#runtimeReady = true;
-        await this.#sendSessionState();
+        // #onState("ready") transitions the session and may schedule a deferred
+        // refreshSessionState() timer with a pool hold; flush it now so no stale
+        // 50 ms hold outlives the initial session.state send.
+        if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
+        this.#sessionStateTimer = undefined;
+        const hold = this.#sessionStateHold;
+        this.#sessionStateHold = undefined;
+        try {
+          await this.#sendSessionState();
+        } finally {
+          hold?.release();
+        }
         const reconnectReady = this.#reconnectReady;
         this.#reconnectReady = null;
         reconnectReady?.resolve();
@@ -9534,9 +9546,10 @@ export class HostedBrowserBroker {
           this.#sendViewerSurface(consumer);
       }
       if (
-        previousActive !== active ||
-        changes.removed.length ||
-        changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id)))
+        !becameReady &&
+        (previousActive !== active ||
+          changes.removed.length ||
+          changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id))))
       )
         this.refreshSessionState();
       return stream.op === "end";
