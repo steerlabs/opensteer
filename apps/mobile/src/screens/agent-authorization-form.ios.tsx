@@ -22,9 +22,10 @@ import {
   frame,
   lineLimit,
   shapes,
+  dynamicTypeSize,
 } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
-import { color } from "../theme.js";
+import { color, displayDynamicTypeLimit } from "../theme.js";
 import {
   agentAuthorizationLabelLimit,
   type AgentAuthorizationFormProps,
@@ -79,7 +80,11 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
             </RNHostView>
           )}
           <Text
-            modifiers={[font({ textStyle: "title2", weight: "bold" }), foregroundStyle(color.text)]}
+            modifiers={[
+              font({ textStyle: "title2", weight: "bold" }),
+              dynamicTypeSize({ max: displayDynamicTypeLimit }),
+              foregroundStyle(color.text),
+            ]}
           >
             {props.title}
           </Text>

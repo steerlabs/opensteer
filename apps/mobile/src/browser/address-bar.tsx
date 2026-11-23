@@ -24,6 +24,7 @@ import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { ToolbarCapsule } from "./toolbar.js";
+import { HostLine } from "../ui/address-text.js";
 
 /** How far the address is dragged before letting go moves to the next tab. */
 const switchDistance = 56;
@@ -84,7 +85,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   });
   const moved = useAnimatedStyle(() => ({ transform: [{ translateX: drag.value }] }));
   const reduceMotion = useReducedMotion();
-  const site = props.site ?? "Search or enter address";
+  const placeholder = "Search or enter address";
   const following = props.following ?? null;
   const device = props.device ?? null;
   const address = props.site === null ? "Address" : `Address, ${props.site}`;
@@ -152,15 +153,26 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
                   </Animated.View>
                 )}
               </LayoutAnimationConfig>
-              <AppText
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                numberOfLines={1}
-                role="secondaryMedium"
-                style={styles.siteText}
-                tone={props.site === null ? "muted" : "default"}
-              >
-                {site}
-              </AppText>
+              {props.site === null ? (
+                <AppText
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  numberOfLines={1}
+                  role="secondaryMedium"
+                  style={styles.siteText}
+                  tone="muted"
+                >
+                  {placeholder}
+                </AppText>
+              ) : (
+                // One line, as a browser's bar: the host plain, giving up its start and keeping
+                // the end that says whose it is. The whole address is in the field it opens.
+                <HostLine
+                  host={props.site}
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  role="secondaryMedium"
+                  style={styles.siteText}
+                />
+              )}
             </Animated.View>
           </Pressable>
           {device === null ? null : <DeviceGlyph device={device} />}
@@ -341,9 +353,13 @@ export function AddressEditor(props: {
               <AppText numberOfLines={1} role="secondaryMedium">
                 {tab.title}
               </AppText>
-              <AppText numberOfLines={1} role="caption" tone="muted">
-                {tab.site === null ? "Switch to tab" : `Switch to tab · ${tab.site}`}
-              </AppText>
+              {tab.site === null ? (
+                <AppText numberOfLines={1} role="caption" tone="muted">
+                  Switch to tab
+                </AppText>
+              ) : (
+                <HostLine before="Switch to tab · " host={tab.site} role="caption" tone="muted" />
+              )}
             </View>
             <Symbol name="square.on.square" size={15} tint={color.muted} />
           </Pressable>

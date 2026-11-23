@@ -447,6 +447,9 @@ export function ThreadTitlePill(
               {props.connectionLabel === null && stopLine === null ? null : (
                 <ThreadSubtitle
                   connectionLabel={props.connectionLabel}
+                  {...(props.connectionKeepsEnd === undefined
+                    ? {}
+                    : { connectionKeepsEnd: props.connectionKeepsEnd })}
                   line={stopLine}
                   task={null}
                 />
@@ -467,6 +470,9 @@ export function ThreadTitlePill(
           {name}
           <ThreadSubtitle
             connectionLabel={props.connectionLabel}
+            {...(props.connectionKeepsEnd === undefined
+              ? {}
+              : { connectionKeepsEnd: props.connectionKeepsEnd })}
             line={stopLine}
             // iOS says "Completed" in the menu's heading and its accessible
             // name, so the bar keeps one line for the title. Android's menu

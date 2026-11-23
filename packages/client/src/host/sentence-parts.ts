@@ -56,15 +56,20 @@ export function siteOrigin(value: string): string | null {
   }
 }
 
-/** `Send ${code} to ${address}.`, as parts: each interpolated value is an address. */
+/** A name a person gave (a computer, a profile, an app), never drawn as an address. */
+export function named(value: string): { readonly name: string } {
+  return { name: value };
+}
+
+/** `Send ${code} to ${address}.`, as parts: each bare string is an address; `named(...)` is a name. */
 export function sentence(
   strings: TemplateStringsArray,
-  ...addresses: readonly string[]
+  ...slots: readonly (string | { readonly name: string })[]
 ): readonly SentencePart[] {
   return strings.flatMap((words, index) => {
-    const address = addresses[index];
+    const slot = slots[index];
     const parts: SentencePart[] = words === "" ? [] : [words];
-    if (address !== undefined) parts.push({ address });
+    if (slot !== undefined) parts.push(typeof slot === "string" ? { address: slot } : slot);
     return parts;
   });
 }

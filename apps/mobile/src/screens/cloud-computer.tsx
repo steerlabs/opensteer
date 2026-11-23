@@ -16,6 +16,7 @@ import { useCopy } from "../ui/copy-mark.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
+import { addressDetail } from "../ui/sentence-parts.js";
 
 /**
  * Opensteer Cloud Computer on the phone. Checkout and billing happen on the Opensteer
@@ -184,7 +185,7 @@ export function cloudComputerSections(props: {
                 kind: "status",
                 tone: "neutral",
                 label: cloudWords("cloud.checkoutWebAddress"),
-                detail: url,
+                ...addressDetail(url),
               },
               {
                 key: "copy",
@@ -305,7 +306,7 @@ export function cloudComputerSections(props: {
           key: "open",
           kind: "button",
           label: cloudWords("cloud.ready.open"),
-          detail: computer.host ?? address,
+          ...addressDetail(computer.host ?? address),
           disabled: !listed,
           onPress: () => {
             if (deploymentId) props.onOpen(deploymentId);
@@ -334,7 +335,7 @@ export function cloudComputerSections(props: {
         kind: "status",
         tone: computer.status.tone,
         label: computer.status.label,
-        ...(address === null ? {} : { detail: address }),
+        ...(address === null ? {} : addressDetail(address)),
       },
       ...(address === null
         ? []
@@ -358,7 +359,7 @@ export function cloudComputerSections(props: {
               key: "browser-address",
               kind: "text" as const,
               label: cloudWords("cloud.ip.address"),
-              detail: computer.browserAddress,
+              ...addressDetail(computer.browserAddress),
             },
           ]
         : []),

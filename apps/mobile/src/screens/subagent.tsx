@@ -71,7 +71,7 @@ import { useAppForeground } from "../ui/foreground.js";
 import { useLiquidGlass } from "../ui/glass.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { appear } from "../ui/motion.js";
-import { AppText } from "../ui/primitives.js";
+import { AppText, DisplayTitle } from "../ui/primitives.js";
 import { Screen, useGutter, useReadingColumn } from "../ui/screen.js";
 import { useContentInsets } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
@@ -511,7 +511,7 @@ function WatchFooter(props: {
       {narrow ? null : <Symbol name="eye" size={14} tint={color.muted} />}
       {line !== null ? (
         <View style={styles.barWords}>
-          <ActionLine line={line} numberOfLines={2} />
+          <ActionLine line={line} />
         </View>
       ) : (
         <AppText role="caption" style={styles.barWords} tone="muted">
@@ -603,7 +603,7 @@ function Body(props: {
           ) : null}
           <View style={styles.heading}>
             <View accessibilityRole="header">
-              <AppText role="displaySmall">{card.title}</AppText>
+              <DisplayTitle size="small">{card.title}</DisplayTitle>
             </View>
             <Meta card={card} />
           </View>

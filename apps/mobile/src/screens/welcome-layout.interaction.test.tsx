@@ -8,6 +8,7 @@ import {
   layoutWindow,
   overlaps,
   textElement,
+  textFaults,
 } from "../../test-support/yoga-frames.js";
 
 vi.mock("react-native", async () => ({
@@ -99,6 +100,10 @@ describe("where an account's first Opensteer lives, on a phone", () => {
           ),
         );
         const frames = await layout(container, size);
+        expect(
+          textFaults(frames, { column: size.width - 32 - 24 }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const words = [
           "Where should your Opensteer live?",
           "Free. Works while your Mac is awake.",
@@ -168,6 +173,10 @@ describe("the phone's front door", () => {
           ),
         );
         const frames = await layout(container, size);
+        expect(
+          textFaults(frames, { column: size.width - 32 - 24 }),
+          "a text a person reads is broken or cut",
+        ).toEqual([]);
         const sentence = textElement(container, "will find your Opensteer");
         expect(frames.cut(sentence), "the sentence is cut").toBe(false);
         const controls = [...container.querySelectorAll("[data-pressable]")];

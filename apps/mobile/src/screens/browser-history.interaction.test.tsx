@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { addressValue, addressWords } from "../ui/address-words.js";
 
 const state = vi.hoisted(() => ({
   alert: null as null | {
@@ -57,6 +58,7 @@ vi.mock("react-native", () => ({
     },
   },
   AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
+  useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
   Pressable: ({
     accessibilityLabel,
     children,
@@ -107,7 +109,13 @@ vi.mock(
   "../ui/placeholder.js",
   async () => (await import("../../test-support/action-line-mocks.js")).placeholder,
 );
-vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
+vi.mock("../theme.js", () => ({
+  color: {},
+  radius: {},
+  space: {},
+  stackedFontScale: 2,
+  touchTarget: 44,
+}));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
   useListContentInsets: () => ({}),
@@ -295,8 +303,10 @@ describe("mobile browsing history", () => {
     const { get, remove, clear, icons, history, update } = host();
     await render();
     expect(get).toHaveBeenCalledWith("bpr_work");
-    expect(text().indexOf("Newest")).toBeLessThan(text().indexOf("old.example"));
-    expect(text()).toContain("new.example");
+    expect(addressValue(text()).indexOf("Newest")).toBeLessThan(
+      addressValue(text()).indexOf("old.example"),
+    );
+    expect(text()).toContain(addressWords("new.example"));
     expect(icons).toHaveBeenCalledWith("bpr_work", ["icon-new"]);
     expect(document.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
     await press("Remove from history");
@@ -404,10 +414,10 @@ describe("mobile browsing history", () => {
       icons: [],
     });
     await render();
-    expect(text()).toContain("bank.example/one");
-    expect(text()).toContain("bank.example/two?tab=2");
-    expect(text()).toContain("bank.example#/account");
-    expect(text()).toContain("bank.example#/billing");
+    expect(text()).toContain(addressWords("bank.example/one"));
+    expect(text()).toContain(addressWords("bank.example/two?tab=2"));
+    expect(text()).toContain(addressWords("bank.example#/account"));
+    expect(text()).toContain(addressWords("bank.example#/billing"));
     const labels = [...document.querySelectorAll("[aria-label^='History actions for']")].map(
       (control) => control.getAttribute("aria-label"),
     );
