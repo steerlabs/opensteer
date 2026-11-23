@@ -254,7 +254,14 @@ integration("Host and Chromium editing contract", () => {
         expect(viewer.messages[0]).not.toHaveProperty("editingVersion");
       checks.push("signed ticket and per-control/watch snapshot opt-in");
       // CZ5: a paste is made for the field a viewer last saw focused, and refused in any other.
-      const fieldContext = async (messages: readonly BrowserServerMessage[]) => {
+      const fieldContext = async (
+        messages: readonly BrowserServerMessage[],
+        match: (
+          field: NonNullable<
+            Extract<BrowserServerMessage, { type: "browser.editing" }>["context"]["field"]
+          >,
+        ) => boolean = () => true,
+      ) => {
         let contextId: string | undefined;
         await expect
           .poll(() => {
@@ -262,7 +269,9 @@ integration("Host and Chromium editing contract", () => {
               .filter((m) => m.type === "browser.editing" && m.surfaceId === surfaceId)
               .at(-1);
             contextId =
-              published?.type === "browser.editing" && published.context.field !== null
+              published?.type === "browser.editing" &&
+              published.context.field !== null &&
+              match(published.context.field)
                 ? published.context.contextId
                 : undefined;
             return contextId;
@@ -335,7 +344,7 @@ integration("Host and Chromium editing contract", () => {
           type: "clipboard.copy",
           surfaceId,
           operationId: id,
-          contextId: await fieldContext(person.messages),
+          contextId: await fieldContext(person.messages, (field) => !field.sensitive),
         });
         await expect
           .poll(() =>
