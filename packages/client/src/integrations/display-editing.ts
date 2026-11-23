@@ -34,8 +34,15 @@ const refusalWords: Record<DisplayInputRefusal, string> = {
   unavailable: "Input is unavailable.",
   contended: "Another viewer is pressing. Try again.",
 };
+const unknownClipboardWords = {
+  paste: "May have been pasted: check before pasting again.",
+  cut: "May have been cut: check before cutting again.",
+} as const;
 interface Pending {
   readonly copy: boolean;
+  readonly mutatesClipboard?: "paste" | "cut";
+  /** True once `lease.input` registered a sequence and handed the batch to the socket. */
+  sent: boolean;
   dispatched?: true;
   clipboardRefusal?: { readonly reason: string; readonly message: string };
   readonly sequences: Set<number>;
@@ -96,8 +103,8 @@ export class DisplayEditingSession {
     const scope = this.#currentScope();
     if (scope === this.#scope) return;
     this.#scope = scope;
-    this.#cancel("The display changed. Try again.");
-    this.#set({ context: null, receipt: null });
+    const preservedReceipt = this.#cancel("The display changed. Try again.");
+    this.#set({ context: null, ...(preservedReceipt ? {} : { receipt: null }) });
   }
   #set(patch: Partial<DisplayEditingSnapshot>): void {
     this.#state = { ...this.#state, ...patch };
@@ -129,11 +136,26 @@ export class DisplayEditingSession {
         (error: Error) => held.callers.forEach((caller) => caller.reject(error)),
       );
   }
-  #cancel(reason: string): void {
+  #carrierEnded(pending: Pending, reason: Error, recordTimeoutReceipt: boolean): boolean {
+    // Q1 (AGENTS.md rule 4): once a paste or cut batch has left this client onto the carrier,
+    // never report it as failed or invite a blind retry on timeout or display/carrier change.
+    if (pending.sent && pending.mutatesClipboard) {
+      this.#count(this.diagnostics.clipboard, "unknown");
+      this.#set({ receipt: unknownClipboardWords[pending.mutatesClipboard] });
+      this.#finish(pending, undefined, { outcome: "unknown", items: [] });
+      return true;
+    }
+    this.#finish(pending, recordTimeoutReceipt ? this.#refuse("timeout", reason.message) : reason);
+    return false;
+  }
+  #cancel(reason: string): boolean {
     const held = this.#held;
     this.#held = null;
     for (const caller of held?.callers ?? []) caller.reject(new Error(reason));
-    for (const pending of new Set(this.#pending.values())) this.#finish(pending, new Error(reason));
+    let preservedReceipt = false;
+    for (const pending of new Set(this.#pending.values()))
+      if (this.#carrierEnded(pending, new Error(reason), false)) preservedReceipt = true;
+    return preservedReceipt;
   }
   #refuse(reason: string, message: string): Error {
     this.#count(this.diagnostics.refusals, reason);
@@ -334,18 +356,22 @@ export class DisplayEditingSession {
     copy = false,
     atomic = false,
   ): Promise<ViewerClipboardResult | undefined> {
+    const mutatesClipboard = events.some((event) => event.kind === "paste")
+      ? "paste"
+      : events.some((event) => event.kind === "cut")
+        ? "cut"
+        : undefined;
     return new Promise((resolve, reject) => {
       const pending: Pending = {
         copy,
+        ...(mutatesClipboard ? { mutatesClipboard } : {}),
+        sent: false,
         resolve,
         reject,
         sequences: new Set(),
         timer: setTimeout(
           () =>
-            this.#finish(
-              pending,
-              this.#refuse("timeout", "This device didn’t respond. Try again."),
-            ),
+            this.#carrierEnded(pending, new Error("This device didn’t respond. Try again."), true),
           10000,
         ),
       };
@@ -355,6 +381,7 @@ export class DisplayEditingSession {
             geometry,
             events,
             (sequence) => {
+              pending.sent = true;
               pending.sequences.add(sequence);
               this.#pending.set(sequence, pending);
             },
@@ -363,6 +390,14 @@ export class DisplayEditingSession {
         )
           this.#finish(pending, new Error("Input is unavailable."));
       } catch (error) {
+        if (pending.sent && pending.mutatesClipboard) {
+          this.#carrierEnded(
+            pending,
+            error instanceof Error ? error : new Error("This edit couldn’t be sent."),
+            false,
+          );
+          return;
+        }
         this.#finish(
           pending,
           atomic

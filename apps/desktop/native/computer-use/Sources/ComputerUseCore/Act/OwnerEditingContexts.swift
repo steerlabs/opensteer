@@ -25,11 +25,11 @@ struct OwnerEditingContexts: Sendable {
     }
 
     func matchesExpected(_ expected: ObservedState) -> Bool {
-      guard location == expected.location, length == expected.length else { return false }
-      if let expectedText = expected.text, let actualText = text {
-        return actualText == expectedText
-      }
-      return true
+      // Q2: an expected (or observed) state whose text could not be predicted is NOT a match: rotate.
+      guard location == expected.location, length == expected.length,
+            let expectedText = expected.text, let actualText = text
+      else { return false }
+      return actualText == expectedText
     }
   }
 

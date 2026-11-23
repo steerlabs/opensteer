@@ -61,7 +61,9 @@ export function createMobileBrowserEditing(
             await write(result.items, current);
           else if (result.outcome === "unknown")
             error(
-              "The connection ended before the paste was confirmed. Check the page before pasting again.",
+              operation.kind === "cut"
+                ? "May have been cut: check before cutting again."
+                : "May have been pasted: check before pasting again.",
             );
           else if (!["empty", "pasted"].includes(result.outcome))
             error(`Clipboard ${result.outcome}.`);

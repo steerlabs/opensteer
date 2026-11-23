@@ -272,6 +272,13 @@ let timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
   case "owner-resume": a.makeFirstResponder(ownerNote)
   case "owner-end": ownerNote.setSelectedRange(NSRange(location: (ownerNote.string as NSString).length, length: 0))
   case "owner-middle": ownerNote.setSelectedRange(NSRange(location: 2, length: 0))
+  case "owner-rewrite-last":
+    let current = ownerNote.string
+    if let last = current.last {
+      let rewritten = String(current.dropLast()) + String(last).uppercased()
+      ownerNote.string = rewritten
+      ownerNote.setSelectedRange(NSRange(location: (rewritten as NSString).length, length: 0))
+    }
   case "owner-close-child":
     if let child = windows.removeValue(forKey: "Child") {
       child.parent?.removeChildWindow(child)

@@ -206,10 +206,12 @@ describe("browser editing transport", () => {
       part: { operationId: command.operationId, index: 1, data: "YQ==" },
     });
     await rejection;
-    const pending = target.send({ kind: "cut", contextId: crypto.randomUUID() });
-    const canceled = expect(pending).rejects.toThrow("disconnected");
+    const pendingCopy = target.send({ kind: "copy", contextId: crypto.randomUUID() });
+    const pendingCut = target.send({ kind: "cut", contextId: crypto.randomUUID() });
+    const canceled = expect(pendingCopy).rejects.toThrow("disconnected");
     store.disconnect(sessionId);
     await canceled;
+    expect(await pendingCut).toEqual({ outcome: "unknown", items: [] });
     store.dispose();
   });
   it("delivers page writes only to the active viewer and drops unawaited parts", async () => {
@@ -361,6 +363,61 @@ describe("browser editing transport", () => {
       });
       store.disconnect(sessionId, surfaceId);
       expect(await inFlightPaste).toEqual({ outcome: "unknown", items: [] });
+    } finally {
+      store.dispose();
+      vi.useRealTimers();
+    }
+  });
+  it("resolves unknown on 10 s timeout or disconnect for a sent paste or cut, while unsent ones and copies still fail", async () => {
+    vi.useFakeTimers();
+    let failSend: string | null = null;
+    const commands: BrowserCommand[] = [];
+    const store = new BrowserEditingStore((_session, _surface, command) => {
+      if (failSend && command.type === failSend) throw new Error("Transport closed before send.");
+      commands.push(command);
+    });
+    store.negotiate(sessionId, 2, surfaceId, true);
+    const target = store.target(sessionId, surfaceId);
+    try {
+      const contextId = crypto.randomUUID();
+      // Paste NOT yet sent (transport refuses before command leaves client): rejects, never unknown.
+      failSend = "clipboard.paste-data";
+      await expect(
+        target.send({
+          kind: "paste",
+          items: [{ type: "text/plain", bytes: encoder.encode("unsent") }],
+          contextId,
+        }),
+      ).rejects.toThrow("Transport closed before send.");
+
+      // Cut NOT yet sent: rejects, never unknown.
+      failSend = "clipboard.cut";
+      await expect(target.send({ kind: "cut", contextId })).rejects.toThrow(
+        "Transport closed before send.",
+      );
+      failSend = null;
+
+      // Paste SENT, then 10 s timer fires while parts/result are still in flight: unknown, never failure.
+      const timedOutPaste = target.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: encoder.encode("slow-upload") }],
+        contextId,
+      });
+      // Cut SENT, then 10 s timer fires: unknown, never failure.
+      const timedOutCut = target.send({ kind: "cut", contextId });
+      // Copy SENT, then 10 s timer fires: nothing changed on the far side, so timeout rejection is honest.
+      const timedOutCopy = target.send({ kind: "copy", contextId });
+      const copyRejection = expect(timedOutCopy).rejects.toThrow("timed out");
+
+      vi.advanceTimersByTime(10_000);
+      expect(await timedOutPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(await timedOutCut).toEqual({ outcome: "unknown", items: [] });
+      await copyRejection;
+
+      // Cut SENT, then carrier disconnects: unknown, never failure.
+      const disconnectedCut = target.send({ kind: "cut", contextId });
+      store.disconnect(sessionId, surfaceId);
+      expect(await disconnectedCut).toEqual({ outcome: "unknown", items: [] });
     } finally {
       store.dispose();
       vi.useRealTimers();

@@ -166,9 +166,7 @@ export function RemoteEditingProxy({
           (result) => {
             if (!arm) {
               if (result?.outcome === "unknown")
-                refuse(
-                  "The connection ended before the paste was confirmed. Check the page before pasting again.",
-                );
+                refuse("May have been pasted: check before pasting again.");
               else if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
                 refuse(`The remote clipboard operation was ${result.outcome}.`);
               return;
@@ -181,7 +179,9 @@ export function RemoteEditingProxy({
               arm.resolve(result.items);
             else {
               arm.reject();
-              if (result && result.outcome !== "empty")
+              if (result?.outcome === "unknown")
+                refuse("May have been cut: check before cutting again.");
+              else if (result && result.outcome !== "empty")
                 refuse(`The remote clipboard operation was ${result.outcome}.`);
             }
           },
@@ -237,9 +237,7 @@ export function RemoteEditingProxy({
               void sendBatch(group).then(
                 (result) => {
                   if (result?.outcome === "unknown")
-                    refuse(
-                      "The connection ended before the paste was confirmed. Check the page before pasting again.",
-                    );
+                    refuse("May have been pasted: check before pasting again.");
                   else if (result && !["copied", "cut", "pasted", "empty"].includes(result.outcome))
                     refuse(`The remote clipboard operation was ${result.outcome}.`);
                 },

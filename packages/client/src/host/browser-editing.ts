@@ -471,9 +471,9 @@ export class BrowserEditingStore {
             }
           }
         } catch (error) {
-          this.#fail(
+          this.#carrierEnded(
             operationId,
-            error instanceof Error ? error : new Error("Clipboard transport failed."),
+            error instanceof Error ? error.message : "Clipboard transport failed.",
           );
         }
         return result;
@@ -484,7 +484,7 @@ export class BrowserEditingStore {
     if (this.#pending.size >= 16) throw new Error("Too many pending clipboard operations.");
     return new Promise((resolve, reject) => {
       const timer = setTimeout(
-        () => this.#fail(id, new Error("The remote clipboard operation timed out.")),
+        () => this.#carrierEnded(id, "The remote clipboard operation timed out."),
         10_000,
       );
       this.#pending.set(id, {
@@ -732,9 +732,9 @@ export class BrowserEditingStore {
   #carrierEnded(id: string, message: string): void {
     const pending = this.#pending.get(id);
     if (!pending) return;
-    // P1 (AGENTS.md rule 4): a paste already sent onto the carrier may have landed; never
-    // report it as "refused" or invite a blind second paste.
-    if (pending.kind === "paste" && pending.dispatched) {
+    // P1 / Q1 (AGENTS.md rule 4): a paste or cut already sent onto the carrier may have changed
+    // the far field; never report it as failed or invite a blind retry.
+    if ((pending.kind === "paste" || pending.kind === "cut") && pending.dispatched) {
       this.#count(this.diagnostics.clipboard, "unknown");
       this.#take(id)?.resolve({ outcome: "unknown", items: [] });
       return;
@@ -839,8 +839,13 @@ export class BrowserEditingStore {
             operation.kind === "copy" ? "KeyC" : "KeyX",
             [target.state.negotiated ? "primary" : platform === "mac" ? "meta" : "control"],
           );
+          const pending = this.#pending.get(id);
+          if (pending) pending.dispatched = true;
         } catch (error) {
-          this.#fail(id, error instanceof Error ? error : new Error("Clipboard transport failed."));
+          this.#carrierEnded(
+            id,
+            error instanceof Error ? error.message : "Clipboard transport failed.",
+          );
         }
         return result;
       }

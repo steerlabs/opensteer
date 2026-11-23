@@ -1352,6 +1352,147 @@ describe("display editing receipt adapter", () => {
     expect(socket.messages("display.input")).toHaveLength(1);
     editing.dispose();
   });
+  it("reports sent paste and cut as unknown (never Try again) on 10 s timeout and resize, while unsent ones and copies may still say Try again", async () => {
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    const fieldContext = {
+      type: "display.editing" as const,
+      generation: 1,
+      context: {
+        contextId,
+        field: { kind: "text" as const, multiline: false, sensitive: false },
+        caret: null,
+      },
+    };
+    let scopeIndex = 0;
+    async function cutCapableFixture() {
+      const { DisplayEditingSession } = await import("./display-editing.js");
+      const lease = streams.retain({ ...target, scope: `q1-${++scopeIndex}`, editing: 1 });
+      const socket = opened();
+      socket.json({
+        type: "display.state",
+        state: "live",
+        generation: 1,
+        width: 720,
+        height: 1280,
+        editingVersion: 1,
+        displayCut: 1,
+        sharedInput: 1,
+      });
+      const editing = new DisplayEditingSession(lease);
+      editing.setGeometry(1);
+      socket.json(fieldContext);
+      return { lease, socket, editing };
+    }
+
+    // Q1(b): 10 s timeout — sent paste resolves unknown with non-retry wording; sent cut too;
+    // copy still rejects with Try again; unsent paste rejects immediately.
+    {
+      const { socket, editing } = await cutCapableFixture();
+      const sentPaste = editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("slow") }],
+        contextId,
+      });
+      const sentBatchPaste = editing.sendBatch([
+        { kind: "edit", edit: { contextId, before: "x", after: "", text: "" } },
+        {
+          kind: "paste",
+          items: [{ type: "text/plain", bytes: new TextEncoder().encode("y") }],
+          contextId,
+          follows: true,
+        },
+      ]);
+      const sentCut = editing.send({ kind: "cut", contextId });
+      const sentCopy = editing.send({ kind: "copy", contextId });
+      expect(socket.messages("display.input")).toHaveLength(4);
+      const copyFailed = expect(sentCopy).rejects.toThrow("Try again.");
+
+      vi.advanceTimersByTime(10_000);
+      expect(await sentPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(await sentBatchPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(await sentCut).toEqual({ outcome: "unknown", items: [] });
+      await copyFailed;
+      // Separate check on receipt for a sent paste timing out alone:
+      const soloPaste = editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("solo") }],
+        contextId,
+      });
+      vi.advanceTimersByTime(10_000);
+      expect(await soloPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(editing.getSnapshot().receipt).toBe(
+        "May have been pasted: check before pasting again.",
+      );
+
+      // Paste NOT yet sent when input is refused before leaving client: rejects, not unknown.
+      const beforeUnsent = socket.messages("display.input").length;
+      socket.json({
+        type: "display.state",
+        state: "paused",
+        generation: 1,
+        width: 720,
+        height: 1280,
+        editingVersion: 1,
+        displayCut: 1,
+        sharedInput: 1,
+      });
+      await expect(
+        editing.send({
+          kind: "paste",
+          items: [{ type: "text/plain", bytes: new TextEncoder().encode("unsent") }],
+          contextId,
+        }),
+      ).rejects.toThrow("Try again.");
+      expect(socket.messages("display.input")).toHaveLength(beforeUnsent);
+      editing.dispose();
+    }
+
+    // Q1(c): resize / geometry change / dispose — sent paste & cut resolve unknown (never Try again);
+    // paste & cut attempted after resize (NOT yet sent) reject with "The display changed. Try again.".
+    for (const trigger of ["geometry", "generation", "dispose"] as const) {
+      const { socket, editing } = await cutCapableFixture();
+      const sentPaste = editing.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: new TextEncoder().encode("in-flight") }],
+        contextId,
+      });
+      const sentCut = editing.send({ kind: "cut", contextId });
+      const sentCopy = editing.send({ kind: "copy", contextId });
+      const copyRejected = expect(sentCopy).rejects.toThrow("The display changed. Try again.");
+      expect(socket.messages("display.input")).toHaveLength(3);
+
+      if (trigger === "geometry") editing.setGeometry(null);
+      else if (trigger === "dispose") editing.dispose();
+      else
+        socket.json({
+          type: "display.state",
+          state: "live",
+          generation: 2,
+          width: 800,
+          height: 1280,
+          editingVersion: 1,
+          displayCut: 1,
+          sharedInput: 1,
+        });
+
+      expect(await sentPaste).toEqual({ outcome: "unknown", items: [] });
+      expect(await sentCut).toEqual({ outcome: "unknown", items: [] });
+      await copyRejected;
+      if (trigger !== "dispose") {
+        expect(editing.getSnapshot().receipt).not.toContain("Try again");
+        // Now attempt a paste NOT yet sent after the resize: must reject with "Try again." and send nothing.
+        await expect(
+          editing.send({
+            kind: "paste",
+            items: [{ type: "text/plain", bytes: new TextEncoder().encode("after-resize") }],
+            contextId,
+          }),
+        ).rejects.toThrow("The display changed. Try again.");
+        expect(socket.messages("display.input")).toHaveLength(3);
+      }
+      editing.dispose();
+    }
+  });
 });
 
 describe("phone power and explicit-open intent", () => {

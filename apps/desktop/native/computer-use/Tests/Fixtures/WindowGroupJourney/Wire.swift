@@ -382,7 +382,7 @@ extension WireJourney {
     var cases: [String: String] = [:]
     var active: String?
     let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
-      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "other-field-insertion-refused", "verified-replacement", "replacement-text-gone", "stale-replacement", "rich-paste-refusal",
+      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "other-field-insertion-refused", "verified-replacement", "earlier-context-replacement", "replacement-text-gone", "stale-replacement", "own-burst-keeps-context", "app-rewrite-rotates", "rich-paste-refusal",
       "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
@@ -743,6 +743,60 @@ extension WireJourney {
     let afterStale = try await note()
     try require(stale["outcome"] as? String == "stale" && afterStale == "qé!", "Stale replacement changed the field")
     try require(try await context() != oldContext, "Stale replacement did not rotate context")
+    passed()
+    start("own-burst-keeps-context")
+    // Q3: send five edit insertions under C in five batches without waiting; after the text lands,
+    // C is still the published context and an exact command (selectAll) under C returns dispatched.
+    let burstContext = try await settledEditingContext(streamA, after: inputMark)
+    let beforeBurstText = try await note()
+    for ch in ["a", "b", "c", "d", "e"] {
+      let reply = try await input([["kind": "edit", "edit": ["contextId": burstContext, "text": ch, "before": "", "after": ""]]])
+      try require(reply["outcome"] as? String == "dispatched", "Own burst insertion \(ch) was refused")
+    }
+    let expectedBurstText = beforeBurstText + "abcde"
+    let burstDeadline = Date().addingTimeInterval(3)
+    while try await note() != expectedBurstText, Date() < burstDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterBurstText = try await note()
+    try require(afterBurstText == expectedBurstText, "Own burst insertions did not all land in order")
+    let afterBurstMark = editingMark
+    let settledAfterBurst = try await settledEditingContext(streamA, after: afterBurstMark)
+    try require(settledAfterBurst == burstContext, "Own burst of five insertions rotated the published context")
+    let burstSelectAll = try await input([["kind": "command", "command": "selectAll", "contextId": burstContext]])
+    try require(burstSelectAll["outcome"] as? String == "dispatched", "Exact selectAll under burst context was refused")
+    try await Contracts.command(out, "owner-end")
+    passed()
+    start("app-rewrite-rotates")
+    // Q3: send one insertion under C, then have the fixture rewrite what was typed (upper-casing
+    // the last character); the helper publishes a new context, refuses exact selectAll under C as
+    // stale, and still applies a relative insertion under C at the live collapsed caret.
+    let rewriteStartMark = editingMark
+    let rewriteContext = try await settledEditingContext(streamA, after: rewriteStartMark)
+    let beforeRewriteText = try await note()
+    let rewriteInsert = try await input([["kind": "edit", "edit": ["contextId": rewriteContext, "text": "z", "before": "", "after": ""]]])
+    try require(rewriteInsert["outcome"] as? String == "dispatched", "Insertion before app rewrite was refused")
+    let renderedLower = beforeRewriteText + "z"
+    let lowerDeadline = Date().addingTimeInterval(3)
+    while try await note() != renderedLower, Date() < lowerDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterLower = try await note()
+    try require(afterLower == renderedLower, "Insertion before app rewrite did not render")
+    try await Contracts.command(out, "owner-rewrite-last")
+    let rotatedContext = try await context(sensitive: false, excluding: rewriteContext)
+    try require(rotatedContext != rewriteContext, "App rewrite of typed text did not rotate the published context")
+    let staleSelectAll = try await input([["kind": "command", "command": "selectAll", "contextId": rewriteContext]])
+    try require(staleSelectAll["outcome"] as? String == "stale", "Exact selectAll under pre-rewrite context was not refused as stale")
+    let relativeAfterRewrite = try await input([["kind": "edit", "edit": ["contextId": rewriteContext, "text": "!", "before": "", "after": ""]]])
+    let expectedRewritten = beforeRewriteText + "Z!"
+    let rewriteDeadline = Date().addingTimeInterval(3)
+    while try await note() != expectedRewritten, Date() < rewriteDeadline {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    let afterRelative = try await note()
+    try require(relativeAfterRewrite["outcome"] as? String == "dispatched" && afterRelative == expectedRewritten,
+      "Relative insertion under pre-rewrite context did not apply at live caret")
     passed()
     start("rich-paste-refusal")
     let rich = try await input([["kind": "paste", "items": [["type": "image/png", "size": 64]]]])

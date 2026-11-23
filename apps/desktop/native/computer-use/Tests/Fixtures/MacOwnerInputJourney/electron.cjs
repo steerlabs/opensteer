@@ -126,6 +126,11 @@ void app.whenReady().then(async () => {
         case "owner-middle":
           await note('document.querySelector("#note").setSelectionRange(2,2)');
           break;
+        case "owner-rewrite-last":
+          await note(
+            'const n=document.querySelector("#note"); if (n.value.length > 0) { n.value = n.value.slice(0, -1) + n.value.slice(-1).toUpperCase(); n.setSelectionRange(n.value.length, n.value.length); }',
+          );
+          break;
         case "owner-other":
           await note(
             'document.querySelector("#other").value=""; document.querySelector("#other").focus()',

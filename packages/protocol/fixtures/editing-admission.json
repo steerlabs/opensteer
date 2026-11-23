@@ -475,6 +475,42 @@
         { "admits": { "context": "published", "kind": "relative" }, "is": true },
         { "admits": { "context": "published2", "kind": "relative" }, "is": true }
       ]
+    },
+    {
+      "name": "expected state with unknown text does not match and rotates",
+      "steps": [
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 1, "length": 0, "text": "a" }
+          },
+          "save": "c1",
+          "expectChanged": true
+        },
+        { "expectOwnEffect": { "location": 2, "length": 0, "text": null } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 2, "length": 0, "text": "XY" }
+          },
+          "save": "c2",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c1", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c1", "kind": "relative" }, "is": true },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": true },
+        { "expectOwnEffect": { "location": 3, "length": 0, "text": "XYz" } },
+        {
+          "observeState": {
+            "field": { "id": "el-1", "kind": "text", "sensitive": false, "editable": true },
+            "state": { "location": 3, "length": 0, "text": null }
+          },
+          "save": "c3",
+          "expectChanged": true
+        },
+        { "admits": { "context": "c2", "kind": "exact" }, "is": false },
+        { "admits": { "context": "c3", "kind": "exact" }, "is": true }
+      ]
     }
   ]
 }

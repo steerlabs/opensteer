@@ -127,8 +127,9 @@ function matchesExpectedState(
   expected: EditingObservedState,
 ): boolean {
   if (observed.location !== expected.location || observed.length !== expected.length) return false;
-  if (expected.text != null && observed.text != null) return observed.text === expected.text;
-  return true;
+  // Q2: an expected (or observed) state whose text could not be predicted is NOT a match: rotate.
+  if (expected.text == null || observed.text == null) return false;
+  return observed.text === expected.text;
 }
 
 /**
