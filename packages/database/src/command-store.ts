@@ -1484,6 +1484,35 @@ export async function listPendingCommands(
           ),
         ]),
       )
+      // Y11 / T8: One firing at a time per automation, FIFO order for queued webhooks.
+      .where((expression) =>
+        expression.or([
+          expression("commands.type", "!=", "trigger.execute"),
+          expression.not(
+            expression.exists(
+              expression
+                .selectFrom("triggerOccurrences as candidate")
+                .innerJoin(
+                  "triggerOccurrences as blocker",
+                  "blocker.triggerId",
+                  "candidate.triggerId",
+                )
+                .select("blocker.id")
+                .whereRef("candidate.commandId", "=", "commands.id")
+                .whereRef("blocker.id", "!=", "candidate.id")
+                .where((eb) =>
+                  eb.or([
+                    eb("blocker.status", "=", "running"),
+                    eb.and([
+                      eb("blocker.status", "=", "pending"),
+                      sql<boolean>`(blocker.created_at, blocker.id) < (candidate.created_at, candidate.id)`,
+                    ]),
+                  ]),
+                ),
+            ),
+          ),
+        ]),
+      )
       // A paused chat's work waits for the chat, not for time: it is not listed until it is back.
       .where((expression) => expression.not(chatWorkHeld(database)))
       .orderBy("commands.createdAt", "asc")

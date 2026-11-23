@@ -3011,6 +3011,37 @@ export async function createHostRuntime(
     const triggers = new TriggerService({
       runnerStore: store,
       onChanged: () => realtime.publishTriggersChanged(),
+      onInterruptFiring: (firing) => {
+        const identity = runners.identityForEnvironment(firing.environmentId);
+        if (
+          !identity ||
+          identity.runnerId !== firing.runnerId ||
+          identity.bootId !== firing.runnerBootId ||
+          !identity.capabilities.includes(triggerStopGenerationCapability)
+        ) {
+          return;
+        }
+        const stopId = createId("command");
+        void runners
+          .dispatch(
+            {
+              commandId: stopId,
+              correlationId: CorrelationIdSchema.parse(stopId),
+              environmentId: firing.environmentId,
+              executionGeneration: firing.executionGeneration,
+              occurrenceId: firing.occurrenceId,
+              type: "trigger.interrupt",
+            },
+            AbortSignal.timeout(3_000),
+            { connectionGeneration: identity.connectionGeneration },
+          )
+          .catch((error) => {
+            app.log.warn(
+              { err: error, occurrenceId: firing.occurrenceId },
+              "Failed to interrupt running automation firing on pause",
+            );
+          });
+      },
 
       onOccurrenceQueued: () => {
         coordinator.wake();

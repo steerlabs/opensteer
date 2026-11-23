@@ -20,7 +20,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { RunnerDescriptor } from "@opensteer/protocol";
-import { WATCH_AUTO_PAUSE_REASON, type TriggerOccurrence } from "@opensteer/triggers";
+import type { TriggerOccurrence } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { AutomationFailureStore, recordAutomationFailure } from "./automation-failure-store.js";
@@ -577,33 +577,47 @@ integration.sequential("automation failure notices", () => {
       "Anchor summary",
     );
   });
-  it("records nothing for a recurring failure below the threshold, and one auto-pause", async ({
+  it("records one started-failing notice without auto-pausing, and resets on recovery (T9)", async ({
     storeFixture,
   }) => {
-    const { createFixture, createCronTrigger, failManual, storedNotices, detail } = storeFixture;
+    const {
+      createFixture,
+      createCronTrigger,
+      failManual,
+      fireManual,
+      complete,
+      storedNotices,
+      detail,
+    } = storeFixture;
     const fixture = await createFixture("recurring");
     const created = await createCronTrigger(fixture, "recurring");
-    await failManual(fixture, created.trigger.id, "first");
-    await failManual(fixture, created.trigger.id, "second");
-    expect(await storedNotices()).toEqual([]);
-    const third = await failManual(fixture, created.trigger.id, "third");
+    const first = await failManual(fixture, created.trigger.id, "first");
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
         detail: "Program failed",
-        occurrenceId: third.id,
-        reason: "paused",
+        occurrenceId: first.id,
+        reason: "started-failing",
         settledAt: null,
         triggerId: created.trigger.id,
       },
     ]);
+    await failManual(fixture, created.trigger.id, "second");
+    await failManual(fixture, created.trigger.id, "third");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      status: "paused",
+      consecutiveFailures: 3,
+      status: "active",
     });
-
-    // A run that fails after the pause is not a second stop.
-    await failManual(fixture, created.trigger.id, "after-pause");
+    // Additional failures while already failing do not spam another notice.
     expect(await storedNotices()).toHaveLength(1);
+    // Recovery clears failureNotifiedAt so a later failure notifies once again.
+    await complete(fixture, await fireManual(fixture, created.trigger.id), "succeeded", "recover");
+    const nextFail = await failManual(fixture, created.trigger.id, "after-recovery");
+    expect(await storedNotices()).toHaveLength(2);
+    expect((await storedNotices())[1]).toMatchObject({
+      occurrenceId: nextFail.id,
+      reason: "started-failing",
+    });
   });
   it("marks unannounced firings unknown on attach for every lineage, notices one-shots, and lets a late proof settle unknown (T12)", async ({
     storeFixture,
@@ -1321,7 +1335,7 @@ integration.sequential("automation failure notices", () => {
       listAfterCancel.find((item) => item.id === created.trigger.id)?.latestOccurrence?.status,
     ).toBe("canceled");
   });
-  it("records one notice when a crash-looping watch is auto-paused", async ({ storeFixture }) => {
+  it("records one watch-crash-loop notice without auto-pausing (Y10)", async ({ storeFixture }) => {
     const { createFixture, triggers, storedNotices, detail } = storeFixture;
     const fixture = await createFixture("watch");
     const created = await triggers.create({
@@ -1366,21 +1380,21 @@ integration.sequential("automation failure notices", () => {
     expect((await report(1)).autoPaused).toBe(false);
     expect((await report(2)).autoPaused).toBe(false);
     expect(await storedNotices()).toEqual([]);
-    expect((await report(3)).autoPaused).toBe(true);
+    expect((await report(3)).autoPaused).toBe(false);
     await report(4);
     expect(await storedNotices()).toEqual([
       {
         activationId: activation.id,
-        detail: "program exited with code 1",
+        detail: "exit 1: program exited with code 1",
         occurrenceId: null,
-        reason: "paused",
+        reason: "watch-crash-loop",
         settledAt: null,
         triggerId: created.trigger.id,
       },
     ]);
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
-      pauseReason: WATCH_AUTO_PAUSE_REASON,
-      status: "paused",
+      pauseReason: null,
+      status: "active",
     });
   });
   it("records one notice per Occurrence, with a bounded detail", async ({ storeFixture }) => {
@@ -1391,6 +1405,7 @@ integration.sequential("automation failure notices", () => {
       database,
       fireManual,
       storedNotices,
+      triggers,
     } = storeFixture;
     const fixture = await createFixture("bounded");
     const created = await createOneShotTrigger(fixture, "bounded");
@@ -1428,6 +1443,11 @@ integration.sequential("automation failure notices", () => {
           }),
         );
       }
+      await triggers.cancelPendingOccurrences(fixture.userId, {
+        actorThreadId: null,
+        occurrenceId: occurrence.id,
+        triggerId: created.trigger.id,
+      });
       const manual = await fireManual(fixture, created.trigger.id);
       await commitPersonalMutation(database, (transaction) =>
         recordAutomationFailure(transaction, {

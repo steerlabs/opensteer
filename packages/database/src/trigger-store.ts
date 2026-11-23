@@ -7,7 +7,7 @@ import {
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   minThreadAccessMode,
   threadAccessModeAtMost,
@@ -29,15 +29,14 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
+  DEFAULT_MAX_WATCHES_PER_COMPUTER,
+  DEFAULT_WAKES_PER_HOUR,
   MANAGED_MEMORY_REFUSAL,
   type TriggerSystemRole,
   MAX_PENDING_TRIGGER_OCCURRENCES,
-  MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
-  TRIGGER_AUTO_PAUSE_FAILURE_THRESHOLD,
-  TRIGGER_AUTO_PAUSE_REASON,
+  RETAINED_OUTPUT_OCCURRENCES,
   TRIGGER_PROGRAM_UPDATE_REASON,
   WATCH_AUTO_PAUSE_FAILURE_THRESHOLD,
-  WATCH_AUTO_PAUSE_REASON,
   WATCH_HEALTHY_WINDOW_MS,
   TriggerOccurrenceSchema,
   TriggerProgramEventSchema,
@@ -53,6 +52,7 @@ import {
   triggerOccurrenceErrorMessage,
   triggerAccess,
   validateTriggerSchedule,
+  type AutomationPausedBy,
   type Trigger,
   type TriggerExecutionOutput,
   type TriggerOccurrence,
@@ -130,6 +130,14 @@ export interface TriggerDetail {
   readonly occurrences: readonly TriggerOccurrence[];
   readonly revision: TriggerRevision;
   readonly trigger: Trigger;
+}
+export interface RunningFiringRef {
+  readonly commandId: CommandId;
+  readonly environmentId: EnvironmentId;
+  readonly executionGeneration: number;
+  readonly occurrenceId: TriggerOccurrenceId;
+  readonly runnerBootId: string;
+  readonly runnerId: RunnerId;
 }
 export interface TriggerDispatchContext {
   readonly anchorThread: {
@@ -746,82 +754,240 @@ export class TriggerStore {
     readonly status: "active" | "paused" | "archived";
     readonly triggerId: TriggerId;
   }): Promise<Trigger> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
-      input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
-      await lockWatchCapacityForTrigger(transaction, input.triggerId);
-      const trigger = await lockTriggerForMutation(
-        transaction,
-        input,
-        input.status === "archived" ? "define" : "control",
-      );
-      await requireTriggerExecutionAuthority(transaction, trigger);
-      if (trigger.systemRole && input.status === "archived") throw conflict(MANAGED_MEMORY_REFUSAL);
-      if (trigger.status === "archived") {
-        if (input.status === "archived") return triggerFromRow(trigger);
-        throw conflict("Archived automations cannot be reactivated");
-      }
-      const revision =
-        input.status === "archived"
-          ? null
-          : await transaction
-              .selectFrom("triggerRevisions")
-              .select(["source", executableProgram.as("executable")])
-              .where("id", "=", trigger.currentRevisionId)
-              .executeTakeFirstOrThrow();
-      const needsUpdate = revision !== null && !revision.executable;
-      if (input.status === "active" && needsUpdate) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
-      // Repeating the current status is a no-op: an auto-paused Trigger keeps
-      // its reason and an active one keeps its failure count.
-      if (trigger.status === input.status) return triggerFromRow(trigger, needsUpdate);
-      if (input.status === "paused") {
-        return triggerFromRow(await pauseTriggerInTransaction(transaction, trigger), needsUpdate);
-      }
-      let nextFireAt = trigger.nextFireAt;
-      if (trigger.kind === "schedule") {
-        if (!revision) {
-          nextFireAt = null;
-        } else {
-          const source = TriggerSourceSchema.parse(revision.source);
-          if (source.kind !== "schedule") throw new Error("Schedule Trigger revision is invalid");
-          nextFireAt = resumedScheduleFireAt(source.schedule, new Date());
+    return (await this.setStatusWithEffects(input)).trigger;
+  }
+  async setStatusWithEffects(input: {
+    readonly actorThreadId: ThreadId | null;
+    readonly actorAccessMode?: ThreadAccessMode;
+    /** The external agent connection the actor works for, checked under this mutation's fence. */
+    readonly actorConnectionId?: string;
+    readonly ownerId: UserId;
+    readonly status: "active" | "paused" | "archived";
+    readonly triggerId: TriggerId;
+  }): Promise<{
+    readonly canceledOccurrenceIds: readonly TriggerOccurrenceId[];
+    readonly runningFirings: readonly RunningFiringRef[];
+    readonly trigger: Trigger;
+  }> {
+    return commitPersonalMutation(
+      this.#database,
+      async (transaction) => {
+        input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
+        const ending = input.status === "paused" || input.status === "archived";
+        const observedActive = ending
+          ? await transaction
+              .selectFrom("triggerOccurrences")
+              .select(["id"])
+              .where("triggerId", "=", input.triggerId)
+              .where("status", "in", ["pending", "running"])
+              .orderBy("id", "asc")
+              .forNoKeyUpdate()
+              .execute()
+          : [];
+        const heldOccurrences = new Set(observedActive.map(({ id }) => id));
+        await lockWatchCapacityForTrigger(transaction, input.triggerId);
+        const trigger = await lockTriggerForMutation(
+          transaction,
+          input,
+          input.status === "archived" ? "define" : "control",
+        );
+        await requireTriggerExecutionAuthority(transaction, trigger);
+        if (trigger.systemRole && input.status === "archived")
+          throw conflict(MANAGED_MEMORY_REFUSAL);
+        if (trigger.status === "archived") {
+          if (input.status === "archived") {
+            return {
+              canceledOccurrenceIds: [],
+              runningFirings: [],
+              trigger: triggerFromRow(trigger),
+            };
+          }
+          throw conflict("Archived automations cannot be reactivated");
         }
-      }
-      const updated = await transaction
-        .updateTable("triggers")
-        .set({
-          ...(input.status === "active"
-            ? {
-                consecutiveFailures: 0,
-              }
-            : {}),
-          nextFireAt,
-          pauseReason: null,
-          status: input.status,
-          updatedAt: new Date(),
-        })
-        .where("id", "=", trigger.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      if (nextFireAt) await wakeTriggerSchedules(transaction);
-      if (trigger.kind === "watch") {
-        await stopActiveWatchActivation(transaction, trigger.id, updated.updatedAt);
-        if (input.status === "active") {
-          const anchor = await transaction
-            .selectFrom("threads")
-            .select("environmentId")
-            .where("id", "=", trigger.anchorThreadId)
-            .executeTakeFirstOrThrow();
-          await createWatchActivation(transaction, {
-            anchorThreadId: trigger.anchorThreadId,
-            createdBy: trigger.createdBy,
-            environmentId: anchor.environmentId,
-            revisionId: trigger.currentRevisionId,
-            triggerId: trigger.id,
+        const revision =
+          input.status === "archived"
+            ? null
+            : await transaction
+                .selectFrom("triggerRevisions")
+                .select(["source", executableProgram.as("executable")])
+                .where("id", "=", trigger.currentRevisionId)
+                .executeTakeFirstOrThrow();
+        const needsUpdate = revision !== null && !revision.executable;
+        if (input.status === "active" && needsUpdate) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+        // Repeating the current status is a no-op: a paused Trigger keeps
+        // its reason and an active one keeps its failure count.
+        if (trigger.status === input.status) {
+          return {
+            canceledOccurrenceIds: [],
+            runningFirings: [],
+            trigger: triggerFromRow(trigger, needsUpdate),
+          };
+        }
+        const now = new Date();
+        let activeOccurrences: {
+          readonly commandId: CommandId;
+          readonly environmentId: EnvironmentId;
+          readonly executionGeneration: number;
+          readonly id: TriggerOccurrenceId;
+          readonly runnerBootId: string | null;
+          readonly runnerId: RunnerId | null;
+          readonly status: "pending" | "running" | "succeeded" | "failed" | "canceled";
+        }[] = [];
+        if (ending) {
+          activeOccurrences = await transaction
+            .selectFrom("triggerOccurrences")
+            .select([
+              "commandId",
+              "environmentId",
+              "executionGeneration",
+              "id",
+              "runnerBootId",
+              "runnerId",
+              "status",
+            ])
+            .where("triggerId", "=", trigger.id)
+            .where("status", "in", ["pending", "running"])
+            .orderBy("id", "asc")
+            .execute();
+          if (activeOccurrences.some(({ id }) => !heldOccurrences.has(id))) {
+            throw new TriggerOccurrenceSetChanged(
+              "Active occurrences changed before Trigger fencing",
+            );
+          }
+        }
+        let updatedRow: TriggerRow;
+        if (input.status === "paused") {
+          updatedRow = await pauseTriggerInTransaction(transaction, trigger, {
+            pausedBy: input.actorThreadId ? "agent" : "person",
+            pausedByThreadId: input.actorThreadId,
           });
+        } else {
+          let nextFireAt = trigger.nextFireAt;
+          if (trigger.kind === "schedule") {
+            if (!revision) {
+              nextFireAt = null;
+            } else {
+              const source = TriggerSourceSchema.parse(revision.source);
+              if (source.kind !== "schedule")
+                throw new Error("Schedule Trigger revision is invalid");
+              nextFireAt = resumedScheduleFireAt(source.schedule, now);
+            }
+          }
+          updatedRow = await transaction
+            .updateTable("triggers")
+            .set({
+              ...(input.status === "active"
+                ? {
+                    consecutiveFailures: 0,
+                    failingSince: null,
+                    failureNotifiedAt: null,
+                    overrunNotifiedAt: null,
+                    watchCrashNotifiedAt: null,
+                  }
+                : {}),
+              nextFireAt,
+              pauseReason: null,
+              pausedAt: null,
+              pausedBy: null,
+              pausedByThreadId: null,
+              status: input.status,
+              updatedAt: now,
+            })
+            .where("id", "=", trigger.id)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          if (nextFireAt) await wakeTriggerSchedules(transaction);
+          if (trigger.kind === "watch") {
+            await stopActiveWatchActivation(transaction, trigger.id, updatedRow.updatedAt);
+            if (input.status === "active") {
+              const anchor = await transaction
+                .selectFrom("threads")
+                .select("environmentId")
+                .where("id", "=", trigger.anchorThreadId)
+                .executeTakeFirstOrThrow();
+              await createWatchActivation(transaction, {
+                anchorThreadId: trigger.anchorThreadId,
+                createdBy: trigger.createdBy,
+                environmentId: anchor.environmentId,
+                revisionId: trigger.currentRevisionId,
+                triggerId: trigger.id,
+              });
+            }
+          }
         }
-      }
-      return triggerFromRow(updated);
-    });
+        const canceledOccurrenceIds: TriggerOccurrenceId[] = [];
+        const runningFirings: RunningFiringRef[] = [];
+        if (ending && activeOccurrences.length > 0) {
+          const pending = activeOccurrences.filter((row) => row.status === "pending");
+          if (pending.length > 0) {
+            await transaction
+              .selectFrom("commands")
+              .select("id")
+              .where(
+                "id",
+                "in",
+                pending.map(({ commandId }) => commandId),
+              )
+              .orderBy("id", "asc")
+              .forNoKeyUpdate()
+              .execute();
+            const cancellation = {
+              code:
+                input.status === "archived"
+                  ? "canceled_by_archive"
+                  : "canceled_by_pause",
+              message:
+                input.status === "archived"
+                  ? "Automation occurrence was canceled when the automation was archived"
+                  : "Automation occurrence was canceled when the automation was paused",
+            };
+            for (const row of pending) {
+              const command = await transaction
+                .updateTable("commands")
+                .set({
+                  lastError: jsonValue(cancellation),
+                  status: "failed",
+                  updatedAt: now,
+                })
+                .where("id", "=", row.commandId)
+                .where("status", "=", "pending")
+                .executeTakeFirst();
+              if (command.numUpdatedRows !== 1n) continue;
+              await transaction
+                .updateTable("triggerOccurrences")
+                .set({
+                  completedAt: now,
+                  error: jsonValue(cancellation),
+                  ...triggerOccurrenceStateColumns("canceled"),
+                  updatedAt: now,
+                })
+                .where("id", "=", row.id)
+                .where("status", "=", "pending")
+                .execute();
+              canceledOccurrenceIds.push(row.id);
+            }
+          }
+          for (const row of activeOccurrences) {
+            if (row.status === "running" && row.runnerId && row.runnerBootId) {
+              runningFirings.push({
+                commandId: row.commandId,
+                environmentId: row.environmentId,
+                executionGeneration: row.executionGeneration,
+                occurrenceId: row.id,
+                runnerBootId: row.runnerBootId,
+                runnerId: row.runnerId,
+              });
+            }
+          }
+        }
+        return {
+          canceledOccurrenceIds,
+          runningFirings,
+          trigger: triggerFromRow(updatedRow, needsUpdate),
+        };
+      },
+      (error) => error instanceof TriggerOccurrenceSetChanged,
+    );
   }
   async setNextFire(input: {
     readonly actorThreadId: ThreadId | null;
@@ -1285,43 +1451,66 @@ export class TriggerStore {
       const failureDelta =
         activation.desired === "active" ? input.restartCount - activation.restartCount : 0;
       let consecutiveFailures = activation.consecutiveFailures + failureDelta;
-      if (
+      const recovered =
         activation.desired === "active" &&
         input.observed === "running" &&
-        input.healthySince &&
-        now.getTime() - input.healthySince.getTime() >= WATCH_HEALTHY_WINDOW_MS
-      ) {
+        input.healthySince !== null &&
+        now.getTime() - input.healthySince.getTime() >= WATCH_HEALTHY_WINDOW_MS;
+      if (recovered) {
         consecutiveFailures = 0;
+        if (
+          trigger.consecutiveFailures !== 0 ||
+          trigger.failingSince !== null ||
+          trigger.watchCrashNotifiedAt !== null
+        ) {
+          await transaction
+            .updateTable("triggers")
+            .set({
+              consecutiveFailures: 0,
+              failingSince: null,
+              watchCrashNotifiedAt: null,
+              updatedAt: now,
+            })
+            .where("id", "=", trigger.id)
+            .execute();
+        }
       }
-      const autoPaused =
+      // Y10 / T8: Never auto-pause a crash-looping watch; emit one 'watch-crash-loop' notice
+      // while the supervisor continues retrying with exponential backoff.
+      const crashLooping =
         activation.desired === "active" &&
         trigger.status === "active" &&
         consecutiveFailures >= WATCH_AUTO_PAUSE_FAILURE_THRESHOLD;
-      if (autoPaused) {
+      if (crashLooping) {
         await transaction
           .updateTable("triggers")
           .set({
             consecutiveFailures,
-            pauseReason: WATCH_AUTO_PAUSE_REASON,
-            status: "paused",
+            failingSince: trigger.failingSince ?? now,
+            watchCrashNotifiedAt: trigger.watchCrashNotifiedAt ?? now,
             updatedAt: now,
           })
           .where("id", "=", trigger.id)
           .execute();
-      }
-      if (autoPaused) {
-        await recordAutomationFailure(transaction, {
-          activationId: activation.id,
-          detail: input.lastError ?? input.stderrTail.slice(-2_000),
-          reason: "paused",
-          triggerId: trigger.id,
-        });
+        if (!trigger.watchCrashNotifiedAt) {
+          const exitPrefix =
+            input.lastExitCode !== null ? `exit ${input.lastExitCode}: ` : "";
+          const rawDetail =
+            input.lastError ??
+            (input.stderrTail.trim() ? input.stderrTail.slice(-2_000) : "Watch exited repeatedly.");
+          await recordAutomationFailure(transaction, {
+            activationId: activation.id,
+            detail: `${exitPrefix}${rawDetail}`,
+            reason: "watch-crash-loop",
+            triggerId: trigger.id,
+          });
+        }
       }
       const updated = await transaction
         .updateTable("triggerWatchActivations")
         .set({
           consecutiveFailures,
-          desired: autoPaused ? "stopped" : activation.desired,
+          desired: activation.desired,
           healthySince: input.healthySince,
           lastError: input.lastError,
           lastExitCode: input.lastExitCode,
@@ -1346,7 +1535,7 @@ export class TriggerStore {
         .executeTakeFirstOrThrow();
       return {
         activation: watchActivationFromRow(updated),
-        autoPaused,
+        autoPaused: false,
       };
     });
   }
@@ -1602,19 +1791,35 @@ export class TriggerStore {
       }
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
-      const enqueued = await enqueueOccurrence(
-        transaction,
-        trigger,
+      const sourceKey =
         input.idempotencyKey === undefined
           ? `manual:${globalThis.crypto.randomUUID()}`
-          : `manual-command:${JSON.stringify([input.ownerId, input.actorThreadId, input.idempotencyKey])}`,
-        {
-          payload: input.payload ?? null,
-          source: {
-            kind: "manual",
-          },
+          : `manual-command:${JSON.stringify([input.ownerId, input.actorThreadId, input.idempotencyKey])}`;
+      if (input.idempotencyKey !== undefined) {
+        const existing = await transaction
+          .selectFrom("triggerOccurrences")
+          .selectAll()
+          .where("triggerId", "=", trigger.id)
+          .where("sourceKey", "=", sourceKey)
+          .executeTakeFirst();
+        if (existing) return occurrenceFromRow(existing);
+      }
+      // Y11: Manual run_now is refused while a firing is already pending or running.
+      const activeOccurrence = await transaction
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where("triggerId", "=", trigger.id)
+        .where("status", "in", ["pending", "running"])
+        .executeTakeFirst();
+      if (activeOccurrence) {
+        throw conflict("This automation already has a firing in progress.");
+      }
+      const enqueued = await enqueueOccurrence(transaction, trigger, sourceKey, {
+        payload: input.payload ?? null,
+        source: {
+          kind: "manual",
         },
-      );
+      });
       return enqueued.occurrence;
     });
   }
@@ -1839,11 +2044,19 @@ export class TriggerStore {
         const source = TriggerSourceSchema.parse(revision.source);
         if (source.kind !== "schedule") throw new Error("Schedule Trigger revision is invalid");
         const scheduledFor = trigger.nextFireAt;
-        // Cron ticks are fungible: a tick still waiting for a Runner already
-        // says everything a newer tick would. Collapsing them keeps a backlog
-        // from forming while the clock keeps advancing. Running Occurrences do
-        // not suppress a tick — overlap up to Runner capacity is intended.
-        if (!(await pendingScheduleOccurrenceExists(transaction, trigger.id))) {
+        // T8 / Y11: One firing at a time. A schedule tick arriving while a firing is already
+        // running is skipped (advancing nextFireAt) and emits a one-time overrun notice; a tick
+        // arriving while a previous schedule tick is still pending collapses without a notice.
+        const runningOccurrence = await transaction
+          .selectFrom("triggerOccurrences")
+          .select("id")
+          .where("triggerId", "=", trigger.id)
+          .where("status", "=", "running")
+          .executeTakeFirst();
+        let notifyOverrun = false;
+        if (runningOccurrence) {
+          notifyOverrun = trigger.overrunNotifiedAt === null;
+        } else if (!(await pendingScheduleOccurrenceExists(transaction, trigger.id))) {
           await seam?.beforeEnqueue?.();
           const enqueued = await enqueueOccurrence(
             transaction,
@@ -1863,14 +2076,23 @@ export class TriggerStore {
           source.schedule,
           new Date(Math.max(now.getTime(), scheduledFor.getTime())),
         );
+        const updatedAt = new Date();
         await transaction
           .updateTable("triggers")
           .set({
             nextFireAt: next,
-            updatedAt: new Date(),
+            ...(notifyOverrun ? { overrunNotifiedAt: updatedAt } : {}),
+            updatedAt,
           })
           .where("id", "=", trigger.id)
           .execute();
+        if (notifyOverrun) {
+          await recordAutomationFailure(transaction, {
+            detail: `Scheduled run for ${scheduledFor.toISOString()} was skipped because a previous firing is still running.`,
+            reason: "overran-schedule",
+            triggerId: trigger.id,
+          });
+        }
         return occurrence;
       };
       for (const trigger of due) {
@@ -2140,7 +2362,7 @@ export class TriggerStore {
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<TriggerOccurrence | null> {
-    return commitPersonalMutation(this.#database, async (transaction) => {
+    const completed = await commitPersonalMutation(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -2211,12 +2433,16 @@ export class TriggerStore {
       let failureNotice:
         | {
             readonly detail: string;
-            readonly reason: "final-occurrence-failed" | "paused";
+            readonly reason: "final-occurrence-failed" | "started-failing";
           }
         | undefined;
       if (input.output.status === "succeeded") {
         const recovered =
-          occurrence.revisionId === trigger.currentRevisionId && trigger.consecutiveFailures !== 0;
+          occurrence.revisionId === trigger.currentRevisionId &&
+          (trigger.consecutiveFailures !== 0 ||
+            trigger.failingSince !== null ||
+            trigger.failureNotifiedAt !== null ||
+            trigger.overrunNotifiedAt !== null);
         const finished = await oneTimeTriggerFinished(transaction, trigger, now);
         if (recovered || finished) {
           await transaction
@@ -2225,6 +2451,9 @@ export class TriggerStore {
               ...(recovered
                 ? {
                     consecutiveFailures: 0,
+                    failingSince: null,
+                    failureNotifiedAt: null,
+                    overrunNotifiedAt: null,
                   }
                 : {}),
               ...(finished
@@ -2242,30 +2471,26 @@ export class TriggerStore {
         input.output.status === "failed" &&
         occurrence.revisionId === trigger.currentRevisionId
       ) {
+        // T9: Never auto-pause after failures. Keep the automation active, stamp failingSince,
+        // and emit a single 'started-failing' notice (or 'final-occurrence-failed' for one-shots).
         const consecutiveFailures = Math.min(trigger.consecutiveFailures + 1, maxPostgresInteger);
-        const autoPause =
-          trigger.status === "active" &&
-          consecutiveFailures >= TRIGGER_AUTO_PAUSE_FAILURE_THRESHOLD;
+        const final = await isFinalOccurrence(transaction, occurrence);
+        const notifyStartedFailing =
+          !final && trigger.status === "active" && trigger.failureNotifiedAt === null;
         await transaction
           .updateTable("triggers")
           .set({
             consecutiveFailures,
-            ...(autoPause
-              ? {
-                  nextFireAt: null,
-                  pauseReason: TRIGGER_AUTO_PAUSE_REASON,
-                  status: "paused" as const,
-                }
-              : {}),
+            failingSince: trigger.failingSince ?? now,
+            ...(notifyStartedFailing ? { failureNotifiedAt: now } : {}),
             updatedAt: now,
           })
           .where("id", "=", trigger.id)
           .execute();
-        const final = await isFinalOccurrence(transaction, occurrence);
-        if (final || autoPause) {
+        if (final || notifyStartedFailing) {
           failureNotice = {
             detail: input.output.error ?? "The program failed without an error message.",
-            reason: final ? "final-occurrence-failed" : "paused",
+            reason: final ? "final-occurrence-failed" : "started-failing",
           };
         }
       }
@@ -2311,8 +2536,14 @@ export class TriggerStore {
           .where("settledAt", "is", null)
           .execute();
       }
+      // Wake the dispatcher so any FIFO-queued webhook firing waiting behind this one starts now.
+      await wakeExecutionCommands(transaction);
       return occurrenceFromRow(updated);
     });
+    if (completed) {
+      await pruneCompletedOccurrenceOutputs(this.#database, completed.triggerId);
+    }
+    return completed;
   }
 
   /**
@@ -2779,6 +3010,129 @@ export class TriggerStore {
     }
     return unknownRows.length;
   }
+
+  /**
+   * T10 rolling-hour wake/ping fuse per automation (120/hr default, overridable via
+   * `triggers.wake_limit_per_hour`). Admits the wake by inserting a row into `automation_wakes`,
+   * or commits a one-per-hour `'wake-limit-reached'` notice and throws `resource_exhausted`.
+   */
+  async recordAutomationWake(input: {
+    readonly activationId?: TriggerWatchActivationId;
+    readonly occurrenceId?: TriggerOccurrenceId;
+    readonly requestId?: string;
+    readonly toolName: string;
+    readonly triggerId: TriggerId;
+  }): Promise<void> {
+    const decision = await commitPersonalMutation(this.#database, async (transaction) => {
+      const trigger = await transaction
+        .selectFrom("triggers")
+        .select(["id", "wakeLimitPerHour"])
+        .where("id", "=", input.triggerId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!trigger) throw notFound("Trigger not found");
+      const now = new Date();
+      const windowStart = new Date(now.getTime() - 3_600_000);
+      const limit = trigger.wakeLimitPerHour ?? DEFAULT_WAKES_PER_HOUR;
+      const counted = await transaction
+        .selectFrom("automationWakes")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("triggerId", "=", trigger.id)
+        .where("createdAt", ">=", windowStart)
+        .executeTakeFirstOrThrow();
+      const count = Number(counted.count);
+      if (count >= limit) {
+        const recentNotice = await transaction
+          .selectFrom("automationFailureNotices")
+          .select("id")
+          .where("triggerId", "=", trigger.id)
+          .where("reason", "=", "wake-limit-reached")
+          .where("createdAt", ">=", windowStart)
+          .executeTakeFirst();
+        if (!recentNotice) {
+          await recordAutomationFailure(transaction, {
+            ...(input.activationId ? { activationId: input.activationId } : {}),
+            detail: `Reached ${limit} wakes in the last hour via ${input.toolName}.`,
+            reason: "wake-limit-reached",
+            triggerId: trigger.id,
+          });
+        }
+        return { admitted: false as const, limit };
+      }
+      await transaction
+        .insertInto("automationWakes")
+        .values({
+          activationId: input.activationId ?? null,
+          createdAt: now,
+          id: randomUUID(),
+          occurrenceId: input.occurrenceId ?? null,
+          requestId: input.requestId ?? null,
+          toolName: input.toolName,
+          triggerId: trigger.id,
+        })
+        .execute();
+      return { admitted: true as const, limit };
+    });
+    if (!decision.admitted) {
+      throw new OpensteerError({
+        code: "resource_exhausted",
+        details: { limit: decision.limit, triggerId: input.triggerId },
+        message: `This automation reached its hourly wake limit (${decision.limit}/hr).`,
+      });
+    }
+  }
+}
+
+/**
+ * T10: Keep full stdout/stderr/result/webhook_body for the most recent 100 completed firings
+ * per automation and clear older ones without deleting rows. Runs in its own lock-ordered
+ * transaction (`trigger_occurrences` by `id asc`) so it never collides with completion locks.
+ */
+async function pruneCompletedOccurrenceOutputs(
+  database: Kysely<DatabaseSchema>,
+  triggerId: TriggerId,
+): Promise<void> {
+  await database.transaction().execute(async (transaction) => {
+    const stale = await transaction
+      .selectFrom("triggerOccurrences")
+      .select("id")
+      .where("triggerId", "=", triggerId)
+      .where("status", "in", ["succeeded", "failed", "canceled"])
+      .where("outputPrunedAt", "is", null)
+      .where(
+        "id",
+        "not in",
+        transaction
+          .selectFrom("triggerOccurrences")
+          .select("id")
+          .where("triggerId", "=", triggerId)
+          .where("status", "in", ["succeeded", "failed", "canceled"])
+          .orderBy("createdAt", "desc")
+          .orderBy("id", "desc")
+          .limit(RETAINED_OUTPUT_OCCURRENCES),
+      )
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .skipLocked()
+      .execute();
+    if (stale.length === 0) return;
+    const now = new Date();
+    await transaction
+      .updateTable("triggerOccurrences")
+      .set({
+        outputPrunedAt: now,
+        result: null,
+        stderr: "",
+        stdout: "",
+        webhookBody: null,
+      })
+      .where(
+        "id",
+        "in",
+        stale.map(({ id }) => id),
+      )
+      .execute();
+  });
 }
 
 /** Whether a failed Occurrence was the only run its one-shot Trigger will make. */
@@ -3198,9 +3552,9 @@ async function createWatchActivation(
     readonly triggerId: TriggerId;
   },
 ): Promise<TriggerWatchActivation> {
-  await transaction
+  const environment = await transaction
     .selectFrom("executionEnvironments")
-    .select("id")
+    .select(["id", "maxActiveWatches"])
     .where("id", "=", input.environmentId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
@@ -3212,14 +3566,15 @@ async function createWatchActivation(
     .where("desired", "=", "active")
     .where(executableProgram)
     .executeTakeFirstOrThrow();
-  if (Number(active.count) >= MAX_ACTIVE_WATCHES_PER_ENVIRONMENT) {
+  const maxActiveWatches = environment.maxActiveWatches ?? DEFAULT_MAX_WATCHES_PER_COMPUTER;
+  if (Number(active.count) >= maxActiveWatches) {
     throw new OpensteerError({
       code: "resource_exhausted",
       details: {
         environmentId: input.environmentId,
-        limit: MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
+        limit: maxActiveWatches,
       },
-      message: `This computer already has ${MAX_ACTIVE_WATCHES_PER_ENVIRONMENT} active watches, its concurrent limit`,
+      message: `This computer already has ${maxActiveWatches} active watches, its concurrent limit`,
     });
   }
   const now = new Date();
@@ -3525,17 +3880,20 @@ export function pauseLineageTrigger(
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (trigger?.status !== "active") return;
-    await pauseTriggerInTransaction(transaction, trigger);
-    await transaction
-      .updateTable("triggers")
-      .set({ pauseReason: "Paused because the connected agent that made it was disconnected." })
-      .where("id", "=", triggerId)
-      .execute();
+    await pauseTriggerInTransaction(transaction, trigger, {
+      pauseReason: "Paused because the connected agent that made it was disconnected.",
+      pausedBy: "system",
+    });
   });
 }
 export async function pauseTriggerInTransaction(
   transaction: Transaction<DatabaseSchema>,
   trigger: TriggerRow,
+  options?: {
+    readonly pauseReason?: string | null;
+    readonly pausedBy?: AutomationPausedBy | null;
+    readonly pausedByThreadId?: ThreadId | null;
+  },
 ): Promise<TriggerRow> {
   if (trigger.status !== "active") return trigger;
   const now = new Date();
@@ -3543,7 +3901,10 @@ export async function pauseTriggerInTransaction(
     .updateTable("triggers")
     .set({
       status: "paused",
-      pauseReason: null,
+      pauseReason: options?.pauseReason ?? null,
+      pausedAt: now,
+      pausedBy: options?.pausedBy ?? null,
+      pausedByThreadId: options?.pausedByThreadId ?? null,
       nextFireAt: trigger.kind === "schedule" ? null : trigger.nextFireAt,
       updatedAt: now,
     })

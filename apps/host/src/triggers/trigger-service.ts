@@ -7,7 +7,12 @@ import type {
   UserId,
 } from "@opensteer/core";
 import { isLoopbackHostname, OpensteerError, ThreadIdSchema } from "@opensteer/core";
-import type { OpensteerStore, TaskReader, TriggerStore } from "@opensteer/database";
+import type {
+  OpensteerStore,
+  RunningFiringRef,
+  TaskReader,
+  TriggerStore,
+} from "@opensteer/database";
 import { personTaskReader } from "@opensteer/database";
 import {
   TriggerControlInputSchema,
@@ -24,6 +29,7 @@ import type { Clock } from "@opensteer/shared/clock";
 import { DeadlineDrain, retryWithBackoff } from "../runtime/deadline-drain.js";
 interface TriggerServiceOptions {
   readonly onChanged?: () => void;
+  readonly onInterruptFiring?: (firing: RunningFiringRef) => void;
   readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly onWatchChanged?: (triggerId: TriggerId) => void;
   readonly publicUrl: URL;
@@ -36,6 +42,7 @@ interface TriggerServiceOptions {
 }
 export class TriggerService {
   readonly #onChanged: TriggerServiceOptions["onChanged"];
+  readonly #onInterruptFiring: TriggerServiceOptions["onInterruptFiring"];
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
@@ -46,6 +53,7 @@ export class TriggerService {
   readonly #tokens: Pick<SignedTokenService, "deriveSecret">;
   constructor(options: TriggerServiceOptions) {
     this.#onChanged = options.onChanged;
+    this.#onInterruptFiring = options.onInterruptFiring;
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
@@ -225,15 +233,19 @@ export class TriggerService {
     actorAccessMode?: ThreadAccessMode,
     actorConnectionId?: string,
   ) {
-    const trigger = await this.#store.setStatus({
+    const result = await this.#store.setStatusWithEffects({
       ...input,
       ownerId,
       actorThreadId,
       ...(actorAccessMode ? { actorAccessMode } : {}),
       ...(actorConnectionId ? { actorConnectionId } : {}),
     });
+    const { trigger } = result;
     this.#onChanged?.();
     if (trigger.kind === "watch") this.#onWatchChanged?.(trigger.id);
+    for (const firing of result.runningFirings) {
+      this.#onInterruptFiring?.(firing);
+    }
     return trigger;
   }
   async setNextFire(

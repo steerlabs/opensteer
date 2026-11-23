@@ -276,6 +276,53 @@ describe("TriggerService", () => {
     expect(enqueueWebhook).toHaveBeenCalledTimes(1);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
   });
+  it("interrupts running firings when pausing an automation (Y12)", async () => {
+    const ownerId = createId("user");
+    const triggerId = createId("trigger");
+    const occurrenceId = createId("triggerOccurrence");
+    const environmentId = createId("environment");
+    const runnerId = createId("runner");
+    const onInterruptFiring = vi.fn();
+    const setStatusWithEffects = vi.fn(async () => ({
+      canceledOccurrenceIds: [],
+      runningFirings: [
+        {
+          environmentId,
+          executionGeneration: 2,
+          occurrenceId,
+          runnerBootId: "boot-pause-1",
+          runnerId,
+        },
+      ],
+      trigger: {
+        id: triggerId,
+        kind: "schedule",
+        status: "paused",
+      },
+    }));
+    const service = new TriggerService({
+      onInterruptFiring,
+      onOccurrenceQueued: vi.fn(),
+      publicUrl: new URL("https://opensteer.example"),
+      runnerStore: {} as never,
+      store: { setStatusWithEffects } as unknown as TriggerStore,
+      threads: {} as never,
+      tokens: { deriveSecret: () => "unused" },
+    });
+    const paused = await service.setStatus(
+      ownerId,
+      { status: "paused", triggerId },
+      null,
+    );
+    expect(paused.status).toBe("paused");
+    expect(onInterruptFiring).toHaveBeenCalledWith({
+      environmentId,
+      executionGeneration: 2,
+      occurrenceId,
+      runnerBootId: "boot-pause-1",
+      runnerId,
+    });
+  });
   it("hides webhookRouteKey from agents lacking run authority (Y3)", async () => {
     const triggerId = createId("trigger");
     const routeKey = "whk_secret_route_key_0123456789abcdef0123456";

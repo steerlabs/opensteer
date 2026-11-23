@@ -320,12 +320,14 @@ integration.sequential("Shared task Done", () => {
     expect(
       await database
         .selectFrom("triggers")
-        .select(["status", "nextFireAt"])
+        .select(["status", "nextFireAt", "pauseReason", "pausedBy"])
         .where("id", "=", trigger.trigger.id)
         .executeTakeFirst(),
     ).toEqual({
       status: "paused",
       nextFireAt: null,
+      pauseReason: "Paused because its task was marked done.",
+      pausedBy: "system",
     });
     expect(done.interruptCommands.map(({ runId }) => runId).sort()).toEqual(
       [parentRun.id, child.run.id].sort(),

@@ -116,6 +116,74 @@ it("describes outcome-unknown notices as lost contact rather than interrupted (Z
   }
 });
 
+it("describes started-failing, overran-schedule, watch-crash-loop, and wake-limit-reached without claiming the automation was paused (T8/T9/T10/Y10)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const triggerId = createId("trigger");
+  const cases: readonly {
+    readonly reason: PendingAutomationFailure["reason"];
+    readonly detail: string;
+    readonly match: RegExp;
+  }[] = [
+    { reason: "started-failing", detail: "exit 1", match: /started failing/iu },
+    { reason: "overran-schedule", detail: "still running", match: /still running/iu },
+    { reason: "watch-crash-loop", detail: "exit 137", match: /keeps stopping/iu },
+    { reason: "wake-limit-reached", detail: "120/hr", match: /wake limit/iu },
+  ];
+  try {
+    for (const item of cases) {
+      let delivered = false;
+      const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(async () => ({
+        disposition: "queued" as const,
+        inputId: createId("threadInput"),
+        runId: null,
+      }));
+      const service = new AutomationFailureService({
+        commands: { enqueueThreadInput },
+        onError: () => undefined,
+        store: {
+          listDue: vi.fn(async () =>
+            delivered
+              ? []
+              : [
+                  {
+                    anchorThreadId: threadId,
+                    anchorThreadTitle: "Task",
+                    attempts: 0,
+                    createdBy: createId("user"),
+                    detail: item.detail,
+                    destinationThreadId: threadId,
+                    id: crypto.randomUUID(),
+                    reason: item.reason,
+                    triggerId,
+                    triggerName: "Check inbox",
+                  },
+                ],
+          ),
+          nextDeadline: async () => null,
+          retryLater: vi.fn(async () => undefined),
+          settle: vi.fn(async () => {
+            delivered = true;
+          }),
+        },
+      });
+      try {
+        service.start();
+        await vi.advanceTimersByTimeAsync(0);
+        const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+          .map((part) => ("text" in part ? part.text : ""))
+          .join("");
+        expect(text).toMatch(item.match);
+        expect(text).not.toMatch(/was paused/iu);
+      } finally {
+        await service.close();
+      }
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("backs off when a due notice cannot be listed, instead of spinning", async () => {
   vi.useFakeTimers();
   let reads = 0;

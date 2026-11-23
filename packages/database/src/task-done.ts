@@ -29,6 +29,7 @@ import { revokeRunGrants } from "./run-grants.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { cancelPending } from "./request-cancellation.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
+import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import {
   idempotencyConflict,
   jsonValue,
@@ -166,6 +167,19 @@ async function discoverDoneScope(
     .where("anchorThreadId", "in", threadIds)
     .orderBy("id")
     .execute();
+  const pendingTriggerOccurrences = triggers.length
+    ? await transaction
+        .selectFrom("triggerOccurrences")
+        .select("id")
+        .where(
+          "triggerId",
+          "in",
+          triggers.map(({ id }) => id),
+        )
+        .where("status", "=", "pending")
+        .orderBy("id")
+        .execute()
+    : [];
   const requests = await transaction
     .selectFrom("requests")
     .select(["id"])
@@ -186,6 +200,7 @@ async function discoverDoneScope(
     threadIds,
     runs,
     triggers,
+    pendingTriggerOccurrences,
     requests,
     inputs,
   };
@@ -238,6 +253,19 @@ export async function setThreadDone(
               "id",
               "in",
               scope.runs.map(({ id }) => id),
+            )
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute()
+        : [];
+      const pendingTriggerOccurrences = scope.pendingTriggerOccurrences.length
+        ? await transaction
+            .selectFrom("triggerOccurrences")
+            .select(["commandId", "id"])
+            .where(
+              "id",
+              "in",
+              scope.pendingTriggerOccurrences.map(({ id }) => id),
             )
             .orderBy("id")
             .forNoKeyUpdate()
@@ -367,7 +395,12 @@ export async function setThreadDone(
                 .execute();
           }
           if (input.done) {
-            for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
+            for (const trigger of triggers) {
+              await pauseTriggerInTransaction(transaction, trigger, {
+                pauseReason: "Paused because its task was marked done.",
+                pausedBy: "system",
+              });
+            }
             for (const row of threads) {
               if (!row.inputQueuePaused) continue;
               await refreshInputQueue(transaction, row.id);
@@ -401,6 +434,47 @@ export async function setThreadDone(
             });
             for (const assignment of cancelledAssignments)
               await publishAssignmentSummaries(transaction, assignment, true);
+            if (pendingTriggerOccurrences.length) {
+              await transaction
+                .selectFrom("commands")
+                .select("id")
+                .where(
+                  "id",
+                  "in",
+                  pendingTriggerOccurrences.map(({ commandId }) => commandId),
+                )
+                .orderBy("id", "asc")
+                .forNoKeyUpdate()
+                .execute();
+              const cancellation = {
+                code: "canceled_by_task_done",
+                message: "Automation occurrence was canceled because its task was marked done",
+              };
+              for (const row of pendingTriggerOccurrences) {
+                const command = await transaction
+                  .updateTable("commands")
+                  .set({
+                    lastError: jsonValue(cancellation),
+                    status: "failed",
+                    updatedAt: now,
+                  })
+                  .where("id", "=", row.commandId)
+                  .where("status", "=", "pending")
+                  .executeTakeFirst();
+                if (command.numUpdatedRows !== 1n) continue;
+                await transaction
+                  .updateTable("triggerOccurrences")
+                  .set({
+                    completedAt: now,
+                    error: jsonValue(cancellation),
+                    ...triggerOccurrenceStateColumns("canceled"),
+                    updatedAt: now,
+                  })
+                  .where("id", "=", row.id)
+                  .where("status", "=", "pending")
+                  .execute();
+              }
+            }
             for (const run of runs) {
               if (
                 !scope.threadIds.includes(run.threadId) ||
