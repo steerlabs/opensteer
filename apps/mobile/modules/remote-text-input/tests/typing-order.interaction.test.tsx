@@ -145,6 +145,16 @@ afterEach(async () => {
  * The product's targets, as the Host's negotiation and the display integration pick them
  * (packages/client/src/host/browser-editing.ts, integrations/display-editing.ts): the random
  * test draws only these.
+ *
+ * What `display` shows (CX3): a Mac app or a phone screen viewed from the phone. Its numbers here
+ * are the phone's half only: the native field, the editing proxy and the reducer with display's
+ * abilities, sending to the same far field as every other target, the model of a Chromium page
+ * (FarField, held to the real page by tests/editing-far-model.test.ts). They do not show what a
+ * Mac app (MacOwnerInput.swift) or an Android app behind a phone screen (OwnerEditing.kt) does
+ * with those operations: nothing here compares either with the model. What exists for them is
+ * the Mac journey (WindowGroupJourney, typing into a Mac app from a phone, in a VM) and the phone
+ * screen's JVM test of what its focused app is sent (OwnerStrokesTest); the rest is on the manual
+ * list.
  */
 const targets = {
   full: browserEditingAbilities.full,
