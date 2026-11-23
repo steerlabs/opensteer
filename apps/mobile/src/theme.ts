@@ -318,6 +318,12 @@ export const controlFontScaleLimit = 1.6;
 export const displayFontScaleLimit = 2;
 
 /**
+ * The same limit for a SwiftUI title (`dynamicTypeSize({ max })`): the Dynamic Type size whose
+ * text is about twice the default, as `displayFontScaleLimit` is.
+ */
+export const displayDynamicTypeLimit = "accessibility2";
+
+/**
  * How far a one-word status may grow beside a row's mark: as large as the narrowest phone's
  * text column (320 points) still holds whole, so it moves to its own line rather than breaking
  * inside the word. Body text carries no cap at all.

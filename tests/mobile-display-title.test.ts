@@ -9,6 +9,16 @@ import { describe, expect, it } from "vitest";
  * screens a person meets when something is wrong (a phone removed, a Home to update, the app not
  * starting), their titles broken inside a word at the largest size. So no screen names a display
  * role itself: it uses `DisplayTitle`, and only the type scale and `DisplayTitle` name them.
+ *
+ * What it sees, by reading each line of the phone's source:
+ * - a display role named outside the type scale and `DisplayTitle`'s own body (another component
+ *   in `primitives.tsx` among them), Compose's `typography: "displayLarge"` too;
+ * - an inline font size as large as the smallest display role (22), outside the type scale;
+ * - a SwiftUI title (`textStyle` largeTitle, title or title2, or a font size of 22 or more) whose
+ *   modifiers do not cap it with `dynamicTypeSize({ max: displayDynamicTypeLimit })`.
+ * What it cannot see: a size computed at run time or passed in from elsewhere, a style spread
+ * from another file, a text drawn by a native module, and whether a capped title still breaks
+ * inside a word (the layout tests see that, on the screens they lay out).
  */
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
@@ -17,14 +27,32 @@ const mobileSource = path.join(repositoryRoot, "apps/mobile/src");
 const allowed = new Set(["apps/mobile/src/theme.ts", "apps/mobile/src/ui/primitives.tsx"]);
 const displayRole = /\bdisplay(?:Large|Medium|Small)\b/u;
 
+const inlineSize = /\bfontSize:\s*(\d+)/u;
+const swiftTitle =
+  /textStyle:\s*"(?:largeTitle|title|title2)"|font\(\{[^}]*\bsize:\s*(?:2[2-9]|[3-9]\d|\d{3})/u;
+/** The smallest display role's size: an inline size this large is a display title. */
+const displaySize = 22;
+
 export function displayRolesIn(file: string, source: string): string[] {
-  return source.split("\n").flatMap((line, index) => {
-    if (!displayRole.test(line)) return [];
-    // `DisplayTitle` itself names the two roles it draws.
-    if (file === "apps/mobile/src/ui/primitives.tsx" && /"display(?:Large|Small)"/u.test(line))
-      return [];
-    if (file === "apps/mobile/src/theme.ts") return [];
-    return [`${file}:${index + 1}: ${line.trim()}`];
+  if (file === "apps/mobile/src/theme.ts") return [];
+  const lines = source.split("\n");
+  // `DisplayTitle`'s own body, the one place in primitives.tsx that names the roles it draws.
+  const titleStart = lines.findIndex((line) => line.startsWith("export function DisplayTitle("));
+  const titleEnd =
+    titleStart < 0 ? -1 : lines.findIndex((line, index) => index > titleStart && line === "}");
+  return lines.flatMap((line, index) => {
+    const where = `${file}:${index + 1}: ${line.trim()}`;
+    const inTitle =
+      file === "apps/mobile/src/ui/primitives.tsx" && index > titleStart && index < titleEnd;
+    if (displayRole.test(line) && !inTitle) return [where];
+    const size = inlineSize.exec(line);
+    if (size && Number(size[1]) >= displaySize) return [where];
+    if (swiftTitle.test(line)) {
+      // Its modifiers, on the lines around it.
+      const near = lines.slice(Math.max(0, index - 4), index + 5).join("\n");
+      if (!/dynamicTypeSize\(\{\s*max:\s*displayDynamicTypeLimit/u.test(near)) return [where];
+    }
+    return [];
   });
 }
 
@@ -50,6 +78,30 @@ describe("display titles on the phone", () => {
     expect(
       [...allowed].every((file) => readFileSync(path.join(repositoryRoot, file), "utf8")),
     ).toBe(true);
+  });
+
+  it("sees a large inline size, an uncapped SwiftUI title and another component in primitives", () => {
+    expect(
+      displayRolesIn("apps/mobile/src/x.tsx", "<Text style={{ fontSize: 34 }}>Hi</Text>"),
+    ).toHaveLength(1);
+    expect(
+      displayRolesIn("apps/mobile/src/x.tsx", "<Text style={{ fontSize: 17 }}>Hi</Text>"),
+    ).toEqual([]);
+    expect(
+      displayRolesIn("apps/mobile/src/x.ios.tsx", 'modifiers={[font({ textStyle: "title" })]}'),
+    ).toHaveLength(1);
+    expect(
+      displayRolesIn(
+        "apps/mobile/src/x.ios.tsx",
+        'modifiers={[font({ textStyle: "title" }), dynamicTypeSize({ max: displayDynamicTypeLimit })]}',
+      ),
+    ).toEqual([]);
+    expect(
+      displayRolesIn(
+        "apps/mobile/src/ui/primitives.tsx",
+        'export function DisplayTitle() {\n  role="displayLarge"\n}\nexport function Big() {\n  role="displaySmall"\n}',
+      ),
+    ).toEqual(['apps/mobile/src/ui/primitives.tsx:5: role="displaySmall"']);
   });
 
   it("sees a screen that names a display role itself", () => {

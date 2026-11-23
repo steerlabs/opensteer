@@ -27,10 +27,11 @@ import {
   multilineTextAlignment,
   shapes,
   tint,
+  dynamicTypeSize,
 } from "@expo/ui/swift-ui/modifiers";
 import { useState, type ReactNode } from "react";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
-import { color } from "../theme.js";
+import { color, displayDynamicTypeLimit } from "../theme.js";
 import { Chevron, ErrorText, Footer, Lines } from "./settings-form-primitives.ios.js";
 import {
   keylessWelcomeCopy,
@@ -71,6 +72,7 @@ export function Welcome(props: WelcomeProps): ReactNode {
             <Text
               modifiers={[
                 font({ textStyle: "title", weight: "bold" }),
+                dynamicTypeSize({ max: displayDynamicTypeLimit }),
                 foregroundStyle(color.text),
                 centred,
               ]}
