@@ -683,7 +683,7 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
           claude_code_version: harnessMinimumVersion("claude"),
           cwd: "/workspace",
           fast_mode_state: "off",
-          mcp_servers: [],
+          mcp_servers: [{ name: "opensteer", source: "dynamic", status: "connected" }],
           model: "claude-test-1",
           output_style: "default",
           permissionMode: "default",
