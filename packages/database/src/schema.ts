@@ -1266,6 +1266,7 @@ export interface TriggerOccurrenceAttemptTable {
 export interface ProviderSessionTable {
   contextSnapshot: Generated<import("@opensteer/core").ProviderContextSnapshot | null>;
   personalContext: Generated<boolean>;
+  personLineage: Generated<boolean>;
   active: boolean;
   stateLayout: "thread" | "session";
   id: ProviderSessionId;

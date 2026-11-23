@@ -1,4 +1,4 @@
-import { safeMessage } from "@opensteer/shared/safeMessage";
+import { networkCredentialSecrets, safeMessage } from "@opensteer/shared/safeMessage";
 import { runRunnerDaemon, type RunnerShutdownProof } from "@opensteer/runner";
 import { refuseInspectorSignal } from "./supervisor/inspector-signal.js";
 import {
@@ -101,6 +101,7 @@ void delivered
 
 const safeMessageOptions = {
   fallback: "The local Runner failed.",
+  secrets: networkCredentialSecrets(process.env),
   redactions: [
     { pattern: /Bearer\s+\S+/giu, replacement: "Bearer [redacted]" },
     { pattern: /os_secret_[A-Za-z0-9_-]+/gu, replacement: "os_secret_[redacted]" },

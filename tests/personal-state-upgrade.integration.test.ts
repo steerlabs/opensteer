@@ -262,6 +262,8 @@ test("carries a person's work from a database the released Home last migrated th
       bridgeConnectionsMigrationName,
       chatRoutesEndMigrationName,
       commandRequestsMigrationName,
+      "0114_thread_inputs_written_by_connection",
+      "0115_provider_session_person_lineage",
     ]);
     await migrateToLatest(database, {
       async getMigrations() {

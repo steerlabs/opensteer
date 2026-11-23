@@ -114,6 +114,7 @@ import {
   threadVisitSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
+  threadStartedByOtherSelection,
   threadFromRow,
   threadsFromRows,
   assignmentFromRow,
@@ -1128,6 +1129,7 @@ export async function readTask(
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("threads.id", "=", threadId)
       .where("threads.createdBy", "=", ownerId)
@@ -1185,6 +1187,7 @@ export async function readThreadForOwner(
           threadVisitSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
+          threadStartedByOtherSelection,
         ])
         .where("threads.id", "=", threadId)
         .where("threads.removedAt", "is", null)
@@ -1660,10 +1663,13 @@ export async function updateThreadExecutionSelection(
             id: providerSessionId,
             leaseExpiresAt: null,
             leaseTokenHash: null,
+            // Whether it may use the person's personal context or own lineage, from its first row:
+            // never widen from the prior session or from the task's lineage.
+            personalContext:
+              (selected?.personalContext ?? true) &&
+              (await lineagePersonalContext(transaction, thread.originConnectionId)),
+            personLineage: (selected?.personLineage ?? true) && thread.originConnectionId === null,
             providerSessionReference: null,
-            // Whether it may use the person's personal context, from its first row: from the
-            // task's lineage, never the column's default until a Run binds it.
-            personalContext: await lineagePersonalContext(transaction, thread.originConnectionId),
             runnerBootId: null,
             runnerId: null,
             status: "starting",
@@ -2247,6 +2253,7 @@ export async function updateThreadAccessMode(
         threadVisitSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
+        threadStartedByOtherSelection,
       ])
       .where("id", "=", input.threadId)
       .forNoKeyUpdate()

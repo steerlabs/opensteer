@@ -315,6 +315,13 @@ describe("agent consent on the phone", () => {
       mark: null,
       title: "An agent wants to connect",
     });
+    // Each mode reads as it does for a connection: its work never runs with
+    // the person's own engine settings.
+    const modes = ready().modes;
+    expect(modes.find(({ mode }) => mode === "approval-required")?.description).toBe(
+      "Asks you before anything that changes something.",
+    );
+    expect(JSON.stringify(modes)).not.toContain("a rule you set in the engine");
     expect(ready().finePrint).toBe(
       "It can’t approve requests, open your saved passwords or give anyone access. This lasts 30 days, and you can remove it any time in Settings → Connected agents.",
     );

@@ -5175,6 +5175,7 @@ function toThreadSummary(
     pendingRequests: thread.pendingRequests,
     purpose: thread.purpose,
     runnerLabel: environment?.name ?? "Unavailable work location",
+    ...(thread.startedByOther ? { startedByOther: true } : {}),
     status: thread.status,
     title: thread.title,
     icon: thread.icon ?? null,

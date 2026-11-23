@@ -40,6 +40,13 @@ export {
 } from "./operation-budget.js";
 
 export * from "./resource-access.js";
+export {
+  runAllowsPersonalContext,
+  runContextLineage,
+  threadAllowsPersonalContext,
+  threadContextLineage,
+  type ThreadContextLineage,
+} from "./run-personal-context.js";
 export * from "./command-attempts.js";
 export * from "./connection-liveness.js";
 export * from "./agent-grant-targets.js";

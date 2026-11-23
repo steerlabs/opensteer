@@ -2,7 +2,7 @@ import { commitPersonalMutation } from "./personal-mutation.js";
 import { publishThreadSummary } from "./thread-status.js";
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
-import { lineagePersonalContext } from "./resource-access.js";
+import { runContextLineage } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
@@ -107,6 +107,10 @@ export interface RunDispatchContext {
   readonly agentHome: import("@opensteer/core").ComputerFolder;
   /** The Run's own connection and its task's origin, from the rows read above. */
   readonly lineage: {
+    /** A chat is somewhere in the task's context lineage, whoever speaks in it. */
+    readonly fromChat: boolean;
+    /** Only the person ever wrote into this Run's task and its ancestors (`runContextLineage`). */
+    readonly personLineage: boolean;
     readonly runConnectionId: string | null;
     readonly taskOriginConnectionId: string | null;
   };
@@ -501,6 +505,7 @@ export async function loadRunDispatchContext(
       .limit(maxHistoryItems + 1)
       .execute(),
   ]);
+  const contextLineage = await runContextLineage(database, runRow.id);
   const historyWindow = newestMessageWindow(
     messagesFromRows(historyRowsDesc),
     maxHistoryItems,
@@ -516,7 +521,7 @@ export async function loadRunDispatchContext(
         ? executionBindingFromRow(bindingRow)
         : null,
     providerSessionStateLayout: bindingRow.stateLayout,
-    personalContext: await lineagePersonalContext(database, runRow.connectionId),
+    personalContext: contextLineage.personalContext,
     history: historyWindow.items,
     initialContext: initialContext
       ? {
@@ -552,6 +557,8 @@ export async function loadRunDispatchContext(
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
     lineage: {
+      fromChat: contextLineage.fromChat,
+      personLineage: contextLineage.personLineage,
       runConnectionId: runRow.connectionId,
       taskOriginConnectionId: threadRow.originConnectionId,
     },
@@ -572,6 +579,7 @@ export async function acquireExecutionBinding(
   input: {
     readonly bindingLeaseExpiresAt: Date;
     readonly personalContext?: boolean;
+    readonly personLineage?: boolean;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
@@ -739,19 +747,28 @@ export async function acquireExecutionBinding(
       ))
     )
       throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
-    const personalContext = await lineagePersonalContext(transaction, run.connectionId);
+    const lineage = await runContextLineage(transaction, input.runId);
     if (
-      (input.personalContext !== undefined && input.personalContext !== personalContext) ||
-      (session.personalContext !== personalContext && session.providerSessionReference !== null)
+      (input.personalContext !== undefined && input.personalContext !== lineage.personalContext) ||
+      (input.personLineage !== undefined && input.personLineage !== lineage.personLineage) ||
+      ((session.personalContext !== lineage.personalContext ||
+        (session.personLineage && !lineage.personLineage)) &&
+        session.providerSessionReference !== null)
     )
       throw new OpensteerError({
         code: "forbidden",
         message: "Messaging personal context changed before execution",
       });
-    if (session.personalContext !== personalContext)
+    if (
+      session.personalContext !== lineage.personalContext ||
+      session.personLineage !== lineage.personLineage
+    )
       await transaction
         .updateTable("providerSessions")
-        .set({ personalContext })
+        .set({
+          personalContext: lineage.personalContext,
+          personLineage: lineage.personLineage,
+        })
         .where("id", "=", session.id)
         .execute();
     if (
