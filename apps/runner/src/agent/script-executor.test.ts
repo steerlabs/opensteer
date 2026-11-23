@@ -1,7 +1,7 @@
 import type { HarnessProcessLaunch } from "@opensteer/harness";
 import { createId } from "@opensteer/core";
 import { MAX_OUTPUT_TAIL_BYTES } from "@opensteer/triggers";
-import { mkdtemp, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -310,5 +310,59 @@ describe("AutomationScriptExecutor", () => {
     expect(Buffer.byteLength(output.stderr, "utf8")).toBeLessThanOrEqual(MAX_OUTPUT_TAIL_BYTES);
     expect(output.stdout).toContain("END_OUT");
     expect(output.stderr).toContain("END_ERR");
+  });
+
+  it("refuses relative interpreters and resolves bare names only through absolute PATH entries (Z11)", async () => {
+    const workspace = await temporaryWorkspace();
+    const evilScript = join(workspace.path, "evil-interp");
+    await writeFile(evilScript, "#!/bin/sh\necho PWNED\n", "utf8");
+    await chmod(evilScript, 0o755);
+    await mkdir(join(workspace.path, "venv", "bin"), { recursive: true });
+    await writeFile(join(workspace.path, "venv", "bin", "python"), "#!/bin/sh\necho PWNED\n");
+    await chmod(join(workspace.path, "venv", "bin", "python"), 0o755);
+
+    const executor = new AutomationScriptExecutor({
+      baseEnvironment: {
+        ...process.env,
+        PATH: `.:./venv/bin:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      },
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+      privateDirectory: join(workspace.path, ".opensteer", "private"),
+    });
+    const runWith = (interpreter: string[], text = "echo ok") => {
+      const automationId = createId("trigger");
+      const firingId = createId("triggerOccurrence");
+      return executor.execute({
+        automationId,
+        endpoints: { mcp: { token: "t", url: "http://127.0.0.1:9/mcp" } },
+        event: {
+          automationId,
+          firedAt: new Date().toISOString(),
+          firingId,
+          kind: "manual",
+        },
+        firingId,
+        planLaunch: async () => (launch: HarnessProcessLaunch) => launch,
+        script: { interpreter, text },
+        signal: new AbortController().signal,
+        workspace,
+      });
+    };
+
+    // Relative interpreter paths must be refused outright.
+    await expect(runWith(["./evil-interp"])).rejects.toThrow(/relative|absolute|PATH/iu);
+    await expect(runWith(["venv/bin/python"])).rejects.toThrow(/relative|absolute|PATH/iu);
+
+    // Bare name present only in cwd (`.`) or relative PATH (`./venv/bin`) must NOT execute.
+    await expect(runWith(["evil-interp"])).rejects.toThrow(/not found|PATH/iu);
+
+    // Bare name found on an absolute PATH entry (`sh`) succeeds and drops relative PATH entries.
+    const ok = await runWith(["sh"], 'printf "ok path=%s\\n" "$PATH"');
+    expect(ok.status).toBe("succeeded");
+    expect(ok.stdout).toContain("ok path=");
+    expect(ok.stdout.split(":")[0]).not.toBe(".");
+    expect(ok.stdout).not.toMatch(/(?:^|:)\.(?::|$)/u);
+    expect(ok.stdout).not.toContain("./venv/bin");
   });
 });

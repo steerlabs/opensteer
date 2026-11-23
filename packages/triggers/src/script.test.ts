@@ -44,6 +44,33 @@ describe("AutomationScriptSchema", () => {
     expect(AutomationScriptSchema.safeParse({ interpreter: ["bash\0"], text: "ok" }).success).toBe(
       false,
     );
+    // Z11: interpreter[0] must be a bare command name or an absolute path, never relative.
+    for (const allowed of [
+      ["python3", "-u"],
+      ["/usr/bin/env", "python3"],
+      ["/bin/sh"],
+      ["C:\\Python312\\python.exe"],
+    ]) {
+      expect(
+        AutomationScriptSchema.safeParse({ interpreter: allowed, text: "ok" }).success,
+        JSON.stringify(allowed),
+      ).toBe(true);
+    }
+    for (const relative of [
+      ["./python"],
+      ["../bin/python"],
+      ["venv/bin/python"],
+      [".\\python.exe"],
+      ["venv\\Scripts\\python.exe"],
+      ["C:python.exe"],
+      ["."],
+      [".."],
+    ]) {
+      expect(
+        AutomationScriptSchema.safeParse({ interpreter: relative, text: "ok" }).success,
+        JSON.stringify(relative),
+      ).toBe(false);
+    }
   });
 
   it("normalizes CRLF/CR to LF on POSIX while leaving Windows text untouched", () => {

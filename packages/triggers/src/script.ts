@@ -21,8 +21,44 @@ const InterpreterArgSchema = z
   .max(1_024)
   .refine((value) => !value.includes("\0"), "Interpreter argument cannot contain a NUL byte");
 
+/** Whether an interpreter executable is an absolute POSIX or Windows drive path (Z11). */
+export function isAbsoluteInterpreterPath(value: string): boolean {
+  return value.startsWith("/") || /^[A-Za-z]:[\\/]/u.test(value);
+}
+
+/** Whether an interpreter executable is a bare command name resolved through PATH (Z11). */
+export function isBareInterpreterName(value: string): boolean {
+  return value.length > 0 && value !== "." && value !== ".." && !/[\\/:]/u.test(value);
+}
+
+/** Whether `interpreter[0]` is a bare command name or an absolute path, never relative (Z11). */
+export function isValidInterpreterExecutable(value: string): boolean {
+  return (
+    value.length > 0 &&
+    !value.includes("\0") &&
+    (isAbsoluteInterpreterPath(value) || isBareInterpreterName(value))
+  );
+}
+
+export function assertValidInterpreterExecutable(value: string): void {
+  if (!isValidInterpreterExecutable(value)) {
+    throw new Error(
+      `Interpreter "${value}" must be a bare command name on PATH or an absolute path; relative paths are not allowed.`,
+    );
+  }
+}
+
 export const AutomationScriptSchema = z.strictObject({
-  interpreter: z.array(InterpreterArgSchema).min(1).max(16).nullable().default(null),
+  interpreter: z
+    .array(InterpreterArgSchema)
+    .min(1)
+    .max(16)
+    .refine(
+      (argv) => argv.length > 0 && isValidInterpreterExecutable(argv[0]!),
+      "Interpreter executable must be a bare command name on PATH or an absolute path, never a relative path.",
+    )
+    .nullable()
+    .default(null),
   text: z
     .string()
     .min(1)

@@ -4,8 +4,10 @@ import { NativeFsHelper, NativeFsHelperError } from "@opensteer/shared/files/nat
 import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import {
   assertAutomationSecretsWithinBounds,
+  assertValidInterpreterExecutable,
   automationSecretEnvName,
   AutomationSecretValueSchema,
+  isBareInterpreterName,
   MAX_OUTPUT_TAIL_BYTES,
   normalizeScriptText,
   scriptFileExtension,
@@ -13,7 +15,7 @@ import {
   type TriggerExecutionOutput,
 } from "@opensteer/triggers";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, statSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -191,7 +193,13 @@ export class AutomationScriptExecutor {
         secrets: input.secrets,
       });
 
-      const executable = input.script.interpreter?.[0] ?? this.#nodeExecutable;
+      const executable = input.script.interpreter
+        ? resolveInterpreterExecutable(
+            input.script.interpreter[0]!,
+            environment.PATH ?? "",
+            environment.PATHEXT,
+          )
+        : this.#nodeExecutable;
       const args = input.script.interpreter
         ? [...input.script.interpreter.slice(1), scriptFile]
         : [scriptFile];
@@ -275,10 +283,11 @@ export class AutomationScriptExecutor {
     readonly secrets?: Readonly<Record<string, string>> | undefined;
   }): Record<string, string> {
     const environment = programEnvironment(this.#baseEnvironment ?? process.env);
-    const existingPath = environment.PATH ?? "";
-    environment.PATH = existingPath
-      ? `${this.#cliBinDirectory}${delimiter}${existingPath}`
-      : this.#cliBinDirectory;
+    // Z11: drop empty, `.`, and relative PATH entries so Agent home in cwd can never hijack commands.
+    const absolutePathEntries = (environment.PATH ?? "")
+      .split(delimiter)
+      .filter((entry) => entry.length > 0 && isAbsolute(entry));
+    environment.PATH = [this.#cliBinDirectory, ...absolutePathEntries].join(delimiter);
     if (input.secrets) {
       assertAutomationSecretsWithinBounds(input.secrets);
       for (const [name, value] of Object.entries(input.secrets)) {
@@ -299,6 +308,41 @@ export class AutomationScriptExecutor {
     }
     return environment;
   }
+}
+
+function resolveInterpreterExecutable(
+  executable: string,
+  pathEnv: string,
+  pathextEnv: string | undefined,
+): string {
+  assertValidInterpreterExecutable(executable);
+  if (!isBareInterpreterName(executable)) return executable;
+  const directories = pathEnv
+    .split(delimiter)
+    .filter((entry) => entry.length > 0 && isAbsolute(entry));
+  const extensions =
+    process.platform === "win32"
+      ? [
+          "",
+          ...(pathextEnv ?? ".COM;.EXE;.BAT;.CMD")
+            .split(";")
+            .filter((ext) => ext.length > 0),
+        ]
+      : [""];
+  for (const directory of directories) {
+    for (const extension of extensions) {
+      const candidate = join(directory, `${executable}${extension}`);
+      try {
+        const info = statSync(candidate);
+        if (!info.isFile()) continue;
+        if (process.platform !== "win32") accessSync(candidate, fsConstants.X_OK);
+        return candidate;
+      } catch {
+        // Try next directory/extension.
+      }
+    }
+  }
+  throw new Error(`Interpreter "${executable}" was not found on PATH.`);
 }
 
 async function writePrivateFile(path: string, content: string): Promise<void> {
