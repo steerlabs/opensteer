@@ -15,6 +15,7 @@
       "version": "0.1.0",
       "protocolVersion": 1,
       "bootId": "fixture-boot",
+      "displayDemandActive": true,
       "bounds": {
         "requestBytes": 262144,
         "responseBytes": 2097152,

@@ -194,8 +194,8 @@ func (a mediaPipelineAdapter) Start(ctx context.Context) (string, error) {
 	return a.pipeline.Start(ctx)
 }
 
-func (a mediaPipelineAdapter) UpdateDemand(maxLongSide, maxFPS int) {
-	a.pipeline.UpdateDemand(maxLongSide, maxFPS)
+func (a mediaPipelineAdapter) ApplyDemand(maxLongSide, maxFPS *int, active *bool) {
+	a.pipeline.ApplyDemand(maxLongSide, maxFPS, active)
 }
 
 func (a mediaPipelineAdapter) RequestKeyframe() {
