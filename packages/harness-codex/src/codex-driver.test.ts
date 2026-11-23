@@ -4936,16 +4936,17 @@ describe("Codex provider retry visibility and budget", () => {
       const retryCountAtStop = retryingObserver.events.filter((e) => e.type === "run.retry").length;
       turnAbort.abort(new Error("user stopped"));
       await running;
-      // Wait past the retry budget to verify the timer was cleared and never fires run.failed.
-      await new Promise<void>((resolve) => setTimeout(resolve, 180));
+      // Shared app-server stayed alive and usable for the sibling session. Running
+      // the sibling through its own retry budget also proves past the original
+      // budget window that the stopped turn's retry timer never fired `run.failed`.
+      expect(siblingSession.usable).toBe(true);
+      await siblingSession.execute(fixture.turn("Go"));
+      await siblingObserver.waitFor("run.failed");
       expect(retryingObserver.events.some((e) => e.type === "run.interrupted")).toBe(true);
       expect(retryingObserver.events.some((e) => e.type === "run.failed")).toBe(false);
       expect(retryingObserver.events.filter((e) => e.type === "run.retry")).toHaveLength(
         retryCountAtStop,
       );
-      // Shared app-server stayed alive and usable for the sibling session.
-      expect(siblingSession.usable).toBe(true);
-      expect(siblingObserver.events.some((e) => e.type === "run.interrupted")).toBe(false);
     } finally {
       await retryingSession.stop();
       await siblingSession.stop();
