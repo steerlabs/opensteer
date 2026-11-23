@@ -16,59 +16,22 @@ import { deploymentRoot, deploymentsRoot, selectionRootTransition } from "./navi
  */
 export const navigationRef = createNavigationContainerRef<RootParamList>();
 
-type SingleRouteTarget = `Home:${string}` | "Deployments";
-
-function singleRouteTarget(state: {
-  readonly index?: number;
-  readonly routes: readonly { readonly name: string; readonly params?: object | undefined }[];
-}): SingleRouteTarget | null {
-  if (state.routes.length !== 1 || (state.index ?? 0) !== 0) return null;
+/** Whether the root stack is already the bare Home screen for `deploymentId`. */
+export function isAtDeploymentRoot(deploymentId: string): boolean {
+  if (!navigationRef.isReady()) return false;
+  const state = navigationRef.getRootState();
+  if (state === undefined || state.routes.length !== 1 || state.index !== 0) return false;
   const route = state.routes[0];
-  if (route === undefined) return null;
-  if (route.name === "Deployments") return "Deployments";
-  if (
-    route.name === "Home" &&
+  return (
+    route?.name === "Home" &&
     route.params !== undefined &&
     "deploymentId" in route.params &&
-    typeof route.params.deploymentId === "string"
-  ) {
-    return `Home:${route.params.deploymentId}`;
-  }
-  return null;
+    route.params.deploymentId === deploymentId
+  );
 }
 
-function stateSignature(state: {
-  readonly index: number;
-  readonly routes: readonly { readonly key: string; readonly name: string }[];
-}): string {
-  return `${state.index}:${state.routes.map((route) => `${route.key}/${route.name}`).join(",")}`;
-}
-
-let pendingRoot: { readonly from: string; readonly target: SingleRouteTarget } | null = null;
-
-/**
- * Replaces the root stack, ignoring a back-to-back reset to the same single-route
- * root (for example, the root selection observer and a screen's own subscriber
- * reacting to the same selection publish before React Navigation commits the first reset).
- */
 export function resetRoot(state: InitialState): void {
-  if (!navigationRef.isReady()) return;
-  const target = singleRouteTarget(state);
-  const current = navigationRef.getRootState();
-  if (target !== null && current !== undefined) {
-    if (singleRouteTarget(current) === target) {
-      pendingRoot = null;
-      return;
-    }
-    const from = stateSignature(current);
-    if (pendingRoot !== null && pendingRoot.from === from && pendingRoot.target === target) {
-      return;
-    }
-    pendingRoot = { from, target };
-  } else {
-    pendingRoot = null;
-  }
-  navigationRef.resetRoot(state);
+  if (navigationRef.isReady()) navigationRef.resetRoot(state);
 }
 
 /** Moves the root stack when the client's published selection changes, outside deferred modals. */
@@ -108,9 +71,7 @@ export function resetToDeployment(deploymentId: string): void {
 
 /** Opens a subagent's own view over whatever is in front, from outside a screen's tree. */
 export function pushSubagent(params: RootParamList["Subagent"]): void {
-  if (!navigationRef.isReady()) return;
-  pendingRoot = null;
-  navigationRef.dispatch(StackActions.push("Subagent", params));
+  if (navigationRef.isReady()) navigationRef.dispatch(StackActions.push("Subagent", params));
 }
 
 /** Links, notifications and Voice share the root entry. */
@@ -130,13 +91,11 @@ export function enterSide(target: TopLevelTarget): boolean {
     };
   }
   if (state.routes[0]?.name !== "Home") {
-    pendingRoot = null;
     navigationRef.dispatch(StackActions.push(target.name, target.params));
     return true;
   }
   const action = sideMemory.enter(state, target);
   if (action === null) return false;
-  pendingRoot = null;
   navigationRef.dispatch(action);
   return true;
 }

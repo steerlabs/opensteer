@@ -2,10 +2,10 @@
 
 import { createRequire } from "node:module";
 import { DeploymentIdSchema } from "@opensteer/core";
-import { act, type ReactNode } from "react";
+import { act, useEffect, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deploymentRoot } from "./navigation-state.js";
+import { deploymentRoot, deploymentsRoot } from "./navigation-state.js";
 import { PendingDestination } from "./pending-destination.js";
 
 /*
@@ -18,8 +18,12 @@ import { PendingDestination } from "./pending-destination.js";
  *   own `openSelected` observer run; the root must reset once, not twice.
  * - On the Tasks (`Home`) screen, Menu (accessibility label starting "Menu")
  *   comes from `rootScreenOptions` on Home's first render (before effects run)
- *   and survives even a forced second root reset, so an effect order or reset
- *   race cannot leave Tasks without a Menu.
+ *   and survives even back-to-back direct keyless resets.
+ * - A root reset always dispatches when called: after a prevented reset is
+ *   lifted, the next identical reset succeeds; an account change on bare Tasks
+ *   mounts a fresh Home instance.
+ * - On a wide window (docked sidebar), Menu is absent on first render and
+ *   updates cleanly as the docked state changes.
  */
 
 const mockDeploymentId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000001");
@@ -38,7 +42,10 @@ const harness = vi.hoisted(() => {
     verification: null,
   } as const;
   let selectionId: string | null = null;
+  let subject: string | null = null;
   let attention = 12;
+  let preventRemove = false;
+  let homeMounts = 0;
 
   const notify = (): void => {
     for (const listener of Array.from(listeners)) listener();
@@ -47,7 +54,17 @@ const harness = vi.hoisted(() => {
   const client = {
     cloudComputers: null,
     getSnapshot: () => ({
-      account: { account: { available: true, detail: null, identity: null, status: "signed-out" } },
+      account: {
+        account:
+          subject === null
+            ? { available: true, detail: null, identity: null, status: "signed-out" }
+            : {
+                available: true,
+                detail: null,
+                identity: { issuer: "https://opensteer.example", subject },
+                status: "signed-in",
+              },
+      },
       directory: { detail: null, status: "idle", unavailable: [] },
       pendingComputer: null,
       rows: [row],
@@ -79,13 +96,32 @@ const harness = vi.hoisted(() => {
   return {
     client,
     getAttention: () => attention,
+    getHomeMounts: () => homeMounts,
+    getPreventRemove: () => preventRemove,
+    incrementHomeMounts: () => {
+      homeMounts += 1;
+      return homeMounts;
+    },
+    notify,
     openSidebar: vi.fn(),
     resetState: () => {
       listeners.clear();
       selectionId = null;
+      subject = null;
       attention = 12;
+      preventRemove = false;
+      homeMounts = 0;
       client.openDeployment.mockClear();
       client.readAttention.mockClear();
+    },
+    setPreventRemove: (next: boolean) => {
+      preventRemove = next;
+    },
+    setSelectionId: (next: string | null) => {
+      selectionId = next;
+    },
+    setSubject: (next: string | null) => {
+      subject = next;
     },
   };
 });
@@ -167,13 +203,21 @@ vi.mock("./threads/task-row.js", () => ({ UnreadDot: () => null }));
 
 import {
   NavigationContainer,
+  StackActions,
   StackRouter,
   createNavigatorFactory,
   useNavigationBuilder,
+  usePreventRemove,
+  type InitialState,
 } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { headerActions, rootScreenOptions, TopLevelMenu } from "./navigation-header.js";
-import { navigationRef, reconcileRootSelection } from "./navigation-ref.js";
+import {
+  navigationRef,
+  reconcileRootSelection,
+  resetRoot,
+  resetToDeployments,
+} from "./navigation-ref.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import {
   SidebarControlContext,
@@ -197,11 +241,23 @@ function readLeadingItems(options: NativeStackNavigationOptions): readonly Nativ
 }
 
 function TasksStub(): ReactNode {
-  return <div>Tasks screen</div>;
+  const [instance] = useState(() => harness.incrementHomeMounts());
+  return <div data-home-instance={instance}>Tasks screen</div>;
+}
+
+function ThreadStub(): ReactNode {
+  return <div>Thread screen</div>;
 }
 
 function SettingsStub(): ReactNode {
   return <div>Settings screen</div>;
+}
+
+function GuardedSetupStub(): ReactNode {
+  const [prevent, setPrevent] = useState(() => harness.getPreventRemove());
+  useEffect(() => harness.client.subscribe(() => setPrevent(harness.getPreventRemove())), []);
+  usePreventRemove(prevent, () => undefined);
+  return <div>Set up this phone</div>;
 }
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -218,8 +274,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function mountApp() {
+async function mountApp(options?: {
+  readonly docked?: boolean;
+  readonly initialState?: InitialState;
+}) {
   const initialLeadingByRoute = new Map<string, readonly NativeItem[]>();
+  const latestOptionsByRoute = new Map<string, NativeStackNavigationOptions>();
 
   function TestStackNavigator(props: {
     readonly children: ReactNode;
@@ -238,11 +298,12 @@ async function mountApp() {
       <NavigationContent>
         {state.routes.map((route) => {
           const descriptor = descriptors[route.key]!;
-          const options = descriptor.options as NativeStackNavigationOptions;
-          const items = readLeadingItems(options);
+          const routeOptions = descriptor.options as NativeStackNavigationOptions;
+          const items = readLeadingItems(routeOptions);
           if (!initialLeadingByRoute.has(route.key)) {
             initialLeadingByRoute.set(route.key, items);
           }
+          latestOptionsByRoute.set(route.key, routeOptions);
           return (
             <section data-route={route.name} key={route.key}>
               <header>
@@ -281,10 +342,28 @@ async function mountApp() {
     reconcileRootSelection({ destinations, selection: harness.client.getSnapshot().selection });
   };
 
+  // Mirrors app.tsx's client.subscribe(sync): account switches rebuild the root,
+  // then selection reconciliation runs.
+  const sync = (): void => {
+    const snapshot = harness.client.getSnapshot();
+    const subject = snapshot.account.account.identity?.subject ?? null;
+    if (
+      destinations.account(subject) &&
+      navigationRef.isReady() &&
+      destinations.mayReconcileSelection(snapshot.selection.deploymentId)
+    ) {
+      const id = snapshot.selection.deploymentId;
+      resetRoot(id === null ? deploymentsRoot() : deploymentRoot(id));
+    }
+    observeRootSelection();
+  };
+
   // Subscribed at app startup before the user taps a Home row, as in app.tsx.
-  cleanups.push(harness.client.subscribe(observeRootSelection));
+  sync();
+  cleanups.push(harness.client.subscribe(sync));
   const control = { close: vi.fn(), open: harness.openSidebar };
   sidebarRef.current = control;
+  sidebarDockedRef.current = options?.docked ?? false;
   const resetRootSpy = vi.spyOn(navigationRef, "resetRoot");
 
   const container = document.createElement("div");
@@ -292,74 +371,88 @@ async function mountApp() {
   const root = createRoot(container);
   roots.push(root);
 
-  await act(async () => {
-    root.render(
-      <SidebarControlContext.Provider value={control}>
-        <SidebarDockedContext.Provider value={false}>
-          <NavigationContainer
-            initialState={{ index: 0, routes: [{ name: "Deployments" }] }}
-            onReady={() => {
-              destinations.ready();
-              observeRootSelection();
+  const initialState = options?.initialState ?? { index: 0, routes: [{ name: "Deployments" }] };
+
+  const renderTree = (docked: boolean) => (
+    <SidebarControlContext.Provider value={control}>
+      <SidebarDockedContext.Provider value={docked}>
+        <NavigationContainer
+          initialState={initialState}
+          onReady={() => {
+            destinations.ready();
+            observeRootSelection();
+          }}
+          onStateChange={observeRootSelection}
+          ref={navigationRef}
+        >
+          <Stack.Navigator
+            screenLayout={({
+              children,
+              options: screenOptions,
+            }: {
+              children: ReactNode;
+              options: NativeStackNavigationOptions;
+            }) => {
+              const modal =
+                screenOptions.presentation !== undefined && screenOptions.presentation !== "card";
+              return (
+                <>
+                  {children}
+                  {modal ? null : <TopLevelMenu />}
+                </>
+              );
             }}
-            onStateChange={observeRootSelection}
-            ref={navigationRef}
+            screenOptions={rootScreenOptions}
           >
-            <Stack.Navigator
-              screenLayout={({
-                children,
-                options,
-              }: {
-                children: ReactNode;
-                options: NativeStackNavigationOptions;
-              }) => {
-                const modal = options.presentation !== undefined && options.presentation !== "card";
-                return (
-                  <>
-                    {children}
-                    {modal ? null : <TopLevelMenu />}
-                  </>
-                );
-              }}
-              screenOptions={rootScreenOptions}
-            >
-              <Stack.Screen
-                component={DeploymentsScreen}
-                name="Deployments"
-                options={({
-                  navigation,
-                }: {
-                  navigation: { navigate: (name: string) => void };
-                }) => ({
-                  ...headerActions({
-                    left: {
-                      icon: "gearshape",
-                      label: "Settings",
-                      onPress: () => navigation.navigate("Settings"),
-                    },
-                    right: {
-                      icon: "plus",
-                      label: "Add",
-                      onPress: () => undefined,
-                    },
-                  }),
-                  title: "Your Opensteers",
-                })}
-              />
-              <Stack.Screen component={TasksStub} name="Home" options={{ title: "Tasks" }} />
-              <Stack.Screen
-                component={SettingsStub}
-                name="Settings"
-                options={{ presentation: "modal", title: "Settings" }}
-              />
-            </Stack.Navigator>
-          </NavigationContainer>
-        </SidebarDockedContext.Provider>
-      </SidebarControlContext.Provider>,
-    );
+            <Stack.Screen
+              component={DeploymentsScreen}
+              name="Deployments"
+              options={({ navigation }: { navigation: { navigate: (name: string) => void } }) => ({
+                ...headerActions({
+                  left: {
+                    icon: "gearshape",
+                    label: "Settings",
+                    onPress: () => navigation.navigate("Settings"),
+                  },
+                  right: {
+                    icon: "plus",
+                    label: "Add",
+                    onPress: () => undefined,
+                  },
+                }),
+                title: "Your Opensteers",
+              })}
+            />
+            <Stack.Screen component={TasksStub} name="Home" options={{ title: "Tasks" }} />
+            <Stack.Screen component={ThreadStub} name="Thread" options={{ title: "Thread" }} />
+            <Stack.Screen
+              component={GuardedSetupStub}
+              name="SetUpPhone"
+              options={{ headerShown: false, title: "Set up this phone" }}
+            />
+            <Stack.Screen
+              component={SettingsStub}
+              name="Settings"
+              options={{ presentation: "modal", title: "Settings" }}
+            />
+          </Stack.Navigator>
+        </NavigationContainer>
+      </SidebarDockedContext.Provider>
+    </SidebarControlContext.Provider>
+  );
+
+  await act(async () => {
+    root.render(renderTree(options?.docked ?? false));
   });
 
-  return { container, initialLeadingByRoute, resetRootSpy };
+  const setDocked = async (docked: boolean) => {
+    sidebarDockedRef.current = docked;
+    await act(async () => {
+      root.render(renderTree(docked));
+    });
+  };
+
+  return { container, initialLeadingByRoute, latestOptionsByRoute, resetRootSpy, setDocked };
 }
 
 describe("opening a Home from Your Opensteers", () => {
@@ -422,18 +515,19 @@ describe("opening a Home from Your Opensteers", () => {
     expect(harness.openSidebar).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps Menu on Home's first render even if a direct keyless reset replaces Home", async () => {
+  it("keeps Menu on Home's first render even across back-to-back direct keyless resets in one act", async () => {
     const { container, initialLeadingByRoute } = await mountApp();
 
+    let firstKey: string | undefined;
+    let secondKey: string | undefined;
     await act(async () => {
       navigationRef.resetRoot(deploymentRoot(mockDeploymentId));
+      firstKey = navigationRef.getRootState()?.routes[0]?.key;
+      navigationRef.resetRoot(deploymentRoot(mockDeploymentId));
+      secondKey = navigationRef.getRootState()?.routes[0]?.key;
     });
-    const firstKey = navigationRef.getRootState()?.routes[0]?.key;
 
-    await act(async () => {
-      navigationRef.resetRoot(deploymentRoot(mockDeploymentId));
-    });
-    const secondKey = navigationRef.getRootState()?.routes[0]?.key;
+    expect(firstKey).toBeDefined();
     expect(secondKey).toBeDefined();
     expect(secondKey).not.toBe(firstKey);
 
@@ -446,5 +540,106 @@ describe("opening a Home from Your Opensteers", () => {
     expect(
       container.querySelector('section[data-route="Home"] header button[aria-label^="Menu"]'),
     ).not.toBeNull();
+  });
+
+  it("dispatches a later reset after a prevented reset on the same stack is lifted", async () => {
+    harness.setSelectionId(mockDeploymentId);
+    harness.setPreventRemove(true);
+    await mountApp({ initialState: deploymentRoot(mockDeploymentId) });
+
+    await act(async () => {
+      navigationRef.dispatch(StackActions.push("SetUpPhone", { deploymentId: mockDeploymentId }));
+    });
+    expect(navigationRef.getRootState()?.routes.map((route) => route.name)).toEqual([
+      "Home",
+      "SetUpPhone",
+    ]);
+
+    await act(async () => {
+      resetToDeployments();
+    });
+    expect(navigationRef.getRootState()?.routes.map((route) => route.name)).toEqual([
+      "Home",
+      "SetUpPhone",
+    ]);
+
+    await act(async () => {
+      harness.setPreventRemove(false);
+      harness.notify();
+    });
+
+    await act(async () => {
+      resetToDeployments();
+    });
+    expect(navigationRef.getRootState()?.routes.map((route) => route.name)).toEqual([
+      "Deployments",
+    ]);
+  });
+
+  it("mounts a fresh Home instance when the account changes on bare Tasks", async () => {
+    harness.setSelectionId(mockDeploymentId);
+    harness.setSubject("account-a");
+    const { container, resetRootSpy } = await mountApp({
+      initialState: deploymentRoot(mockDeploymentId),
+    });
+
+    const initialKey = navigationRef.getRootState()?.routes[0]?.key;
+    expect(initialKey).toBeDefined();
+    expect(
+      container.querySelector("[data-home-instance]")?.getAttribute("data-home-instance"),
+    ).toBe("1");
+    resetRootSpy.mockClear();
+
+    await act(async () => {
+      harness.setSubject("account-b");
+      harness.notify();
+    });
+
+    expect(resetRootSpy).toHaveBeenCalledTimes(1);
+    const nextKey = navigationRef.getRootState()?.routes[0]?.key;
+    expect(nextKey).toBeDefined();
+    expect(nextKey).not.toBe(initialKey);
+    expect(harness.getHomeMounts()).toBe(2);
+    expect(
+      container.querySelector("[data-home-instance]")?.getAttribute("data-home-instance"),
+    ).toBe("2");
+  });
+
+  it("omits Menu on a docked wide window on first render and updates as docked changes", async () => {
+    harness.setSelectionId(mockDeploymentId);
+    const { container, initialLeadingByRoute, latestOptionsByRoute, setDocked } = await mountApp({
+      docked: true,
+      initialState: deploymentRoot(mockDeploymentId),
+    });
+
+    const homeKey = navigationRef.getRootState()?.routes[0]?.key;
+    expect(homeKey).toBeDefined();
+    expect(initialLeadingByRoute.get(homeKey!)).toEqual([]);
+    expect(latestOptionsByRoute.get(homeKey!)?.headerLeft?.({ canGoBack: false })).toBeNull();
+    expect(
+      container.querySelector('section[data-route="Home"] header button[aria-label^="Menu"]'),
+    ).toBeNull();
+
+    // Pushing a new screen while docked also omits Menu on its very first render.
+    await act(async () => {
+      navigationRef.dispatch(
+        StackActions.push("Thread", { deploymentId: mockDeploymentId, threadId: "thr_1" }),
+      );
+    });
+    const threadKey = navigationRef.getRootState()?.routes[1]?.key;
+    expect(threadKey).toBeDefined();
+    expect(initialLeadingByRoute.get(threadKey!)).toEqual([]);
+    expect(latestOptionsByRoute.get(threadKey!)?.headerLeft?.({ canGoBack: false })).toBeNull();
+
+    // Narrowing restores Menu; docking again removes it.
+    await setDocked(false);
+    expect(
+      container.querySelector('section[data-route="Thread"] header button[aria-label^="Menu"]'),
+    ).not.toBeNull();
+    await setDocked(true);
+    expect(
+      container.querySelector('section[data-route="Thread"] header button[aria-label^="Menu"]'),
+    ).toBeNull();
+    expect(latestOptionsByRoute.get(threadKey!)?.headerLeft?.({ canGoBack: false })).toBeNull();
   });
 });
