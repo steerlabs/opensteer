@@ -177,6 +177,8 @@ vi.mock("react-native", () => ({
   ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+  // A phone at the default text size: rows of Your Opensteers lay out side by side.
+  useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("./ui/copy-mark.js", () => ({ useCopy: () => ({ copied: false, copy: vi.fn() }) }));
