@@ -822,8 +822,8 @@ export class CloudComputerStore {
   }
 
   /**
-   * Brings a personal Cloud Computer's billing up to date with Stripe. A row whose deletion is
-   * requested has its subscription cancelled whatever else is open: a checkout keeps its own path.
+   * Brings a Cloud Computer's billing up to date with Stripe. A row whose deletion is requested
+   * has its subscription cancelled whatever else is open: a checkout keeps its own path.
    */
   async #refreshSubscription(tx: TransactionDb, id: string) {
     const row = await tx
@@ -2181,13 +2181,6 @@ export class CloudComputerStore {
         .where("id", "=", row.id)
         .executeTakeFirstOrThrow();
     });
-  }
-
-  async list(accountId?: ControlPlaneAccountId): Promise<CloudComputerView[]> {
-    let query = this.#db.selectFrom("cloudComputers").selectAll().orderBy("createdAt", "desc");
-    if (accountId) query = query.where("accountId", "=", accountId);
-    const rows = await query.execute();
-    return this.#views(rows);
   }
 
   async listForAccount(accountId: ControlPlaneAccountId): Promise<CloudComputerView[]> {

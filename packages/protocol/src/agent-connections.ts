@@ -35,7 +35,7 @@ export type AgentConnectionState = z.infer<typeof AgentConnectionStateSchema>;
  * reached at, or the name the client gave itself.
  */
 export const AgentConnectionIdentityPresentationSchema = z.object({
-  evidenceKind: z.enum(["platform", "unverified"]),
+  evidenceKind: z.enum(["verified", "unverified"]),
   verified: z.boolean(),
   selfAsserted: z.boolean(),
   heading: z.string().min(1).max(300),
@@ -43,7 +43,7 @@ export const AgentConnectionIdentityPresentationSchema = z.object({
   origins: z
     .array(
       z.object({
-        role: z.enum(["platform", "redirect"]),
+        role: z.enum(["verified", "redirect"]),
         label: z.string().min(1).max(200),
         origin: z.string().max(2048),
       }),

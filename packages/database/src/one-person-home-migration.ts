@@ -17,9 +17,13 @@ export const removeOrganizationsMigrationName = "0054_remove_organizations_contr
  * narrows it; a grant the policy refused (everything without both allowEverything and allowTasks,
  * or Tasks without allowTasks), which could do nothing, is revoked as Disconnect revokes it, and so
  * is every connection of a work Home its organization was closing. What the policy said about
- * enrolling devices bound the person's devices, not a connection. A chat that ended for a reason
- * that no longer exists keeps no reason and reads as ended. On a database that never had a work
- * Home, only the columns, the functions and the chat reasons are touched, and none hold anything.
+ * enrolling devices bound the person's devices, not a connection. Pending direct-operation Requests
+ * of a narrowed connection are left open for the first start's cleanup: answering one requires the
+ * person's explicit click, and every hand-off re-checks the connection's live access mode and grant
+ * revision (`assertActiveGrant` refuses anything below `cleanup_minimum_grant_revision`), so leaving
+ * them open widens nothing. A chat that ended for a reason that no longer exists keeps no reason
+ * and reads as ended. On a database that never had a work Home, only the columns, the functions and
+ * the chat reasons are touched, and none hold anything.
  */
 export async function applyRemoveOrganizations(database: Kysely<unknown>): Promise<void> {
   await sql`

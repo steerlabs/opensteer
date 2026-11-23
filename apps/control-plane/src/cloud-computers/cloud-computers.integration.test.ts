@@ -1330,7 +1330,7 @@ integration("Cloud Computer Account service", () => {
     expect(JSON.stringify(pool)).not.toMatch(/secret-[ab]|access-[ab]|checkout\.stripe/u);
     await expect(run("backup-remove", reserved.id)).rejects.toThrow("reserved");
     expect((await webhook("checkout.session.completed", order.session)).statusCode).toBe(200);
-    const id = (await cloud.list(account.id))[0]!.id;
+    const id = (await cloud.listForAccount(account.id))[0]!.id;
     await expect(run("backup-remove", reserved.id)).rejects.toThrow("assigned");
     await run("delete", id);
     const deleting = (await getDesired(id))!;
@@ -1814,7 +1814,7 @@ integration("Cloud Computer Account service", () => {
     expect(
       (await webhook("checkout.session.completed", order.session, "evt_fenced")).statusCode,
     ).toBe(200);
-    expect(await cloud.list(account.id)).toEqual([]);
+    expect(await cloud.listForAccount(account.id)).toEqual([]);
     expect(
       (
         await database
@@ -1847,7 +1847,7 @@ integration("Cloud Computer Account service", () => {
       deferredEvents: [],
       paidAttempts: [],
     });
-    expect(await cloud.list(account.id)).toHaveLength(1);
+    expect(await cloud.listForAccount(account.id)).toHaveLength(1);
     expect(
       (
         await database
@@ -1881,7 +1881,7 @@ integration("Cloud Computer Account service", () => {
         throw new Error("unexpected periodic billing failure");
       });
     await tick();
-    const [computer] = await cloud.list(customer.id);
+    const [computer] = await cloud.listForAccount(customer.id);
     expect(computer?.status).toBe("preparing");
     subscriptions.set(order.subscription, {
       ...order.details,

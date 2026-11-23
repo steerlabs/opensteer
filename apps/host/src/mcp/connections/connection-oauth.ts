@@ -303,11 +303,11 @@ export class ConnectionOAuth {
     }
     return pending;
   }
-  async #currentConsentIdentity(pending: Consent): Promise<AgentConnectionIdentityAtConsent> {
+  #currentConsentIdentity(pending: Consent): AgentConnectionIdentityAtConsent {
     const evidence = pending.identityAtConsent;
     if (evidence.kind === "unverified") return evidence;
     const directory = this.#options.directory?.current() ?? null;
-    if (await isIdentityStillVerified(evidence, directory)) return evidence;
+    if (isIdentityStillVerified(evidence, directory)) return evidence;
     pending.verificationChanged = true;
     return unverifiedConsentIdentity(
       pending.authorization.redirect_uri,
@@ -319,7 +319,7 @@ export class ConnectionOAuth {
 
   async consent(requestId: string, _userId: UserId) {
     const pending = this.#consent(requestId);
-    const identity = await this.#currentConsentIdentity(pending);
+    const identity = this.#currentConsentIdentity(pending);
     return {
       requestId,
       clientName: pending.client.name,
@@ -359,7 +359,7 @@ export class ConnectionOAuth {
         const decision = command.decision;
         let connectionId: string | null = null;
         if (decision.kind === "approve") {
-          const identity = await this.#currentConsentIdentity(pending);
+          const identity = this.#currentConsentIdentity(pending);
           const expected = verificationSnapshot(command.requestId, identity);
           if (
             decision.verificationSnapshot !== undefined

@@ -769,16 +769,16 @@ integration("external MCP OAuth over HTTP", () => {
     const verified = await f.begin({ redirect: platform });
     expect(await read(verified.requestId)).toMatchObject({
       identityAtConsent: {
-        kind: "platform",
-        platformDirectoryId: "agentpay",
+        kind: "verified",
+        directoryId: "agentpay",
         directoryRevision: 3,
       },
       identity: {
-        evidenceKind: "platform",
+        evidenceKind: "verified",
         heading: "AgentPay",
         detail: "https://agentpay.example",
         verified: true,
-        origins: [{ role: "platform", origin: "https://agentpay.example" }],
+        origins: [{ role: "verified", origin: "https://agentpay.example" }],
         warning: "Only allow this if you started it yourself.",
       },
     });
@@ -788,7 +788,7 @@ integration("external MCP OAuth over HTTP", () => {
       parameters: { opensteer_embedder_assertion: "a.b.c" },
     });
     expect((await read(withStatement.requestId)).identity).toMatchObject({
-      evidenceKind: "platform",
+      evidenceKind: "verified",
       heading: "AgentPay",
       verified: true,
     });
@@ -825,7 +825,7 @@ integration("external MCP OAuth over HTTP", () => {
     expect(listed).toMatchObject([
       {
         label: "AgentPay",
-        identityAtConsent: { kind: "platform", platformOrigin: "https://agentpay.example" },
+        identityAtConsent: { kind: "verified", origin: "https://agentpay.example" },
         identity: { heading: "AgentPay" },
       },
     ]);
@@ -884,7 +884,7 @@ integration("external MCP OAuth over HTTP", () => {
     const f = await verifiedDirectoryFixture();
     const approved = await f.authorize("approval-required", { redirect: f.callback });
     expect(approved.consent.identityAtConsent).toMatchObject({
-      kind: "platform",
+      kind: "verified",
       directoryRevision: 1,
     });
     f.setNow(f.now() + 1_000);
@@ -961,7 +961,7 @@ integration("external MCP OAuth over HTTP", () => {
       redirect: "https://platform.example/cb",
     });
     expect(approved.consent.identityAtConsent).toMatchObject({
-      kind: "platform",
+      kind: "verified",
       directoryRevision: 3,
     });
 
@@ -1071,7 +1071,7 @@ integration("external MCP OAuth over HTTP", () => {
     const clientId = registration.json().client_id;
     for (const [redirect, kind] of [
       [unknown, "unverified"],
-      [known, "platform"],
+      [known, "verified"],
     ] as const) {
       const result = await f.authorize("approval-required", { clientId, redirect });
       expect(result.consent.clientName).toBe("Test agent");

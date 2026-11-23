@@ -38,6 +38,15 @@ describeStore("a connection verified through a platform reads as verified by its
       expiresAt: new Date(Date.now() + 60 * 60_000),
       grant: { scope: "selected", tasks: false, resources: [] },
     });
+    const direct = await connections.create({
+      userId: fixture.userId,
+      label: "AgentPay",
+      clientName: "AgentPay",
+      accessMode: "approval-required",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "selected", tasks: false, resources: [] },
+    });
     await sql`
       update agent_connections set identity_at_consent = ${JSON.stringify({
         kind: "platform-and-embedder",
@@ -50,7 +59,15 @@ describeStore("a connection verified through a platform reads as verified by its
         keyThumbprint: "a".repeat(43),
         directoryRevision: 3,
         recordedAt,
-      })}::jsonb where id = ${agent.id}
+      })}::jsonb where id = ${agent.id};
+      update agent_connections set identity_at_consent = ${JSON.stringify({
+        kind: "platform",
+        platformOrigin: "https://agentpay.example",
+        platformDirectoryId: "agentpay",
+        platformName: "AgentPay",
+        directoryRevision: 3,
+        recordedAt,
+      })}::jsonb where id = ${direct.id}
     `.execute(database);
     await sql`
       insert into agent_directory_cache (issuer, document, accepted_at) values (${issuer}, ${JSON.stringify(
@@ -76,15 +93,18 @@ describeStore("a connection verified through a platform reads as verified by its
     const { rows } = await sql<{ table: string | null }>`
       select to_regclass('agent_embedder_assertion_claims')::text as table`.execute(database);
     expect(rows[0]?.table).toBeNull();
-    const [listed] = await connections.list(fixture.userId);
-    expect(listed?.identityAtConsent).toEqual({
-      kind: "platform",
-      platformOrigin: "https://agentpay.example",
-      platformDirectoryId: "agentpay",
-      platformName: "AgentPay",
+    const listed = await connections.list(fixture.userId);
+    const byId = new Map(listed.map((connection) => [connection.id, connection]));
+    const expected = {
+      kind: "verified",
+      origin: "https://agentpay.example",
+      directoryId: "agentpay",
+      displayName: "AgentPay",
       directoryRevision: 3,
       recordedAt,
-    });
+    };
+    expect(byId.get(agent.id)?.identityAtConsent).toEqual(expected);
+    expect(byId.get(direct.id)?.identityAtConsent).toEqual(expected);
     // The cached directory reads again, each entry a name and its origins.
     expect(await connections.loadDirectory(issuer)).toEqual({
       revision: 3,

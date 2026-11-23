@@ -6,7 +6,7 @@ import { plainSentence, sentenceWith, siteOrigin, type SentencePart } from "./se
 /**
  * Who a connected agent is, as far as the Home could prove at consent. The Home's own
  * presentation decides the words; without one (an older Home), the agent is only the name
- * it gave itself and where it returns to. A logo is shown only for a platform the Home
+ * it gave itself and where it returns to. A logo is shown only for a directory entry the Home
  * verified, never guessed from a domain.
  */
 export interface AgentWho {
@@ -21,7 +21,7 @@ export interface AgentWho {
   readonly verified: boolean;
   /** The heading is only what the client calls itself. */
   readonly selfAsserted: boolean;
-  /** A logo key for a verified platform; null otherwise. */
+  /** A logo key for a verified directory entry; null otherwise. */
   readonly providerId: string | null;
   /** The redirect returns to this computer. */
   readonly local: boolean;
@@ -39,7 +39,7 @@ export interface AgentWho {
 
 /** One origin the Home recorded for this agent. */
 export interface AgentWhoOrigin {
-  readonly role: "platform" | "redirect";
+  readonly role: "verified" | "redirect";
   /** The Home's verified name for it; null for a redirect, whose only name is the claim. */
   readonly name: string | null;
   readonly origin: string;
@@ -65,8 +65,8 @@ export function agentClaim(name: string, maxLength = agentClaimMaxLength): strin
     : name.trim();
 }
 
-/** Logos the apps draw, keyed by the verified directory's own platform id. */
-const platformLogos: Readonly<Record<string, string>> = {
+/** Logos the apps draw, keyed by the verified directory entry's id. */
+const directoryLogos: Readonly<Record<string, string>> = {
   chatgpt: "openai",
   claude: "anthropic",
 };
@@ -92,10 +92,10 @@ export function agentWho(input: {
     // An unverified heading is the client's own name: only ever a claim, made safe to show.
     const claim = presented.verified ? null : agentClaim(input.clientName);
     // The line under the heading, from what the Home recorded, each value by what it is.
-    const platform = presented.origins.find((origin) => origin.role === "platform");
+    const verifiedOrigin = presented.origins.find((origin) => origin.role === "verified");
     const detailParts: readonly SentencePart[] = local
       ? [workWords("who.local")]
-      : originParts(platform?.origin ?? input.redirect);
+      : originParts(verifiedOrigin?.origin ?? input.redirect);
     return {
       heading: claim ?? presented.heading,
       detail: plainSentence(detailParts),
@@ -104,7 +104,7 @@ export function agentWho(input: {
       selfAsserted: presented.selfAsserted,
       providerId:
         verified && recorded && recorded.kind !== "unverified"
-          ? (platformLogos[recorded.platformDirectoryId] ?? null)
+          ? (directoryLogos[recorded.directoryId] ?? null)
           : null,
       local,
       withdrawnSince: presented.verified ? withdrawnSince : null,
@@ -121,20 +121,19 @@ export function agentWho(input: {
   if (recorded && recorded.kind !== "unverified") {
     const origins: AgentWhoOrigin[] = [
       {
-        role: "platform",
-        name: recorded.platformName,
-        origin: recorded.platformOrigin,
-        roleLabel: workWords("who.origin.platform"),
+        role: "verified",
+        name: recorded.displayName,
+        origin: recorded.origin,
+        roleLabel: workWords("who.origin.verified"),
       },
     ];
     return {
-      heading: recorded.platformName,
-      detail: plainSentence(originParts(recorded.platformOrigin)),
-      detailParts: originParts(recorded.platformOrigin),
+      heading: recorded.displayName,
+      detail: plainSentence(originParts(recorded.origin)),
+      detailParts: originParts(recorded.origin),
       verified: withdrawnSince === null,
       selfAsserted: false,
-      providerId:
-        withdrawnSince === null ? (platformLogos[recorded.platformDirectoryId] ?? null) : null,
+      providerId: withdrawnSince === null ? (directoryLogos[recorded.directoryId] ?? null) : null,
       local,
       withdrawnSince,
       warning: workWords("who.consentWarning"),

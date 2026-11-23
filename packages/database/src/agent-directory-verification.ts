@@ -8,14 +8,13 @@ import type {
  * its entry still lists the origin it was verified by. Returns `null` when the directory is
  * unavailable (cannot claim withdrawal without a live directory).
  */
-export async function isIdentityStillVerified(
+export function isIdentityStillVerified(
   identity: AgentConnectionIdentityAtConsent,
   directory: AgentDirectoryDocument | null,
-): Promise<boolean | null> {
+): boolean | null {
   if (identity.kind === "unverified") return false;
   if (!directory) return null;
   return directory.entries.some(
-    (entry) =>
-      entry.id === identity.platformDirectoryId && entry.origins.includes(identity.platformOrigin),
+    (entry) => entry.id === identity.directoryId && entry.origins.includes(identity.origin),
   );
 }

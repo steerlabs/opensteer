@@ -86,7 +86,7 @@ export function registerCloudComputerPortal(
     if (!cloudComputers) return unavailable(reply);
     const session = await readSession(request, reply);
     if (!session) return signIn(reply, cloudComputerCheckoutPortalPath);
-    const current = currentComputer(await cloudComputers.list(accountOf(session)));
+    const current = currentComputer(await cloudComputers.listForAccount(accountOf(session)));
     // Nothing to buy while one is set up or running: its own page says where it stands.
     if (current) return reply.redirect(cloudComputerPortalPath, 303);
     return renderCheckout(reply, cloudComputers, null);
@@ -189,7 +189,7 @@ export function registerCloudComputerPortal(
       };
     } else {
       const account = accountOf(session);
-      const computers = await store.list(account);
+      const computers = await store.listForAccount(account);
       const current = currentComputer(computers);
       state = current
         ? {

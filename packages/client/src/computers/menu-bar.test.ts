@@ -205,7 +205,7 @@ describe("Needs you", () => {
 describe("Right now", () => {
   const plain = { verified: false, selfAsserted: false, providerId: null };
   const grok = mockAgentIdentity.selfNamed("Grok", "https://grok.com", false);
-  const claude = mockAgentIdentity.verifiedPlatform("claude", "Claude", "https://claude.ai");
+  const claude = mockAgentIdentity.verifiedOrigin("claude", "Claude", "https://claude.ai");
 
   it("shows an agent in an app as information, named by its task and the app", () => {
     const status = menuBarStatus({

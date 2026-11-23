@@ -121,7 +121,7 @@ export const AgentDirectoryResponseSchema = z.strictObject({
 });
 export type AgentDirectoryResponse = z.infer<typeof AgentDirectoryResponseSchema>;
 
-export const AgentConnectionIdentityEvidenceKindSchema = z.enum(["platform", "unverified"]);
+export const AgentConnectionIdentityEvidenceKindSchema = z.enum(["verified", "unverified"]);
 export type AgentConnectionIdentityEvidenceKind = z.infer<
   typeof AgentConnectionIdentityEvidenceKindSchema
 >;
@@ -129,10 +129,10 @@ export type AgentConnectionIdentityEvidenceKind = z.infer<
 /** Recorded once at consent time so later directory changes can be surfaced without rewriting history. */
 export const AgentConnectionIdentityAtConsentSchema = z.discriminatedUnion("kind", [
   z.strictObject({
-    kind: z.literal("platform"),
-    platformOrigin: AgentDirectoryOriginSchema,
-    platformDirectoryId: AgentDirectoryEntryIdSchema,
-    platformName: AgentDirectoryDisplayNameSchema,
+    kind: z.literal("verified"),
+    origin: AgentDirectoryOriginSchema,
+    directoryId: AgentDirectoryEntryIdSchema,
+    displayName: AgentDirectoryDisplayNameSchema,
     directoryRevision: AgentDirectoryRevisionSchema,
     recordedAt: isoDateTime,
   }),

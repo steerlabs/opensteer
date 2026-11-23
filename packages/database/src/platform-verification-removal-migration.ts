@@ -15,13 +15,13 @@ async function removePlatformVerification(database: Kysely<unknown>): Promise<vo
   await sql`
     drop table if exists agent_embedder_assertion_claims;
     update agent_connections set identity_at_consent = jsonb_build_object(
-        'kind', 'platform',
-        'platformOrigin', identity_at_consent->'platformOrigin',
-        'platformDirectoryId', identity_at_consent->'platformDirectoryId',
-        'platformName', identity_at_consent->'platformName',
+        'kind', 'verified',
+        'origin', identity_at_consent->'platformOrigin',
+        'directoryId', identity_at_consent->'platformDirectoryId',
+        'displayName', identity_at_consent->'platformName',
         'directoryRevision', identity_at_consent->'directoryRevision',
         'recordedAt', identity_at_consent->'recordedAt')
-      where identity_at_consent->>'kind' = 'platform-and-embedder';
+      where identity_at_consent->>'kind' in ('platform', 'platform-and-embedder');
     update agent_directory_cache set document = jsonb_set(document, '{entries}', coalesce((
         select jsonb_agg(entry - 'keys' - 'embedsVia' order by position)
         from jsonb_array_elements(document->'entries') with ordinality as listed(entry, position)

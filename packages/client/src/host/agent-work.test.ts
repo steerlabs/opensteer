@@ -49,7 +49,7 @@ describe("an origin that does not parse", () => {
     expect(
       addresses(
         agentWhoOriginParts({
-          role: "platform",
+          role: "verified",
           name: "Claude",
           origin,
           roleLabel: "Holds the access",
@@ -60,10 +60,10 @@ describe("an origin that does not parse", () => {
       clientName: "Grok",
       redirect: origin,
       identityAtConsent: {
-        kind: "platform",
-        platformDirectoryId: "claude",
-        platformName: "Claude",
-        platformOrigin: origin,
+        kind: "verified",
+        directoryId: "claude",
+        displayName: "Claude",
+        origin,
       } as never,
     });
     expect(addresses(unparsed.detailParts)).toEqual([]);

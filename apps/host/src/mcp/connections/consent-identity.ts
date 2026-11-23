@@ -2,7 +2,11 @@ import type {
   AgentConnectionIdentityAtConsent,
   AgentDirectoryDocument,
 } from "@opensteer/control-plane-protocol";
-import { extractRedirectOrigin, isLoopbackRedirect, matchPlatform } from "./agent-directory.js";
+import {
+  extractRedirectOrigin,
+  isLoopbackRedirect,
+  matchDirectoryEntry,
+} from "./agent-directory.js";
 
 export const consentSelfStartWarning = "Only allow this if you started it yourself.";
 
@@ -19,19 +23,14 @@ export function resolveConsentIdentity(input: {
 }): AgentConnectionIdentityAtConsent {
   const nowMs = typeof input.now === "function" ? input.now() : (input.now ?? Date.now());
   const recordedAt = new Date(nowMs).toISOString();
-  const platformEntry = matchPlatform(input.directory, input.redirectUri);
-  const platformOrigin = extractRedirectOrigin(input.redirectUri);
-  if (
-    platformEntry &&
-    input.directory &&
-    platformOrigin &&
-    platformEntry.origins.includes(platformOrigin)
-  )
+  const entry = matchDirectoryEntry(input.directory, input.redirectUri);
+  const origin = extractRedirectOrigin(input.redirectUri);
+  if (entry && input.directory && origin && entry.origins.includes(origin))
     return {
-      kind: "platform",
-      platformOrigin,
-      platformDirectoryId: platformEntry.id,
-      platformName: platformEntry.displayName,
+      kind: "verified",
+      origin,
+      directoryId: entry.id,
+      displayName: entry.displayName,
       directoryRevision: input.directory.revision,
       recordedAt,
     };
@@ -60,7 +59,7 @@ export function unverifiedConsentIdentity(
 }
 
 export interface IdentityOriginPresentation {
-  readonly role: "platform" | "redirect";
+  readonly role: "verified" | "redirect";
   readonly label: string;
   readonly origin: string;
 }
@@ -78,16 +77,14 @@ export interface IdentityPresentation {
 /** Projects recorded consent identity evidence into the exact consent presentation view model. */
 export function describeIdentity(identity: AgentConnectionIdentityAtConsent): IdentityPresentation {
   switch (identity.kind) {
-    case "platform":
+    case "verified":
       return {
-        evidenceKind: "platform",
+        evidenceKind: "verified",
         verified: true,
         selfAsserted: false,
-        heading: identity.platformName,
-        detail: identity.platformOrigin,
-        origins: [
-          { role: "platform", label: identity.platformName, origin: identity.platformOrigin },
-        ],
+        heading: identity.displayName,
+        detail: identity.origin,
+        origins: [{ role: "verified", label: identity.displayName, origin: identity.origin }],
         warning: consentSelfStartWarning,
       };
     case "unverified":

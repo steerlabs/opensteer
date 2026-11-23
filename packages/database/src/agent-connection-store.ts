@@ -102,7 +102,7 @@ export class AgentConnectionStore {
         const directory = await new AgentConnectionStore(tx, this.now).loadDirectory(
           input.directoryIssuer,
         );
-        if (directory && !(await isIdentityStillVerified(evidence, directory))) {
+        if (directory && !isIdentityStillVerified(evidence, directory)) {
           throw new OpensteerError({
             code: "conflict",
             reason: agentConnectionConsentRefusals.verificationChanged,
@@ -267,7 +267,7 @@ export class AgentConnectionStore {
           evidence &&
           evidence.kind !== "unverified" &&
           evidence.directoryRevision < document.revision &&
-          !(await isIdentityStillVerified(evidence, document))
+          !isIdentityStillVerified(evidence, document)
         )
           withdrawn.push(row.id);
       }

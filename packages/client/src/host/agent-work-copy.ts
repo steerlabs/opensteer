@@ -104,7 +104,7 @@ export const agentWorkCopy = {
   "who.appAt": "An app at {host}",
   "who.localApp": "An app on this computer",
   "who.unnamed": "an app with no name",
-  "who.origin.platform": "Holds the access",
+  "who.origin.verified": "Holds the access",
   "who.origin.redirect": "Returns to",
   "who.yourName": "Your name for it",
 } as const;
