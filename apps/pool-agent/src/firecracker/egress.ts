@@ -255,7 +255,7 @@ export async function removeEgress(index: number): Promise<void> {
 }
 
 /**
- * E2: Confirms the slot's egress proxy process is running and serving `/health` inside its
+ * Confirms the slot's egress proxy process is running and serving `/health` inside its
  * network namespace (triggering socket activation if idle), within `signal`'s bound. Returns
  * `false` immediately if the proxy service or socket has entered `failed`, or if `signal` aborts
  * before a healthy `{"ok":true}` answer is received.

@@ -1,6 +1,7 @@
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { posix } from "node:path";
 import { z } from "zod";
+import { defaultHomeSilenceMs, minimumHomeSilenceMs } from "./agent.js";
 import { maximumSlots } from "./firecracker/slot-numbers.js";
 import { isPublicIp } from "@opensteer/access/public-network";
 
@@ -34,6 +35,16 @@ export const agentConfigSchema = z
     retentionHours: z.number().positive().max(24).default(24),
     /** Seconds a guest stays paused in memory before it is saved to disk; null keeps it there. */
     saveAfterSeconds: z.number().nonnegative().nullable().default(600),
+    /**
+     * Seconds a running guest may go without an authenticated call from its Home before the agent
+     * stops it to free host memory. Default 15 minutes; never below the guest runtime's
+     * session-without-channel deadline plus margin (12 minutes).
+     */
+    homeSilenceSeconds: z
+      .number()
+      .finite()
+      .min(minimumHomeSilenceMs / 1000)
+      .default(defaultHomeSilenceMs / 1000),
     maxConcurrentSaves: z.number().int().min(1).max(64).default(2),
     driver: z.strictObject({
       firecracker: path,

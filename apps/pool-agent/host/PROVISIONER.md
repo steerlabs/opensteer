@@ -289,8 +289,11 @@ No upstream, no start, and the host's credentials are a copy of what the account
   - **Proxy not serving:** before `start` or wake (`resume`, from memory or disk) answers applied,
     the agent confirms the slot's egress proxy serves `/health` inside its network namespace and
     its systemd service is `active` within 5 s (`deadlines.proxy`; `firecracker/egress.ts`,
-    `confirmEgress`). If not, no guest is left running and a stored, signed `applied: false` with
-    reason `egress-proxy-down` answers (`agent.ts`, `#prepareToRun`).
+    `confirmEgress`). On `resume` this check (with `#ensureHost`, `#prepareToRun` and closing the
+    guest gate) runs before the right to resume is consumed (`consumed`), so a refusal leaves the
+    slot `paused` with its saved state intact and a later resume succeeds once the proxy is back.
+    In both cases no guest is left running and a stored, signed `applied: false` with reason
+    `egress-proxy-down` answers (`agent.ts`, `#prepareToRun`).
   - **The fetch could not be completed** (no answer, a refusal, a malformed answer, its
     deadline): what is there is used, if anything is. Otherwise it is refused as `unavailable`
     ("try again later"), with nothing written.
@@ -322,3 +325,22 @@ No upstream, no start, and the host's credentials are a copy of what the account
   - TLS uses the system's roots, no redirect is followed, and the answer is capped at 16 KiB. A
     reply cut off part-way fails at once.
   - The password is never logged, journaled or put in an error.
+
+## 9. Stopping a running guest whose Home has gone silent
+
+A Home that shuts down cleanly leaves its pooled sessions alive for adoption and polls a running
+guest's signed status at least once a minute while it is up. If the Home never returns, the guest
+runtime tears its sessions down and closes Chromium after 10 minutes (`pooledRuntimeSessionDeadlineMs`
+in `packages/browser-runtime-core/src/browser-pool.ts`), leaving an empty micro-VM holding host RAM.
+`homeSilenceSeconds` in `agent.json` (`config.ts`, `agentConfigSchema`; default `900` — 15 minutes;
+lower bound `720` — 12 minutes, i.e., the runtime's 10-minute deadline plus a 2-minute margin,
+enforced in both `agentConfigSchema` and `PoolAgent`) controls how long a running guest may go
+without an authenticated call from its Home (`status`, `result`, `apply`, or an authorized relay
+open) before the agent stops it through the slot's lane and journal, freeing its memory while
+leaving the durable profile disk untouched. Parked guests are unaffected (their own `discardAt`
+governs them), and an agent restart starts the silence clock fresh from restart time. Because this
+bounds how long an orphaned running VM can hold a memory slot on the host, the host owner sets
+`homeSilenceSeconds` to fit their host's capacity budget. When the agent stops a silent guest,
+operators see `{ "event": "guest.stopped", "slotId": ..., "reason": "home-silent" }` in the agent
+log and `status.stopReason: "home-silent"` in `list` summaries (and in the Home's signed `status`
+reply until the Home starts a fresh guest or stops/replaces the slot).
