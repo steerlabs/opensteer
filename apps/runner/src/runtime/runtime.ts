@@ -2221,6 +2221,15 @@ export class RunnerRuntime {
     const deadline = Date.now() + this.#sharedEngineSettleMs;
     let current = session;
     if (!current && opening) {
+      if (!sharedEngine) {
+        // A dedicated engine's process tree is proven gone by containment; do not
+        // wait `sharedEngineSettleMs` on a stuck open, but still stop any late session.
+        void opening.then(
+          (late) => late.stop().catch(() => undefined),
+          () => undefined,
+        );
+        return undefined;
+      }
       const opened = await settleBy(
         opening.then(
           (value) => ({ ok: true as const, session: value }),

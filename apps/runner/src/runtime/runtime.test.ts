@@ -3720,15 +3720,21 @@ describe("RunnerRuntime", () => {
       /** Resolved when a session open has reached the gate. */
       readonly openReached?: () => void;
       readonly settleMs?: number;
+      readonly sharedEngineProcess?: boolean;
     }) {
       const driver = new FakeHarnessDriver("test-driver", options.session);
       const create = driver.create.bind(driver);
       driver.create = async (input) => {
         const adapter = await create(input);
-        if (!options.startGate) return adapter;
+        const capabilities = {
+          ...adapter.capabilities,
+          sharedEngineProcess: options.sharedEngineProcess ?? true,
+        };
+        if (!options.startGate) return { ...adapter, capabilities };
         const gate = options.startGate;
         return {
           ...adapter,
+          capabilities,
           startSession: async (context) => {
             options.openReached?.();
             await gate;
@@ -4425,6 +4431,7 @@ describe("RunnerRuntime", () => {
       const stopped = deferred<void>();
       const f = sharedStopFixture({
         session: () => new SharedEngineSession(stopped.promise, "own"),
+        sharedEngineProcess: false,
       });
       const execute = executeCommand(f.environmentId);
       await reconcile(f.registry, execute);
@@ -4441,6 +4448,44 @@ describe("RunnerRuntime", () => {
         });
       } finally {
         stopped.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("ends a dedicated engine stopped while opening on grace without waiting for sharedEngineSettleMs", async () => {
+      const opened = deferred<void>();
+      const reached = deferred<void>();
+      const sessions: SharedEngineSession[] = [];
+      const f = sharedStopFixture({
+        session: () => {
+          const session = new SharedEngineSession(Promise.resolve(), "own");
+          sessions.push(session);
+          return session;
+        },
+        startGate: opened.promise,
+        openReached: () => reached.resolve(),
+        settleMs: 5_000,
+        sharedEngineProcess: false,
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await reached.promise;
+        const stoppedAt = Date.now();
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        await waitUntil(() => f.ends().length === 1);
+        expect(Date.now() - stoppedAt).toBeLessThan(1_500);
+        expect(f.ends()[0]?.type).toBe("run.interrupted");
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
+          status: "accepted",
+        });
+        // If the dedicated open resolves late, it is still stopped rather than leaked.
+        opened.resolve();
+        await waitUntil(() => sessions.length >= 1 && sessions[0]!.stops);
+      } finally {
+        opened.resolve();
         await f.runtime.close();
       }
     });
