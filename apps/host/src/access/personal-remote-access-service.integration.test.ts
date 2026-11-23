@@ -5,7 +5,7 @@ import type { IdentityService } from "@opensteer/identity";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PersonalRemoteAccessService } from "./personal-remote-access-service.js";
 import type { AuthenticatedHostSession, HostCredentialKind } from "../identity/auth.js";
-import { signHostDiscovery } from "../identity/host-keys.js";
+import { signHostDiscovery, signPersonalHostAccessRoute } from "../identity/host-keys.js";
 
 const ownerId = createId("user");
 let owner: Awaited<
@@ -125,6 +125,76 @@ describe("PersonalRemoteAccessService", () => {
         code: "conflict",
       });
       expect(refused.fixture.updated).not.toHaveBeenCalled();
+    }
+  });
+
+  it("issues a Connect credential and publishes Connect as on only as the step of its operation (AD10)", async () => {
+    const issuer = "https://accounts.opensteer.test";
+    const keys = generateKeyPairSync("ed25519");
+    const refusal = "Remote access changes only as part of a change you asked for in Opensteer.";
+    const steps = [
+      {
+        name: "connect-provision",
+        asks: { action: "configure", mode: "connect" },
+        run: (service: PersonalRemoteAccessService) =>
+          service.connectCredentialForExecutor({} as never, false),
+      },
+      {
+        name: "connect-rotate",
+        asks: { action: "rotate" },
+        run: (service: PersonalRemoteAccessService) =>
+          service.connectCredentialForExecutor({} as never, true),
+      },
+      {
+        name: "connect-projection (on)",
+        asks: { action: "configure", mode: "connect" },
+        run: (service: PersonalRemoteAccessService) =>
+          service.publishConnectProjection(ownerSession(), {
+            expectedAccessRoute: signPersonalHostAccessRoute(keys, {
+              authority,
+              documentVersion: 2,
+              purpose: "opensteer-personal-access-route",
+              route: { generation: 1, kind: "connect", origin: "https://connect.test" },
+            }),
+            schemaVersion: 2,
+            state: "ready",
+          }),
+      },
+    ];
+    for (const step of steps) {
+      const attempt = async (operation: Parameters<typeof projectionDatabase>[3]) => {
+        const fetch = vi.fn(async () => Response.json({}, { status: 500 }));
+        const service = new PersonalRemoteAccessService({
+          authority,
+          database: ownerAuthority(
+            projectionDatabase(issuer, `osh_${"a".repeat(43)}`, undefined, operation),
+          ) as never,
+          fetch,
+          grantVerifier: { issuer } as never,
+          identity: fakeIdentity(),
+          keys,
+        });
+        const outcome = await step.run(service).then(
+          () => "done",
+          (error: { readonly message?: string }) => error.message ?? "error",
+        );
+        return { outcome, fetch };
+      };
+      // With its admitted, unfinished operation: past the check, to what the step does next.
+      const carried = await attempt({ intent: step.asks, state: "running" });
+      expect(carried.outcome, step.name).not.toBe(refusal);
+      // Without one, for a finished or failed one, or for one that asked for something else:
+      // refused before anything reaches the Opensteer account.
+      for (const operation of [
+        null,
+        { intent: step.asks, state: "succeeded" },
+        { intent: step.asks, state: "failed" },
+        { intent: { action: "configure", mode: "private" }, state: "running" },
+      ]) {
+        const refused = await attempt(operation);
+        expect(refused.outcome, `${step.name} ${JSON.stringify(operation)}`).toBe(refusal);
+        expect(refused.fetch).not.toHaveBeenCalled();
+      }
     }
   });
 
@@ -811,7 +881,10 @@ function projectionDatabase(
     readonly mode: "off" | "connect" | "private";
     readonly routeOrigin: string | null;
   } = { generation: 1, mode: "off", routeOrigin: null },
+  /** The latest Remote access operation; none by default. */
+  operation: { readonly intent: Record<string, unknown>; readonly state: string } | null = null,
 ) {
+  const operationQuery = rowQuery(operation ?? undefined);
   const link = {
     accountOperation: null as import("kysely").Selectable<
       import("@opensteer/database").DatabaseSchema["personalRemoteAccountLink"]
@@ -869,7 +942,11 @@ function projectionDatabase(
   };
   return {
     selectFrom: vi.fn((table: string) =>
-      table === "personalRemoteAccess" ? remoteAccessQuery : linkQuery,
+      table === "personalRemoteAccess"
+        ? remoteAccessQuery
+        : table === "personalRemoteAdministration"
+          ? operationQuery
+          : linkQuery,
     ),
     transaction: () => ({
       execute: (run: (value: unknown) => unknown) =>
@@ -894,7 +971,9 @@ function projectionDatabase(
               ? liveSessionQuery()
               : table === "personalRemoteAccess"
                 ? remoteAccessQuery
-                : linkQuery,
+                : table === "personalRemoteAdministration"
+                  ? operationQuery
+                  : linkQuery,
           ),
         }),
     }),

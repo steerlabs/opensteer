@@ -943,6 +943,9 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
           message: "Connect projection requires a linked Opensteer Account",
         });
       }
+      // Publishing Connect as on is the step of the person's Connect (or rotate) operation;
+      // publishing it as off narrows, and the Mac app's own cleanup does it at startup.
+      if (request.state !== "disabled") await requireRemoteAccessOperation(transaction, "connect");
       if (request.state === "disabled" && status.mode === "connect") {
         throw new OpensteerError({
           code: "conflict",
@@ -1100,6 +1103,8 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
         code: "conflict",
         message: "Link an Opensteer Account before enabling Connect",
       });
+    // A Connect credential is the step of the person's Connect operation, or of a rotate.
+    await requireRemoteAccessOperation(this.#database, rotate ? "rotate" : "connect");
     return this.#accountClient(link).connectCredential(input, rotate);
   }
 
@@ -1493,31 +1498,39 @@ function assertStoredAccountLinkConsume(
   }
 }
 
+/** What a step of the Mac app's Remote access executor would do, as its operation must ask. */
+export type RemoteAccessStep = ConfigurePersonalRemoteAccessRequest["mode"] | "rotate";
+
 /**
- * The admitted, unfinished Remote access operation a configure step carries out: turning it off
- * belongs to any of them (unlink, rotate and a change of mode each pass through off); turning it
- * on belongs only to the operation that asked for that mode, or a rotate of Connect.
+ * The one check every executor step makes (AD10): the step stands only while the latest Remote
+ * access operation is admitted, unfinished, and asks for it. Turning Remote access off belongs to
+ * any of them (unlink, rotate and a change of mode each pass through off); Connect to the
+ * operation that asked for Connect, or a rotate of it; private to the one that asked for private;
+ * a new Connect credential by rotation only to a rotate.
  */
 export async function requireRemoteAccessOperation(
-  transaction: Transaction<DatabaseSchema>,
-  mode: ConfigurePersonalRemoteAccessRequest["mode"],
+  executor: Kysely<DatabaseSchema>,
+  step: RemoteAccessStep,
 ): Promise<void> {
-  const operation = await transaction
+  const operation = await executor
     .selectFrom("personalRemoteAdministration")
     .select(["intent", "state"])
     .orderBy("position", "desc")
     .limit(1)
-    // A plain read under the Remote access lock this step already holds: a row lock here would
+    // A plain read under the Remote access lock a step already holds: a row lock here would
     // come before the sessions it ends, the reverse of every other path.
     .executeTakeFirst();
   const intent = operation?.intent as
-    { readonly action: string; readonly mode?: string } | undefined;
+    | { readonly action: string; readonly mode?: string }
+    | undefined;
   const unfinished = operation?.state === "pending" || operation?.state === "running";
   const carries =
     unfinished &&
-    (mode === "off" ||
-      (intent?.action === "configure" && intent.mode === mode) ||
-      (mode === "connect" && intent?.action === "rotate"));
+    (step === "off" ||
+      (step === "rotate"
+        ? intent?.action === "rotate"
+        : (intent?.action === "configure" && intent.mode === step) ||
+          (step === "connect" && intent?.action === "rotate")));
   if (!carries)
     throw new OpensteerError({
       code: "conflict",
