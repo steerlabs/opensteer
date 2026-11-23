@@ -627,6 +627,40 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     await settle();
   });
 
+  /*
+   * CY5: a refusal takes with it what was computed from it. Typing over a selection away from
+   * the caret is the selection's deletion, moves back to where it was, then the insertion; when
+   * the deletion is refused under an earlier context the moves computed from it are refused too,
+   * and what was typed lands at the page's caret.
+   */
+  it("refuses the moves computed from a refused deletion, and lands the text at the caret", async () => {
+    await seed(page, kind, "abcd", 4);
+    await settle();
+    const earlier = observer.context.contextId!;
+    // The page rewrites the field before the phone hears of it.
+    await seed(page, kind, "ab-cd", 5);
+    await settle();
+    expect(observer.context.contextId).not.toBe(earlier);
+    // What the reducer sends for "X" typed over "ab" with the far caret after "abcd".
+    expect(
+      await send({
+        kind: "edit",
+        edit: { contextId: earlier, text: "cd", before: "abcd", after: "" },
+      }),
+    ).toBe(false);
+    for (let index = 0; index < 2; index++)
+      expect(await send({ kind: "command", command: "moveBackward", contextId: earlier })).toBe(
+        false,
+      );
+    expect(
+      await send({ kind: "edit", edit: { contextId: earlier, text: "X", before: "", after: "" } }),
+    ).toBe(true);
+    expect(await read(page, kind)).toEqual({ value: "ab-cdX", caret: 6, collapsed: true });
+    // The person's own swipe afterwards moves as ever.
+    expect(await send({ kind: "command", command: "moveBackward", contextId: earlier })).toBe(true);
+    expect((await read(page, kind)).caret).toBe(5);
+  });
+
   // CS1: a refusal inside the context while composing. The page moved the selection under an
   // open composition (Blink keeps the composition open), so the next update is refused for the
   // changed selection; the composition stays the composer's. The person keeps what they

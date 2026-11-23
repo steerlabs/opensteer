@@ -188,6 +188,12 @@ export class PageEditingObserver {
    * one of these is still an insertion at its caret. Focus moving to another field clears them.
    */
   #earlier = new Set<string>();
+  /**
+   * CY5: an edit the page refused, by its context and producer. What that producer computed from
+   * it (its moves under the same context) is refused too, until its next insertion, which lands
+   * at the caret: a refusal takes with it what was computed from it.
+   */
+  #refusedFrom: { contextId: string; producer: string | undefined } | null = null;
   /** Remembers the context being replaced, for the same field. */
   #supersede(sameField: boolean): void {
     if (!sameField) {
@@ -355,7 +361,10 @@ export class PageEditingObserver {
       // Typed under an earlier context of this same field: still the person's, at the caret. Any
       // other operation of another context is refused alone: it changed nothing the current
       // context's mirror holds, so the current context stays.
-      if (!(insertion && this.#earlier.has(edit.contextId))) return false;
+      if (!(insertion && this.#earlier.has(edit.contextId))) {
+        this.#refusedFrom = { contextId: edit.contextId, producer };
+        return false;
+      }
     }
     // CW1: another context's (or viewer's) composition is closed only for an operation the page
     // admits whatever its text: an insertion at the caret. A replacement or a composition of
@@ -375,8 +384,10 @@ export class PageEditingObserver {
           silent: true,
         })
         .catch(() => null);
-      if (typeof open?.result?.value === "string" && open.result.value.length > 0)
+      if (typeof open?.result?.value === "string" && open.result.value.length > 0) {
+        this.#refusedFrom = { contextId: edit.contextId, producer };
         return this.#stale();
+      }
       this.#composer = null;
     }
     // CY3: another composer's composition is closed only for an edit the page will apply: after
@@ -412,6 +423,7 @@ export class PageEditingObserver {
             transportFailed: response === null,
           }),
         );
+      this.#refusedFrom = { contextId: edit.contextId, producer };
       return this.#stale();
     }
     try {
@@ -422,6 +434,12 @@ export class PageEditingObserver {
           return false;
       }
       admitted?.();
+      // Applied: what this producer computes from here on is its own again.
+      if (
+        this.#refusedFrom?.contextId === edit.contextId &&
+        this.#refusedFrom.producer === producer
+      )
+        this.#refusedFrom = null;
       if (composition && "selectionStart" in edit) {
         await this.#cdp.send("Input.imeSetComposition", {
           text: edit.text,
@@ -497,6 +515,13 @@ export class PageEditingObserver {
         contextId === this.#context.contextId ||
         (relative && this.#focused !== null && this.#earlier.has(contextId)));
     if (!admitted()) return false;
+    // A move or deletion computed from an edit the page refused goes with it (CY5).
+    if (
+      contextId !== undefined &&
+      this.#refusedFrom?.contextId === contextId &&
+      this.#refusedFrom.producer === producer
+    )
+      return false;
     if (!focus) {
       await action();
       return true;

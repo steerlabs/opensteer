@@ -862,6 +862,8 @@ export class FarField {
   private rotations = 0;
   /** The field's earlier contexts: an insertion under one is still the person's (CV1). */
   readonly earlier = new Set<string>();
+  /** CY5: an edit refused, by context and producer: its moves after it go with it. */
+  private refusedFrom: { contextId: string | null; producer: string | undefined } | null = null;
   /** The context a refusal rotates to; several fields on one page give each a distinct one. */
   nextContextId = () =>
     `00000000-0000-4000-8000-${String(100000000000 + ++this.rotations).slice(-12)}`;
@@ -914,8 +916,20 @@ export class FarField {
       // anything else is refused alone, the field's context kept.
       if (!(insertion && this.earlier.has(context))) {
         this.refused.push(operation);
+        if (operation.kind !== "command") this.refusedFrom = { contextId: context, producer };
         return true;
       }
+    }
+    // CY5: the moves computed from an edit refused go with it, until that producer's next edit
+    // that applies.
+    if (
+      operation.kind === "command" &&
+      context !== null &&
+      this.refusedFrom?.contextId === context &&
+      this.refusedFrom.producer === producer
+    ) {
+      this.refused.push(operation);
+      return true;
     }
     // CW1: another composer's composition is closed only for an operation admitted whatever its
     // text (an insertion, a command); a replacement or a composition of another composer while
@@ -928,6 +942,7 @@ export class FarField {
       (operation.kind === "edit" || operation.kind === "compose") &&
       !insertion
     ) {
+      this.refusedFrom = { contextId: context, producer };
       this.refuse(operation);
       return true;
     }
@@ -949,9 +964,12 @@ export class FarField {
             this.value.slice(this.caret, range.end) !== after)
         ) {
           this.mismatched.push(operation);
+          this.refusedFrom = { contextId: context, producer };
           this.refuse(operation);
           return true;
         }
+        if (this.refusedFrom?.contextId === context && this.refusedFrom.producer === producer)
+          this.refusedFrom = null;
         if (operation.kind === "compose") {
           this.replace(range.start, range.end, text);
           this.composition = text ? { start: range.start, end: range.start + text.length } : null;
