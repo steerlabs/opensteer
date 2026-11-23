@@ -37,4 +37,14 @@ describe("Automations migration contract (AA13 / AB5)", () => {
     expect(migrationSource).toContain("canceled_legacy_upgrade");
     expect(migrationSource).toMatch(/update trigger_occurrences[\s\S]*status = 'canceled'/u);
   });
+
+  it("cleans triggers.name via the single TypeScript outsideName helper with no SQL copy (N2)", () => {
+    const migrationSource = readFileSync(
+      fileURLToPath(new URL("./automation-scripts-migration.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(migrationSource).toContain('from "@opensteer/shared/outsideName"');
+    expect(migrationSource).not.toContain("pg_temp.outside_name");
+    expect(migrationSource).not.toContain("create function");
+  });
 });

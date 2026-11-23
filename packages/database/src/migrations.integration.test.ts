@@ -1573,8 +1573,8 @@ it("applies 0113_automations_contract in one migration from pre-script state and
       id, anchor_thread_id, created_by, idempotency_key, request_fingerprint, name, kind, status,
       current_revision_id, consecutive_failures, next_fire_at
     ) values
-      (${legacyScheduleId}, ${task.id}, ${fixture.userId}, 'leg-sched', 'fp-1', 'Legacy schedule', 'schedule', 'active', ${legacyScheduleRevId}, 2, ${futureFireAt}),
-      (${legacyWebhookId}, ${task.id}, ${fixture.userId}, 'leg-hook', 'fp-2', 'Legacy webhook', 'webhook', 'active', ${legacyWebhookRevId}, 0, null),
+      (${legacyScheduleId}, ${task.id}, ${fixture.userId}, 'leg-sched', 'fp-1', ${"Legacy\u202E\n\tschedule\u200D"}, 'schedule', 'active', ${legacyScheduleRevId}, 2, ${futureFireAt}),
+      (${legacyWebhookId}, ${task.id}, ${fixture.userId}, 'leg-hook', 'fp-2', ${"\u202E\u200D\n "}, 'webhook', 'active', ${legacyWebhookRevId}, 0, null),
       (${legacyWatchId}, ${task.id}, ${fixture.userId}, 'leg-watch', 'fp-3', 'Legacy watch', 'watch', 'active', ${legacyWatchRevId}, 1, null),
       (${archivedLegacyId}, ${task.id}, ${fixture.userId}, 'arch-leg', 'fp-6', 'Archived legacy', 'schedule', 'archived', ${archivedLegacyRevId}, 0, null)
     `.execute(tx);
@@ -1657,16 +1657,20 @@ it("applies 0113_automations_contract in one migration from pre-script state and
     (
       await sql<{
         id: string;
+        name: string;
         status: string;
         nextFireAt: Date | null;
         pauseReason: string | null;
         pausedBy: string | null;
         pausedAt: Date | null;
-      }>`select id, status, next_fire_at, pause_reason, paused_by, paused_at from triggers`.execute(
+      }>`select id, name, status, next_fire_at, pause_reason, paused_by, paused_at from triggers`.execute(
         database,
       )
     ).rows.map((row) => [row.id, row]),
   );
+
+  expect(triggers.get(legacyScheduleId)?.name).toBe("Legacy schedule");
+  expect(triggers.get(legacyWebhookId)?.name).toBe("Automation");
 
   for (const id of [legacyScheduleId, legacyWebhookId, legacyWatchId]) {
     const row = triggers.get(id);

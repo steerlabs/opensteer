@@ -266,10 +266,10 @@ describe("the command rule, generated from the table", () => {
       ownWork: true,
       ownLineage: true,
     });
-    const program = { toolContractVersion: 5, language: "javascript", source: "x" };
+    const script = { interpreter: null, text: "console.log('x')" };
     for (const command of [
-      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", program } },
-      { type: "trigger.update", triggerId: "trg_1", input: { program } },
+      { type: "trigger.create", input: { anchorThreadId: "thr_1", name: "n", script } },
+      { type: "trigger.update", triggerId: "trg_1", input: { script } },
       { type: "trigger.run", triggerId: "trg_1" },
     ]) {
       const at = (mode: ThreadAccessMode) =>

@@ -1,5 +1,9 @@
+import { outsideName } from "@opensteer/shared/outsideName";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+
+const cleanBatchSize = 500;
+const needsCleanPattern = "[^ -~]|^ | $|  ";
 
 export const automationsContractMigrationName = "0113_automations_contract";
 
@@ -214,14 +218,39 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
       );
 
     drop table if exists watch_control_requests;
-
-    create function pg_temp.outside_name(value text, maximum integer, fallback text) returns text
-    language sql immutable as $clean$
-      select coalesce(nullif(rtrim(left(btrim(regexp_replace(regexp_replace(
-        regexp_replace(value, '\r\n|[\n\r\t\v\f\u0085\u2028\u2029]', ' ', 'g'),
-        '[\x01-\x1f\x7f-\x9f\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890-\u0891\u08e2\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f]', '', 'g'), '\s+', ' ', 'g')), maximum)), ''), fallback)
-    $clean$;
-    update triggers set name = pg_temp.outside_name(name, 160, 'Automation');
-    drop function pg_temp.outside_name(text, integer, text);
   `.execute(database);
+
+  // Clean any pre-existing dirty triggers.name rows using the single TypeScript cleaner (ruling N2).
+  let afterId: string | null = null;
+  for (;;) {
+    const after = afterId === null ? sql`true` : sql`id > ${afterId}`;
+    const rows = (
+      await sql<{ readonly id: string; readonly name: string }>`
+        select id, name
+        from triggers
+        where ${after}
+          and (name ~ ${needsCleanPattern} or length(name) > 160 or name = '')
+        order by id
+        limit ${cleanBatchSize}
+      `.execute(database)
+    ).rows;
+    if (rows.length === 0) break;
+    const ids: string[] = [];
+    const names: string[] = [];
+    for (const row of rows) {
+      const cleaned = outsideName(row.name, 160) || "Automation";
+      if (cleaned === row.name) continue;
+      ids.push(row.id);
+      names.push(cleaned);
+    }
+    if (ids.length > 0) {
+      await sql`
+        update triggers as t set name = u.name
+        from unnest(${ids}::text[], ${names}::text[]) as u(id, name)
+        where t.id = u.id
+      `.execute(database);
+    }
+    afterId = rows[rows.length - 1]!.id;
+    if (rows.length < cleanBatchSize) break;
+  }
 }
