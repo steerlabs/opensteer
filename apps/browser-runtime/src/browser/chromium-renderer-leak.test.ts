@@ -84,6 +84,10 @@ it("reaps renderer processes promptly after closing distinct-origin tabs in a na
   ).playwrightContext;
   const rootPid = playwrightContext.process().pid;
 
+  // The browser's own start ends first: the look for the tab helper briefly opens the helper's
+  // manifest in the private page (one extension renderer, gone once the look has ended).
+  await (launched as unknown as { contextHandle: { lifecycleSettled: Promise<void> } })
+    .contextHandle.lifecycleSettled;
   const baselineRenderers = countDescendantRenderers(rootPid);
   const tabCount = 6;
   const pages = [];
