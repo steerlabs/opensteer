@@ -12,10 +12,11 @@ export const removeOrganizationsMigrationName = "0037_remove_organizations";
 
 /**
  * Drops organizations, seats, work assignments and their audit. It never destroys a computer or a
- * subscription it cannot settle: while any organization, organization checkout, work assignment
- * or organization-paid Cloud Computer exists, it refuses, names them, and changes nothing, so an
- * operator decides what becomes of them. No released account can hold one. On a database without
- * them, it drops empty tables and columns only.
+ * subscription it cannot settle: while any organization, organization checkout, work assignment,
+ * or unresolved Cloud Computer (with a work assignment, any `work:` placeholder Stripe id, or
+ * alive with no owning account) exists, it refuses, names each blocking row, and changes nothing,
+ * so an operator decides what becomes of them. No released account can hold one. On a database
+ * without them, it drops empty tables and columns only.
  */
 async function removeOrganizations(database: Parameters<Migration["up"]>[0]): Promise<void> {
   await sql`
@@ -27,12 +28,34 @@ async function removeOrganizations(database: Parameters<Migration["up"]>[0]): Pr
             from public.organization_checkouts
           union all select 'work assignment ' || id || ' (Cloud Computer ' || cloud_computer_id || ')'
             from public.work_assignments
-          union all select 'Cloud Computer ' || id from public.cloud_computers
+          union all select 'Cloud Computer ' || id || ' (work_assignment_id ' || work_assignment_id || ')'
+            from public.cloud_computers
             where work_assignment_id is not null
         ) rows;
-        if held is not null then
-          raise exception 'Organizations cannot be removed while these exist; an operator must decide what becomes of them first: %', held;
-        end if;
+      end if;
+      if to_regclass('public.cloud_computers') is not null then
+        select nullif(concat_ws(', ', held, string_agg(name, ', ')), '') into held from (
+          select 'Cloud Computer ' || id || ' (placeholder ' || concat_ws(', ',
+              case when stripe_subscription_id like 'work:%' then 'stripe_subscription_id' end,
+              case when stripe_customer_id like 'work:%' then 'stripe_customer_id' end,
+              case when stripe_checkout_id like 'work:%' then 'stripe_checkout_id' end,
+              case when stripe_price_id like 'work:%' then 'stripe_price_id' end
+            ) || ')' as name
+            from public.cloud_computers
+            where stripe_subscription_id like 'work:%'
+              or stripe_customer_id like 'work:%'
+              or stripe_checkout_id like 'work:%'
+              or stripe_price_id like 'work:%'
+          union all select 'Cloud Computer ' || id || ' (no owning account)'
+            from public.cloud_computers
+            where account_id is null
+              and state <> 'deleted'
+              and deletion_requested_at is null
+              and tombstoned_at is null
+        ) rows;
+      end if;
+      if held is not null then
+        raise exception 'Organizations cannot be removed while these exist; an operator must decide what becomes of them first: %', held;
       end if;
     end $remove$;
     alter table public.cloud_computers drop constraint if exists cloud_computer_work_billing;

@@ -537,7 +537,6 @@ integration("organizations removed (0037_remove_organizations)", () => {
           'fingerprint-seat-1', ${organization})
     `.execute(database);
     const before = await computer(personal);
-    const workBefore = await computer(work);
     const left = () =>
       sql<{ name: string }>`
         select table_name as name from information_schema.tables where table_schema = 'public'
@@ -551,41 +550,65 @@ integration("organizations removed (0037_remove_organizations)", () => {
     const shapeBefore = await left();
     expect(shapeBefore.length).toBeGreaterThan(0);
 
+    const expectRefused = async (pattern: RegExp) => {
+      const computerBefore = await computer(work);
+      const failure = await migrateControlPlaneToLatest(database).then(
+        () => null,
+        (error: unknown) => error as Error & { cause?: Error },
+      );
+      expect(failure?.message).toContain("Control-plane migration failed");
+      expect(String(failure?.cause?.message)).toMatch(pattern);
+      const recorded = await sql<{ name: string }>`
+        select name from public.kysely_migration where name = '0037_remove_organizations'`.execute(
+        database,
+      );
+      expect(recorded.rows).toEqual([]);
+      expect(await left()).toEqual(shapeBefore);
+      expect(await computer(work)).toEqual(computerBefore);
+      expect(await computer(personal)).toEqual(before);
+    };
+
     // A computer someone paid for is never destroyed or orphaned by a migration: it refuses and
     // names what an operator must decide about.
-    const refused = await migrateControlPlaneToLatest(database).then(
-      () => null,
-      (error: unknown) => error as Error & { cause?: Error },
+    await expectRefused(
+      new RegExp(`organization ${organization}[\\s\\S]*Cloud Computer ${work}`, "u"),
     );
-    expect(refused?.message).toContain("Control-plane migration failed");
-    const recorded = await sql<{ name: string }>`
-      select name from public.kysely_migration where name = '0037_remove_organizations'`.execute(
-      database,
-    );
-    expect(recorded.rows).toEqual([]);
-    expect(String(refused?.cause?.message)).toContain(`Cloud Computer ${work}`);
-    expect(String(refused?.cause?.message)).toContain(`organization ${organization}`);
-    expect(await left()).toEqual(shapeBefore);
-    expect(await computer(work)).toEqual(workBefore);
-    expect(await computer(personal)).toEqual(before);
 
-    // An operator decides: here, the person who used it already has a computer of their own, so
-    // it is handed to the organization's admin with a subscription of their own, and the
-    // organization's records go. Then the migration runs, and keeps both computers.
+    // Clearing the organization rows alone is not enough if the computer is half-resolved:
+    // alive without an owning account, or still carrying any work: placeholder billing id.
     await sql`
-      update public.cloud_computers set work_assignment_id = null, account_id = ${admin},
+      update public.cloud_computers set work_assignment_id = null,
           stripe_checkout_id = 'cs_admin', stripe_customer_id = 'cus_admin',
           stripe_subscription_id = 'sub_admin', stripe_price_id = 'price_1', billing_currency = 'usd'
         where id = ${work}
     `.execute(database);
+    await sql`delete from public.work_assignments`.execute(database);
+    await sql`delete from public.organization_members`.execute(database);
+    await sql`delete from public.organizations`.execute(database);
+    await expectRefused(new RegExp(`Cloud Computer ${work}.*no owning account`, "u"));
+
+    for (const [column, value] of [
+      ["stripe_subscription_id", `work:${assignment}`],
+      ["stripe_customer_id", `work:${assignment}`],
+      ["stripe_checkout_id", `work:${assignment}`],
+    ] as const) {
+      await sql`
+        update public.cloud_computers set account_id = ${admin},
+            stripe_checkout_id = ${column === "stripe_checkout_id" ? value : "cs_admin"},
+            stripe_customer_id = ${column === "stripe_customer_id" ? value : "cus_admin"},
+            stripe_subscription_id = ${column === "stripe_subscription_id" ? value : "sub_admin"}
+          where id = ${work}
+      `.execute(database);
+      await expectRefused(new RegExp(`Cloud Computer ${work}.*${column}`, "u"));
+    }
+
+    // An operator finishes resolving it: owned by the organization's admin with real Stripe ids.
+    // Then the migration runs, and keeps both computers.
     await sql`
-      delete from public.work_assignments
-    `.execute(database);
-    await sql`
-      delete from public.organization_members
-    `.execute(database);
-    await sql`
-      delete from public.organizations
+      update public.cloud_computers set account_id = ${admin},
+          stripe_checkout_id = 'cs_admin', stripe_customer_id = 'cus_admin',
+          stripe_subscription_id = 'sub_admin', stripe_price_id = 'price_1', billing_currency = 'usd'
+        where id = ${work}
     `.execute(database);
     await migrateControlPlaneToLatest(database);
     expect(await left()).toEqual([]);
