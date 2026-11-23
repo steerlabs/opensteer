@@ -3022,6 +3022,25 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
 
     const openSince = performance.now();
     const followAtOpen = followDiagnostics().length;
+    // Each ledger event for the tab, as the follow view is given it: whether its document had
+    // committed, and was still loading, when each start was asked for and refused.
+    const ledgerEvents: Array<{ readonly surfaceId: string | null; readonly entry: string }> = [];
+    const documents = new Map<string, number>();
+    const stopLedgerEvents = ledger.subscribe((event) => {
+      const at = `${Math.round(performance.now() - openSince)}ms`;
+      if (event.type === "changed") {
+        const surface = event.surface;
+        const shown = surface.documentId ?? "none";
+        if (!documents.has(shown)) documents.set(shown, documents.size);
+        ledgerEvents.push({
+          entry: `${at} changed ${event.change} document ${documents.get(shown)} revision ${surface.geometryRevision}${surface.loading ? " loading" : ""}${surface.active ? " active" : ""} ${surface.url}`,
+          surfaceId: surface.id,
+        });
+      } else if (event.type === "resized" || event.type === "geometry" || event.type === "dialog")
+        ledgerEvents.push({ entry: `${at} ${event.type}`, surfaceId: event.surfaceId });
+      else if (event.type === "snapshot")
+        ledgerEvents.push({ entry: `${at} snapshot`, surfaceId: null });
+    });
     await controller.handle({
       type: "surface.open",
       url: `${origin}/follow?person-opened`,
@@ -3060,6 +3079,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       timeline: castTimeline(personTabDebugger, openSince),
       // The follow view's own reason for each start it asked for, and each it set aside.
       followView: followDiagnostics().slice(followAtOpen),
+      ledgerEvents: ledgerEvents
+        .filter((event) => event.surfaceId === null || event.surfaceId === personTab.surface.id)
+        .slice(0, 40)
+        .map((event) => event.entry),
       // Who started each cast, so a count over the bound names its senders.
       senders: debuggerCommands
         .filter(
@@ -3074,6 +3097,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           from: command.sender,
         })),
     };
+    stopLedgerEvents();
     await controller.handle({
       surfaceId: personTab.surface.id,
       type: "surface.close",
