@@ -488,7 +488,8 @@ describe("a chat on the phone", () => {
     await press(row("chat-tasks", key));
     expect(stop).toHaveBeenCalledOnce();
     await act(async () => finish());
-    expect(row("chat-tasks", key)).toMatchObject({ label: "Stop", disabled: false });
+    // Taken: it reads Stopping… until the Home says the task no longer runs.
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
   });
 
   it("keeps what a paused chat holds on screen when an edit met a newer one", async () => {
