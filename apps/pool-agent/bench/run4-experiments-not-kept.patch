@@ -1,0 +1,83 @@
+diff --git a/apps/pool-agent/src/firecracker/cgroup.ts b/apps/pool-agent/src/firecracker/cgroup.ts
+index 8c5669065..d11359a3a 100644
+--- a/apps/pool-agent/src/firecracker/cgroup.ts
++++ b/apps/pool-agent/src/firecracker/cgroup.ts
+@@ -8,7 +8,7 @@ import { appendFile, mkdir, readdir, readFile, rmdir, writeFile } from "node:fs/
+ import { join } from "node:path";
+ 
+ const mountPoint = "/sys/fs/cgroup";
+-const controllers = "+cpu +memory +pids";
++const controllers = "+cpu +io +memory +pids";
+ 
+ export class GuestCgroups {
+   /** Relative to the cgroup mount, such as `system.slice/opensteer-pool-agent.service`. */
+@@ -44,6 +44,35 @@ export class GuestCgroups {
+   }
+ 
+   /** Moves one task (a VMM's kvm-pit kernel thread) into the VMM's cgroup. */
++  /**
++   * Round 4, item 3: a slot's share of CPU and I/O against the other slots (its siblings). A
++   * slot that is saving gets the least, so guests that are waking are not kept waiting behind
++   * its snapshot; 100 is the default. A controller the kernel did not give is left alone.
++   */
++  async weigh(slotKey: string, weight: number): Promise<void> {
++    const directory = join(mountPoint, this.#base, "guests", slotKey);
++    await writeFile(join(directory, "cpu.weight"), String(weight)).catch(() => undefined);
++    await writeFile(join(directory, "io.weight"), `default ${weight}`).catch(() => undefined);
++  }
++
++  /**
++   * A VMM's memory.high, lowered for one snapshot to where its guest and its own use end
++   * (memory.max is twice the guest + 512 MiB, so the guest is (max - 512 MiB) / 2), and put back
++   * to memory.max afterwards.
++   */
++  async throttleWrites(slotKey: string, jailId: string): Promise<{ restore(): Promise<void> }> {
++    const directory = join(mountPoint, this.#base, "guests", slotKey, jailId);
++    const max = Number((await readFile(join(directory, "memory.max"), "utf8")).trim());
++    if (!Number.isSafeInteger(max)) return { restore: async () => {} };
++    const mib = 1024 * 1024;
++    const guest = (max - 512 * mib) / 2;
++    await writeFile(join(directory, "memory.high"), String(guest + 512 * mib));
++    return {
++      restore: () =>
++        writeFile(join(directory, "memory.high"), String(max)).catch(() => undefined),
++    };
++  }
++
+   async adopt(slotKey: string, jailId: string, task: string): Promise<void> {
+     await writeFile(
+       join(mountPoint, this.#base, "guests", slotKey, jailId, "cgroup.procs"),
+diff --git a/apps/pool-agent/src/firecracker/driver.ts b/apps/pool-agent/src/firecracker/driver.ts
+index 41f68e2d5..57ad9c2f0 100644
+--- a/apps/pool-agent/src/firecracker/driver.ts
++++ b/apps/pool-agent/src/firecracker/driver.ts
+@@ -346,10 +346,16 @@ export class FirecrackerDriver implements HypervisorDriver {
+       space.bavail * space.bsize,
+       memoryBytes + minimumFreeMarginBytes,
+     );
++    // Round 4, item 3: while it saves, this slot yields CPU and I/O to the slots that wake, and
++    // its page cache is reclaimed early (memory.high) rather than ending it at memory.max.
++    await this.#cgroups.weigh(slotKey(slotId), 1);
++    const high = await this.#cgroups.throttleWrites(slotKey(slotId), jailId);
+     try {
+       return await this.#writeSnapshot(slotId, jailId, savedStateId, signal, root, began);
+     } finally {
+       release();
++      await high.restore();
++      await this.#cgroups.weigh(slotKey(slotId), 100);
+     }
+   }
+ 
+@@ -635,8 +641,10 @@ export class FirecrackerDriver implements HypervisorDriver {
+     // the memory cgroup (measured on the first real-host run).
+     const memoryBytes = (boot.memoryMib * 2 + 512) * 1024 * 1024;
+     // Review G6(b): memory.high reclaims and slows a writer (a save's page cache) before
+-    // memory.max would end it; it sits where the guest and the VMM's own use end.
+-    const memoryHigh = (boot.memoryMib + 512) * 1024 * 1024;
++    // memory.max would end it. Round 4, item 3: it is lowered to the guest's size + 512 MiB only
++    // while a snapshot writes (snapshot()); at that level all the time, every restored guest was
++    // throttled while it faulted its memory back in (measured on run 4's host).
++    const memoryHigh = memoryBytes;
+     // Review G6(d): no file the VMM writes may grow past what it needs: its memory file, or its
+     // profile disk, whichever is larger (a write past the limit inside the profile would fail).
+     const profileBytes = (await stat(boot.profilePath)).size;

@@ -16,6 +16,7 @@ import {
   migrateControlPlaneToLatest,
   ownerDirectoryVisibilityMigration,
 } from "./migrations.js";
+import { browserPoolMigration } from "../cloud-computers/pool-migration.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -387,5 +388,62 @@ integration("Account name revision migration", () => {
       { displayName: "Ada Lovelace", nameRevision: "1" },
       { displayName: "Grace Hopper", nameRevision: "1" },
     ]);
+  });
+});
+
+integration("browser pool expand-only migration (0036_browser_pool)", () => {
+  const databaseName = `opensteer_browser_pool_mig_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  let maintenance: Pool;
+  let database: Kysely<ControlPlaneDatabaseSchema>;
+  const urlForDatabase = (name: string) => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
+    await maintenance.query(`create database ${databaseName}`);
+    database = createControlPlaneDatabase({ connectionString: urlForDatabase(databaseName) });
+    await migrateControlPlaneToLatest(database);
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("defaults existing Cloud Computers to browser_mode='local' and enforces S1 schema invariants", async () => {
+    // Ensure a pre-existing-style insert (omitting new columns) defaults cleanly to local.
+    await sql`
+      insert into public.users (id, display_name, email, email_verified)
+      values ('acct_00000000-0000-4000-8000-000000000099', 'Ada', 'ada@example.test', true)
+    `.execute(database);
+    await sql`
+      insert into public.cloud_computers (
+        id, account_id, generation, state, hostname, region, server_type, release,
+        readiness_started_at, phase, stripe_checkout_id, stripe_customer_id,
+        stripe_subscription_id, stripe_price_id, billing_currency, billing_status,
+        created_at, updated_at
+      ) values (
+        'cc_00000000-0000-4000-8000-000000000099',
+        'acct_00000000-0000-4000-8000-000000000099',
+        1, 'active', 'cc-99.home.example.test', 'us-central1-a', 'default', '{}'::jsonb,
+        now(), 'ready', 'cs_99', 'cus_99', 'sub_99', 'price_1', 'usd', 'active', now(), now()
+      )
+    `.execute(database);
+    const computer = await sql<{ browserMode: string; browserSlotErasedAt: Date | null }>`
+      select browser_mode, browser_slot_erased_at from public.cloud_computers
+      where id = 'cc_00000000-0000-4000-8000-000000000099'
+    `.execute(database);
+    expect(computer.rows[0]).toEqual({ browserMode: "local", browserSlotErasedAt: null });
+
+    // S1: no port columns on browser_pool_hosts.
+    const portCols = await sql<{ columnName: string }>`
+      select column_name from information_schema.columns
+      where table_schema = 'public' and table_name = 'browser_pool_hosts'
+        and column_name ~ '(^|_)port$'
+    `.execute(database);
+    expect(portCols.rows).toEqual([]);
+    expect(browserPoolMigration).toBeDefined();
   });
 });

@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "tsup";
 import { nodeApp } from "../../scripts/tsup-node-app.js";
@@ -53,6 +55,49 @@ export default defineConfig((options) => {
               return {
                 errors: [{ text: "Browser harness source changed during the Host build." }],
               };
+          });
+        },
+      },
+      {
+        name: "repl-worker-inputs",
+        setup(build) {
+          build.onEnd((result) => {
+            if (result.errors.length > 0 || !result.metafile) return;
+            const outputs = result.metafile.outputs;
+            const entryOutput = Object.keys(outputs).find(
+              (file) => path.basename(file) === "computer-repl-worker.js",
+            );
+            if (!entryOutput) return;
+            const outFile = path.resolve(entryOutput);
+            const outDir = path.dirname(outFile);
+            const visited = new Set<string>();
+            const inputs = new Set<string>();
+            const visit = (outputKey: string) => {
+              if (visited.has(outputKey)) return;
+              visited.add(outputKey);
+              const meta = outputs[outputKey];
+              if (!meta) return;
+              for (const input of Object.keys(meta.inputs)) {
+                if (input.includes(":")) continue;
+                inputs.add(path.relative(outDir, path.resolve(input)));
+              }
+              for (const imported of meta.imports) {
+                if (imported.external) continue;
+                visit(imported.path);
+              }
+            };
+            visit(entryOutput);
+            for (const name of browserGuestModuleNames) {
+              const harnessFile = fileURLToPath(
+                new URL(`../runner/browser-harness/${name}`, import.meta.url),
+              );
+              inputs.add(path.relative(outDir, harnessFile));
+            }
+            mkdirSync(outDir, { recursive: true });
+            writeFileSync(
+              `${outFile}.inputs.json`,
+              `${JSON.stringify({ inputs: [...inputs].sort() }, null, 2)}\n`,
+            );
           });
         },
       },

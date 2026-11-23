@@ -236,6 +236,8 @@ export async function createControlPlaneServer(
     registerCloudComputerRoutes(app, {
       ...dependencies.cloudComputers,
       authenticator: dependencies.authenticator,
+      authenticateHostCredential: (authorization) =>
+        dependencies.store.authenticateHostCredential(authorization),
     });
   }
   if (dependencies.organizations && dependencies.cloudComputers) {

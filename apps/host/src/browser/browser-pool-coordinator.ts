@@ -9,6 +9,7 @@ import {
   advanceBrowserPoolSlot,
   beginBrowserPoolPark,
   BrowserPoolAdmissionClosed,
+  withDatabaseOperationSignal,
   browserPoolSlotIdentity,
   installBrowserPoolSlot,
   listBrowserPoolRuntimeSessions,
@@ -41,9 +42,25 @@ import {
 import { BrowserPoolGate } from "./browser-pool-gate.js";
 
 /** The runtime's signed control channel; in-process for the loopback target. */
+/**
+ * The Home's way to the runtime inside the guest. A remote one cannot always answer: with no
+ * guest (stopped) or a paused one there is no runtime to ask, and it says so as `null`, never by
+ * throwing. A throw or a deadline is not knowing, and the loop asks again later.
+ */
 export interface BrowserPoolRuntimeChannel {
+  poolState(signal?: AbortSignal): Promise<BrowserPoolRuntimeState | null>;
+  controlPool(control: BrowserPoolControl, signature: Uint8Array): Promise<BrowserPoolRuntimeState>;
+}
+
+/** A runtime in this process (loopback): its state is always there to read. */
+export function loopbackPoolChannel(runtime: {
   poolState(): BrowserPoolRuntimeState | undefined;
   controlPool(control: BrowserPoolControl, signature: Uint8Array): Promise<BrowserPoolRuntimeState>;
+}): BrowserPoolRuntimeChannel {
+  return {
+    poolState: async () => runtime.poolState() ?? null,
+    controlPool: (control, signature) => runtime.controlPool(control, signature),
+  };
 }
 
 /** What the Home does per session; one session's failure is that session's alone. */
@@ -85,6 +102,8 @@ export interface BrowserPoolCoordinatorOptions {
   readonly retryMs?: number;
   /** How long a lost Runner channel may take to come back before its sessions end. */
   readonly channelDeadlineMs?: number;
+  /** How long a restart waits for every holder to let go before it settles them itself. */
+  readonly quiesceMs?: number;
   /** Every controller call and runtime control has this deadline; then its outcome is read. */
   readonly callTimeoutMs?: number;
   /** How often finished bookkeeping past its retention is removed, idle or not. */
@@ -106,9 +125,15 @@ interface Retained {
 }
 
 /**
- * The Home's half of the pool for one target: the owner of intent. It drives every state,
- * including one found after a restart, to an open or parked gate. The ladder ends in a discard
- * of live state and an open gate, never in a closed one.
+ * The Home's half of the pool for one target: the owner of intent. One loop drives every state,
+ * including one found after a Home restart, to an open or parked gate; a step that keeps failing
+ * may give live state up for a fresh guest, chosen like any other step, and never ends closed.
+ *
+ * Not wired yet (the next piece, with the provisioner): the Home selects a coordinator for a
+ * managed pooled target and passes it to `BrowserService` by Runner id. Its idle rule calls
+ * `tryPark()` when the browser is open and nobody holds it (no reservation, no viewer, no
+ * connected agent's work) for the idle period; a park any send vetoes is simply asked again at
+ * the next idle period. Until then only tests construct one and call `tryPark()`.
  */
 export class BrowserPoolCoordinator {
   readonly gate = new BrowserPoolGate();
@@ -124,7 +149,13 @@ export class BrowserPoolCoordinator {
     | { readonly ended: Set<BrowserSessionId>; readonly noted: PromiseWithResolvers<void> }
     | undefined;
   #restartWanted:
-    { readonly keys: Set<string>; readonly done: PromiseWithResolvers<void> } | undefined;
+    | {
+        readonly keys: Set<string>;
+        readonly done: PromiseWithResolvers<void>;
+        /** Asked before any slot existed: the first install answers it. */
+        firstInstall?: boolean;
+      }
+    | undefined;
   #parkWanted: PromiseWithResolvers<"parked" | "vetoed"> | undefined;
   #parkSettling = false;
   #unknownIntent: string | undefined;
@@ -139,6 +170,11 @@ export class BrowserPoolCoordinator {
   readonly #releasedForGood = Promise.withResolvers<void>();
   #changed = new AbortController();
   #running: Promise<void> | undefined;
+  /** The step running now, and the signal everything it awaits takes: its deadline or a removal. */
+  #step: { readonly name: string; readonly preempt: AbortController } | undefined;
+  #signal: AbortSignal | undefined;
+  /** Live state is given up for (R3): a step the next turn may choose, never run from a catch. */
+  #discardWanted: string | undefined;
 
   constructor(options: BrowserPoolCoordinatorOptions) {
     this.#options = options;
@@ -247,8 +283,9 @@ export class BrowserPoolCoordinator {
   /** A pooled session's Runner channel was lost: the loop reattaches it inside its window. */
   channelLost(sessionId: BrowserSessionId, documents?: ReadonlyMap<string, string>): void {
     if (this.#closed) return;
-    if (!this.#lost.has(sessionId))
-      this.#lost.set(sessionId, { since: Date.now(), ...(documents ? { documents } : {}) });
+    // Each close is its own loss, with its own window and documents: one that arrives while the
+    // previous attach is being finished replaces that entry, so the attach cannot delete it.
+    this.#lost.set(sessionId, { since: Date.now(), ...(documents ? { documents } : {}) });
     this.#publish(this.#slot);
     this.#kick();
   }
@@ -262,6 +299,9 @@ export class BrowserPoolCoordinator {
     this.#released ??= { ended: new Set(), noted: Promise.withResolvers() };
     for (const sessionId of ended) this.#released.ended.add(sessionId);
     this.gate.set({ hold: "released" });
+    // A removal goes first: the step under way stops awaiting, and the next turn is the release.
+    if (this.#step && this.#step.name !== "release")
+      this.#step.preempt.abort(new BrowserPoolAdmissionClosed("This device was removed."));
     this.#start();
     this.#kick();
     return this.#released.noted.promise;
@@ -281,7 +321,9 @@ export class BrowserPoolCoordinator {
     if (this.#released)
       return Promise.reject(new BrowserPoolAdmissionClosed("This device was removed."));
     this.#restartWanted ??= { keys: new Set(), done: Promise.withResolvers() };
-    if (input.key) this.#restartWanted.keys.add(input.key);
+    // Past the bound a key joins the same outcome without being recorded.
+    if (input.key && this.#restartWanted.keys.size < restartKeysKept)
+      this.#restartWanted.keys.add(input.key);
     this.gate.set({ hold: "restart" });
     this.#start();
     this.#kick();
@@ -320,8 +362,21 @@ export class BrowserPoolCoordinator {
           await abortableWait(changed);
           continue;
         }
-        // The step is awaited to its end; its own deadlines bound it, so nothing is abandoned.
-        await step.run(AbortSignal.timeout(step.deadlineMs ?? defaultStepMs));
+        // Everything the step awaits takes its signal (the database included), so a deadline or
+        // a removal ends the wait; what it had sent is fenced by its id, sequence or predecessor.
+        const deadlineMs = step.deadlineMs ?? defaultStepMs;
+        const preempt = new AbortController();
+        const signal = AbortSignal.any([preempt.signal, AbortSignal.timeout(deadlineMs)]);
+        this.#step = { name: step.name, preempt };
+        this.#signal = signal;
+        try {
+          await withDatabaseOperationSignal(signal, Date.now() + deadlineMs, () =>
+            step!.run(signal),
+          );
+        } finally {
+          this.#step = undefined;
+          this.#signal = undefined;
+        }
         if (failing === step.name) failures = 0;
         this.#publish(this.#slot);
       } catch (error) {
@@ -329,10 +384,10 @@ export class BrowserPoolCoordinator {
         if (step) {
           failures = failing === step.name ? failures + 1 : 1;
           failing = step.name;
-          // Once the attempts are used and the step has just failed again, its live state is
-          // given up for behind a fresh guest (R3); a failed fallback is tried again later.
-          if (step.fallback && failures >= discardAfterAttempts)
-            await step.fallback().catch((fallback: unknown) => this.#options.onError?.(fallback));
+          // Once the attempts are used, live state is given up for behind a fresh guest (R3):
+          // the next turn chooses again, so anything wanted above it goes first.
+          if (step.discards && failures >= discardAfterAttempts)
+            this.#discardWanted = "unrecoverable";
         }
         await delay(
           Math.min(this.#options.retryMs ?? 100 * 2 ** Math.min(failures, 6), 5_000),
@@ -350,15 +405,27 @@ export class BrowserPoolCoordinator {
     this.#publish(slot);
     if (this.#released || slot?.phase === "releasing")
       return { name: "release", run: () => this.#releaseStep(slot) };
-    if (this.#restartWanted) return { name: "restart", run: () => this.#restartStep(slot) };
+    // A restart accepted before a Home crash is finished by this Home, once.
+    const pending = slot ? pendingRestart(slot) : [];
+    if (!this.#restartWanted && pending.length)
+      this.#restartWanted = { keys: new Set(pending), done: Promise.withResolvers() };
+    if (this.#restartWanted && slot) return { name: "restart", run: () => this.#restartStep(slot) };
+    // With no slot yet, the first install answers it.
+    if (this.#restartWanted) this.#restartWanted.firstInstall = true;
     if (this.#unknownIntent) return { name: "intent", run: () => this.#readIntent() };
+    if (this.#discardWanted && slot) {
+      const reason = this.#discardWanted;
+      return { name: "discard", run: () => this.#discardRead(reason) };
+    }
     if (!this.#recovered || !slot || slot.phase === "preparing" || slot.phase === "waking")
       return {
         name: "recover",
         run: () => this.#recoverStep(),
-        ...(slot ? { fallback: () => this.#discardRead("unrecoverable") } : {}),
+        ...(slot ? { discards: true } : {}),
       };
     const withoutChannel = slot.phase === "running" ? await this.#withoutChannel() : [];
+    // A removal or a restart asked during that read is chosen first: selection runs again.
+    if (this.#released || this.#restartWanted) return this.#next();
     if (withoutChannel.length)
       return {
         name: "reconnect",
@@ -366,11 +433,7 @@ export class BrowserPoolCoordinator {
         run: (signal) => this.#reconnectStep(slot, withoutChannel, signal),
       };
     if (slot.phase === "parked" && this.gate.demand)
-      return {
-        name: "wake",
-        run: () => this.#wakeStep(),
-        fallback: () => this.#discardRead("unrecoverable"),
-      };
+      return { name: "wake", run: () => this.#wakeStep(), discards: true };
     if (this.#parkWanted && slot.phase === "running")
       return { name: "park", run: () => this.#parkStep() };
     if (this.#parkWanted) this.#settlePark("vetoed");
@@ -443,6 +506,8 @@ export class BrowserPoolCoordinator {
       for (const sessionId of past) this.#lost.delete(sessionId);
       return;
     }
+    // The losses this attempt answers: one recorded since is a new loss and stays.
+    const answering = new Map(within.map((sessionId) => [sessionId, this.#lost.get(sessionId)]));
     const advanced = await this.#advance(slot, {
       phase: slot.phase,
       attachmentGeneration: slot.attachmentGeneration + 1,
@@ -460,7 +525,8 @@ export class BrowserPoolCoordinator {
       signal: window,
     });
     const back = within.filter((sessionId) => this.#adopter?.live(sessionId));
-    for (const sessionId of back) this.#lost.delete(sessionId);
+    for (const sessionId of back)
+      if (this.#lost.get(sessionId) === answering.get(sessionId)) this.#lost.delete(sessionId);
     if (back.length < within.length) throw new Error("A session is not back yet.");
   }
 
@@ -480,17 +546,16 @@ export class BrowserPoolCoordinator {
       );
     }
     this.#released?.noted.resolve();
-    if (slot?.phase === "releasing") {
-      // A failed status read is not knowing, never "stopped" (R2); only an applied stop or a
-      // status that reads stopped is evidence.
-      const status = await this.#status();
-      if (status.phase !== "stopped") {
-        const stopped = await this.#call(slot, "stop", status, true);
-        if (!stopped.applied && stopped.status.phase !== "stopped")
-          throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
-      }
-      await finishBrowserPoolRelease(this.#options.database, slot.runnerId);
+    // With or without a slot row the controller is asked: a guest started before its row was
+    // written is stopped too. A failed status read is not knowing, never "stopped" (R2); only an
+    // applied stop or a status that reads stopped is evidence.
+    const status = await this.#status();
+    if (status.phase !== "stopped") {
+      const stopped = await this.#call(slot, "stop", status, true);
+      if (!stopped.applied && stopped.status.phase !== "stopped")
+        throw new Error(`The removed device's guest did not stop: ${stopped.reason}.`);
     }
+    await finishBrowserPoolRelease(this.#options.database, this.#options.runnerId);
     this.#slot = undefined;
     this.#ended = true;
     this.gate.set({ hold: "released" });
@@ -508,27 +573,41 @@ export class BrowserPoolCoordinator {
    */
   async #restartStep(slot: BrowserPoolSlot | undefined): Promise<void> {
     const wanted = this.#restartWanted!;
-    if (slot) {
+    if (slot && !wanted.firstInstall) {
       const handled = new Set(restartKeysOf(slot));
       if (!wanted.keys.size || [...wanted.keys].some((key) => !handled.has(key))) {
+        // Durable before the first effect: a crash from here on is finished by recovery.
+        if (wanted.keys.size)
+          slot = await this.#advance(slot, { phase: slot.phase, restartWanted: [...wanted.keys] });
         await this.#adopter?.quiesce();
-        await withTimeout(this.gate.idle(), quiesceMs, {
+        const idle = await withTimeout(this.gate.idle(), this.#options.quiesceMs ?? quiesceMs, {
+          ...(this.#signal ? { signal: this.#signal } : {}),
           timeoutError: () => new Error("A send still holds the browser."),
-        }).catch((error: unknown) => this.#options.onError?.(error));
+        }).then(
+          () => true,
+          () => false,
+        );
+        this.#signal?.throwIfAborted();
+        // A holder still here (a script that ignores its abort) gets its recorded outcome first,
+        // unknown when it sent something and refused when it sent nothing: never a guess.
+        if (!idle) await this.gate.settleHolders();
         // The live set: a restart that joins while this one runs is answered by the same start.
         await this.#discard(slot, "person", wanted.keys);
+        this.#discardWanted = undefined;
       }
-      // One that joined after the start was written: its key is recorded with that start too.
-      for (
-        let late = unrecorded(this.#slot, wanted.keys);
-        this.#slot && late.length;
-        late = unrecorded(this.#slot, wanted.keys)
-      )
-        await this.#advance(this.#slot, {
-          phase: this.#slot.phase,
-          restartKeys: withRestartKeys(this.#slot, late),
-        });
     }
+    // One that joined after the start was written, or one the first install answered: its key
+    // is recorded with that start. Keys are bounded, so this ends.
+    for (
+      let late = unrecorded(this.#slot, wanted.keys);
+      this.#slot && late.length;
+      late = unrecorded(this.#slot, wanted.keys)
+    )
+      await this.#advance(this.#slot, {
+        phase: this.#slot.phase,
+        restartKeys: withRestartKeys(this.#slot, late),
+        restartWanted: [],
+      });
     this.#restartWanted = undefined;
     this.#publish(this.#slot);
     wanted.done.resolve();
@@ -581,6 +660,7 @@ export class BrowserPoolCoordinator {
     const slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed("The pooled browser has no slot yet.");
     await this.#discard(slot, reason);
+    this.#discardWanted = undefined;
     this.#recovered = true;
     this.#publish(this.#slot);
     this.#recovering.resolve();
@@ -612,18 +692,34 @@ export class BrowserPoolCoordinator {
     next: Parameters<typeof advanceBrowserPoolSlot>[2],
     losses?: readonly BrowserPoolSessionLoss[],
   ): Promise<BrowserPoolSlot> {
+    // A step whose deadline passed, or that a removal ended, writes nothing more.
+    this.#signal?.throwIfAborted();
     this.#slot = await advanceBrowserPoolSlot(this.#options.database, slot, next, losses);
     return this.#slot;
   }
 
-  #state(): BrowserPoolRuntimeState {
-    const state = this.#options.runtime.poolState();
-    if (!state) throw new Error("The pooled runtime has no pool control.");
+  /** The runtime's state, read now; null: there is no runtime to ask (no guest, or paused). */
+  async #runtimeState(): Promise<BrowserPoolRuntimeState | null> {
+    this.#signal?.throwIfAborted();
+    return withTimeout(
+      this.#options.runtime.poolState(this.#signal),
+      this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
+      {
+        timeoutError: () => new Error("The pooled runtime did not answer in time."),
+        ...(this.#signal ? { signal: this.#signal } : {}),
+      },
+    );
+  }
+
+  /** The state of a runtime that must be running here; not answering is not knowing. */
+  async #state(): Promise<BrowserPoolRuntimeState> {
+    const state = await this.#runtimeState();
+    if (!state) throw new Error("The pooled runtime cannot be asked yet.");
     return state;
   }
 
   #status(): Promise<BrowserPoolPhysicalStatus> {
-    return this.#journal.status(this.#options.slotId, this.#options.term);
+    return this.#journal.status(this.#options.slotId, this.#options.term, this.#signal);
   }
 
   /** `replacing`: this call replaces the guest, and closes every open journal row with `status`. */
@@ -633,6 +729,7 @@ export class BrowserPoolCoordinator {
     status: BrowserPoolPhysicalStatus,
     replacing = false,
   ): Promise<BrowserPoolControllerResult> {
+    this.#signal?.throwIfAborted();
     return this.#journal.call(
       {
         slotId: this.#options.slotId,
@@ -645,6 +742,7 @@ export class BrowserPoolCoordinator {
       },
       slot?.intentId ?? null,
       replacing ? status : undefined,
+      this.#signal,
     );
   }
 
@@ -670,6 +768,8 @@ export class BrowserPoolCoordinator {
         control,
       },
       slot.intentId,
+      undefined,
+      this.#signal,
     );
     const issued = signed.control;
     if (
@@ -693,20 +793,26 @@ export class BrowserPoolCoordinator {
     control: BrowserPoolControl,
     signature: string,
   ): Promise<{ readonly state: BrowserPoolRuntimeState; readonly answered: boolean }> {
+    this.#signal?.throwIfAborted();
     const fault = this.#options.runtimeFault?.(control.kind);
-    if (fault === "request") return { state: this.#state(), answered: false };
+    if (fault === "request") return { state: await this.#state(), answered: false };
     try {
       const state = await withTimeout(
         this.#options.runtime.controlPool(control, Buffer.from(signature, "base64")),
         this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
-        { timeoutError: () => new Error("The runtime did not answer in time.") },
+        {
+          timeoutError: () => new Error("The runtime did not answer in time."),
+          // The control is not cancelled: the runtime orders controls by sequence, and the
+          // next one the loop sends (a release, a newer intent) is applied after it.
+          ...(this.#signal ? { signal: this.#signal } : {}),
+        },
       );
       return fault === "reply"
-        ? { state: this.#state(), answered: false }
+        ? { state: await this.#state(), answered: false }
         : { state, answered: true };
     } catch {
       // A refusal and a lost reply look alike here: the current state decides.
-      return { state: this.#state(), answered: false };
+      return { state: await this.#state(), answered: false };
     }
   }
 
@@ -726,6 +832,8 @@ export class BrowserPoolCoordinator {
         },
       },
       slot.intentId,
+      undefined,
+      this.#signal,
     );
     if (!signed.applied || !signed.signature || signed.control?.kind !== "retire")
       throw new Error(`The controller did not sign retire: ${signed.reason ?? "refused"}.`);
@@ -764,8 +872,8 @@ export class BrowserPoolCoordinator {
 
   async #afterD(intent: BrowserPoolSlot, vetoedDuringCommit: boolean) {
     const expected = this.#adopter?.inventory() ?? [];
-    await this.#journal.settleOpen();
-    let state = this.#state();
+    await this.#journal.settleOpen(this.#signal);
+    let state = await this.#state();
     let abort = vetoedDuringCommit;
     if (!vetoedDuringCommit) {
       const retired = await this.#retire(intent);
@@ -803,7 +911,7 @@ export class BrowserPoolCoordinator {
 
   /** Release, then reattach so every retained page is reachable, then open. */
   async #abort(slot: BrowserPoolSlot): Promise<"parked" | "vetoed"> {
-    let state = this.#state();
+    let state = await this.#state();
     const pending =
       !sameIntent(state, slot) ||
       (!state.cancelled && (state.phase === "running" || state.phase === "retiring")) ||
@@ -831,7 +939,7 @@ export class BrowserPoolCoordinator {
   }
 
   async #sealAndPause(slot: BrowserPoolSlot): Promise<"parked" | "vetoed"> {
-    let state = this.#state();
+    let state = await this.#state();
     // A lost seal request is sent again once; a refusal leaves it released.
     for (
       let tries = 0;
@@ -875,7 +983,7 @@ export class BrowserPoolCoordinator {
   async #wake(): Promise<void> {
     // One recovery live and at start: an open journal row is settled by its id first, so a
     // guest a lost acknowledgement left resumed is never mistaken for one without live state.
-    await this.#journal.settleOpen();
+    await this.#journal.settleOpen(this.#signal);
     let slot = await this.#read();
     if (!slot) throw new BrowserPoolAdmissionClosed();
     if (slot.phase === "running") return;
@@ -913,7 +1021,8 @@ export class BrowserPoolCoordinator {
         phase: "waking",
         fence: { instanceId: adopt.fence.instance, epoch: adopt.fence.epoch },
       });
-    let state = this.#state();
+    // Resumed, the guest runs again: only now is its runtime asked.
+    let state = await this.#state();
     if (state.phase === "sealed") state = (await this.#deliver(adopt, resumed.signature!)).state;
     // An adopt that did not arrive leaves the runtime sealed under the epoch before it: the
     // next attempt sends it again.
@@ -953,12 +1062,14 @@ export class BrowserPoolCoordinator {
         attachmentGeneration: slot.attachmentGeneration + 1,
       });
       const attempt = slot.attachmentGeneration;
+      this.#signal?.throwIfAborted();
       if (this.#adopter)
         tabLosses = await this.#adopter.reattach({
           sessions: state.adoption.sessions,
           documents: retained.documents,
           fence: state.fence!,
           attempt,
+          ...(this.#signal ? { signal: this.#signal } : {}),
         });
       // Partial results survive a restart: they are durable before the runtime completes.
       slot = await this.#advance(slot, {
@@ -1073,7 +1184,7 @@ export class BrowserPoolCoordinator {
           id: randomUUID(),
         },
         // Every key the restart was asked with is handled by this one start.
-        ...(keys.size ? { restartKeys: withRestartKeys(slot, [...keys]) } : {}),
+        ...(keys.size ? { restartKeys: withRestartKeys(slot, [...keys]), restartWanted: [] } : {}),
         failedStarts: 0,
       },
       losses,
@@ -1126,9 +1237,8 @@ export class BrowserPoolCoordinator {
 
   async #recover(): Promise<void> {
     const slot = await this.#read();
-    await this.#journal.settleOpen();
+    await this.#journal.settleOpen(this.#signal);
     const status = await this.#status();
-    const state = this.#state();
     if (!slot) return this.#install(status);
     // The whole fence, the controller's and the runtime's. Only waking may find the epoch moved
     // on by a resume that applied; its own check compares it with that resume.
@@ -1138,8 +1248,30 @@ export class BrowserPoolCoordinator {
       slot.phase === "waking" && fence
         ? sameFence(fence, { ...fenceOf(slot), epoch: fence.epoch })
         : sameFence(fence, fenceOf(slot));
-    if (!expected(statusFence(status)) || !expected(state.fence))
-      return this.#discard(slot, "guest-restarted");
+    // A stopped guest has no fence: it is replaced, with nothing to adopt.
+    if (!expected(statusFence(status))) return this.#discard(slot, "guest-restarted");
+    // A paused guest has no runtime to ask: the row and the controller's signed status say where
+    // it is, with nothing cached from before a Home restart.
+    if (status.phase === "paused") {
+      const saved = slot.savedState as { id?: string } | null;
+      switch (slot.phase) {
+        case "parked":
+          if (saved?.id && status.savedState?.id === saved.id) return;
+          return this.#continueWake(await this.#advance(slot, { phase: "waking" }));
+        case "waking":
+          return this.#continueWake(slot);
+        case "preparing":
+          // The pause applied before its row was written: the park finishes.
+          await this.#pause(slot);
+          return;
+        default:
+          // Running by the row and paused by the controller: no intent explains it.
+          return this.#discard(slot, "guest-changed");
+      }
+    }
+    // A running guest is asked; one that cannot answer yet is asked again by a later turn.
+    const state = await this.#state();
+    if (!expected(state.fence)) return this.#discard(slot, "guest-restarted");
     switch (slot.phase) {
       case "running":
         if (state.phase === "running") return this.#finishRunning(slot, []);
@@ -1150,17 +1282,9 @@ export class BrowserPoolCoordinator {
         if (sameIntent(state, slot) && state.phase === "sealed") await this.#sealAndPause(slot);
         else await this.#abort(slot);
         return;
-      case "parked": {
-        const saved = slot.savedState as { id?: string } | null;
-        if (
-          status.phase === "paused" &&
-          status.savedState?.id === saved?.id &&
-          state.phase === "sealed" &&
-          sameIntent(state, slot)
-        )
-          return;
+      case "parked":
+        // Parked by the row and running by the controller: it is woken from what it holds.
         return this.#continueWake(await this.#advance(slot, { phase: "waking" }));
-      }
       case "waking":
         return this.#continueWake(slot);
     }
@@ -1217,7 +1341,8 @@ interface Step {
   readonly name: string;
   readonly deadlineMs?: number;
   run(signal: AbortSignal): Promise<void>;
-  readonly fallback?: () => Promise<void>;
+  /** After its attempts are used, the loop may choose to give live state up for this one. */
+  readonly discards?: boolean;
 }
 
 function restartKeysOf(slot: BrowserPoolSlot): readonly string[] {
@@ -1227,6 +1352,13 @@ function restartKeysOf(slot: BrowserPoolSlot): readonly string[] {
 /** The newest handled keys first, each once, bounded. */
 function withRestartKeys(slot: BrowserPoolSlot, keys: readonly string[]): readonly string[] {
   return [...new Set([...keys, ...restartKeysOf(slot)])].slice(0, restartKeysKept);
+}
+
+/** Keys accepted before a crash whose restart no start has answered yet. */
+function pendingRestart(slot: BrowserPoolSlot): string[] {
+  const handled = new Set(restartKeysOf(slot));
+  const wanted = Array.isArray(slot.restartWanted) ? slot.restartWanted : [];
+  return wanted.filter((key) => !handled.has(key));
 }
 
 function unrecorded(slot: BrowserPoolSlot | undefined, keys: ReadonlySet<string>): string[] {
@@ -1306,7 +1438,10 @@ function retainedOf(slot: BrowserPoolSlot | undefined): Retained | undefined {
 }
 
 function surfacesOf(retained: Retained, sessionId: BrowserSessionId) {
-  return retained.documents
-    .filter((document) => document.sessionId === sessionId)
-    .map(({ surfaceId, documentId, typed }) => ({ surfaceId, documentId, typed: typed === true }));
+  return (
+    retained.documents
+      .filter((document) => document.sessionId === sessionId)
+      // The park's manifest says for each page whether it held typed text: known yes or no.
+      .map(({ surfaceId, documentId, typed }) => ({ surfaceId, documentId, typed: typed === true }))
+  );
 }

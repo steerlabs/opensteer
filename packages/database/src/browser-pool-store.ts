@@ -30,7 +30,7 @@ export interface BrowserPoolSessionLoss {
   readonly surfaces: readonly {
     readonly surfaceId: string;
     readonly documentId: string | null;
-    /** Known typed text that was not sent; written with the loss. */
+    /** Typed text that was not sent, when known; written with the loss. Absent: not known. */
     readonly typed?: boolean;
   }[];
   /** False for a tab lost inside a session that was otherwise adopted. */
@@ -230,6 +230,7 @@ export interface BrowserPoolSlotChange {
   readonly lastStart?: BrowserPoolSlot["lastStart"];
   readonly failedStarts?: number;
   readonly restartKeys?: readonly string[];
+  readonly restartWanted?: readonly string[];
 }
 
 /**
@@ -278,6 +279,11 @@ export async function advanceBrowserPoolSlot(
           ...(next.restartKeys !== undefined
             ? { restartKeys: sql<readonly string[]>`${JSON.stringify(next.restartKeys)}::jsonb` }
             : {}),
+          ...(next.restartWanted !== undefined
+            ? {
+                restartWanted: sql<readonly string[]>`${JSON.stringify(next.restartWanted)}::jsonb`,
+              }
+            : {}),
           ...(next.phase !== current.phase ? { phaseSince: new Date() } : {}),
         })
         .where("runnerId", "=", slot.runnerId)
@@ -320,7 +326,7 @@ async function recordBrowserPoolLosses(
             surfaceId: surfaceId as BrowserSurfaceId,
             documentId,
             reason,
-            typed: typed === true,
+            typed: typed ?? null,
           }))
         : [];
     });

@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./host": "./src/host.ts"
+    "./host": "./src/host.ts",
+    "./public-network": "./src/public-network.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

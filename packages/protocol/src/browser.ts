@@ -1536,7 +1536,8 @@ export const BrowserPoolReportSchema = z.object({
         /** The notice's id: a client sends it back once the person has seen the note. */
         noticeId: z.string().min(1).max(200).optional(),
         outcome: z.enum(["reloaded", "lost"]),
-        typed: z.boolean(),
+        /** Whether the page held typed text that was not sent: known yes, known no, or not known. */
+        typed: z.enum(["yes", "no", "unknown"]),
       }),
     )
     .max(500)

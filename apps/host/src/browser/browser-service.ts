@@ -75,6 +75,21 @@ type BrowserTabOpenAgent = {
   readonly threadId: ThreadId;
   readonly browserSend?: PooledBrowserSend;
 };
+
+declare const ownedBrowserSessionBrand: unique symbol;
+/** A browser session record loaded via `getBrowserSessionForOwner` for the checked owner. */
+export type OwnedBrowserSessionRecord = BrowserSessionRecord & {
+  readonly [ownedBrowserSessionBrand]: UserId;
+};
+
+export async function loadOwnedBrowserSession(
+  repository: Pick<BrowserSessionRepository, "getBrowserSessionForOwner">,
+  sessionId: BrowserSessionId,
+  ownerId: UserId,
+): Promise<OwnedBrowserSessionRecord | null> {
+  const record = await repository.getBrowserSessionForOwner(sessionId, ownerId);
+  return record ? (record as OwnedBrowserSessionRecord) : null;
+}
 import { browserBasicInputAllows, type BrowserPoolReportView } from "@opensteer/protocol/browser";
 import { editingClipboardPartCount } from "@opensteer/protocol/editing";
 import {
@@ -973,6 +988,7 @@ export class BrowserService {
     if (detached?.length) {
       for (const sessionId of detached) {
         this.#holdings.delete(sessionId);
+        this.#forgetLastHeldSession(sessionId);
         this.#forgetActing(sessionId);
         for (const actor of this.#actors.values())
           if (actor.sessionId === sessionId) this.#clearActor(actor);
@@ -984,6 +1000,8 @@ export class BrowserService {
   readonly #localProfiles: BrowserLocalProfiles | undefined;
   readonly #eraseLocalProfiles: BrowserServiceOptions["eraseLocalProfiles"];
   readonly #sessionProfiles = new Map<BrowserSessionId, BrowserProfileId>();
+  readonly #lastHeldBindingBySession = new Map<BrowserSessionId, string>();
+  readonly #lastHeldSessionByBinding = new Map<string, BrowserSessionId>();
   readonly #signer: BrowserAttachTicketSigner;
   readonly #targetResolver: BrowserRuntimeTargetResolver | undefined;
   /** Held here by Runner, so a Runner that is away or removed still has its coordinator. */
@@ -1251,6 +1269,7 @@ export class BrowserService {
       if (!local.initialized) throw new Error("The pooled profile has no storage.");
       identity = local;
     }
+    signal?.throwIfAborted();
     const origin = record.origin === "person" ? "person" : "agent";
     // A Stop that committed during the lookups above wins: the row is read again before attach.
     const stillReady = async () =>
@@ -1258,10 +1277,12 @@ export class BrowserService {
     const adopting = { active: true };
     // Under Stop's own lane: the row is read again, the lineage read, the ticket sent and the
     // broker registered, so a Stop either commits before (nothing is attached) or finds the broker.
+    // The lane is awaited, never abandoned: once the attempt has ended nothing in it is sent.
     const broker = await this.#serialize(async () => {
-      if (!(await stillReady()) || this.#closed) return undefined;
+      if (signal?.aborted || !(await stillReady()) || this.#closed) return undefined;
       // Person use is keyed by the session's persistent lineage, which survives the old broker.
       const groupId = (await readBrowserPoolSessionLineage(database, sessionId)) ?? sessionId;
+      if (signal?.aborted) return undefined;
       const socket = target.connect(
         this.#signer.issue({
           creationOrigin:
@@ -1679,6 +1700,7 @@ export class BrowserService {
       this.#onTabsChanged(input.ownerId);
     }
     if (input.threadId) {
+      this.#forgetLastHeldSession(result.session.id);
       this.announceUsage(
         await this.#repository.recordBrowserSessionUse({
           ownerId: input.ownerId,
@@ -2258,7 +2280,7 @@ export class BrowserService {
                       opening && "profileId" in opening ? (opening.profileId ?? null) : null,
                   },
             );
-            await this.#requireAgentAccess(runnerId);
+            if (!record) await this.#requireAgentAccess(runnerId);
           }
           const pooled = this.#pool(runnerId);
           if (
@@ -3510,6 +3532,7 @@ export class BrowserService {
         }),
       )
       .then(async (credits) => {
+        this.#noteLastHeldSession(actor.sessionId, actor.binding);
         this.announceUsage(credits);
         await this.#restoreHoldings(actor.sessionId);
       })
@@ -3712,6 +3735,7 @@ export class BrowserService {
       undefined,
       true,
     );
+    await this.admitAgentBrowser(agent, "read-write", [record]);
     await this.#recordAgentTabPlace(agent, record, opened.tabId);
     return { tabId: opened.tabId, sessionId: opened.sessionId, backend };
   }
@@ -3895,8 +3919,12 @@ export class BrowserService {
       "profileId" in target ? profiles.find((profile) => profile.id === target.profileId) : null;
     if ("profileId" in target && !profile)
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found." });
-    const placement =
+    const eligibleRunners =
       !profile && actor.kind === "run"
+        ? await this.#repository.listEligibleBrowserRunners(ownerId)
+        : null;
+    const placement =
+      eligibleRunners && actor.kind === "run"
         ? this.#defaultPlacement(
             {
               origin: "agent",
@@ -3905,8 +3933,8 @@ export class BrowserService {
                 ? { chosenRunnerId: await this.#selfRunnerId(target.computerId) }
                 : {}),
             },
-            this.#eligiblePlacements(await this.#repository.listEligibleBrowserRunners(ownerId)),
-            await this.#repository.listEligibleBrowserRunners(ownerId),
+            this.#eligiblePlacements(eligibleRunners),
+            eligibleRunners,
           )
         : undefined;
     if (actor.kind === "browser-binding") actor.signal?.throwIfAborted();
@@ -4159,8 +4187,9 @@ export class BrowserService {
         undefined,
         true,
       );
-      await this.#requireWorkspaceGeneration(agent.ownerId, row);
-      await this.pageTabs.admitted!((await this.#workspaceTabs!.get(agent.ownerId, row.id))!);
+      const fresh = await this.#requireWorkspaceGeneration(agent.ownerId, row);
+      await this.pageTabs.admitted!(fresh);
+      await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
     } finally {
@@ -4384,13 +4413,27 @@ export class BrowserService {
     record: BrowserSessionRecord,
     tabId: BrowserSurfaceId,
   ) {
-    await this.admitAgentBrowser(agent, "read-write", [record]);
-    const [actor] = await this.#repository.resolvePlaceActors({
-      agentBindingIds: [agent.agentBindingId],
-      ownerIds: [agent.ownerId],
-    });
+    if (this.#endedBindings.has(agent.agentBindingId))
+      throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+    const actorKey = `${record.id}:${agent.agentBindingId}`;
+    const existingToken = this.#actorKeys.get(actorKey);
+    const existingActor = existingToken ? this.#actors.get(existingToken) : undefined;
+    const actor = existingActor
+      ? { runId: existingActor.runId, generation: existingActor.generation }
+      : (
+          await this.#repository.resolvePlaceActors({
+            agentBindingIds: [agent.agentBindingId],
+            ownerIds: [agent.ownerId],
+          })
+        )[0];
     const data = this.#placeData(record.id, tabId);
     if (actor && data) this.#enterRunPlace(actor.runId, actor.generation, data);
+    const broker = this.#brokers.get(record.id);
+    const key = broker?.pageKeyOf(tabId);
+    const previous = existingActor?.surfaces.get(tabId);
+    if (key !== undefined && existingActor && previous?.recordedPage?.key === key) {
+      return;
+    }
     this.announceUsage(
       await this.#repository.recordAgentBrowserUse({
         ...agent,
@@ -4399,7 +4442,21 @@ export class BrowserService {
         page: data ? { title: data.title, site: data.site ?? "" } : null,
       }),
     );
+    this.#noteLastHeldSession(record.id, agent.agentBindingId);
     await this.#restoreHoldings(record.id);
+    if (key !== undefined) {
+      const token = this.#actorKeys.get(actorKey);
+      const installed = token ? this.#actors.get(token) : undefined;
+      if (installed) {
+        const currentSurface = installed.surfaces.get(tabId);
+        installed.surfaces.set(tabId, {
+          at: 0,
+          seq: 0,
+          ...currentSurface,
+          recordedPage: { key, at: this.#activityClock.now() },
+        });
+      }
+    }
   }
 
   async listAgentSessions(input: {
@@ -4647,10 +4704,21 @@ export class BrowserService {
     /** Hears the same facts as `captureAuthority` without changing how the admission answers. */
     noteAuthority?: (facts: StandardCdpAuthority) => void,
   ) {
-    const record = input.sessionId
-      ? await this.#usableAgentSession(input, input.sessionId, captureAuthority === undefined)
-      : await this.#followedAgentSession(input);
-    await this.#requireAgentAccess(record.runnerId);
+    const sessionId = input.sessionId ?? (await this.#followedAgentSessionId(input));
+    // Attaching is new access; a command on an open attachment follows its Run's end.
+    // Check authority before inspecting the broker so an unauthorized caller never
+    // learns broker state, and defer forwarding captured facts until broker checks pass.
+    let captured: StandardCdpAuthority | undefined;
+    const record = await this.#admitAgentSession(
+      input,
+      sessionId,
+      !hold && !captureAuthority,
+      captureAuthority || noteAuthority
+        ? (facts) => {
+            captured = facts;
+          }
+        : undefined,
+    );
     const broker = this.#brokers.get(record.id);
     if (!broker)
       throw new BrowserCdpConnectionEnded(
@@ -4673,16 +4741,7 @@ export class BrowserService {
         "unsupported-operation",
         "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then reopen the tab.",
       );
-    // Attaching is new access; a command on an open attachment follows its Run's end.
-    await this.admitAgentBrowser(
-      input,
-      "read-write",
-      [record],
-      this.#repository,
-      !hold && !captureAuthority,
-      undefined,
-      captureAuthority ?? noteAuthority,
-    );
+    if (captured) (captureAuthority ?? noteAuthority)?.(captured);
     if (hold && input.sessionId) await this.#holdForAgent(input, record);
     return { record, broker, backend };
   }
@@ -4882,6 +4941,7 @@ export class BrowserService {
         pool = {
           target: pooled.identity(),
           release: reserve.release,
+          ...(reserve.ended ? { ended: reserve.ended } : {}),
           ...(documentId ? { documentId } : {}),
         };
       }
@@ -4935,6 +4995,12 @@ export class BrowserService {
     pool?: StandardCdpPoolReservation,
   ) {
     const id = randomUUID();
+    const heldEnds = (phase: string | undefined) => {
+      if (phase === "restarting" || phase === "released" || pool?.ended?.aborted)
+        throw new BrowserCdpConnectionEnded(
+          "This browser is restarting. Request a new attachment.",
+        );
+    };
     const ending = new AbortController();
     const entry: StandardCdpEntry = {
       claims,
@@ -4995,6 +5061,8 @@ export class BrowserService {
         throw new BrowserCdpConnectionEnded(
           "This browser authority changed. Request a new attachment.",
         );
+      // A restart or a removal holds admission: no ticket is redeemed and no frame passes.
+      if (pool) heldEnds(pooled?.gate.phase);
       checked.throwIfAborted();
       return admitted;
     };
@@ -5235,13 +5303,6 @@ export class BrowserService {
               );
               if (fences.length) return { fences };
               if (pool) {
-                // A restart or a removal holds admission: no frame passes on a connection already
-                // attached either.
-                const phase = this.#pool(record.runnerId!)?.gate.phase;
-                if (phase === "restarting" || phase === "released")
-                  throw new BrowserCdpConnectionEnded(
-                    "This browser is restarting. Request a new attachment.",
-                  );
                 await verify(AbortSignal.timeout(1_000), Date.now() + 1_000, true);
                 // The live document is compared at every frame, as at attach.
                 if (
@@ -5253,6 +5314,8 @@ export class BrowserService {
                     "This browser page changed. Request a new attachment.",
                   );
               }
+              // After the frame's last asynchronous step, immediately before it is written.
+              if (pool) heldEnds(this.#pool(record.runnerId!)?.gate.phase);
               return { work: transport.send(frame) };
             });
             if (next.work) return next.work;
@@ -5945,6 +6008,7 @@ export class BrowserService {
                     tabId: target.data.surfaceId,
                   })
                   .then(async (credits) => {
+                    this.#noteLastHeldSession(record.id, input.agentBindingId);
                     this.announceUsage(credits);
                     await this.#restoreHoldings(record.id);
                   })
@@ -6539,7 +6603,12 @@ export class BrowserService {
           surfaceId,
           noticeId: intentId,
           outcome: reloaded ? ("reloaded" as const) : ("lost" as const),
-          typed,
+          typed:
+            typed === true
+              ? ("yes" as const)
+              : typed === false
+                ? ("no" as const)
+                : ("unknown" as const),
         };
       }),
     );
@@ -7073,6 +7142,7 @@ export class BrowserService {
               this.#shadows.delete(sessionId);
               this.#sessionProfiles.delete(sessionId);
               this.#holdings.delete(sessionId);
+              this.#forgetLastHeldSession(sessionId);
               this.#announcedPresence.delete(sessionId);
               this.#onTabsChanged();
               if (!tabRestore) this.#endPersonUse(groupId);
@@ -7202,6 +7272,107 @@ export class BrowserService {
     }
   }
 
+  async #loadUsableOwnedSession(
+    input: { ownerId: UserId; agentBindingId?: string },
+    sessionId: BrowserSessionId,
+  ): Promise<OwnedBrowserSessionRecord> {
+    const record = await loadOwnedBrowserSession(this.#repository, sessionId, input.ownerId);
+    if (!record || isTerminal(record.state))
+      throw new BrowserCdpConnectionEnded(
+        connectedAgentBinding(input.agentBindingId)
+          ? "This tab has ended or is unavailable. Use discover to find an open tab and pass its tabId."
+          : "This tab has ended or is unavailable. Use tab_list and Browser Harness openPage(tabId).",
+      );
+    return record;
+  }
+
+  /**
+   * Resolves binding authority, then loads the owned session row and checks
+   * profile grant and device access so session ownership is always checked
+   * after `resolveResourceAccess` with a single `getBrowserSessionForOwner` read.
+   */
+  async #admitAgentSession(
+    input: { ownerId: UserId; agentBindingId?: string },
+    sessionId: BrowserSessionId,
+    endedBindingAnswers = false,
+    captureAuthority?: (facts: StandardCdpAuthority) => void,
+  ): Promise<OwnedBrowserSessionRecord> {
+    if (!input.agentBindingId)
+      throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+    if (this.#endedBindings.has(input.agentBindingId)) {
+      if (!endedBindingAnswers)
+        throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+      // Its connection's own token check ends it; until then the command only answers.
+      const record = await this.#loadUsableOwnedSession(input, sessionId);
+      await this.#requireAgentAccess(record.runnerId);
+      return record;
+    }
+    let scope: Awaited<ReturnType<OpensteerStore["runCapabilityScope"]>> = null;
+    if (input.agentBindingId.startsWith("run:") && this.#repository.runCapabilityScope) {
+      scope = await this.#repository.runCapabilityScope(
+        RunIdSchema.parse(input.agentBindingId.slice(4)),
+      );
+      if (!scope || scope.requestedBy !== input.ownerId)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This task's browser access has ended.",
+        });
+      await this.#repository.assertActiveGrant?.(scope);
+    }
+    const authority = this.#repository.resolveResourceAccess
+      ? await this.#repository.resolveResourceAccess({
+          ownerUserId: input.ownerId,
+          agentBindingId: input.agentBindingId,
+          explicitAccess: "read-write",
+        })
+      : null;
+    if (authority) {
+      captureAuthority?.({
+        mode: authority.execution.mode,
+        threadId: authority.execution.threadId,
+        grantRevision: authority.execution.agentConnection?.grantRevision ?? null,
+        agentConnectionId: authority.execution.agentConnection?.agentConnectionId ?? null,
+      });
+      const level = executionAccess(authority.execution, "read-write");
+      if (!level || level !== "read-write")
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This task has read-only browser access and cannot drive or change tabs.",
+        });
+    }
+    const record = await this.#loadUsableOwnedSession(input, sessionId);
+    if (authority) {
+      const grant = selectedGrantOf(authority.execution);
+      if (
+        grant &&
+        (!record.profileId ||
+          !agentGrantAllows(
+            grant,
+            { kind: "browser-profile", profileId: record.profileId },
+            "read-write",
+          ))
+      ) {
+        if (input.agentBindingId.startsWith("session:"))
+          throw new OpensteerError({ code: "not_found", message: "Tab not found." });
+        throw new OpensteerError({
+          code: "forbidden",
+          message:
+            "This browser profile is not one this connected agent may use. The person can change what it may use under Connected agents.",
+        });
+      }
+      if (authority.execution.agentConnection && record.profileId === null)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This connected agent needs a saved browser profile. Guest is unavailable.",
+        });
+    }
+    await this.#requireAgentAccess(record.runnerId);
+    if (scope) await this.#repository.assertActiveGrant?.(scope);
+    if (this.#endedBindings.has(input.agentBindingId))
+      throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+    return record;
+  }
+
   /**
    * The session an agent names, if this task may drive it now. Every
    * refusal says what the agent can do next, because the agent reads it
@@ -7211,33 +7382,15 @@ export class BrowserService {
     input: { ownerId: UserId; agentBindingId?: string },
     sessionId: BrowserSessionId,
     authorize = true,
-  ): Promise<BrowserSessionRecord> {
-    const record = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
-    if (
-      !record ||
-      isTerminal(record.state) ||
-      (authorize &&
-        // A command of an ended Run's open connection still answers, but never acts
-        // or holds the session again; new tab operations refuse an ended Run.
-        !(await this.admitAgentBrowser(input, "read-write", [record], this.#repository, true).then(
-          () => true,
-        )))
-    )
-      throw new BrowserCdpConnectionEnded(
-        connectedAgentBinding(input.agentBindingId)
-          ? "This tab has ended or is unavailable. Use discover to find an open tab and pass its tabId."
-          : "This tab has ended or is unavailable. Use tab_list and Browser Harness openPage(tabId).",
-      );
-    return record;
+  ): Promise<OwnedBrowserSessionRecord> {
+    if (authorize) return this.#admitAgentSession(input, sessionId, true);
+    return this.#loadUsableOwnedSession(input, sessionId);
   }
 
-  async #followedAgentSession(
-    input: {
-      readonly agentBindingId: string;
-      readonly ownerId: UserId;
-    },
-    authorize = true,
-  ): Promise<BrowserSessionRecord> {
+  async #followedAgentSessionId(input: {
+    readonly agentBindingId: string;
+    readonly ownerId: UserId;
+  }): Promise<BrowserSessionId> {
     const [latest] = await this.#repository.listActiveBrowserSessionsForAgentBinding(
       input.agentBindingId,
     );
@@ -7246,7 +7399,17 @@ export class BrowserService {
         "This Run has no selected tab. Use tab_list and Browser Harness openPage(tabId), or tab_open with a Guest page target.",
       );
     }
-    return this.#usableAgentSession(input, latest.id, authorize);
+    return latest.id;
+  }
+
+  async #followedAgentSession(
+    input: {
+      readonly agentBindingId: string;
+      readonly ownerId: UserId;
+    },
+    authorize = true,
+  ): Promise<OwnedBrowserSessionRecord> {
+    return this.#usableAgentSession(input, await this.#followedAgentSessionId(input), authorize);
   }
 
   async admitAgentBrowser(
@@ -7275,6 +7438,13 @@ export class BrowserService {
       for (const record of records)
         if (!(await repository.getBrowserSessionForOwner(record.id, input.ownerId)))
           throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+      if (records.length) {
+        await Promise.all(
+          [...new Set(records.map((record) => record.runnerId))].map((runnerId) =>
+            this.#requireAgentAccess(runnerId),
+          ),
+        );
+      }
       return null;
     }
     let scope: Awaited<ReturnType<OpensteerStore["runCapabilityScope"]>> = null;
@@ -7473,23 +7643,31 @@ export class BrowserService {
           )
         : undefined;
       try {
-        const [attached, credits] = await Promise.all([
-          this.#repository.attachBrowserSession({
-            agentBindingId: input.agentBindingId,
-            ownerId: input.ownerId,
-            sessionId: record.id,
-            ...(pool ? { pool: pool.identity() } : {}),
-          }),
-          this.#repository.recordAgentBrowserUse({
+        // Run attachment and usage sequentially so they never contend on client_sync_state,
+        // and skip repeat session-only usage writes only when this binding's last recorded
+        // session and this session's last recorded binding are both unchanged.
+        const attached = await this.#repository.attachBrowserSession({
+          agentBindingId: input.agentBindingId,
+          ownerId: input.ownerId,
+          sessionId: record.id,
+          ...(pool ? { pool: pool.identity() } : {}),
+        });
+        if (attached) this.#onSessionsChanged([record.id]);
+        if (
+          attached ||
+          this.#lastHeldSessionByBinding.get(input.agentBindingId) !== record.id ||
+          this.#lastHeldBindingBySession.get(record.id) !== input.agentBindingId
+        ) {
+          const credits = await this.#repository.recordAgentBrowserUse({
             agentBindingId: input.agentBindingId,
             ownerId: input.ownerId,
             page: null,
             sessionId: record.id,
             tabId: null,
-          }),
-        ]);
-        if (attached) this.#onSessionsChanged([record.id]);
-        this.announceUsage(credits);
+          });
+          this.#noteLastHeldSession(record.id, input.agentBindingId);
+          this.announceUsage(credits);
+        }
       } finally {
         reservation?.release();
       }
@@ -7550,7 +7728,24 @@ export class BrowserService {
     this.#actingTimers.set(sessionId, cancel);
   }
 
+  #noteLastHeldSession(sessionId: BrowserSessionId, agentBindingId: string): void {
+    if (!this.#endedBindings.has(agentBindingId) && this.#brokers.has(sessionId)) {
+      this.#lastHeldBindingBySession.set(sessionId, agentBindingId);
+      this.#lastHeldSessionByBinding.set(agentBindingId, sessionId);
+    } else {
+      this.#lastHeldSessionByBinding.delete(agentBindingId);
+    }
+  }
+
+  #forgetLastHeldSession(sessionId: BrowserSessionId): void {
+    this.#lastHeldBindingBySession.delete(sessionId);
+    for (const [binding, lastSessionId] of this.#lastHeldSessionByBinding) {
+      if (lastSessionId === sessionId) this.#lastHeldSessionByBinding.delete(binding);
+    }
+  }
+
   #forgetAgentBinding(agentBindingId: string): void {
+    this.#lastHeldSessionByBinding.delete(agentBindingId);
     for (const waiter of this.#poolAgentWaiters.get(agentBindingId) ?? [])
       waiter.abort(new BrowserCdpConnectionEnded("The browser task ended."));
     this.closeStandardCdpForBinding(agentBindingId, "The browser task ended.");

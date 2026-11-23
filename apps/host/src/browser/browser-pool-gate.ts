@@ -11,6 +11,11 @@ export interface BrowserPoolReservation {
   release(): void;
   /** Aborted when a restart or a removal needs every holder gone: the holder stops and settles. */
   readonly ended?: AbortSignal;
+  /**
+   * How this holder records its outcome when a restart cannot wait for it any longer (a script
+   * that ignores its abort): the restart runs it, and only then stops the guest.
+   */
+  onForcedEnd?(settle: () => Promise<void>): void;
 }
 
 /**
@@ -30,6 +35,7 @@ export class BrowserPoolGate {
   #changed = new AbortController();
   #ended = new AbortController();
   readonly #idle: (() => void)[] = [];
+  readonly #settlers = new Set<() => Promise<void>>();
   /** The loop is asked to act: someone waits with demand, or a hold needs holders gone. */
   onChange: () => void = () => {};
 
@@ -100,20 +106,18 @@ export class BrowserPoolGate {
   }
 
   /**
-   * The park intent committed. False: a send arrived first and vetoes it. True: the browser is
-   * now away (parking) and every send waits.
+   * The park intent committed. False: a send arrived first and vetoes it. Either way the browser
+   * is now away (parking) and every send waits: a vetoed park is undone first, and only the row
+   * reading running again, published by the loop, opens admission.
    */
   committed(): boolean {
     if (!this.#preparing) return false;
     this.#preparing = false;
-    // A send, a restart or a removal that came first vetoes it.
-    if (this.demandedSince() || this.#hold) {
-      this.#notify();
-      return false;
-    }
     this.#away = "parking";
+    // A send, a restart or a removal that came first vetoes it.
+    const vetoed = this.demandedSince() || this.#hold !== null;
     this.#notify();
-    return true;
+    return !vetoed;
   }
 
   /** The park step ended before D: the window closes. */
@@ -146,6 +150,11 @@ export class BrowserPoolGate {
     return new Promise((resolve) => this.#idle.push(resolve));
   }
 
+  /** Every holder still here records its outcome; resolves once each one has. */
+  async settleHolders(): Promise<void> {
+    await Promise.allSettled([...this.#settlers].map((settle) => settle()));
+  }
+
   async #wait(signal: AbortSignal, demand: boolean): Promise<BrowserPoolReservation> {
     if (demand) this.#waiting++;
     try {
@@ -173,11 +182,19 @@ export class BrowserPoolGate {
   #take(): BrowserPoolReservation {
     this.#active++;
     let released = false;
+    let settler: (() => Promise<void>) | undefined;
     return {
       ended: this.#ended.signal,
+      onForcedEnd: (settle) => {
+        if (released) return;
+        if (settler) this.#settlers.delete(settler);
+        settler = settle;
+        this.#settlers.add(settle);
+      },
       release: () => {
         if (released) return;
         released = true;
+        if (settler) this.#settlers.delete(settler);
         if (--this.#active === 0) for (const idle of this.#idle.splice(0)) idle();
       },
     };
