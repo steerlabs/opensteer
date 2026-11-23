@@ -546,3 +546,141 @@ describe("the follow view, for a still page whose one frame comes with its start
     await tab.follow.close();
   });
 });
+
+/*
+ * The walker's six runs on be9b313a5, runs 4 and 6 of never-shown-tab: three starts. The ledger
+ * listed the tab's blank first document as loading, and the follow view sent it a start, refused;
+ * then the real document's commit came, and the start sent at that same moment was refused too:
+ * Chromium tells the page's session of a commit before its browser side takes commands for that
+ * document. The answered start waited for the load to end, which on a slow page would be seconds.
+ * Here the page has the navigation port the desktop app's has: it counts each navigation its
+ * browser side finished, after which the committed document takes commands.
+ */
+describe("the follow view, on a page that says when its browser side has finished a navigation", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession } = await import("../test-support/fakes.js");
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  async function navigating(options: { readonly opened: boolean }) {
+    const cdp = new FakeCdpSession();
+    // Whether the browser side takes commands for the page's current document.
+    let active = options.opened;
+    const sent: Array<{ readonly taken: boolean; readonly loading: boolean }> = [];
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab",
+      loading: true,
+      url: options.opened ? "https://example.test/one" : "about:blank",
+    };
+    cdp.responses.set("Page.startScreencast", () => {
+      sent.push({ loading: surface.loading, taken: active });
+      if (!active) throw new Error("Not attached to an active page");
+      return {};
+    });
+    let finished = options.opened ? 1 : 0;
+    const navigationListeners = new Set<() => void>();
+    const capture = { height: 600, rasterScale: 1, revision: 1, width: 800 };
+    const page = {
+      applyGeometry: async () => undefined,
+      capture: { read: () => capture, subscribe: () => () => undefined },
+      navigations: {
+        finished: () => finished,
+        subscribe: (listener: () => void) => {
+          navigationListeners.add(listener);
+          return () => navigationListeners.delete(listener);
+        },
+      },
+      settleRendering: async () => undefined,
+    };
+    const binding = { cdp, page, surface };
+    const listeners = new Set<(event: unknown) => void>();
+    const changed = () => {
+      for (const listener of listeners)
+        listener({ change: "updated", surface: { ...surface }, type: "changed" });
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => ({ height: 600, width: 800 }),
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async () => undefined }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    await follow.start();
+    await follow.setStreaming(true).catch(() => undefined);
+    await settle();
+    return {
+      follow,
+      sent,
+      /** The page's session hears of a new document; its browser side does not take it yet. */
+      commit: async () => {
+        active = false;
+        surface.documentId += "+";
+        surface.geometryRevision += 1;
+        surface.url = "https://example.test/two";
+        changed();
+        await settle();
+      },
+      /** The browser side's end of the navigation: the committed document takes commands. */
+      navigated: async () => {
+        active = true;
+        finished += 1;
+        for (const listener of navigationListeners) listener();
+        await settle();
+      },
+      /** Something else about the loading page changed. */
+      changed: async () => {
+        surface.geometryRevision += 1;
+        changed();
+        await settle();
+      },
+    };
+  }
+
+  it("sends a tab opened with an address no start before its first document can take one", async () => {
+    const tab = await navigating({ opened: false });
+    await tab.changed();
+    await tab.commit();
+    await tab.changed();
+    expect(tab.sent).toEqual([]);
+    await tab.navigated();
+    await vi.waitFor(() => expect(tab.sent).toEqual([{ loading: true, taken: true }]));
+    await tab.follow.close();
+  });
+
+  it("sends a start refused at a commit again once the navigation finished, while the page still loads", async () => {
+    const tab = await navigating({ opened: true });
+    await vi.waitFor(() => expect(tab.sent).toHaveLength(1));
+    // The person turns away and back as it navigates: the start goes out at the commit, refused.
+    await tab.commit();
+    await tab.follow.setStreaming(false);
+    const turned = tab.sent.length;
+    await tab.follow.setStreaming(true).catch(() => undefined);
+    await settle();
+    await tab.changed();
+    expect(tab.sent.slice(turned)).toEqual([{ loading: true, taken: false }]);
+    await tab.navigated();
+    // The answered start goes out at the navigation's end, with the page still loading.
+    await vi.waitFor(() =>
+      expect(tab.sent.slice(turned)).toEqual([
+        { loading: true, taken: false },
+        { loading: true, taken: true },
+      ]),
+    );
+    await tab.follow.close();
+  });
+});

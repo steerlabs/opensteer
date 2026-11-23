@@ -1189,6 +1189,24 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       return () => this.#captureListeners.delete(listener);
     },
   };
+  #navigationsFinished = 0;
+  readonly #navigationListeners = new Set<() => void>();
+  /**
+   * Electron's main-frame `did-navigate` and `did-fail-load`, which it sends from the browser side's
+   * end of a navigation: the committed document is the frame's active one then, and takes commands.
+   * The page's own session hears of the commit (Page.frameNavigated) before that.
+   */
+  readonly navigations = {
+    finished: (): number => this.#navigationsFinished,
+    subscribe: (listener: () => void): (() => void) => {
+      this.#navigationListeners.add(listener);
+      return () => this.#navigationListeners.delete(listener);
+    },
+  };
+  #navigationFinished(): void {
+    this.#navigationsFinished += 1;
+    for (const listener of [...this.#navigationListeners]) listener();
+  }
   #frameSubscriptionRevision: number | null = null;
   #paintedSurfaceRevision = -1;
   #metricsSurfaceRevision = 0;
@@ -1415,6 +1433,11 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#mediaPlaying = false;
       this.#invalidateCursor();
       void this.invalidateSurface().catch(() => undefined);
+      this.#navigationFinished();
+    });
+    view.webContents.on("did-fail-load", (_event, code, _text, _url, mainFrame) => {
+      // An aborted navigation (ERR_ABORTED) gave way to another, whose own end follows.
+      if (mainFrame && code !== -3) this.#navigationFinished();
     });
     view.webContents.on("media-started-playing", () => {
       this.#mediaPlaying = true;

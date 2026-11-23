@@ -53,10 +53,13 @@ interface ActiveCast {
   casting: boolean;
   awaitingNavigation: boolean;
   /**
-   * The document a start was refused for while it loaded, until the page can take one: another
-   * document commits, or its loading stops. Every start asked for before then joins that one.
+   * A start held until the page can take one, while it loads: one refused for this document, or
+   * one for a tab whose first document has not committed. With the page's navigation port it goes
+   * out once a navigation finishes after `navigations` (one counted when it was sent); without one,
+   * once another document commits. Or when loading stops. Every start asked for before joins it.
    */
-  deferredFor: string | null;
+  deferred: { readonly document: string | null; readonly navigations: number } | null;
+  unsubscribeNavigations: (() => void) | null;
   /**
    * While a start is with Chromium: the latest frame that came with it (Chromium's first, or the
    * one a hub holds for a cast it joins), kept unacknowledged. It is that start's picture, shown
@@ -494,7 +497,8 @@ export class ScreencastController {
       raster: null,
       casting: false,
       awaitingNavigation: false,
-      deferredFor: null,
+      deferred: null,
+      unsubscribeNavigations: null,
       starting: null,
       cdp: binding.cdp,
       pageScale: 1,
@@ -513,6 +517,12 @@ export class ScreencastController {
       surfaceId: binding.surface.id,
     };
     this.active = active;
+    // A navigation's end is when a held start can go out; it asks for one as any trigger does.
+    active.unsubscribeNavigations =
+      binding.page.navigations?.subscribe(() => {
+        if (this.active !== active || active.casting) return;
+        void this.viewportChanged(active.surfaceId).catch(() => undefined);
+      }) ?? null;
     active.unsubscribeCapture =
       binding.page.capture?.subscribe(() => {
         if (this.active !== active) return;
@@ -568,6 +578,7 @@ export class ScreencastController {
     this.cancelPendingCast(active);
     active.leave.abort();
     active.unsubscribeCapture?.();
+    active.unsubscribeNavigations?.();
     active.releaseRendering?.();
     active.releaseRendering = null;
     active.cdp.off("Page.screencastFrame", active.onFrame);
@@ -816,16 +827,28 @@ export class ScreencastController {
 
   private async castLive(active: ActiveCast, reason: string): Promise<void> {
     if (!this.inView(active) || !this.streaming || active.casting) return;
-    if (active.deferredFor !== null) {
-      // Chromium refused a start for this document while it loaded (a tab opened with an
-      // address is not attached to a page until its first document commits): a start before the
-      // page can take one would be refused the same way, so this one joins it.
-      const surface = this.ledger.binding(active.surfaceId)?.surface;
-      if (surface?.loading && surface.documentId === active.deferredFor) {
-        this.diagnose({ stage: "cast-held", reason, castId: active.castId });
-        return;
+    {
+      const binding = this.ledger.binding(active.surfaceId);
+      const navigations = binding?.page.navigations;
+      // A tab opened with an address takes no command before its first document commits
+      // ("Not attached to an active page"): its start waits for that, as a refused one would.
+      if (active.deferred === null && binding?.surface.loading && navigations?.finished() === 0)
+        active.deferred = { document: binding.surface.documentId ?? null, navigations: 0 };
+      if (active.deferred !== null) {
+        // A start before the page can take one would be refused: this one joins the one held.
+        const deferred = active.deferred;
+        const held =
+          binding?.surface.loading === true &&
+          (navigations
+            ? navigations.finished() <= deferred.navigations
+            : binding.surface.documentId === deferred.document);
+        if (held) {
+          active.awaitingNavigation = true;
+          this.diagnose({ stage: "cast-held", reason, castId: active.castId });
+          return;
+        }
+        active.deferred = null;
       }
-      active.deferredFor = null;
     }
     if (this.ledger.dialogOpen(active.surfaceId)) {
       this.showRetainedPicture(active);
@@ -871,6 +894,8 @@ export class ScreencastController {
           return;
         const surface = this.ledger.binding(active.surfaceId)?.surface;
         const documentId = surface?.documentId;
+        // A navigation that finishes while this start is with Chromium ends a refusal's wait.
+        const navigationsAtStart = page?.navigations?.finished() ?? 0;
         active.awaitingNavigation = surface?.loading === true;
         active.capture = capture;
         active.geometryRevision =
@@ -948,7 +973,7 @@ export class ScreencastController {
             // address has none attached until its document commits. Keep demand until a
             // document commits or its navigation stops.
             active.awaitingNavigation = true;
-            active.deferredFor = documentId ?? null;
+            active.deferred = { document: documentId ?? null, navigations: navigationsAtStart };
             this.diagnose({
               stage: "cast-deferred",
               reason: "navigation",

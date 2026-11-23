@@ -399,6 +399,46 @@ it("restores a Guest page before announcing without loading a blank", async () =
   }
 });
 
+// The follow view's sign that a page takes commands for the document it committed: Electron's
+// main-frame did-navigate and did-fail-load, sent from the browser side's end of a navigation.
+it("counts each navigation the page's browser side finished, and none that gave way to another", async () => {
+  const downloads = { accept: vi.fn(), active: vi.fn(() => false) };
+  const launcher = new ElectronBrowserLauncher({ downloads, pagePolicyPreloadPath: "/policy.cjs" });
+  const browser = await launcher.launch({
+    partitionKey: "session:navigations",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  const page = browser.context.pages()[0]! as unknown as {
+    readonly navigations: { finished(): number; subscribe(listener: () => void): () => void };
+  };
+  const emit = (event: string, ...parameters: unknown[]) => {
+    for (const [name, listener] of electron.views.at(-1)!.webContents.on.mock.calls)
+      if (name === event) (listener as (...values: unknown[]) => void)({}, ...parameters);
+  };
+  try {
+    const heard = vi.fn();
+    const stop = page.navigations.subscribe(heard);
+    // Opened with an address, its first document has not committed.
+    expect(page.navigations.finished()).toBe(0);
+    emit("did-navigate", "https://site.test/", 200, "OK");
+    // A main-frame load that failed committed an error page; one aborted gave way to another; a
+    // subframe's is the frame's own.
+    emit("did-fail-load", -105, "ERR_NAME_NOT_RESOLVED", "https://gone.test/", true);
+    emit("did-fail-load", -3, "ERR_ABORTED", "https://site.test/next", true);
+    emit("did-fail-load", -105, "ERR_NAME_NOT_RESOLVED", "https://ad.test/", false);
+    expect(page.navigations.finished()).toBe(2);
+    expect(heard).toHaveBeenCalledTimes(2);
+    stop();
+    emit("did-navigate", "https://site.test/again", 200, "OK");
+    expect(page.navigations.finished()).toBe(3);
+    expect(heard).toHaveBeenCalledTimes(2);
+  } finally {
+    await browser.close();
+    launcher.close();
+  }
+});
+
 it("keeps POST results and engine activity awake and treats a POST redirect as GET", async () => {
   const downloads = { accept: vi.fn(), active: vi.fn(() => false) };
   const launcher = new ElectronBrowserLauncher({ downloads, pagePolicyPreloadPath: "/policy.cjs" });

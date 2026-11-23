@@ -53,6 +53,19 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
+/**
+ * The navigations a page's browser side has finished: from each one on, it takes commands for the
+ * document it committed. Chromium reports a commit to the page's own session (Page.frameNavigated)
+ * before its browser side takes commands for that document ("Not attached to an active page"), and
+ * a tab opened with an address takes none until its first document commits there.
+ */
+export interface PageNavigationPort {
+  /** How many, since the page was opened: none while its first document has not committed. */
+  finished(): number;
+  /** Called after each one. */
+  subscribe(listener: () => void): () => void;
+}
+
 export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
 
 /** A renderer after its page ended: gone, still serving other pages, or still running alone. */
@@ -78,6 +91,8 @@ export interface BrowserPage {
   hasOpenerAccess?(): boolean | Promise<boolean>;
   readonly cursor?: import("./cursor-hints.js").NativePageCursor;
   readonly capture?: PageCapturePort;
+  /** An engine without it is taken to accept commands for a document once it commits. */
+  readonly navigations?: PageNavigationPort;
   /**
    * Observes compositing after geometry acknowledgement, outside its lock.
    * Electron cannot identify the metrics revision of those pixels: an already
