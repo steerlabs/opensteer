@@ -20,6 +20,9 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileState: () => ({ rows: [], selection: { deploymentId: null, hostClient: null } }),
 }));
 vi.mock("../ui/shell-gate.js", () => ({ useShellGate: () => undefined }));
+vi.mock("../ui/pane.js", () => ({
+  useContentInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
+}));
 vi.mock("../ui/screen.js", () => ({
   Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
   useReadingColumn: () => ({}),

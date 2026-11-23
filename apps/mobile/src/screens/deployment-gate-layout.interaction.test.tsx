@@ -81,7 +81,7 @@ afterEach(() => {
   layoutWindow.fontScale = 1;
 });
 
-async function draw(phone: LayoutPhone, fontScale: number) {
+async function draw(phone: LayoutPhone, fontScale: number, header = true) {
   geometry.insets = phone.insets;
   geometry.window = phone.window;
   Object.assign(layoutWindow, phone.window, { fontScale });
@@ -95,7 +95,7 @@ async function draw(phone: LayoutPhone, fontScale: number) {
       <View style={phone.window}>
         <DeploymentGate
           deploymentId="dep_00000000-0000-4000-8000-0000000000ff"
-          paddingTop={phone.header}
+          {...(header ? { paddingTop: phone.header } : {})}
         />
       </View>,
     ),
@@ -133,4 +133,24 @@ describe("a Home that is no longer here, at every text size", () => {
           "the way back is smaller than a touch",
         ).toBeGreaterThanOrEqual(43.5);
       });
+});
+
+/*
+ * The reader's re-check of 5ebc2cbbd: a route with no header (setting up this phone again, where
+ * a removed phone is told so) passes the gate no room for a bar, and the gate gave its words none
+ * for the status bar either: at the largest text size they scrolled up under the island.
+ */
+describe("the gate on a route with no header, at the largest text size", () => {
+  const islandPhone: LayoutPhone = {
+    header: 103,
+    insets: { bottom: 34, left: 0, right: 0, top: 59 },
+    name: "a phone with an island",
+    window: { height: 844, width: 390 },
+  };
+  for (const phone of [layoutPhones[0]!, islandPhone])
+    it(`keeps its words below the status bar on ${phone.name}`, async () => {
+      const { container, frames } = await draw(phone, layoutTextSizes.at(-1)!, false);
+      const title = textElement(container, "This Home is no longer here");
+      expect(frames.frame(title).y).toBeGreaterThanOrEqual(phone.insets.top);
+    });
 });

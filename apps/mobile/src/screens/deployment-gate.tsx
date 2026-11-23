@@ -16,6 +16,7 @@ import { color, space } from "../theme.js";
 import { ConnectionGate, type ConnectionGateButton } from "../ui/connection-gate.js";
 import { ConnectionRouteGate } from "../ui/route-gate.js";
 import { useShellGate } from "../ui/shell-gate.js";
+import { useContentInsets } from "../ui/pane.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import {
   AppText,
@@ -73,7 +74,10 @@ export function useAttachedHostOf(deploymentId: string | null): HostClient | nul
  */
 export function DeploymentGate(props: {
   readonly deploymentId: string;
-  /** Room for a transparent bar above the content. */
+  /**
+   * Room for a transparent bar above the content. A route with no bar leaves it out, and the gate
+   * clears the status bar itself.
+   */
   readonly paddingTop?: number;
 }): ReactNode {
   const navigation = useNavigation();
@@ -101,7 +105,8 @@ export function DeploymentGate(props: {
       ? { label: "Other computers", onPress: () => navigation.navigate("DeploymentSwitcher") }
       : null;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
-  const top = { paddingTop: props.paddingTop ?? 0 };
+  const insets = useContentInsets();
+  const top = { paddingTop: props.paddingTop ?? insets.top };
   const iphone = useOptionalIphoneApps();
   const removedFrom = useRemovedFrom(iphone);
   // Every branch below explains this computer, so the pill would only repeat it.
