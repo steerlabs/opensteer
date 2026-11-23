@@ -220,6 +220,27 @@ import UIKit
     var selections: Int { packets.filter { ($0["event"] as? [String: Any])?["type"] as? String == "selection" }.count }
   }
 
+  // CW5: a move is measured from the selection the view last set, whether or not UIKit told the
+  // delegate of that set (it may defer or coalesce the callback). Here UIKit's callback is withheld
+  // while the view applies typing; the person then moves back two characters.
+  func testAMoveIsMeasuredFromTheSelectionTheViewSetWithoutACallback() {
+    let field = Field(settled: "hello")
+    field.view.delegate = nil
+    field.view.insertText("a")
+    field.view.insertText("b")
+    field.answerAll()
+    XCTAssertEqual(field.view.selectedRange, NSRange(location: 7, length: 0))
+    field.view.delegate = field.view
+    // "c" waits while the person moves back two characters from after "b": the move is two
+    // back from after "c", where "x" then goes.
+    field.view.insertText("c")
+    field.select(NSRange(location: 5, length: 0))
+    field.answerAll()
+    field.view.insertText("x")
+    field.answerAll()
+    XCTAssertEqual(field.view.text, "helloaxbc")
+  }
+
   // P1: a typo then Backspace erases the typo, not the character before it.
   func testATypoThenBackspaceErasesTheTypo() {
     let field = Field(settled: "a")

@@ -13,8 +13,17 @@ import UniformTypeIdentifiers
   /// The selection the view itself last left, so a selection callback UIKit sends about it later
   /// (on another run loop turn, after `mutating` is false again) is not taken for a choice.
   private var ownSelection: NSRange?
-  /// The selection as the last callback saw it, to measure a move from.
+  /// The selection a move is measured from: as the last callback saw it, or as the view last set
+  /// it (CW5: UIKit may defer or coalesce the callback for a selection the view sets).
   private var lastSelection = NSRange(location: 0, length: 0)
+  /// The view owns the selection as it now stands (after its own edit, an answer, a configure):
+  /// a callback UIKit sends about it later is not a choice, and a move is measured from it even
+  /// when UIKit sends none (CW5). Every selection the view leaves goes through here.
+  private func recordOwn(_ range: NSRange? = nil) {
+    if let range, selectedRange != range { selectedRange = range }
+    ownSelection = selectedRange
+    lastSelection = selectedRange
+  }
   /// The caret's moves since the last report ran, in composed characters; nil once a range is
   /// chosen.
   private var distance: [Int]? = []
@@ -216,7 +225,7 @@ import UniformTypeIdentifiers
     mutating = true
     defer {
       selectedRange = NSRange(location: start, length: end - start)
-      ownSelection = selectedRange
+      recordOwn()
       turnCaret = selectedRange
       heldChoice = nil
       mutating = false
@@ -300,7 +309,7 @@ import UniformTypeIdentifiers
         let proxy = self.snapshot()
         let markedText = self.marked()
         self.keepChosen(after: typed)
-        self.ownSelection = self.selectedRange
+        self.recordOwn()
         self.mutating = false
         if !wasComposing && composing { self.gate.notify(["type": "compositionstart", "proxy": proxy]) }
         if composing { self.gate.notify(["type": "compositionupdate", "data": markedText, "proxy": proxy]) }
@@ -382,7 +391,7 @@ import UniformTypeIdentifiers
       // Its event reports its own caret; the caret the person chose is reported in its turn.
       let proxy = self.snapshot()
       self.keepChosen(after: named)
-      self.ownSelection = self.selectedRange
+      self.recordOwn()
       self.mutating = false
       self.gate.notify(["type": "compositionend", "data": data, "proxy": proxy])
     }
@@ -483,8 +492,9 @@ import UniformTypeIdentifiers
         move.resolved = self.place(at)
         // The native caret is the person's from here on, unless they have moved it since.
         if self.edits.chosen(after: moved) == nil, self.selectedRange != at {
+          // Owned before it is set, so UIKit's callback for it is not taken for a move.
           self.ownSelection = at
-          self.selectedRange = at
+          self.recordOwn(at)
         }
       }
       self.gate.event(["type": "selection", "proxy": self.snapshot(selection: at)])
@@ -585,7 +595,7 @@ import UniformTypeIdentifiers
       edit(NSRange(location: 0, length: length)) { text = "" }
       edits.clear()
       selectedRange = NSRange(location: 0, length: 0)
-      ownSelection = selectedRange
+      recordOwn()
       heldChoice = nil
       mutating = false
     }
