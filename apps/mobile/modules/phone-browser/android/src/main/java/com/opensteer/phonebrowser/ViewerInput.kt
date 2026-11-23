@@ -19,8 +19,12 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
     PhoneBrowserNative.authority?.requireViewer(input.epoch, input.channelId, input.sessionId, true) ?: throw BrowserFailure("forbidden")
     val message = JSONObject(input.message)
     val copied = if (message.optString("type") == "clipboard.copy") {
-      val tab = pool.ui(input.epoch) { pool.check(input, true).also(admission) }
-      JSONObject(pool.evaluate(tab, input.epoch, "(()=>{const e=document.activeElement;if(e&&e.tagName==='INPUT'&&e.type==='password')return {sensitive:true,text:''};return {sensitive:false,text:e&&typeof e.selectionStart==='number'?e.value.slice(e.selectionStart,e.selectionEnd):String(getSelection())}})()"))
+      val copyTab = pool.ui(input.epoch) {
+        val tab = pool.check(input, true).also(admission)
+        if (message.getString("contextId") == tab.contextId && !sensitive(tab)) tab else null
+      }
+      if (copyTab != null) JSONObject(pool.evaluate(copyTab, input.epoch, "(()=>{const e=document.activeElement;if(e&&e.tagName==='INPUT'&&e.type==='password')return {sensitive:true,text:''};return {sensitive:false,text:e&&typeof e.selectionStart==='number'?e.value.slice(e.selectionStart,e.selectionEnd):String(getSelection())}})()"))
+      else null
     } else null
     pool.ui(input.epoch) {
       val type = message.optString("type")
@@ -73,12 +77,15 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
         "clipboard.copy" -> {
           val consumer = message.optString("consumerToken").takeIf { it.isNotEmpty() } ?: throw BrowserFailure("forbidden")
           val operation = message.getString("operationId")
-          if (copied == null || copied.getBoolean("sensitive") || sensitive(tab)) throw BrowserFailure("forbidden")
-          val bytes = copied.getString("text").toByteArray(Charsets.UTF_8)
-          if (bytes.size > 1048576) throw BrowserFailure("too-large")
-          val result = mapOf("type" to "clipboard.result", "consumerToken" to consumer, "surfaceId" to tab.id, "operationId" to operation, "outcome" to if (bytes.isEmpty()) "empty" else "copied") + if (bytes.isNotEmpty()) mapOf("items" to listOf(mapOf("type" to "text/plain", "size" to bytes.size))) else emptyMap()
-          server(tab, input.channelId, result)
-          if (bytes.isNotEmpty()) (0 until (bytes.size+524287)/524288).forEach { index -> val part = bytes.copyOfRange(index*524288, minOf(bytes.size,(index+1)*524288)); server(tab, input.channelId, mapOf("type" to "clipboard.part", "consumerToken" to consumer, "part" to mapOf("operationId" to operation, "index" to index, "data" to android.util.Base64.encodeToString(part, android.util.Base64.NO_WRAP)))) }
+          if (message.getString("contextId") != tab.contextId || copied == null || copied.getBoolean("sensitive") || sensitive(tab)) {
+            server(tab, input.channelId, mapOf("type" to "clipboard.result", "consumerToken" to consumer, "surfaceId" to tab.id, "operationId" to operation, "outcome" to "refused"))
+          } else {
+            val bytes = copied.getString("text").toByteArray(Charsets.UTF_8)
+            if (bytes.size > 1048576) throw BrowserFailure("too-large")
+            val result = mapOf("type" to "clipboard.result", "consumerToken" to consumer, "surfaceId" to tab.id, "operationId" to operation, "outcome" to if (bytes.isEmpty()) "empty" else "copied") + if (bytes.isNotEmpty()) mapOf("items" to listOf(mapOf("type" to "text/plain", "size" to bytes.size))) else emptyMap()
+            server(tab, input.channelId, result)
+            if (bytes.isNotEmpty()) (0 until (bytes.size+524287)/524288).forEach { index -> val part = bytes.copyOfRange(index*524288, minOf(bytes.size,(index+1)*524288)); server(tab, input.channelId, mapOf("type" to "clipboard.part", "consumerToken" to consumer, "part" to mapOf("operationId" to operation, "index" to index, "data" to android.util.Base64.encodeToString(part, android.util.Base64.NO_WRAP)))) }
+          }
         }
         "clipboard.paste-data" -> {
           val items = message.getJSONArray("items")

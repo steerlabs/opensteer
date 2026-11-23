@@ -1471,7 +1471,7 @@ describe("phone browser manager", () => {
     await fixture.present();
     for (const message of [
       { type: "input.command", surfaceId: fixture.surfaceId, command: "undo", contextId: uuid() },
-      { type: "clipboard.cut", surfaceId: fixture.surfaceId, operationId: uuid() },
+      { type: "clipboard.cut", surfaceId: fixture.surfaceId, operationId: uuid(), contextId: uuid() },
       { type: "state.import", operationId: uuid(), site: "https://example.com", cookies: [] },
       { type: "signin.probe", probeId: uuid(), site: "https://example.com" },
       { type: "navigation.go", surfaceId: fixture.surfaceId, url: "file:///private/file" },

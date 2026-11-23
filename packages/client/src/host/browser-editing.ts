@@ -411,9 +411,13 @@ export class BrowserEditingStore {
               )
             : null;
         const operationId = crypto.randomUUID();
-        // CZ5: a paste names the field it was made for; without one there is none to paste into.
-        if (operation.kind === "paste" && !operation.contextId)
-          throw new Error("There is no field to paste into.");
+        // CZ5, PH5: clipboard ops name the field they were made for; without one there is none.
+        if (!operation.contextId)
+          throw new Error(
+            operation.kind === "paste"
+              ? "There is no field to paste into."
+              : `There is no field to ${operation.kind} from.`,
+          );
         const command: BrowserCommand =
           operation.kind === "paste"
             ? {
@@ -421,13 +425,14 @@ export class BrowserEditingStore {
                 surfaceId,
                 operationId,
                 items: [...items!],
-                contextId: operation.contextId!,
+                contextId: operation.contextId,
                 ...(operation.follows ? { follows: true } : {}),
               }
             : {
                 type: operation.kind === "copy" ? "clipboard.copy" : "clipboard.cut",
                 surfaceId,
                 operationId,
+                contextId: operation.contextId,
               };
         if (basicInput && !browserBasicInputAllows(command)) return;
         const result = this.#await(operationId, target, operation.kind);

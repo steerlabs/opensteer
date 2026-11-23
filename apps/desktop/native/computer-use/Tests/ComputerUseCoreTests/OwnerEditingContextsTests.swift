@@ -106,6 +106,8 @@ final class OwnerEditingContextsTests: XCTestCase {
       #"{"kind":"command","command":"deleteBackward","contextId":"not-a-uuid"}"#,
       #"{"kind":"paste","text":"hello"}"#,
       #"{"kind":"paste","text":"hello","contextId":"not-a-uuid"}"#,
+      #"{"kind":"copy"}"#,
+      #"{"kind":"copy","contextId":"not-a-uuid"}"#,
     ] {
       let event = try JSONDecoder().decode(MacOwnerInput.Event.self, from: Data(bad.utf8))
       XCTAssertThrowsError(try event.validate(), bad) { error in
@@ -115,6 +117,7 @@ final class OwnerEditingContextsTests: XCTestCase {
     for good in [
       #"{"kind":"command","command":"selectAll","contextId":"\#(validId)"}"#,
       #"{"kind":"paste","text":"hello","contextId":"\#(validId)"}"#,
+      #"{"kind":"copy","contextId":"\#(validId)"}"#,
     ] {
       let event = try JSONDecoder().decode(MacOwnerInput.Event.self, from: Data(good.utf8))
       XCTAssertNoThrow(try event.validate(), good)

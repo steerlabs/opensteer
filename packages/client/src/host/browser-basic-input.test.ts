@@ -165,7 +165,7 @@ describe("basic browser input", () => {
     "settles clipboard quietly on %s",
     async (reason) => {
       const { store, target, commands } = setup();
-      const copy = target.send({ kind: "copy" });
+      const copy = target.send({ kind: "copy", contextId: context.contextId });
       expect(commands.at(-1)?.type).toBe("clipboard.copy");
       store.receive(
         "session",
@@ -250,7 +250,7 @@ describe("basic browser input", () => {
       command: "deleteWordBackward",
       contextId: context.contextId,
     });
-    await target.send({ kind: "cut" });
+    await target.send({ kind: "cut", contextId: context.contextId });
     await target.send({
       kind: "paste",
       items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],

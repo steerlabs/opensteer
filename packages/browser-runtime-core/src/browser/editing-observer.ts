@@ -569,17 +569,43 @@ export class PageEditingObserver {
   /**
    * PH2: performs a paste after verifying the focused field LIVE in the page (after all awaits,
    * including closing any open composition and clipboard setup). Refuses if focus moved, the field
-   * became sensitive/disabled, or a preceding selection-deletion edit under this context was refused.
+   * became disabled/readOnly, or a preceding selection-deletion edit under this context was refused.
    */
-  async paste(
+  paste(
     contextId: string,
     action: () => Promise<unknown>,
     producer?: string,
     follows = false,
   ): Promise<boolean> {
-    if (this.#activeChild) return this.#activeChild.paste(contextId, action, producer, follows);
+    return this.#clipboard(contextId, action, { requireNonSensitive: false, producer, follows });
+  }
+
+  /**
+   * PH5: performs a copy or cut after verifying the focused field LIVE in the page (same rule as
+   * paste, plus live non-sensitive check).
+   */
+  copyOrCut(contextId: string, action: () => Promise<unknown>, producer?: string): Promise<boolean> {
+    return this.#clipboard(contextId, action, {
+      requireNonSensitive: true,
+      producer,
+      follows: false,
+    });
+  }
+
+  async #clipboard(
+    contextId: string,
+    action: () => Promise<unknown>,
+    options: {
+      readonly requireNonSensitive: boolean;
+      readonly producer?: string | undefined;
+      readonly follows: boolean;
+    },
+  ): Promise<boolean> {
+    if (this.#activeChild) return this.#activeChild.#clipboard(contextId, action, options);
+    const { requireNonSensitive, producer, follows } = options;
     const admitted = () =>
       this.#admission.admits(contextId, "relative") &&
+      !(requireNonSensitive && this.#context.field?.sensitive) &&
       !(follows && this.#refusedFrom.get(producer) === contextId);
     if (!admitted()) return false;
     const focus = this.#focused;
@@ -588,7 +614,7 @@ export class PageEditingObserver {
         const response = await this.#cdp
           .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
             contextId: execContext,
-            expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: null, requireNonSensitive: false })})`,
+            expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: null, requireNonSensitive })})`,
             returnByValue: true,
             silent: true,
           })
@@ -610,7 +636,7 @@ export class PageEditingObserver {
     const response = await this.#cdp
       .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
         contextId: focus.context,
-        expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: focus.fieldId, requireNonSensitive: false })})`,
+        expression: `globalThis.editingOwner?.prepareClipboard(${JSON.stringify({ fieldId: focus.fieldId, requireNonSensitive })})`,
         returnByValue: true,
         silent: true,
       })
@@ -625,7 +651,8 @@ export class PageEditingObserver {
       return false;
     }
     try {
-      if (this.#refusedFrom.get(producer) === contextId) this.#refusedFrom.delete(producer);
+      if (!requireNonSensitive && this.#refusedFrom.get(producer) === contextId)
+        this.#refusedFrom.delete(producer);
       await action();
       return true;
     } finally {

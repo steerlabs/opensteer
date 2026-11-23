@@ -49,16 +49,29 @@ import Foundation
     let type = message["type"] as? String
     if type == "clipboard.copy" {
       guard let operation = message["operationId"] as? String else { throw BrowserRefusal.invalidArgument }
+      let consumer = message["consumerToken"] as? String
+      guard let contextId = message["contextId"] as? String, contextId == tab.contextId, !tab.secureInput else {
+        clipboardReply(tab, channel: input.channelId, operation: operation, consumer: consumer, outcome: "refused")
+        return
+      }
       let primitive = BrowserActionInput()
       primitive.epoch = input.epoch; primitive.tabId = tab.id; primitive.documentId = tab.documentId
-      primitive.contextId = tab.contextId; primitive.action.kind = "text.copy"
-      let result = try await perform(primitive, viewer: true, authorization: { _ = try self.authorize(input, viewer: true) })
-      _ = try authorize(input, viewer: true)
-      guard let text = result["text"] as? String else { throw BrowserRefusal.notActionable }
-      let bytes = Data(text.utf8)
-      clipboardReply(tab, channel: input.channelId, operation: operation, consumer: message["consumerToken"] as? String,
-        outcome: bytes.count > 16 * 1024 * 1024 ? "too-large" : bytes.isEmpty ? "empty" : "copied",
-        bytes: bytes.count <= 16 * 1024 * 1024 && !bytes.isEmpty ? bytes : nil)
+      primitive.contextId = contextId; primitive.action.kind = "text.copy"
+      do {
+        let result = try await perform(primitive, viewer: true, authorization: { _ = try self.authorize(input, viewer: true) })
+        _ = try authorize(input, viewer: true)
+        guard tab.contextId == contextId, !tab.secureInput else {
+          clipboardReply(tab, channel: input.channelId, operation: operation, consumer: consumer, outcome: "refused")
+          return
+        }
+        guard let text = result["text"] as? String else { throw BrowserRefusal.notActionable }
+        let bytes = Data(text.utf8)
+        clipboardReply(tab, channel: input.channelId, operation: operation, consumer: consumer,
+          outcome: bytes.count > 16 * 1024 * 1024 ? "too-large" : bytes.isEmpty ? "empty" : "copied",
+          bytes: bytes.count <= 16 * 1024 * 1024 && !bytes.isEmpty ? bytes : nil)
+      } catch BrowserRefusal.notActionable, BrowserRefusal.staleDocument, BrowserRefusal.unsupportedOperation {
+        clipboardReply(tab, channel: input.channelId, operation: operation, consumer: consumer, outcome: "refused")
+      }
       return
     }
     if type == "clipboard.paste-data" {

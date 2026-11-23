@@ -91,6 +91,8 @@ enum MacOwnerInput {
       case "command":
         guard MacOwnerInput.commands[command ?? ""] != nil,
           let contextId, UUID(uuidString: contextId) != nil else { throw Refusal("unsupported") }
+      case "copy":
+        guard let contextId, UUID(uuidString: contextId) != nil else { throw Refusal("unsupported") }
       default: break
       }
     }
@@ -438,7 +440,7 @@ final class MacOwnerInputWorker {
         guard contexts.admits(event.contextId!, kind: .relative) else { throw MacOwnerInput.Refusal("stale") }
         try await insert(event.text!, focused: focused, lease: lease, map: map, proceed: proceed)
       case "copy":
-        do { try copy(sequence: params.sequence, lease: lease, map: map) }
+        do { try copy(contextId: event.contextId!, sequence: params.sequence, lease: lease, map: map) }
         catch {
           lease.count("clipboard.refused")
           lease.emit(.init(type: "display.clipboard", sequence: params.sequence,
@@ -757,10 +759,14 @@ final class MacOwnerInputWorker {
     }
     try await insert(edit.text, focused: focused, lease: lease, map: map, route: route, proceed: proceed)
   }
-  private func copy(sequence: Int, lease: MacOwnerAttachment, map: MacOwnerInputMap) throws {
+  private func copy(contextId: String, sequence: Int, lease: MacOwnerAttachment, map: MacOwnerInputMap) throws {
     let focused = try keyboard(lease, map: map)
     guard !focused.secure else {
       throw MacOwnerInput.Refusal("sensitive")
+    }
+    refresh(focused, agentRevision: lease.mutations.agentRevision)
+    guard contexts.admits(contextId, kind: .relative) else {
+      throw MacOwnerInput.Refusal("stale")
     }
     guard let selected = range(focused.element) else { throw MacOwnerInput.Refusal("unsupported") }
     if selected.length == 0 { lease.emit(.init(type: "display.clipboard", sequence: sequence, outcome: "empty")); return }

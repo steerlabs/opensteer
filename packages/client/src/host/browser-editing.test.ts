@@ -124,7 +124,7 @@ describe("browser editing transport", () => {
     const { store, target, commands } = setup();
     store.negotiate(sessionId, version, undefined, version === 2 ? true : undefined);
     expect(target.get().abilities.clipboard).toBe("full");
-    const pending = target.send({ kind: "copy" });
+    const pending = target.send({ kind: "copy", contextId: crypto.randomUUID() });
     const command = commands.at(-1);
     expect(command?.type).toBe("clipboard.copy");
     if (command?.type !== "clipboard.copy") throw new Error("No full clipboard operation");
@@ -139,7 +139,7 @@ describe("browser editing transport", () => {
   });
   it("routes a copy only to the operation that awaits it, after all ordered parts", async () => {
     const { store, target, commands } = setup();
-    const copy = target.send({ kind: "copy" });
+    const copy = target.send({ kind: "copy", contextId: crypto.randomUUID() });
     const command = commands[0];
     if (command?.type !== "clipboard.copy") throw new Error("Copy was not sent as an operation.");
     store.receive(sessionId, {
@@ -190,7 +190,7 @@ describe("browser editing transport", () => {
   });
   it("refuses malformed parts and cancels pending operations at disconnect", async () => {
     const { store, target, commands } = setup();
-    const copy = target.send({ kind: "copy" });
+    const copy = target.send({ kind: "copy", contextId: crypto.randomUUID() });
     const rejection = expect(copy).rejects.toThrow("order");
     const command = commands[0];
     if (command?.type !== "clipboard.copy") throw new Error("No copy");
@@ -206,7 +206,7 @@ describe("browser editing transport", () => {
       part: { operationId: command.operationId, index: 1, data: "YQ==" },
     });
     await rejection;
-    const pending = target.send({ kind: "cut" });
+    const pending = target.send({ kind: "cut", contextId: crypto.randomUUID() });
     const canceled = expect(pending).rejects.toThrow("disconnected");
     store.disconnect(sessionId);
     await canceled;

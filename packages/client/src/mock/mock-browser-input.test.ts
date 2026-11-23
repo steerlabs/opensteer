@@ -46,7 +46,7 @@ describe("mock basic browser input", () => {
       });
       await target.send({ kind: "edit", edit: { contextId, before: "", after: "", text: "日本" } });
       await target.send({ kind: "command", command: "selectAll", contextId });
-      const copied = await target.send({ kind: "copy" });
+      const copied = await target.send({ kind: "copy", contextId });
       expect(copied?.outcome).toBe("copied");
       expect(new TextDecoder().decode(copied!.items[0]!.bytes)).toBe("hello日本");
       expect(
@@ -57,7 +57,7 @@ describe("mock basic browser input", () => {
         }),
       ).toMatchObject({ outcome: "pasted" });
       await target.send({ kind: "command", command: "selectAll", contextId });
-      const pasted = await target.send({ kind: "copy" });
+      const pasted = await target.send({ kind: "copy", contextId });
       expect(new TextDecoder().decode(pasted!.items[0]!.bytes)).toBe("new text");
       release();
     } finally {
@@ -118,7 +118,7 @@ describe("mock basic browser input", () => {
         ]);
       }
       await target.send({ kind: "command", command: "selectAll", contextId: context.contextId });
-      const copied = await target.send({ kind: "copy" });
+      const copied = await target.send({ kind: "copy", contextId: context.contextId });
       expect(new TextDecoder().decode(copied!.items[0]!.bytes)).toBe("hel");
       release();
     } finally {
@@ -202,7 +202,7 @@ describe("mock basic browser input", () => {
       },
       { type: "input.key", surfaceId, action: "down", key: "Enter", code: "Enter", modifiers: [] },
       { type: "input.key", surfaceId, action: "down", key: "v", code: "KeyV", modifiers: ["meta"] },
-      { type: "clipboard.cut", surfaceId, operationId },
+      { type: "clipboard.cut", surfaceId, operationId, contextId: operationId },
       {
         type: "clipboard.paste-data",
         surfaceId,

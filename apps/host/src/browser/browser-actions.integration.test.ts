@@ -888,7 +888,7 @@ integration("session-scoped browser agent backends", () => {
     );
     for (const message of [
       { type: "input.command", command: "undo", contextId: crypto.randomUUID() },
-      { type: "clipboard.cut", operationId: crypto.randomUUID() },
+      { type: "clipboard.cut", operationId: crypto.randomUUID(), contextId: crypto.randomUUID() },
       {
         type: "clipboard.paste-data",
         operationId: crypto.randomUUID(),
@@ -906,7 +906,7 @@ integration("session-scoped browser agent backends", () => {
       expect(await refused).toMatchObject({ error: { reason: "unsupported-operation" } });
     }
     const operationId = crypto.randomUUID();
-    send({ type: "clipboard.copy", operationId });
+    send({ type: "clipboard.copy", operationId, contextId: crypto.randomUUID() });
     await vi.waitFor(
       () =>
         expect(commands).toContainEqual(

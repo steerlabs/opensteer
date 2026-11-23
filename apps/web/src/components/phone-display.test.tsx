@@ -856,7 +856,7 @@ describe("negotiated phone viewer wire", () => {
       field.dispatchEvent(new Event("copy", { bubbles: true, cancelable: true }));
     });
     const batch = inputs().at(-1)!;
-    expect(batch.events).toEqual([{ kind: "copy" }]);
+    expect(batch.events).toEqual([{ kind: "copy", contextId: editingContext.contextId }]);
     act(() =>
       sockets[0]!.deliver({
         type: "display.clipboard",

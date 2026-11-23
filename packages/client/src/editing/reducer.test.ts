@@ -692,7 +692,7 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
   });
   it("routes clipboard chords as operations and lets the paste event supply bytes", () => {
     const copied = replay([key("c", { meta: true }), { type: "copy" }]);
-    expect(copied.operations).toEqual([{ kind: "copy" }]);
+    expect(copied.operations).toEqual([{ kind: "copy", contextId: context.contextId }]);
     expect(
       replay([
         key("v", { meta: true }),
@@ -1079,6 +1079,25 @@ describe("a paste over a selection the target cannot delete", () => {
       contextId: context.contextId,
     });
     expect(state.proxy.value).toBe("typed");
+  });
+  it("stamps copy and cut with contextId and preserves an explicit menu contextId", () => {
+    const other: EditingContext = {
+      ...context,
+      contextId: "00000000-0000-4000-8000-000000000002",
+    };
+    const { operations } = replay([
+      { type: "copy" },
+      { type: "cut" },
+      { type: "context", context: other },
+      { type: "copy", contextId: context.contextId },
+      { type: "cut", contextId: context.contextId },
+    ]);
+    expect(operations).toEqual([
+      { kind: "copy", contextId: context.contextId },
+      { kind: "cut", contextId: context.contextId },
+      { kind: "copy", contextId: context.contextId },
+      { kind: "cut", contextId: context.contextId },
+    ]);
   });
 });
 

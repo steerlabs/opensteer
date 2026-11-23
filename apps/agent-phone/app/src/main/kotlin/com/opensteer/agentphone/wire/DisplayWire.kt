@@ -34,7 +34,7 @@ sealed interface DisplayInput {
     data class Command(val command: String, val contextId: String = "00000000-0000-4000-8000-000000000000") : DisplayInput
     data class Edit(val contextId: String, val text: String, val before: String, val after: String) : DisplayInput
     data class Cut(val contextId: String) : DisplayInput
-    data object Copy : DisplayInput
+    data class Copy(val contextId: String) : DisplayInput
     data class Paste(val text: String, val contextId: String = "00000000-0000-4000-8000-000000000000") : DisplayInput
     data object UnsupportedPaste : DisplayInput
 }
@@ -145,7 +145,7 @@ object DisplayWire {
                     .also { if (it.text.isEmpty() && it.before.isEmpty() && it.after.isEmpty()) edit.fail("text", "is an empty edit"); edit.end() }
             }
             "cut" -> DisplayInput.Cut(f.string("contextId", pattern = Ids.uuid))
-            "copy" -> DisplayInput.Copy
+            "copy" -> DisplayInput.Copy(f.string("contextId", pattern = Ids.uuid))
             "paste" -> if (f.has("items")) {
                 var total = 0L
                 f.array("items", 1, 16).forEach { value ->

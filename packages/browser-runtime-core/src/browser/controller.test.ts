@@ -1455,6 +1455,7 @@ describe("BrowserController", () => {
           type: "clipboard.copy",
           surfaceId,
           operationId: crypto.randomUUID(),
+          contextId: crypto.randomUUID(),
         });
         expect(
           page.cdpSession.sent
@@ -1509,7 +1510,7 @@ describe("BrowserController", () => {
         await controller.handle(
           type === "clipboard.paste-data"
             ? { ...identity, type, items: [{ type: "text/plain", size: 1 }], contextId }
-            : { ...identity, type },
+            : { ...identity, type, contextId },
         );
         expect(
           sink.messages.filter(
@@ -4201,6 +4202,37 @@ describe("BrowserController", () => {
         producerId: producer,
       });
       expect(commandsNamed("Input.insertText", page)).toHaveLength(0);
+
+      // 4) PH5: clipboard.copy and clipboard.cut verify contextId and live non-sensitive focus in page.
+      liveOk = true;
+      const staleOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: staleOp,
+        contextId: crypto.randomUUID(),
+        producerId: producer,
+      });
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === staleOp),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
+
+      clipboardOpenHook = () => {
+        liveOk = false;
+      };
+      const liveCutOp = crypto.randomUUID();
+      await controller.handle({
+        type: "clipboard.cut",
+        surfaceId: active.surface.id,
+        operationId: liveCutOp,
+        contextId: latestContext.context.contextId,
+        producerId: producer,
+      });
+      expect(
+        sink.messages.find((m) => m.type === "clipboard.result" && m.operationId === liveCutOp),
+      ).toMatchObject({ outcome: "refused" });
+      expect(commandsNamed("Input.dispatchKeyEvent", page)).toHaveLength(0);
     } finally {
       await controller.close();
       await ledger.close();

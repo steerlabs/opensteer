@@ -214,14 +214,22 @@ export class DisplayEditingSession {
         events = [{ kind: "edit", edit: operation.edit }];
         break;
       case "copy":
-        events = [{ kind: "copy" }];
+        if (!operation.contextId) {
+          this.#count(this.diagnostics.operations, operation.kind);
+          throw this.#refuse("stale", refusalWords.stale);
+        }
+        events = [{ kind: "copy", contextId: operation.contextId }];
         break;
       case "cut":
         if (this.#lease.getSnapshot().display?.displayCut !== 1 || !this.#state.context?.field) {
           this.#count(this.diagnostics.operations, operation.kind);
           throw this.#refuse("unsupported", "Cut isn’t supported by this device.");
         }
-        events = [{ kind: "cut", contextId: this.#state.context.contextId }];
+        if (!operation.contextId) {
+          this.#count(this.diagnostics.operations, operation.kind);
+          throw this.#refuse("stale", refusalWords.stale);
+        }
+        events = [{ kind: "cut", contextId: operation.contextId }];
         break;
       case "compose":
         this.#count(this.diagnostics.operations, operation.kind);

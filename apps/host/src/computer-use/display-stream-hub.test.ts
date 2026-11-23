@@ -663,7 +663,7 @@ describe("phone display Host sockets", () => {
       });
       await a.roundTrip();
     }
-    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }] });
     await b.roundTrip();
     a.socket.close();
     await a.closed;
@@ -706,7 +706,7 @@ describe("phone display Host sockets", () => {
       ],
     });
     await a.roundTrip();
-    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    b.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }] });
     await b.roundTrip();
     expect(b.json()).toContainEqual({
       type: "display.input.result",
@@ -732,7 +732,7 @@ describe("phone display Host sockets", () => {
     });
     await a.roundTrip();
     for (let sequence = 2; sequence <= 128; sequence++)
-      a.send({ type: "display.input", geometry: 1, sequence, events: [{ kind: "copy" }] });
+      a.send({ type: "display.input", geometry: 1, sequence, events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }] });
     await a.roundTrip();
     expect(f.sent.filter((m) => m.type === "host.integrations.display.input")).toHaveLength(128);
     expect(a.json()).toContainEqual({
@@ -749,7 +749,7 @@ describe("phone display Host sockets", () => {
     const b = await f.viewer(true);
     const baseline = await f.connect(`/v1/computer-use/sessions/${f.sessionId}/display`, "owner");
     await f.state();
-    a.send({ type: "display.input", geometry: 1, sequence: 40, events: [{ kind: "copy" }] });
+    a.send({ type: "display.input", geometry: 1, sequence: 40, events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }] });
     await a.roundTrip();
     const base = { ...f.fence, streamId: f.start().streamId, sessionId: f.sessionId, geometry: 1 };
     for (const event of [
@@ -796,7 +796,7 @@ describe("phone display Host sockets", () => {
       controlId: `dcl_${randomUUID()}`,
       geometry: 1,
       sequence: 50,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await baseline.roundTrip();
     expect(baseline.json()).toContainEqual({
@@ -953,7 +953,7 @@ describe("phone display Host sockets", () => {
 
       geometry: 1,
       sequence: 1,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     expect(viewer.json()).toContainEqual({
@@ -968,7 +968,7 @@ describe("phone display Host sockets", () => {
 
       geometry: 2,
       sequence: 2,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     await f.apps.handleMessage(f.peer, f.stream, {
@@ -2883,7 +2883,7 @@ describe("Mac owner input over authenticated display sockets", () => {
 
       geometry: 1,
       sequence: 0,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     });
     await viewer.roundTrip();
     expect(
@@ -2932,7 +2932,7 @@ describe("phone owner input and power", () => {
     await owner.received(() => owner.json().some((m) => m.state === "live"));
     const task = await h.viewer(true);
     await task.received(() => task.json().some((m) => m.state === "live"));
-    owner.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy" }] });
+    owner.send({ type: "display.input", geometry: 1, sequence: 0, events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }] });
     await owner.roundTrip();
     const command = h.sent.findLast((m) => m.type === "host.integrations.display.input")!;
     expect(command).toMatchObject({ source: h.macSource });

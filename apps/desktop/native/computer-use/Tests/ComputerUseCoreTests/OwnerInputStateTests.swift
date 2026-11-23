@@ -95,7 +95,7 @@ final class OwnerInputStateTests: XCTestCase {
       #"{"kind":"command","command":"selectAll","contextId":"00000000-0000-4000-8000-000000000001"}"#,
       #"{"kind":"edit","edit":{"contextId":"00000000-0000-0000-0000-000000000001","text":"a","before":"","after":""}}"#,
       #"{"kind":"paste","text":"a","contextId":"00000000-0000-4000-8000-000000000001"}"#,
-      #"{"kind":"copy"}"#,
+      #"{"kind":"copy","contextId":"00000000-0000-4000-8000-000000000001"}"#,
     ]
     for json in inputs {
       let input = try event(json)

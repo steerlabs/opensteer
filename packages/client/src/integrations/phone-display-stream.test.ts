@@ -774,9 +774,10 @@ describe("shared input", () => {
   });
 
   it("requires both viewer opt-in and producer editing support and delivers private results", () => {
+    const contextId = "00000000-0000-4000-8000-000000000001";
     const lease = streams.retain({ ...target, editing: 1 });
     const socket = opened();
-    expect(lease.input(1, [{ kind: "copy" }])).toBe(false);
+    expect(lease.input(1, [{ kind: "copy", contextId }])).toBe(false);
     socket.json({
       type: "display.state",
       state: "live",
@@ -793,9 +794,9 @@ describe("shared input", () => {
         {
           kind: "paste",
           text: "\u0001".repeat(30000),
-          contextId: "00000000-0000-4000-8000-000000000001",
+          contextId,
         },
-        { kind: "copy" },
+        { kind: "copy", contextId },
       ]),
     ).toBe(true);
     socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
@@ -836,7 +837,9 @@ describe("shared input", () => {
     const first = streams.retain(target);
     const second = streams.retain(target);
     const socket = opened();
-    expect(first.input(1, [{ kind: "copy" }])).toBe(false);
+    expect(
+      first.input(1, [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }]),
+    ).toBe(false);
     hold(socket);
     expect(first.input(1, [{ kind: "text", insert: "one" }])).toBe(true);
     expect(second.input(1, [{ kind: "text", insert: "two" }])).toBe(true);
@@ -1069,13 +1072,14 @@ describe("display editing receipt adapter", () => {
     const press = { kind: "pointer", phase: "down", x: 0.7, y: 0.5, t: 2 } as const;
     calls.push(editing.input(1, [press]));
     calls.push(editing.input(1, [pointer(0.8)]));
-    calls.push(editing.send({ kind: "copy" }));
+    const contextId = "00000000-0000-4000-8000-000000000001";
+    calls.push(editing.send({ kind: "copy", contextId }));
     expect(socket.messages("display.input").map((batch) => batch.events)).toEqual([
       [pointer(0.1)],
       [pointer(0.7)],
       [press],
       [pointer(0.8)],
-      [{ kind: "copy" }],
+      [{ kind: "copy", contextId }],
     ]);
     for (let sequence = 0; sequence < 5; sequence++)
       socket.json({ type: "display.input.result", sequence, outcome: "dispatched" });
@@ -1183,7 +1187,10 @@ describe("display editing receipt adapter", () => {
   });
   it("correlates copy by actual batch sequence and never accepts unsolicited clipboard", async () => {
     const { socket, editing } = await editingFixture();
-    const pending = editing.send({ kind: "copy" });
+    const pending = editing.send({
+      kind: "copy",
+      contextId: "00000000-0000-4000-8000-000000000001",
+    });
     socket.json({ type: "display.clipboard", sequence: 900, outcome: "copied", text: "wrong" });
     socket.json({ type: "display.input.result", sequence: 0, outcome: "dispatched" });
     socket.json({ type: "display.clipboard", sequence: 0, outcome: "copied", text: "right" });
@@ -1202,7 +1209,10 @@ describe("display editing receipt adapter", () => {
       context: { contextId: "00000000-0000-4000-8000-000000000001", field: null, caret: null },
     });
     expect(editing.getSnapshot().context?.contextId).toBe("00000000-0000-4000-8000-000000000001");
-    const pending = editing.send({ kind: "copy" });
+    const pending = editing.send({
+      kind: "copy",
+      contextId: "00000000-0000-4000-8000-000000000001",
+    });
     const rejected = expect(pending).rejects.toThrow("changed");
     socket.json({
       type: "display.state",
@@ -1256,11 +1266,12 @@ describe("display editing receipt adapter", () => {
     expect(await pending).toBeUndefined();
     editing.dispose();
   });
-  it("refuses command and paste without a context", async () => {
+  it("refuses command, copy and paste without a context", async () => {
     const { socket, editing } = await editingFixture();
     await expect(editing.send({ kind: "command", command: "selectAll" })).rejects.toThrow(
       "changed",
     );
+    await expect(editing.send({ kind: "copy" })).rejects.toThrow("changed");
     await expect(
       editing.send({
         kind: "paste",
@@ -1292,7 +1303,10 @@ describe("display editing receipt adapter", () => {
   });
   it("times out unanswered copy and clears its timer when disposed", async () => {
     const { editing } = await editingFixture();
-    const pending = editing.send({ kind: "copy" });
+    const pending = editing.send({
+      kind: "copy",
+      contextId: "00000000-0000-4000-8000-000000000001",
+    });
     const rejected = expect(pending).rejects.toThrow("respond");
     vi.advanceTimersByTime(10000);
     await rejected;

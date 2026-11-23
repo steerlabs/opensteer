@@ -410,7 +410,7 @@ describe("typed browser agent wire", () => {
         type: "input.compose",
         composition: { contextId: uuid, text: "字", selectionStart: 1, selectionEnd: 1 },
       },
-      { type: "clipboard.copy", operationId: uuid },
+      { type: "clipboard.copy", operationId: uuid, contextId: uuid },
       { type: "clipboard.paste", text: "Hello", contextId: uuid },
       {
         type: "clipboard.paste-data",
@@ -444,7 +444,7 @@ describe("typed browser agent wire", () => {
           before: "x",
         },
       },
-      { type: "clipboard.cut", operationId: uuid },
+      { type: "clipboard.cut", operationId: uuid, contextId: uuid },
       {
         type: "clipboard.paste-data",
         operationId: uuid,

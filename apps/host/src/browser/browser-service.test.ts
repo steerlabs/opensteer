@@ -1649,6 +1649,13 @@ describe("BrowserService", () => {
       surfaceId: "page-1",
     });
     await send(editing, { type: "stream.subscribe", surfaceId: "page-1" });
+    const editingContextId = randomUUID();
+    runtime.sendServer({
+      type: "browser.editing",
+      surfaceId: "page-1",
+      context: { contextId: editingContextId, field: null, caret: null },
+    });
+    await waitFor(() => modern.text().some((m) => m.type === "browser.editing"));
     for (const [index, operation] of ["copy", "cut", "copy"].entries()) {
       const text = `native-${index}`;
       let command: Record<string, unknown>;
@@ -1657,6 +1664,7 @@ describe("BrowserService", () => {
           type: `clipboard.${operation}`,
           surfaceId: "page-1",
           operationId: randomUUID(),
+          contextId: editingContextId,
         });
         command = await runtime.nextCommand();
       } else {
@@ -1904,6 +1912,7 @@ describe("BrowserService", () => {
                       type: "clipboard.copy",
                       surfaceId: "page-1",
                       operationId: randomUUID(),
+                      contextId: randomUUID(),
                     }),
                   ),
                   false,

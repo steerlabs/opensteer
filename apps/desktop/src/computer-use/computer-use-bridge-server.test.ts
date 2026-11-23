@@ -112,7 +112,11 @@ describe("ComputerUseBridgeServer", () => {
         },
         ...(method === "display.input-reset"
           ? {}
-          : { sequence: 0, geometry: 1, events: [{ kind: "copy" }] }),
+          : {
+              sequence: 0,
+              geometry: 1,
+              events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
+            }),
       });
       expect(response).toMatchObject({ error: { code: "unsupported" } });
       expect(h.calls).toEqual([]);

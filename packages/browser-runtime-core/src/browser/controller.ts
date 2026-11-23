@@ -2004,23 +2004,18 @@ export class BrowserController {
         await outcome("refused");
         return;
       }
-      // CZ5, PH2: a paste goes into the field it was made for, or nowhere: refused whole.
-      if (
-        message.type === "clipboard.paste-data" &&
-        !observer.admitsInsertion(message.contextId, message.producerId, message.follows === true)
-      ) {
-        this.clipboardParts.discard(message);
+      // CZ5, PH2, PH5: clipboard ops target the field they were made for, or nowhere: refused whole.
+      const follows = message.type === "clipboard.paste-data" && message.follows === true;
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
+        if (message.type === "clipboard.paste-data") this.clipboardParts.discard(message);
         await outcome("refused");
         return;
       }
       const input =
         message.type === "clipboard.paste-data" ? await this.clipboardParts.take(message) : null;
       if (message.type === "clipboard.paste-data" && input === null) return;
-      // Focus may have moved while its bytes arrived: checked again, and again live in page inside run().
-      if (
-        message.type === "clipboard.paste-data" &&
-        !observer.admitsInsertion(message.contextId, message.producerId, message.follows === true)
-      ) {
+      // Focus may have moved while bytes arrived: checked again, and again live in page inside run().
+      if (!observer.admitsInsertion(message.contextId, message.producerId, follows)) {
         await outcome("refused");
         return;
       }
@@ -2046,9 +2041,10 @@ export class BrowserController {
               message.producerId,
               message.follows === true,
             );
-          return observer.input(dispatch, message.producerId).then(() => true);
+          return observer.copyOrCut(message.contextId, dispatch, message.producerId);
         });
-        if (command === "paste") await outcome(result.result ? "pasted" : "refused");
+        if (!result.result) await outcome("refused");
+        else if (command === "paste") await outcome("pasted");
         else
           await publishClipboardItems(
             {

@@ -267,7 +267,11 @@ export function RemoteEditingProxy({
         if (current.current.enabled) clipboard.current!.armActivation();
       },
       perform: (operation) => {
-        if (operation.kind === "copy" || operation.kind === "cut") feed({ type: operation.kind });
+        if (operation.kind === "copy" || operation.kind === "cut")
+          feed({
+            type: operation.kind,
+            ...(operation.contextId ? { contextId: operation.contextId } : {}),
+          });
         else {
           feed({ type: "pointerdown" });
           perform(operation);

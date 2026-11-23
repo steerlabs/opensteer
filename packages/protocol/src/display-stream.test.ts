@@ -231,6 +231,7 @@ describe("display input and socket messages", () => {
       { kind: "text", insert: "x", submit: true },
       { kind: "nav", to: "quickSettings" },
       { kind: "command", command: "selectAll" },
+      { kind: "copy" },
       { kind: "paste", text: "hello" },
     ])
       expect(DisplayInputEventsSchema.safeParse([event]).success).toBe(false);

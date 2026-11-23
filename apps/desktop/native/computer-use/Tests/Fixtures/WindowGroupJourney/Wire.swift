@@ -648,7 +648,7 @@ extension WireJourney {
     // Reset releases the input lease. Focus the editor after the contact
     // test, then admit a new action before expecting its editing context.
     try await Contracts.command(out, "owner-resume")
-    let resumedInput = try await input([["kind": "copy"]])
+    let resumedInput = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
     try require(resumedInput["outcome"] as? String == "dispatched", "New input did not reacquire the reset viewer")
     _ = try await context()
     start("native-text-key")
@@ -739,7 +739,7 @@ extension WireJourney {
     passed()
     start("AX-copy")
     try await Contracts.command(out, "owner-select-all")
-    let copied = try await input([["kind": "copy"]])
+    let copied = try await input([["kind": "copy", "contextId": try await context(sensitive: false)]])
     try require(copied["outcome"] as? String == "dispatched", "AX selection copy was refused")
     _ = try await request("permissions.get", [:])
     let wireFiles = try FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)
@@ -817,7 +817,7 @@ extension WireJourney {
     start("secure-refusal")
     try await Contracts.command(out, "owner-secure")
     let secureContext = try await context(sensitive: true)
-    let secureCopy = try await input([["kind": "copy"]])
+    let secureCopy = try await input([["kind": "copy", "contextId": secureContext]])
     try require(secureCopy["outcome"] as? String == "refused" && secureCopy["reason"] as? String == "sensitive", "Secure copy was not refused")
     let securePaste = try await input([["kind": "paste", "text": "must not insert", "contextId": secureContext]])
     try require(securePaste["outcome"] as? String == "refused" && securePaste["reason"] as? String == "sensitive", "Secure paste was not refused")
@@ -909,7 +909,7 @@ extension WireJourney {
     let lostDown = try await input(shiftDown)
     try require(lostDown["outcome"] as? String == "dispatched", "Lost-keyup setup was refused")
     try await waitForModifierRelease(after: beforeLost, seconds: 6)
-    let expired = try await input([["kind": "copy"]])
+    let expired = try await input([["kind": "mouse", "phase": "move", "button": "none", "modifiers": [], "x": 0.5, "y": 0.5]])
     try require(expired["outcome"] as? String == "dispatched",
       "Lost keyup prevented the next shared batch")
     try await reset(self, streamA, viewA)
@@ -921,7 +921,7 @@ extension WireJourney {
     _ = try await request("display.demand", ["streamId": streamA, "revision": 1, "sources": [],
       "warm": ["durationMs": 30_000, "sources": [source(viewA)]]])
     try await waitForModifierRelease(after: beforeHide, seconds: 2)
-    let hiddenInput = try await input([["kind": "copy"]])
+    let hiddenInput = try await input([["kind": "copy", "contextId": "00000000-0000-4000-8000-000000000001"]])
     try require(hiddenInput["outcome"] as? String == "refused" && hiddenInput["reason"] as? String == "unavailable",
       "Hidden demand left owner input admitted")
     try await reset(self, streamA, viewA)
@@ -958,7 +958,7 @@ extension WireJourney {
     helper.stopFromOverlay()
     try await waitForModifierRelease(after: beforeStop, seconds: 2)
     let stopped = try await other.request("display.input", ["streamId": streamB, "source": source(viewB),
-      "geometry": currentB, "sequence": 2, "events": [["kind": "copy"]]])
+      "geometry": currentB, "sequence": 2, "events": [["kind": "copy", "contextId": "00000000-0000-4000-8000-000000000001"]]])
     try require(stopped["outcome"] as? String == "refused" && stopped["reason"] as? String == "unavailable",
       "Stop without a session left input admitted")
     passed()

@@ -51,7 +51,7 @@ describe("Mac owner input contract", () => {
       source,
       geometry: 1,
       sequence: 0,
-      events: [{ kind: "copy" }],
+      events: [{ kind: "copy", contextId: "00000000-0000-4000-8000-000000000001" }],
     };
     expect(macWindowVideoParams["display.input"].safeParse(input).success).toBe(true);
     expect(macWindowVideoParams["display.input"].safeParse({ ...input, geometry: 0 }).success).toBe(

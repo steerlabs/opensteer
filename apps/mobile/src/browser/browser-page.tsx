@@ -637,7 +637,8 @@ export function BrowserPage(props: {
         (action === "cut" && !pageMenu.editable)
       )
         return;
-      editing.send({ kind: action });
+      const contextId = editingState.menuContext;
+      if (contextId) editing.send({ kind: action, contextId });
     } else if (action === "select-all") {
       // CZ3: made for the field the menu was opened in, and refused in any other.
       const contextId = editingState.menuContext;

@@ -106,6 +106,7 @@ class OwnerEditing(private val service: AccessibilityService, private val device
         val id = identity(node)
         if (event is DisplayInput.Edit && event.contextId != id ||
             event is DisplayInput.Cut && event.contextId != id ||
+            event is DisplayInput.Copy && event.contextId != id ||
             event is DisplayInput.Command && event.contextId != id ||
             event is DisplayInput.Paste && event.contextId != id) return stale()
         if (Build.VERSION.SDK_INT < 33) {
@@ -300,7 +301,7 @@ class OwnerEditing(private val service: AccessibilityService, private val device
                 }) { connection.commitText("", 1, null) }
                 if (result.outcome == "dispatched") result.copy(clipboard = Clipboard("cut", selected)) else result
             }
-            DisplayInput.Copy -> {
+            is DisplayInput.Copy -> {
                 val surrounding = connection.getSurroundingText(0, 0, 0) ?: return refused("unsupported")
                 val start = minOf(surrounding.selectionStart, surrounding.selectionEnd)
                 val end = maxOf(surrounding.selectionStart, surrounding.selectionEnd)

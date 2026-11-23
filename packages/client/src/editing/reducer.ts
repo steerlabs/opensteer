@@ -308,9 +308,12 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     instruction = { ...instruction, preventDefault: true };
   };
   const emit = (computed: EditingOperation): boolean => {
-    // CZ3: a command carries the context it was computed for, as an edit does: this reducer's.
+    // CZ3, PH5: a command or clipboard op carries the context it was computed for: this reducer's.
     const operation =
-      (computed.kind === "command" || computed.kind === "paste") &&
+      (computed.kind === "command" ||
+        computed.kind === "paste" ||
+        computed.kind === "copy" ||
+        computed.kind === "cut") &&
       computed.contextId === undefined &&
       state.context
         ? { ...computed, contextId: state.context.contextId }
@@ -1019,9 +1022,14 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     case "copy":
     case "cut": {
       prevent();
+      if (event.contextId !== undefined && event.contextId !== state.context?.contextId) {
+        if (event.type === "cut" && state.abilities.basicInput) break;
+        emit({ kind: event.type, contextId: event.contextId });
+        break;
+      }
       interrupt();
       if (event.type === "cut" && state.abilities.basicInput) break;
-      emit({ kind: event.type });
+      emit({ kind: event.type, ...(event.contextId ? { contextId: event.contextId } : {}) });
       break;
     }
     case "paste": {

@@ -10186,6 +10186,8 @@ export class HostedBrowserBroker {
               },
             }),
           );
+        const contextId = this.#editingContexts.get(message.surfaceId)?.context.contextId;
+        if (!contextId) return Promise.resolve();
         outlet.legacyClipboardKeys.add(message.code);
         message = {
           type: key === "c" ? "clipboard.copy" : "clipboard.cut",
@@ -10194,6 +10196,7 @@ export class HostedBrowserBroker {
             message.surfaceId,
             key === "c" ? "copied" : "cut",
           ),
+          contextId,
           inputGeneration: message.inputGeneration,
         };
       }

@@ -78,7 +78,7 @@ export type EditingProxyEvent =
       /** PH3: the context captured before an async menu or native-paste IPC round-trip. */
       readonly contextId?: string | undefined;
     }
-  | { readonly type: "copy" | "cut" }
+  | { readonly type: "copy" | "cut"; readonly contextId?: string | undefined }
   | { readonly type: "pointerdown" }
   | { readonly type: "blur" }
   /** The target's focused field changed, or it refused an edit as stale. */
@@ -113,7 +113,11 @@ export type EditingOperation =
     }
   | { readonly kind: "compose"; readonly composition: EditingComposition }
   | { readonly kind: "edit"; readonly edit: EditingTextEdit }
-  | { readonly kind: "copy" | "cut" }
+  | {
+      readonly kind: "copy" | "cut";
+      /** PH5: the context it was made for, stamped where it is made (reducer or menu). */
+      readonly contextId?: string | undefined;
+    }
   | {
       readonly kind: "paste";
       readonly items: readonly EditingClipboardPayloadItem[];

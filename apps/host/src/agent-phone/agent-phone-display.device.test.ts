@@ -1537,7 +1537,11 @@ it.each([
               );
             });
             await phase(`editing-${mode}-limited-copy-refusal`, async () => {
-              await dispatch([{ kind: "copy" }], "refused", "unsupported");
+              await dispatch(
+                [{ kind: "copy", contextId: (await context()).contextId }],
+                "refused",
+                "unsupported",
+              );
               await dispatch(
                 [{ kind: "cut", contextId: (await context()).contextId }],
                 "refused",
@@ -1591,7 +1595,7 @@ it.each([
             ]);
             await receipt("editing_selection", selectionAfter, `0:${replaced.length}`);
             expect((await context(selectionCursor)).contextId).not.toBe(previous.contextId);
-            const copy = await dispatch([{ kind: "copy" }]);
+            const copy = await dispatch([{ kind: "copy", contextId: (await context()).contextId }]);
             await editing.wait("selected copy", () =>
               editing.trace.events.find(
                 (event) =>
@@ -1679,7 +1683,9 @@ it.each([
               },
             ]);
             await receipt("editing_selection", selectionAfter, mode === "webview" ? "1:3" : "3:1");
-            const selected = await dispatch([{ kind: "copy" }]);
+            const selected = await dispatch([
+              { kind: "copy", contextId: (await context()).contextId },
+            ]);
             await editing.wait("middle selection", () =>
               editing.trace.events.find(
                 (event) =>
@@ -1846,7 +1852,11 @@ it.each([
           ]);
           await receipt("editing_selection", selectedAfter, `0:${secret.length}`);
         }
-        await dispatch([{ kind: "copy" }], "refused", api < 33 ? "unsupported" : "sensitive");
+        await dispatch(
+          [{ kind: "copy", contextId: (await context()).contextId }],
+          "refused",
+          api < 33 ? "unsupported" : "sensitive",
+        );
         const cutAfter = await baseline();
         await dispatch(
           [{ kind: "cut", contextId: (await context()).contextId }],

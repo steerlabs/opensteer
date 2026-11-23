@@ -299,7 +299,13 @@ integration("Host and Chromium editing contract", () => {
         ).result.value;
       await expect.poll(() => evaluate("!!document.querySelector('#t')")).toBe(true);
       const operationId = randomUUID();
-      person.send({ type: "clipboard.copy", surfaceId, operationId, consumerToken: randomUUID() });
+      person.send({
+        type: "clipboard.copy",
+        surfaceId,
+        operationId,
+        consumerToken: randomUUID(),
+        contextId: await fieldContext(person.messages),
+      });
       await expect
         .poll(() =>
           person.messages.some(
@@ -325,7 +331,12 @@ integration("Host and Chromium editing contract", () => {
       const modernCopy = async (text: string) => {
         await evaluate(`t.value=${JSON.stringify(text)};t.focus();t.select()`);
         const id = randomUUID();
-        person.send({ type: "clipboard.copy", surfaceId, operationId: id });
+        person.send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: id,
+          contextId: await fieldContext(person.messages),
+        });
         await expect
           .poll(() =>
             person.messages.some(

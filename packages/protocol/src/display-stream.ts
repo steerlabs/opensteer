@@ -239,7 +239,7 @@ export const DisplayInputEventSchema = z.union([
     contextId: EditingContextSchema.shape.contextId,
   }),
   z.strictObject({ kind: z.literal("edit"), edit: EditingTextEditSchema }),
-  z.strictObject({ kind: z.literal("copy") }),
+  z.strictObject({ kind: z.literal("copy"), contextId: EditingContextSchema.shape.contextId }),
   z.strictObject({ kind: z.literal("cut"), contextId: EditingContextSchema.shape.contextId }),
   z.strictObject({
     kind: z.literal("paste"),

@@ -551,7 +551,13 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           read<boolean>("t.selectionStart === 0 && t.selectionEnd === t.value.length"),
         );
         const operationId = randomUUID();
-        send({ type: "clipboard.cut", surfaceId, operationId, consumerToken });
+        send({
+          type: "clipboard.cut",
+          surfaceId,
+          operationId,
+          consumerToken,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === operationId),
         );
@@ -628,7 +634,13 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await read("p.focus();p.value='secret';p.select()");
         const sensitiveId = randomUUID();
         const copyEvents = await read<number>("events.filter(e=>e.type==='copy').length");
-        send({ type: "clipboard.copy", surfaceId, operationId: sensitiveId, consumerToken });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: sensitiveId,
+          consumerToken,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === sensitiveId),
         );
@@ -859,7 +871,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           modifiers: [],
         });
         const emptyCopyId = randomUUID();
-        send({ type: "clipboard.copy", surfaceId, operationId: emptyCopyId });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: emptyCopyId,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === emptyCopyId),
         );
@@ -901,7 +918,12 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           attached.sessionId,
         );
         const interleavedCopy = randomUUID();
-        send({ type: "clipboard.copy", surfaceId, operationId: interleavedCopy });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: interleavedCopy,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === interleavedCopy),
         );
@@ -1029,8 +1051,14 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         await read(
           "rich.innerHTML='<b>Bold</b> text';rich.focus();const range=document.createRange();range.selectNodeContents(rich);getSelection().removeAllRanges();getSelection().addRange(range)",
         );
+        await waitForBrowserState(() => context().context.field?.kind === "rich");
         const htmlCopy = randomUUID();
-        send({ type: "clipboard.copy", surfaceId, operationId: htmlCopy });
+        send({
+          type: "clipboard.copy",
+          surfaceId,
+          operationId: htmlCopy,
+          contextId: context().context.contextId,
+        });
         await waitForBrowserState(() =>
           messages.some((m) => m.type === "clipboard.result" && m.operationId === htmlCopy),
         );
@@ -1128,6 +1156,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           surfaceId,
           producerId: contender,
           operationId: randomUUID(),
+          contextId: blockedContext,
         });
         await waitForBrowserState(
           () =>

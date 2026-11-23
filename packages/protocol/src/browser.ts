@@ -707,6 +707,8 @@ const BaselineBrowserClientMessageSchema = z
       consumerToken: z.uuid().optional(),
       surfaceId: BrowserSurfaceIdSchema,
       operationId: EditingClipboardOperationIdSchema,
+      /** PH5: the context of the field it was made for, refused whole in any other. */
+      contextId: EditingContextIdSchema,
     }),
     /**
      * Editing sessions only. The person's paste: its bytes follow in
