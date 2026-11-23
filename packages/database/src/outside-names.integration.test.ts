@@ -1,7 +1,19 @@
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import { createId, type RequestId } from "@opensteer/core";
+import {
+  createIntegrationId,
+  IntegrationDefinitionSchema,
+  integrationDefinitionSummary,
+} from "@opensteer/integration-core";
 import { expect } from "vitest";
 import { AgentConnectionStore } from "./agent-connection-store.js";
+import { computerAppAccessPresentation } from "./computer-app-setup.js";
+import {
+  computerConnectionTargetInTransaction,
+  writeComputerConnectionInTransaction,
+} from "./computer-connection-writes.js";
+import { integrationConnectionFromRow } from "./integration-connections.js";
+import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { needsYouPage } from "./needs-you-store.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
@@ -298,5 +310,124 @@ describeStore("a name from outside enters the Home clean", (it) => {
     expect(served.filter((name) => Array.from(name).length > 240)).toEqual([]);
     expect(served).toContain("Helper Disconnected");
     expect(served).toContain("#ops Only you can message this chat");
+  });
+
+  it("keeps the stored Mac app connection label clean (the wire caps length)", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { userId, runnerId, run, threadId, environmentId } =
+      await storeFixture.startRunFixture("outside-mac-app");
+    const deviceId = await store.requireSelfDeviceId(runnerId);
+    const definition = integrationDefinitionSummary(
+      IntegrationDefinitionSchema.parse({
+        adapter: "computer",
+        authMethods: [{ id: "computer", kind: "computer", label: "This Mac" }],
+        config: {
+          accessLabels: { read: "Observe", readWrite: "Control" },
+          accessSummaries: { read: "Observe the app", readWrite: "Control the app" },
+          kind: "gui",
+          operations: [
+            {
+              description: "Observe the app",
+              effect: "read",
+              inputSchema: { type: "object" },
+              name: "observe",
+              outputSchema: null,
+              title: "Observe",
+            },
+          ],
+          platforms: ["darwin"],
+        },
+        description: "One Mac app",
+        id: "macos-app",
+        name: "Computer use",
+        provider: "apple",
+      }),
+    );
+    const platform = new IntegrationPlatformStore(database);
+    await platform.install({
+      actorUserId: userId,
+      installation: {
+        description: definition.description,
+        id: createIntegrationId("installation"),
+        manifest: { definition },
+        name: definition.id,
+        provenance: { definitionId: definition.id, maintainedBy: "opensteer" },
+        sourceKind: "built-in",
+        status: "active",
+        title: definition.name,
+        trust: "built-in",
+        version: "fixture",
+      },
+      requestId: "outside-mac-app",
+      servers: [
+        {
+          catalog: null,
+          connectionRequirement: { definitionId: definition.id, kind: "computer" },
+          id: createIntegrationId("server"),
+          name: "default",
+          status: "active",
+          statusDetail: null,
+          transport: { definitionId: definition.id, type: "computer" },
+        },
+      ],
+    });
+    const labels: string[] = [];
+    const activityLabels: (string | undefined)[] = [];
+    for (const [index, displayName] of boundedNames.entries()) {
+      const app = { bundleId: "test.app", displayName, teamId: null };
+      const row = await database.transaction().execute(async (tx) => {
+        const target = await computerConnectionTargetInTransaction(tx, {
+          app,
+          definitionId: definition.id,
+          deviceId,
+        });
+        return writeComputerConnectionInTransaction(tx, {
+          access: "read",
+          app,
+          now: new Date(),
+          ownerUserId: userId,
+          runner: { id: deviceId, name: "Mac" },
+          target,
+        });
+      });
+      labels.push(integrationConnectionFromRow(row).displayName);
+      expect(integrationConnectionFromRow(row).computer?.app).toEqual(app);
+      expect(
+        computerAppAccessPresentation({
+          access: "read",
+          app,
+          reason: "The task is waiting.",
+          runnerName: "Mac",
+          setupRequestId: "outside-mac-app",
+        }).title,
+      ).toBe(`Wants to use ${cleaned[index]} on Mac`);
+      const { toolCallId } = await platform.computerOperations.start({
+        context: { runId: run.id, threadId, environmentId },
+        operation: "observe",
+        subject: {
+          account: "Mac",
+          computerApp: {
+            app: displayName,
+            bundleId: app.bundleId,
+            computer: "Mac",
+            runnerId: deviceId,
+          },
+          effect: "read",
+          integration: "Computer use",
+          operation: { name: "observe", title: "Observe" },
+        },
+      });
+      const { integration } = await database
+        .selectFrom("toolCalls")
+        .select("integration")
+        .where("id", "=", toolCallId)
+        .executeTakeFirstOrThrow();
+      expect(integration?.computerApp?.bundleId).toBe(app.bundleId);
+      activityLabels.push(integration?.computerApp?.app);
+    }
+    expect(labels).toEqual(cleaned.map((name) => `${name} on Mac`));
+    expect(activityLabels).toEqual(cleaned);
   });
 });
