@@ -104,7 +104,8 @@ const state = vi.hoisted(() => ({
   /** The Host has sent its whole tab list. */
   tabsComplete: true,
   /** What the Host's activation answers for a tab, when a test decides it. */
-  activate: null as null | ((tabId: string) => Promise<TabViewer>),
+  activate: null as
+    null | ((tabId: string, options?: { answered?: (tab: Tab) => void }) => Promise<TabViewer>),
   /** Told on every render, as the native stack tells a screen its focus changed. */
   focusListeners: new Set<() => void>(),
   focusEpoch: 0,
@@ -915,8 +916,11 @@ type TestRoute = Omit<Partial<TabRoute>, "tabId" | "threadId"> & {
 };
 
 /** The Host's activation: a page in the browser listing it, an app as itself. */
-async function activate(tabId: string): Promise<TabViewer> {
-  if (state.activate) return state.activate(tabId);
+async function activate(
+  tabId: string,
+  options?: { answered?: (tab: Tab) => void },
+): Promise<TabViewer> {
+  if (state.activate) return state.activate(tabId, options);
   const tab = tabs.get(tabId);
   if (tab?.kind === "app") return { appId: tab.appId!, kind: "app" };
   const held = pagesOf(state.snapshot).find(({ page }) => page.id === tabId);
@@ -1393,12 +1397,71 @@ describe("mobile pages", () => {
     await render();
     expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
     // Asking again spends no Open: it wakes the tab, not a phone.
-    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", { wake: false });
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", asked(false));
     // The wake lands: the page shows, and nothing is asked a third time.
     state.snapshot = snapshot([session("chosen")]);
     await render();
     expect(container.textContent).toBe(shown);
     expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+  });
+
+  /*
+   * V8: an ask has an identity, and its answer and the tab's row decide what follows, never
+   * timing. The old rule asked again whenever the row said asleep under a shown page: an answer
+   * that beat the row's own news asked twice, and a tab that slept again under the answer was
+   * left on a dead page.
+   */
+  it.each(["open", "asleep"] as const)(
+    "decides what follows an answer that found the tab %s from that answer and the row (V8)",
+    async (found) => {
+      const asleep = { ...firstPage, tabState: "asleep" } as PageInput;
+      state.activate = async (tabId, options) => {
+        options?.answered?.({ ...tabs.get(tabId as TabId)!, state: found });
+        return { kind: "page", sessionId: "chosen" as never, surfaceId: tabId as TabId };
+      };
+      // The row this phone holds says asleep when the answer lands.
+      const { container, render } = await setup(
+        { sessionId: "chosen" },
+        { snapshot: snapshot([session("chosen", "ready", [asleep])]) },
+      );
+      await settle();
+      expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+      if (found === "open") {
+        // The answer is the newer word: nothing is asked again, and the page is shown.
+        expect(container.textContent).not.toContain("went back to sleep");
+        state.snapshot = snapshot([session("chosen")]);
+        await render();
+        expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+        expect(container.textContent).toContain("Viewing chosen");
+        return;
+      }
+      // Slept again under the answer: its status with Try again, and nothing asked by itself.
+      expect(container.textContent).toContain("This tab went back to sleep before it opened.");
+      await render();
+      await settle();
+      expect(state.hostClient.activateTab).toHaveBeenCalledOnce();
+      state.activate = null;
+      await pressAsync(container, "Try again");
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", asked(true));
+      state.snapshot = snapshot([session("chosen")]);
+      await render();
+      expect(container.textContent).toContain("Viewing chosen");
+      expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("says a sleeping tab is waking, with its address, while its wake has not answered (V10)", async () => {
+    const asleep = { ...firstPage, tabState: "asleep" } as PageInput;
+    state.activate = () => new Promise(() => {});
+    const { container } = await setup(
+      { sessionId: "chosen" },
+      { snapshot: snapshot([session("chosen", "ready", [asleep])]) },
+    );
+    await settle();
+    expect(container.textContent).toContain("Waking this tab…");
+    expect(container.textContent).toContain(firstPage.url);
+    expect(container.textContent).not.toContain("Opening…");
   });
 
   it("keeps its selection by tabId through a catalog replacement, and asks the Host only once", async () => {
@@ -1603,7 +1666,7 @@ describe("mobile pages", () => {
     await pressAsync(container, "Open again");
     // Open again is the person's own Open.
     expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
-    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", { wake: true });
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("page-1", asked(true));
     expect(container.textContent).not.toContain("Viewing other");
     expect(state.dispatch).not.toHaveBeenCalled();
   });
@@ -2021,17 +2084,16 @@ describe("any kind of tab, by its tabId", () => {
         `${phone ? "Phone" : "Mac app com.apple.notes"} view owner-view:7`,
       );
       // Only the person's Open may wake a phone: asking again on return to the foreground may not.
-      expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
-        wake: true,
-      });
+      expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith(
+        "tab_native",
+        asked(true),
+      );
       state.foreground = false;
       await render();
       state.foreground = true;
       await render();
       expect(state.hostClient.activateTab).toHaveBeenCalledTimes(2);
-      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
-        wake: false,
-      });
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", asked(false));
       expect(container.textContent).toContain("view owner-view:7");
     },
   );
@@ -2072,9 +2134,10 @@ describe("any kind of tab, by its tabId", () => {
         { snapshot: withAgents([]) },
       );
       if (openFirst) {
-        expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
-          wake: true,
-        });
+        expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith(
+          "tab_native",
+          asked(true),
+        );
         // Its computer drops off and the viewer goes with it.
         state.extraTabs = [offline];
         await render();
@@ -2085,9 +2148,7 @@ describe("any kind of tab, by its tabId", () => {
       await render();
       expect(container.textContent).toContain("Phone view owner-view:7");
       expect(state.hostClient.activateTab).toHaveBeenCalledTimes(openFirst ? 2 : 1);
-      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", {
-        wake: false,
-      });
+      expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", asked(false));
     },
   );
 
@@ -2111,12 +2172,13 @@ describe("any kind of tab, by its tabId", () => {
     expect(container.textContent).toContain("Close tab");
     expect(state.hostClient.activateTab).not.toHaveBeenCalled();
     await pressAsync(container, "Try again");
+    // The unavailable tab's own Try again asks the Home itself.
     expect(state.hostClient.activateTab).toHaveBeenCalledExactlyOnceWith("tab_native", {
       wake: true,
     });
     await render();
     expect(container.textContent).toContain("Phone view owner-view:2");
-    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", { wake: false });
+    expect(state.hostClient.activateTab).toHaveBeenLastCalledWith("tab_native", asked(false));
   });
 
   it("says why an unavailable tab cannot open, and asks the Host nothing", async () => {
@@ -3264,3 +3326,6 @@ describe("a Cloud Computer's browser", () => {
     );
   });
 });
+
+/** An ask as the viewer sends it: the person's Open or not, and its answer's reader (V8). */
+const asked = (wake: boolean) => ({ wake, answered: expect.any(Function) });

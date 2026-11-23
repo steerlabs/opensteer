@@ -232,6 +232,48 @@ export function tabViewerStands(
   return viewer.view.state !== "closed" && viewer.view.state !== "expired";
 }
 
+/**
+ * V8: one ask for a tab's viewer, as the web and the phone hold it. An ask has an identity (the
+ * caller's own), and what comes after it is decided by its answer and the tab's row, never by a
+ * timer.
+ */
+export interface TabAsk {
+  /** The tab's state as the Home read it after this ask's activation; null when it did not say. */
+  readonly answeredState: "open" | "asleep" | "unavailable" | null;
+  /** The tab's row this device held when the answer came (the store's own object). */
+  readonly rowAtAnswer: unknown;
+}
+
+/**
+ * What follows an answered ask:
+ * - `show`: the tab is open, or the answer found it open and the row has said nothing since (the
+ *   answer is the newer word);
+ * - `ask-again`: the answer found it open and the row has since said it is not: it slept under
+ *   the view, and one new ask (with its own identity) wakes it;
+ * - `asleep`: the answer itself found it asleep (it slept again under the answer): the tab's
+ *   status with Try again, and nothing is asked by itself.
+ * A window or phone view stands until it is closed or expired, as `tabViewerStands` says.
+ */
+export function tabAskStep(
+  viewer: TabViewer,
+  ask: TabAsk,
+  row: { readonly state: "open" | "asleep" | "unavailable" } | undefined,
+): "show" | "ask-again" | "asleep" {
+  if (viewer.kind !== "page") return tabViewerStands(viewer, row?.state) ? "show" : "ask-again";
+  if (row === undefined || row.state !== "asleep") return "show";
+  if (ask.answeredState === "asleep") return "asleep";
+  return row === ask.rowAtAnswer ? "show" : "ask-again";
+}
+
+/**
+ * V10: what the stage says while a sleeping tab wakes, above its address: never an empty stage,
+ * and never the browser starting (only the browser itself starts).
+ */
+export const tabWakingWords = "Waking this tab…";
+
+/** The words for a tab still asleep after its answer; it is shown with Try again. */
+export const tabAsleepAfterAnswer = "This tab went back to sleep before it opened.";
+
 /** Whether this is a Cloud Computer's pooled browser, which alone offers Restart browser. */
 export function browserIsPooled(browser: BrowserSleep): boolean {
   return browser.kind !== "not-pooled";

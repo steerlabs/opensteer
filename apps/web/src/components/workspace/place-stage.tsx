@@ -1,6 +1,13 @@
 import { agentSessionSlot } from "@opensteer/client/host";
 import { TabAgentStatus } from "../agent-work.js";
-import { actingOccupants, tabViewerStands, threadMark } from "@opensteer/client/host";
+import {
+  actingOccupants,
+  tabAskStep,
+  tabAsleepAfterAnswer,
+  tabViewerStands,
+  threadMark,
+  type TabAsk,
+} from "@opensteer/client/host";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
@@ -192,13 +199,35 @@ function SelectedPlace({
       ? placeKey
       : null,
   );
+  // V8: this device's last answered ask for the tab in the middle, with what its answer said of
+  // the tab and the Try again it answered. What comes next is decided by it and the tab's row.
+  const [ask, setAsk] = useState<{
+    readonly tabId: string;
+    readonly retry: number;
+    readonly answer: TabAsk;
+  } | null>(null);
+  const askOf = ask?.tabId === placeKey ? ask : null;
   // Selecting a tab opens (or wakes) this device's view of it; an unavailable tab says why instead.
-  const viewerReady = tabViewerStands(viewer, tabState);
-  const needsActivation = placeKey !== null && !!kind && tabState !== "unavailable" && !viewerReady;
+  // A viewer this device's own ask did not answer stands as long as its tab is open.
+  const step =
+    viewer === null
+      ? ("ask-again" as const)
+      : askOf
+        ? tabAskStep(viewer, askOf.answer, live?.tab)
+        : tabViewerStands(viewer, tabState)
+          ? ("show" as const)
+          : ("ask-again" as const);
+  // A tab still asleep after its answer is asked for again only by Try again.
+  const needsActivation =
+    placeKey !== null &&
+    !!kind &&
+    tabState !== "unavailable" &&
+    (step === "ask-again" || (step === "asleep" && askOf?.retry !== retry));
   // A re-render, StrictMode or a second opening while one activation is on its way joins it.
   const pendingActivation = useRef<{
     readonly tabId: string;
     readonly done: Promise<unknown>;
+    answeredState: TabAsk["answeredState"];
   } | null>(null);
   useLayoutEffect(() => {
     if (!needsActivation || placeKey === null || reconnect.getSnapshot() !== "idle") return;
@@ -206,17 +235,38 @@ function SelectedPlace({
     setActivation({ tabId: placeKey, state: "activating" });
     let pending = pendingActivation.current;
     if (pending?.tabId !== placeKey) {
-      const done = hostClient.activateTab(placeKey, { wake: open.current.wake });
+      const asked: {
+        tabId: string;
+        done: Promise<unknown>;
+        answeredState: TabAsk["answeredState"];
+      } = { tabId: placeKey, done: Promise.resolve(), answeredState: null };
+      asked.done = hostClient.activateTab(placeKey, {
+        wake: open.current.wake,
+        answered: (tab) => {
+          asked.answeredState = tab.state;
+        },
+      });
+      const done = asked.done;
       open.current.wake = false;
-      pending = pendingActivation.current = { tabId: placeKey, done };
+      pending = pendingActivation.current = asked;
       const settled = () => {
         if (pendingActivation.current === pending) pendingActivation.current = null;
       };
       done.then(settled, settled);
     }
+    const answered = pending;
     pending.done.then(
       () => {
-        if (!cancelled) setActivation(null);
+        if (cancelled) return;
+        setActivation(null);
+        setAsk({
+          tabId: placeKey,
+          retry,
+          answer: {
+            answeredState: answered.answeredState,
+            rowAtAnswer: hostClient.getSnapshot().tabs.get(placeKey as TabId),
+          },
+        });
       },
       () => {
         // The tab's own fact; why the browser didn't start is never shown as raw text.
@@ -231,7 +281,9 @@ function SelectedPlace({
   const activationError =
     activation?.tabId === placeKey && activation.state === "failed"
       ? (activation.message ?? null)
-      : null;
+      : step === "asleep" && !(activation?.tabId === placeKey && activation.state === "activating")
+        ? tabAsleepAfterAnswer
+        : null;
   const reopenView = useCallback(async () => {
     reconnect.reset();
     if (placeKey !== null) await hostClient.activateTab(placeKey, { wake: true });
@@ -376,7 +428,10 @@ function SelectedPlace({
                   ) : null}
                 </>
               ) : (
-                <BrowserOpening address={place.title} />
+                <BrowserOpening
+                  address={place.asleep ? (place.tab.url ?? place.title) : place.title}
+                  waking={place.asleep}
+                />
               )}
             </div>
           </div>
