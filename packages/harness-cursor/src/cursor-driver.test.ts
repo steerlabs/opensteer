@@ -81,6 +81,27 @@ describe("Cursor runtime boundary", () => {
   );
 });
 
+describe("Cursor and whose task it is", () => {
+  it.each(["start", "resume"] as const)(
+    "refuses a task a connected agent or a chat started on %s",
+    async (mode) => {
+      const fixture = await setup({ personLineage: false });
+      if (mode === "resume") await seedTranscript(fixture);
+      const open =
+        mode === "start"
+          ? fixture.adapter.startSession(fixture.context)
+          : fixture.adapter.resumeSession(fixture.reference, fixture.context);
+      await expect(open).rejects.toThrow(
+        "Cursor always starts with your own Cursor settings and MCP servers, so it runs only tasks you started yourself, not ones a connected agent or a chat started.",
+      );
+      await expect(open).rejects.toMatchObject({ code: "forbidden" });
+      // Nothing was launched: Cursor never read the person's configuration.
+      expect(await fixture.invocations()).toEqual([]);
+      await fixture.adapter.close();
+    },
+  );
+});
+
 describe("Cursor access-mode hooks", () => {
   it.each([
     ["approval-required", "Write", "file-change"],
@@ -1226,6 +1247,8 @@ describe("Cursor interruption and lifetime", () => {
 
 interface SetupOptions {
   readonly accessMode?: HarnessSessionContext["accessMode"];
+  /** The person's own task unless a test says otherwise: the only kind Cursor runs. */
+  readonly personLineage?: boolean;
   readonly config?: Record<string, unknown>;
   readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly machineAccessNotice?: string;
@@ -1303,8 +1326,8 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     history: [],
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Follow the workspace instructions.",
-    personalContext: false,
-    personLineage: false,
+    personalContext: true,
+    personLineage: options.personLineage ?? true,
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
