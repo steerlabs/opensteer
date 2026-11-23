@@ -2428,9 +2428,17 @@ const pageKeepAwakeReasons: ReadonlySet<string> = new Set<PageKeepAwake>([
 async function documentKeepAwake(frame: Frame): Promise<PageKeepAwake | null> {
   // V1 (rule A): a read that fails is not known, and not known is not unprotected; only a frame
   // that is really gone has nothing to protect.
-  const reason = await frame
-    .evaluate<unknown>(
+  const read = () =>
+    frame.evaluate<unknown>(
       `(() => { const state = globalThis[Symbol.for("opensteer.keepAwake")]; return typeof state === "function" ? state() : null; })()`,
+    );
+  // A document replaced by a navigation is read again, as the media read does: the new one is the
+  // document a sleep would take.
+  const reason = await read()
+    .catch((error: unknown) =>
+      error instanceof Error && error.message.includes("Execution context was destroyed")
+        ? read()
+        : Promise.reject(error),
     )
     .catch(() => (frame.isDetached() ? null : "unknown"));
   return typeof reason === "string" && pageKeepAwakeReasons.has(reason)

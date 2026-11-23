@@ -774,7 +774,9 @@ describe("native Chromium profiles", () => {
       const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
       vi.spyOn(f.context, "pages").mockReturnValue([page]);
       expect(await (await ownPage(launched, f.context, page)).keepAwake?.()).toBe("media");
-      expect(main.evaluate).toHaveBeenCalledTimes(2);
+      // The protections' read (V1) meets the destroyed context and reads the new document again;
+      // then the media read.
+      expect(main.evaluate).toHaveBeenCalledTimes(3);
       expect(f.context.newCDPSession).not.toHaveBeenCalledWith(child);
       await launched.close();
     } finally {

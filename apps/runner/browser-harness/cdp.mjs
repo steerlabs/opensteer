@@ -425,7 +425,7 @@ export function createBrowserHarness(client, initialTargetId) {
   const resumedNotice = (surfaceId, reopened = false) =>
     process.stderr.write(
       reopened
-        ? `[opensteer] Tab ${surfaceId} was asleep and was reopened at its address: its typed text, scroll position and page state are gone. Observe it again before acting; old page handles are invalid.\n`
+        ? `[opensteer] Tab ${surfaceId} was asleep and has reloaded: it was reopened at its address, so its typed text, scroll position and page state are gone. Observe it again before acting; old page handles are invalid.\n`
         : `[opensteer] Tab ${surfaceId} was asleep and has reloaded. Observe it again before acting; old page handles are invalid.\n`,
     );
   const attachedSurfaces = new Map();

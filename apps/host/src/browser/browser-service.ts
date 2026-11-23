@@ -4179,7 +4179,8 @@ export class BrowserService {
       // cancels the runtime's wait, and this bind ends at once; a slow wake has its own bound.
       const broker = this.#brokers.get(session.id);
       let reopened = false;
-      if (broker?.surfaceState === 1) {
+      // A tab this Home knows to be live is bound as it is; one asleep or not yet known is woken.
+      if (broker?.surfaceState === 1 && broker.surfaceStateOf(row.id) !== "live") {
         const woke = await withTimeout(
           broker.requestCdp(
             {
@@ -4978,8 +4979,10 @@ export class BrowserService {
       }
       const ticket = this.standardCdpTickets.issue({ ...input, facts, mode }, pool);
       // V4: the seed tab is the agent's from its wake until the client attaches or the link
-      // expires: nothing puts it to sleep before the agent has it.
-      if (facts.seed) this.#holdForAttach(record.id, facts.seed.surfaceId, input.ttl ?? 60_000);
+      // expires: nothing puts it to sleep before the agent has it. A pooled browser sleeps no tab
+      // (its parks keep every document), and a hold there would only veto its park.
+      if (facts.seed && !pooled)
+        this.#holdForAttach(record.id, facts.seed.surfaceId, input.ttl ?? 60_000);
       return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode };
     } catch (error) {
       reserve?.release();

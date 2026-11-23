@@ -604,6 +604,11 @@ acceptance(
     await kit.read(
       `document.querySelector('#audio-frame').contentWindow.testAudio.close().then(() => true)`,
     );
+    // V1: Web Audio is heard for a minute after it stops, as an audio element is.
+    expect(await page.keepAwake?.()).toBe("recently-audible");
+    await kit.read(
+      `(() => { const frame = document.querySelector('#audio-frame').contentWindow; const now = frame.Date.now(); frame.Date.now = () => now + 61_000; return true; })()`,
+    );
     expect(await page.keepAwake?.()).toBeNull();
     const wav = Buffer.alloc(44 + 16_000);
     wav.write("RIFF", 0);
