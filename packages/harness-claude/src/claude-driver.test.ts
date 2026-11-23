@@ -5213,6 +5213,26 @@ describe("whose configuration Claude Code starts with", () => {
     await fixture.adapter.close();
   });
 
+  it("fails a Run of the person's own task in which Opensteer's server is missing", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      scriptedQuery([
+        initMessage(providerSessionId(parameters.options), {
+          mcp_servers: [{ name: "person-server", source: "user", status: "connected" }],
+        }),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+    const fixture = await openSession(sdk, { personalContext: true });
+    const observer = observe(fixture.session.events);
+    await send(fixture.session, "Hello").catch(() => undefined);
+    await fixture.session.stop();
+    await observer.done;
+    expect(JSON.stringify(observer.events.find((event) => event.type === "run.failed"))).toContain(
+      "did not load Opensteer's own MCP server",
+    );
+    await fixture.adapter.close();
+  });
+
   it("accepts the person's own servers and tools, but not one replacing Opensteer's", async () => {
     const own = (source: string) =>
       new FakeSdk((parameters) =>

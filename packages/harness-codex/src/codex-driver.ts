@@ -4295,6 +4295,19 @@ function codexOwnThreadRuntimeConfig(
   // field set here wins, and a field only theirs sets stays, since a thread's
   // configuration can neither replace nor remove it (Codex 0.162.0). If what
   // stays keeps Opensteer's server from connecting, the Run fails closed.
+  for (const name of codexMcpTools(context.agentTools.tools).keys()) {
+    const theirs = configuredMcpServers[name];
+    // A server that runs a command cannot take Opensteer's address: Codex
+    // would refuse the merged entry with a transport error nobody can read.
+    if (typeof theirs === "object" && theirs !== null && "command" in theirs) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: `Your Codex configuration has an MCP server named ${name} that runs a command. Opensteer's own server uses that name, so rename yours (codex mcp remove ${name}, then add it again under another name).`,
+      });
+    }
+  }
+  // `enabled_tools` and every other field set here replace theirs, so their
+  // own list cannot filter Opensteer's tools.
   setOpensteerMcpServers(runtimeConfig, context);
   for (const name of codexMcpTools(context.agentTools.tools).keys()) {
     if (name in configuredMcpServers) {

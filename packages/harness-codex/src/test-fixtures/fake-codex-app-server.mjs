@@ -343,7 +343,11 @@ function handleClientMethod(message) {
                     "company.docs": { command: "ambient-docs" },
                     github: { url: "https://example.test" },
                   }
-                : {},
+                : scenario === "person-opensteer-command"
+                  ? { opensteer: { command: "person-opensteer" } }
+                  : scenario === "person-opensteer-url"
+                    ? { opensteer: { enabled_tools: ["only_theirs"], url: "https://person.test" } }
+                    : {},
             tools: {
               update_plan: { enabled: scenario === "managed-planning-tool" },
             },

@@ -3453,7 +3453,10 @@ class ClaudeHarnessSession implements HarnessSession {
       // The person's own servers and Claude Code's own tools belong here; only
       // Opensteer's server has to be the one Opensteer started.
       const opensteer = message.mcp_servers.find(({ name }) => name === "opensteer");
-      if (opensteer?.source !== undefined && opensteer.source !== "dynamic") {
+      if (!opensteer) {
+        this.#markUnusable("Claude Code did not load Opensteer's own MCP server");
+      }
+      if (opensteer.source !== undefined && opensteer.source !== "dynamic") {
         this.#markUnusable(
           `Claude Code loaded an MCP server named opensteer from ${opensteer.source} settings in place of Opensteer's own`,
         );

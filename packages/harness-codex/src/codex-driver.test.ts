@@ -2726,6 +2726,29 @@ describe("Codex app-server harness", () => {
       await fixture.adapter.close();
     });
 
+    it("says plainly when the person's own server named opensteer runs a command", async () => {
+      const fixture = await setup("person-opensteer-command", { personalContext: true });
+      await expect(fixture.adapter.startSession(fixture.context)).rejects.toMatchObject({
+        code: "conflict",
+        message: expect.stringContaining(
+          "Your Codex configuration has an MCP server named opensteer that runs a command",
+        ),
+      });
+      await fixture.adapter.close();
+    });
+
+    it("keeps the person's own enabled_tools from filtering Opensteer's tools", async () => {
+      const fixture = await setup("person-opensteer-url", { personalContext: true });
+      const session = await fixture.adapter.startSession(fixture.context);
+      const { config } = await threadStartOf(fixture);
+      expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
+        expect.arrayContaining(["opensteer_task_read"]),
+      );
+      expect(config["mcp_servers.opensteer.disabled_tools"]).toEqual([]);
+      await session.stop();
+      await fixture.adapter.close();
+    });
+
     it("starts a connected agent's or a chat's task with personal context with none of the person's configuration", async () => {
       const fixture = await setup("ambient-extensions", {
         accessMode: "approval-required",
