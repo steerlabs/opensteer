@@ -638,6 +638,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         ).toEqual([]);
         checks.push("a paste whose field lost focus in flight lands nowhere and is refused");
         await read("p.focus();p.value='secret';p.select()");
+        await waitForBrowserState(() => context().context.field?.sensitive === true);
         const sensitiveId = randomUUID();
         const copyEvents = await read<number>("events.filter(e=>e.type==='copy').length");
         send({
@@ -1054,10 +1055,13 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         });
         await waitForBrowserState(() => read<boolean>("editContext.text==='한국'"));
         checks.push("generic EditContext composition commits once");
+        const beforeRich = context().context.contextId;
         await read(
           "rich.innerHTML='<b>Bold</b> text';rich.focus();const range=document.createRange();range.selectNodeContents(rich);getSelection().removeAllRanges();getSelection().addRange(range)",
         );
-        await waitForBrowserState(() => context().context.field?.kind === "rich");
+        await waitForBrowserState(
+          () => context().context.contextId !== beforeRich && context().context.field?.kind === "rich",
+        );
         const htmlCopy = randomUUID();
         send({
           type: "clipboard.copy",

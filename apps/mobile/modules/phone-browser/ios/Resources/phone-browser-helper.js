@@ -149,7 +149,7 @@
     },
   });
   document.addEventListener("focusin", editing, true);
-  document.addEventListener("focusout", () => queueMicrotask(editing), true);
+  document.addEventListener("focusout", () => setTimeout(editing, 0), true);
   addEventListener("resize", viewport);
   visualViewport?.addEventListener("resize", viewport);
   visualViewport?.addEventListener("scroll", viewport);

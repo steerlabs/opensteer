@@ -59,3 +59,45 @@ it.each(["input", "textarea"] as const)(
     }
   },
 );
+
+it("does not publish a transient null field when focus switches directly between two inputs", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("visualViewport", null);
+  const first = document.createElement("input");
+  const second = document.createElement("input");
+  document.body.append(first, second);
+  first.focus();
+  const cdp = new FakeCdpSession();
+  cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
+  cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
+  const observer = new PageEditingObserver(cdp, () => {});
+  await observer.start();
+  try {
+    const binding = cdp.sent.find((entry) => entry.method === "Runtime.addBinding")!.parameters!
+      .name as string;
+    const payloads: Array<{ fieldId: string | null }> = [];
+    vi.stubGlobal(binding, (raw: string) => payloads.push(JSON.parse(raw)));
+    const source = cdp.sent.find(
+      (entry) => entry.method === "Page.addScriptToEvaluateOnNewDocument",
+    )!.parameters!.source as string;
+    globalThis.eval(source);
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.fieldId).not.toBeNull();
+
+    // Switching focus directly to another input must not emit fieldId: null (even when the
+    // element's own blur event captures through window before focusin lands on the second field).
+    payloads.length = 0;
+    second.focus();
+    vi.runAllTimers();
+    expect(payloads.some((entry) => entry.fieldId === null)).toBe(false);
+    expect(payloads.at(-1)?.fieldId).not.toBeNull();
+
+    // Blurring to the page background still publishes fieldId: null.
+    payloads.length = 0;
+    second.blur();
+    vi.runAllTimers();
+    expect(payloads.at(-1)?.fieldId).toBeNull();
+  } finally {
+    await observer.close();
+  }
+});

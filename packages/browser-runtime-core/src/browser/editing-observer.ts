@@ -1452,11 +1452,14 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       if (button) takeSave(button);
     });
   }
+  let blurTimer = 0;
   const publish = () => {
     publishPerson();
     syncSelection();
     if (scheduled) cancelAnimationFrame(scheduled);
     scheduled = 0;
+    if (blurTimer) clearTimeout(blurTimer);
+    blurTimer = 0;
     const element = active(),
       kind = mechanism(element);
     if (!document.hasFocus() || !kind || element.disabled || element.readOnly) {
@@ -1688,14 +1691,21 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
   on(document, "focusout", () => {
     last = null;
     // W4: during focusout activeElement is transiently document.body before focusin runs on the
-    // next field; deferring to a microtask publishes the new field directly when moving between
-    // fields in the same document, and still publishes field: null immediately on a true blur.
-    queueMicrotask(publish);
+    // next field; deferring to a 0ms macrotask lets SetFocusedElement finish so switching fields
+    // publishes the new field directly with no transient field: null.
+    if (!blurTimer) blurTimer = setTimeout(publish, 0);
   });
-  on(window, "blur", () => {
-    last = null;
-    publish();
-  });
+  // Target-phase only: capture-phase blur on window intercepts every element's blur while
+  // activeElement is transiently document.body during a field-to-field focus switch.
+  on(
+    window,
+    "blur",
+    () => {
+      last = null;
+      publish();
+    },
+    false,
+  );
   const resize = new ResizeObserver(schedule);
   if (document.documentElement) resize.observe(document.documentElement);
   else
@@ -1797,6 +1807,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       stopEditContext();
       resize.disconnect();
       cancelAnimationFrame(scheduled);
+      clearTimeout(blurTimer);
       mirror?.remove();
       delete globalThis.editingOwner;
     },
