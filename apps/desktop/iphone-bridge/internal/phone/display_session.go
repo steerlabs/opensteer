@@ -43,7 +43,7 @@ type MediaPipelineConfig struct {
 }
 type MediaPipeline interface {
 	Start(context.Context) (string, error)
-	UpdateDemand(maxLongSide, maxFPS int)
+	ApplyDemand(maxLongSide, maxFPS *int, active *bool)
 	RequestKeyframe()
 	LatestFrame(maxAge time.Duration) (*MediaFrame, bool)
 	SetPrivacyHidden(state, reason string)
@@ -95,6 +95,7 @@ type displaySession struct {
 	ref               wire.DisplayRef
 	pipeline          MediaPipeline
 	config            MediaPipelineConfig
+	demandMu          sync.Mutex
 	life              context.Context
 	cancel            context.CancelFunc
 	monitorDone       chan struct{}
@@ -183,6 +184,7 @@ func (s *screenSession) startDisplay(ctx context.Context, p *wire.DisplayStartPa
 	if sock != path || err != nil || info.Mode().Type() != os.ModeSocket || info.Mode().Perm() != 0600 {
 		return wire.DisplayStartResult{}, wire.Fail(wire.NativeServiceFailed)
 	}
+	sample := s.privacySample()
 	state, err = s.backend.State(ctx)
 	if err != nil {
 		return wire.DisplayStartResult{}, err
@@ -214,7 +216,7 @@ func (s *screenSession) startDisplay(ctx context.Context, p *wire.DisplayStartPa
 		})
 	}
 	s.displayMu.Unlock()
-	s.applyPrivacy(state, foreground, foregroundKnown)
+	s.applyPrivacySample(state, foreground, foregroundKnown, &sample)
 	go s.monitorDisplay(monitorCtx, d, fence)
 	started = true
 	return wire.DisplayStartResult{SocketPath: sock}, nil
@@ -321,16 +323,16 @@ func (s *screenSession) invalidateObservation() {
 	s.observation = nil
 	s.mu.Unlock()
 }
+func (s *screenSession) privacySample() uint64 {
+	s.displayMu.Lock()
+	defer s.displayMu.Unlock()
+	return s.privacyRevision
+}
 func (s *screenSession) applyPrivacy(state DeviceState, foreground *Foreground, foregroundKnown bool) {
 	s.applyPrivacySample(state, foreground, foregroundKnown, nil)
 }
 func (s *screenSession) applyPrivacySample(state DeviceState, foreground *Foreground, foregroundKnown bool, revision *uint64) {
 	s.displayMu.Lock()
-	if revision != nil && *revision != s.privacyRevision {
-		s.displayMu.Unlock()
-		return
-	}
-	s.privacyRevision++
 	d := s.display
 	if d == nil {
 		s.displayMu.Unlock()
@@ -339,6 +341,7 @@ func (s *screenSession) applyPrivacySample(state DeviceState, foreground *Foregr
 		}
 		return
 	}
+	stale := revision != nil && *revision != s.privacyRevision
 	if state.Display == "off" || state.Lock == "locked" || (!d.powerPendingUntil.IsZero() && time.Now().After(d.powerPendingUntil)) {
 		d.powerPending = false
 		d.powerPendingUntil = time.Time{}
@@ -350,6 +353,13 @@ func (s *screenSession) applyPrivacySample(state DeviceState, foreground *Foregr
 		hidden, reason = "protected", "locked-screen"
 	}
 	private := hidden != ""
+	// A stale sample may still fail closed (apply a shield), but must never
+	// lift a newer privacy shield or overwrite a newer revision's visible state.
+	if stale && !private {
+		s.displayMu.Unlock()
+		return
+	}
+	s.privacyRevision++
 	if private {
 		d.hide(hidden, reason)
 	} else {
@@ -376,9 +386,9 @@ func displayPrivacy(state DeviceState, foreground *Foreground, foregroundKnown b
 	switch {
 	case state.Display == "off":
 		return "screen-off", "locked-screen"
-	case state.Lock != "unlocked":
+	case state.Lock == "locked":
 		return "protected", "locked-screen"
-	case state.Display != "on" || state.Rotation == nil:
+	case state.Lock != "unlocked" || state.Display != "on" || state.Rotation == nil:
 		return "protected", "target-unavailable"
 	case foreground != nil && foreground.AppID == opensteerAppID:
 		return "protected", "opensteer-app"
@@ -441,9 +451,10 @@ func (s *screenSession) setPower(ctx context.Context, state DeviceState, action 
 				d.powerPendingUntil = time.Time{}
 			}
 			s.displayMu.Unlock()
+			sample := s.privacySample()
 			if fresh, stateErr := s.backend.State(ctx); stateErr == nil {
 				f, fgKnown := s.foregroundChecked(ctx)
-				s.applyPrivacy(fresh, f, fgKnown)
+				s.applyPrivacySample(fresh, f, fgKnown, &sample)
 			}
 		}
 		return err
@@ -458,10 +469,11 @@ func (s *screenSession) setPower(ctx context.Context, state DeviceState, action 
 	}
 	s.displayMu.Unlock()
 	for i := 0; i < 5; i++ {
+		sample := s.privacySample()
 		state, err := s.backend.State(ctx)
 		if err == nil && state.Display == "on" {
 			f, fgKnown := s.foregroundChecked(ctx)
-			s.applyPrivacy(state, f, fgKnown)
+			s.applyPrivacySample(state, f, fgKnown, &sample)
 			return nil
 		}
 		if err := wait(ctx, 100*time.Millisecond); err != nil {

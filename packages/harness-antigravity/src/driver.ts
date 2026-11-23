@@ -91,6 +91,7 @@ import {
   isNativeAntigravitySessionId,
   removeTemporaryAntigravitySession,
 } from "./session-files.js";
+import { antigravityToolIdentity } from "./tool-identity.js";
 import { readAntigravityUsage } from "./usage.js";
 
 const initializeDeadlineMs = 20_000;
@@ -992,6 +993,7 @@ class AntigravityAdapter implements HarnessAdapter {
         },
         normalizeUpdate: normalizeAntigravityUpdate,
         permissionChoices,
+        toolIdentity: antigravityToolIdentity,
         transformStdout: (stdout) => transformAntigravityStdout(stdout),
       },
       launch: ({ context }) => this.#launch(context),

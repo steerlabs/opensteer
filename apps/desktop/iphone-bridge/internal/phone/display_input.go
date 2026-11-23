@@ -356,13 +356,14 @@ func (s *screenSession) displayInput(ctx context.Context, d *displaySession, geo
 			_ = s.resetOwnerInput()
 		}
 	}()
+	sample := s.privacySample()
 	state, err := s.backend.State(ctx)
 	if err != nil {
 		s.hideDisplay("protected", "target-unavailable")
 		return err
 	}
 	f, fgKnown := s.foregroundChecked(ctx)
-	s.applyPrivacy(state, f, fgKnown)
+	s.applyPrivacySample(state, f, fgKnown, &sample)
 	if err := state.safe(); err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ import { Readable, Writable } from "node:stream";
 import { z } from "zod";
 import type { SupervisedProcess } from "@opensteer/harness";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { parseAcpToolCall } from "./tool-calls.js";
 import type {
   AcpClientCapabilities,
   AcpClientInfo,
@@ -666,20 +667,7 @@ function commandPermissionToolCall(subject: unknown, title: string): AcpToolCall
 }
 
 function toolCall(call: unknown): AcpToolCall {
-  if (!isRecord(call) || typeof call.toolCallId !== "string") {
-    return { id: "unknown-tool-call" };
-  }
-  return {
-    id: call.toolCallId,
-    ...(Array.isArray(call.content) ? { content: call.content } : {}),
-    ...(typeof call.kind === "string" ? { kind: call.kind } : {}),
-    ...(Array.isArray(call.locations) ? { locations: call.locations } : {}),
-    ...(typeof call.name === "string" ? { name: call.name } : {}),
-    ...(call.rawInput !== undefined ? { rawInput: call.rawInput } : {}),
-    ...(call.rawOutput !== undefined ? { rawOutput: call.rawOutput } : {}),
-    ...(typeof call.status === "string" ? { status: call.status } : {}),
-    ...(typeof call.title === "string" ? { title: call.title } : {}),
-  };
+  return parseAcpToolCall(call) ?? { id: "unknown-tool-call" };
 }
 
 function elicitationRequest(
