@@ -482,7 +482,7 @@ integration("organizations removed (0037_remove_organizations)", () => {
       alter table public.cloud_computer_backup_targets
         add column reserved_organization_id text,
         add column organization_reservation_request_id uuid;
-      delete from public.kysely_migration where name = '0037_remove_organizations';
+      delete from public.kysely_migration where name >= '0037_remove_organizations';
     `.execute(database);
   });
   afterAll(async () => {
@@ -495,13 +495,19 @@ integration("organizations removed (0037_remove_organizations)", () => {
     await sql`
       insert into public.users (id, display_name, email, email_verified) values
         (${assignee}, 'Ada', 'ada@example.test', true),
-        (${admin}, 'Grace', 'grace@example.test', true);
+        (${admin}, 'Grace', 'grace@example.test', true)
+    `.execute(database);
+    await sql`
       insert into public.organizations (id, name, stripe_customer_id, stripe_subscription_id,
           stripe_price_id, billing_currency, billing_status, paid_seats, policy)
         values (${organization}, 'Workshop', 'cus_org', 'sub_org', 'price_seat', 'usd', 'active',
-          2, '{"externalMaxMode":"approval-required","allowEverything":false,"allowTasks":false,"devices":"cloud-computer-only"}');
+          2, '{"externalMaxMode":"approval-required","allowEverything":false,"allowTasks":false,"devices":"cloud-computer-only"}')
+    `.execute(database);
+    await sql`
       insert into public.organization_members (organization_id, account_id, role) values
-        (${organization}, ${admin}, 'admin'), (${organization}, ${assignee}, 'member');
+        (${organization}, ${admin}, 'admin'), (${organization}, ${assignee}, 'member')
+    `.execute(database);
+    await sql`
       insert into public.cloud_computers (
         id, account_id, generation, state, hostname, region, server_type, release,
         readiness_started_at, phase, stripe_checkout_id, stripe_customer_id,
@@ -514,15 +520,21 @@ integration("organizations removed (0037_remove_organizations)", () => {
         (${work}, null, 1, 'active', 'cc-d2.home.example.test', 'us-central1-a', 'default',
           '{}'::jsonb, now(), 'ready', ${`work:${assignment}`}, ${`work:${assignment}`},
           ${`work:${assignment}`}, ${`work:${assignment}`}, '', 'active', now(), now(),
-          'sealed-d2', 'digest-d2');
+          'sealed-d2', 'digest-d2')
+    `.execute(database);
+    await sql`
       insert into public.work_assignments (id, organization_id, assignee_account_id,
           cloud_computer_id, request_id, state)
-        values (${assignment}, ${organization}, ${assignee}, ${work}, ${randomUUID()}, 'active');
-      update public.cloud_computers set work_assignment_id = ${assignment} where id = ${work};
+        values (${assignment}, ${organization}, ${assignee}, ${work}, ${randomUUID()}, 'active')
+    `.execute(database);
+    await sql`
+      update public.cloud_computers set work_assignment_id = ${assignment} where id = ${work}
+    `.execute(database);
+    await sql`
       insert into public.cloud_computer_backup_targets (id, endpoint, bucket, prefix,
           sealed_credentials, principal_fingerprint, reserved_organization_id)
         values (${reservedTarget}, 'https://s3.example.test', 'backups', 'seat-1', 'sealed',
-          'fingerprint-seat-1', ${organization});
+          'fingerprint-seat-1', ${organization})
     `.execute(database);
     const before = await computer(personal);
     const workBefore = await computer(work);
@@ -545,26 +557,43 @@ integration("organizations removed (0037_remove_organizations)", () => {
       () => null,
       (error: unknown) => error as Error & { cause?: Error },
     );
-    expect(refused?.message).toContain("0037_remove_organizations");
+    expect(refused?.message).toContain("Control-plane migration failed");
+    const recorded = await sql<{ name: string }>`
+      select name from public.kysely_migration where name = '0037_remove_organizations'`.execute(
+      database,
+    );
+    expect(recorded.rows).toEqual([]);
     expect(String(refused?.cause?.message)).toContain(`Cloud Computer ${work}`);
     expect(String(refused?.cause?.message)).toContain(`organization ${organization}`);
     expect(await left()).toEqual(shapeBefore);
     expect(await computer(work)).toEqual(workBefore);
     expect(await computer(personal)).toEqual(before);
 
-    // An operator decides: here, the computer is handed to the person who used it, and the
+    // An operator decides: here, the person who used it already has a computer of their own, so
+    // it is handed to the organization's admin with a subscription of their own, and the
     // organization's records go. Then the migration runs, and keeps both computers.
     await sql`
-      update public.cloud_computers set work_assignment_id = null, account_id = ${assignee}
-        where id = ${work};
-      delete from public.work_assignments;
-      delete from public.organization_members;
-      delete from public.organizations;
+      update public.cloud_computers set work_assignment_id = null, account_id = ${admin},
+          stripe_checkout_id = 'cs_admin', stripe_customer_id = 'cus_admin',
+          stripe_subscription_id = 'sub_admin', stripe_price_id = 'price_1', billing_currency = 'usd'
+        where id = ${work}
+    `.execute(database);
+    await sql`
+      delete from public.work_assignments
+    `.execute(database);
+    await sql`
+      delete from public.organization_members
+    `.execute(database);
+    await sql`
+      delete from public.organizations
     `.execute(database);
     await migrateControlPlaneToLatest(database);
     expect(await left()).toEqual([]);
-    expect(await computer(personal)).toEqual(before);
-    expect(await computer(work)).toMatchObject({ account_id: assignee, state: "active" });
+    // Every column it had is kept, but the one the migration drops.
+    const { workAssignmentId, ...kept } = before;
+    expect(workAssignmentId).toBeNull();
+    expect(await computer(personal)).toEqual(kept);
+    expect(await computer(work)).toMatchObject({ accountId: admin, state: "active" });
     // The seat it reserved is a free backup target.
     const target = await sql<{ id: string }>`
       select id from public.cloud_computer_backup_targets where id = ${reservedTarget}
