@@ -10,6 +10,41 @@
  */
 
 const PROTOCOL_VERSION = "2025-11-25";
+const EXIT_OK = 0;
+const EXIT_LOCAL = 1;
+const EXIT_REFUSED = 2;
+const EXIT_UNKNOWN = 3;
+
+class CliExitError extends Error {
+  constructor(message, exitCode) {
+    super(message);
+    this.exitCode = exitCode;
+  }
+}
+
+function isOutcomeUnknownCode(code) {
+  return code === "outcome_unknown" || code === "outcome-unknown";
+}
+
+function isOutcomeUnknownPayload(value) {
+  if (!value || typeof value !== "object") return false;
+  if (isOutcomeUnknownCode(value.code)) return true;
+  if (value.outcome === "unknown") return true;
+  if (value.error && typeof value.error === "object" && isOutcomeUnknownCode(value.error.code)) {
+    return true;
+  }
+  if (value.data && typeof value.data === "object" && isOutcomeUnknownCode(value.data.code)) {
+    return true;
+  }
+  return false;
+}
+
+function isOutcomeUnknownText(text) {
+  return (
+    typeof text === "string" &&
+    /\b(?:OperationOutcomeUnknown|outcome_unknown|outcome-unknown)\b/u.test(text)
+  );
+}
 
 function usage() {
   process.stderr.write(
@@ -19,6 +54,12 @@ function usage() {
       "  opensteer tool <name> [json]",
       "",
       "Calls Opensteer tools through OPENSTEER_MCP_URL and OPENSTEER_MCP_TOKEN.",
+      "",
+      "Exit codes:",
+      "  0  Done",
+      "  1  Usage or local error (nothing was sent)",
+      "  2  Refused by Opensteer (nothing happened; safe to retry)",
+      "  3  Outcome unknown (effect may have happened; do not blind-retry)",
     ].join("\n") + "\n",
   );
 }
@@ -47,7 +88,7 @@ function parseRpcPayload(text, contentType) {
   return JSON.parse(text);
 }
 
-async function mcpRequest(url, token, sessionId, payload) {
+async function mcpRequest(url, token, sessionId, payload, options = {}) {
   const headers = {
     accept: "application/json, text/event-stream",
     authorization: `Bearer ${token}`,
@@ -55,21 +96,53 @@ async function mcpRequest(url, token, sessionId, payload) {
     "mcp-protocol-version": PROTOCOL_VERSION,
   };
   if (sessionId) headers["mcp-session-id"] = sessionId;
-  const response = await fetch(url, {
-    body: JSON.stringify(payload),
-    headers,
-    method: "POST",
-    redirect: "error",
-  });
-  const nextSessionId = response.headers.get("mcp-session-id") || sessionId;
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Opensteer MCP HTTP ${response.status}: ${text || response.statusText}`);
+  const mayHaveEffect = options.mayHaveEffect === true;
+  let response;
+  let text;
+  try {
+    response = await fetch(url, {
+      body: JSON.stringify(payload),
+      headers,
+      method: "POST",
+      redirect: "error",
+    });
+    text = await response.text();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliExitError(
+      `Opensteer MCP transport error: ${message}`,
+      mayHaveEffect ? EXIT_UNKNOWN : EXIT_LOCAL,
+    );
   }
-  return {
-    body: parseRpcPayload(text, response.headers.get("content-type") || ""),
-    sessionId: nextSessionId,
-  };
+  const nextSessionId = response.headers.get("mcp-session-id") || sessionId;
+  if (!response.ok) {
+    let parsedError = null;
+    try {
+      parsedError = text.trim() ? JSON.parse(text) : null;
+    } catch {
+      parsedError = null;
+    }
+    const unknown =
+      response.status >= 500 ||
+      isOutcomeUnknownPayload(parsedError) ||
+      isOutcomeUnknownText(text);
+    throw new CliExitError(
+      `Opensteer MCP HTTP ${response.status}: ${text || response.statusText}`,
+      unknown ? EXIT_UNKNOWN : EXIT_REFUSED,
+    );
+  }
+  try {
+    return {
+      body: parseRpcPayload(text, response.headers.get("content-type") || ""),
+      sessionId: nextSessionId,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliExitError(
+      `Opensteer MCP response parse error: ${message}`,
+      mayHaveEffect ? EXIT_UNKNOWN : EXIT_LOCAL,
+    );
+  }
 }
 
 async function closeSession(url, token, sessionId) {
@@ -89,7 +162,7 @@ async function withSession(fn) {
   const url = process.env.OPENSTEER_MCP_URL;
   const token = process.env.OPENSTEER_MCP_TOKEN;
   if (!url || !token) {
-    throw new Error("OPENSTEER_MCP_URL and OPENSTEER_MCP_TOKEN must be set.");
+    throw new CliExitError("OPENSTEER_MCP_URL and OPENSTEER_MCP_TOKEN must be set.", EXIT_LOCAL);
   }
   let sessionId = null;
   try {
@@ -104,7 +177,10 @@ async function withSession(fn) {
       },
     });
     if (init.body?.error) {
-      throw new Error(init.body.error.message || "MCP initialize failed");
+      throw new CliExitError(
+        init.body.error.message || "MCP initialize failed",
+        isOutcomeUnknownPayload(init.body.error) ? EXIT_UNKNOWN : EXIT_REFUSED,
+      );
     }
     sessionId = init.sessionId;
     await mcpRequest(url, token, sessionId, {
@@ -121,7 +197,7 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0 || args[0] === "-h" || args[0] === "--help") {
     usage();
-    process.exit(args.length === 0 ? 2 : 0);
+    process.exit(args.length === 0 ? EXIT_LOCAL : EXIT_OK);
   }
   const subcommand = args[0];
   if (subcommand === "tools") {
@@ -134,7 +210,10 @@ async function main() {
         params: {},
       });
       if (response.body?.error) {
-        throw new Error(response.body.error.message || "tools/list failed");
+        throw new CliExitError(
+          response.body.error.message || "tools/list failed",
+          isOutcomeUnknownPayload(response.body.error) ? EXIT_UNKNOWN : EXIT_REFUSED,
+        );
       }
       return response.body?.result?.tools ?? [];
     });
@@ -152,7 +231,7 @@ async function main() {
     const name = args[1];
     if (!name || name.startsWith("-")) {
       usage();
-      process.exit(2);
+      process.exit(EXIT_LOCAL);
     }
     const rawInput = args[2] !== undefined ? args[2] : (await readStdin()).trim();
     let toolArgs = {};
@@ -160,23 +239,36 @@ async function main() {
       try {
         toolArgs = JSON.parse(rawInput);
       } catch (error) {
-        throw new Error(
+        throw new CliExitError(
           `Tool input must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+          EXIT_LOCAL,
         );
       }
       if (toolArgs === null || typeof toolArgs !== "object" || Array.isArray(toolArgs)) {
-        throw new Error("Tool input JSON must be an object.");
+        throw new CliExitError("Tool input JSON must be an object.", EXIT_LOCAL);
       }
     }
     const result = await withSession(async (url, token, sessionId) => {
-      const response = await mcpRequest(url, token, sessionId, {
-        id: 2,
-        jsonrpc: "2.0",
-        method: "tools/call",
-        params: { arguments: toolArgs, name },
-      });
+      const response = await mcpRequest(
+        url,
+        token,
+        sessionId,
+        {
+          id: 2,
+          jsonrpc: "2.0",
+          method: "tools/call",
+          params: { arguments: toolArgs, name },
+        },
+        { mayHaveEffect: true },
+      );
       if (response.body?.error) {
-        throw new Error(response.body.error.message || `Tool ${name} failed`);
+        throw new CliExitError(
+          response.body.error.message || `Tool ${name} failed`,
+          isOutcomeUnknownPayload(response.body.error) ||
+            isOutcomeUnknownText(response.body.error.message)
+            ? EXIT_UNKNOWN
+            : EXIT_REFUSED,
+        );
       }
       return response.body?.result ?? {};
     });
@@ -191,18 +283,22 @@ async function main() {
           : result;
     const serialized = typeof output === "string" ? output : JSON.stringify(output, null, 2);
     if (result.isError) {
+      const unknown =
+        isOutcomeUnknownPayload(result.structuredContent) ||
+        isOutcomeUnknownPayload(result) ||
+        isOutcomeUnknownText(serialized);
       process.stderr.write(`${serialized}\n`);
-      process.exit(1);
+      process.exit(unknown ? EXIT_UNKNOWN : EXIT_REFUSED);
     }
     process.stdout.write(`${serialized}\n`);
     return;
   }
 
   usage();
-  process.exit(2);
+  process.exit(EXIT_LOCAL);
 }
 
 main().catch((error) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
+  process.exit(error instanceof CliExitError ? error.exitCode : EXIT_LOCAL);
 });

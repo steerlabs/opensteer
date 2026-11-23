@@ -183,7 +183,7 @@ describe("AutomationScriptExecutor", () => {
       expect(output.error).toBeNull();
       const printed = JSON.parse(output.stdout.trim());
       expect(printed).toEqual({
-        failStatus: 1,
+        failStatus: 2,
         hasCdp: false,
         kind: "schedule",
         mcpTokenMatchesHost: false,
@@ -364,5 +364,192 @@ describe("AutomationScriptExecutor", () => {
     expect(ok.stdout.split(":")[0]).not.toBe(".");
     expect(ok.stdout).not.toMatch(/(?:^|:)\.(?::|$)/u);
     expect(ok.stdout).not.toContain("./venv/bin");
+  });
+
+  it("distinguishes done (0), usage/local error (1), Host refusal (2), and outcome unknown (3) in opensteer CLI (Z12)", async () => {
+    const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+      void (async () => {
+        if (request.method === "DELETE") {
+          response.writeHead(204).end();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+          id?: number;
+          method: string;
+          params?: { name?: string };
+        };
+        response.setHeader("content-type", "application/json");
+        response.setHeader("mcp-session-id", "z12-session");
+        if (body.method === "initialize") {
+          response.end(
+            JSON.stringify({
+              id: body.id,
+              jsonrpc: "2.0",
+              result: {
+                capabilities: { tools: {} },
+                protocolVersion: "2025-11-25",
+                serverInfo: { name: "z12", version: "1" },
+              },
+            }),
+          );
+          return;
+        }
+        if (body.method === "notifications/initialized") {
+          response.writeHead(202).end();
+          return;
+        }
+        const toolName = body.params?.name;
+        if (toolName === "refused_tool") {
+          response.end(
+            JSON.stringify({
+              id: body.id,
+              jsonrpc: "2.0",
+              result: {
+                content: [{ text: "forbidden", type: "text" }],
+                isError: true,
+                structuredContent: { error: { code: "forbidden", message: "forbidden" } },
+              },
+            }),
+          );
+          return;
+        }
+        if (toolName === "refused_rpc") {
+          response.end(
+            JSON.stringify({
+              error: { code: -32602, message: "Invalid params" },
+              id: body.id,
+              jsonrpc: "2.0",
+            }),
+          );
+          return;
+        }
+        if (toolName === "refused_http") {
+          response.writeHead(403).end("Forbidden");
+          return;
+        }
+        if (toolName === "unknown_tool") {
+          response.end(
+            JSON.stringify({
+              id: body.id,
+              jsonrpc: "2.0",
+              result: {
+                content: [{ text: "Outcome unknown", type: "text" }],
+                isError: true,
+                structuredContent: {
+                  error: { code: "outcome_unknown", message: "Effect may have happened" },
+                },
+              },
+            }),
+          );
+          return;
+        }
+        if (toolName === "unknown_hyphen") {
+          response.end(
+            JSON.stringify({
+              id: body.id,
+              jsonrpc: "2.0",
+              result: {
+                content: [{ text: "Outcome unknown", type: "text" }],
+                isError: true,
+                structuredContent: {
+                  error: { code: "outcome-unknown", message: "Effect may have happened" },
+                },
+              },
+            }),
+          );
+          return;
+        }
+        if (toolName === "unknown_503") {
+          response.writeHead(503).end("Service Unavailable");
+          return;
+        }
+        if (toolName === "unknown_drop") {
+          request.socket.destroy();
+          return;
+        }
+        response.end(
+          JSON.stringify({
+            id: body.id,
+            jsonrpc: "2.0",
+            result: {
+              content: [{ text: "done", type: "text" }],
+              structuredContent: { ok: true },
+            },
+          }),
+        );
+      })();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server");
+    const workspace = await temporaryWorkspace();
+    const automationId = createId("trigger");
+    const firingId = createId("triggerOccurrence");
+    try {
+      const output = await new AutomationScriptExecutor({
+        nativeFsHelperBinary,
+        nodeExecutable: process.execPath,
+        privateDirectory: join(workspace.path, ".opensteer", "private"),
+      }).execute({
+        automationId,
+        endpoints: {
+          mcp: { token: "z12-token", url: `http://127.0.0.1:${address.port}/mcp` },
+        },
+        event: {
+          automationId,
+          firedAt: new Date().toISOString(),
+          firingId,
+          kind: "manual",
+        },
+        firingId,
+        planLaunch: async () => (launch: HarnessProcessLaunch) => launch,
+        script: {
+          interpreter: null,
+          text: `
+            import { spawnSync } from "node:child_process";
+            const run = (args, env = process.env) => spawnSync("opensteer", args, { encoding: "utf8", env }).status;
+            const noEnv = { ...process.env };
+            delete noEnv.OPENSTEER_MCP_URL;
+            console.log(JSON.stringify({
+              help: run(["--help"]),
+              ok: run(["tool", "ok_tool", "{}"]),
+              noArgs: run([]),
+              badSubcmd: run(["bogus"]),
+              badJson: run(["tool", "ok_tool", "{bad"]),
+              missingEnv: run(["tool", "ok_tool", "{}"], noEnv),
+              refusedTool: run(["tool", "refused_tool", "{}"]),
+              refusedRpc: run(["tool", "refused_rpc", "{}"]),
+              refusedHttp: run(["tool", "refused_http", "{}"]),
+              unknownTool: run(["tool", "unknown_tool", "{}"]),
+              unknownHyphen: run(["tool", "unknown_hyphen", "{}"]),
+              unknown503: run(["tool", "unknown_503", "{}"]),
+              unknownDrop: run(["tool", "unknown_drop", "{}"]),
+            }));
+          `,
+        },
+        signal: new AbortController().signal,
+        workspace,
+      });
+      expect(output.status).toBe("succeeded");
+      expect(JSON.parse(output.stdout.trim())).toEqual({
+        badJson: 1,
+        badSubcmd: 1,
+        help: 0,
+        missingEnv: 1,
+        noArgs: 1,
+        ok: 0,
+        refusedHttp: 2,
+        refusedRpc: 2,
+        refusedTool: 2,
+        unknown503: 3,
+        unknownDrop: 3,
+        unknownHyphen: 3,
+        unknownTool: 3,
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
