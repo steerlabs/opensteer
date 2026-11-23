@@ -244,6 +244,7 @@ export function ConnectedAgentPage({
             facts={chat}
             live={connected}
             tasks={chatTasks.tasks}
+            onRunEnded={() => void agents.refresh?.()}
           />
         ) : null}
         {/* Under a work Home's ceiling, the choices wait for it: none is offered and then refused. */}

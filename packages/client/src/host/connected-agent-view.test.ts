@@ -2,7 +2,7 @@ import { createId, UserIdSchema, type AgentGrant } from "@opensteer/core";
 import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opensteer/protocol";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
-import { chatFacts, messagingAccountView } from "./chat-view.js";
+import { chatFacts, chatTasksNow, messagingAccountView } from "./chat-view.js";
 import { plainSentence, type SentencePart } from "./sentence-parts.js";
 import {
   agentAppOptions,
@@ -65,6 +65,22 @@ function connection(patch: Partial<AgentConnection> = {}): AgentConnection {
     ...patch,
   };
 }
+
+describe("a chat's tasks as they are now", () => {
+  it("reads the chat's list again for a running task no live update holds", () => {
+    const tasks = [{ id: "thr_1", title: "Old work", running: true, runId: "run_1" }];
+    const now = chatTasksNow(tasks, { threads: [], tasks: null, activeTasks: [] });
+    expect(now.behind).not.toBeNull();
+    // A task that does not run asks nothing.
+    expect(
+      chatTasksNow([{ ...tasks[0]!, running: false, runId: null }], {
+        threads: [],
+        tasks: null,
+        activeTasks: [],
+      }).behind,
+    ).toBeNull();
+  });
+});
 
 describe("connected agents list", () => {
   it("shows a paused chat as paused, with what becomes of what is sent to it, per transport and cause", () => {

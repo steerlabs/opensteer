@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
+import { HostTransportError } from "@opensteer/client/connections";
 import { MockHostClient, mockAgentWorkThreads, mockConnectedAgents } from "@opensteer/client/mock";
 import type { AgentConnection } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -785,6 +786,50 @@ describe("a chat, as a connected agent", () => {
     const other = await mount(host, `${base}/${chat(5)}`);
     await vi.waitFor(() => expect(other.textContent).toContain("This chat has ended."));
     expect(other.textContent).not.toContain("You disconnected it.");
+  });
+
+  it("says nothing when the Run had already ended, and reads the chat's list again", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Summarize my week"));
+    const real = host.dispatch.bind(host);
+    vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "Run is already terminal",
+        status: 409,
+      });
+    });
+    const reads = vi.fn();
+    const read = host.rpc["connections.list"];
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: (input: Parameters<typeof read>[0]) => {
+        reads();
+        return read(input);
+      },
+      configurable: true,
+    });
+    await act(async () => buttonNamed(page, "Stop").click());
+    await vi.waitFor(() => expect(reads).toHaveBeenCalled());
+    expect(page.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("says it couldn't confirm the task was stopped when the answer is lost", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Summarize my week"));
+    const real = host.dispatch.bind(host);
+    vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostTransportError("timed-out");
+    });
+    await act(async () => buttonNamed(page, "Stop").click());
+    await vi.waitFor(() =>
+      expect(page.querySelector('[role="alert"]')?.textContent).toContain(
+        "Couldn't confirm the task was stopped.",
+      ),
+    );
   });
 
   it("says why a task could not be stopped, and keeps its Stop", async () => {
