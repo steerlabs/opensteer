@@ -698,7 +698,7 @@
   {
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-11-16T02:10:51Z",
     "deadline": "2026-11-23T02:10:51Z",
     "sha": "1a0d6b311bec7c55b602285f0b633e5bbda4e26b",
