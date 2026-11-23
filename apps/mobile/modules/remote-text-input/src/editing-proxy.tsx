@@ -132,8 +132,10 @@ export function NativeEditingProxy({
     operation: EditingOperation,
     contextId: string,
   ): EditingOperation[] | null => {
-    if (operation.kind === "edit" || operation.kind === "compose") return [operation];
-    if (operation.kind === "command") return [operation];
+    if (operation.kind === "edit" || operation.kind === "command") return [operation];
+    // CZ12: a composition is not relative to the caret: the page refuses it under an earlier
+    // context, so it is not sent (and its reducer hears it never went, below).
+    if (operation.kind === "compose") return [];
     if (operation.kind !== "paste") return [];
     const item = operation.items.find((candidate) => candidate.type === "text/plain");
     if (!item) return [];
@@ -228,6 +230,8 @@ export function NativeEditingProxy({
             )
               nativeComposing.current = true;
             else if (event.type === "compositionend") nativeComposing.current = false;
+            for (const operation of result.operations)
+              if (operation.kind === "compose") late(contextId, { type: "refused", operation });
             const pieces = result.operations.map((operation) =>
               lateOperations(operation, contextId),
             );

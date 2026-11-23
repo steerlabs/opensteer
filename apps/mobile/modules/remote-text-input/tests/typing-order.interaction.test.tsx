@@ -1974,37 +1974,39 @@ describe("a person's caret moves and selections in the native field", () => {
     },
   );
 
-  // CY8: a send the transport refuses on the late path reaches that context's reducer, as on the
-  // ordinary path (CU5): the composition it carried goes again as a fresh start.
-  it("tells the late reducer of a send the transport refused", async () => {
+  // CY8: a send the transport refuses on the late path is answered as on the ordinary path: it
+  // never left, so the native field keeps its default from happening and the person is told.
+  it("answers a late send the transport refused as refused", async () => {
     const { remote, keyboard, answerAll, publish } = await open();
     const before = remote.contextId;
     await keyboard((field) => {
       field.insertText("a");
-      field.setMarkedText("に");
-      field.setMarkedText("にほ");
+      field.insertText("b");
     });
     const next = "00000000-0000-4000-8000-000000000781";
     remote.earlier.add(remote.contextId!);
     remote.contextId = next;
     await publish(next);
-    const composed: EditingOperation[] = [];
-    let refused = false;
+    const seen: { id: number; preventDefault?: boolean }[] = [];
+    const respond = harness.field!.respond;
+    harness.field!.respond = (instruction) => {
+      seen.push(instruction as { id: number; preventDefault?: boolean });
+      return respond(instruction);
+    };
+    let refusedId: number | null = null;
     harness.take = (operation) => {
       const made = operation as EditingOperation;
-      if (made.kind === "compose" && made.composition.contextId === before) {
-        composed.push(made);
-        if (!refused) {
-          refused = true;
-          return false;
-        }
+      if (made.kind === "edit" && made.edit.contextId === before && made.edit.text === "b") {
+        refusedId = seen.length;
+        return false;
       }
       return remote.take(made);
     };
     await answerAll();
-    expect(composed.length).toBeGreaterThan(1);
-    // Refused, the first never left: the next is a fresh start, restating what it replaces.
-    expect(composed[1]).toMatchObject({ kind: "compose", composition: { before: "", after: "" } });
+    expect(refusedId).not.toBeNull();
+    expect(remote.value).toBe("a");
+    // The answer to the refused send's own packet keeps the native default from happening.
+    expect(seen.some((answer) => answer.preventDefault === true)).toBe(true);
   });
 
   // CZ9: a keystroke of the context just left that reaches the view right after React commits
@@ -2052,14 +2054,32 @@ describe("a person's caret moves and selections in the native field", () => {
     harness.committed = null;
   });
 
-  // CZ2: a composition a tap, a blur or a refusal already ended has no commit, whatever comes
-  // after it: the input method's own commit of it that arrives under the context left inserts
-  // nothing (the person walked away from it).
   const rotate = async (opened: Awaited<ReturnType<typeof open>>, contextId: string) => {
     opened.remote.earlier.add(opened.remote.contextId!);
     opened.remote.contextId = contextId;
     await opened.publish(contextId);
   };
+  // CZ12: under the context just left, a composition begun over a selection and cancelled leaves
+  // the selected text once. The page refuses a composition under an earlier context, so none was
+  // ever sent there, and its cancel restates nothing.
+  it("leaves the selected text once when a late composition over it is cancelled", async () => {
+    const opened = await open();
+    const { remote, keyboard, answerAll } = opened;
+    for (const letter of "abc") await keyboard((field) => field.insertText(letter));
+    await answerAll();
+    await keyboard((field) => {
+      field.moveSelection(0, 1);
+      field.setMarkedText("に");
+      field.setMarkedText("");
+    });
+    await rotate(opened, "00000000-0000-4000-8000-000000000787");
+    await answerAll();
+    expect(remote.value).toBe("abc");
+  });
+
+  // CZ2: a composition a tap, a blur or a refusal already ended has no commit, whatever comes
+  // after it: the input method's own commit of it that arrives under the context left inserts
+  // nothing (the person walked away from it).
   it("commits nothing more of a composition a tap ended, after the context changes", async () => {
     const opened = await open();
     const { remote, keyboard, answerAll, interrupt } = opened;
