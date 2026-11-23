@@ -202,6 +202,47 @@ it("keeps a Home that used teams working: its old rows read without error and ev
       afterSequence: SequenceSchema.parse("0"),
     });
     expect(JSON.stringify(waited)).not.toContain("team-member");
+
+    // Task-list message search, changedSince, and activity paging all omit retired teammate messages.
+    const searched = await store.agentThreadPageForOwner({
+      ownerId: host.ownerId,
+      scope: { kind: "personal" },
+      scopeId: own.threadId,
+      query: "teammate",
+    });
+    expect(searched.threads.map(({ id }) => id)).not.toContain(threadId);
+    const changed = await store.agentThreadPageForOwner({
+      ownerId: host.ownerId,
+      scope: { kind: "personal" },
+      scopeId: own.threadId,
+      changedSince: new Date(0),
+    });
+    expect(changed.threads.find(({ id }) => id === threadId)).toBeUndefined();
+    expect(changed.threads.find(({ id }) => id === own.threadId)?.newMessages).toBe(1);
+
+    await store.enqueueThreadInput({
+      requestedBy: host.ownerId,
+      threadId,
+      content: [{ type: "text", text: "Owner follow-up" }],
+      source: { kind: "human" },
+      policy: "report",
+      idempotencyKey: "team-era-owner-followup",
+    });
+    const messagesActivity = await readAgentThreadActivity(store.database, {
+      threadId,
+      ownerId: host.ownerId,
+      messagesOnly: true,
+      limit: 1,
+    });
+    expect(messagesActivity?.items).toHaveLength(1);
+    expect(messagesActivity?.hasMore).toBe(false);
+    const fullActivity = await readAgentThreadActivity(store.database, {
+      threadId,
+      ownerId: host.ownerId,
+      limit: 1,
+    });
+    expect(fullActivity?.items).toHaveLength(1);
+    expect(fullActivity?.hasMore).toBe(false);
   } finally {
     await host.close();
   }

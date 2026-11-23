@@ -103,6 +103,7 @@ import {
 } from "./store-primitives.js";
 import { isDeepStrictEqual } from "node:util";
 import {
+  keptMessageSql,
   threadPendingRequestsSelection,
   threadVisitSelection,
   threadProviderSessionSelection,
@@ -912,6 +913,7 @@ export async function agentThreadPageForOwner(
             where messages.thread_id = threads.id
               and messages.published
               and messages.kind <> 'continuation'
+              and ${keptMessageSql}
               and jsonb_to_tsvector('simple', jsonb_path_query_array(messages.content, '$[*] ? (@.type == "text").text'), '["string"]') @@ plainto_tsquery('simple', ${search})
           ))`,
         );

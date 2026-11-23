@@ -211,12 +211,14 @@ function activityMetadata(
     return query
       .where("item.nodeId", "is", null)
       .where(
-        sql<boolean>`((item.kind='message' and message.published) or (item.kind='request' and request.kind='person.question'))`,
+        sql<boolean>`((item.kind='message' and message.published and message.author->>'kind' is distinct from 'team-member') or (item.kind='request' and request.kind='person.question'))`,
       );
   return query
     .where("item.nodeId", "is", null)
     .where(sql<boolean>`item.kind in ('message','tool','place','app','request','node')`)
-    .where(sql<boolean>`(item.kind <> 'message' or message.published)`)
+    .where(
+      sql<boolean>`(item.kind <> 'message' or (message.published and message.author->>'kind' is distinct from 'team-member'))`,
+    )
     .$if(visibleRequests !== undefined, (q) =>
       q.where(sql<boolean>`(item.kind <> 'request' or request.id is not null)`),
     );

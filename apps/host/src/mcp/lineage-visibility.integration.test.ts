@@ -809,7 +809,7 @@ describeStore("a selected connection reads only its own lineage", (it) => {
       .values({
         id: unavailableHarnessId,
         environmentId: unavailableEnv,
-        driverKind: "native",
+        driverKind: f.harnessInstance.driverKind,
         name: "Unavailable Harness",
         config: sql`'{}'::jsonb`,
         runtimeRevision: 1,

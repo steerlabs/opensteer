@@ -3,6 +3,7 @@ import { sql, type Transaction } from "kysely";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import type { connectionRequests } from "./request-agent-response.js";
 import type { DatabaseSchema } from "./schema.js";
+import { keptMessageSql } from "./thread-row-mappers.js";
 
 export interface ChangedTaskSummary {
   readonly id: ThreadId;
@@ -61,6 +62,7 @@ export function changedTasksSubquery(
     )
     .where("messages.kind", "!=", "continuation")
     .where(publishedMessagePredicate("threadInputs"))
+    .where(keptMessageSql)
     .where(changedMessageAt, ">", since);
 
   if (excludeSystemWorkers) {
