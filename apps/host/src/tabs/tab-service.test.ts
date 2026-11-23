@@ -269,3 +269,74 @@ it("shares one owner read and refreshes only the changed binding for two devices
   }).toEqual({ databaseSnapshots: 0, nativeRPCs: 1, computerReads: 1, taskReads: 2 });
   f.service.dispose();
 });
+
+it("resolves earlier projection callers without starvation when changed() fires mid-pass", async () => {
+  const a = row("window"),
+    f = fixture([a]);
+  const firstPass = Promise.withResolvers<void>();
+  const secondPass = Promise.withResolvers<void>();
+  let pass = 0;
+  f.native.windowState = vi.fn(async () => {
+    pass += 1;
+    if (pass === 1) await firstPass.promise;
+    else await secondPass.promise;
+    return { state: "asleep" as const, usedBy: [] };
+  });
+
+  const firstCaller = f.service.project(actor);
+  await vi.waitFor(() => {
+    expect(pass).toBe(1);
+  });
+
+  // A new mutation arrives while the first pass is still in flight.
+  a.title = "Updated during pass 1";
+  f.service.changed(ownerId, [a.id]);
+  const secondCaller = f.service.project(actor);
+
+  // Finishing pass 1 must immediately resolve the first caller without waiting for pass 2.
+  firstPass.resolve();
+  const firstResult = await withTimeout(firstCaller, 1_000, {
+    timeoutError: () => new Error("First caller starved behind later invalidation"),
+  });
+  expect(firstResult.tabs[0]?.title).toBe("window");
+
+  // Second caller advances to pass 2 and sees the updated state.
+  await vi.waitFor(() => {
+    expect(pass).toBe(2);
+  });
+  secondPass.resolve();
+  const secondResult = await secondCaller;
+  expect(secondResult.tabs[0]?.title).toBe("Updated during pass 1");
+  f.service.dispose();
+});
+
+it("refreshes only the matching window tab on windowChanged()", async () => {
+  const first = row("window"),
+    second = row("window"),
+    f = fixture([first, second]);
+  await f.service.project(actor);
+  const reads = vi.spyOn(f.options.store, "snapshot");
+  const windowStates = vi.spyOn(f.native, "windowState");
+  windowStates.mockResolvedValueOnce({
+    state: "unavailable",
+    unavailableCode: "window-closed",
+    unavailableReason: "Window closed",
+    usedBy: [],
+  });
+
+  f.service.windowChanged(ownerId, first.windowId!);
+  const projected = await f.service.project(actor);
+  expect(reads).not.toHaveBeenCalled();
+  expect(windowStates).toHaveBeenCalledTimes(1);
+  expect(windowStates).toHaveBeenCalledWith(
+    ownerId,
+    expect.any(String),
+    first.windowId,
+    first.windowApp,
+  );
+  expect(projected.tabs).toMatchObject([
+    { tabId: first.id, state: "unavailable", unavailableCode: "window-closed" },
+    { tabId: second.id, state: "asleep" },
+  ]);
+  f.service.dispose();
+});

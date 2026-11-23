@@ -677,7 +677,7 @@
   {
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-11-16T02:10:51Z",
     "deadline": "2026-11-23T02:10:51Z",
     "sha": "1a0d6b311bec7c55b602285f0b633e5bbda4e26b",
@@ -688,7 +688,8 @@
     ],
     "evidence": [
       "Fails intermittently since #638 (unified tabs, Browser Harness openPage and the reworked agent CDP bridge): on its branch at 03bdfdb28 (https://github.com/steerlabs/opensteer/actions/runs/43790574948), on main at 1a0d6b311 (https://github.com/steerlabs/opensteer/actions/runs/43922680655) and on a docs-only PR at a0d74d4a1 (https://github.com/steerlabs/opensteer/actions/runs/43925614504). Main passed on the runs between them.",
-      "Measured locally with the silence window widened: no program hung. Under load (load average 30-110) single Browser Harness programs took 5-15.4 s and every one finished; one dialog answer alone took 6.5 s. Before the fake engine reported progress, a turn of four or five programs exceeded waitForInput's 15 s no-event window (2 of 3 runs failed). With each program reported as a Codex command item, 17 of 18 runs passed; the failure was one program still running after 15 s at moderate load. Remaining work: why a single program can take over 15 s under load (gotoUrl/waitForLoad, Page.handleJavaScriptDialog latency through the agent CDP bridge)."
+      "Measured locally with the silence window widened: no program hung. Under load (load average 30-110) single Browser Harness programs took 5-15.4 s and every one finished; one dialog answer alone took 6.5 s. Before the fake engine reported progress, a turn of four or five programs exceeded waitForInput's 15 s no-event window (2 of 3 runs failed). With each program reported as a Codex command item, 17 of 18 runs passed; the failure was one program still running after 15 s at moderate load. Remaining work: why a single program can take over 15 s under load (gotoUrl/waitForLoad, Page.handleJavaScriptDialog latency through the agent CDP bridge).",
+      "The quarantine expired on 2026-11-23 without a root fix and was not renewed. The case runs and gates again; this record stays for the unexplained dialog/CDP latency timeout."
     ]
   },
   {
