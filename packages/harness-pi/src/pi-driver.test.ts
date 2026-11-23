@@ -2490,7 +2490,7 @@ describe("pi Thread naming", () => {
         (c) => c.type === "prompt",
       ).length;
       expect(commandsAfterTurn2).toBe(1);
-      expect(await session.releaseForReuse()).toBe(false);
+      expect(await session.releaseForReuse?.()).toBe(false);
     } finally {
       await session.stop();
       await fixture.adapter.close();
