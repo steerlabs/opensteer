@@ -975,9 +975,7 @@ class ColdCodexHarnessDriver extends CodexHarnessDriver {
   ): Promise<HarnessAdapter> {
     const adapter = await super.create(context);
     const capabilities = { ...adapter.capabilities, sharedEngineProcess: false, warmReuse: false };
-    const withoutSharedEngine = (
-      sessionContext: Parameters<HarnessAdapter["startSession"]>[0],
-    ) => {
+    const withoutSharedEngine = (sessionContext: Parameters<HarnessAdapter["startSession"]>[0]) => {
       const { sharedEngine: _ignored, ...dedicated } = sessionContext;
       return dedicated;
     };
