@@ -141,7 +141,7 @@ export function registerAgentPageBindingRoute(
   app: FastifyInstance,
   tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">,
   tabs: Pick<TabServicePort, "requireOpenPage">,
-  callers: Pick<AgentCallerResolver, "authenticate">,
+  _callers: Pick<AgentCallerResolver, "authenticate">,
   runBrowser: (
     claims: RunToolScope,
   ) => Promise<{ driverKind: string; accessMode: ThreadAccessMode }>,
@@ -153,9 +153,8 @@ export function registerAgentPageBindingRoute(
       try {
         const token = bearerToken(request.headers);
         const claims = await tokens.authenticate(token);
-        const caller = await callers.authenticate(token);
-        const capability = caller.kind === "run" ? await runBrowser(claims) : null;
-        if (!capability || !runHasBrowserPages(capability.driverKind, capability.accessMode))
+        const capability = await runBrowser(claims);
+        if (!runHasBrowserPages(capability.driverKind, capability.accessMode))
           return reply.code(403).send({
             error: {
               code: "access_denied",
@@ -164,7 +163,7 @@ export function registerAgentPageBindingRoute(
             },
           });
         const { tabId } = PageAgentBindInputSchema.parse(request.body);
-        return await tabs.requireOpenPage(await tokens.reauthorize(claims), tabId);
+        return await tabs.requireOpenPage(claims, tabId);
       } catch (error) {
         const normalized = normalizeHostError(error);
         return reply.code(normalized.status).send({ error: normalized.error });
@@ -179,14 +178,22 @@ export function registerAgentPageBindingRoute(
  */
 export async function runBrowserCapability(
   store: Pick<OpensteerStore, "database" | "admitExecution">,
-  claims: Pick<RunToolScope, "runId" | "requestedBy">,
+  claims: Pick<RunToolScope, "runId" | "requestedBy"> &
+    Partial<Pick<RunToolScope, "threadId" | "environmentId">>,
 ): Promise<{ driverKind: string; accessMode: ThreadAccessMode }> {
   const run = await store.database
     .selectFrom("runs")
     .innerJoin("harnessInstances", "harnessInstances.id", "runs.harnessInstanceId")
+    .innerJoin("threads", "threads.id", "runs.threadId")
     .select(["harnessInstances.driverKind", "runs.accessMode"])
     .where("runs.id", "=", claims.runId)
     .where("runs.requestedBy", "=", claims.requestedBy)
+    .where("threads.createdBy", "=", claims.requestedBy)
+    .where("threads.removedAt", "is", null)
+    .$if(claims.threadId !== undefined, (query) => query.where("threads.id", "=", claims.threadId!))
+    .$if(claims.environmentId !== undefined, (query) =>
+      query.where("threads.environmentId", "=", claims.environmentId!),
+    )
     .executeTakeFirst();
   if (!run)
     throw new OpensteerError({

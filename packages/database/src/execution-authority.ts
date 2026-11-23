@@ -11,6 +11,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { liveDelegatingConnection } from "./resource-access.js";
 import { isWorkHomeDatabase } from "./work-home-context.js";
 type Database = Kysely<DatabaseSchema>;
@@ -133,73 +134,130 @@ export async function assertActiveGrant(
   },
   executionNow: () => number = Date.now,
 ): Promise<RunLineage> {
-  await assertActiveExecutionBinding(database, input, executionNow);
-  // The Run's own facts, its connection and its task's origin among them, in the one read this
-  // check already makes.
-  const run = await database
+  const workHome = isWorkHomeDatabase(database);
+  const row = await database
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .select([
+    .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
+    .innerJoin("users", "users.id", "personalSettings.ownerId")
+    .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
+    .innerJoin("runners", "runners.id", "providerSessions.runnerId")
+    .leftJoin("executionEnvironments", (join) =>
+      join
+        .onRef("executionEnvironments.id", "=", "threads.environmentId")
+        .onRef("executionEnvironments.runnerId", "=", "personalSettings.agentHomeComputerId"),
+    )
+    .select((eb) => [
+      "runs.environmentId",
+      "runs.finishIntent",
+      "runs.harnessInstanceId as runHarnessInstanceId",
+      "runs.requestedBy",
+      "runs.status as runStatus",
+      "runs.bindingGeneration as runBindingGeneration",
+      "runs.threadId",
       "runs.assignmentId",
       "runs.connectionId",
       "runs.admittedGrantRevision",
       "runs.admittedAccessMode",
-      "runs.bindingGeneration",
       "threads.originConnectionId",
+      "personalSettings.agentHomeComputerId",
+      "users.disabledAt as ownerDisabledAt",
+      "providerSessions.bindingGeneration",
+      "providerSessions.harnessInstanceId as providerSessionHarnessInstanceId",
+      "providerSessions.leaseExpiresAt",
+      "providerSessions.runnerBootId",
+      "providerSessions.runnerId",
+      "providerSessions.status as providerSessionStatus",
+      "runners.revokedAt",
+      "executionEnvironments.id as availableEnvironmentId",
+      eb
+        .selectFrom("grants")
+        .select(
+          sql<boolean>`count(*) = 1 and coalesce(bool_and(grants.runner_id = ${input.runnerId} and grants.runner_boot_id = ${input.runnerBootId}), false)`.as(
+            "matched",
+          ),
+        )
+        .where("grants.runId", "=", input.runId)
+        .where("grants.status", "=", "active")
+        .where("grants.bindingGeneration", "=", input.bindingGeneration)
+        .$if(input.grantId !== undefined, (query) => query.where("grants.id", "=", input.grantId!))
+        .where((geb) =>
+          geb.not(
+            geb.exists(
+              geb
+                .selectFrom("runAttempts")
+                .select("id")
+                .whereRef("runAttempts.runId", "=", "grants.runId")
+                .whereRef("runAttempts.bindingGeneration", "=", "grants.bindingGeneration")
+                .whereRef("runAttempts.runnerId", "=", "grants.runnerId")
+                .whereRef("runAttempts.runnerBootId", "=", "grants.runnerBootId")
+                .where("runAttempts.terminalEvidenceAt", "is not", null),
+            ),
+          ),
+        )
+        .as("hasActiveGrant"),
     ])
-    .where("runs.id", "=", input.runId)
-    .executeTakeFirstOrThrow();
-  const grant = await database
-    .selectFrom("grants")
-    .select(["runnerBootId", "runnerId"])
-    .where("runId", "=", input.runId)
-    .where("status", "=", "active")
-    .where("bindingGeneration", "=", input.bindingGeneration)
-    .where((eb) =>
-      eb.not(
-        eb.exists(
-          eb
-            .selectFrom("runAttempts")
-            .select("id")
-            .whereRef("runAttempts.runId", "=", "grants.runId")
-            .whereRef("runAttempts.bindingGeneration", "=", "grants.bindingGeneration")
-            .whereRef("runAttempts.runnerId", "=", "grants.runnerId")
-            .whereRef("runAttempts.runnerBootId", "=", "grants.runnerBootId")
-            .where("runAttempts.terminalEvidenceAt", "is not", null),
-        ),
+    .$if(workHome, (query) =>
+      query.select((eb) =>
+        eb
+          .exists(eb.selectFrom("workHomePolicy").select("singleton").where("state", "=", "active"))
+          .as("workHomeActive"),
       ),
     )
-    .$if(input.grantId !== undefined, (query) => query.where("id", "=", input.grantId!))
+    .where("runs.id", "=", input.runId)
+    .where("personalSettings.singletonKey", "=", "personal")
+    .where("providerSessions.active", "=", true)
     .executeTakeFirst();
+  const threadAdmitted =
+    row !== undefined &&
+    row.ownerDisabledAt === null &&
+    row.availableEnvironmentId !== null &&
+    (!workHome || Boolean(row.workHomeActive));
   if (
-    !grant ||
-    grant.runnerId !== input.runnerId ||
-    grant.runnerBootId !== input.runnerBootId ||
-    (await assignmentWasCancelled(database, run.assignmentId))
+    !row ||
+    !executionBindingHolds(row, input, executionNow()) ||
+    (input.lostExecution !== true && !threadAdmitted)
   )
+    refuseExecutionBinding();
+  if (!row.hasActiveGrant)
     throw new OpensteerError({
       code: "forbidden",
       message: "Run tool authority has ended",
     });
-  if (run.connectionId) {
+  // A native personal Run with no delegation or connection completes in one atomic MVCC read.
+  if (row.assignmentId === null && row.connectionId === null)
+    return { agentConnectionId: null, taskOriginConnectionId: row.originConnectionId };
+  // Delegated and connected-agent Runs keep one repeatable-read snapshot across the grant,
+  // delegation ancestry and connection rows.
+  if (!database.isTransaction) {
+    return withPersonalReadTransaction(database, (transaction) =>
+      assertActiveGrant(transaction, input, executionNow),
+    );
+  }
+  if (await assignmentWasCancelled(database, row.assignmentId))
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
+  if (row.connectionId) {
     const connection = await liveDelegatingConnection(
       database,
       input.requestedBy,
-      run.connectionId,
+      row.connectionId,
     );
     if (
-      run.bindingGeneration !== input.bindingGeneration ||
+      row.runBindingGeneration !== input.bindingGeneration ||
       (connection.cleanupMinimumGrantRevision !== null &&
-        (run.admittedGrantRevision === null ||
-          run.admittedGrantRevision < connection.cleanupMinimumGrantRevision ||
-          (run.admittedGrantRevision === connection.cleanupMinimumGrantRevision &&
+        (row.admittedGrantRevision === null ||
+          row.admittedGrantRevision < connection.cleanupMinimumGrantRevision ||
+          (row.admittedGrantRevision === connection.cleanupMinimumGrantRevision &&
             connection.cleanupMaximumMode !== null &&
-            (run.admittedAccessMode === null ||
-              !threadAccessModeAtMost(run.admittedAccessMode, connection.cleanupMaximumMode)))))
+            (row.admittedAccessMode === null ||
+              !threadAccessModeAtMost(row.admittedAccessMode, connection.cleanupMaximumMode)))))
     )
       refuseExecutionBinding();
   }
-  return { agentConnectionId: run.connectionId, taskOriginConnectionId: run.originConnectionId };
+  return { agentConnectionId: row.connectionId, taskOriginConnectionId: row.originConnectionId };
 }
 /** Whom an authenticated Run works for, from the row that authenticated it. */
 export interface RunLineage {
