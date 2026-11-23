@@ -76,6 +76,11 @@ class Chromium {
   stopLate = false;
   /** It never answers its next stop, though the stop takes effect (S3). */
   stopHangs = false;
+  /**
+   * Bumped as the engine ends the session's casts: a command sent before fails, as the desktop
+   * hub fails every command it holds right after it says so (`#interrupt`).
+   */
+  era = 0;
   private readonly world: World;
   private readonly id: Id;
   constructor(world: World, id: Id) {
@@ -115,8 +120,13 @@ class Chromium {
       });
       return new Promise(() => undefined);
     }
+    const era = this.era;
+    const interrupted = () => {
+      if (era !== this.era) throw new Error("Interrupted: the casts ended.");
+    };
     const run = async () => {
       if (this.dead) throw new Error("Target closed.");
+      interrupted();
       if (method === "Emulation.setVisibleSize" && this.world.tabs[this.id].failPrepare) {
         this.world.tabs[this.id].failPrepare = false;
         throw new Error("Emulation.setVisibleSize failed");
@@ -124,6 +134,7 @@ class Chromium {
       if (method === "Page.stopScreencast") {
         this.casting = false;
         if (this.stopLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
+        interrupted();
       }
       if (method !== "Page.startScreencast") return {};
       if (!this.attached) {
@@ -156,12 +167,14 @@ class Chromium {
       // Chromium answers, and no frame of the start ever comes.
       if (this.silent) {
         if (this.answerLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
+        interrupted();
         return {};
       }
       // The start's frame is of another size, before its answer or after: on the desktop its own
       // follows it, or the follow view repairs the view once the time it gives it is up.
       if (before) this.frame(fit, true);
       if (this.answerLate) await new Promise<void>((resolve) => this.lateAnswers.push(resolve));
+      interrupted();
       // A frame of another size before the answer is what the page last drew: on a page sized
       // natively the start's own frame follows it (F30); on one sized by command it does not.
       // Chromium's frame for a start usually comes once its answer is handled; while the page is
@@ -718,14 +731,17 @@ function actions(
       },
     },
     {
-      name: "the engine ends the session's casts while what it holds stays held",
+      name: "the engine ends the session's casts, then fails what it holds",
       run: () => {
-        // The desktop hub, as a debugger detaches: it says so before the commands it holds are
-        // answered (re-check 10, finding 1). Linux Chrome says nothing.
+        // The desktop hub, as a debugger detaches: it says so before it fails the commands it
+        // holds (re-check 10, finding 1), and a command sent before never takes effect after.
+        // Linux Chrome says nothing.
         if (world.engine !== "desktop") return;
         const chromium = inView().chromium;
         chromium.casting = false;
+        chromium.era += 1;
         chromium.emit(screencastEndedEvent, {});
+        for (const answer of chromium.lateAnswers.splice(0)) answer();
       },
     },
     {
@@ -785,8 +801,10 @@ function actions(
         const chromium = tab.chromium;
         for (const answer of chromium.lateAnswers.splice(0)) answer();
         if (world.engine === "desktop") {
-          // The hub ends the session's casts and says so on it; the page's navigation ends.
+          // The hub ends the session's casts and says so on it, then fails what it still holds;
+          // the page's navigation ends.
           chromium.casting = false;
+          chromium.era += 1;
           chromium.emit(screencastEndedEvent, {});
           tab.navigation = { ...tab.navigation, pending: false };
           world.navigated(tab.id);
