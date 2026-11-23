@@ -15,6 +15,7 @@ import { chatScreenHost, type ChatScreenCommand } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { Sheet } from "../ui/sheet.js";
+import { readGateSections } from "./read-gate-sections.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { useClientRead, useConnectedAgents } from "@opensteer/client/react";
@@ -478,36 +479,19 @@ function Messaging({
     }
   }
   // The last read failed: what is shown is the answer before it, never as current, and nothing
-  // on it changes anything; only Refresh, Try again and moving around stay. One rule for every
-  // section, as the web holds it for every control.
-  if (loaded !== null && dashboard.data !== null)
-    for (const [index, section] of sections.entries())
-      if (section.key !== "refresh")
-        sections[index] = {
-          ...section,
-          rows: section.rows.flatMap((row): NativeSettingsRow[] =>
-            row.kind === "status"
-              ? [{ ...row, tone: "neutral", label: agentWords("messaging.status.stale") }]
-              : (row.kind === "button" &&
-                    !row.opens &&
-                    row.label !== agentWords("common.tryAgain")) ||
-                  row.kind === "toggle" ||
-                  row.kind === "input" ||
-                  row.kind === "chips"
-                ? []
-                : [row],
-          ),
-        };
-  // A section the rule emptied says nothing, so it is not drawn.
-  const drawn = sections.filter(
-    (section) => section.key === "refresh" || section.rows.length > 0 || section.footer,
-  );
+  // on it changes anything; only Refresh, Try again and moving around stay (`readGateSections`,
+  // the one rule for every phone page drawn from a read).
+  const readFailed = loaded !== null && dashboard.data !== null;
+  const drawn = readGateSections(sections, {
+    failed: readFailed,
+    keep: (section) => section.key === "refresh",
+  }).filter((section) => section.key === "refresh" || section.rows.length > 0 || section.footer);
   const setup = drawn.filter((section) => section.key.startsWith("setup:"));
   return (
     <>
       <NativeSettingsPage sections={drawn.filter((section) => !section.key.startsWith("setup:"))} />
       <Sheet
-        open={providerId !== null}
+        open={providerId !== null && !readFailed}
         title={
           dashboard.data?.providers.find((provider) => provider.provider === providerId)?.label ??
           "Messaging"

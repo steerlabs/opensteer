@@ -40,6 +40,7 @@ import {
   type AgentGrantSheet,
 } from "./agent-grant-sections.js";
 import { AgentGrantSheetPage } from "./agent-grant-sheet.js";
+import { readGateSections } from "./read-gate-sections.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
@@ -99,6 +100,10 @@ export function ConnectedAgentController(props: {
   useEffect(() => {
     if (agent !== null) navigation.setOptions({ title: agent });
   }, [agent, navigation]);
+  // A sheet open when a refresh fails closes without saving what it held.
+  useEffect(() => {
+    if (agents.readFailed) setSheet(null);
+  }, [agents.readFailed]);
   const hasKind = (kind: "computer-app" | "plugin") =>
     detail?.grant.scope === "selected" &&
     detail.grant.resources.some((resource) => resource.kind === kind);
@@ -243,44 +248,55 @@ export function ConnectedAgentController(props: {
   return (
     <>
       <NativeSettingsPage
-        sections={connectedAgentSections({
-          busy,
-          conflict: agents.conflict === connection.id,
-          context,
-          workPolicyRead: workPolicy !== undefined,
-          current,
-          detail,
-          error: agents.error,
-          note,
-          onDisconnect: disconnect,
-          onMode: (mode) => void save({ mode }),
-          onOpen: (which) => setSheet({ which, draft: current }),
-          onRemove: remove,
-          onScope: changeScope,
-          onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
-          onStop: (threadId) => {
-            if (stopping !== null) return;
-            setStopping(threadId);
-            void chatHost
-              .stopRun(threadId)
-              .catch((error: unknown) => {
-                const words = failureWords(error, {
-                  label: "stop this task",
-                  done: "stopped",
-                  happened: "the task was stopped",
-                });
-                if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
-              })
-              .finally(() => setStopping(null));
+        // A refresh that failed after the page was read: only Try again works until it is read.
+        sections={readGateSections(
+          connectedAgentSections({
+            busy,
+            conflict: agents.conflict === connection.id,
+            context,
+            workPolicyRead: workPolicy !== undefined,
+            current,
+            detail,
+            error: agents.error,
+            note,
+            onDisconnect: disconnect,
+            onMode: (mode) => void save({ mode }),
+            onOpen: (which) => setSheet({ which, draft: current }),
+            onRemove: remove,
+            onScope: changeScope,
+            onWatch: (threadId) => navigation.navigate("Thread", { deploymentId, threadId }),
+            onStop: (threadId) => {
+              if (stopping !== null) return;
+              setStopping(threadId);
+              void chatHost
+                .stopRun(threadId)
+                .catch((error: unknown) => {
+                  const words = failureWords(error, {
+                    label: "stop this task",
+                    done: "stopped",
+                    happened: "the task was stopped",
+                  });
+                  if (words !== null) Alert.alert(agentWords("chat.tasks.stop"), words);
+                })
+                .finally(() => setStopping(null));
+            },
+            stopping,
+            onChromeTab: (resource, on) =>
+              void save({ draft: toggleDraftResource(current, resource, on) }),
+            onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
+            pending,
+          }),
+          {
+            failed: agents.readFailed,
+            retry: {
+              message: agentWords("agent.readFailed"),
+              onRetry: () => void agents.refresh?.(),
+            },
           },
-          stopping,
-          onChromeTab: (resource, on) =>
-            void save({ draft: toggleDraftResource(current, resource, on) }),
-          onTasks: (tasks) => void save({ draft: { ...current, tasks } }),
-          pending,
-        })}
+        )}
       />
-      {sheet === null ? null : (
+      {/* No sheet over a page whose last read failed: it closes without acting. */}
+      {sheet === null || agents.readFailed ? null : (
         <AgentGrantSheetPage
           context={context}
           draft={sheet.draft}

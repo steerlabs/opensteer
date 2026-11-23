@@ -446,6 +446,43 @@ describe("Messaging", () => {
     }
   });
 
+  it("closes an open Remove when a refresh fails, so Remove does nothing until the page is read", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const client = chats();
+    try {
+      await withDashboard(client, (dashboard) => dashboard, 1);
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      await act(async () =>
+        page.querySelector<HTMLButtonElement>('button[aria-label="Actions for Workshop"]')!.click(),
+      );
+      await act(async () =>
+        [...document.querySelectorAll<HTMLElement>("[role=menuitem], button")]
+          .find((item) => item.textContent?.includes("Remove account"))!
+          .click(),
+      );
+      const remove = document.querySelector<HTMLButtonElement>("[role=dialog] .btn--danger");
+      expect(remove).toBeTruthy();
+      const dispatch = vi.spyOn(client, "dispatch");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await vi.waitFor(() => expect(page.textContent).toContain("Not read just now"));
+      // The dialog is gone; its Remove, if still held, acts no more.
+      expect(document.querySelector("[role=dialog]")).toBeNull();
+      await act(async () => remove!.click());
+      expect(dispatch).not.toHaveBeenCalled();
+      // One enabled control: the page's Try again.
+      const enabled = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (button) => !button.disabled && !button.closest("fieldset[disabled]"),
+      );
+      expect(enabled.map((button) => button.textContent)).toEqual(["Try again"]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("selects only the Messaging account named by the child route", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const loaded = unwrapRpcResult(await client.rpc["channels.get"]({}));

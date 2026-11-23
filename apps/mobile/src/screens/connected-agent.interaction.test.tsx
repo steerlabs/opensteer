@@ -602,6 +602,42 @@ describe("a chat on the phone", () => {
     expect(section("gone")).toBeUndefined();
   });
 
+  it("after a refresh fails on a page read before, offers only Try again", async () => {
+    const client = chats();
+    const changed: (() => void)[] = [];
+    const subscribe = client.subscribeConnectionsChanged.bind(client);
+    vi.spyOn(client, "subscribeConnectionsChanged").mockImplementation((listener) => {
+      changed.push(listener);
+      return subscribe(listener);
+    });
+    await open(chat(1), client);
+    expect(section("chat-where")).toBeDefined();
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() => expect(section("read-failed")).toBeDefined());
+    // Every row that acts, found by enumeration: only Try again.
+    const acting = (state.page?.sections ?? []).flatMap((candidate) =>
+      candidate.rows
+        .filter(
+          (candidateRow) =>
+            (candidateRow.kind === "button" && !candidateRow.opens) ||
+            candidateRow.kind === "toggle" ||
+            candidateRow.kind === "input" ||
+            candidateRow.kind === "choice" ||
+            candidateRow.kind === "chips",
+        )
+        .map((candidateRow) => candidateRow.label),
+    );
+    expect(acting).toEqual(["Try again"]);
+  });
+
   it("shows a chat none of a signed-in agent's identity lines", async () => {
     await open(chat(2), chats());
     expect(section("who")).toBeUndefined();

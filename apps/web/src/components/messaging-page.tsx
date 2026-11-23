@@ -31,6 +31,7 @@ import type { AgentConnection } from "@opensteer/protocol";
 import { useShell } from "./app-shell.js";
 import { ComputerChannelSetup } from "./computer-channel-setup.js";
 import { Dialog } from "./dialog.js";
+import { ReadGate } from "./read-gate.js";
 import { ExternalLink } from "./external-link.js";
 import { Icon } from "./icon.js";
 import { PageHeader, PageTopbar } from "./page-header.js";
@@ -499,24 +500,24 @@ export function ChannelOverview({
   const providerReady = dashboard.providers.some(
     ({ availability }) => availability === "available",
   );
+  // While the last read failed, nothing here changes anything: one gate for the page and its
+  // dialogs, whose Try again reads the accounts and the chats again.
   return (
-    <>
-      {readFailed ? (
-        <p className="notice notice--error" role="alert">
-          {agentWords("messaging.readFailed")}{" "}
-          <button className="btn btn--small" onClick={onRetry} type="button">
-            {agentWords("common.tryAgain")}
-          </button>
-        </p>
-      ) : null}
+    <ReadGate
+      failed={readFailed}
+      message={agentWords("messaging.readFailed")}
+      onRetry={() => {
+        onRetry();
+        onRetryChats();
+      }}
+    >
       {error ? (
         <p aria-live="assertive" className="notice notice--error" role="alert">
           <Icon name="alert-circle" />
           <span>{error}</span>
         </p>
       ) : null}
-      {/* While the last read failed, nothing here changes anything: one rule for every control. */}
-      <fieldset className="messaging-overview" disabled={readFailed}>
+      <div className="messaging-overview">
         {dashboard.connections.length === 0 ? (
           <div className="card">
             <div className="card__empty">
@@ -627,7 +628,7 @@ export function ChannelOverview({
             </section>
           );
         })}
-      </fieldset>
+      </div>
       {removing ? (
         <Dialog
           title={agentWords("messaging.remove.title", { account: removing.name })}
@@ -653,7 +654,7 @@ export function ChannelOverview({
           <p>{agentWords("messaging.remove.body")}</p>
         </Dialog>
       ) : null}
-    </>
+    </ReadGate>
   );
 }
 
