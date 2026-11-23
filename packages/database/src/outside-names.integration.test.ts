@@ -23,6 +23,7 @@ import { requestFromRow } from "./request-persistence.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { personalReachableGrant } from "./runner-store.js";
 import { TabStore } from "./tab-store.js";
+import { TriggerStore } from "./trigger-store.js";
 import {
   describeStore,
   liveRequest,
@@ -729,6 +730,46 @@ describeStore("a name from outside enters the Home clean", (it) => {
     });
     expect(await store.getThreadForOwner(session.threadId, userId)).toMatchObject({
       title: "Helper: Check Approved by you",
+    });
+  });
+  it("keeps automation names clean on create and update (the wire caps length)", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const { threadId, userId } = await storeFixture.createRunFixture("outside-automations");
+    const triggers = new TriggerStore(database);
+    const createdNames: string[] = [];
+    const updatedNames: string[] = [];
+    for (const [index, name] of boundedNames.entries()) {
+      const created = await triggers.create({
+        actorThreadId: null,
+        anchorThreadId: threadId,
+        createdBy: userId,
+        idempotencyKey: `outside-automation-${index}`,
+        name,
+        program: {
+          toolContractVersion: 5,
+          language: "javascript",
+          source: "export default async () => null",
+        },
+        source: {
+          kind: "schedule",
+          schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+        },
+      });
+      createdNames.push(created.trigger.name);
+      const updated = await triggers.update({
+        actorThreadId: null,
+        expectedRevisionId: created.revision.id,
+        name: boundedNames[(index + 1) % boundedNames.length]!,
+        ownerId: userId,
+        triggerId: created.trigger.id,
+      });
+      updatedNames.push(updated.trigger.name);
+    }
+    expect({ createdNames, updatedNames }).toEqual({
+      createdNames: cleaned,
+      updatedNames: [...cleaned.slice(1), cleaned[0]],
     });
   });
 });
