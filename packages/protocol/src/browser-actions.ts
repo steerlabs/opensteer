@@ -581,5 +581,10 @@ export const BrowserResumeTabResultSchema = z.strictObject({
   targetId: identifier,
   documentId: z.string().min(1).max(255),
   reloaded: z.boolean(),
+  /**
+   * V4: this wake opened the tab again at its address, not as itself: its typed text, scroll and
+   * page state are gone.
+   */
+  reopened: z.boolean().optional(),
 });
 export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;

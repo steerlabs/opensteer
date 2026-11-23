@@ -3888,6 +3888,10 @@ export class BrowserController {
         userActivity: this.ledger.targetActivity(binding.targetId) ?? null,
         pageResize: this.ledger.targetResize(binding.targetId) ?? null,
         reloaded,
+        // V4: woken by opening it again at its address, not as itself.
+        ...(reloaded && this.ledger.toRecord(parsed.data.surfaceId)?.reopenedAt !== undefined
+          ? { reopened: true }
+          : {}),
       };
       if (message.replyBudget && boundedJsonSize(result, message.replyBudget) === undefined)
         throw new BrowserRuntimeError(

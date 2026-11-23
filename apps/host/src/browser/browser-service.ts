@@ -4177,8 +4177,9 @@ export class BrowserService {
       // V3: the wake and its load wait end with the operation (Stop, Disconnect): the broker
       // cancels the runtime's wait, and this bind ends at once; a slow wake has its own bound.
       const broker = this.#brokers.get(session.id);
-      if (broker?.surfaceState === 1)
-        await withTimeout(
+      let reopened = false;
+      if (broker?.surfaceState === 1) {
+        const woke = await withTimeout(
           broker.requestCdp(
             {
               type: "cdp.command",
@@ -4200,6 +4201,8 @@ export class BrowserService {
               new BrowserCdpConnectionEnded("This tab did not wake in time. Try again shortly."),
           },
         );
+        reopened = (woke.result as { reopened?: unknown } | undefined)?.reopened === true;
+      }
       const { backend } = await this.#admitAgentBackend(
         { ...agent, sessionId: session.id },
         undefined,
@@ -4209,7 +4212,13 @@ export class BrowserService {
       await this.pageTabs.admitted!(fresh);
       await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
-      return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
+      return {
+        tabId: row.id,
+        sessionId: session.id,
+        backend,
+        reloaded: !live || reopened,
+        ...(reopened ? { reopened: true } : {}),
+      };
     } finally {
       reservation?.release();
     }
@@ -4966,6 +4975,9 @@ export class BrowserService {
         };
       }
       const ticket = this.standardCdpTickets.issue({ ...input, facts, mode }, pool);
+      // V4: the seed tab is the agent's from its wake until the client attaches or the link
+      // expires: nothing puts it to sleep before the agent has it.
+      if (facts.seed) this.#holdForAttach(record.id, facts.seed.surfaceId, input.ttl ?? 60_000);
       return { ticket, path: `${standardCdpConnectPrefix}${ticket}`, mode };
     } catch (error) {
       reserve?.release();
@@ -5245,6 +5257,8 @@ export class BrowserService {
         };
       });
       const transport = await opening;
+      // V4: the agent has its tab now; the hold from its wake ends.
+      if (claims.facts.seed) this.#releaseAttachHold(record.id, claims.facts.seed.surfaceId);
       const held = profileLease;
       if (pool && attempts) {
         transportOwnsPool = true;
@@ -6266,6 +6280,23 @@ export class BrowserService {
   }
   tabStateOf(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
     return this.#brokers.get(sessionId)?.surfaceStateOf(surfaceId);
+  }
+
+  readonly #attachHolds = new Map<string, NodeJS.Timeout>();
+  /** V4: keeps a tab woken for an agent's connection awake until it attaches or the link ends. */
+  #holdForAttach(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId, ttlMs: number): void {
+    const key = `attach:${sessionId}:${surfaceId}`;
+    clearTimeout(this.#attachHolds.get(key));
+    const timer = setTimeout(() => this.#releaseAttachHold(sessionId, surfaceId), ttlMs);
+    timer.unref();
+    this.#attachHolds.set(key, timer);
+    this.setRequestPins(key, [{ sessionId, runId: null, surfaceId }]);
+  }
+  #releaseAttachHold(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId): void {
+    const key = `attach:${sessionId}:${surfaceId}`;
+    clearTimeout(this.#attachHolds.get(key));
+    if (!this.#attachHolds.delete(key)) return;
+    this.setRequestPins(key, []);
   }
 
   setRequestPins(

@@ -8812,6 +8812,69 @@ it("ends an agent's bind at once when its operation ends while the tab wakes, an
   );
 });
 
+it("tells an agent's bind that its tab was reopened at its address, when the runtime says so (V4)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "bind-reopened",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() =>
+    expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("suspended"),
+  );
+  const binding = service.pageTabs.bindBrowserScript!(
+    {
+      authority: { ownerId, agentBindingId: "run:bind-reopened" },
+      threadId: createId("thread"),
+      signal: new AbortController().signal,
+    } as never,
+    row,
+  );
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === "Opensteer.resumeTab",
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: resume.requestId,
+    result: {
+      surfaceId: row.id,
+      targetId: "target-1",
+      documentId: "document-1",
+      dialog: null,
+      userActivity: null,
+      pageResize: null,
+      reloaded: true,
+      reopened: true,
+    },
+  });
+  await expect(binding).resolves.toMatchObject({ reloaded: true, reopened: true });
+});
+
 function memoryTabs() {
   const rows = new Map<string, TabRecord>();
   const add = async (write: TabWrite) => {

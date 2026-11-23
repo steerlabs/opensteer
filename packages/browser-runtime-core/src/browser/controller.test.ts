@@ -426,9 +426,10 @@ describe("BrowserController", () => {
         type: "cdp.result",
         result: { tabs: [{ surfaceId: id, targetId: null, state: "suspended" }], nextCursor: null },
       });
+      // V4: this tab slept by closing, so its wake opened it again at its address, and says so.
       expect(await command(browserHostMethods.resumeTab, { surfaceId: id })).toMatchObject({
         type: "cdp.result",
-        result: { surfaceId: id, targetId: expect.any(String), reloaded: true },
+        result: { surfaceId: id, targetId: expect.any(String), reloaded: true, reopened: true },
       });
       expect(create).toHaveBeenCalledTimes(1);
       expect(await command("Target.attachToTarget", { targetId, flatten: true })).toMatchObject({
