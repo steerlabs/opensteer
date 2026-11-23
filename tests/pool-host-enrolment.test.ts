@@ -1583,8 +1583,8 @@ exec /bin/rm "\${clean[@]}"
         writeFileSync(
           mpPath,
           existingMp.replace(
-            'if [[ -f "$MOUNT_STATE" ]]; then',
-            `if [[ "$target" == ${JSON.stringify(h.arrayDir)} ]]; then exit 0; fi\nif [[ -f "$MOUNT_STATE" ]]; then`,
+            'target="${!#}"',
+            `target="\${!#}"\nif [[ $target == ${JSON.stringify(h.arrayDir)} ]]; then exit 0; fi`,
           ),
           { mode: 0o755 },
         );
@@ -1723,6 +1723,151 @@ exit 0
         hNever.readCalls().some((c) => c.cmd === "mount"),
         "must not attempt mount when durable profile disk never appears",
       ).toBe(false);
+    });
+
+    it("real-host proof: setup-host.sh boot never calls systemctl daemon-reexec (which severs D-Bus during systemctl enable --now), while install re-execs only when systemd drop-ins change", () => {
+      const labelA = hostProfileDiskLabel("ph_11111111-1111-4111-8111-111111111111");
+      const makeKernelSettingsHarness = () => {
+        const h = createFakeHostEnv({
+          blockDeviceAppearsOnCheck: 1,
+          blkidRc: 0,
+          blkidOut: `DEVNAME=/dev/sdb\nLABEL=${labelA}\nTYPE=ext4\nUSAGE=filesystem`,
+          realInstallHostEnv: true,
+        });
+        const fakeSys = join(h.root, "sys");
+        const fakeEtc = join(h.root, "etc");
+        mkdirSync(join(fakeSys, "vulns"), { recursive: true });
+        writeFileSync(join(fakeSys, "kvm"), "");
+        writeFileSync(join(fakeSys, "cgroup.controllers"), "cpu memory pids\n");
+        writeFileSync(join(fakeSys, "smt-active"), "0\n");
+        mkdirSync(join(fakeSys, "thp"), { recursive: true });
+        mkdirSync(join(fakeSys, "ksm"), { recursive: true });
+        mkdirSync(join(fakeEtc, "sysctl.d"), { recursive: true });
+        mkdirSync(join(fakeEtc, "systemd/coredump.conf.d"), { recursive: true });
+        mkdirSync(join(fakeEtc, "systemd/system.conf.d"), { recursive: true });
+        writeFileSync(join(fakeSys, "thp/enabled"), "[madvise]\n");
+        writeFileSync(join(fakeSys, "thp/defrag"), "[madvise]\n");
+        writeFileSync(join(fakeEtc, "fstab"), "# test fstab\n");
+        writeFileSync(join(fakeEtc, "nftables.conf"), "#!/usr/sbin/nft -f\n");
+
+        writeFileSync(
+          join(h.etcDir, "host.env"),
+          [
+            `OSP_LOCAL_SSDS=/dev/null/none`,
+            `OSP_HOME_CIDR=10.40.0.0/20`,
+            `OSP_PROVISIONER_CIDR=10.50.0.0/24`,
+            `OSP_AGENT_PORT=7310`,
+            `OSP_ADMIN_PORT=7311`,
+            `OSP_RELAY_PORT=7312`,
+            `OSP_PROFILES_ROOT=${join(h.stateDir, "profiles")}`,
+            `OSP_EGRESS_SLICE_MIB=1536`,
+            `OSP_SKIP_DEFAULT_KERNEL=1`,
+            `OSP_REQUIRE_PROFILE_DISK=1`,
+            `OSP_PROFILE_DISK=${poolProfileDiskDevicePath}`,
+            `OSP_PROFILE_DISK_LABEL=${labelA}`,
+            "",
+          ].join("\n"),
+          { mode: 0o600 },
+        );
+
+        const mpPath = join(h.binDir, "mountpoint");
+        const existingMp = readFileSync(mpPath, "utf8");
+        writeFileSync(
+          mpPath,
+          existingMp.replace(
+            'target="${!#}"',
+            `target="\${!#}"\nif [[ $target == ${JSON.stringify(h.arrayDir)} ]]; then exit 0; fi`,
+          ),
+          { mode: 0o755 },
+        );
+        writeExecutable(
+          h.binDir,
+          "sed",
+          process.platform === "darwin"
+            ? `#!/usr/bin/env bash
+if [[ $1 == -i ]]; then shift; exec /usr/bin/sed -i '' "$@"; fi
+exec /usr/bin/sed "$@"
+`
+            : `#!/usr/bin/env bash
+exec /usr/bin/sed "$@"
+`,
+        );
+
+        const text = readFileSync(setupScript, "utf8")
+          .replace(
+            /^readonly KVM_DEV=.*$/mu,
+            `readonly KVM_DEV=${JSON.stringify(join(fakeSys, "kvm"))}`,
+          )
+          .replace(
+            /^readonly CGROUP_CONTROLLERS=.*$/mu,
+            `readonly CGROUP_CONTROLLERS=${JSON.stringify(join(fakeSys, "cgroup.controllers"))}`,
+          )
+          .replace(
+            /^readonly SMT_ACTIVE=.*$/mu,
+            `readonly SMT_ACTIVE=${JSON.stringify(join(fakeSys, "smt-active"))}`,
+          )
+          .replace(
+            /^readonly CPU_VULNS_DIR=.*$/mu,
+            `readonly CPU_VULNS_DIR=${JSON.stringify(join(fakeSys, "vulns"))}`,
+          )
+          .replace("[[ -c $KVM_DEV ]]", "[[ -e $KVM_DEV ]]")
+          .replaceAll("/sys/kernel/mm/transparent_hugepage", join(fakeSys, "thp"))
+          .replaceAll("/sys/kernel/mm/ksm", join(fakeSys, "ksm"))
+          .replaceAll("/etc/fstab", join(fakeEtc, "fstab"))
+          .replaceAll("/etc/sysctl.d", join(fakeEtc, "sysctl.d"))
+          .replaceAll("/etc/systemd/coredump.conf.d", join(fakeEtc, "systemd/coredump.conf.d"))
+          .replaceAll("/etc/systemd/system.conf.d", join(fakeEtc, "systemd/system.conf.d"))
+          .replaceAll("/etc/nftables.conf", join(fakeEtc, "nftables.conf"))
+          .replace(
+            "    check)\n        check\n        ;;",
+            "    check)\n        check\n        ;;\n    test-install-kernel-settings)\n        CMD=install\n        kernel_settings\n        ;;",
+          );
+        const copyPath = join(h.root, "setup-host-reexec.sh");
+        writeFileSync(copyPath, text, { mode: 0o755 });
+        return { h, copyPath, fakeEtc };
+      };
+
+      // 1. `setup-host.sh boot` writes the systemd drop-ins but must NEVER run `systemctl daemon-reexec`.
+      const bootHarness = makeKernelSettingsHarness();
+      const bootRes = runScript(bootHarness.copyPath, ["boot"], bootHarness.h.env);
+      expect(bootRes.status, bootRes.stderr).toBe(0);
+      expect(
+        readFileSync(
+          join(bootHarness.fakeEtc, "systemd/system.conf.d/opensteer-pool.conf"),
+          "utf8",
+        ),
+      ).toContain("DefaultLimitCORE=0");
+      expect(
+        bootHarness.h
+          .readCalls()
+          .some((c) => c.cmd === "systemctl" && c.args.includes("daemon-reexec")),
+        "setup-host.sh boot must not call systemctl daemon-reexec",
+      ).toBe(false);
+
+      // 2. `setup-host.sh install` calls `systemctl daemon-reexec` once when drop-ins change, and
+      //    does not re-exec again on an idempotent re-run when the files are unchanged.
+      const installHarness = makeKernelSettingsHarness();
+      const firstInstall = runScript(
+        installHarness.copyPath,
+        ["test-install-kernel-settings"],
+        installHarness.h.env,
+      );
+      expect(firstInstall.status, firstInstall.stderr).toBe(0);
+      const reexecCountAfterFirst = installHarness.h
+        .readCalls()
+        .filter((c) => c.cmd === "systemctl" && c.args.includes("daemon-reexec")).length;
+      expect(reexecCountAfterFirst).toBe(1);
+
+      const secondInstall = runScript(
+        installHarness.copyPath,
+        ["test-install-kernel-settings"],
+        installHarness.h.env,
+      );
+      expect(secondInstall.status, secondInstall.stderr).toBe(0);
+      const reexecCountAfterSecond = installHarness.h
+        .readCalls()
+        .filter((c) => c.cmd === "systemctl" && c.args.includes("daemon-reexec")).length;
+      expect(reexecCountAfterSecond).toBe(1);
     });
 
     it("Z4(c) + Z11: rendered download script rejects wrong SHA-256 before tar AND refuses any symlink inside the extracted bundle before running enroll-host.sh", () => {

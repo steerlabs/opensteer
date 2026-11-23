@@ -485,9 +485,21 @@ vm.swappiness=0
 EOF
     sysctl -q --system
     install -d -m 0755 /etc/systemd/coredump.conf.d /etc/systemd/system.conf.d
-    printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /etc/systemd/coredump.conf.d/opensteer-pool.conf
-    printf '[Manager]\nDefaultLimitCORE=0\n' > /etc/systemd/system.conf.d/opensteer-pool.conf
-    systemctl daemon-reexec
+    local systemd_conf_changed=0
+    if ! cmp -s <(printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n') /etc/systemd/coredump.conf.d/opensteer-pool.conf 2>/dev/null; then
+        printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /etc/systemd/coredump.conf.d/opensteer-pool.conf
+        systemd_conf_changed=1
+    fi
+    if ! cmp -s <(printf '[Manager]\nDefaultLimitCORE=0\n') /etc/systemd/system.conf.d/opensteer-pool.conf 2>/dev/null; then
+        printf '[Manager]\nDefaultLimitCORE=0\n' > /etc/systemd/system.conf.d/opensteer-pool.conf
+        systemd_conf_changed=1
+    fi
+    # Never re-exec PID 1 during `boot` (opensteer-pool-host.service): doing so inside a unit
+    # started as a dependency of `systemctl enable --now opensteer-pool-agent.service` severs the
+    # caller's D-Bus connection and lets systemctl return 0 before the services finish starting.
+    if (( systemd_conf_changed )) && [[ $CMD != boot ]]; then
+        systemctl daemon-reexec
+    fi
     # Linux 6.1+ cgroup v2 attach latency (Firecracker production host setup).
     mount -o remount,favordynmods /sys/fs/cgroup || die "could not remount cgroup2 with favordynmods"
 }
