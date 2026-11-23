@@ -338,10 +338,23 @@ export function agentWords(
  */
 export const connectionModeDescriptions: Readonly<Record<ThreadAccessMode, string>> = {
   "approval-required": "Asks you before anything that changes something.",
-  "auto-accept-edits": "Edits files in its tasks without asking. Asks before anything else.",
-  auto: "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+  "auto-accept-edits":
+    "Its tasks edit files in their own folder without asking, and the engine asks before what it counts as riskier. Its own direct actions ask you before anything that changes something.",
+  auto: "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
   "full-access":
     "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+};
+
+/** A chat has no direct actions: what Auto-accept edits means for the tasks it starts. */
+const chatAutoAcceptEdits =
+  "Edits files in the task’s own folder without asking; the engine asks you before what it counts as riskier.";
+
+/** The same, for a chat that answers only you: its tasks work in your Agent home. */
+export const ownerChatModeDescriptions: Readonly<Record<ThreadAccessMode, string>> = {
+  "approval-required": connectionModeDescriptions["approval-required"],
+  "auto-accept-edits": chatAutoAcceptEdits,
+  auto: "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+  "full-access": connectionModeDescriptions["full-access"],
 };
 
 /**
@@ -353,7 +366,7 @@ export function anyoneChatModeDescriptions(
 ): Readonly<Record<ThreadAccessMode, string>> {
   return {
     "approval-required": connectionModeDescriptions["approval-required"],
-    "auto-accept-edits": connectionModeDescriptions["auto-accept-edits"],
+    "auto-accept-edits": chatAutoAcceptEdits,
     auto: `People in ${conversation} can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.`,
     "full-access": `Never asks. People in ${conversation} can have it do anything on its computer that your user account can.`,
   };

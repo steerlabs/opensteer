@@ -29,7 +29,12 @@ import {
   type AgentGrantDraft,
 } from "./connected-agent-view.js";
 import type { ThreadSummary } from "./client.js";
-import { agentWords, connectionModeDescriptions } from "./connected-agents-copy.js";
+import {
+  agentWords,
+  anyoneChatModeDescriptions,
+  connectionModeDescriptions,
+  ownerChatModeDescriptions,
+} from "./connected-agents-copy.js";
 
 const now = new Date("2026-11-19T12:00:00Z");
 const profile = "bpr_00000000-0000-4000-8000-000000000003";
@@ -677,7 +682,24 @@ describe("connected agents copy", () => {
     expect(agentWords("consent.chromeTabs.label", { device: "Work Mac" })).toBe(
       "Tabs you share from Chrome on Work Mac",
     );
-    expect(connectionModeDescriptions["auto-accept-edits"]).toContain("Asks before anything else");
+    // No sentence promises what an engine does not do: nothing about reading, no "anything else".
+    for (const sentence of [
+      ...Object.values(connectionModeDescriptions),
+      ...Object.values(ownerChatModeDescriptions),
+      ...Object.values(anyoneChatModeDescriptions("#team")),
+    ])
+      expect(sentence).not.toMatch(/anything else\.|read/u);
+    expect(connectionModeDescriptions["auto-accept-edits"]).toBe(
+      "Its tasks edit files in their own folder without asking, and the engine asks before what it counts as riskier. Its own direct actions ask you before anything that changes something.",
+    );
+    expect(connectionModeDescriptions.auto).toBe(
+      "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
+    );
+    // A chat has no direct actions: the same words for each kind of chat.
+    for (const chat of [ownerChatModeDescriptions, anyoneChatModeDescriptions("#team")])
+      expect(chat["auto-accept-edits"]).toBe(
+        "Edits files in the task’s own folder without asking; the engine asks you before what it counts as riskier.",
+      );
   });
 });
 
