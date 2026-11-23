@@ -47,8 +47,10 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   private var composingEnd = -1
   private var contextId: String? = null
   private val selection = RemoteInputSelection()
-  /** A text change outside the gate is under way: its caret is part of it. */
-  private var outsideEdit = false
+  /** A text change outside the gate: one input after it has settled, its caret part of it (CW4). */
+  private val outside = RemoteInputOutsideEdit {
+    gate.notify(mapOf("type" to "input", "inputType" to "insertReplacementText", "composing" to composing(), "proxy" to snapshot()))
+  }
   private val touch = RemoteInputTouch(ViewConfiguration.getLongPressTimeout().toLong(), ViewConfiguration.get(context).scaledTouchSlop.toFloat())
   private val longPress = Runnable { if (touch.longPress(android.os.SystemClock.uptimeMillis()) != null) offerPaste() }
   var deliver: ((Map<String, Any?>) -> Unit)?
@@ -66,12 +68,11 @@ class RemoteInputEditText(context: Context) : EditText(context) {
       // A text change outside the gate (an accessibility set-text, a multi-character key) is
       // reported as the edit it is: its own caret goes with it, never undone half.
       override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
-        if (initialized && !mutating && !gate.inTurn) outsideEdit = true
+        if (initialized) outside.changing(byGate = mutating || gate.inTurn)
       }
       override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
       override fun afterTextChanged(s: Editable?) {
-        if (!mutating) gate.notify(mapOf("type" to "input", "inputType" to "insertReplacementText", "composing" to composing(), "proxy" to snapshot()))
-        outsideEdit = false
+        outside.changed(byGate = mutating || gate.inTurn) { post(it) }
       }
     })
     onFocusChangeListener = View.OnFocusChangeListener { _, focused -> if (!focused) gate.notify(mapOf("type" to "blur")) }
@@ -114,6 +115,13 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   /** Accessibility moves no caret and selects nothing in a field whose text nobody sees. */
   override fun performAccessibilityAction(action: Int, arguments: Bundle?): Boolean {
     if (action in refusedAccessibilityActions) return false
+    // CW4: an accessibility set-text goes through the gate whole: its text and the caret it puts
+    // at the end are one edit, sent with a beforeinput like any other.
+    if (action == AccessibilityNodeInfo.ACTION_SET_TEXT && isEnabled) {
+      val text = arguments?.getCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE)?.toString() ?: ""
+      change("insertReplacementText", text) { super.performAccessibilityAction(action, arguments) }
+      return true
+    }
     return super.performAccessibilityAction(action, arguments)
   }
   override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
@@ -206,7 +214,12 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   override fun onSelectionChanged(start: Int, end: Int) {
     super.onSelectionChanged(start, end)
     if (!initialized) return
-    when (selection.changed(start, end, gate.inTurn || outsideEdit, mutating)) {
+    // The caret an outside change moves is that change's: kept, and carried by its input.
+    if (outside.ownsSelection()) {
+      selection.changed(start, end, inGateTurn = true, mutating = true)
+      return
+    }
+    when (selection.changed(start, end, gate.inTurn, mutating)) {
       RemoteInputSelection.Outcome.REPORT -> gate.notify(mapOf("type" to "selection", "proxy" to snapshot()))
       RemoteInputSelection.Outcome.QUIET -> {}
       RemoteInputSelection.Outcome.UNDO -> {
@@ -300,6 +313,13 @@ class RemoteInputEditText(context: Context) : EditText(context) {
   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
     // Android owns Back/system keys, and Meta shortcuts remain available to the app.
     if (event.keyCode == KeyEvent.KEYCODE_BACK || (event.isMetaPressed && event.action != KeyEvent.ACTION_UP)) return super.dispatchKeyEvent(event)
+    // CW4: a multi-character key event types its characters through the gate, whole.
+    @Suppress("DEPRECATION")
+    if (event.action == KeyEvent.ACTION_MULTIPLE && event.keyCode == KeyEvent.KEYCODE_UNKNOWN && event.characters != null) {
+      val characters = event.characters
+      change("insertText", characters) { super.dispatchKeyEvent(event) }
+      return true
+    }
     if (event.action != KeyEvent.ACTION_DOWN && event.action != KeyEvent.ACTION_UP) return super.dispatchKeyEvent(event)
     val named = mapOf(KeyEvent.KEYCODE_DEL to "Backspace", KeyEvent.KEYCODE_FORWARD_DEL to "Delete", KeyEvent.KEYCODE_ENTER to "Enter", KeyEvent.KEYCODE_TAB to "Tab", KeyEvent.KEYCODE_ESCAPE to "Escape", KeyEvent.KEYCODE_PAGE_UP to "PageUp", KeyEvent.KEYCODE_PAGE_DOWN to "PageDown", KeyEvent.KEYCODE_SPACE to " ", KeyEvent.KEYCODE_MENU to "ContextMenu", KeyEvent.KEYCODE_DPAD_LEFT to "ArrowLeft", KeyEvent.KEYCODE_DPAD_RIGHT to "ArrowRight", KeyEvent.KEYCODE_DPAD_UP to "ArrowUp", KeyEvent.KEYCODE_DPAD_DOWN to "ArrowDown", KeyEvent.KEYCODE_MOVE_HOME to "Home", KeyEvent.KEYCODE_MOVE_END to "End", KeyEvent.KEYCODE_CTRL_LEFT to "Control", KeyEvent.KEYCODE_CTRL_RIGHT to "Control", KeyEvent.KEYCODE_ALT_LEFT to "Alt", KeyEvent.KEYCODE_ALT_RIGHT to "Alt", KeyEvent.KEYCODE_SHIFT_LEFT to "Shift", KeyEvent.KEYCODE_SHIFT_RIGHT to "Shift", KeyEvent.KEYCODE_META_LEFT to "Meta", KeyEvent.KEYCODE_META_RIGHT to "Meta")
     val unicode = event.getUnicodeChar(event.metaState and KeyEvent.META_CTRL_MASK.inv())
