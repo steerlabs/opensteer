@@ -120,24 +120,7 @@ export class CommandTools {
     if (input.type) {
       const found = held.find((entry) => entry.type === input.type);
       if (!found) throw notFound();
-      const row = commandRow(found.type) as CommandRow;
-      const omitted = Object.fromEntries(
-        ["idempotencyKey", ...(row.secretFields ?? []).filter((path) => !path.includes("."))].map(
-          (key) => [key, true],
-        ),
-      );
-      const schemas = (variants.get(found.type) ?? []).map((variant) =>
-        z.toJSONSchema(
-          variant.omit(
-            Object.fromEntries(
-              Object.keys(omitted)
-                .filter((key) => key in variant.shape)
-                .map((key) => [key, true]),
-            ) as never,
-          ),
-          { io: "input", unrepresentable: "any" },
-        ),
-      );
+      const schemas = commandInputSchemas(found.type);
       return {
         type: found.type,
         title: found.title,
@@ -343,6 +326,39 @@ export class CommandTools {
         : {}),
     };
   }
+}
+
+/**
+ * One command's input as JSON Schemas, one per variant: without its key, and without any value
+ * only the person types, at whatever depth the table's paths name it.
+ */
+export function commandInputSchemas(type: CommandType): Record<string, unknown>[] {
+  const row = commandRow(type) as CommandRow;
+  return (variants.get(type) ?? []).map((variant) => {
+    const schema = z.toJSONSchema(
+      "idempotencyKey" in variant.shape ? variant.omit({ idempotencyKey: true } as never) : variant,
+      { io: "input", unrepresentable: "any" },
+    ) as Record<string, unknown>;
+    for (const path of row.secretFields ?? []) dropPath(schema, path.split("."));
+    return schema;
+  });
+}
+
+/** Removes a dotted path from a JSON Schema, through its properties and its unions. */
+function dropPath(node: unknown, path: readonly string[]): void {
+  if (!node || typeof node !== "object" || path.length === 0) return;
+  const schema = node as Record<string, unknown>;
+  for (const key of ["anyOf", "oneOf", "allOf"])
+    if (Array.isArray(schema[key])) for (const option of schema[key]) dropPath(option, path);
+  const properties = schema.properties as Record<string, unknown> | undefined;
+  if (!properties || !(path[0]! in properties)) return;
+  if (path.length === 1) {
+    delete properties[path[0]!];
+    if (Array.isArray(schema.required))
+      schema.required = (schema.required as string[]).filter((name) => name !== path[0]);
+    return;
+  }
+  dropPath(properties[path[0]!], path.slice(1));
 }
 
 /**
