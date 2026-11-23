@@ -365,10 +365,29 @@ export function commandAskedFace(type: CommandType, face: number | undefined): n
 }
 
 /**
- * What a command gives, and to whom, when it widens something, in the person's words; null when
- * it gives nothing to anyone. From the table and the input only, never the agent's description.
+ * Where an automation's script would run, and as whom, as the Home read it from the anchor task's
+ * device (T4): the parts of one sentence, the device's own name already quoted as an outside name.
+ * Nothing about a sandbox: a script runs as that user, with what that user may do.
  */
-export function commandGives(command: Command, face: number): string | null {
+export interface CommandScriptPlace {
+  /** "on your Mac", "on this Cloud Computer", "on this server", "on the computer". */
+  readonly where: string;
+  /** The device's name, quoted, where it is not the Home's own computer. */
+  readonly name: string | null;
+  /** "you" on the person's Mac; "its user" elsewhere. */
+  readonly as: "you" | "its user";
+}
+
+/**
+ * What a command gives, and to whom, when it widens something, in the person's words; null when
+ * it gives nothing to anyone. From the table and the input only, never the agent's description,
+ * and, for a script an automation will run, the place the Home read (`place`).
+ */
+export function commandGives(
+  command: Command,
+  face: number,
+  place?: CommandScriptPlace | null,
+): string | null {
   const shape = commandTable[command.type].faces[face];
   if (!shape) return null;
   const input = command as unknown as Record<string, unknown>;
@@ -416,6 +435,12 @@ export function commandGives(command: Command, face: number): string | null {
       return shape.class === "widen-other"
         ? "What your tasks say would be sent to that server."
         : null;
+    case "trigger.create":
+    case "trigger.update":
+    case "trigger.run":
+      // Only a face that puts a program on the computer (its script, or when it runs).
+      if (!shape.lineage || !place) return null;
+      return `Its script runs ${place.where}${place.name ? ` ${place.name}` : ""}, as ${place.as}.`;
     default:
   }
   switch (shape.class) {

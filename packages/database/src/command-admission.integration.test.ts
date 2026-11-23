@@ -24,7 +24,11 @@ import {
   commandTable,
   type CommandResource,
 } from "@opensteer/protocol/command-table";
-import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
+import {
+  describeStore,
+  testModelSelection,
+  type StoreFixture,
+} from "./store.integration.test-support.js";
 
 /** The types an agent sends today through the administration service, which admits at commit. */
 const otherConnection = (type: CommandType) => commandTable[type].scope === "other-connection";
@@ -1037,6 +1041,151 @@ describeStore("one admission for Home commands", (it) => {
     const own = commands(await make(connection.id));
     for (const command of Object.values(own))
       expect(await admit(command), command.type).toBe("now");
+  });
+
+  it("reads an automation of a chat without personal context as nothing, for a memory pass's work (T3)", async ({
+    storeFixture,
+  }) => {
+    const { f, database } = await setup(storeFixture);
+    const program = {
+      toolContractVersion: 5 as const,
+      language: "javascript" as const,
+      source: "export default async () => null",
+    };
+    const make = async () =>
+      (
+        await storeFixture.triggers.create({
+          actorThreadId: null,
+          anchorThreadId: f.threadId,
+          createdBy: f.userId,
+          idempotencyKey: randomUUID(),
+          name: "Daily",
+          program,
+          source: {
+            kind: "schedule",
+            schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+          },
+        })
+      ).trigger.id;
+    // A chat anyone may speak in, and an automation in its lineage.
+    const chat = await storeFixture.createBridgeFixture("memory-reader", {
+      senders: "anyone",
+      conversation: { id: "C-memory-reader", name: "Open room" },
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const chats = await make();
+    await database
+      .updateTable("triggers")
+      .set({ originConnectionId: chat.bridge.id } as never)
+      .where("id", "=", chats)
+      .execute();
+    const persons = await make();
+    const admit = async (command: Record<string, unknown>) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(`run:${f.run.id}`),
+          command: { idempotencyKey: randomUUID(), ...command } as Command,
+        })
+      ).answer;
+    const pause = (triggerId: string) => ({
+      type: "trigger.status.set",
+      triggerId,
+      status: "paused",
+    });
+    // An ordinary Run of the person's task: both are the person's to pause.
+    expect(await admit(pause(chats))).toBe("now");
+    // The same Run as a memory pass's own work: its task is a memory automation's anchor.
+    await database
+      .updateTable("triggers")
+      .set({ systemRole: "memory-light" } as never)
+      .where("id", "=", persons)
+      .execute();
+    expect(await admit(pause(chats))).toBe("not_found");
+    expect(await admit({ type: "trigger.run", triggerId: chats })).toBe("not_found");
+    expect(await admit(pause(persons))).toBe("now");
+  });
+
+  it("asks one of the person's own agents before it runs, or puts a program in, another lineage's automation (T1)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, connect } = await setup(storeFixture);
+    const connection = await connect({ scope: "everything" });
+    // A task the connected agent started: its lineage, not the person's.
+    const { thread: theirs } = await storeFixture.store.createThread({
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstance.id,
+      idempotencyKey: randomUUID(),
+      modelSelection: testModelSelection,
+      title: "The agent's task",
+    } as never);
+    await database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id, accessMode: "full-access" })
+      .where("id", "=", theirs.id)
+      .execute();
+    const make = async (anchorThreadId: string, originConnectionId: string | null) => {
+      const created = await storeFixture.triggers.create({
+        actorThreadId: null,
+        anchorThreadId: f.threadId,
+        createdBy: f.userId,
+        idempotencyKey: randomUUID(),
+        name: "Daily",
+        program: {
+          toolContractVersion: 5,
+          language: "javascript",
+          source: "export default async () => null",
+        },
+        source: {
+          kind: "schedule",
+          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        },
+      });
+      await database
+        .updateTable("triggers")
+        .set({ anchorThreadId, originConnectionId } as never)
+        .where("id", "=", created.trigger.id)
+        .execute();
+      return created.trigger.id;
+    };
+    // The person's own agent: a Full Run in the person's own task, with no connection.
+    const admit = async (command: Record<string, unknown>) =>
+      (
+        await admitCommand(database, {
+          ownerUserId: f.userId,
+          subject: commandSubject(`run:${f.run.id}`),
+          command: { idempotencyKey: randomUUID(), ...command } as Command,
+        })
+      ).answer;
+    const program = {
+      toolContractVersion: 5,
+      language: "javascript",
+      source: "export default async () => 1",
+    };
+    const source = {
+      kind: "schedule",
+      schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+    };
+    const create = (anchorThreadId: string) => ({
+      type: "trigger.create",
+      input: { anchorThreadId, name: "New", program, source },
+    });
+    // The connected agent's automation: a program run unattended as its task is more than the
+    // person's own agent holds there; the person is asked.
+    const others = await make(theirs.id, connection.id);
+    expect(await admit({ type: "trigger.run", triggerId: others })).toBe("ask");
+    expect(await admit({ type: "trigger.update", triggerId: others, input: { program } })).toBe(
+      "ask",
+    );
+    expect(await admit(create(theirs.id))).toBe("ask");
+    // The person's own: its own work, at Full access, now.
+    const persons = await make(f.threadId, null);
+    expect(await admit({ type: "trigger.run", triggerId: persons })).toBe("now");
+    expect(await admit({ type: "trigger.update", triggerId: persons, input: { program } })).toBe(
+      "now",
+    );
+    expect(await admit(create(f.threadId))).toBe("now");
   });
 
   it("settles what a command answers in the effect's own transaction, or not at all", async ({

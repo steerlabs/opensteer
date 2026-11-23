@@ -104,7 +104,7 @@ import { ConnectionOAuth, connectionCommandEffects } from "../mcp/connections/in
 import { AgentDirectoryCache } from "../mcp/connections/agent-directory.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac } from "node:crypto";
-import { personalHomeKindOption } from "./home-kind.js";
+import { personalHomeKind, personalHomeKindOption } from "./home-kind.js";
 import { withFolderPluginPackage } from "../local-servers/folder-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
@@ -3492,6 +3492,8 @@ export async function createHostRuntime(
       store: commandRequestStore,
       database: store.database,
       requests: store.requests,
+      // Where an automation's script would run on this Home's own computer (T4).
+      homeKind: personalHomeKind(config),
     }));
     // An approval cut off by a restart may have taken effect: it is unknown, never run again.
     await commandRequestStore.recoverRunning();
