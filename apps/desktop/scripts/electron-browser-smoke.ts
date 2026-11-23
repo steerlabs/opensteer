@@ -1943,9 +1943,12 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     followTimed
       .filter(({ at }) => at >= since)
       .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`);
-  /** A check that counted a start exported that start's record, and its reason with it. */
+  /**
+   * A tab that must be cast counted its start, and exported that start's record with its reason:
+   * none counted is a failure, as when its debugger was missed (re-check 10, S6).
+   */
   const recordsItsStarts = (starts: number, followView: readonly string[]) =>
-    starts === 0 || followView.some((entry) => / cast-start /u.test(entry));
+    starts > 0 && followView.some((entry) => / cast-start /u.test(entry));
   /** What the follow view and each tab's debugger did since `since`, each tab by its address. */
   const evidenceSince = (since: number) => ({
     followView: followTimed
