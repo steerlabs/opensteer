@@ -46,6 +46,7 @@ import {
   type JourneyAccountTls,
 } from "./account-tls.js";
 import { journeyAppEnvironment } from "./app-environment.js";
+import { endHelpersStartedSince, runningHelpers } from "./helper-cleanup.js";
 import { presentedCertificate, presentedCertificateLine } from "./tls-evidence.js";
 import { phoneStepTitle, setupMoves } from "./setup-walk.js";
 import { openedByPress, type ElectronAppCalls } from "./system-browser.js";
@@ -96,10 +97,15 @@ const postgres = await startJourneyPostgres({
   dataDirectory: path.join(await mkdtemp(path.join(tmpdir(), "account-")), "postgres"),
 });
 const results: { trial: Trial; verdict: FirstRunTrialVerdict }[] = [];
+// The Computer Use helper the app starts outlives it by design: what the journey caused, it ends.
+const helpersBefore = runningHelpers();
 try {
   for (const trial of trials) results.push({ trial, verdict: await runTrial(trial) });
 } finally {
   await postgres.stop();
+  const ended = await endHelpersStartedSince(helpersBefore);
+  if (ended.length > 0)
+    console.log(`first-run: ended the Computer Use helper the app started (${ended.join(", ")})`);
 }
 for (const { trial, verdict } of results) {
   console.log(

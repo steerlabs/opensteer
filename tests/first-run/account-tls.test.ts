@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import { createServer, request } from "node:https";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
