@@ -649,6 +649,7 @@ async function chatFacts(
     )
     .select([
       "agentConnections.id",
+      "agentConnections.revokedAt",
       "agentConnections.bridgeEndedBy",
       "channelAccounts.displayName",
       "channelAccounts.handle",
@@ -710,7 +711,7 @@ async function chatFacts(
         pausedMessages:
           channelProviderCatalog.find((entry) => entry.provider === row.provider)?.pausedMessages ??
           "lost",
-        endedBy: row.bridgeEndedBy ?? row.endReason,
+        endedBy: row.revokedAt !== null ? row.bridgeEndedBy : (row.bridgeEndedBy ?? row.endReason),
         unknownReplies: row.unknownReplies,
         tasks: tasksOf(row.id),
       },

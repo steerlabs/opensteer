@@ -105,17 +105,17 @@ export function connectionState(now: Date = new Date()): RawBuilder<ConnectionSt
 }
 
 /**
- * Why a chat that is not live has ended, in the person's terms, from the same facts as its
- * state: its chat account was disconnected; the computer it ran on lost Messages or was removed;
- * otherwise the person disconnected it. A chat whose grant holds no tasks (none can be made
- * since the person cannot take them away) has no reason to give: null, read as ended.
+ * Why an unrevoked chat that is not live has ended, in the person's terms, from the same facts as
+ * its state: its chat account was disconnected; the computer it ran on lost Messages or was
+ * removed; otherwise no reason is given (null, read as ended — a chat the person disconnected
+ * writes `'you'` when revoked, and one ended without a reason never falls back to `'you'`).
  */
 export function chatEndReason(): RawBuilder<BridgeEndedBy | null> {
   return sql<BridgeEndedBy | null>`(case
     when not ${chatHoldsTasks} then null
     when not ${accountHeld(chatAccount)} or not ${chatOwnerHolds} then 'account'
     when not ${computerHeld(chatAccount)} then 'computer'
-    else 'you' end)`;
+    else null end)`;
 }
 
 /** The connection carries authority now. */

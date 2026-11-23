@@ -188,7 +188,8 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
       mode: "approval-required",
       agentConnection: { grant: tasks },
     });
-    // The chat ended for a reason that no longer exists: it keeps none, and reads as ended.
+    // The chat ended for a reason that no longer exists: it keeps none, and reads as ended
+    // through the person's list (never "you").
     expect(
       await database
         .selectFrom("agentConnections")
@@ -196,6 +197,11 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
         .where("id", "=", bridgeId!)
         .executeTakeFirstOrThrow(),
     ).toEqual({ bridgeEndedBy: null });
+    const listedEnded = (
+      await new AgentConnectionStore(database).list(fixture.userId, { includeRevoked: true })
+    ).find(({ id }) => id === bridgeId);
+    expect(listedEnded).toMatchObject({ state: "stopped", revokedAt: expect.any(String) });
+    expect(listedEnded?.bridge?.endedBy).toBeUndefined();
     await expect(
       sql`update agent_connections set bridge_ended_by = 'organization' where id = ${bridgeId!}`.execute(
         database,
@@ -207,7 +213,7 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     storeFixture,
   }) => {
     const { database } = storeFixture;
-    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-tasks");
+    const { bridgeId, fixture } = await storeFixture.createChannelDeliveryFixture("work-tasks");
     const [refused, kept] = await workHomeDatabase(
       database,
       fixture.deploymentId,
@@ -237,6 +243,12 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     });
     expect(await connection(database, kept)).toEqual(keptBefore);
     expect(await admit(database, fixture.userId, kept)).toMatchObject({ mode: "auto" });
+    // The open chat revoked by the migration reads as ended with no reason, never "you".
+    const listedBridge = (
+      await new AgentConnectionStore(database).list(fixture.userId, { includeRevoked: true })
+    ).find(({ id }) => id === bridgeId);
+    expect(listedBridge).toMatchObject({ state: "stopped", revokedAt: expect.any(String) });
+    expect(listedBridge?.bridge?.endedBy).toBeUndefined();
   });
 
   it("allowEverything: an everything grant the policy refused is ended; a selected one is kept", async ({
@@ -314,10 +326,39 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     storeFixture,
   }) => {
     const { database } = storeFixture;
-    const { fixture } = await storeFixture.createChannelDeliveryFixture("work-closing");
-    const agent = await workHomeDatabase(database, fixture.deploymentId, "offboarding", open, () =>
-      connected(database, fixture.userId, tasks, "auto"),
-    );
+    const { bridgeId, configured, fixture } =
+      await storeFixture.createChannelDeliveryFixture("work-closing");
+    const connections = new AgentConnectionStore(database);
+    const workHomeEndedChat = await connections.createBridge({
+      userId: fixture.userId,
+      accountId: configured.account.id,
+      conversation: { id: "C-work-home-ended", name: "#ops" },
+      senders: "owner",
+      accessMode: "auto",
+      grant: tasks,
+    });
+    const personEndedChat = await connections.createBridge({
+      userId: fixture.userId,
+      accountId: configured.account.id,
+      conversation: { id: "C-person-ended", name: "#mine" },
+      senders: "owner",
+      accessMode: "auto",
+      grant: tasks,
+    });
+    await connections.revoke(fixture.userId, personEndedChat.id);
+    const agent = await workHomeDatabase(database, fixture.deploymentId, "offboarding", open, async () => {
+      await database
+        .updateTable("agentConnections")
+        .set({
+          revokedAt: new Date(),
+          cleanupReason: "revoked",
+          cleanupRequestedAt: new Date(),
+          bridgeEndedBy: "work-home" as never,
+        })
+        .where("id", "=", workHomeEndedChat.id)
+        .execute();
+      return connected(database, fixture.userId, tasks, "auto");
+    });
     const before = await connection(database, agent);
 
     await migrateToLatest(database);
@@ -332,6 +373,16 @@ describeStore("a Home that was a work Home becomes an ordinary Home of its one p
     });
     await expect(admit(database, fixture.userId, agent)).rejects.toMatchObject({
       code: "forbidden",
+    });
+    const listed = await connections.list(fixture.userId, { includeRevoked: true });
+    for (const id of [bridgeId!, workHomeEndedChat.id]) {
+      const chat = listed.find((row) => row.id === id);
+      expect(chat).toMatchObject({ state: "stopped", revokedAt: expect.any(String) });
+      expect(chat?.bridge?.endedBy).toBeUndefined();
+    }
+    expect(listed.find((row) => row.id === personEndedChat.id)).toMatchObject({
+      state: "stopped",
+      bridge: { endedBy: "you" },
     });
   });
 
