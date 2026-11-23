@@ -4484,6 +4484,8 @@ it("vetoes a park attempted during the first session.state send after a re-attac
       now: () => gate.backgroundNow(),
       wait: (signal: AbortSignal) => gate.background(signal),
       retiring: () => gate.retiringOrAdopting,
+      refusesWrite: (reservation: Parameters<BrowserPoolGate["refusesWrite"]>[0]) =>
+        gate.refusesWrite(reservation),
     },
     readSessionState: async () => {
       stateReads += 1;
