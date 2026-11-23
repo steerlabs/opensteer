@@ -310,7 +310,7 @@ describe("browser editing transport", () => {
       store.receive(sessionId, {
         type: "browser.error",
         error: {
-          code: "invalid_argument",
+          code: "bad_message",
           reason: "too-large",
           message: "Too large.",
           retryable: false,

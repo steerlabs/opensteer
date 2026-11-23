@@ -1129,7 +1129,7 @@ it("sends a Backspace at the mirror's start to the page", () => {
 it("never swallows a Backspace input after a composition commit when no beforeinput precedes it", () => {
   const { operations, state } = replay([
     { type: "compositionstart", proxy: proxy("") },
-    { type: "compositionupdate", data: "日本", proxy: proxy("日本", 2, 2, { start: 0, end: 2 }) },
+    { type: "compositionupdate", data: "日本", proxy: proxy("日本", 2, 2) },
     input("日本", "insertCompositionText", true),
     { type: "compositionend", data: "日本", proxy: proxy("日本") },
     // An adapter or browser that emits input(deleteContentBackward) without a preceding
@@ -1157,7 +1157,7 @@ it("never swallows a Backspace input after a composition commit when no beforein
 it("still swallows a cancelled composition's trailing deleteContentBackward input", () => {
   const { operations } = replay([
     { type: "compositionstart", proxy: proxy("") },
-    { type: "compositionupdate", data: "に", proxy: proxy("に", 1, 1, { start: 0, end: 1 }) },
+    { type: "compositionupdate", data: "に", proxy: proxy("に", 1, 1) },
     input("に", "insertCompositionText", true),
     { type: "compositionend", data: "", proxy: proxy("") },
     input("", "deleteContentBackward", false),

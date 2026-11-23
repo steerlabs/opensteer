@@ -4125,7 +4125,7 @@ describe("BrowserController", () => {
 
       // 1) Focus flips in page DURING clipboard.open (after admitsInsertion passed): must refuse!
       let liveOk = true;
-      cdp.responses.set("Runtime.evaluate", (params) => {
+      cdp.responses.set("Runtime.evaluate", (params?: Record<string, unknown>) => {
         const expr = String(params?.expression ?? "");
         if (expr.includes("prepareClipboard"))
           return {
