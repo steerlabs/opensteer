@@ -982,8 +982,8 @@ describe("the follow view, under random sequences of what the person, the page a
   for (const engine of ["desktop", "linux"] as const)
     it(
       `keeps every invariant at every quiet point (${engine})`,
-      // oxlint-disable-next-line opensteer/no-unit-test-timeout -- The seed count sets the work: a larger search is given time in proportion (20 ms a seed), so it needs no flag.
-      { timeout: 5_000 + seeds * 20 },
+      // oxlint-disable-next-line opensteer/no-unit-test-timeout -- The seed count sets the work: a larger search is given time in proportion, so it needs no flag. 500 seeds took 23 ms a seed at a load of 40; each is given 60.
+      { timeout: 5_000 + seeds * 60 },
       async () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const only = process.env.OPENSTEER_FOLLOW_GENERATED_SEED;
