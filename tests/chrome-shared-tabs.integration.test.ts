@@ -291,7 +291,7 @@ async function proveChromeShares(
   const attachEvidence = sharedChromeAttempts(fixture.database);
   let attachEndsHeld: Promise<void> | null = null;
   /** Attach ends asked for so far (each one, held or not). */
-  let attachEndsAsked = 0;
+  const attachEndsAsked = new Map<string, number>();
   const holdAttachEnds = () => {
     const held = Promise.withResolvers<void>();
     attachEndsHeld = held.promise;
@@ -304,7 +304,8 @@ async function proveChromeShares(
     attempts: {
       ...attachEvidence,
       finish: async (...args: Parameters<typeof attachEvidence.finish>) => {
-        attachEndsAsked++;
+        // Only the ends a test's own connection asks for count (TS15).
+        attachEndsAsked.set(args[0], (attachEndsAsked.get(args[0]) ?? 0) + 1);
         await attachEndsHeld;
         return attachEvidence.finish(...args);
       },
@@ -314,8 +315,12 @@ async function proveChromeShares(
   // The Home's authority recheck of an attach, which a test can make pass for a while
   // (`holdRecheck`), so that cleanup, not the recheck, ends a revoked connection's attach.
   let recheckHeld = false;
-  const holdRecheck = () => {
+  // A recheck already under way when the hold begins is waited for, so none can see a revoke
+  // made after the hold (TS15).
+  const rechecks = new Set<Promise<unknown>>();
+  const holdRecheck = async () => {
     recheckHeld = true;
+    await Promise.allSettled(rechecks);
     return () => {
       recheckHeld = false;
     };
@@ -328,7 +333,13 @@ async function proveChromeShares(
       ...attached,
       reauthorize: async (...check: Parameters<typeof reauthorize>) => {
         if (recheckHeld) return;
-        return reauthorize(...check);
+        const running = reauthorize(...check);
+        rechecks.add(running);
+        try {
+          return await running;
+        } finally {
+          rechecks.delete(running);
+        }
       },
     };
   };
@@ -1106,7 +1117,8 @@ async function proveChromeShares(
       (await connections.list(ownerId, { includeRevoked: true })).find(
         ({ id }) => id === isolated.connectionId,
       )?.state;
-    const askedBefore = attachEndsAsked;
+    const endsAsked = () => attachEndsAsked.get(isolated.connectionId) ?? 0;
+    const askedBefore = endsAsked();
     let cleanup: Awaited<ReturnType<typeof driveCleanups>>;
     if (revokeOrder === "recheck first") {
       // The Home's next authority recheck ends the attach; its end is held until the state before
@@ -1119,7 +1131,7 @@ async function proveChromeShares(
             expect.objectContaining({ kind: "shared-chrome", terminalEvidenceAt: null }),
           ]),
         );
-        await vi.waitFor(() => expect(attachEndsAsked).toBeGreaterThan(askedBefore), {
+        await vi.waitFor(() => expect(endsAsked()).toBeGreaterThan(askedBefore), {
           timeout: 5_000,
           interval: 25,
         });
@@ -1131,7 +1143,7 @@ async function proveChromeShares(
     } else {
       // Nothing ends the attach before cleanup does: the recheck passes until cleanup has run, and
       // cleanup's stop (stopSharing, then the unshare) writes the attach's end.
-      const releaseRecheck = holdRecheck();
+      const releaseRecheck = await holdRecheck();
       try {
         expect(await connections.revoke(ownerId, isolated.connectionId)).toBe(true);
         expect(await connectionAttempts(fixture.database, isolated.connectionId)).toEqual(
@@ -1140,9 +1152,9 @@ async function proveChromeShares(
           ]),
         );
         expect(await stateOf()).toBe("stopping");
-        expect(attachEndsAsked).toBe(askedBefore);
+        expect(endsAsked()).toBe(askedBefore);
         cleanup = await driveCleanups();
-        expect(attachEndsAsked).toBeGreaterThan(askedBefore);
+        expect(endsAsked()).toBeGreaterThan(askedBefore);
       } finally {
         releaseRecheck();
       }
