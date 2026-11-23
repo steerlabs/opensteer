@@ -34,7 +34,7 @@ import { startBrowserRuntime } from "../browser/browser-runtime.test-support.js"
 import { agentCommandAdmission, agentCommandScope, dispatchCommand } from "./dispatch.js";
 import type { CommandRegistry } from "./registry.js";
 import { sql } from "kysely";
-import { expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   connectionCredentialPrefix,
   credentialHash,
@@ -216,9 +216,17 @@ function corresponds(tool: Outcome, door: Door): boolean {
   return door === "ask";
 }
 
-it("records what today's tools let each caller do, and the door answers the same", async () => {
+/**
+ * The Home, its computer, the five callers and every scenario, set up once for the tests below;
+ * each test runs one scenario for the five callers and holds it to the frozen record.
+ */
+async function setUpParity() {
   const database = await cloneTestDatabase("host");
   const close: (() => Promise<unknown>)[] = [];
+  const closeAll = async () => {
+    for (const step of close) await step().catch(() => undefined);
+    await database.drop?.();
+  };
   try {
     // Plugins build against the engine's fixture registry and install from its catalog.
     const { pluginFixtureFiles, pluginFixtureRegistry } = await pluginFixture();
@@ -1698,46 +1706,6 @@ export default defineApp({}, { tools: router({ tick }),
       }
     });
 
-    // Only the person approves: a connection's token and a Run's tools token are not sessions,
-    // so neither can send the approval through the person's command route.
-    for (const bearer of [everything.token, full.toolsToken]) {
-      const refused = await testRpcRequest(
-        host.origin,
-        "commands.dispatch",
-        {
-          type: "request.command.approve",
-          idempotencyKey: randomUUID(),
-          requestId: "req_00000000-0000-4000-8000-000000000001",
-          expectedRevision: "1",
-          command: {},
-        } as never,
-        { headers: { authorization: `Bearer ${bearer}` } },
-      );
-      expect(refused.status, "an agent's credential on the person's command route").toBe(401);
-    }
-
-    // Every step-A command has a scenario, or a reason no tool performs it, or is owed by name.
-    const covered = new Set(
-      scenarios.flatMap((scenario) => scenario.command?.("own-full").type ?? []),
-    );
-    const stepA = (
-      expectedRows.rows as readonly {
-        type: string;
-        step: string;
-        faces: readonly { step?: string }[];
-      }[]
-    )
-      .filter((row) => row.step === "A" || row.faces.some((face) => face.step === "A"))
-      .map((row) => row.type);
-    expect(
-      stepA.filter((type) => !covered.has(type) && !withoutTool[type] && !owed[type]),
-      "step-A commands with no scenario, no reason and no owed entry",
-    ).toEqual([]);
-    expect(
-      Object.keys({ ...withoutTool, ...owed }).filter((type) => covered.has(type)),
-      "a reason or an owed entry for a command that has a scenario",
-    ).toEqual([]);
-
     // After A5 removed a tool, what it did is the frozen record; the door is still held to it.
     const offeredNames = new Set<string>(agentTools.map(({ name }) => name));
     const frozen = existsSync(fixturePath)
@@ -1752,7 +1720,7 @@ export default defineApp({}, { tools: router({ tick }),
       ...scenarios.filter((scenario) => scenario.tool.startsWith("tab_")),
       ...scenarios.filter((scenario) => !scenario.tool.startsWith("tab_")),
     ];
-    for (const scenario of ordered) {
+    const runScenario = async (scenario: Scenario) => {
       recorded[scenario.name] = {} as Record<Caller, Outcome>;
       for (const caller of callerNames) {
         current = `${scenario.name} / ${caller}`;
@@ -1833,25 +1801,111 @@ export default defineApp({}, { tools: router({ tick }),
           );
       }
       await scenario.after?.();
-    }
-    if (process.env.OPENSTEER_TOOL_PARITY_TRACE === "1")
-      console.error("PARITY SENT", JSON.stringify(sent));
-    // Recorded once, then frozen: outside recording a missing record fails.
-    if (process.env.OPENSTEER_RECORD_TOOL_PARITY === "1")
-      writeFileSync(fixturePath, `${JSON.stringify(recorded, null, 1)}\n`);
-    else {
-      expect(existsSync(fixturePath), "the frozen recording").toBe(true);
-      expect(recorded).toEqual(JSON.parse(readFileSync(fixturePath, "utf8")));
-    }
-    expect(machineClosed).toEqual([]);
-    expect(unfaithful).toEqual([]);
-    expect(differences).toEqual([]);
-  } finally {
-    for (const step of close) await step().catch(() => undefined);
-    await database.drop?.();
+    };
+    const recording = process.env.OPENSTEER_RECORD_TOOL_PARITY === "1";
+    return {
+      names: ordered.map((scenario) => scenario.name),
+      /** One scenario, its five callers: its own differences, and its row as it was frozen. */
+      async run(name: string) {
+        const scenario = ordered.find((candidate) => candidate.name === name);
+        expect(scenario, `${name}: no such scenario`).toBeDefined();
+        const known = { differences: differences.length, unfaithful: unfaithful.length };
+        await runScenario(scenario!);
+        expect(machineClosed).toEqual([]);
+        expect(unfaithful.slice(known.unfaithful)).toEqual([]);
+        expect(differences.slice(known.differences)).toEqual([]);
+        if (!recording) expect(recorded[name]).toEqual(frozen[name]);
+      },
+      /** What holds across every scenario, and the record written or held to. */
+      async finish() {
+        // Only the person approves: a connection's token and a Run's tools token are not sessions,
+        // so neither can send the approval through the person's command route.
+        for (const bearer of [everything.token, full.toolsToken]) {
+          const refused = await testRpcRequest(
+            host.origin,
+            "commands.dispatch",
+            {
+              type: "request.command.approve",
+              idempotencyKey: randomUUID(),
+              requestId: "req_00000000-0000-4000-8000-000000000001",
+              expectedRevision: "1",
+              command: {},
+            } as never,
+            { headers: { authorization: `Bearer ${bearer}` } },
+          );
+          expect(refused.status, "an agent's credential on the person's command route").toBe(401);
+        }
+
+        // Every step-A command has a scenario, or a reason no tool performs it, or is owed by name.
+        const covered = new Set(
+          scenarios.flatMap((scenario) => scenario.command?.("own-full").type ?? []),
+        );
+        const stepA = (
+          expectedRows.rows as readonly {
+            type: string;
+            step: string;
+            faces: readonly { step?: string }[];
+          }[]
+        )
+          .filter((row) => row.step === "A" || row.faces.some((face) => face.step === "A"))
+          .map((row) => row.type);
+        expect(
+          stepA.filter((type) => !covered.has(type) && !withoutTool[type] && !owed[type]),
+          "step-A commands with no scenario, no reason and no owed entry",
+        ).toEqual([]);
+        expect(
+          Object.keys({ ...withoutTool, ...owed }).filter((type) => covered.has(type)),
+          "a reason or an owed entry for a command that has a scenario",
+        ).toEqual([]);
+        if (process.env.OPENSTEER_TOOL_PARITY_TRACE === "1")
+          console.error("PARITY SENT", JSON.stringify(sent));
+        // Recorded once, then frozen: outside recording a missing record fails.
+        if (recording) writeFileSync(fixturePath, `${JSON.stringify(recorded, null, 1)}\n`);
+        else {
+          expect(existsSync(fixturePath), "the frozen recording").toBe(true);
+          expect(recorded).toEqual(frozen);
+        }
+        expect(machineClosed).toEqual([]);
+      },
+      close: closeAll,
+    };
+  } catch (error) {
+    await closeAll();
+    throw error;
   }
-  // Every command an agent can send, five callers each, with real plugin builds among them.
-}, 600_000);
+}
+
+/** The frozen record's rows, in the order they were recorded: the order the scenarios run. */
+const frozenOrder = existsSync(fixturePath)
+  ? Object.keys(JSON.parse(readFileSync(fixturePath, "utf8")) as Record<string, unknown>)
+  : [];
+
+describe("parity with today's tools: what each caller may do, and the door answers the same", () => {
+  let parity: Awaited<ReturnType<typeof setUpParity>>;
+  // A Home, its computer and browser, the callers' Runs and connections, and the person's plugins.
+  // Sized on the spare Linux machine: set-up 5.9 s, the slowest scenario 2.9 s (the file's bound
+  // is 30 s for each).
+  beforeAll(async () => {
+    parity = await setUpParity();
+  });
+  afterAll(async () => {
+    await parity?.close();
+  });
+
+  it("runs its scenarios in the order the record froze them", () => {
+    const recording = process.env.OPENSTEER_RECORD_TOOL_PARITY === "1";
+    if (recording)
+      expect(parity.names.filter((name) => frozenOrder.includes(name))).toEqual(frozenOrder);
+    else expect(parity.names).toEqual(frozenOrder);
+  });
+  for (const name of frozenOrder) it(name, () => parity.run(name));
+  it("records the scenarios the record does not hold yet", async () => {
+    const fresh = parity.names.filter((name) => !frozenOrder.includes(name));
+    if (process.env.OPENSTEER_RECORD_TOOL_PARITY !== "1") expect(fresh).toEqual([]);
+    for (const name of fresh) await parity.run(name);
+  });
+  it("covers every step-A command, and the record holds every row", () => parity.finish());
+});
 
 /**
  * Waits for one named thing, polling, within a stated bound. On timeout it says what it waited
