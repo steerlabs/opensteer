@@ -308,18 +308,31 @@ export function LinkRow(props: {
       ]}
     >
       <ListItem.HeadlineContent>
-        {props.leadAbove === true && props.lead ? props.lead : null}
-        <Text
-          color={
-            props.disabled === true
-              ? color.mutedDim
-              : props.destructive === true
-                ? color.red
-                : color.text
-          }
-        >
-          {title}
-        </Text>
+        {(() => {
+          const line = (
+            <Text
+              color={
+                props.disabled === true
+                  ? color.mutedDim
+                  : props.destructive === true
+                    ? color.red
+                    : color.text
+              }
+            >
+              {title}
+            </Text>
+          );
+          // Material lays a slot's children over one another: a mark above the title is a
+          // Column's first child, the title its second.
+          return props.leadAbove === true && props.lead ? (
+            <Column verticalArrangement={{ spacedBy: 8 }}>
+              {props.lead}
+              {line}
+            </Column>
+          ) : (
+            line
+          );
+        })()}
       </ListItem.HeadlineContent>
       {detail ? (
         <ListItem.SupportingContent>
