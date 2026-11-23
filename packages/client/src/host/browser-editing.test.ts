@@ -423,6 +423,101 @@ describe("browser editing transport", () => {
       vi.useRealTimers();
     }
   });
+  it("never settles an unnamed sent paste or cut as empty on unsupported-operation or target-suspended", async () => {
+    const { store, target, commands } = setup();
+    try {
+      const paste = target.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: encoder.encode("hello") }],
+        contextId: crypto.randomUUID(),
+      });
+      const cut = target.send({ kind: "cut", contextId: crypto.randomUUID() });
+      const copy = target.send({ kind: "copy", contextId: crypto.randomUUID() });
+      const pasteCmd = commands.find((c) => c.type === "clipboard.paste-data");
+      const copyCmd = commands.find((c) => c.type === "clipboard.copy");
+      if (pasteCmd?.type !== "clipboard.paste-data" || copyCmd?.type !== "clipboard.copy")
+        throw new Error("Missing clipboard commands.");
+
+      // An unnamed per-message unsupported-operation (e.g. surface.close or an unrelated command)
+      // must NOT settle any pending paste, cut, or copy as empty.
+      store.receive(
+        sessionId,
+        {
+          type: "browser.error",
+          error: {
+            code: "conflict",
+            reason: "unsupported-operation",
+            message: "Close tabs through the Host.",
+            retryable: false,
+          },
+        },
+        surfaceId,
+      );
+      const afterUnnamed = await Promise.race([
+        paste.then((r) => `paste:${r?.outcome}`),
+        cut.then((r) => `cut:${r?.outcome}`),
+        copy.then((r) => `copy:${r?.outcome}`),
+        new Promise<string>((resolve) => setTimeout(() => resolve("all-pending"), 0)),
+      ]);
+      expect(afterUnnamed).toBe("all-pending");
+
+      // Naming ONLY copy settles only copy; paste and cut stay pending.
+      store.receive(
+        sessionId,
+        {
+          type: "browser.error",
+          operationId: copyCmd.operationId,
+          error: {
+            code: "conflict",
+            reason: "unsupported-operation",
+            message: "Only basic phone input is available.",
+            retryable: false,
+          },
+        },
+        surfaceId,
+      );
+      expect(await copy).toEqual({ outcome: "empty", items: [] });
+      const afterNamedCopy = await Promise.race([
+        paste.then((r) => `paste:${r?.outcome}`),
+        cut.then((r) => `cut:${r?.outcome}`),
+        new Promise<string>((resolve) => setTimeout(() => resolve("paste-and-cut-pending"), 0)),
+      ]);
+      expect(afterNamedCopy).toBe("paste-and-cut-pending");
+
+      // Paste receives its own result normally.
+      store.receive(sessionId, {
+        type: "clipboard.result",
+        surfaceId,
+        operationId: pasteCmd.operationId,
+        outcome: "pasted",
+      });
+      expect(await paste).toEqual({ outcome: "pasted", items: [] });
+
+      // On surface-wide target-suspended, a sent paste or cut settles as unknown (never empty).
+      const paste2 = target.send({
+        kind: "paste",
+        items: [{ type: "text/plain", bytes: encoder.encode("world") }],
+        contextId: crypto.randomUUID(),
+      });
+      store.receive(
+        sessionId,
+        {
+          type: "browser.error",
+          error: {
+            code: "conflict",
+            reason: "target-suspended",
+            message: "Tab suspended.",
+            retryable: false,
+          },
+        },
+        surfaceId,
+      );
+      expect(await paste2).toEqual({ outcome: "unknown", items: [] });
+      expect(await cut).toEqual({ outcome: "unknown", items: [] });
+    } finally {
+      store.dispose();
+    }
+  });
 });
 
 describe("browser autofill offers", () => {

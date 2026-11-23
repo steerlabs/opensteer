@@ -166,11 +166,14 @@ describe("basic browser input", () => {
     async (reason) => {
       const { store, target, commands } = setup();
       const copy = target.send({ kind: "copy", contextId: context.contextId });
-      expect(commands.at(-1)?.type).toBe("clipboard.copy");
+      const cmd = commands.at(-1);
+      expect(cmd?.type).toBe("clipboard.copy");
+      const operationId = cmd?.type === "clipboard.copy" ? cmd.operationId : undefined;
       store.receive(
         "session",
         {
           type: "browser.error",
+          ...(reason === "unsupported-operation" && operationId ? { operationId } : {}),
           error: {
             code: "conflict",
             reason,

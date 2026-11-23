@@ -9956,10 +9956,17 @@ export class HostedBrowserBroker {
       (!browserBasicInputAllows(message) ||
         (message.type === "clipboard.part" &&
           !outlet.clipboardOperations.has(message.part.operationId)))
-    )
+    ) {
+      const operationId =
+        "operationId" in message
+          ? message.operationId
+          : message.type === "clipboard.part"
+            ? message.part.operationId
+            : undefined;
       return outlet.sendText(
         JSON.stringify({
           type: "browser.error",
+          ...(operationId ? { operationId } : {}),
           error: {
             code: "conflict",
             reason: "unsupported-operation",
@@ -9969,6 +9976,7 @@ export class HostedBrowserBroker {
           },
         }),
       );
+    }
     if (message.type === "stream.subscribe" || message.type === "stream.unsubscribe") {
       const subscription =
         message.type === "stream.subscribe"

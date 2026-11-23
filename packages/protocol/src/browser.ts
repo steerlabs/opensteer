@@ -1109,6 +1109,7 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     ...browserBase,
     type: z.literal("browser.error"),
     error: ProtocolErrorSchema,
+    operationId: z.uuid().optional(),
   }),
   /**
    * The viewer named by `consumerToken` opened this popup with its own input.

@@ -540,13 +540,36 @@ export class BrowserEditingStore {
   }
   receive(sessionId: string, message: BrowserServerMessage, surfaceId?: string): void {
     if (message.type === "browser.error") {
-      // P1 (M1): a clipboard operation is settled only by an answer naming its operationId or
-      // by the end of what carries it. Only the two session-wide reasons settle pending ops here.
+      // P1 / A2: settle only the operation a per-message refusal names; an unnamed
+      // `unsupported-operation` belongs to some other message, and a sent paste or cut that a
+      // refusal does not name stays pending (or becomes `unknown` on `target-suspended`), never `empty`.
       if (
         message.error.reason !== "unsupported-operation" &&
         message.error.reason !== "target-suspended"
       )
         return;
+      if (message.operationId) {
+        const pending = this.#pending.get(message.operationId);
+        if (
+          !pending ||
+          pending.kind === "written" ||
+          pending.target.sessionId !== sessionId ||
+          (surfaceId && pending.target.surfaceId !== surfaceId)
+        )
+          return;
+        if (
+          message.error.reason === "target-suspended" &&
+          (pending.kind === "paste" || pending.kind === "cut") &&
+          pending.dispatched
+        ) {
+          this.#carrierEnded(message.operationId, message.error.message);
+          return;
+        }
+        const outcome = pending.kind === "paste" || pending.kind === "cut" ? "refused" : "empty";
+        this.#take(message.operationId)?.resolve({ outcome, items: [] });
+        return;
+      }
+      if (message.error.reason === "unsupported-operation") return;
       for (const [id, pending] of this.#pending) {
         if (
           pending.kind === "written" ||
@@ -554,6 +577,10 @@ export class BrowserEditingStore {
           (surfaceId && pending.target.surfaceId !== surfaceId)
         )
           continue;
+        if ((pending.kind === "paste" || pending.kind === "cut") && pending.dispatched) {
+          this.#carrierEnded(id, message.error.message);
+          continue;
+        }
         this.#take(id)?.resolve({ outcome: "empty", items: [] });
       }
       return;

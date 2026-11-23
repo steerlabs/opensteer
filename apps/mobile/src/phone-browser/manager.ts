@@ -703,8 +703,26 @@ export class PhoneBrowserManager {
       if (this.#connection !== connection || !this.#foreground) return;
       if (message.type === "browser.client-message") {
         const channel = this.#channels.get(message.channelId);
-        if (channel)
-          await this.#send(channel, { type: "browser.error", error: protocolError(error) });
+        if (channel) {
+          const raw = message.message;
+          const operationId =
+            raw && typeof raw === "object"
+              ? "operationId" in raw && typeof raw.operationId === "string"
+                ? raw.operationId
+                : "part" in raw &&
+                    raw.part &&
+                    typeof raw.part === "object" &&
+                    "operationId" in raw.part &&
+                    typeof raw.part.operationId === "string"
+                  ? raw.part.operationId
+                  : undefined
+              : undefined;
+          await this.#send(channel, {
+            type: "browser.error",
+            error: protocolError(error),
+            ...(operationId ? { operationId } : {}),
+          });
+        }
       } else if ("requestId" in message) {
         await this.#sendRelay({
           ...connection.fence,
