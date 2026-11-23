@@ -834,6 +834,8 @@ export class TriggerStore {
         const now = new Date();
         let activeOccurrences: {
           readonly commandId: CommandId;
+          readonly connectionId: string | null;
+          readonly contactLostAt: Date | null;
           readonly environmentId: EnvironmentId;
           readonly executionGeneration: number;
           readonly id: TriggerOccurrenceId;
@@ -846,6 +848,8 @@ export class TriggerStore {
             .selectFrom("triggerOccurrences")
             .select([
               "commandId",
+              "connectionId",
+              "contactLostAt",
               "environmentId",
               "executionGeneration",
               "id",
@@ -933,18 +937,26 @@ export class TriggerStore {
         const runningFirings: RunningFiringRef[] = [];
         if (ending && activeOccurrences.length > 0) {
           const pending = activeOccurrences.filter((row) => row.status === "pending");
-          if (pending.length > 0) {
+          const lostPersonalRunning = activeOccurrences.filter(
+            (row) =>
+              row.status === "running" && row.connectionId === null && row.contactLostAt !== null,
+          );
+          const commandIdsToLock = [
+            ...new Set([
+              ...pending.map(({ commandId }) => commandId),
+              ...lostPersonalRunning.map(({ commandId }) => commandId),
+            ]),
+          ].sort();
+          if (commandIdsToLock.length > 0) {
             await transaction
               .selectFrom("commands")
               .select("id")
-              .where(
-                "id",
-                "in",
-                pending.map(({ commandId }) => commandId),
-              )
+              .where("id", "in", commandIdsToLock)
               .orderBy("id", "asc")
               .forNoKeyUpdate()
               .execute();
+          }
+          if (pending.length > 0) {
             const cancellation = {
               code: input.status === "archived" ? "canceled_by_archive" : "canceled_by_pause",
               message:
@@ -976,6 +988,37 @@ export class TriggerStore {
                 .where("status", "=", "pending")
                 .execute();
               canceledOccurrenceIds.push(row.id);
+            }
+          }
+          if (lostPersonalRunning.length > 0) {
+            // AA12: A person's own firing whose computer already lost contact settles to
+            // 'unknown' when ended/paused so a dead computer cannot deadlock later firings.
+            const unknownPayload = jsonValue({
+              code: "outcome_unknown",
+              message: "Outcome unknown: ended after contact with its computer was lost.",
+            });
+            for (const row of lostPersonalRunning) {
+              await transaction
+                .updateTable("commands")
+                .set({
+                  lastError: unknownPayload,
+                  status: "unknown",
+                  updatedAt: now,
+                })
+                .where("id", "=", row.commandId)
+                .where("status", "=", "dispatched")
+                .execute();
+              await transaction
+                .updateTable("triggerOccurrences")
+                .set({
+                  completedAt: now,
+                  error: unknownPayload,
+                  ...triggerOccurrenceStateColumns("unknown"),
+                  updatedAt: now,
+                })
+                .where("id", "=", row.id)
+                .where("status", "=", "running")
+                .execute();
             }
           }
           for (const row of activeOccurrences) {
@@ -1939,18 +1982,29 @@ export class TriggerStore {
       this.#database,
       async (transaction) => {
         input = (await admitTriggerActor(transaction, ownerId, input)).input;
-        const observedPending = await transaction
+        const observedCancelable = await transaction
           .selectFrom("triggerOccurrences")
           .select("id")
           .where("triggerId", "=", input.triggerId)
-          .where("status", "=", "pending")
-          .$if(input.occurrenceId !== undefined, (query) =>
-            query.where("id", "=", input.occurrenceId!),
+          .where((eb) =>
+            input.occurrenceId !== undefined
+              ? eb.and([
+                  eb("id", "=", input.occurrenceId),
+                  eb.or([
+                    eb("status", "=", "pending"),
+                    eb.and([
+                      eb("status", "=", "running"),
+                      eb("connectionId", "is", null),
+                      eb("contactLostAt", "is not", null),
+                    ]),
+                  ]),
+                ])
+              : eb("status", "=", "pending"),
           )
           .orderBy("id", "asc")
           .forNoKeyUpdate()
           .execute();
-        const heldOccurrences = new Set(observedPending.map(({ id }) => id));
+        const heldOccurrences = new Set(observedCancelable.map(({ id }) => id));
         const trigger = await lockTriggerForMutation(
           transaction,
           {
@@ -1968,14 +2022,28 @@ export class TriggerStore {
             .executeTakeFirst();
           if (!target) throw notFound("Automation occurrence not found");
         }
-        let query = transaction
+        const cancelable = await transaction
           .selectFrom("triggerOccurrences")
-          .select(["commandId", "id"])
+          .select(["commandId", "connectionId", "contactLostAt", "id", "status"])
           .where("triggerId", "=", trigger.id)
-          .where("status", "=", "pending");
-        if (input.occurrenceId) query = query.where("id", "=", input.occurrenceId);
-        const pending = await query.orderBy("id", "asc").execute();
-        if (pending.some(({ id }) => !heldOccurrences.has(id))) {
+          .where((eb) =>
+            input.occurrenceId !== undefined
+              ? eb.and([
+                  eb("id", "=", input.occurrenceId),
+                  eb.or([
+                    eb("status", "=", "pending"),
+                    eb.and([
+                      eb("status", "=", "running"),
+                      eb("connectionId", "is", null),
+                      eb("contactLostAt", "is not", null),
+                    ]),
+                  ]),
+                ])
+              : eb("status", "=", "pending"),
+          )
+          .orderBy("id", "asc")
+          .execute();
+        if (cancelable.some(({ id }) => !heldOccurrences.has(id))) {
           throw new TriggerOccurrenceSetChanged(
             "Pending occurrences changed before Trigger fencing",
           );
@@ -1985,21 +2053,50 @@ export class TriggerStore {
           code: "canceled_by_owner",
           message: "Automation occurrence was canceled before it reached its computer",
         };
+        const lostUnknown = {
+          code: "outcome_unknown",
+          message: "Outcome unknown: ended after contact with its computer was lost.",
+        };
         const canceledOccurrenceIds: TriggerOccurrenceId[] = [];
-        if (pending.length) {
+        if (cancelable.length) {
           await transaction
             .selectFrom("commands")
             .select("id")
             .where(
               "id",
               "in",
-              pending.map(({ commandId }) => commandId),
+              cancelable.map(({ commandId }) => commandId),
             )
             .orderBy("id", "asc")
             .forNoKeyUpdate()
             .execute();
         }
-        for (const row of pending) {
+        for (const row of cancelable) {
+          if (row.status === "running" && row.connectionId === null && row.contactLostAt !== null) {
+            await transaction
+              .updateTable("commands")
+              .set({
+                lastError: jsonValue(lostUnknown),
+                status: "unknown",
+                updatedAt: now,
+              })
+              .where("id", "=", row.commandId)
+              .where("status", "=", "dispatched")
+              .execute();
+            await transaction
+              .updateTable("triggerOccurrences")
+              .set({
+                completedAt: now,
+                error: jsonValue(lostUnknown),
+                ...triggerOccurrenceStateColumns("unknown"),
+                updatedAt: now,
+              })
+              .where("id", "=", row.id)
+              .where("status", "=", "running")
+              .execute();
+            canceledOccurrenceIds.push(row.id);
+            continue;
+          }
           const command = await transaction
             .updateTable("commands")
             .set({

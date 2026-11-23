@@ -2489,11 +2489,13 @@ export async function createHostRuntime(
             .catch((error) => app.log.warn({ err: error }, "App state report failed"));
         },
         onDisconnect: async (identity, scope) => {
-          if (scope.reason !== "superseded" && scope.reason !== "shutdown")
+          if (scope.reason !== "superseded" && scope.reason !== "shutdown") {
             await store.markConnectionAttemptsContactLost({
               runnerId: identity.runnerId,
               runnerBootId: identity.bootId,
             });
+            realtime.publishTriggersChanged();
+          }
           void apps
             ?.onRunnerDisconnected(identity.runnerId, identity.connectionId)
             .catch((error) => app.log.warn({ err: error }, "App disconnect handling failed"));

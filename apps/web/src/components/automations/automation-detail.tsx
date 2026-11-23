@@ -131,9 +131,11 @@ function summaryOf(detail: TriggerDetail): TriggerSummary {
     latestOccurrence: latest
       ? {
           completedAt: latest.completedAt,
+          contactLostAt: latest.contactLostAt ?? null,
           createdAt: latest.createdAt,
           error: triggerOccurrenceErrorMessage(latest.error),
           id: latest.id,
+          ...(latest.sent !== undefined ? { sent: latest.sent } : {}),
           source: latest.event.source.kind,
           status: latest.status,
         }
@@ -821,14 +823,15 @@ function RunRow({
           Open
         </AreaLink>
       ) : null}
-      {occurrence.status === "pending" ? (
+      {occurrence.status === "pending" ||
+      (occurrence.status === "running" && occurrence.contactLostAt) ? (
         <button
           className="btn btn--small"
           disabled={disabled}
           onClick={() => onCancel(occurrence.id)}
           type="button"
         >
-          Cancel
+          {occurrence.status === "running" ? "Mark unknown" : "Cancel"}
         </button>
       ) : null}
     </div>

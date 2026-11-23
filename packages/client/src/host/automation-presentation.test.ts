@@ -83,6 +83,12 @@ describe("placing automations", () => {
     });
     expect(placeAutomation(once, now).group).toBe("attention");
     expect(placeAutomation(once, now).problem).toContain("Running as far as Opensteer knows");
+    const repeating = automation({ latestOccurrence: lostRunning });
+    expect(placeAutomation(repeating, now).group).toBe("attention");
+    expect(placeAutomation(repeating, now).problem).toContain("Running as far as Opensteer knows");
+    const webhook = automation({ latestOccurrence: lostRunning, source: { kind: "webhook" } });
+    expect(placeAutomation(webhook, now).group).toBe("attention");
+    expect(placeAutomation(webhook, now).problem).toContain("Running as far as Opensteer knows");
     expect(latestRun(lostRunning, now)).toEqual({
       text: expect.stringMatching(/^Running — contact lost yesterday,/u),
       tone: "warn",

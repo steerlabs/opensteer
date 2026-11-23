@@ -66,6 +66,13 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
   // A memory pass waiting for a usable model is active, not paused.
   if (summary.waitingReason) return attention(summary.waitingReason);
   if (summary.systemRole) return { group: "system", problem: null };
+  // Any active automation (once, repeating, or webhook) whose computer lost contact mid-firing
+  // needs its owner's attention rather than looking healthy (AA12).
+  if (summary.latestOccurrence?.status === "running" && summary.latestOccurrence.contactLostAt) {
+    return attention(
+      `Running as far as Opensteer knows — contact lost ${formatMoment(summary.latestOccurrence.contactLostAt, now, true)}.`,
+    );
+  }
   if (shape === "repeating") return { group: "repeating", problem: null };
   if (shape === "webhook" || shape === "watch") return { group: "events", problem: null };
   if (summary.nextFireAt) return { group: "upcoming", problem: null };
@@ -73,11 +80,6 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
     case "pending":
       return { group: "upcoming", problem: null };
     case "running":
-      if (summary.latestOccurrence.contactLostAt) {
-        return attention(
-          `Running as far as Opensteer knows — contact lost ${formatMoment(summary.latestOccurrence.contactLostAt, now, true)}.`,
-        );
-      }
       return { group: "upcoming", problem: null };
     case "failed":
       return attention("It failed when it ran.");

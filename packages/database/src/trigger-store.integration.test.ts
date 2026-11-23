@@ -2840,6 +2840,61 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
   });
 
+  it("lets a person settle a contact-lost personal firing to unknown so later firings can proceed (AA12)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database, store, triggers } = storeFixture;
+    const fixture = await createFixture("contact-lost-personal");
+    const created = await createScheduleTrigger(fixture, "contact-lost-personal");
+    const first = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    const second = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await store.claimCommand(first.commandId, "lost-dispatcher");
+    await triggers.startExecution({
+      commandId: first.commandId,
+      runnerBootId: "boot-lost-forever",
+      runnerId: fixture.runnerId,
+    });
+
+    // Computer disconnects and never comes back: personal firing gets contactLostAt stamped.
+    await store.markConnectionAttemptsContactLost({
+      runnerBootId: "boot-lost-forever",
+      runnerId: fixture.runnerId,
+    });
+    const lost = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status", "contactLostAt"])
+      .where("id", "=", first.id)
+      .executeTakeFirstOrThrow();
+    expect(lost.status).toBe("running");
+    expect(lost.contactLostAt).not.toBeNull();
+    // Second firing is blocked while first is still running.
+    expect(await store.claimCommand(second.commandId, "lost-dispatcher")).toBeNull();
+
+    // Ending the stuck contact-lost firing settles it to unknown and unblocks the second firing.
+    const ended = await triggers.cancelPendingOccurrences(fixture.userId, {
+      actorThreadId: null,
+      occurrenceId: first.id,
+      triggerId: created.trigger.id,
+    });
+    expect(ended.canceledOccurrenceIds).toEqual([first.id]);
+    const settled = await database
+      .selectFrom("triggerOccurrences")
+      .select(["status", "completedAt"])
+      .where("id", "=", first.id)
+      .executeTakeFirstOrThrow();
+    expect(settled.status).toBe("unknown");
+    expect(settled.completedAt).not.toBeNull();
+    expect(await store.claimCommand(second.commandId, "lost-dispatcher")).not.toBeNull();
+  });
+
   /**
    * Marks a Run running without dispatching it, with the grant a dispatched
    * Run holds: only a Run whose authority stands takes a steer.
