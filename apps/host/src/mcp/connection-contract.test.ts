@@ -1,4 +1,4 @@
-import { agentTools, connectionDirectTools, normalizeToolError } from "@opensteer/agent-tools";
+import { agentTools, connectionDirectTools } from "@opensteer/agent-tools";
 import { AgentGrantSchema, createId, requestOperationCallsMaxLength } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { measureMcpContext } from "../agents/agent-context-budget.test-support.js";
@@ -71,9 +71,6 @@ const removedNames = [
   "local_server_add",
   "local_server_list",
   "local_server_remove",
-  "opensteer_messaging_bridge_list",
-  "opensteer_messaging_bridge_update",
-  "opensteer_messaging_bridge_remove",
   "opensteer_request_list",
   "opensteer_request_read",
   "opensteer_delegation_wait",
@@ -91,6 +88,10 @@ const removedNames = [
   "opensteer_automation_create",
   "tab_open",
   "tab_close",
+  // Messaging is a connection now: these tools are gone for good.
+  "opensteer_messaging_bridge_list",
+  "opensteer_messaging_bridge_update",
+  "opensteer_messaging_bridge_remove",
 ];
 function unavailableMentions(
   visible: string,
@@ -287,19 +288,11 @@ describe("the connection's actual MCP listing", () => {
     },
   );
 
-  it.each(["Your organization doesn't allow this", "Sign-in and new work on this Home have ended"])(
-    "classifies a work Home SQLSTATE 42501 gate: %s",
-    (message) => {
-      const failure = Object.assign(new Error(message), { code: "42501" });
-      const policy = normalizeToolError(agentToolFailure(failure, "write", undefined, true), {
-        tools: new Set(),
-      });
-      expect(policy).toMatchObject({ code: "organization_not_allowed", message });
-      const other = Object.assign(new Error("a private database failure"), { code: "42501" });
-      expect(agentToolFailure(other, "write", undefined, true)).toMatchObject({
-        code: "internal",
-        message: "Opensteer hit an internal error.",
-      });
-    },
-  );
+  it("keeps a database permission failure private", () => {
+    const failure = Object.assign(new Error("a private database failure"), { code: "42501" });
+    expect(agentToolFailure(failure, "write", undefined, true)).toMatchObject({
+      code: "internal",
+      message: "Opensteer hit an internal error.",
+    });
+  });
 });

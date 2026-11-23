@@ -7,6 +7,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { liveConnection } from "./connection-liveness.js";
 
 export function sharedChromeAttempts(database: Kysely<DatabaseSchema>) {
   return {
@@ -28,8 +29,7 @@ export function sharedChromeAttempts(database: Kysely<DatabaseSchema>) {
         .where("id", "=", witness.connectionId)
         .where("userId", "=", witness.ownerId)
         .where("grantRevision", "=", witness.grantRevision)
-        .where("revokedAt", "is", null)
-        .where("expiresAt", ">", sql<Date>`now()`)
+        .where(liveConnection(new Date()))
         .executeTakeFirst();
       if (updated.numUpdatedRows !== 1n)
         throw new OpensteerError({

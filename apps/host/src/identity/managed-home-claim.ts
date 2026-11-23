@@ -6,7 +6,6 @@ import {
   managedHomeClaimPath,
   managedHomeClaimReceiptSigningBytes,
   type ManagedHomeClaimReceipt,
-  type WorkHomeMarker,
 } from "@opensteer/control-plane-protocol";
 import { OpensteerError, type HostInstanceId, type HostKeyFingerprint } from "@opensteer/core";
 import type { IdentityService } from "@opensteer/identity";
@@ -25,7 +24,6 @@ import type { HostKeyPair } from "./host-keys.js";
 interface ManagedClaimTarget {
   readonly cloudComputerId: string;
   readonly generation: number;
-  readonly work?: WorkHomeMarker;
 }
 
 export class ManagedHomeClaimService {
@@ -39,7 +37,6 @@ export class ManagedHomeClaimService {
     readonly hostKeyFingerprint: HostKeyFingerprint;
   };
   readonly #keys: Pick<HostKeyPair, "privateKey" | "publicKey">;
-  readonly #onClaimed: () => void;
   readonly #now: () => Date;
 
   constructor(options: {
@@ -53,7 +50,6 @@ export class ManagedHomeClaimService {
       readonly hostKeyFingerprint: HostKeyFingerprint;
     };
     readonly keys: Pick<HostKeyPair, "privateKey" | "publicKey">;
-    readonly onClaimed?: () => void;
     readonly now?: () => Date;
   }) {
     this.#identity = options.identity;
@@ -61,7 +57,6 @@ export class ManagedHomeClaimService {
     this.#managed = options.managed;
     this.#authority = options.authority;
     this.#keys = options.keys;
-    this.#onClaimed = options.onClaimed ?? (() => undefined);
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -69,14 +64,6 @@ export class ManagedHomeClaimService {
     const request = ManagedHomeClaimRequestSchema.parse(input);
     const claims = await this.#verifier.verifyManagedHomeClaim(request.assertion);
     const authority = this.#authority;
-    if (
-      claims.work?.assignmentId !== this.#managed.work?.assignmentId ||
-      claims.work?.organizationId !== this.#managed.work?.organizationId
-    )
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "This claim is for a different work assignment",
-      });
     if (
       claims.authority.deploymentId !== authority.deploymentId ||
       claims.authority.hostInstanceId !== authority.hostInstanceId ||
@@ -110,8 +97,6 @@ export class ManagedHomeClaimService {
       account: { issuer: this.#verifier.issuer, subject: claims.sub },
       authority,
       claim: claims.claim,
-      // A work Cloud Computer's organization and assignment, as the Account signed them.
-      ...(claims.work ? { work: claims.work } : {}),
       linkGeneration: claims.link.generation,
       hostCredentialSha256: credentialDigest,
       claimedAt: this.#now().toISOString(),
@@ -176,7 +161,6 @@ export class ManagedHomeClaimService {
         message: "This Home was claimed with a different Account link credential",
         reason: "managed-home-link-mismatch",
       });
-    if (!result.replayed) this.#onClaimed();
     return committed;
   }
 }

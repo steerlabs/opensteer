@@ -1,4 +1,4 @@
-import { named, plainSentence as madeWords, sentence } from "@opensteer/client/host";
+import { named, sentence } from "@opensteer/client/host";
 import { describe, expect, it } from "vitest";
 import { sentenceOf } from "./sentence-addresses.js";
 import { plainSentence } from "./sentence-parts.js";
@@ -13,6 +13,6 @@ describe("a sentence made where it was said", () => {
       " is stopped in ",
       "evil.example",
     ]);
-    expect(plainSentence(parts)).toBe(madeWords(made));
+    expect(plainSentence(parts)).toBe("Sharing github.com is stopped in evil.example");
   });
 });

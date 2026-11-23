@@ -1,4 +1,6 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
+import { isRecord } from "@opensteer/shared/isRecord";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { commitPersonalMutation } from "./personal-mutation.js";
 import {
   administrationCommand,
@@ -10,6 +12,26 @@ import { OpensteerError, type UserId, type RunnerId, type ThreadId } from "@open
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { nearestListedThread } from "./thread-lineage.js";
+
+/** Keep a manifest's display label clean without changing its package or server keys. */
+export function cleanPluginDeviceName(manifest: Readonly<Record<string, unknown>>) {
+  const extensions = manifest.extensions;
+  if (!isRecord(extensions)) return manifest;
+  const opensteer = extensions["com.opensteer"];
+  if (!isRecord(opensteer)) return manifest;
+  const device = opensteer.device;
+  if (!isRecord(device) || typeof device.name !== "string") return manifest;
+  return {
+    ...manifest,
+    extensions: {
+      ...extensions,
+      "com.opensteer": {
+        ...opensteer,
+        device: { ...device, name: outsideName(device.name, 80) || "Device" },
+      },
+    },
+  };
+}
 
 export class PluginStore {
   private readonly database: Kysely<DatabaseSchema>;
@@ -145,7 +167,7 @@ export class PluginStore {
           id: versionId,
           pluginId: input.id,
           digest: input.digest,
-          manifest: jsonValue(input.manifest),
+          manifest: jsonValue(cleanPluginDeviceName(input.manifest)),
           packageFormat: input.packageFormat,
           createdAt: now,
         })
@@ -191,7 +213,7 @@ export class PluginStore {
           id,
           pluginId: plugin.id,
           digest: input.digest,
-          manifest: jsonValue(input.manifest),
+          manifest: jsonValue(cleanPluginDeviceName(input.manifest)),
           packageFormat: input.packageFormat,
           createdAt: new Date(),
         })

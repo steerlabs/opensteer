@@ -4,7 +4,9 @@ import {
   chromeTabGrantOptions,
   type ChromeTabGrantCatalog,
   agentWords,
+  agentSentence,
   connectionModeDescriptions,
+  type ConnectionModeDescription,
   accessModeOptions,
   draftAppsSummary,
   draftBrowserSummary,
@@ -15,22 +17,22 @@ import {
   draftSharedProfiles,
   setDraftPluginAccess,
   toggleDraftResource,
-  workPolicyLimits,
   type AgentGrantDraft,
   type AppOption,
   type BrowserOptions,
   type HostClient,
   type PluginChoice,
   type PluginOption,
+  type SentencePart,
 } from "@opensteer/client/host";
 import {
   useAgentAppOptions,
   useAgentPluginOptions,
   type AgentOptionsRead,
 } from "@opensteer/client/react";
-import type { WorkPolicy } from "@opensteer/control-plane-protocol";
-import type { ThreadAccessMode } from "@opensteer/core";
+import type { ChatGrantShape, ThreadAccessMode } from "@opensteer/core";
 import { Icon } from "../icon.js";
+import { SentenceText } from "../../ui/address-text.js";
 import { SettingsSegmented } from "./primitives.js";
 
 type Disclosure = "browser" | "apps" | "plugins" | null;
@@ -50,9 +52,10 @@ export function AgentGrantEditor({
   draft,
   home,
   onChange,
-  workPolicy,
+  chat,
 }: {
-  readonly agent: string;
+  /** Its name (a `{ name }`), or Opensteer's words for an agent with none. */
+  readonly agent: SentencePart;
   readonly browser: BrowserOptions;
   readonly chromeTabs?: ChromeTabGrantCatalog | undefined;
   readonly client: HostClient;
@@ -60,10 +63,11 @@ export function AgentGrantEditor({
   readonly draft: AgentGrantDraft;
   readonly home: string;
   readonly onChange: (draft: AgentGrantDraft) => void;
-  /** A work Home's effective policy, once the Home reports it; it rules choices out. */
-  readonly workPolicy?: WorkPolicy | undefined;
+  /** A chat's grant as the Home says it may be: only that is offered, and Tasks stays on. */
+  readonly chat?: ChatGrantShape | undefined;
 }) {
-  const limits = workPolicyLimits(workPolicy);
+  const offers = (kind: ChatGrantShape["resources"][number]) =>
+    chat === undefined || chat.resources.includes(kind);
   const [open, setOpen] = useState<Disclosure>(null);
   const apps = useAgentAppOptions(client, open === "apps" || hasKind(draft, "computer-app"));
   const plugins = useAgentPluginOptions(client, open === "plugins" || hasKind(draft, "plugin"));
@@ -84,124 +88,145 @@ export function AgentGrantEditor({
             onSelect={() => onChange({ ...draft, scope: "selected" })}
             value="selected"
           />
-          <Choice
-            checked={draft.scope === "everything"}
-            detail={agentWords("consent.scope.everything.detail")}
-            label={agentWords("consent.scope.everything.label")}
-            name="agent-grant-scope"
-            onSelect={() => onChange({ ...draft, scope: "everything" })}
-            unavailable={limits.everything}
-            value="everything"
-          />
+          {chat !== undefined && !chat.everything ? null : (
+            <Choice
+              checked={draft.scope === "everything"}
+              detail={agentWords("consent.scope.everything.detail")}
+              label={agentWords("consent.scope.everything.label")}
+              name="agent-grant-scope"
+              onSelect={() => onChange({ ...draft, scope: "everything" })}
+              value="everything"
+            />
+          )}
         </div>
       </fieldset>
       {draft.scope === "selected" ? (
         <section aria-label={agentWords("consent.scope.selected.label")} className="settings-group">
           <div className="card agent-grant">
-            <DisclosureRow
-              disabled={disabled}
-              icon="globe"
-              id="browser"
-              onToggle={() => toggle("browser")}
-              open={open === "browser"}
-              summary={draftBrowserSummary(draft, browser)}
-              title={agentWords("consent.browser.title")}
-            />
-            {open === "browser" ? (
-              <BrowserChoices
-                agent={agent}
-                browser={browser}
+            {offers("browser-profile") ? (
+              <>
+                <DisclosureRow
+                  disabled={disabled}
+                  icon="globe"
+                  id="browser"
+                  onToggle={() => toggle("browser")}
+                  open={open === "browser"}
+                  summary={draftBrowserSummary(draft, browser)}
+                  title={agentWords("consent.browser.title")}
+                />
+                {open === "browser" ? (
+                  <BrowserChoices
+                    agent={agent}
+                    browser={browser}
+                    disabled={disabled}
+                    draft={draft}
+                    onChange={onChange}
+                  />
+                ) : null}
+              </>
+            ) : null}
+            {!offers("chrome-tabs")
+              ? null
+              : chrome.options.map((option) => (
+                  <label className="card__row" key={option.resource.sourceId}>
+                    <span aria-hidden className="card__row-glyph">
+                      <Icon name="browser" />
+                    </span>
+                    <span className="card__row-body">
+                      <span className="card__row-title">{option.name}</span>
+                      <span
+                        className="card__row-detail"
+                        id={`agent-grant-chrome-${option.resource.sourceId}`}
+                      >
+                        {agentWords("consent.chromeTabs.detail")}
+                      </span>
+                    </span>
+                    <span className="card__row-actions">
+                      <input
+                        aria-describedby={`agent-grant-chrome-${option.resource.sourceId}`}
+                        aria-label={option.name}
+                        checked={draftHas(draft, option.resource)}
+                        className="switch"
+                        disabled={disabled}
+                        onChange={(event) =>
+                          onChange(
+                            toggleDraftResource(
+                              draft,
+                              option.resource,
+                              event.currentTarget.checked,
+                            ),
+                          )
+                        }
+                        role="switch"
+                        type="checkbox"
+                      />
+                    </span>
+                  </label>
+                ))}
+            {chrome.repair && offers("chrome-tabs") ? (
+              <p className="settings-footnote">{chrome.repair}</p>
+            ) : null}
+            {offers("computer-app") ? (
+              <>
+                <DisclosureRow
+                  disabled={disabled}
+                  icon="app"
+                  id="apps"
+                  onToggle={() => toggle("apps")}
+                  open={open === "apps"}
+                  summary={draftAppsSummary(draft, apps.status === "ready" ? apps.data : null)}
+                  title={agentWords("consent.apps.title")}
+                />
+                {open === "apps" ? (
+                  <div className="card__form agent-grant__list" id="agent-grant-apps">
+                    <OptionsState read={apps}>
+                      {(options) =>
+                        options.length === 0 ? (
+                          <EmptyChoice
+                            detail={agentWords("consent.edge.noApps.detail")}
+                            title={agentWords("consent.edge.noApps.title")}
+                          />
+                        ) : (
+                          <>
+                            {options.map((option) => (
+                              <AppChoice
+                                disabled={disabled}
+                                key={option.key}
+                                on={draftHas(draft, option.resource)}
+                                onChange={(on) =>
+                                  onChange(toggleDraftResource(draft, option.resource, on))
+                                }
+                                option={option}
+                              />
+                            ))}
+                            <p className="settings-footnote">
+                              <SentenceText
+                                parts={agentSentence("consent.apps.footer", { agent })}
+                              />
+                            </p>
+                          </>
+                        )
+                      }
+                    </OptionsState>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
+            {offers("plugin") ? (
+              <DisclosureRow
                 disabled={disabled}
-                draft={draft}
-                onChange={onChange}
+                icon="puzzle"
+                id="plugins"
+                onToggle={() => toggle("plugins")}
+                open={open === "plugins"}
+                summary={draftPluginsSummary(
+                  draft,
+                  plugins.status === "ready" ? plugins.data.options : null,
+                )}
+                title={agentWords("consent.plugins.title")}
               />
             ) : null}
-            {chrome.options.map((option) => (
-              <label className="card__row" key={option.resource.sourceId}>
-                <span aria-hidden className="card__row-glyph">
-                  <Icon name="browser" />
-                </span>
-                <span className="card__row-body">
-                  <span className="card__row-title">{option.name}</span>
-                  <span
-                    className="card__row-detail"
-                    id={`agent-grant-chrome-${option.resource.sourceId}`}
-                  >
-                    {agentWords("consent.chromeTabs.detail")}
-                  </span>
-                </span>
-                <span className="card__row-actions">
-                  <input
-                    aria-describedby={`agent-grant-chrome-${option.resource.sourceId}`}
-                    aria-label={option.name}
-                    checked={draftHas(draft, option.resource)}
-                    className="switch"
-                    disabled={disabled}
-                    onChange={(event) =>
-                      onChange(
-                        toggleDraftResource(draft, option.resource, event.currentTarget.checked),
-                      )
-                    }
-                    role="switch"
-                    type="checkbox"
-                  />
-                </span>
-              </label>
-            ))}
-            {chrome.repair ? <p className="settings-footnote">{chrome.repair}</p> : null}
-            <DisclosureRow
-              disabled={disabled}
-              icon="app"
-              id="apps"
-              onToggle={() => toggle("apps")}
-              open={open === "apps"}
-              summary={draftAppsSummary(draft, apps.status === "ready" ? apps.data : null)}
-              title={agentWords("consent.apps.title")}
-            />
-            {open === "apps" ? (
-              <div className="card__form agent-grant__list" id="agent-grant-apps">
-                <OptionsState read={apps}>
-                  {(options) =>
-                    options.length === 0 ? (
-                      <EmptyChoice
-                        detail={agentWords("consent.edge.noApps.detail")}
-                        title={agentWords("consent.edge.noApps.title")}
-                      />
-                    ) : (
-                      <>
-                        {options.map((option) => (
-                          <AppChoice
-                            disabled={disabled}
-                            key={option.key}
-                            on={draftHas(draft, option.resource)}
-                            onChange={(on) =>
-                              onChange(toggleDraftResource(draft, option.resource, on))
-                            }
-                            option={option}
-                          />
-                        ))}
-                        <p className="settings-footnote">
-                          {agentWords("consent.apps.footer", { agent })}
-                        </p>
-                      </>
-                    )
-                  }
-                </OptionsState>
-              </div>
-            ) : null}
-            <DisclosureRow
-              disabled={disabled}
-              icon="puzzle"
-              id="plugins"
-              onToggle={() => toggle("plugins")}
-              open={open === "plugins"}
-              summary={draftPluginsSummary(
-                draft,
-                plugins.status === "ready" ? plugins.data.options : null,
-              )}
-              title={agentWords("consent.plugins.title")}
-            />
-            {open === "plugins" ? (
+            {open === "plugins" && offers("plugin") ? (
               <div className="card__form agent-grant__list" id="agent-grant-plugins">
                 <OptionsState read={plugins}>
                   {({ options, more }) =>
@@ -230,11 +255,7 @@ export function AgentGrantEditor({
                 </OptionsState>
               </div>
             ) : null}
-            <div
-              className={
-                limits.tasks !== null && !draft.tasks ? "card__row is-unavailable" : "card__row"
-              }
-            >
+            <div className="card__row">
               <span aria-hidden className="card__row-glyph">
                 <Icon name="list" />
               </span>
@@ -243,7 +264,9 @@ export function AgentGrantEditor({
                   {agentWords("consent.tasks.title")}
                 </span>
                 <span className="card__row-detail" id="agent-grant-tasks-detail">
-                  {limits.tasks ?? agentWords("consent.tasks.detail", { home })}
+                  {chat
+                    ? agentWords("chat.grant.tasks")
+                    : agentWords("consent.tasks.detail", { home })}
                 </span>
               </span>
               <span className="card__row-actions">
@@ -252,7 +275,7 @@ export function AgentGrantEditor({
                   aria-labelledby="agent-grant-tasks"
                   checked={draft.tasks}
                   className="switch"
-                  disabled={disabled || (limits.tasks !== null && !draft.tasks)}
+                  disabled={disabled || chat !== undefined}
                   onChange={(event) => onChange({ ...draft, tasks: event.currentTarget.checked })}
                   role="switch"
                   type="checkbox"
@@ -260,27 +283,37 @@ export function AgentGrantEditor({
               </span>
             </div>
           </div>
-          {draft.tasks ? (
+          {/* The warning belongs to choosing Tasks: a chat holds it always, so it is not said. */}
+          {draft.tasks && chat === undefined ? (
             <p className="settings-footnote agent-grant__warning" role="note">
               {agentWords("consent.tasks.warning", { home })}
             </p>
           ) : null}
           {shared.length > 0 ? (
             <p className="settings-footnote agent-grant__caution" role="note">
-              {agentWords("consent.browser.shareWarning", { agent, profile: shared.join(", ") })}
+              <SentenceText
+                parts={agentSentence(
+                  "consent.browser.shareWarning",
+                  { agent },
+                  { profile: shared.join(", ") },
+                )}
+              />
             </p>
           ) : null}
           {draft.newProfile !== null && draftNewProfileHome(draft, browser)?.online === false ? (
             <p className="settings-footnote">
-              {agentWords("consent.edge.noDeviceOnline", {
-                agent,
-                device: draftNewProfileHome(draft, browser)?.name ?? home,
-              })}
+              <SentenceText
+                parts={agentSentence(
+                  "consent.edge.noDeviceOnline",
+                  { agent },
+                  { device: draftNewProfileHome(draft, browser)?.name ?? home },
+                )}
+              />
             </p>
           ) : null}
           {draft.tasks || draft.resources.length > 0 || draft.newProfile ? null : (
             <p className="settings-footnote">
-              {agentWords("consent.scope.nothingChosen", { agent })}
+              <SentenceText parts={agentSentence("consent.scope.nothingChosen", { agent })} />
             </p>
           )}
         </section>
@@ -289,22 +322,26 @@ export function AgentGrantEditor({
   );
 }
 
+/** A mode's words, with a name from outside drawn as a name. */
+function sentenceOrWords(description: ConnectionModeDescription): ReactNode {
+  return typeof description === "string" ? description : <SentenceText parts={description} />;
+}
+
 /** The four safety modes, in the words a connection's mode is chosen by. */
 export function ConnectionModeChoices({
+  descriptions = connectionModeDescriptions,
   disabled,
   mode,
   onChange,
   showSettingsNote,
-  workPolicy,
 }: {
+  /** What each mode means for this connection (a chat for anyone has its own). */
+  readonly descriptions?: Readonly<Record<ThreadAccessMode, ConnectionModeDescription>>;
   readonly disabled: boolean;
   readonly mode: ThreadAccessMode;
   readonly onChange: (mode: ThreadAccessMode) => void;
   readonly showSettingsNote: boolean;
-  /** A work Home's effective policy, once the Home reports it; it caps the mode. */
-  readonly workPolicy?: WorkPolicy | undefined;
 }) {
-  const limits = workPolicyLimits(workPolicy);
   return (
     <fieldset className="settings-group" disabled={disabled}>
       <legend className="settings-group__title">{agentWords("consent.safety.title")}</legend>
@@ -312,12 +349,11 @@ export function ConnectionModeChoices({
         {accessModeOptions.map((option) => (
           <Choice
             checked={mode === option.mode}
-            detail={connectionModeDescriptions[option.mode]}
+            detail={sentenceOrWords(descriptions[option.mode])}
             key={option.mode}
             label={option.label}
             name="agent-consent-mode"
             onSelect={() => onChange(option.mode)}
-            unavailable={limits.mode(option.mode)}
             value={option.mode}
           />
         ))}
@@ -335,34 +371,21 @@ function Choice({
   label,
   name,
   onSelect,
-  unavailable = null,
   value,
 }: {
   readonly checked: boolean;
-  readonly detail: string;
+  readonly detail: ReactNode;
   readonly label: string;
   readonly name: string;
   readonly onSelect: () => void;
-  /** Why this choice can't be made here; it stays visible, disabled, with the reason. */
-  readonly unavailable?: string | null;
   readonly value: string;
 }) {
   return (
-    <label
-      aria-disabled={unavailable === null ? undefined : true}
-      className="card__row agent-consent__mode"
-    >
-      <input
-        checked={checked}
-        disabled={unavailable !== null && !checked}
-        name={name}
-        onChange={onSelect}
-        type="radio"
-        value={value}
-      />
+    <label className="card__row agent-consent__mode">
+      <input checked={checked} name={name} onChange={onSelect} type="radio" value={value} />
       <span className="card__row-body">
         <span className="card__row-title">{label}</span>
-        <span className="card__row-detail">{unavailable ?? detail}</span>
+        <span className="card__row-detail">{detail}</span>
       </span>
     </label>
   );
@@ -418,7 +441,8 @@ function BrowserChoices({
   draft,
   onChange,
 }: {
-  readonly agent: string;
+  /** Its name (a `{ name }`), or Opensteer's words for an agent with none. */
+  readonly agent: SentencePart;
   readonly browser: BrowserOptions;
   readonly disabled: boolean;
   readonly draft: AgentGrantDraft;
@@ -506,7 +530,9 @@ function BrowserChoices({
           </span>
         </label>
       ))}
-      <p className="settings-footnote">{agentWords("consent.browser.pickerFooter", { agent })}</p>
+      <p className="settings-footnote">
+        <SentenceText parts={agentSentence("consent.browser.pickerFooter", { agent })} />
+      </p>
     </div>
   );
 }

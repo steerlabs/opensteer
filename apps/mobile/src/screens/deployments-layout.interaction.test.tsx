@@ -73,9 +73,8 @@ vi.mock("./deployment-menu.js", async () => {
   const { View } = (await import("../../test-support/yoga-frames.js")).layoutReactNative;
   return { DeploymentMenu: () => <View style={{ height: 44, width: 44 }} /> };
 });
-vi.mock("./work-home.js", () => ({
+vi.mock("./cloud-computer-ids.js", () => ({
   useCloudComputerIds: () => new Set(),
-  useWorkBadges: () => new Map(),
 }));
 vi.mock("../threads/task-row.js", () => ({ UnreadDot: () => null }));
 vi.mock("../ui/action-line.js", () => ({ ActionLine: () => null }));
@@ -259,7 +258,6 @@ describe("what a Home's row says", () => {
                     remoteAccessOff: true,
                     status: "unavailable",
                   }}
-                  work="Work · Northwind Traders"
                 />,
               ]}
             </PickerList>,
@@ -271,11 +269,7 @@ describe("what a Home's row says", () => {
           textFaults(frames, { column: readingColumn(phone) }),
           "a text a person reads is broken or cut",
         ).toEqual([]);
-        for (const words of [
-          remoteAccessOff,
-          "Home: Mac mini in the studio",
-          "Work · Northwind Traders",
-        ]) {
+        for (const words of [remoteAccessOff, "Home: Mac mini in the studio"]) {
           const text = [...container.querySelectorAll('[data-rn="Text"]')].find(
             (candidate) => candidate.textContent === words,
           );
@@ -321,8 +315,6 @@ describe("a Home that needs signing in to, as the picker showed it", () => {
                     kindLabel: "Server",
                     status: "needs-sign-in",
                   }}
-                  // As the picker shows a Home an organization pays for, on a Cloud Computer.
-                  work="Work · Northwind Traders"
                   cloud
                 />,
               ]}
@@ -335,7 +327,7 @@ describe("a Home that needs signing in to, as the picker showed it", () => {
           textFaults(frames, { column: readingColumn(phone) }),
           "a text a person reads is broken or cut",
         ).toEqual([]);
-        for (const words of ["Messaging computer", sentence, "Work · Northwind Traders"]) {
+        for (const words of ["Messaging computer", sentence]) {
           const text = textElement(container, words);
           expect(frames.shown(text), `"${words}" is cut`).toBe(words);
         }

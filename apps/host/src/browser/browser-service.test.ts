@@ -6475,6 +6475,8 @@ async function startFakeRuntime(
     readonly navigation?: boolean;
     readonly editing?: boolean | 1 | 2 | undefined;
     readonly clipboard?: boolean | undefined;
+    /** The snapshot offers reply budgets and command cancellation, as the shipped runtime does. */
+    readonly cdpReplyBudget?: boolean;
   } = {},
 ): Promise<{
   connectionCount(): number;
@@ -6681,6 +6683,7 @@ async function startFakeRuntime(
           ...(claims.personFillVersion ? { personFillVersion: claims.personFillVersion } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
+          ...(options.cdpReplyBudget ? { cdpReplyBudget: 1, scriptCancellation: 1 } : {}),
           ...(options.editing && claims.editingVersion
             ? {
                 editingVersion: claims.editingVersion,
@@ -7994,16 +7997,38 @@ it("admits paged listing and exact resume only inside an agent's own session", a
       .receivedCommands()
       .slice(before)
       .find((m) => m.type === "cdp.command")!;
-    expect(sent.command).toMatchObject({ method, parameters });
+    expect(sent.command).toEqual({
+      method,
+      // TS11: an agent's wake is answered once the page it woke has loaded.
+      parameters: method === "Opensteer.resumeTab" ? { ...parameters, loaded: true } : parameters,
+    });
     runtime.sendServer({ type: "cdp.result", requestId: sent.requestId, result: { ok: true } });
     expect(await result).toEqual({ ok: true });
   };
   await forward("Opensteer.listTabs", { cursor: "42" });
   await forward("Opensteer.resumeTab", { surfaceId: "page-1" });
   expect(await repository.countBrowserSessionAttachments(opened.session.id)).toBe(2);
-  await expect(
-    cdp.request({ method: "Opensteer.resumeTab", parameters: { surfaceId: "other-session-tab" } }),
-  ).rejects.toMatchObject({ code: "not_found" });
+  // A tab this session does not hold is the runtime's to refuse, never this Home's copy of the
+  // tab's state: it reads as not found, the same as one that never existed.
+  const before = runtime.receivedCommands().length;
+  const outside = cdp.request({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: "other-session-tab" },
+  });
+  const asked = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .slice(before)
+      .find((m) => m.type === "cdp.command");
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({
+    type: "cdp.error",
+    requestId: asked.requestId,
+    error: { code: "not_found", message: "The browser tab closed.", retryable: false },
+  });
+  await expect(outside).rejects.toMatchObject({ code: "not_found" });
   await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
     code: "forbidden",
   });
@@ -8534,6 +8559,77 @@ it("retains the requesting tab's pin after its actor ends and keeps unknown Host
   cdp.close();
 });
 
+it("tells the runtime which tabs a live agent works in, so they are slept last, and forgets them when the agent leaves (TS12)", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    runId = createId("run"),
+    threadId = createId("thread");
+  const repository = new MemoryBrowserRepository(ownerId);
+  vi.spyOn(repository as BrowserSessionRepository, "resolvePlaceActors").mockImplementation(
+    async () => [
+      {
+        agentBindingId: `run:${runId}`,
+        ownerId,
+        runId,
+        threadId,
+        generation: 1,
+        lineageThreadIds: [threadId],
+      },
+    ],
+  );
+  const service = freshService({ keys, runtime, repository, surfaceState: true });
+  const authority = { ownerId, agentBindingId: `run:${runId}` };
+  const { session } = await service.openAgentSession({ ...authority, fresh: true });
+  const cdp = await service.attachCdpForAgent(
+    { ...authority, sessionId: session.id },
+    () => undefined,
+  );
+  const attached = await cdp.dispatch({
+    method: "Target.attachToTarget",
+    parameters: { targetId: "target-1", flatten: true },
+  });
+  await vi.waitFor(() =>
+    expect(runtime.receivedCommands().findLast((m) => m.type === "cdp.command")).toBeDefined(),
+  );
+  const command = runtime.receivedCommands().findLast((m) => m.type === "cdp.command")!;
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: command.requestId,
+    result: { surfaceId: "page-1", sessionId: "attached" },
+  });
+  await attached.result;
+  runtime.publishTabs({
+    surfaces: ["page-1", "page-2"].map((id, index) => ({
+      id,
+      active: index === 0,
+      state: "live",
+      title: id,
+      url: "https://example.com",
+      geometryRevision: 1,
+    })),
+  });
+  const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
+  // The tab it attached to is bound at once; a tab it then works in joins it.
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 1, agentTabs: ["page-1"] }));
+  runtime.sendServer({
+    type: "browser.activity",
+    actorToken: command.actorToken,
+    surfaceId: "page-2",
+    seq: 1,
+    geometryRevision: 1,
+    pointer: null,
+  });
+  await vi.waitFor(() =>
+    expect(last()).toMatchObject({ runs: 1, agentTabs: ["page-1", "page-2"] }),
+  );
+  await service.detachAgentSessionsForBinding(authority.agentBindingId);
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 0 }));
+  expect(last()).not.toHaveProperty("agentTabs");
+});
+
 it("publishes a passkey offer as a pin until the ceremony is cancelled", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -8626,6 +8722,260 @@ it("person activation resumes the exact suspended workspace tab in its existing 
   runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
   expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
 });
+
+it("person activation asks the runtime to wake the tab even while this Home still has it live, so a sleep a moment before the ask never leaves the tab unopened (TS10)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary"),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "sleep",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!,
+    sessionId = row.pageBinding!.sessionId;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "live", active: true, title: "Awake here" }],
+  });
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, row.id)).toBe("live"));
+  // The runtime has just put it to sleep; its update has not reached this Home.
+  const activated = service.pageTabs.activate(ownerId, row, "activate");
+  let command = await runtime.nextCommand();
+  while (command.type !== "cdp.command") command = await runtime.nextCommand();
+  expect(command.command).toEqual({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: row.id },
+  });
+  runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+  expect(await activated).toEqual({ kind: "page", sessionId, surfaceId: row.id });
+});
+
+it("ends an agent's bind at once when its operation ends while the tab wakes, and cancels the runtime's wait (V3)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "bind-wake",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() =>
+    expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("suspended"),
+  );
+  const stop = new AbortController();
+  const binding = service.pageTabs.bindBrowserScript!(
+    {
+      authority: { ownerId, agentBindingId: "run:bind-wake" },
+      threadId: createId("thread"),
+      signal: stop.signal,
+    } as never,
+    row,
+  );
+  void binding.catch(() => undefined);
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === "Opensteer.resumeTab",
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  // The runtime is still waking the tab and waiting for its page; the agent's task stops.
+  const stopped = performance.now();
+  stop.abort(new Error("The task was stopped."));
+  await expect(binding).rejects.toThrow();
+  expect(performance.now() - stopped).toBeLessThan(1_000);
+  await vi.waitFor(() =>
+    expect(
+      runtime
+        .receivedCommands()
+        .some(
+          (m) =>
+            m.type === "cdp.command" &&
+            (m.command as { method?: string; parameters?: { requestId?: string } }).method ===
+              "Opensteer.cancelScriptCommand" &&
+            (m.command as { parameters?: { requestId?: string } }).parameters?.requestId ===
+              resume.requestId,
+        ),
+    ).toBe(true),
+  );
+});
+
+it("tells an agent's bind that its tab was reopened at its address, when the runtime says so (V4)", async () => {
+  const keys = generateKeyPairSync("ed25519"),
+    runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+    ownerId = createId("user"),
+    repository = new MemoryBrowserRepository(ownerId),
+    memory = memoryTabs(),
+    service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      surfaceState: true,
+      tabRestoreVersion: true,
+    });
+  const descriptor = await service.pageTabs.open(
+    { kind: "person", ownerId },
+    { kind: "page", guest: true, url: "about:blank" },
+    "bind-reopened",
+  );
+  await memory.add(descriptor);
+  const row = memory.rows.get(descriptor.id)!;
+  runtime.publishTabs({
+    surfaces: [{ id: row.id, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() =>
+    expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("suspended"),
+  );
+  const binding = service.pageTabs.bindBrowserScript!(
+    {
+      authority: { ownerId, agentBindingId: "run:bind-reopened" },
+      threadId: createId("thread"),
+      signal: new AbortController().signal,
+    } as never,
+    row,
+  );
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === "Opensteer.resumeTab",
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: resume.requestId,
+    result: {
+      surfaceId: row.id,
+      targetId: "target-1",
+      documentId: "document-1",
+      dialog: null,
+      userActivity: null,
+      pageResize: null,
+      reloaded: true,
+      reopened: true,
+    },
+  });
+  await expect(binding).resolves.toMatchObject({ reloaded: true, reopened: true });
+});
+
+/*
+ * Z1: this Home's copy of a tab's state is a picture of the past and decides nothing on the
+ * runtime. (A) a woken tab whose load did not finish in the first try is announced live, and the
+ * retry must still be asked of the runtime, which waits for that load; (B) a tab that slept on
+ * the runtime before this Home heard of it is still live here, and the bind must still wake it.
+ * In both the Home holds "live"; the old bind skipped the runtime and handed the tab over as it was.
+ */
+it.each([
+  ["a retry after the wake's load did not finish in time", true],
+  ["a tab that slept on the runtime before this Home heard", true],
+] as const)(
+  "asks the runtime on every bind, whatever this Home last heard of the tab: %s (Z1)",
+  async (_case, runtimeWoke) => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { cdpReplyBudget: true }),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId),
+      memory = memoryTabs(),
+      service = freshService({
+        keys,
+        runtime,
+        repository,
+        tabs: memory.store,
+        surfaceState: true,
+        tabRestoreVersion: true,
+      });
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", guest: true, url: "about:blank" },
+      "bind-cached-live",
+    );
+    await memory.add(descriptor);
+    const row = memory.rows.get(descriptor.id)!;
+    runtime.publishTabs({
+      surfaces: [{ id: row.id, state: "live", active: true, title: "Awake here" }],
+    });
+    await vi.waitFor(() =>
+      expect(service.tabStateOf(row.pageBinding!.sessionId, row.id)).toBe("live"),
+    );
+    const binding = service.pageTabs.bindBrowserScript!(
+      {
+        authority: { ownerId, agentBindingId: "run:bind-cached-live" },
+        threadId: createId("thread"),
+        signal: new AbortController().signal,
+      } as never,
+      row,
+    );
+    void binding.catch(() => undefined);
+    const resume = await vi.waitFor(
+      () => {
+        const sent = runtime
+          .receivedCommands()
+          .findLast(
+            (m) =>
+              m.type === "cdp.command" &&
+              (m.command as { method?: string }).method === "Opensteer.resumeTab",
+          );
+        expect(sent).toBeDefined();
+        return sent!;
+      },
+      { timeout: 2_000 },
+    );
+    expect((resume.command as { parameters?: unknown }).parameters).toEqual({
+      surfaceId: row.id,
+      loaded: true,
+    });
+    // The runtime says it woke the tab (or that its wake's load is what this retry waited for).
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: resume.requestId,
+      result: {
+        surfaceId: row.id,
+        targetId: "target-1",
+        documentId: "document-1",
+        dialog: null,
+        userActivity: null,
+        pageResize: null,
+        reloaded: runtimeWoke,
+      },
+    });
+    await expect(binding).resolves.toMatchObject({ reloaded: true });
+  },
+);
 
 it("a tab closed while activation reopens it in a new session leaves no page running", async () => {
   const keys = generateKeyPairSync("ed25519"),
@@ -8733,7 +9083,21 @@ it("a reopening whose last read fails for another reason keeps the open tab and 
     ],
   });
   await vi.waitFor(() => expect(service.tabStateOf(started, row.id)).toBe("live"));
-  expect(await service.pageTabs.activate!(ownerId, row, "again")).toMatchObject({
+  const again = service.pageTabs.activate!(ownerId, row, "again");
+  // TS10: activation always asks a runtime that sleeps tabs to wake the tab; it is awake.
+  const resume = await vi.waitFor(() => {
+    const sent = runtime
+      .receivedCommands()
+      .findLast(
+        (m) =>
+          m.type === "cdp.command" &&
+          (m.command as { method?: string }).method === browserHostMethods.resumeTab,
+      );
+    expect(sent).toBeDefined();
+    return sent!;
+  });
+  runtime.sendServer({ type: "cdp.result", requestId: resume.requestId, result: {} });
+  expect(await again).toMatchObject({
     kind: "page",
     sessionId: started,
     surfaceId: row.id,
@@ -9044,7 +9408,7 @@ describe("a connected agent's selected grant admits the exact profile before any
         }),
       },
       store: {
-        getThreadForOwner: async () => null,
+        readTask: async () => null,
         threadOrigins: async () => new Map(),
         requests: { get: async () => null },
       },

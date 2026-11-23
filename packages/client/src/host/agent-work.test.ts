@@ -2,7 +2,7 @@ import type { AgentOperationView } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
-import { agentWho, agentWithdrawnLine } from "./agent-identity.js";
+import { agentWho, agentWhoOriginParts, agentWithdrawnLine } from "./agent-identity.js";
 import {
   operationDecisionField,
   sessionQuestions,
@@ -40,14 +40,48 @@ const slot = (thread: keyof typeof mockAgentWorkThreads) => {
   )!;
 };
 
+describe("an origin that does not parse", () => {
+  const addresses = (parts: readonly unknown[]) =>
+    parts.filter((part) => typeof part === "object" && part !== null && "address" in part);
+
+  it("is never drawn as an address, on an origin's line or under the heading", () => {
+    const origin = "evil.example\u202E/moc.elgoog";
+    expect(
+      addresses(
+        agentWhoOriginParts({
+          role: "verified",
+          name: "Claude",
+          origin,
+          roleLabel: "Holds the access",
+        }),
+      ),
+    ).toEqual([]);
+    const unparsed = agentWho({
+      clientName: "Grok",
+      redirect: origin,
+      identityAtConsent: {
+        kind: "verified",
+        directoryId: "claude",
+        displayName: "Claude",
+        origin,
+      } as never,
+    });
+    expect(addresses(unparsed.detailParts)).toEqual([]);
+    expect(unparsed.detail).not.toContain("evil");
+    // One that parses is its origin, an address.
+    const parsed = agentWho({ clientName: "Grok", redirect: "https://grok.com/cb?x=1" });
+    expect(parsed.detailParts).toEqual([{ address: "https://grok.com" }]);
+  });
+});
+
 describe("who a connected agent is", () => {
-  it("names a verified pair and a verified platform in the Home's words, with a logo only for a verified platform", () => {
+  it("names a verified agent in the Home's words, with a logo only for a known one", () => {
     const errand = agentWho({
       ...named("Errand"),
       redirect: "https://agentpay.example/cb",
     });
     expect(errand).toMatchObject({
-      heading: "Errand via AgentPay",
+      heading: "AgentPay",
       verified: true,
       selfAsserted: false,
       providerId: null,
@@ -140,12 +174,12 @@ describe("a task a connected agent works itself", () => {
   it("works, waits, is stopped or ends, and offers Stop only while its session is live", () => {
     expect(view("working", "running")).toMatchObject({
       state: "working",
-      statusLine: "Claude is working",
-      stop: { label: "Stop Claude" },
+      statusLine: "“Claude” is working",
+      stop: { label: "Stop “Claude”" },
     });
     expect(view("waiting", "waiting")).toMatchObject({
       state: "waiting",
-      statusLine: "Grok needs you",
+      statusLine: "“Grok” needs you",
     });
     expect(view("stopped", "idle")).toMatchObject({
       state: "stopped",
@@ -154,11 +188,11 @@ describe("a task a connected agent works itself", () => {
     });
     expect(view("ended", "idle")).toMatchObject({
       state: "ended",
-      statusLine: "Ended: Shop helper was disconnected",
+      statusLine: "Ended: “Shop helper” was disconnected",
       stop: null,
     });
     expect(view("working", "running")?.noComposer).toBe(
-      "Claude works this task itself. You can’t write to it here.",
+      "“Claude” works this task itself. You can’t write to it here.",
     );
     expect(view("working", "running")?.header).toBe("Connected agent · https://claude.ai");
   });
@@ -177,7 +211,7 @@ describe("a task a connected agent works itself", () => {
   it("names the agent and what it is using in Tasks", () => {
     expect(sessionTaskRow({ thread: { status: "running" }, slot: slot("working") })).toMatchObject({
       agent: { name: "Claude", providerId: "anthropic" },
-      line: "Claude · Travel",
+      line: "“Claude” · Travel",
       working: true,
     });
   });
@@ -250,19 +284,25 @@ describe("a tab a connected agent uses", () => {
   const occupant = { threadId: mockAgentWorkThreads.working, title: "Find flights to Lisbon" };
   it("says who is using it and for which task, and both when the person shares it", () => {
     expect(tabAgentLine({ occupant, slot: slot("working") })).toEqual({
-      line: "Claude is using this page for “Find flights to Lisbon”",
+      line: "“Claude” is using this page for “Find flights to Lisbon”",
+      lineParts: [
+        { name: "Claude" },
+        " is using this page for ",
+        { name: "Find flights to Lisbon" },
+      ],
       stop: { sessionId: slot("working").sessionId },
     });
     expect(tabAgentLine({ occupant, slot: slot("working"), sharedFromChrome: true })?.line).toBe(
-      "You and Claude are using this page, for “Find flights to Lisbon”",
+      "You and “Claude” are using this page, for “Find flights to Lisbon”",
     );
     expect(
       tabAgentLine({ occupant: { ...occupant, title: " " }, slot: slot("working") })?.line,
-    ).toBe("Claude is using this page");
+    ).toBe("“Claude” is using this page");
   });
   it("says stopped after Stop, and nothing for a native task or an ended session", () => {
     expect(tabAgentLine({ occupant, slot: slot("stopped") })).toEqual({
       line: "Stopped by you",
+      lineParts: ["Stopped by you"],
       stop: null,
     });
     expect(tabAgentLine({ occupant, slot: slot("ended") })).toBeNull();
@@ -284,11 +324,12 @@ describe("the Request a direct operation opens", () => {
   it("keeps the Home's question, the agent's words and the exact calls apart", () => {
     const view = operationRequestView({ request, session })!;
     expect(view.question).toBe("Run a script in Shopping?");
-    expect(view.listTitle).toBe("Grok: Run a script in Shopping?");
+    expect(view.listTitle).toBe("“Grok”: Run a script in Shopping?");
     // Where it acts, from the Home's parts; the summary only restates the question.
     expect(view.context).toBe("Shopping · Studio Mac");
     expect(view.agentWords).toEqual({
-      label: "Grok says:",
+      label: "“Grok” says:",
+      labelParts: [{ name: "Grok" }, " says:"],
       text: "Buy the $12 phone case you asked for.",
     });
     expect(view.calls?.text).toContain("Place order");
@@ -298,7 +339,7 @@ describe("the Request a direct operation opens", () => {
       deny: { label: "Don’t allow", value: "deny" },
     });
     expect(view.after).toBe(
-      "Grok is told your answer. Allowing this once doesn’t give it any more access.",
+      "“Grok” is told your answer. Allowing this once doesn’t give it any more access.",
     );
   });
 
@@ -336,13 +377,13 @@ describe("the Request a direct operation opens", () => {
         },
         session,
       })?.settled,
-    ).toBe("This request expired. Grok was told no one answered.");
+    ).toBe("This request expired. “Grok” was told no one answered.");
     expect(
       operationRequestView({
         request: answered("withdrawn"),
         session: { ...session, status: "ended", endReason: "stopped" },
       })?.settled,
-    ).toBe("No longer needed: you stopped Grok.");
+    ).toBe("No longer needed: you stopped “Grok”.");
   });
 
   it("leaves every other Request alone", () => {
@@ -475,5 +516,60 @@ describe("what a connected agent asks the person itself", () => {
   it("leaves an answered question and any other task's Request alone", () => {
     expect(sessionQuestions([{ ...question, status: "fulfilled" }])).toEqual([]);
     expect(sessionQuestions([{ ...question, originatingAgentSessionId: null }])).toEqual([]);
+  });
+});
+
+describe("outside names in agent work copy (Y3)", () => {
+  const request = seed.requests[mockAgentWorkThreads.waiting]![0]!;
+  const session = slot("waiting");
+
+  it("quotes an unverified agent named Opensteer in approval cards, Needs you, and tab status", () => {
+    const spoofedSession = {
+      ...session,
+      connection: {
+        ...session.connection!,
+        label: "Opensteer",
+        clientName: "Opensteer",
+      },
+    };
+    const view = operationRequestView({ request, session: spoofedSession })!;
+    expect(view.listTitle).toBe("“Opensteer”: Run a script in Shopping?");
+    expect(view.agentWords?.label).toBe("“Opensteer” says:");
+    expect(view.after).toBe(
+      "“Opensteer” is told your answer. Allowing this once doesn’t give it any more access.",
+    );
+    const taskView = sessionTaskView({
+      thread: { status: "waiting", agentSessionId: spoofedSession.sessionId },
+      slot: spoofedSession,
+    })!;
+    expect(taskView.statusLine).toBe("“Opensteer” needs you");
+    expect(taskView.noComposer).toBe(
+      "“Opensteer” works this task itself. You can’t write to it here.",
+    );
+    expect(taskView.stop?.label).toBe("Stop “Opensteer”");
+    expect(
+      tabAgentLine({
+        occupant: { threadId: mockAgentWorkThreads.waiting, title: "Buy the phone case" },
+        slot: spoofedSession,
+      })?.line,
+    ).toBe("“Opensteer” is using this page for “Buy the phone case”");
+  });
+
+  it("forbids passing outside-name keys directly to workWords and agentWords", async () => {
+    const { workWords } = await import("./agent-work-copy.js");
+    const { agentWords } = await import("./connected-agents-copy.js");
+    for (const key of ["agent", "label", "name", "task"] as const) {
+      expect(() =>
+        (workWords as (id: string, values: Record<string, string>) => string)("ask.says", {
+          [key]: "Opensteer",
+        }),
+      ).toThrow();
+      expect(() =>
+        (agentWords as (id: string, values: Record<string, string>) => string)(
+          "agents.add.connected",
+          { [key]: "Opensteer" },
+        ),
+      ).toThrow();
+    }
   });
 });

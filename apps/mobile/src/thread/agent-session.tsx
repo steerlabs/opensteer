@@ -1,6 +1,7 @@
 import {
   deriveSurface,
   mutationIdempotencyKey,
+  phoneSentence,
   requestDecision,
   canRespondToRequests,
   sessionQuestions,
@@ -168,7 +169,7 @@ export function AgentSessionPane(props: {
               role="secondaryMedium"
               tone={view.state === "stopped" || view.state === "ended" ? "muted" : "default"}
             >
-              {view.statusLine}
+              {phoneSentence(view.statusLineParts)}
             </AppText>
           </View>
           {view.stop === null ? null : (
@@ -176,7 +177,7 @@ export function AgentSessionPane(props: {
               busy={stop.running}
               disabled={false}
               kind="stop"
-              label={view.stop.label}
+              label={phoneSentence(view.stop.labelParts)}
               onPress={() => {
                 if (view.stop) void stop.run(view.stop.sessionId);
               }}
@@ -184,7 +185,7 @@ export function AgentSessionPane(props: {
           )}
         </View>
         <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
-          {view.noComposer}
+          {phoneSentence(view.noComposerParts)}
         </AppText>
         {stop.line === null ? null : <ActionLine line={stop.line} onDismiss={stop.dismiss} />}
       </View>
@@ -300,7 +301,7 @@ export function OperationRequestCard(props: {
       {view.agentWords === null ? null : (
         <View style={styles.agentWords}>
           <AppText role="caption" tone="muted">
-            {view.agentWords.label}
+            {phoneSentence(view.agentWords.labelParts)}
           </AppText>
           <AppText role="secondary" style={styles.italic} tone="soft">
             {view.agentWords.text}
@@ -327,7 +328,7 @@ export function OperationRequestCard(props: {
       )}
       {view.answers === null ? (
         <AppText role="secondary" tone="muted">
-          {view.settled}
+          {view.settledParts ? phoneSentence(view.settledParts) : null}
         </AppText>
       ) : (
         <>
@@ -345,7 +346,7 @@ export function OperationRequestCard(props: {
             />
           </View>
           <AppText role="caption" tone="muted">
-            {view.after}
+            {phoneSentence(view.afterParts)}
           </AppText>
         </>
       )}

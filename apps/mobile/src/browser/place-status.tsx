@@ -1,6 +1,7 @@
 import { useThreadTranscript } from "@opensteer/client/react";
 import {
   canRespondToRequests,
+  phoneSentence,
   requestsWaitingOn,
   samePlaceAgents,
   threadMark,
@@ -390,14 +391,14 @@ export function SessionStatusRow(props: {
           style={styles.words}
           tone={props.onStop === null ? "muted" : "soft"}
         >
-          {session.line}
+          {phoneSentence(session.lineParts)}
         </AppText>
       </View>
       {props.onAnswer === null && props.onStop === null ? null : (
         <View style={styles.controls}>
           {props.onAnswer !== null ? (
             <AnswerPill
-              accessibilityHint={`${workWords("tab.needsYou", { agent: session.agent.name })}. Returns to the task, where you answer it`}
+              accessibilityHint={`${phoneSentence(session.needsYouParts)}. Returns to the task, where you answer it`}
               label={workWords("tab.answer")}
               onPress={props.onAnswer}
               tone="primary"
@@ -408,7 +409,7 @@ export function SessionStatusRow(props: {
               busy={props.busy}
               disabled={false}
               kind="stop"
-              label={workWords("work.stop", { agent: session.agent.name })}
+              label={phoneSentence(session.stopLabelParts)}
               onPress={props.onStop}
             />
           )}

@@ -73,7 +73,7 @@ class RuntimeConnection extends EventEmitter implements BrowserRuntimeConnection
 }
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
 integration("page tab adapter", () => {
-  it("binds live pages without a resume and restores an ended session once without changing membership", async () => {
+  it("binds live pages as they are, the runtime saying it woke nothing, and restores an ended session once without changing membership", async () => {
     const fixture = await createStoreFixture(),
       f = await fixture.startRunFixture("page-tabs");
     const root = await mkdtemp(join(tmpdir(), "opensteer-tab-runtime-"));
@@ -207,7 +207,8 @@ integration("page tab adapter", () => {
       sessionId: row.pageBinding!.sessionId,
       reloaded: false,
     });
-    expect(connections.flatMap((connection) => connection.commands)).not.toContain(
+    // Z1: the runtime is asked, never this Home's copy of the tab's state; it woke nothing.
+    expect(connections.flatMap((connection) => connection.commands)).toContain(
       "Opensteer.resumeTab",
     );
     expect(

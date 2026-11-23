@@ -16,7 +16,6 @@ import {
   type HostSnapshot,
   type TaskList,
   type TaskRow,
-  workHomeMark,
 } from "@opensteer/client/host";
 import {
   usePlaceAgents,
@@ -24,7 +23,6 @@ import {
   useTab,
   useTabStrip,
   useTabsSyncing,
-  useWorkPolicy,
 } from "@opensteer/client/react";
 import type { TabId } from "@opensteer/core";
 import {
@@ -291,8 +289,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     props.shelves,
   );
   const identity = useDeploymentIdentity(deploymentId);
-  // A work Home says whose it is under its name; a personal Home says nothing more.
-  const work = workHomeMark(useWorkPolicy(hostClient));
   const userId = useHostUserId(hostClient);
   const replies = useUnsentReplies(tasksShown ? deploymentId : null, userId);
   const client = useMobileClient();
@@ -543,75 +539,37 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           // switched on a screen that shows each one's state.
           <Pressable
             accessibilityHint="Opens Settings"
-            accessibilityLabel={`Settings. ${identity.name}${work ? `, ${work.badge}` : ""}, ${identity.status}`}
+            accessibilityLabel={`Settings. ${identity.name}, ${identity.status}`}
             accessibilityRole="button"
             onPress={actions.onSettings}
             style={({ pressed }) => [styles.deployment, pressed && styles.pressed]}
           >
             <DeploymentMarkView mark={identity.mark} />
-            {work ? (
-              <View style={styles.workIdentity}>
-                <View style={styles.workLine}>
-                  <AppText
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    numberOfLines={1}
-                    role="secondaryMedium"
-                    style={styles.deploymentName}
-                  >
-                    {identity.name}
-                  </AppText>
-                  <StatusDot
-                    live={row.status === "connecting" || row.status === "reconnecting"}
-                    tone={statusTone(row.status)}
-                  />
-                  {/* Colour alone never carries a problem, so only being connected goes unsaid. */}
-                  {row.status === "connected" ? null : (
-                    <AppText
-                      maxFontSizeMultiplier={controlFontScaleLimit}
-                      numberOfLines={1}
-                      role="caption"
-                      tone="muted"
-                    >
-                      {identity.status}
-                    </AppText>
-                  )}
-                </View>
+            <View style={styles.statusLine}>
+              <AppText
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                numberOfLines={1}
+                role="secondaryMedium"
+                style={styles.deploymentName}
+              >
+                {identity.name}
+              </AppText>
+              <StatusDot
+                live={row.status === "connecting" || row.status === "reconnecting"}
+                tone={statusTone(row.status)}
+              />
+              {/* Colour alone never carries a problem, so only being connected goes unsaid. */}
+              {row.status === "connected" ? null : (
                 <AppText
                   maxFontSizeMultiplier={controlFontScaleLimit}
                   numberOfLines={1}
                   role="caption"
                   tone="muted"
                 >
-                  {work.badge}
+                  {identity.status}
                 </AppText>
-              </View>
-            ) : (
-              <View style={styles.statusLine}>
-                <AppText
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  numberOfLines={1}
-                  role="secondaryMedium"
-                  style={styles.deploymentName}
-                >
-                  {identity.name}
-                </AppText>
-                <StatusDot
-                  live={row.status === "connecting" || row.status === "reconnecting"}
-                  tone={statusTone(row.status)}
-                />
-                {/* Colour alone never carries a problem, so only being connected goes unsaid. */}
-                {row.status === "connected" ? null : (
-                  <AppText
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    numberOfLines={1}
-                    role="caption"
-                    tone="muted"
-                  >
-                    {identity.status}
-                  </AppText>
-                )}
-              </View>
-            )}
+              )}
+            </View>
             <Symbol name="gearshape" size={17} tint={color.muted} />
           </Pressable>
         )}
@@ -1100,8 +1058,6 @@ const styles = StyleSheet.create({
     paddingLeft: space[12] - 1,
   },
   statusLine: { alignItems: "center", flex: 1, flexDirection: "row", gap: space[6], minWidth: 0 },
-  workIdentity: { flex: 1, gap: space[2], minWidth: 0 },
-  workLine: { alignItems: "center", flexDirection: "row", gap: space[6], minWidth: 0 },
   welcome: {
     backgroundColor: color.surfaceRaised,
     borderColor: color.line,

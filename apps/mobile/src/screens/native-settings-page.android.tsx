@@ -1,5 +1,5 @@
 import { Box, ModalBottomSheet, RNHostView, Row, Text, TextButton } from "@expo/ui/jetpack-compose";
-import { fillMaxWidth, padding } from "@expo/ui/jetpack-compose/modifiers";
+import { fillMaxWidth, padding, weight } from "@expo/ui/jetpack-compose/modifiers";
 import { SymbolView, type AndroidSymbol } from "expo-symbols";
 import { useState, type ReactNode } from "react";
 import { color } from "../theme.js";
@@ -89,7 +89,8 @@ export function NativeSettingsPage(props: NativeSettingsPageProps): ReactNode {
           horizontalArrangement="spaceBetween"
           modifiers={[fillMaxWidth(), padding(16, 0, 8, 4)]}
         >
-          <Text color={color.text} style={{ typography: "titleLarge" }}>
+          {/* The title takes the row's room and wraps; Close stays on screen. */}
+          <Text color={color.text} modifiers={[weight(1)]} style={{ typography: "titleLarge" }}>
             {sheet.title}
           </Text>
           <TextButton onClick={sheet.onClose}>

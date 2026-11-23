@@ -1,5 +1,7 @@
+import { homeFailureText } from "./failure-text.js";
+import { clientIssue, presentClientIssue } from "../feedback/client-issue.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
-import { HostClientRequestError, type HostClient } from "./client.js";
+import type { HostClient } from "./client.js";
 import type {
   PersonalRemoteAdministrationIntent,
   PersonalRemoteAdministrationStatus,
@@ -148,10 +150,16 @@ export class PersonalRemoteAccessClient {
               : null,
         });
       } catch (error) {
+        // Said in the app's words: a failure's own text (a validator's report, a socket's
+        // error) is never put in front of a person.
         if (!signal.aborted)
           this.#set({
-            error:
-              error instanceof Error ? error.message : "Remote access status could not be loaded.",
+            error: presentClientIssue(
+              clientIssue(error, { operation: "read", label: "remote access" }) ?? {
+                code: "read-failed",
+                resource: "remote access",
+              },
+            ).title,
           });
       } finally {
         reading = false;
@@ -190,9 +198,8 @@ export class PersonalRemoteAccessClient {
     } catch (error) {
       this.#set({
         actionError:
-          error instanceof HostClientRequestError
-            ? error.message
-            : "Something went wrong. Try again.",
+          // The Home's refusal in its words; never a report of input this app sent wrong.
+          homeFailureText(error, "Something went wrong. Try again."),
       });
     } finally {
       this.#set({ working: false });

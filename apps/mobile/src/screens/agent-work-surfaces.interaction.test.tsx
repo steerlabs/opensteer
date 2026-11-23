@@ -84,8 +84,8 @@ vi.mock("../ui/composer-action.js", () => ({
   ),
 }));
 vi.mock("../thread/answer-pill.js", () => ({
-  AnswerPill: (props: { label: string; onPress: () => void }) => (
-    <button aria-label={props.label} onClick={props.onPress}>
+  AnswerPill: (props: { accessibilityHint?: string; label: string; onPress: () => void }) => (
+    <button aria-label={props.label} data-hint={props.accessibilityHint} onClick={props.onPress}>
       {props.label}
     </button>
   ),
@@ -136,10 +136,35 @@ describe("Needs you on the phone", () => {
         >[0])}
       />,
     );
-    await vi.waitFor(() => expect(page.textContent).toContain("Grok: Run a script in Shopping?"));
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("“\u2068Grok\u2069”: Run a script in Shopping?"),
+    );
     expect(page.querySelector('[data-mark="G"]')).not.toBeNull();
     // Every other Request keeps its own title.
     expect(page.textContent).toContain("Book a table for Friday");
+  });
+
+  it("quotes and bidi-isolates an RTL + digit agent name in Needs you and place-status accessibilityHint", async () => {
+    const rtlAgent = "\u0639\u0645\u064A\u0644 2";
+    const client = seeded({ question: true });
+    for (const thread of client.getSnapshot().threads) {
+      if (thread.externalWork?.connection) {
+        (thread.externalWork.connection as { label: string; clientName: string }).label = rtlAgent;
+        (thread.externalWork.connection as { label: string; clientName: string }).clientName =
+          rtlAgent;
+      }
+    }
+    await client.loadEarlierNeedsYou();
+    const page = await render(
+      <NeedsYouScreen
+        {...({ route: { params: { deploymentId: "dep" } } } as Parameters<
+          typeof NeedsYouScreen
+        >[0])}
+      />,
+    );
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain(`“\u2068${rtlAgent}\u2069”: Run a script in Shopping?`),
+    );
   });
 });
 
@@ -180,9 +205,13 @@ describe("a tab a connected agent uses, on the phone", () => {
         tabId="mock-tab-1-0"
       />,
     );
-    expect(page.textContent).toContain("Claude is using this page for “Find flights to Lisbon”");
+    expect(page.textContent).toContain(
+      "“\u2068Claude\u2069” is using this page for “\u2068Find flights to Lisbon\u2069”",
+    );
     await act(async () =>
-      [...page.querySelectorAll("button")].find((b) => b.textContent === "Stop Claude")!.click(),
+      [...page.querySelectorAll("button")]
+        .find((b) => b.textContent === "Stop “\u2068Claude\u2069”")!
+        .click(),
     );
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "agent.session.stop", threadId }),
@@ -200,7 +229,7 @@ describe("a tab a connected agent uses, on the phone", () => {
       />,
     );
     expect(page.textContent).toContain(
-      "You and Grok are using this page, for “Buy the phone case”",
+      "You and “\u2068Grok\u2069” are using this page, for “\u2068Buy the phone case\u2069”",
     );
   });
 
@@ -216,14 +245,20 @@ describe("a tab a connected agent uses, on the phone", () => {
         tabId="mock-tab-1-0"
       />,
     );
-    expect(page.textContent).toContain("Claude is using this page for “Find flights to Lisbon”");
-    await act(async () =>
-      [...page.querySelectorAll("button")].find((b) => b.textContent === "Answer")!.click(),
+    expect(page.textContent).toContain(
+      "“\u2068Claude\u2069” is using this page for “\u2068Find flights to Lisbon\u2069”",
     );
+    const answerBtn = [...page.querySelectorAll("button")].find((b) => b.textContent === "Answer")!;
+    expect(answerBtn.getAttribute("data-hint")).toBe(
+      "“\u2068Claude\u2069” needs you. Returns to the task, where you answer it",
+    );
+    await act(async () => answerBtn.click());
     expect(answered).toHaveBeenCalledExactlyOnceWith(threadId);
     // The question takes nothing from the row: its Stop still ends that same session.
     await act(async () =>
-      [...page.querySelectorAll("button")].find((b) => b.textContent === "Stop Claude")!.click(),
+      [...page.querySelectorAll("button")]
+        .find((b) => b.textContent === "Stop “\u2068Claude\u2069”")!
+        .click(),
     );
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "agent.session.stop", threadId }),
@@ -299,9 +334,13 @@ describe("a place two kinds of agent hold, on the phone", () => {
         client={client}
       />,
     );
-    expect(page.textContent).toContain("Claude is using this page for “Find flights to Lisbon”");
+    expect(page.textContent).toContain(
+      "“\u2068Claude\u2069” is using this page for “\u2068Find flights to Lisbon\u2069”",
+    );
     await act(async () =>
-      [...page.querySelectorAll("button")].find((b) => b.textContent === "Stop Claude")!.click(),
+      [...page.querySelectorAll("button")]
+        .find((b) => b.textContent === "Stop “\u2068Claude\u2069”")!
+        .click(),
     );
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "agent.session.stop", threadId: lisbon }),
@@ -331,6 +370,6 @@ describe("a connected agent's task in Tasks, on the phone", () => {
     );
     expect(page.querySelector('[data-mark="anthropic"]')).not.toBeNull();
     expect(page.querySelector('[data-mark="task"]')).toBeNull();
-    expect(page.textContent).toContain("Claude is working");
+    expect(page.textContent).toContain("“Claude” is working");
   });
 });

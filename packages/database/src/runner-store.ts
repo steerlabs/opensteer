@@ -1,5 +1,4 @@
-import { assertWorkDeviceEnrollment } from "./work-policy.js";
-import { isWorkHomeDatabase } from "./work-home-context.js";
+import { outsideName } from "@opensteer/shared/outsideName";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import {
   lockDeviceRemovalInTransaction,
@@ -54,7 +53,6 @@ import {
   machineAccessPolicyDefault,
   runnerDescriptorProfileRefusal,
   runnerEnvironmentIds,
-  workHomeEnrollmentPreviewRequiredReason,
 } from "@opensteer/protocol";
 import { type Kysely, type Transaction, sql } from "kysely";
 import { TransactionScopeChanged } from "./connection.js";
@@ -309,7 +307,7 @@ async function activateRunnerConnection(
       updateRequired: null,
       ...(descriptor.modules.integrations?.platform === "android"
         ? {
-            name: descriptor.name,
+            name: outsideName(descriptor.name, 120) || "Computer",
           }
         : {}),
       updatedAt: seenAt,
@@ -1153,7 +1151,17 @@ export async function revokeRunner(
         };
 
         // A messaging service's accounts may move to another; a channel pinned
-        // to this computer went with its app connection above.
+        // to this computer went with its app connection above. Each set of rows is
+        // locked in id order before it changes.
+        await transaction
+          .selectFrom("integrationConnections")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .where("connectionKind", "=", "channel")
+          .where("transportKind", "!=", "computer")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
         await transaction
           .updateTable("integrationConnections")
           .set({
@@ -1164,8 +1172,17 @@ export async function revokeRunner(
           .where("connectionKind", "=", "channel")
           .where("transportKind", "!=", "computer")
           .execute(databaseOperationOptions());
+        // A bridge's reply this computer held but never started goes to whichever takes over.
         await transaction
-          .updateTable("channelDeliveries")
+          .selectFrom("bridgeDeliveries")
+          .select("id")
+          .where("claimOwner", "=", runnerId)
+          .where("status", "=", "leased")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute(databaseOperationOptions());
+        await transaction
+          .updateTable("bridgeDeliveries")
           .set({
             claimExpiresAt: null,
             claimOwner: null,
@@ -1247,12 +1264,13 @@ export async function renameRunner(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
   ownerId: UserId,
-  name: string,
+  requestedName: string,
   options: {
     readonly allowDeployment?: boolean;
     readonly administration?: AdministrationCommandIdentity | undefined;
   } = {},
 ): Promise<void> {
+  const name = outsideName(requestedName, 120) || "Computer";
   await commitPersonalMutation(database, (transaction, mutation) =>
     administrationCommand(transaction, options.administration, async () => {
       const updatedAt = new Date();
@@ -1455,14 +1473,8 @@ export async function createRunnerEnrollment(
     readonly tokenHash: string;
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
+  const name = outsideName(input.name, 120) || "Computer";
   return commitPersonalMutation(database, async (transaction, mutation) => {
-    const configuredService =
-      input.configuredInitial &&
-      input.createdBy === null &&
-      input.ownerUserId === undefined &&
-      isSupervisedServiceRunner({ ...input, ownerKind: "deployment" });
-    if (input.runnerKind !== "main" && !configuredService)
-      await assertWorkDeviceEnrollment(transaction);
     let preparedIdentity = input.preparedIdentity ?? null;
     if (preparedIdentity) {
       try {
@@ -1571,7 +1583,7 @@ export async function createRunnerEnrollment(
         !isDeepStrictEqual(existing.preparedIdentity, preparedIdentity) ||
         existing.deviceProfile !== (input.deviceProfile ?? null) ||
         (!keepEnrolled && existing.requestFingerprint !== input.requestFingerprint) ||
-        existing.name !== input.name ||
+        existing.name !== name ||
         existing.runnerKind !== input.runnerKind ||
         (!keepEnrolled && existing.tokenHash !== input.tokenHash) ||
         // A replay that names a different owner is a different request, not
@@ -1673,7 +1685,7 @@ export async function createRunnerEnrollment(
         expiresAt: input.expiresAt,
         id: input.id,
         idempotencyKey: input.idempotencyKey,
-        name: input.name,
+        name,
         ownerKind: input.runnerKind === "local" ? "user" : "deployment",
         ownerUserId,
         requestFingerprint: input.requestFingerprint,
@@ -1792,15 +1804,6 @@ export async function enrollRunnerConnection(
         message: "Runner enrollment failed",
       });
     }
-    const configuredService =
-      enrollmentIdentity.createdBy === null &&
-      enrollmentIdentity.ownerUserId === null &&
-      isSupervisedServiceRunner(enrollmentIdentity);
-    const previewRequired =
-      enrollmentIdentity.runnerKind !== "main" &&
-      !configuredService &&
-      isWorkHomeDatabase(transaction);
-    if (previewRequired) await assertWorkDeviceEnrollment(transaction);
     if (enrollmentIdentity.runnerKind === "main") {
       await lockMainRunnerEnrollment(transaction);
     }
@@ -1946,7 +1949,7 @@ export async function enrollRunnerConnection(
           revokedAt: null,
         })
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      const consumed = await transaction
+      await transaction
         .updateTable("runnerEnrollments")
         .set({
           consumedAt: new Date(),
@@ -1954,14 +1957,7 @@ export async function enrollRunnerConnection(
         })
         .where("tokenHash", "=", input.enrollmentTokenHash)
         .where("consumedAt", "is", null)
-        .$if(previewRequired, (query) => query.where("workEnrollmentPreviewedAt", "is not", null))
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      if (previewRequired && consumed.numUpdatedRows === 0n)
-        throw new OpensteerError({
-          code: "forbidden",
-          reason: workHomeEnrollmentPreviewRequiredReason,
-          message: "Read what this work Home shares first, then try again.",
-        });
     }
     await upsertSelfDeviceInTransaction(
       transaction,

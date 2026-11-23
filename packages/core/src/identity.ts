@@ -71,7 +71,6 @@ export type DeploymentPresentation = z.infer<typeof DeploymentPresentationSchema
 /**
  * What kind of Home this is, as its own configuration says: a managed Home is
  * a Cloud Computer, a networked one a server, a loopback one on macOS a Mac.
- * Whether it is a work Home is the Account's to say, not this.
  */
 export const HostHomeKindSchema = z.enum(["mac", "server", "cloud-computer"]);
 export type HostHomeKind = z.infer<typeof HostHomeKindSchema>;

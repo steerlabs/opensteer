@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -355,6 +356,7 @@ it("owns independent memory jobs that see ordinary tasks as changed", async () =
     });
   }
   const changed = await agentThreadPageForOwner(f.database, {
+    reader: personTaskReader,
     ownerId: f.userId,
     scope: { kind: "personal" },
     scopeId: f.userId,

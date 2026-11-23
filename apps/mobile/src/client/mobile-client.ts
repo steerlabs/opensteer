@@ -2,6 +2,7 @@ import { clientIssue, presentClientIssue } from "@opensteer/client/feedback";
 import {
   createMessageOutboxStorage,
   disposeMessageOutbox,
+  homeFailureText,
   initializeMessageOutbox,
   realtimeIdleProbeDeadlineMs,
   realtimeIdleProbeMs,
@@ -2443,8 +2444,15 @@ export class MobileClient {
       const listed = await client.rpc["sessions.list"]({});
       if (!listed.ok && removed && listed.error.code === "unauthorized") return;
       if (!listed.ok) {
+        // The Home's refusal in its words when it wrote one for the person; never a raw fault.
+        let refusal: unknown;
+        try {
+          unwrapRpcResult(listed);
+        } catch (error) {
+          refusal = error;
+        }
         throw new Error(
-          listed.error.message || "That Opensteer would not list this phone's session.",
+          homeFailureText(refusal, "That Opensteer would not list this phone's session."),
         );
       }
       const own = listed.data.sessions.find((session) => session.current);

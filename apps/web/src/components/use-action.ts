@@ -376,9 +376,17 @@ export const requestAnswer = {
  * a refusal with the Host's safe reason where it has one, otherwise an honest
  * "couldn't". Never the exception's own text.
  */
-export function presentFailure(reason: unknown, label = "do this", done?: string): string {
+export function presentFailure(
+  reason: unknown,
+  label = "do this",
+  done?: string,
+  happened?: string,
+): string {
   if (reason instanceof Refusal) return reason.words;
   if (reason instanceof ActionNotDone) return outcomeWords(reason.outcome) ?? "";
   const issue = clientIssue(reason, { operation: "action", label });
-  return issue ? presentClientIssue({ ...issue, ...(done ? { done } : {}) }).title : "";
+  return issue
+    ? presentClientIssue({ ...issue, ...(done ? { done } : {}), ...(happened ? { happened } : {}) })
+        .title
+    : "";
 }

@@ -1028,15 +1028,18 @@ button.card__row > .card__row-body {
 .settings-messaging-row .card__row-title {
   flex-wrap: wrap;
 }
+/* An account's name is drawn whole, never cut: an address name wraps at its joints. */
 .settings-messaging-row .card__row-title > a {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
+/* Its sentences are read whole: a paused note or what the account reports is never cut. */
 .settings-messaging-row .card__row-detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  /* break-word, not anywhere: a row never shrinks to its narrowest part and splits an address. */
+  overflow-wrap: break-word;
+  text-overflow: clip;
+  white-space: normal;
 }
 .settings-messaging-row .card__row-actions {
   gap: var(--space-4);
@@ -1432,37 +1435,6 @@ a.connected-agents__row:focus-visible {
   color: var(--green);
 }
 
-/* An organization's work Home: its badge wherever the Home is named, and its card. */
-.work-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  margin-left: var(--space-8);
-  padding: 1px var(--space-8);
-  border: 1px solid var(--rim-plate);
-  border-radius: 999px;
-  background: var(--sheen) var(--fill-plate);
-  color: var(--muted);
-  font-size: var(--text-2xs);
-  font-weight: 500;
-  white-space: nowrap;
-  vertical-align: 1px;
-}
-.work-badge svg {
-  width: 11px;
-  height: 11px;
-}
-.card__row-title > .work-badge:first-child {
-  margin-left: 0;
-}
-.work-home__subtitle {
-  margin-top: var(--space-12);
-}
-.work-see__list {
-  margin: var(--space-4) 0 0;
-  padding-left: 1.1em;
-}
-
 /* ---- Who a connected agent is: verified, or the name it gave itself ---- */
 
 .agent-who {
@@ -1499,7 +1471,8 @@ a.connected-agents__row:focus-visible {
 }
 
 .agent-who__detail {
-  overflow-wrap: anywhere;
+  /* Its origin wraps at its own joints (`Address`), never anywhere inside a host. */
+  overflow-wrap: break-word;
   color: var(--muted);
   font-size: var(--text-sm);
 }
@@ -1529,23 +1502,6 @@ a.connected-agents__row:focus-visible {
   font-weight: 600;
 }
 
-/* ---- A work Home seen from inside it: its mark beside the Home's name, and its policy ---- */
-
-.work-badge--quiet {
-  margin-left: 0;
-  align-self: flex-start;
-}
-
-.agent-consent__work {
-  margin: 0 0 calc(var(--space-8) * -1);
-}
-
-.work-see__value {
-  color: var(--text-soft);
-  font-size: var(--text-sm);
-  text-align: right;
-}
-
 .devices__add {
   display: inline-flex;
   flex-direction: column;
@@ -1553,18 +1509,28 @@ a.connected-agents__row:focus-visible {
   gap: var(--space-4);
 }
 
-.devices__add-limit {
-  color: var(--muted);
-  font-size: var(--text-xs);
+/* The Messaging overview's one switch for its controls: no frame of its own. */
+.messaging-overview {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+/*
+ * Who "me" is and the code that links it: the sentence keeps a readable measure, and on a narrow
+ * screen Copy and Link go under it instead of squeezing it to a few words a line.
+ */
+.card__row.messaging-me {
+  flex-wrap: wrap;
+}
+.messaging-me > .card__row-body {
+  flex: 1 1 18rem;
 }
 
-/* A choice a work Home's policy rules out: still shown, quieter, with its reason. */
-.agent-consent__mode[aria-disabled="true"],
-.card__row.is-unavailable {
-  cursor: default;
-}
-
-.agent-consent__mode[aria-disabled="true"] .card__row-title,
-.card__row.is-unavailable .card__row-title {
-  color: var(--muted);
+/* A page's body while its last read failed (`ReadGate`): a plain group, disabled. */
+.read-gate {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
 }

@@ -9,7 +9,8 @@ import type {
 import type { AgentConnection } from "@opensteer/protocol";
 import type { PersonalTaskExternalWork } from "@opensteer/protocol/personal-sync";
 import { agentWho, type AgentWho } from "./agent-identity.js";
-import { workWords } from "./agent-work-copy.js";
+import { workSentence, workWords } from "./agent-work-copy.js";
+import { plainSentence, type SentencePart } from "./sentence-parts.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { HostClient } from "./client.js";
@@ -142,6 +143,19 @@ export function sessionAgent(
   };
 }
 
+export function sessionAgentPart(agent: SessionAgent): SentencePart {
+  return agent.who !== null && agent.name !== unknownAgent.name ? { name: agent.name } : agent.name;
+}
+
+export function tabNeedsYouParts(
+  connection: SessionConnection | null | undefined,
+  withdrawnAt?: string | null | undefined,
+): readonly SentencePart[] {
+  return workSentence("tab.needsYou", {
+    agent: sessionAgentPart(sessionAgent(connection, withdrawnAt)),
+  });
+}
+
 /* ------------------------------------------------------------------------- *
  * One operation, as the task's activity reads it.
  * ------------------------------------------------------------------------- */
@@ -239,14 +253,18 @@ export interface SessionTaskView {
   readonly state: SessionTaskState;
   /** Where the composer would be: the agent's state, never a box to type in. */
   readonly statusLine: string;
+  readonly statusLineParts: readonly SentencePart[];
   readonly noComposer: string;
+  readonly noComposerParts: readonly SentencePart[];
   /** "Connected agent · https://grok.com", or for an app on this computer. */
   readonly header: string;
   /** Ends this session, bound to the session the person saw; null once it has ended. */
   readonly stop: {
     readonly sessionId: string;
     readonly label: string;
+    readonly labelParts: readonly SentencePart[];
     readonly detail: string;
+    readonly detailParts: readonly SentencePart[];
   } | null;
   readonly activity:
     | { readonly kind: "unavailable" }
@@ -270,7 +288,7 @@ export function sessionTaskView(input: {
   const sessionId = slot?.sessionId ?? thread.agentSessionId ?? null;
   if (sessionId === null) return null;
   const agent = sessionAgent(slot?.connection, input.withdrawnAt);
-  const name = agent.name;
+  const agentName = sessionAgentPart(agent);
   const ended = slot?.status === "ended";
   const state: SessionTaskState = ended
     ? slot.endReason === "stopped"
@@ -281,24 +299,29 @@ export function sessionTaskView(input: {
       : thread.status === "running"
         ? "working"
         : "idle";
-  const statusLine =
+  const statusLineParts: readonly SentencePart[] =
     state === "working"
-      ? workWords("work.working", { agent: name })
+      ? workSentence("work.working", { agent: agentName })
       : state === "waiting"
-        ? workWords("work.waiting", { agent: name })
+        ? workSentence("work.waiting", { agent: agentName })
         : state === "idle"
-          ? workWords("work.idle", { agent: name })
+          ? workSentence("work.idle", { agent: agentName })
           : state === "stopped"
-            ? workWords("work.stopped")
-            : workWords(`work.ended.${slot?.endReason ?? "idle"}` as "work.ended.idle", {
-                agent: name,
+            ? [workWords("work.stopped")]
+            : workSentence(`work.ended.${slot?.endReason ?? "idle"}` as "work.ended.idle", {
+                agent: agentName,
               });
+  const noComposerParts = workSentence("work.noComposer", { agent: agentName });
+  const stopLabelParts = workSentence("work.stop", { agent: agentName });
+  const stopDetailParts = workSentence("work.stopDetail", { agent: agentName });
   const who = agent.who;
   return {
     agent,
     state,
-    statusLine,
-    noComposer: workWords("work.noComposer", { agent: name }),
+    statusLine: plainSentence(statusLineParts),
+    statusLineParts,
+    noComposer: plainSentence(noComposerParts),
+    noComposerParts,
     header:
       who === null || who.local
         ? workWords("work.headerLocal")
@@ -308,8 +331,10 @@ export function sessionTaskView(input: {
         ? null
         : {
             sessionId,
-            label: workWords("work.stop", { agent: name }),
-            detail: workWords("work.stopDetail", { agent: name }),
+            label: plainSentence(stopLabelParts),
+            labelParts: stopLabelParts,
+            detail: plainSentence(stopDetailParts),
+            detailParts: stopDetailParts,
           },
     activity: slot?.operations
       ? { kind: "ready", rows: slot.operations.map(operationRow) }
@@ -324,15 +349,26 @@ export function sessionTaskRow(input: {
     readonly agentSessionId?: string | null | undefined;
   };
   readonly slot: AgentSessionSlot | null | undefined;
-}): { readonly agent: SessionAgent; readonly line: string; readonly working: boolean } | null {
+}): {
+  readonly agent: SessionAgent;
+  readonly line: string;
+  readonly lineParts: readonly SentencePart[];
+  readonly working: boolean;
+} | null {
   const view = sessionTaskView(input);
   if (!view) return null;
   const latest = input.slot?.operations?.at(-1);
+  const lineParts = latest
+    ? workSentence(
+        "work.subtitle",
+        { agent: sessionAgentPart(view.agent) },
+        { what: latest.target.name },
+      )
+    : view.statusLineParts;
   return {
     agent: view.agent,
-    line: latest
-      ? workWords("work.subtitle", { agent: view.agent.name, what: latest.target.name })
-      : view.statusLine,
+    line: plainSentence(lineParts),
+    lineParts,
     working: view.state === "working",
   };
 }
@@ -350,21 +386,28 @@ export function tabAgentLine(input: {
   readonly occupant: { readonly threadId: string; readonly title: string } | null;
   readonly slot: AgentSessionSlot | null | undefined;
   readonly withdrawnAt?: string | null | undefined;
-}): { readonly line: string; readonly stop: { readonly sessionId: string } | null } | null {
+}): {
+  readonly line: string;
+  readonly lineParts: readonly SentencePart[];
+  readonly stop: { readonly sessionId: string } | null;
+} | null {
   const { occupant, slot } = input;
   if (!occupant || !slot) return null;
-  const agent = sessionAgent(slot.connection, input.withdrawnAt).name;
+  const agentName = sessionAgentPart(sessionAgent(slot.connection, input.withdrawnAt));
   const task = occupant.title.trim();
-  if (slot.status === "ended")
-    return slot.endReason === "stopped" ? { line: workWords("tab.stopped"), stop: null } : null;
-  const line = input.sharedFromChrome
+  if (slot.status === "ended") {
+    if (slot.endReason !== "stopped") return null;
+    const stopped = workWords("tab.stopped");
+    return { line: stopped, lineParts: [stopped], stop: null };
+  }
+  const lineParts = input.sharedFromChrome
     ? task
-      ? workWords("tab.shared", { agent, task })
-      : workWords("tab.sharedNoTask", { agent })
+      ? workSentence("tab.shared", { agent: agentName, task: { name: task } })
+      : workSentence("tab.sharedNoTask", { agent: agentName })
     : task
-      ? workWords("tab.using", { agent, task })
-      : workWords("tab.usingNoTask", { agent });
-  return { line, stop: { sessionId: slot.sessionId } };
+      ? workSentence("tab.using", { agent: agentName, task: { name: task } })
+      : workSentence("tab.usingNoTask", { agent: agentName });
+  return { line: plainSentence(lineParts), lineParts, stop: { sessionId: slot.sessionId } };
 }
 
 /* ------------------------------------------------------------------------- *
@@ -444,25 +487,32 @@ export interface OperationRequestView {
   readonly agent: SessionAgent;
   /** The Home's question, never the agent's words. */
   readonly question: string;
-  /** "{agent}: {question}", for the Needs you list. */
+  /** "“{agent}”: {question}", for the Needs you list. */
   readonly listTitle: string;
+  readonly listTitleParts: readonly SentencePart[];
   /** The Home's summary of what, where and who; its whole text when the parts aren't sent. */
   readonly summary: string;
   /** Where it would act: "Shopping · Studio Mac"; null when the Home sent no parts. */
   readonly context: string | null;
   /** The agent's own reason, labelled as its words; separate from everything else. */
-  readonly agentWords: { readonly label: string; readonly text: string } | null;
+  readonly agentWords: {
+    readonly label: string;
+    readonly labelParts: readonly SentencePart[];
+    readonly text: string;
+  } | null;
   /** The exact script or calls, behind one tap. */
   readonly calls: { readonly show: string; readonly hide: string; readonly text: string } | null;
   readonly state: OperationRequestState;
   /** Shown once it is no longer pending. */
   readonly settled: string | null;
+  readonly settledParts: readonly SentencePart[] | null;
   readonly answers: {
     readonly fieldId: string;
     readonly allow: { readonly label: string; readonly value: string };
     readonly deny: { readonly label: string; readonly value: string };
   } | null;
   readonly after: string;
+  readonly afterParts: readonly SentencePart[];
 }
 
 export function operationRequestView(input: {
@@ -476,6 +526,7 @@ export function operationRequestView(input: {
   const fieldId = operationDecisionField(request);
   if (fieldId === null || request.presentation.kind !== "form") return null;
   const agent = sessionAgent(slot?.connection ?? input.session?.connection, input.withdrawnAt);
+  const agentName = sessionAgentPart(agent);
   const question = request.presentation.title;
   const answered =
     request.response?.kind === "form" ? request.response.answers[fieldId]?.[0] : undefined;
@@ -491,33 +542,46 @@ export function operationRequestView(input: {
           : slot?.expired
             ? "expired"
             : "withdrawn";
+  const listTitleParts = workSentence("ask.title", { agent: agentName }, { question });
+  const agentWordsLabelParts = slot?.agentReason
+    ? workSentence("ask.says", { agent: agentName })
+    : null;
+  const settledParts: readonly SentencePart[] | null =
+    state === "allowed"
+      ? [workWords("ask.allowed")]
+      : state === "denied"
+        ? [workWords("ask.denied")]
+        : state === "expired"
+          ? workSentence("ask.expired", { agent: agentName })
+          : state === "withdrawn"
+            ? withdrawnLineParts(agentName, input.session?.endReason ?? null, slot?.target.name)
+            : null;
+  const afterParts = workSentence("ask.after", { agent: agentName });
   return {
     agent,
     question,
-    listTitle: workWords("ask.title", { agent: agent.name, question }),
+    listTitle: plainSentence(listTitleParts),
+    listTitleParts,
     summary: slot?.summary ?? request.presentation.detail ?? "",
     context: slot
       ? slot.target.device && slot.target.device.name !== slot.target.name
         ? workWords("ask.context", { target: slot.target.name, device: slot.target.device.name })
         : slot.target.name
       : null,
-    agentWords: slot?.agentReason
-      ? { label: workWords("ask.says", { agent: agent.name }), text: slot.agentReason }
-      : null,
+    agentWords:
+      slot?.agentReason && agentWordsLabelParts
+        ? {
+            label: plainSentence(agentWordsLabelParts),
+            labelParts: agentWordsLabelParts,
+            text: slot.agentReason,
+          }
+        : null,
     calls: slot
       ? { show: workWords("ask.calls"), hide: workWords("ask.hideCalls"), text: slot.calls }
       : null,
     state,
-    settled:
-      state === "allowed"
-        ? workWords("ask.allowed")
-        : state === "denied"
-          ? workWords("ask.denied")
-          : state === "expired"
-            ? workWords("ask.expired", { agent: agent.name })
-            : state === "withdrawn"
-              ? withdrawnLine(agent.name, input.session?.endReason ?? null, slot?.target.name)
-              : null,
+    settled: settledParts ? plainSentence(settledParts) : null,
+    settledParts,
     answers:
       state === "pending"
         ? {
@@ -526,18 +590,19 @@ export function operationRequestView(input: {
             deny: { label: workWords("ask.deny"), value: operationAnswerValues.deny },
           }
         : null,
-    after: workWords("ask.after", { agent: agent.name }),
+    after: plainSentence(afterParts),
+    afterParts,
   };
 }
 
-function withdrawnLine(
-  agent: string,
+function withdrawnLineParts(
+  agent: SentencePart,
   reason: AgentSessionEndReason | null,
   target: string | undefined,
-): string {
-  if (reason === "stopped") return workWords("ask.withdrawn.stopped", { agent });
-  if (reason === "revoked") return workWords("ask.withdrawn.revoked", { agent });
+): readonly SentencePart[] {
+  if (reason === "stopped") return workSentence("ask.withdrawn.stopped", { agent });
+  if (reason === "revoked") return workSentence("ask.withdrawn.revoked", { agent });
   if (reason === "narrowed" && target)
-    return workWords("ask.withdrawn.narrowed", { agent, target });
-  return workWords("ask.withdrawn");
+    return workSentence("ask.withdrawn.narrowed", { agent }, { target });
+  return [workWords("ask.withdrawn")];
 }

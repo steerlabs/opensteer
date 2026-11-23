@@ -28,12 +28,6 @@ import {
   UpdateAccountProfileRequestSchema,
   UpdateAccountProfileResponseSchema,
   hostOwnerProfilePath,
-  organizationWorkPath,
-  WorkPolicyResponseSchema,
-  WorkPolicyAppliedResponseSchema,
-  WorkAuditAcknowledgmentSchema,
-  type WorkAssignmentId,
-  type WorkAuditPush,
   type AccountProfile,
   type UpdateAccountProfileRequest,
   type UpdateAccountProfileResponse,
@@ -283,47 +277,6 @@ export class AccountDirectoryClient {
     return UpdateAccountProfileResponseSchema.parse(
       await readBoundedJson(response, boundedJsonOptions),
     );
-  }
-
-  async workPolicy(assignmentId: WorkAssignmentId, signal: AbortSignal) {
-    const response = await this.#request(
-      `${organizationWorkPath}/${assignmentId}/policy`,
-      "GET",
-      null,
-      "Work policy",
-      undefined,
-      10_000,
-      signal,
-    );
-    return WorkPolicyResponseSchema.parse(await readBoundedJson(response, boundedJsonOptions));
-  }
-
-  async reportWorkPolicy(assignmentId: WorkAssignmentId, revision: number, signal: AbortSignal) {
-    const response = await this.#request(
-      `${organizationWorkPath}/${assignmentId}/applied`,
-      "POST",
-      { revision },
-      "Work policy acknowledgment",
-      undefined,
-      10_000,
-      signal,
-    );
-    return WorkPolicyAppliedResponseSchema.parse(
-      await readBoundedJson(response, boundedJsonOptions),
-    );
-  }
-
-  async pushWorkAudit(batch: WorkAuditPush, signal: AbortSignal) {
-    const response = await this.#request(
-      `${organizationWorkPath}/${batch.assignmentId}/audit`,
-      "POST",
-      batch,
-      "Work audit",
-      undefined,
-      10_000,
-      signal,
-    );
-    return WorkAuditAcknowledgmentSchema.parse(await readBoundedJson(response, boundedJsonOptions));
   }
 
   async #request(

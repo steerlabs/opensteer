@@ -10,6 +10,7 @@ import {
   listedRowThreadId,
   threadMark,
   tabSuccessor,
+  tabWakingWords,
   type BrowserTabDestination,
   type HostClient,
   type TabStrip,
@@ -387,6 +388,7 @@ function ViewedTab(
     props.presence.shown,
     intent,
     available,
+    props.tab,
   );
   const last = useRef<TabViewer | null>(null);
   const viewer: TabViewer | null =
@@ -407,6 +409,9 @@ function ViewedTab(
       <Screen>
         {state.status === "failed" ? (
           <TabStatus action={{ label: "Try again", onPress: retry }} title={state.error} />
+        ) : props.tab.kind === "page" && props.tab.state === "asleep" ? (
+          // V10: a sleeping tab says it is waking, with its address.
+          <TabStatus detail={props.tab.url ?? null} title={tabWakingWords} waiting />
         ) : (
           <TabStatus title="Opening…" waiting />
         )}

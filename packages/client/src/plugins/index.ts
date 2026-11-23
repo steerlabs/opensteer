@@ -1,3 +1,4 @@
+import { homeFailureText } from "../host/failure-text.js";
 import { requestDecision } from "../host/client.js";
 import cronstrue from "cronstrue";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
@@ -403,9 +404,8 @@ export function pluginEngineRefusal(error: unknown): PluginEngineStateView | nul
     error.reason === "plugin-engine-unavailable"
     ? {
         status: "unavailable",
-        ...("message" in error && typeof error.message === "string"
-          ? { reason: error.message }
-          : {}),
+        // The Home's own sentence for why the engine is unavailable, never a raw fault.
+        ...(homeFailureText(error, "") ? { reason: homeFailureText(error, "") } : {}),
       }
     : null;
 }

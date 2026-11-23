@@ -1,4 +1,6 @@
 import { expiredPersonalSignInRequests, nextPersonalRequestDeadline } from "./request-deadlines.js";
+import { liveConnection } from "./connection-liveness.js";
+import { assertRequestOriginMayContinue } from "./resource-access.js";
 import { computerConnectionDeviceId } from "./integration-connections.js";
 import type {
   IntegrationConnectionSummary as LegacyIntegrationConnectionSummary,
@@ -16,6 +18,7 @@ import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { nearestListedThread } from "./thread-lineage.js";
+import { readerSees, type TaskReader } from "./task-reader.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
@@ -225,7 +228,7 @@ interface PendingRequestContinuation {
  * changes remain explicit callers of this store, but creation, visibility,
  * replay, withdrawal, cancellation, and continuation bookkeeping do not fork.
  */
-const personAuthorities = ["user-session", "channel-ingress"];
+const personAuthorities = ["user-session"];
 export class RequestStore {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #links: ChannelLinks;
@@ -850,6 +853,7 @@ export class RequestStore {
 
   async agentPage(input: {
     readonly ownerId: UserId;
+    readonly reader?: TaskReader;
     readonly scope: import("./thread-store.js").AgentThreadListScope;
     readonly scopeId: string;
     readonly connectionAuthority?: Extract<
@@ -901,6 +905,8 @@ export class RequestStore {
             .innerJoin("threads", "threads.id", "requests.originatingThreadId")
             .where("threads.createdBy", "=", input.ownerId)
             .where("threads.removedAt", "is", null);
+          if (input.reader?.kind === "work")
+            query = query.where(readerSees(input.reader, sql.ref("threads.origin_connection_id")));
           if (lineageRootThreadId !== null)
             query = query.where("threads.lineageRootThreadId", "=", lineageRootThreadId);
           if (input.scope.kind === "connection")
@@ -1826,8 +1832,7 @@ export class RequestStore {
         .innerJoin("agentConnections", "agentConnections.id", "agentSessions.connectionId")
         .select("agentConnections.id")
         .where("agentSessions.id", "=", input.originatingAgentSessionId)
-        .where("agentConnections.revokedAt", "is", null)
-        .where("agentConnections.expiresAt", ">", new Date())
+        .where(liveConnection())
         .where("agentConnections.grantRevision", "=", input.grantRevision)
         .forShare("agentConnections")
         .executeTakeFirst();
@@ -3070,7 +3075,8 @@ async function createRequestInTransaction(
       const target = run.replyTarget;
       await enqueueChannelConversationStatus(transaction, {
         conversationId: target.conversationId,
-        text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(canonical.originatingThreadId)}`,
+        // One line and a link: what is asked, and every answer, stay in Opensteer.
+        text: `This task needs you: ${links.threadUrl(canonical.originatingThreadId)}`,
       });
     }
   }
@@ -3180,7 +3186,23 @@ export async function fulfilBrowserSignInRequestInTransaction(
     .where("id", "=", input.requestId)
     .executeTakeFirst();
   if (!matches(observed)) return null;
-  await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+  // The sign-in already reached the browser: never refuse or roll back its receipt if the
+  // connection ended mid-delivery. Record the Request as fulfilled and enqueue a continuation
+  // only if its connection and task origin are still active.
+  const { origin } = await lockActiveDurableRequestAuthority(
+    transaction,
+    requestFromRow(observed),
+    {
+      checkConnection: false,
+    },
+  );
+  let mayContinue = true;
+  try {
+    await assertRequestOriginMayContinue(transaction, observed.requestedBy, origin);
+  } catch (error) {
+    if (error instanceof OpensteerError && error.code === "forbidden") mayContinue = false;
+    else throw error;
+  }
   await lockRequestThreads(transaction, [observed.originatingThreadId]);
   const row = await transaction
     .selectFrom("requests")
@@ -3212,7 +3234,7 @@ export async function fulfilBrowserSignInRequestInTransaction(
     .returningAll()
     .executeTakeFirstOrThrow();
   const resolved = requestFromRow(resolvedRow);
-  await enqueueContinuation(transaction, resolved, now);
+  if (mayContinue) await enqueueContinuation(transaction, resolved, now);
   await refreshRequestState(transaction, resolved.id);
   return {
     request: resolved,
@@ -3391,6 +3413,7 @@ function originMismatchMessage(input: RequestOriginSelector): string {
     : "Request origin does not match its signed Trigger Occurrence authority";
 }
 type LockedRequestOrigin = {
+  readonly connectionId: string | null;
   readonly environmentId: DatabaseSchema["runs"]["environmentId"];
   /** Present only for a Run, which signs the generation into its authority. */
 
@@ -3398,6 +3421,7 @@ type LockedRequestOrigin = {
   readonly running: boolean;
   readonly runId: RunId | null;
   readonly threadId: ThreadId;
+  readonly threadOriginConnectionId: string | null;
 };
 async function lockRequestOrigin(
   transaction: Transaction<DatabaseSchema>,
@@ -3418,16 +3442,24 @@ async function lockRequestOrigin(
     const session = await transaction
       .selectFrom("agentSessions")
       .innerJoin("threads", "threads.id", "agentSessions.threadId")
-      .select(["agentSessions.status", "agentSessions.userId", "threads.environmentId"])
+      .select([
+        "agentSessions.connectionId",
+        "agentSessions.status",
+        "agentSessions.userId",
+        "threads.environmentId",
+        "threads.originConnectionId",
+      ])
       .where("agentSessions.id", "=", origin.originatingAgentSessionId)
       .executeTakeFirst();
     return session
       ? {
+          connectionId: session.connectionId,
           environmentId: session.environmentId,
           requestedBy: session.userId,
           runId: null,
           running: session.status === "active",
           threadId: parent.threadId,
+          threadOriginConnectionId: session.originConnectionId,
         }
       : undefined;
   }
@@ -3442,17 +3474,25 @@ async function lockRequestOrigin(
     }
     const watch = await transaction
       .selectFrom("triggerWatchActivations")
-      .selectAll()
-      .where("id", "=", origin.originatingWatchActivationId)
-      .$if(lock, (q) => q.forNoKeyUpdate())
+      .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+      .innerJoin("threads", "threads.id", "triggerWatchActivations.anchorThreadId")
+      .selectAll("triggerWatchActivations")
+      .select([
+        "triggers.originConnectionId as triggerOriginConnectionId",
+        "threads.originConnectionId as threadOriginConnectionId",
+      ])
+      .where("triggerWatchActivations.id", "=", origin.originatingWatchActivationId)
+      .$if(lock, (q) => q.forNoKeyUpdate("triggerWatchActivations"))
       .executeTakeFirst();
     return watch
       ? {
+          connectionId: watch.connectionId ?? watch.triggerOriginConnectionId,
           environmentId: watch.environmentId,
           requestedBy: watch.createdBy,
           runId: null,
           running: watch.desired === "active" && watch.observed === "running",
           threadId: watch.anchorThreadId,
+          threadOriginConnectionId: watch.threadOriginConnectionId,
         }
       : undefined;
   }
@@ -3460,51 +3500,77 @@ async function lockRequestOrigin(
     const occurrence = await transaction
       .selectFrom("triggerOccurrences")
       .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+      .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .select([
+        "triggerOccurrences.connectionId",
         "triggerOccurrences.environmentId",
         "triggerOccurrences.status",
         "triggers.anchorThreadId",
         "triggers.createdBy",
+        "triggers.originConnectionId as triggerOriginConnectionId",
+        "threads.originConnectionId as threadOriginConnectionId",
       ])
       .where("triggerOccurrences.id", "=", origin.originatingOccurrenceId)
       .$if(lock, (query) => query.forNoKeyUpdate("triggerOccurrences"))
       .executeTakeFirst();
     if (!occurrence) return undefined;
     return {
+      connectionId: occurrence.connectionId ?? occurrence.triggerOriginConnectionId,
       environmentId: occurrence.environmentId,
       requestedBy: occurrence.createdBy,
       runId: null,
       running: occurrence.status === "running",
       threadId: occurrence.anchorThreadId,
+      threadOriginConnectionId: occurrence.threadOriginConnectionId,
     };
   }
   const run = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .select(["runs.environmentId", "runs.id", "runs.requestedBy", "runs.status", "runs.threadId"])
+    .select([
+      "runs.connectionId",
+      "runs.environmentId",
+      "runs.id",
+      "runs.requestedBy",
+      "runs.status",
+      "runs.threadId",
+      "threads.originConnectionId",
+    ])
     .where("runs.id", "=", origin.originatingRunId)
     .$if(lock, (query) => query.forNoKeyUpdate("runs"))
     .executeTakeFirst();
   if (!run) return undefined;
   return {
+    connectionId: run.connectionId,
     environmentId: run.environmentId,
     requestedBy: run.requestedBy,
     runId: run.id,
     running: run.status === "running",
     threadId: run.threadId,
+    threadOriginConnectionId: run.originConnectionId,
   };
 }
 export async function lockActiveDurableRequestAuthority(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
-): Promise<void> {
+  options?: { readonly checkConnection?: boolean },
+): Promise<{
+  readonly origin: {
+    readonly connectionId: string | null;
+    readonly threadOriginConnectionId: string | null;
+  };
+}> {
   if (request.mode !== "durable") {
     throw new OpensteerError({
       code: "conflict",
       message: "Request is not durable",
     });
   }
-  if (request.originatingAgentSessionId && request.kind === "browser.password-sign-in") {
+  if (
+    options?.checkConnection !== false &&
+    request.originatingAgentSessionId &&
+    request.kind === "browser.password-sign-in"
+  ) {
     const live = await transaction
       .selectFrom("agentOperations")
       .innerJoin("agentSessions", "agentSessions.id", "agentOperations.sessionId")
@@ -3514,8 +3580,7 @@ export async function lockActiveDurableRequestAuthority(
       .where("agentSessions.id", "=", request.originatingAgentSessionId)
       .where("agentSessions.status", "=", "active")
       .whereRef("agentConnections.grantRevision", "=", "agentOperations.grantRevision")
-      .where("agentConnections.revokedAt", "is", null)
-      .where("agentConnections.expiresAt", ">", new Date())
+      .where(liveConnection())
       .forShare("agentConnections")
       .executeTakeFirst();
     if (!live)
@@ -3541,6 +3606,21 @@ export async function lockActiveDurableRequestAuthority(
     });
   }
   await requirePersonalOwner(transaction, request.requestedBy);
+  // A Request cannot be answered once the connection its task or origin belongs to has ended;
+  // post-effect receipt recording passes `checkConnection: false` so already-delivered effects
+  // are never rolled back.
+  if (options?.checkConnection !== false) {
+    await assertRequestOriginMayContinue(transaction, request.requestedBy, {
+      connectionId: origin.connectionId,
+      threadOriginConnectionId: origin.threadOriginConnectionId,
+    });
+  }
+  return {
+    origin: {
+      connectionId: origin.connectionId,
+      threadOriginConnectionId: origin.threadOriginConnectionId,
+    },
+  };
 }
 function clampLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) {

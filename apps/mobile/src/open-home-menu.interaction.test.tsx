@@ -211,11 +211,7 @@ vi.mock("./screens/add-deployment.js", () => ({ AccountIdentityRow: () => null }
 vi.mock("./screens/deployment-menu.js", () => ({ DeploymentMenu: () => null }));
 vi.mock("./screens/setup-scanner.js", () => ({ useSetupScanner: () => vi.fn() }));
 vi.mock("./screens/welcome.js", () => ({ Welcome: () => <div>Welcome</div> }));
-vi.mock("./screens/work-home.js", () => ({
-  useCloudComputerIds: () => new Set(),
-  useWorkBadges: () => new Map(),
-  workHomeSections: () => [],
-}));
+vi.mock("./screens/cloud-computer-ids.js", () => ({ useCloudComputerIds: () => new Set() }));
 vi.mock("./screens/native-settings-page.js", () => ({
   NativeSettingsPage: ({
     sections,

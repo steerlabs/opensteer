@@ -1,3 +1,4 @@
+import { personTaskReader } from "./task-reader.js";
 import { requestFromRow } from "./request-persistence.js";
 import { DeviceIdSchema } from "@opensteer/core";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
@@ -811,7 +812,7 @@ describe("fresh personal/team lineage", () => {
     await migrateToLatest(database);
     const triggers = new TriggerStore(database);
     for (const saved of [savedSchedule, savedWatch]) {
-      const detail = await triggers.getForOwner(saved.trigger.id, userId, 1);
+      const detail = await triggers.getForOwner(saved.trigger.id, userId, 1, personTaskReader);
       expect(detail?.revision.program).toEqual(saved.revision.program);
     }
     expect(
@@ -822,7 +823,7 @@ describe("fresh personal/team lineage", () => {
         .executeTakeFirstOrThrow(),
     ).toMatchObject({ program: { toolContractVersion: 4 } });
     expect(
-      (await triggers.getForOwner(savedWatch.trigger.id, userId, 1))?.activation,
+      (await triggers.getForOwner(savedWatch.trigger.id, userId, 1, personTaskReader))?.activation,
     ).toMatchObject({
       desired: "active",
     });

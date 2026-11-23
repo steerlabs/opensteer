@@ -39,8 +39,6 @@ import type { DeviceDriverManagementPort } from "./administration/device-driver-
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
 import { installClientAddress, installTrustedProxy } from "./identity/anonymous-client-address.js";
 import { registerManagedHomeClaimRoute } from "./identity/managed-home-claim.js";
-import { registerDeviceEnrollmentPreview } from "./organizations/device-enrollment-preview.js";
-import { registerWorkHomeRoutes, type WorkHomeService } from "./organizations/work-home.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
   deviceMembershipTurn,
@@ -48,7 +46,7 @@ import {
   signOutDeviceSession,
 } from "./administration/device-removal.js";
 import { RunnerLeaveRequestSchema, RunnerLeaveResponseSchema } from "@opensteer/protocol";
-import { requirePersonalOwner, needsYouPage } from "@opensteer/database";
+import { requirePersonalOwner, needsYouPage, personTaskReader } from "@opensteer/database";
 import type { PersonalExecution } from "./runtime/personal-execution.js";
 
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
@@ -474,9 +472,6 @@ export interface HostServerDependencies {
     import("./identity/managed-home-claim.js").ManagedHomeClaimService,
     "claim"
   >;
-  readonly workHome?: {
-    readonly service: WorkHomeService;
-  };
   /** The Opensteer Account link, on every Personal Host whether or not it has Remote access. */
   readonly personalAccountLink?: { readonly service: PersonalRemoteAccessService } | undefined;
   /** The personal owner's name; absent before the Home has an owner. */
@@ -684,7 +679,6 @@ export async function createHostServer(
       }
     : undefined;
   if (connectionRoutes) registerConnectionRoutes(app, connectionRoutes);
-  if (dependencies.workHome) registerWorkHomeRoutes(app, dependencies.workHome.service);
   if (dependencies.managedHomeClaim)
     registerManagedHomeClaimRoute(app, dependencies.managedHomeClaim, (address) =>
       consumeAnonymousRateLimit(
@@ -1543,7 +1537,7 @@ export async function createHostServer(
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         maxItems: input.limit ?? 100,
       });
-      if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess({
         ...page,
         messages: await withClientSendKeys(page.messages, readSendKeys(requireRpcSession(context))),
@@ -1568,7 +1562,7 @@ export async function createHostServer(
     "thread.browserUsage.get": async (input, context) => {
       const ownerId = requireRpcSession(context).user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, ownerId);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(
         hostApi["thread.browserUsage.get"].success.parse({
           threadId: thread.id,
@@ -1600,7 +1594,7 @@ export async function createHostServer(
       const session = requireRpcSession(context);
       const requestedBy = session.user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
-      if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       const queue = await dependencies.store.getThreadInputQueue({
         threadId: thread.id,
         requestedBy,
@@ -1624,6 +1618,7 @@ export async function createHostServer(
       const assignment = await dependencies.store.getAssignmentForOwner({
         assignmentId: input.assignmentId,
         ownerId: requireRpcSession(context).user.id,
+        reader: personTaskReader,
       });
       if (!assignment) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(assignment);
@@ -1637,7 +1632,7 @@ export async function createHostServer(
         ...(input.before ? { before: input.before } : {}),
         ...(input.open ? { open: true } : {}),
       });
-      if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Task not found" });
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({ ...page, threadId: input.threadId }),
       );
@@ -1879,7 +1874,7 @@ export async function createHostServer(
 
       case "thread.rename": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         return {
           ...(await dependencies.commands.renameThread({
             idempotencyKey: command.idempotencyKey,
@@ -1892,7 +1887,7 @@ export async function createHostServer(
       }
       case "thread.icon.set": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         return {
           ...(await dependencies.commands.setThreadIcon({
             idempotencyKey: command.idempotencyKey,
@@ -1905,7 +1900,7 @@ export async function createHostServer(
       }
       case "thread.access.update": {
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+        if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
         const harness = await dependencies.store.getHarnessInstance(thread.harnessInstanceId);
         if (harness) {
           assertAccessModeEnforceable(
@@ -2670,7 +2665,6 @@ export async function createHostServer(
     },
   );
 
-  registerDeviceEnrollmentPreview(app, dependencies.store.database);
   app.post(
     "/v1/runner/leave",
     { config: unversionedRoute, bodyLimit: 8 * 1024 },

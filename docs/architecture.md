@@ -18,9 +18,8 @@ person reads is plain words.
 
 An effect happens only if every term that applies allows it, all at once:
 
-> the person's ownership ∩ the organization's ceiling (on a work Home) ∩ the connected agent's
-> grant (when the work descends from a connection) ∩ the task's mode ∩ the device's switch ∩ the
-> target's own approval.
+> the person's ownership ∩ the connected agent's grant (when the work descends from a connection)
+> ∩ the task's mode ∩ the device's switch ∩ the target's own approval.
 
 The terms are intersected. None of them outranks another, and none widens another. An answer from
 the person allows one operation inside the grant; it never widens the grant.
@@ -31,10 +30,9 @@ The rule is resolved in one module, `packages/database/src/resource-access.ts`:
   the binding the Home issued (`run:`, `thread:`, `trigger:`, `watch:`, `session:`), never from
   what a caller says. It checks the owner and that the execution is still live. When nothing
   resolves, the answer is a refusal, never Full access.
-- The connection's live state is read in one statement: grant, grant revision, consent version,
-  mode ceiling and, on a work Home, the organization's policy joined into the same `SELECT`
-  (`readLiveAgentConnectionRow`). The policy can therefore never be read at a different moment
-  from the grant. A personal Home runs no policy query at all.
+- The connection's standing is read in one statement by one function: its grant, grant revision,
+  consent version, mode ceiling and its state (`readConnectionStanding`, with `connectionState`
+  in the same `SELECT`). Every reader of where a connection stands is a view of that statement.
 - The effective mode is the lowest mode in the lineage (connection, task and Run;
   `minThreadAccessMode`), read at the moment of the effect. The modes from lowest to highest are
   `approval-required` (shown as Supervised), `auto-accept-edits`, `auto` and `full-access`.
@@ -107,27 +105,21 @@ Over OAuth 2 with PKCE (S256) and a public client (`apps/host/src/mcp/connection
 ### The signed agent directory and what "verified" means
 
 The Opensteer account service publishes one signed list of known agents (`GET
-/v1/agent-directory`, `apps/control-plane/src/agent-directory/`). Each entry has a display name,
-exact HTTPS origins, optional keys, and optionally the platforms it is embedded through. The
-Home fetches it from its configured account origin over HTTPS, checks the signature against that
-origin's published keys, and caches it (refresh every 15 minutes; a copy is usable for 24 hours).
+/v1/agent-directory`, `apps/control-plane/src/agent-directory/`). Each entry has a display name
+and the exact HTTPS origins it is verified by. The Home fetches it from its configured account
+origin over HTTPS, checks the signature against that origin's published keys, and caches it (refresh every 15 minutes; a copy is usable for 24 hours).
 A Home never fetches an address an agent supplies. See [agent-directory.md](agent-directory.md).
 
 - **Verified** means the redirect address the person consented to has exactly the origin of a
   directory entry. The consent heading then shows that entry's name with a verified mark.
-- **Verified through a platform** ("Errand via AgentPay") additionally needs a short-lived
-  assertion (at most 120 seconds, single use) signed by the embedding party's directory key and
-  bound to this request's client, Home, redirect address, PKCE challenge and state.
 - **Anything else is unverified**: heading "An agent wants to connect", with its own name shown
-  as its claim. An assertion that does not verify makes the consent unverified; it never fails
-  the sign-in.
+  as its claim.
 - Consent uses the cached copy. A Home that has never accepted a copy waits at most two seconds
   for one, then shows everything as unverified.
-- If the directory later removes an origin, a pairing or a key, the connection shows "No longer
-  verified since {date}" and offers Disconnect. The Home never disconnects on a remote list's
+- If the directory later removes the origin, the connection shows "No longer verified since
+  {date}" and offers Disconnect. The Home never disconnects on a remote list's
   say-so. If verification changes between the consent screen and the approval, the approval is
   refused with `consent-verification-changed` and the person looks again.
-- The embedding party gets nothing: no code, no token, no grant.
 
 ### What a connected agent is shown
 
@@ -238,7 +230,7 @@ Each call is one reviewed **operation** of an **agent session**:
 8. **What a refusal carries.** `{ error: { code, message, next }, taskId, operationId, status }`.
    The codes a connected agent acts on: `declined_by_person` (do not retry that action),
    `stopped_by_person` (stop that task and ask before starting again), `access_changed` (the grant,
-   mode or connection changed during the work), `organization_not_allowed`, `not_found`,
+   mode or connection changed during the work), `not_found`,
    `computer_stopped`, `computer_asleep`, `computer_offline`, and `access_denied` for any other
    refusal.
 
@@ -279,9 +271,12 @@ prefixes, credential commands, MCP servers) and reads none of their instructions
 the engine needs to sign in stays. An engine runs such a task only where an engine-lane test plants
 one of each kind in a temporary home and project and shows all three on the real engine. Otherwise
 `assertEngineMayRun`, in the same file, refuses it before any process starts, with code `forbidden`
-and one sentence, for example: "Cursor starts with your own Cursor settings, so it runs only tasks
-you started yourself that no connected agent or chat has written to." The Home offers every engine
-to every task and does not refuse by engine itself, so the Runner refuses. Background text (task
+and two audiences (`EngineUnavailableForTaskError`): the starting party (a connected agent, a chat
+reply, a delegation result, or a follow-up Run) reads only the neutral sentence `"This engine is not
+available for this task."` for every engine and every refusal reason, while the person on their own
+screens (task view, task list preview, and notifications) reads `ownerMessage` with the exact
+reason and what they can change. The Home offers every engine to every task and does not refuse by
+engine itself, so the Runner refuses. Background text (task
 naming and Auto-mode review) always starts without the person's configuration on every engine,
 using the Opensteer-owned home on Codex (refusing as unavailable when no file login is present or
 the active provider runs a credential program) and the others'-tasks folder on Pi (refusing as
@@ -371,8 +366,7 @@ What the person sees follows evidence:
 - With no answer and no contact loss, the connection stays Stopping. There is no timeout, and it
   cannot be removed until it settles.
 
-Expiry, a narrowed grant, a lowered mode and a narrower organization policy go through the same
-worker. The person's other work is untouched. Disconnect does not close tabs.
+Expiry, a narrowed grant and a lowered mode go through the same worker. The person's other work is untouched. Disconnect does not close tabs.
 
 ### Stop everything on this Mac
 
@@ -443,6 +437,23 @@ Pages are separated by lineage; signed-in state is not. The isolation boundary f
 sign-ins is the browser profile. A connected agent works only in profiles granted to it, never in
 Guest. Two agents granted the same profile share its signed-in state.
 
+On a Linux Home or a Cloud Computer, tabs nobody is using sleep, and wake with their state while
+the browser keeps running, which makes it unlikely that a Home with many tabs on a small machine
+runs out of memory (not impossible: when every tab is in use, a new tab still opens, and a storm of
+pages that a page opens can outrun sleeping, so background tabs can then be lost to the system). A sleeping tab is discarded in Chromium (freeing its renderer while keeping its tab
+state, driven by container working set or host memory pressure with 70%/60% hysteresis, also
+checked before each new page opens) and named, only while it sleeps, through a minimal internal
+helper extension that is never visible to tab lists, session CDP or connected agents; it is removed
+with confirmation and bounded retries when the tab closes or its session ends. When the browser
+itself restarts (a Home update, a crash, a cold start), each tab reopens at its address: what was
+typed and not sent, its scroll position and its back history are not kept across that restart;
+sign-ins are kept, since they live in the profile, except that a sign-in made in the last half
+minute before the browser is killed may not be (Chromium writes its cookies to disk on its own
+timer). The launcher deletes the last session's
+records in the profile directory it owns before launch, and refuses a launch that finds a page. On a
+Cloud Computer the browser pool keeps the exact state through idle time, so a restart is the rare
+case there.
+
 **Chrome tabs the person shares.** The companion extension, listed as "Opensteer tab sharing",
 shares tabs from the person's own Chrome (a `chrome-tabs` grant). The agent finds them with
 `tab_list` and works in them through `browser_use` or `browser_connect`. Stop, Disconnect and a
@@ -486,47 +497,79 @@ Where fills work: only in the browser of the person's own Mac that hosts the Hom
 CDP endpoint refuses both fill commands. A Home whose hosting device has no Passwords broker (an
 Opensteer Cloud Computer, a self-hosted Linux Home) does not list the two tools.
 
-## Organizations and work Homes
+## Chats: Slack and iMessage
 
-An organization owns work Homes on Opensteer Cloud Computers, each assigned to one person, who is
-its only owner. The organization pays and governs; it is never a user of the Home.
+A chat is a connected agent reached through one of the person's messaging accounts: its direct
+messages, or one named channel. It is an `agent_connections` row with a grant like any other
+(`bridge_account_id`, `bridge_conversation_id`, `bridge_senders`), listed, edited and disconnected
+in the same places (`packages/database/src/agent-connection-store.ts`, `createBridge`). Its caller
+is the chat identity of whoever wrote the message: the Home resolves it for each message
+(`apps/host/src/channels/bridge-caller.ts`) and every task tool asks again whether that sender may
+speak, at the moment it acts (`admitBridgeSender`, `packages/database/src/bridge-admission.ts`).
 
-**Four switches, no rule language** (`packages/control-plane-protocol/src/organizations.ts`):
+Who may speak is chosen when the chat is added and never changes on that row: **me** (the one
+identity linked to the person on that account, by a code the person sends from their own account;
+linking another replaces it, and nothing is said in the chat), or **anyone** who can write in that
+one channel, whose tasks run without the person's personal context (`lineageHasPersonalContext`).
 
-| Switch            | Default               | Means                                                          |
-| ----------------- | --------------------- | -------------------------------------------------------------- |
-| `externalMaxMode` | `approval-required`   | the highest mode a connected agent may have                    |
-| `allowEverything` | `false`               | may an agent be granted everything (also needs `allowTasks`)   |
-| `allowTasks`      | `false`               | may an agent be granted tasks                                  |
-| `devices`         | `cloud-computer-only` | or `assignee-may-enroll`: may the person add their own devices |
+What a chat may hold follows from who may speak, in one rule: `chatGrantShape` and
+`chatGrantRefusal` (`packages/core/src/agent-grants.ts`). A chat always holds tasks; an anyone chat
+holds no more than tasks and plugins, never everything. The Home refuses any other grant
+(`assertBridgeGrant`) and sends the shape with each chat (`bridge.grantShape`, optional), so the
+grant editors offer only what it allows and check it before they create anything.
 
-- **Delivery.** The account service signs the policy with its version and the assignment's state.
-  The Home verifies it, keeps the highest version, applies it, and reports what it applied. It
-  fetches at start, on a signed change notice and every 30 seconds.
-- **Fail static.** If the account service is unreachable, the last applied policy holds and the
-  Home keeps working. Cutting a Home off is done by suspending its computer.
-- **Enforcement** is the organization term of the authority rule, joined into the connection read.
-  A narrower policy revokes or narrows connections in one transaction and the Disconnect worker
-  stops their work. Refusals read `organization_not_allowed` ("Your organization doesn't allow
-  this"). The person's own agents are not capped by it.
-- **Audit without content.** Each recorded event is written to an outbox in the same transaction
-  as the change, with a gapless sequence and a hash chain, and pushed signed with the Home's key.
-  Kinds: connection consent, grant change, disconnect, expiry; agent session start and end; each
-  direct operation; Requests opened, answered, expired; Stop; device enrolled, removed, switch
-  changed; owner sign-in and sign-out; policy applied. Records hold ids, enums and times only:
-  no addresses, titles, scripts, results, messages, file names or labels. The account service
-  accepts only the next contiguous range and shows a gap as a gap. The person sees the same list
-  under "What {organization} can see".
-- **What an admin can never do:** sign in to the Home, answer its Requests, watch it, or see
-  pages, messages, prompts or files. Work sign-in is issued only to the assignee. Membership never
-  gives access to anyone's personal Home or Mac.
-- **Offboarding:** sign-in is cut, the Home is asked to send its last audit records, the computer
-  is suspended, then deleted after the chosen retention. Deletion shows three facts: "Computer and
-  disk destroyed", "Backups made unreadable", "Stored backup data removed". A work Home is never
-  reassigned.
-- **Devices.** A device that joins a work Home is told so first (the Runner's command line prints
-  the notice and refuses locally when the policy allows no devices), and the Home's database
-  refuses a device the policy forbids.
+### Three states, one function
+
+`connectionState` (`packages/database/src/connection-liveness.ts`) answers live, waiting or ended
+in the statement that reads the row. A chat has ended when it is revoked, its grant holds no tasks,
+its account or channel is gone or belongs to someone else, or its Mac lost Messages or was
+removed; it is waiting while its account is paused or needs attention, or its
+channel is paused (`chatAccountState`). The person reads them as active, paused and ended.
+
+| Layer                                                                        | live                                 | waiting (paused)                                                                                        | ended                                        |
+| ---------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| A message arriving (`claimIngress`, `ingressWaiting`)                        | decided                              | left pending, not claimed                                                                               | decided and ignored                          |
+| Deciding it, resolving its caller, the task tools                            | runs                                 | given back to pending, attempt refunded (`chatWaitingError`)                                            | ignored, nothing said                        |
+| A code to link "me"                                                          | linked                               | given back, redeemed when back                                                                          | ignored                                      |
+| Queued messages (`ensureQueuedRun`, `claimFollowUps`)                        | run, if their sender may still speak | kept in order                                                                                           | cancelled                                    |
+| A Run (listing, claim, first check, hand-off)                                | sent                                 | held: pending and queued, not listed, no error, no timer                                                | failed                                       |
+| An automation of the chat (its own lineage, `triggers.origin_connection_id`) | runs                                 | does not fire (nothing created, nothing moved); fires once, late, when back; a tick from before is held | ended with the chat                          |
+| Replies and notices (`claimDelivery`, `startDeliveryAttempt`)                | sent                                 | kept, sent in order when back                                                                           | cancelled; one that may have left is unknown |
+| A standard CDP attempt                                                       | opens                                | refused                                                                                                 | refused                                      |
+| The list and the page                                                        | active                               | paused, with why and what becomes of messages                                                           | stopping, then stopped, with why             |
+
+One wake brings everything back (`ChannelService #wakeHeld`: `wakeChatQueues`, then the ingress
+drain): the person's resume, a successful check of the account, and the runtime reporting the
+account healthy again each call it, and its commit wakes the dispatcher and the schedule loop.
+"Held" is only ever read from the chat's state before anything reaches a Runner; once the send has
+passed, an end the Home cannot confirm stays unknown.
+
+### What a pause does to a message sent meanwhile
+
+It depends on the transport, and the provider's manifest says which (`pausedMessages`,
+`packages/channel-core/src/catalog.ts`); the screens say it in those words. iMessage keeps it: the
+Mac's cursor in Messages history reads on from where it stopped, and a message more than an hour
+old is answered that it came too late. Slack does not deliver it: Socket Mode holds nothing for a
+closed connection, and nothing reads history on reconnect.
+
+### What a memory pass reads
+
+A memory pass reads tasks as the person's own conversations, and a chat others can speak in is not
+that. So a memory worker's own task tree (a task whose lineage root is the task a memory automation
+is anchored to: the pass and the workers it delegates to) sees, of tasks and of what derives from
+them, only what has personal context; the rest reads exactly like what does not exist
+(`readerSees`, `packages/database/src/task-reader.ts`, used by every agent-side read of a task, a
+delegation, a Request or an automation). This keeps other people's words from being taken as the
+person's. It is not a wall: a pass still reads the person's mail and messages, which other people
+write, a task it creates for the person is an ordinary task of theirs, and its tab list may name a
+task it cannot read.
+
+### What Disconnect ends
+
+Disconnecting a chat is the Disconnect above: its Runs, queued messages (the person's own on its
+tasks included, since they take the task's lineage), automations and replies not yet sent. A reply
+that may have been sent is kept as unknown and shown as "may have been sent", never sent again.
+Removing a messaging account ends every chat on it.
 
 ## Where a Home runs
 
@@ -624,8 +667,7 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
   a plugin call, keystrokes and frames. None issues more statements; several issue fewer (a Run's
   tab open 312 against 344, a Run's plugin call 197 against 210). Wall times show no consistent
   slowdown. `apps/host/src/runtime/personal-hot-paths.integration.test.ts` pins the shell read at 18
-  database round trips and the warm tab projection at 1, with no organization query on a personal
-  Home.
+  database round trips and the warm tab projection at 1.
 
 ## Known limits
 
@@ -658,8 +700,6 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
 - **Backups and the old VM.** "Last backup" is what the Cloud Computer reported. A replaced VM is
   deleted once the account issued the owner a sign-in to the new one, not once a session there is
   proved.
-- **A work Cloud Computer cannot be replaced by an operator**; recovery is an in-place restore, or
-  ending the assignment and assigning a new one. Organization invitations are not emailed.
 - **The Linux Home verifier does not prove** public certificates, real IPv6, a pristine
   Ubuntu install, or a VM reboot during boot or restore. It proves AMD64 only when run on an
   AMD64 server in local mode.
@@ -668,6 +708,5 @@ public certificates, real IPv6, a pristine Ubuntu install or a VM reboot.
 
 Fleets of micro-VMs, a broker across server providers, throwaway CI sandboxes, model or Git
 proxies, cookie or event blocklists on the browser protocol, per-site allowlists, per-app tools,
-"take over and give back" modes, a Home shared by several people, a builder for custom roles,
-policy expressions, content in the audit export, self-hosted work Homes, and card filling on
-another device.
+"take over and give back" modes, a Home shared by several people, an organization above a person
+that caps what they may grant, a builder for custom roles, and card filling on another device.

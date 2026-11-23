@@ -52,7 +52,6 @@ const connectionErrorCodes = new Map([
   ["person-declined", "declined_by_person"],
   ["agent-session-stopped", "stopped_by_person"],
   ["authority-changed", "access_changed"],
-  ["work-policy", "organization_not_allowed"],
   ["target-unavailable", "not_found"],
 ]);
 const toolNames = new Set<string>(agentTools.map(({ name }) => name));

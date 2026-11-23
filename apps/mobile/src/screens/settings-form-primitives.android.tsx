@@ -190,15 +190,16 @@ export function Footer(props: {
   );
   if (!props.link) return text;
   const link = props.link;
+  // The sentence above its link: at the largest text size it wraps, and the link stays on screen.
   return (
-    <Row verticalAlignment="center" modifiers={[padding(gutter, 4, gutter, 8)]}>
+    <Column modifiers={[padding(gutter, 4, gutter, 8)]}>
       {text}
       <TextButton onClick={link.onPress}>
         <Text color={color.ember} style={{ typography: "labelMedium" }}>
           {link.label}
         </Text>
       </TextButton>
-    </Row>
+    </Column>
   );
 }
 

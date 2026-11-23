@@ -9,34 +9,11 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   accountCloudComputerBillingPortalPath,
   accountCloudComputerCheckoutPath,
   accountCloudComputerPath,
   accountCloudComputersPath,
-  accountOrganizationsPath,
-  canonicalWorkAuditRecord,
-  defaultWorkPolicy,
-  MyOrganizationsResponseSchema,
-  OrganizationAdminResponseSchema,
-  organizationWorkPath,
-  WorkAssignmentViewSchema,
-  WorkAuditPushSchema,
-  WorkHomeResponseSchema,
-  WorkPolicyClaimsSchema,
-  WorkPolicyResponseSchema,
-  workAuditFlushPath,
-  WorkAuditFlushClaimsSchema,
-  WorkAuditFlushRequestSchema,
-  workPolicyChangedPath,
-  WorkPolicyChangedClaimsSchema,
-  workAuditGenesisHash,
-  workAuditSigningBytes,
-  type WorkAuditRecord,
-  type WorkPolicy,
   CloudComputerBootResponseSchema,
   type CloudComputerCheck,
   CloudComputerDesiredResponseSchema,
@@ -76,7 +53,7 @@ import {
 } from "@opensteer/deployment-authority";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { createLocalJWKSet, exportJWK, jwtVerify, SignJWT } from "jose";
-import { sql, type KyselyPlugin } from "kysely";
+import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
@@ -92,8 +69,7 @@ import { CloudComputerStore } from "./store.js";
 import { billingErrorDetails } from "./billing-error.js";
 import { cloudComputerBillingSettledMigration } from "./migration.js";
 import { cloudComputerOperatorUsage, runCloudComputerOperator } from "./operator.js";
-import type { CloudComputerStripe, StripeBilling, StripeSubscription } from "./stripe.js";
-import { OrganizationStore } from "../organizations/store.js";
+import type { StripeBilling, StripeSubscription } from "./stripe.js";
 
 const url = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
 // The focused integration launcher supplies a disposable Account database.
@@ -147,41 +123,6 @@ const identity = CloudComputerIdentitySchema.parse({
 
 integration("Cloud Computer Account service", () => {
   const database = createControlPlaneDatabase({ connectionString: url!, maxConnections: 4 });
-  let offboardLockBarrier: (() => Promise<void>) | undefined;
-  let reissueFenceReached: (() => void) | undefined;
-  function transitionBarrier(scope: "organization" | "computer"): KyselyPlugin {
-    const pauses = new Map<object, () => Promise<void>>();
-    return {
-      transformQuery({ node, queryId }) {
-        if (offboardLockBarrier || reissueFenceReached) {
-          const sqlTree = JSON.stringify(node);
-          const assignment =
-            sqlTree.includes("work_assignments") || sqlTree.includes("workAssignments");
-          if (
-            scope === "organization" &&
-            offboardLockBarrier &&
-            assignment &&
-            sqlTree.includes("ForNoKeyUpdate")
-          ) {
-            pauses.set(queryId, offboardLockBarrier);
-          }
-          if (
-            scope === "computer" &&
-            ((assignment && sqlTree.includes("ForShare")) || node.kind === "UpdateQueryNode")
-          ) {
-            reissueFenceReached?.();
-          }
-        }
-        return node;
-      },
-      async transformResult({ result, queryId }) {
-        const pause = pauses.get(queryId);
-        pauses.delete(queryId);
-        if (pause) await pause();
-        return result;
-      },
-    };
-  }
   const subscriptions = new Map<string, StripeSubscription>();
   const byRequest = new Map<string, string>();
   const checkout = vi.fn<StripeBilling["checkout"]>(async (input) => {
@@ -207,28 +148,7 @@ integration("Cloud Computer Account service", () => {
     cancel: vi.fn<StripeBilling["cancel"]>(async (id) => {
       subscriptions.set(id, { ...subscriptions.get(id)!, status: "canceled" });
     }),
-    updateSeatQuantity: vi.fn<CloudComputerStripe["updateSeatQuantity"]>(async ({ subscription }) =>
-      subscriptions.get(subscription)!,
-    ),
-    invoice: vi.fn<CloudComputerStripe["invoice"]>(async (id) => {
-      const invoice = [...subscriptions.values()].find(
-        (value) => value.latest_invoice?.id === id,
-      )?.latest_invoice;
-      if (!invoice) throw new Error("No mock invoice");
-      return invoice;
-    }),
-    voidInvoice: vi.fn<CloudComputerStripe["voidInvoice"]>(async (id) => {
-      for (const [subscription, value] of subscriptions) {
-        if (value.latest_invoice?.id === id)
-          subscriptions.set(subscription, {
-            ...value,
-            pending_update: null,
-            latest_invoice: { ...value.latest_invoice, status: "void" },
-          });
-      }
-    }),
-  } satisfies StripeBilling &
-    Pick<CloudComputerStripe, "updateSeatQuantity" | "invoice" | "voidInvoice">;
+  } satisfies StripeBilling;
   const logs: string[] = [];
   const billingAttention = vi.fn<(message: string) => void>();
   let now = new Date();
@@ -240,28 +160,12 @@ integration("Cloud Computer Account service", () => {
     googleClientSecret: "test-secret",
   });
   const cipher = new CloudComputerSecretCipher(Buffer.alloc(32, 5).toString("base64url"));
-  const organizations = new OrganizationStore(
-    database.withPlugin(transitionBarrier("organization")),
-    {
-      stripe,
-      now: () => now,
-      offer: {
-        priceId: "price_seat",
-        portalConfigurationId: "bpc_org",
-        name: "Work seat",
-        currency: "usd",
-        amountMinor: 4900,
-        interval: "month",
-      },
-    },
-  );
   const vault = testBackupVault();
   const eraseKey = vi.fn(vault.destroy);
   const purge = vi.fn<import("./backup-purge.js").BackupPurgeStep>(async () => true);
-  const cloud = new CloudComputerStore(database.withPlugin(transitionBarrier("computer")), {
+  const cloud = new CloudComputerStore(database, {
     backupKeyVault: { ...vault, destroy: eraseKey },
     purgeBackupStep: purge,
-    organizations,
     onBillingAttention: billingAttention,
     config,
     accountOrigin: publicOrigin,
@@ -272,7 +176,6 @@ integration("Cloud Computer Account service", () => {
   const kickBootstrap = vi.fn();
   const kickBilling = vi.fn();
   const claimErrors: unknown[] = [];
-  const workHomeFetch = vi.fn<typeof globalThis.fetch>();
   const directory = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
   const claimer = (
     fetch: typeof globalThis.fetch,
@@ -380,7 +283,6 @@ integration("Cloud Computer Account service", () => {
           hostKeyFingerprint: hostKeyFingerprint(spki),
         },
         claim: claims.claim,
-        ...(claims.work ? { work: claims.work } : {}),
         linkGeneration: claims.link.generation,
         hostCredentialSha256: claims.link.hostCredentialSha256,
         claimedAt: new Date().toISOString(),
@@ -460,8 +362,6 @@ integration("Cloud Computer Account service", () => {
         auth,
         authenticator: new ControlPlaneAuthenticator(auth, database, publicOrigin),
         connectLifecycle,
-        organizations,
-        workHomeFetch,
         cloudComputers: {
           store: cloud,
           kickBootstrap,
@@ -503,12 +403,7 @@ integration("Cloud Computer Account service", () => {
     kickBilling.mockClear();
     logs.length = 0;
     now = new Date();
-    stripe.updateSeatQuantity
-      .mockReset()
-      .mockImplementation(async ({ subscription }) => subscriptions.get(subscription)!);
-    workHomeFetch.mockReset();
     await cloud.checkOffer();
-    await organizations.checkOffer();
     await cloud.addBackupTarget({
       endpoint: "https://s3.example.test",
       bucket: "test-backups",
@@ -651,7 +546,6 @@ integration("Cloud Computer Account service", () => {
         .selectFrom("cloudComputers")
         .select("id")
         .where("accountId", "=", account.id)
-        .where("workAssignmentId", "is", null)
         .where("tombstonedAt", "is", null)
         .executeTakeFirstOrThrow()
     ).id;
@@ -731,1032 +625,6 @@ integration("Cloud Computer Account service", () => {
       ...(payload !== undefined ? { payload } : {}),
     });
   }
-
-  async function buyOrganization(admin: Awaited<ReturnType<typeof createAccount>>, seats: number) {
-    const order = purchase(admin.id);
-    const input = { requestId: order.requestId, name: "Workspace", seats };
-    const started = await requestAs(admin, "POST", `${accountOrganizationsPath}/checkout`, input);
-    expect(started.statusCode, started.body).toBe(200);
-    const submitted = checkout.mock.calls.at(-1)?.[0];
-    expect(submitted?.organization).toMatchObject({ quantity: seats });
-    expect(submitted?.priceId).toBe("price_seat");
-    const id = submitted!.organization!.id;
-    const metadata = { ...order.session.metadata, organization_id: id };
-    const subscription = {
-      ...order.details,
-      metadata,
-      items: {
-        has_more: false,
-        data: [{ id: "si_seat", quantity: seats, price: { id: "price_seat", currency: "usd" } }],
-      },
-    } satisfies StripeSubscription;
-    subscriptions.set(order.subscription, subscription);
-    const completed = { ...order.session, metadata };
-    const eventId = `evt_${randomUUID().replaceAll("-", "")}`;
-    expect((await webhook("checkout.session.completed", completed, eventId)).statusCode).toBe(200);
-    expect((await webhook("checkout.session.completed", completed, eventId)).statusCode).toBe(200);
-    expect((await webhook("checkout.session.completed", completed)).statusCode).toBe(200);
-    const index = MyOrganizationsResponseSchema.parse(
-      (await requestAs(admin, "GET", accountOrganizationsPath)).json(),
-    );
-    expect(index.organizations).toEqual([{ id, name: "Workspace", role: "admin" }]);
-    const path = `${accountOrganizationsPath}/${id}`;
-    const read = async () => {
-      const response = await requestAs(admin, "GET", `${path}/admin`);
-      expect(response.statusCode, response.body).toBe(200);
-      return OrganizationAdminResponseSchema.parse(response.json());
-    };
-    expect((await read()).seats).toEqual({ paid: seats, assigned: 0, free: seats, pending: null });
-    return { id, path, read, subscription };
-  }
-
-  async function invite(
-    orgPath: string,
-    admin: Awaited<ReturnType<typeof createAccount>>,
-    account: Awaited<ReturnType<typeof createAccount>>,
-    wrong?: Awaited<ReturnType<typeof createAccount>>,
-  ) {
-    const email = `${account.id}@example.test`;
-    const invited = await requestAs(admin, "POST", `${orgPath}/invitations`, {
-      email,
-      role: "member",
-    });
-    expect(invited.statusCode, invited.body).toBe(200);
-    const info = invited.json();
-    const acceptPath = `${accountOrganizationsPath}/invitations/${info.id}/accept`;
-    if (wrong) expect((await requestAs(wrong, "POST", acceptPath)).statusCode).toBe(403);
-    const inbox = MyOrganizationsResponseSchema.parse(
-      (await requestAs(account, "GET", accountOrganizationsPath)).json(),
-    );
-    expect(inbox.invitations).toHaveLength(1);
-    expect(inbox.invitations[0]).toMatchObject({ id: info.id, email });
-    expect((await requestAs(account, "POST", acceptPath)).statusCode).toBe(200);
-    expect((await requestAs(account, "POST", acceptPath)).statusCode).toBe(409);
-  }
-
-  it("provisions work through the real listener, fences policy, audit and offboarding by assignment", async () => {
-    const admin = await createAccount();
-    const first = await createAccount();
-    const second = await createAccount();
-    const outsider = await createAccount();
-    const org = await buyOrganization(admin, 1);
-    await invite(org.path, admin, first, outsider);
-    await invite(org.path, admin, second);
-    const candidates = [first, second].map((account) => ({
-      account,
-      payload: { requestId: randomUUID(), accountId: account.id },
-    }));
-    const assign = (payload: (typeof candidates)[number]["payload"]) =>
-      requestAs(admin, "POST", `${org.path}/assignments`, payload);
-    const competing = await Promise.all(candidates.map(({ payload }) => assign(payload)));
-    expect(competing.map((result) => result.statusCode).sort()).toEqual([200, 409]);
-    const winner = competing.findIndex((result) => result.statusCode === 200);
-    const { account: assignee, payload } = candidates[winner]!;
-    const { account: other } = candidates[1 - winner]!;
-    const assignment = WorkAssignmentViewSchema.parse(competing[winner]!.json());
-    const marker = {
-      organizationId: org.id,
-      organizationName: "Workspace",
-      assignmentId: assignment.assignmentId,
-    };
-    expect(assignment).toMatchObject(marker);
-    expect(await runCloudComputerOperator(cloud, ["show", assignment.computerId])).toMatchObject({
-      accountId: assignee.id,
-      workAssignmentId: assignment.assignmentId,
-    });
-    expect((await assign(payload)).json()).toMatchObject({
-      assignmentId: assignment.assignmentId,
-      computerId: assignment.computerId,
-    });
-    expect((await org.read()).seats).toMatchObject({ paid: 1, assigned: 1, free: 0 });
-    const assignmentPath = `${org.path}/assignments/${assignment.assignmentId}`;
-    const hostPath = `${organizationWorkPath}/${assignment.assignmentId}`;
-    const homePath = `${org.path}/work-home`;
-    const computerId = CloudComputerIdSchema.parse(assignment.computerId);
-    const ownerPath = accountCloudComputerPath(computerId);
-    const readWorkHome = async () => {
-      const response = await requestAs(assignee, "GET", homePath);
-      expect(response.statusCode).toBe(200);
-      return WorkHomeResponseSchema.parse(response.json());
-    };
-    const paths = [
-      ["GET", `${org.path}/admin`, undefined],
-      ["POST", `${org.path}/seats`, { requestId: randomUUID(), seats: 2 }],
-      ["POST", `${org.path}/invitations`, { email: "another@example.test", role: "member" }],
-      ["PUT", `${org.path}/members/${admin.id}`, { role: "member" }],
-      ["DELETE", `${org.path}/members/${admin.id}`, undefined],
-      ["POST", `${org.path}/assignments`, payload],
-      ["POST", `${assignmentPath}/offboard`, { retentionSeconds: 0 }],
-      ["PUT", `${org.path}/policy`, { expectedRevision: 1, policy: defaultWorkPolicy }],
-      ["GET", `${assignmentPath}/audit`, undefined],
-    ] as const;
-    for (const account of [assignee, outsider]) {
-      for (const [method, url, body] of paths)
-        expect((await requestAs(account, method, url, body)).statusCode, `${method} ${url}`).toBe(
-          403,
-        );
-    }
-    expect(
-      (await requestAs(admin, "PUT", `${org.path}/members/${admin.id}`, { role: "member" }))
-        .statusCode,
-    ).toBe(409);
-    expect((await requestAs(admin, "DELETE", `${org.path}/members/${admin.id}`)).statusCode).toBe(
-      409,
-    );
-    expect(
-      (await requestAs(admin, "DELETE", `${org.path}/members/${assignee.id}`)).statusCode,
-    ).toBe(409);
-    await expect(directory.beginAccountDeletion(admin.id)).rejects.toMatchObject({
-      code: "conflict",
-    });
-    await expect(directory.beginAccountDeletion(assignee.id)).rejects.toMatchObject({
-      code: "conflict",
-    });
-    expect((await requestAs(outsider, "GET", homePath)).statusCode).toBe(403);
-    expect((await requestAs(other, "GET", homePath)).json()).toBeNull();
-    expect(await readWorkHome()).toMatchObject({
-      assignment: { ...marker, homeStatus: "preparing", deploymentId: null },
-    });
-    const ownerRead = await requestAs(assignee, "GET", ownerPath);
-    expect(ownerRead.statusCode).toBe(200);
-    expect(ownerRead.json()).toMatchObject({ id: computerId, work: marker });
-    expect(await cloud.show(computerId, assignee.id)).toMatchObject({
-      id: computerId,
-      work: marker,
-    });
-    expect(
-      (await requestAs(assignee, "GET", accountCloudComputersPath)).json().computers,
-    ).toMatchObject([{ id: assignment.computerId, work: marker }]);
-    expect((await requestAs(other, "GET", accountCloudComputersPath)).json().computers).toEqual([]);
-
-    expect((await requestAs(admin, "GET", ownerPath)).statusCode).toBe(404);
-    const forbiddenSuspend = await requestAs(assignee, "POST", `${ownerPath}/suspend`);
-    expect(forbiddenSuspend.statusCode).toBe(403);
-    expect(forbiddenSuspend.json()).toMatchObject({
-      error: {
-        reason: "cloud-computer-work-managed",
-        message: "This Cloud Computer is managed by its organization",
-      },
-    });
-    expect((await requestAs(assignee, "POST", `${ownerPath}/resume`)).statusCode).toBe(403);
-    expect(
-      (await requestAs(assignee, "POST", accountCloudComputerBillingPortalPath)).statusCode,
-    ).toBe(404);
-    expect(
-      (
-        await requestAs(assignee, "DELETE", ownerPath, {
-          confirmation: cloudComputerDeleteConfirmation(
-            CloudComputerIdSchema.parse(assignment.computerId),
-          ),
-        })
-      ).statusCode,
-    ).toBe(403);
-    await expect(
-      runCloudComputerOperator(cloud, ["replace", computerId, "abcdef123456"]),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    const restoreDir = await mkdtemp(join(tmpdir(), "work-home-restore-"));
-    try {
-      const restoreFile = join(restoreDir, "restore-backup.json");
-      const target = (await cloud.listBackupTargets()).find((entry) => !entry.computerId)!;
-      await writeFile(
-        restoreFile,
-        JSON.stringify({ targetId: target.id, password: "staged-restore-password" }),
-        { mode: 0o600 },
-      );
-      await expect(
-        runCloudComputerOperator(cloud, ["reissue-bootstrap", computerId, restoreFile]),
-      ).rejects.toMatchObject({ code: "forbidden", reason: "cloud-computer-work-managed" });
-    } finally {
-      await rm(restoreDir, { recursive: true, force: true });
-    }
-
-    const desired = (await getDesired(CloudComputerIdSchema.parse(assignment.computerId)))!;
-    let server:
-      | {
-          id: number;
-          generation: number;
-          status: "off" | "running";
-          ipv4: string;
-          ipv6: null;
-          firewalls: readonly [];
-        }
-      | undefined;
-    let booted: CloudComputerBootResponse | undefined;
-    let dns = false;
-    const { accountClient } = await vi.importActual<{
-      accountClient: (
-        origin: URL,
-        token: () => Promise<string>,
-        http: { timeoutMs: number },
-        holder: string,
-      ) => object;
-    }>("../../../home-provisioner/src/account.js");
-    const options = {
-      account: accountClient(listener, async () => provisionerToken, { timeoutMs: 5000 }, lease),
-      provider: {
-        ensureFirewall: async () => 1,
-        ensureFirewallAttached: async () => true,
-        listManaged: async () => [],
-        find: async () => (server ? [server] : []),
-        create: async ({ generation, userData }: { generation: number; userData: string }) => {
-          expect(userData).toContain(desired.bootstrapToken);
-          server = {
-            id: 7,
-            generation,
-            status: "off",
-            ipv4: "192.0.2.7",
-            ipv6: null,
-            firewalls: [],
-          };
-          return server;
-        },
-        describe: async () => server,
-        powerOn: async () => {
-          if (!booted) {
-            const response = await boot(desired);
-            expect(response.statusCode, response.body).toBe(200);
-            booted = CloudComputerBootResponseSchema.parse(response.json());
-          }
-          server = { ...server!, status: "running" };
-        },
-        powerOff: async () => {
-          server = { ...server!, status: "off" };
-        },
-        delete: async () => {
-          server = undefined;
-        },
-      },
-      dns: {
-        listManaged: async () => [],
-        ensureRecords: async () => {
-          dns = true;
-        },
-        removeRecords: async () => {
-          dns = false;
-        },
-      },
-      discover: async () => identity,
-      accountOrigin: publicOrigin,
-      image: "image",
-      defaultRegion: "ash",
-      defaultServerType: "cpx22",
-      concurrency: 1,
-      readinessTimeoutMs: 10_000,
-    };
-    const { Reconciler } = await vi.importActual<{
-      Reconciler: new (input: typeof options) => { pass: (signal: AbortSignal) => Promise<void> };
-    }>("../../../home-provisioner/src/reconcile.js");
-    const reconciler = new Reconciler(options);
-    const pass = () => reconciler.pass(new AbortController().signal);
-    await pass();
-    expect(booted?.work).toEqual(marker);
-    expect((await complete(desired)).json()).toEqual({ completed: true });
-    expect(await readWorkHome()).toMatchObject({
-      assignment: { ...marker, homeStatus: "preparing", deploymentId: identity.deploymentId },
-    });
-    await pass();
-    const home = fakeHome({ hostname: desired.hostname, boot: booted! });
-    expect(await claimer(home.fetch).runOnce()).toBe(1);
-    expect(claimErrors).toEqual([]);
-    expect(home.state.owner).toBe(assignee.id);
-    expect(home.state.receipt?.document.work).toEqual(marker);
-    expect(dns).toBe(true);
-    const address = `https://${desired.hostname}`;
-    expect(await readWorkHome()).toMatchObject({
-      assignment: { ...marker, homeStatus: "ready", address, deploymentId: identity.deploymentId },
-      policy: defaultWorkPolicy,
-    });
-    expect((await requestAs(other, "GET", homePath)).json()).toBeNull();
-    expect((await directory.listDeployments(admin.id)).length).toBe(0);
-
-    const authorize = new URL("/api/auth/oauth2/authorize", publicOrigin);
-    const verifier = "a".repeat(43);
-    authorize.search = new URLSearchParams({
-      client_id: booted!.managedHome!.oidc.clientId,
-      redirect_uri: `${address}/v1/auth/oidc/callback`,
-      response_type: "code",
-      scope: "openid profile email",
-      state: randomUUID(),
-      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
-      code_challenge_method: "S256",
-    }).toString();
-    expect((await requestAs(admin, "GET", authorize.pathname + authorize.search)).statusCode).toBe(
-      403,
-    );
-    async function issueCode() {
-      const signedIn = await http({
-        method: "GET",
-        url: authorize.pathname + authorize.search,
-        headers: { ...assignee.headers, accept: "text/html" },
-        redirect: "manual",
-      });
-      expect(signedIn.statusCode).toBe(200);
-      const authorized = signedIn.json();
-      expect(authorized.redirect).toBe(true);
-      const callback = new URL(authorized.url);
-      expect(callback.origin).toBe(address);
-      expect(callback.pathname).toBe("/v1/auth/oidc/callback");
-      const code = callback.searchParams.get("code");
-      expect(code).toBeTruthy();
-      return code!;
-    }
-    function redeemCode(code: string) {
-      const oauth = booted!.managedHome!.oidc;
-      return http({
-        method: "POST",
-        url: "/api/auth/oauth2/token",
-        headers: {
-          "content-type": "application/x-www-form-urlencoded",
-          authorization:
-            "Basic " + Buffer.from(`${oauth.clientId}:${oauth.clientSecret}`).toString("base64"),
-          host: publicOrigin.host,
-        },
-        payload: new URLSearchParams({
-          grant_type: "authorization_code",
-          code,
-          code_verifier: verifier,
-          redirect_uri: `${address}/v1/auth/oidc/callback`,
-        }).toString(),
-      });
-    }
-
-    const jwks = createLocalJWKSet((await http({ method: "GET", url: "/api/auth/jwks" })).json());
-    const signedIn = await redeemCode(await issueCode());
-    expect(signedIn.statusCode).toBe(200);
-    const ownerToken = await jwtVerify(signedIn.json().id_token, jwks, {
-      issuer: publicOrigin.origin,
-      audience: booted!.managedHome!.oidc.clientId,
-      algorithms: ["EdDSA"],
-    });
-    expect(ownerToken.payload.sub).toBe(assignee.id);
-    const unusedCode = await issueCode();
-    const headers = { authorization: `Bearer ${home.state.hostCredential}` };
-    const hostCall = (method: string, action: string, payload?: unknown) =>
-      http({
-        method,
-        url: `${hostPath}/${action}`,
-        headers,
-        ...(payload === undefined ? {} : { payload }),
-      });
-    const policy: WorkPolicy = {
-      ...defaultWorkPolicy,
-      externalMaxMode: "full-access",
-      allowTasks: true,
-    };
-    let policyNoticeVerified = false;
-    workHomeFetch.mockImplementationOnce(async (target, init) => {
-      expect(String(target)).toBe(address + workPolicyChangedPath);
-      const { assertion } = WorkAuditFlushRequestSchema.parse(JSON.parse(String(init?.body)));
-      const verified = await jwtVerify(assertion, jwks, {
-        issuer: publicOrigin.origin,
-        audience: address,
-        algorithms: ["EdDSA"],
-      });
-      expect(WorkPolicyChangedClaimsSchema.parse(verified.payload)).toMatchObject({
-        assignmentId: assignment.assignmentId,
-        deploymentId: identity.deploymentId,
-      });
-      policyNoticeVerified = true;
-      return new Response(null, { status: 204 });
-    });
-    expect(
-      await requestAs(admin, "PUT", `${org.path}/policy`, { expectedRevision: 1, policy }),
-    ).toMatchObject({ statusCode: 200 });
-    expect(policyNoticeVerified).toBe(true);
-    workHomeFetch.mockClear();
-    expect((await org.read()).assignments[0]?.policyStatus).toBe("Pending on Home");
-    const response = await hostCall("GET", "policy");
-    expect(response.statusCode, response.body).toBe(200);
-    const { assertion } = WorkPolicyResponseSchema.parse(response.json());
-    const { payload: claims } = await jwtVerify(assertion, jwks, {
-      issuer: publicOrigin.origin,
-      audience: identity.deploymentId,
-      algorithms: ["EdDSA"],
-    });
-    expect(WorkPolicyClaimsSchema.parse(claims)).toMatchObject({
-      assignmentId: assignment.assignmentId,
-      deploymentId: identity.deploymentId,
-      policy,
-      revision: 2,
-      state: "active",
-    });
-    expect(claims.exp).toBeUndefined();
-    expect((await hostCall("POST", "applied", { revision: 3 })).statusCode).toBe(400);
-    expect((await hostCall("POST", "applied", { revision: 2 })).json()).toEqual({
-      appliedRevision: 2,
-    });
-    expect((await hostCall("POST", "applied", { revision: 1 })).json()).toEqual({
-      appliedRevision: 2,
-    });
-    expect((await org.read()).assignments[0]?.policyStatus).toBe("Applied");
-
-    const buildAudit = (from: number, previous: string) => {
-      const record: WorkAuditRecord = {
-        kind: "policy.applied",
-        revision: 2,
-        sequence: from,
-        at: now.toISOString(),
-      };
-      const headHash = createHash("sha256")
-        .update(Buffer.from(previous, "hex"))
-        .update(canonicalWorkAuditRecord(record))
-        .digest("hex");
-      const body = {
-        assignmentId: assignment.assignmentId,
-        fromSequence: from,
-        records: [record],
-        headHash,
-      };
-      return WorkAuditPushSchema.parse({
-        ...body,
-        signature: sign(null, workAuditSigningBytes(body), homeKeys.privateKey).toString(
-          "base64url",
-        ),
-      });
-    };
-    const batch = buildAudit(1, workAuditGenesisHash);
-    expect(
-      (await hostCall("POST", "audit", { ...batch, signature: "x".repeat(86) })).statusCode,
-    ).toBe(403);
-    expect(
-      (
-        await hostCall("POST", "audit", {
-          ...batch,
-          records: [{ ...batch.records[0], url: "https://secret.example" }],
-        })
-      ).statusCode,
-    ).toBe(400);
-    expect((await hostCall("POST", "audit", batch)).json()).toEqual({ lastSequence: 1 });
-    expect((await hostCall("POST", "audit", batch)).json()).toEqual({ lastSequence: 1 });
-    const conflictingRecord = {
-      ...batch.records[0]!,
-      at: new Date(now.getTime() + 1).toISOString(),
-    };
-    const conflictHead = createHash("sha256")
-      .update(Buffer.from(workAuditGenesisHash, "hex"))
-      .update(canonicalWorkAuditRecord(conflictingRecord))
-      .digest("hex");
-    const conflicting = { ...batch, records: [conflictingRecord], headHash: conflictHead };
-    const signedConflict = {
-      ...conflicting,
-      signature: sign(null, workAuditSigningBytes(conflicting), homeKeys.privateKey).toString(
-        "base64url",
-      ),
-    };
-    expect((await hostCall("POST", "audit", signedConflict)).statusCode).toBe(409);
-    const wrongChain = buildAudit(2, workAuditGenesisHash);
-    expect((await hostCall("POST", "audit", wrongChain)).statusCode).toBe(400);
-    const next = buildAudit(2, batch.headHash);
-    const third = buildAudit(3, next.headHash);
-    const fourth = buildAudit(4, third.headHash);
-    const gap = {
-      ...third,
-      records: [...third.records, ...fourth.records],
-      headHash: fourth.headHash,
-    };
-    const signedGap = {
-      ...gap,
-      signature: sign(null, workAuditSigningBytes(gap), homeKeys.privateKey).toString("base64url"),
-    };
-    expect((await hostCall("POST", "audit", signedGap)).statusCode).toBe(409);
-    const exportAudit = () => requestAs(admin, "GET", `${assignmentPath}/audit?after=0`);
-    const exported = await exportAudit();
-    expect(exported.headers).toMatchObject({
-      "x-opensteer-audit-last-sequence": "1",
-      "x-opensteer-audit-gap-expected": "2",
-      "x-opensteer-audit-gap-received": "3",
-    });
-    expect(exported.headers["x-opensteer-audit-last-received-at"]).toBe(now.toISOString());
-    expect(exported.body).toBe(canonicalWorkAuditRecord(batch.records[0]!) + "\n");
-    expect((await hostCall("POST", "audit", next)).statusCode).toBe(200);
-    expect((await hostCall("POST", "audit", third)).json()).toEqual({ lastSequence: 3 });
-    expect((await exportAudit()).headers["x-opensteer-audit-gap-expected"]).toBe("2");
-    expect((await hostCall("POST", "audit", fourth)).json()).toEqual({ lastSequence: 4 });
-    expect((await exportAudit()).headers["x-opensteer-audit-gap-expected"]).toBeUndefined();
-    expect((await requestAs(admin, "GET", `${assignmentPath}/audit?after=2`)).body).toBe(
-      [third, fourth].map((batch) => canonicalWorkAuditRecord(batch.records[0]!) + "\n").join(""),
-    );
-
-    let flushVerified = false;
-    workHomeFetch.mockImplementation(async (target, init) => {
-      const url = new URL(String(target));
-      expect(url.origin).toBe(address);
-      expect(url.pathname).toBe(workAuditFlushPath);
-      const assertion = JSON.parse(String(init?.body)).assertion as string;
-      const verified = await jwtVerify(assertion, jwks, {
-        issuer: publicOrigin.origin,
-        audience: address,
-        algorithms: ["EdDSA"],
-      });
-      expect(WorkAuditFlushClaimsSchema.parse(verified.payload)).toMatchObject({
-        assignmentId: assignment.assignmentId,
-        deploymentId: identity.deploymentId,
-      });
-      expect(
-        (await requestAs(assignee, "GET", authorize.pathname + authorize.search)).statusCode,
-      ).toBe(403);
-      expect(server?.status).toBe("running");
-      flushVerified = true;
-      return new Response(null, { status: 204 });
-    });
-    const tokenInFlight = Promise.withResolvers<void>();
-    const issueToken = Promise.withResolvers<void>();
-    const issue = auth.handler.bind(auth);
-    const issueSpy = vi.spyOn(auth, "handler").mockImplementation(async (request) => {
-      const response = await issue(request);
-      if (new URL(request.url).pathname === "/api/auth/oauth2/token") {
-        expect(response.status).toBe(200);
-        tokenInFlight.resolve();
-        await issueToken.promise;
-      }
-      return response;
-    });
-    const issuing = redeemCode(await issueCode());
-    await tokenInFlight.promise;
-    const offboarded = await requestAs(admin, "POST", `${assignmentPath}/offboard`, {
-      retentionSeconds: 0,
-    }).finally(() => issueToken.resolve());
-    expect((await issuing).statusCode).toBe(403);
-    issueSpy.mockRestore();
-    expect(offboarded.statusCode, offboarded.body).toBe(200);
-    expect(offboarded.json()).toMatchObject({
-      state: "offboarding",
-      signInCut: true,
-      suspended: false,
-      deleted: false,
-    });
-    expect(workHomeFetch).toHaveBeenCalledOnce();
-    expect(flushVerified).toBe(true);
-    const token = await redeemCode(unusedCode);
-    expect(token.statusCode).toBe(403);
-    expect((await org.read()).seats.free).toBe(0);
-    await pass();
-    expect(dns).toBe(false);
-    expect(server?.status).toBe("off");
-    const onBillingError = vi.fn();
-    await organizations.reconcileOffboarding(onBillingError);
-    expect(onBillingError).not.toHaveBeenCalled();
-    const suspended = await org.read();
-    expect(suspended.assignments[0]).toMatchObject({
-      state: "offboarding",
-      suspended: true,
-      deleted: false,
-    });
-    expect(suspended.seats.free).toBe(0);
-    await pass();
-    expect(server).toBeUndefined();
-    expect((await org.read()).seats.free).toBe(0);
-    await organizations.reconcileOffboarding(onBillingError);
-    expect(onBillingError).not.toHaveBeenCalled();
-    const ended = await org.read();
-    expect(ended.assignments[0]).toMatchObject({
-      state: "ended",
-      signInCut: true,
-      deleted: true,
-      audit: { lastSequence: 4 },
-    });
-    expect(ended.seats.free).toBe(1);
-    // The billing pass never settles a work Home with Stripe: its billing is the organization's.
-    stripe.deleteIdleCustomer.mockClear();
-    stripe.cancel.mockClear();
-    await cloud.reconcileBilling(() => undefined);
-    expect(stripe.deleteIdleCustomer).not.toHaveBeenCalled();
-    expect(stripe.cancel).not.toHaveBeenCalled();
-    expect(
-      (
-        await database
-          .selectFrom("cloudComputers")
-          .select(["deletionRequestedAt", "billingSettledAt"])
-          .where("id", "=", assignment.computerId)
-          .executeTakeFirstOrThrow()
-      ).billingSettledAt,
-    ).toBeNull();
-    const successor = await assign({ requestId: randomUUID(), accountId: other.id });
-    expect(successor.statusCode, successor.body).toBe(200);
-    expect(successor.json().computerId).not.toBe(assignment.computerId);
-    expect(
-      (await getDesired(CloudComputerIdSchema.parse(successor.json().computerId)))?.restoreSnapshot,
-    ).toBeUndefined();
-    expect((await cloud.listBackupTargets()).filter((target) => target.needsRotation)).toHaveLength(
-      1,
-    );
-  });
-
-  it("fences an operator reissue behind the assignment cut even before the VM is ready", async () => {
-    const admin = await createAccount();
-    const org = await buyOrganization(admin, 1);
-    const assigned = await requestAs(admin, "POST", `${org.path}/assignments`, {
-      accountId: admin.id,
-      requestId: randomUUID(),
-    });
-    const assignment = WorkAssignmentViewSchema.parse(assigned.json());
-    const computerId = CloudComputerIdSchema.parse(assignment.computerId);
-    const before = (await getDesired(computerId))!;
-    const locked = Promise.withResolvers<void>();
-    const resume = Promise.withResolvers<void>();
-    const read = Promise.withResolvers<void>();
-    offboardLockBarrier = async () => {
-      locked.resolve();
-      await resume.promise;
-    };
-    const cut = requestAs(
-      admin,
-      "POST",
-      `${org.path}/assignments/${assignment.assignmentId}/offboard`,
-      {
-        retentionSeconds: 0,
-      },
-    );
-    await locked.promise;
-    reissueFenceReached = () => read.resolve();
-    const reissuing = runCloudComputerOperator(cloud, ["reissue-bootstrap", computerId]).then(
-      () => ({ code: "accepted" }),
-      (error: unknown) => error,
-    );
-    try {
-      await read.promise;
-    } finally {
-      offboardLockBarrier = undefined;
-      reissueFenceReached = undefined;
-      resume.resolve();
-    }
-    expect((await cut).statusCode).toBe(200);
-    expect(await reissuing).toMatchObject({
-      code: "forbidden",
-      reason: "cloud-computer-work-managed",
-    });
-    expect(await getDesired(computerId)).toMatchObject({
-      state: "suspended",
-      generation: before.generation,
-    });
-  });
-
-  it("rejects policy and audit calls signed in with another claimed work Home's credential", async () => {
-    const admin = await createAccount();
-    const member = await createAccount();
-    const org = await buyOrganization(admin, 2);
-    await invite(org.path, admin, member);
-    async function claimWork(accountId: ControlPlaneAccountId, second: boolean) {
-      const deploymentId = second
-        ? "dep_00000000-0000-4000-8000-000000000021"
-        : identity.deploymentId;
-      const keys = second ? generateKeyPairSync("ed25519") : homeKeys;
-      const spki = keys.publicKey.export({ format: "der", type: "spki" }).toString("base64url");
-      const result = await requestAs(admin, "POST", `${org.path}/assignments`, {
-        accountId,
-        requestId: randomUUID(),
-      });
-      expect(result.statusCode, result.body).toBe(200);
-      const assignment = WorkAssignmentViewSchema.parse(result.json());
-      const id = CloudComputerIdSchema.parse(assignment.computerId);
-      const initial = (await getDesired(id))!;
-      const booted = await bootable(initial);
-      const observed = CloudComputerIdentitySchema.parse({
-        deploymentId,
-        hostKeyFingerprint: hostKeyFingerprint(spki),
-      });
-      expect((await complete(initial, observed)).statusCode).toBe(200);
-      expect(
-        (await report((await getDesired(id))!, { observedIdentity: observed })).json(),
-      ).toEqual({ recorded: true });
-      const home = fakeHome({
-        hostname: initial.hostname,
-        boot: booted,
-        deploymentId,
-        privateKey: keys.privateKey,
-        spki,
-        ...(second ? { hostInstanceId: "hst_00000000-0000-4000-8000-000000000021" } : {}),
-      });
-      expect(await claimer(home.fetch).runOnce()).toBe(1);
-      expect(home.state.owner).toBe(accountId);
-      return { assignment, credential: home.state.hostCredential! };
-    }
-    const first = await claimWork(admin.id, false);
-    const second = await claimWork(member.id, true);
-    expect(claimErrors).toEqual([]);
-    const assignmentId = first.assignment.assignmentId;
-    const base = `${organizationWorkPath}/${assignmentId}`;
-    const headers = { authorization: `Bearer ${second.credential}` };
-    const own = await http({
-      method: "GET",
-      url: `${organizationWorkPath}/${second.assignment.assignmentId}/policy`,
-      headers,
-    });
-    expect(own.statusCode, own.body).toBe(200);
-    expect((await http({ method: "GET", url: `${base}/policy`, headers })).statusCode).toBe(403);
-    expect(
-      (await http({ method: "POST", url: `${base}/applied`, headers, payload: { revision: 1 } }))
-        .statusCode,
-    ).toBe(403);
-    const record: WorkAuditRecord = {
-      sequence: 1,
-      at: now.toISOString(),
-      kind: "policy.applied",
-      revision: 1,
-    };
-    const headHash = createHash("sha256")
-      .update(Buffer.from(workAuditGenesisHash, "hex"))
-      .update(canonicalWorkAuditRecord(record))
-      .digest("hex");
-    const batch = { assignmentId, fromSequence: 1, headHash, records: [record] };
-    const signed = {
-      ...batch,
-      signature: sign(null, workAuditSigningBytes(batch), homeKeys.privateKey).toString(
-        "base64url",
-      ),
-    };
-    expect(
-      (await http({ method: "POST", url: `${base}/audit`, headers, payload: signed })).statusCode,
-    ).toBe(403);
-  });
-
-  it("reserves every organization seat before Stripe and refuses to sell unbacked seats", async () => {
-    const admin = await createAccount();
-    const order = purchase(admin.id);
-    const start = (seats: number) =>
-      requestAs(admin, "POST", `${accountOrganizationsPath}/checkout`, {
-        requestId: order.requestId,
-        name: "Workspace",
-        seats,
-      });
-    expect((await start(3)).statusCode).toBe(503);
-    expect(checkout).not.toHaveBeenCalled();
-    expect((await start(2)).statusCode).toBe(200);
-    const orgId = checkout.mock.calls[0]![0].organization!.id;
-    expect(
-      (await cloud.listBackupTargets()).filter(
-        ({ reservedOrganizationId }) => reservedOrganizationId === orgId,
-      ),
-    ).toHaveLength(2);
-    const personal = purchase(admin.id);
-    expect(
-      (
-        await requestAs(admin, "POST", accountCloudComputerCheckoutPath, {
-          requestId: personal.requestId,
-        })
-      ).statusCode,
-    ).toBe(503);
-  });
-
-  it("refunds an organization Checkout that pays while Account deletion is expiring it", async () => {
-    const founder = await createAccount();
-    const paid = purchase(founder.id);
-    expect(
-      (
-        await requestAs(founder, "POST", `${accountOrganizationsPath}/checkout`, {
-          requestId: paid.requestId,
-          name: "Workspace",
-          seats: 2,
-        })
-      ).statusCode,
-    ).toBe(200);
-    const organization = checkout.mock.calls.at(-1)![0].organization!;
-    const metadata = { ...paid.session.metadata, organization_id: organization.id };
-    const payment = {
-      ...paid.session,
-      metadata,
-      payment_status: "paid" as const,
-      mode: "subscription" as const,
-    };
-    subscriptions.set(paid.subscription, {
-      ...paid.details,
-      metadata,
-      items: {
-        has_more: false,
-        data: [{ id: "si_seat", quantity: 2, price: { id: "price_seat", currency: "usd" } }],
-      },
-    });
-    const entered = Promise.withResolvers<void>();
-    const deliver = Promise.withResolvers<void>();
-    stripe.findCheckout.mockResolvedValueOnce({
-      id: payment.id,
-      status: "open",
-      url: checkoutUrl,
-      payment: undefined,
-    });
-    stripe.expireCheckout.mockImplementationOnce(async () => {
-      entered.resolve();
-      await deliver.promise;
-      return { id: payment.id, status: "complete", url: null, payment };
-    });
-    const deleting = requestAs(founder, "DELETE", "/v1/account");
-    await entered.promise;
-    const event = webhook("checkout.session.completed", payment);
-    deliver.resolve();
-    const output = await deleting;
-    expect(output.statusCode, output.body).toBe(200);
-    expect((await event).statusCode).toBe(200);
-    expect(stripe.cancel).toHaveBeenCalledWith(paid.subscription);
-    expect(stripe.refundCheckout).toHaveBeenCalledOnce();
-    expect(
-      await database
-        .selectFrom("organizations")
-        .select("id")
-        .where("id", "=", organization.id)
-        .execute(),
-    ).toEqual([]);
-    expect(
-      await database
-        .selectFrom("organizationCheckouts")
-        .select("status")
-        .where("organizationId", "=", organization.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "refunded" });
-    expect(
-      (await cloud.listBackupTargets()).every(
-        ({ reservedOrganizationId }) => reservedOrganizationId === null,
-      ),
-    ).toBe(true);
-  });
-
-  it("confirms changes with Stripe, refuses reductions below occupancy, and reconciles billing suspension", async () => {
-    const admin = await createAccount();
-    const member = await createAccount();
-    const org = await buyOrganization(admin, 1);
-    await invite(org.path, admin, member);
-    const pending = { requestId: randomUUID(), seats: 2 };
-    const assign = (accountId: ControlPlaneAccountId) =>
-      requestAs(admin, "POST", `${org.path}/assignments`, { accountId, requestId: randomUUID() });
-    now = new Date(now.getTime() + 5 * 60_000 + 1);
-    expect((await assign(admin.id)).statusCode).toBe(503);
-    expect(
-      (await webhook("customer.subscription.updated", { id: org.subscription.id })).statusCode,
-    ).toBe(200);
-    const spare = (await cloud.listBackupTargets()).find(
-      (target) => !target.reservedOrganizationId && !target.computerId && !target.reserved,
-    )!;
-    await cloud.removeBackupTarget(spare.id);
-    expect((await requestAs(admin, "POST", `${org.path}/seats`, pending)).statusCode).toBe(503);
-    expect(stripe.updateSeatQuantity).not.toHaveBeenCalled();
-    await cloud.addBackupTarget({
-      endpoint: "https://s3.example.test",
-      bucket: "test-backups",
-      prefix: "seat-increase",
-      accessKeyId: "access-seat-increase",
-      secretAccessKey: "secret-seat-increase",
-    });
-    const changed = await requestAs(admin, "POST", `${org.path}/seats`, pending);
-    expect(changed.statusCode, changed.body).toBe(200);
-    expect(changed.json().seats).toEqual({ paid: 1, pending: 2, assigned: 0, free: 1 });
-    expect(stripe.updateSeatQuantity).toHaveBeenCalledWith({
-      item: "si_seat",
-      organization: org.id,
-      subscription: org.subscription.id,
-      requestId: pending.requestId,
-      quantity: 2,
-      increase: true,
-    });
-    const first = await assign(admin.id);
-    expect(first.statusCode, first.body).toBe(200);
-    expect((await assign(member.id)).statusCode).toBe(409);
-    const sub = org.subscription;
-    const id = CloudComputerIdSchema.parse(first.json().computerId);
-    subscriptions.set(sub.id, {
-      ...sub,
-      pending_update: {
-        expires_at: Math.floor(now.getTime() / 1000) + 300,
-        subscription_items: [{ id: "si_seat", quantity: 2 }],
-      },
-      latest_invoice: {
-        id: "in_seats",
-        billing_reason: "subscription_update",
-        status: "open",
-        attempt_count: 1,
-        hosted_invoice_url: "https://invoice.stripe.example.test/seat-change",
-      },
-    });
-    expect((await webhook("invoice.payment_failed", { subscription: sub.id })).statusCode).toBe(
-      200,
-    );
-    expect((await getDesired(id))?.state).toBe("active");
-    expect((await org.read()).seats).toMatchObject({ paid: 1, assigned: 1, free: 0, pending: 2 });
-    subscriptions.set(sub.id, {
-      ...sub,
-      latest_invoice: {
-        id: "in_seats",
-        billing_reason: "subscription_update",
-        status: "open",
-        attempt_count: 1,
-      },
-      items: { has_more: false, data: [{ ...sub.items.data[0]!, quantity: 2 }] },
-    });
-    expect((await webhook("customer.subscription.updated", { id: sub.id })).statusCode).toBe(200);
-    expect((await org.read()).seats.paid).toBe(1);
-    expect((await org.read()).pendingSeatChange).toMatchObject({ requestId: pending.requestId });
-    subscriptions.set(sub.id, {
-      ...sub,
-      latest_invoice: {
-        id: "in_seats",
-        billing_reason: "subscription_update",
-        status: "paid",
-        attempt_count: 1,
-      },
-      items: { has_more: false, data: [{ ...sub.items.data[0]!, quantity: 2 }] },
-    });
-    expect((await webhook("customer.subscription.updated", { id: sub.id })).statusCode).toBe(200);
-    expect((await org.read()).seats).toEqual({ paid: 2, pending: null, assigned: 1, free: 1 });
-    expect((await assign(member.id)).statusCode).toBe(200);
-    expect(
-      (await requestAs(admin, "POST", `${org.path}/seats`, { requestId: randomUUID(), seats: 1 }))
-        .statusCode,
-    ).toBe(409);
-    subscriptions.set(sub.id, {
-      ...subscriptions.get(sub.id)!,
-      latest_invoice: {
-        id: "in_renewal",
-        status: "draft",
-        attempt_count: 0,
-        last_finalization_error: {},
-      },
-    });
-    expect(
-      (await webhook("invoice.finalization_failed", { subscription: sub.id })).statusCode,
-    ).toBe(200);
-    expect((await getDesired(id))?.state).toBe("suspended");
-    subscriptions.set(sub.id, { ...subscriptions.get(sub.id)!, status: "past_due" });
-    expect((await webhook("invoice.payment_failed", { subscription: sub.id })).statusCode).toBe(
-      200,
-    );
-    expect((await getDesired(id))?.state).toBe("suspended");
-    expect((await org.read()).seats.free).toBe(0);
-    subscriptions.set(sub.id, {
-      ...subscriptions.get(sub.id)!,
-      status: "active",
-      latest_invoice: { id: "in_renewal", status: "paid", attempt_count: 1 },
-    });
-    const errors = vi.fn();
-    await cloud.reconcileBilling(errors);
-    expect(errors).not.toHaveBeenCalled();
-    expect((await getDesired(id))?.state).toBe("active");
-    await cloud.addBackupTarget({
-      endpoint: "https://s3.example.test",
-      bucket: "test-backups",
-      prefix: "personal",
-      accessKeyId: "access-c",
-      secretAccessKey: "secret-c",
-    });
-    const personal = await buy(admin);
-    expect(personal.id).not.toBe(id);
-    expect((await cloud.list(admin.id)).map((computer) => computer.id)).toEqual([personal.id]);
-    expect(
-      WorkHomeResponseSchema.parse((await requestAs(admin, "GET", `${org.path}/work-home`)).json())
-        ?.assignment.computerId,
-    ).toBe(id);
-    subscriptions.set(sub.id, { ...subscriptions.get(sub.id)!, status: "canceled" });
-    expect((await webhook("customer.subscription.deleted", { id: sub.id })).statusCode).toBe(200);
-    expect((await getDesired(id))?.state).toBe("suspended");
-    expect((await getDesired(personal.id))?.state).toBe("active");
-  });
-
-  it("recovers a paid seat increase when the Stripe write committed but its reply was lost", async () => {
-    const admin = await createAccount();
-    const org = await buyOrganization(admin, 1);
-    const requestId = randomUUID();
-    const change = { requestId, seats: 2 };
-    const id = org.subscription.id;
-    const updated: StripeSubscription = {
-      ...org.subscription,
-      latest_invoice: {
-        id: "in_lost_reply",
-        status: "paid",
-        billing_reason: "subscription_update",
-        attempt_count: 1,
-      },
-      items: { has_more: false, data: [{ ...org.subscription.items.data[0]!, quantity: 2 }] },
-    };
-    stripe.updateSeatQuantity.mockImplementationOnce(async () => {
-      subscriptions.set(id, updated);
-      throw new ControlPlaneError("unavailable", "Lost the Stripe response");
-    });
-    expect((await requestAs(admin, "POST", `${org.path}/seats`, change)).statusCode).toBe(503);
-    expect((await org.read()).seats).toMatchObject({ paid: 1, pending: 2 });
-    const entered = Promise.withResolvers<void>();
-    const resume = Promise.withResolvers<void>();
-    stripe.updateSeatQuantity.mockImplementationOnce(async () => {
-      entered.resolve();
-      await resume.promise;
-      return updated;
-    });
-    const errors = vi.fn();
-    const reconcile = cloud.reconcileBilling(errors);
-    await entered.promise;
-    try {
-      expect(await cloud.reconcileBilling(errors)).toBe(false);
-    } finally {
-      resume.resolve();
-    }
-    expect(await reconcile).toBe(true);
-    expect(errors).not.toHaveBeenCalled();
-    expect((await org.read()).seats).toMatchObject({ paid: 2, pending: null });
-    expect((await requestAs(admin, "POST", `${org.path}/seats`, change)).statusCode).toBe(200);
-    expect(
-      (await requestAs(admin, "POST", `${org.path}/seats`, { ...change, seats: 1 })).statusCode,
-    ).toBe(409);
-    expect(stripe.updateSeatQuantity).toHaveBeenCalledTimes(2);
-    expect(stripe.updateSeatQuantity.mock.calls[0]).toEqual(
-      stripe.updateSeatQuantity.mock.calls[1],
-    );
-  });
 
   it("reports only observed preparation, location, Home identity, egress and Stripe renewal facts", async () => {
     const { id, account, order } = await buy();
@@ -2395,7 +1263,6 @@ integration("Cloud Computer Account service", () => {
     expect(await run("show", id)).toMatchObject({
       id,
       accountId: account.id,
-      workAssignmentId: null,
       state: "active",
       phase: "provisioning",
       generation: computer.generation,
@@ -2463,7 +1330,7 @@ integration("Cloud Computer Account service", () => {
     expect(JSON.stringify(pool)).not.toMatch(/secret-[ab]|access-[ab]|checkout\.stripe/u);
     await expect(run("backup-remove", reserved.id)).rejects.toThrow("reserved");
     expect((await webhook("checkout.session.completed", order.session)).statusCode).toBe(200);
-    const id = (await cloud.list(account.id))[0]!.id;
+    const id = (await cloud.listForAccount(account.id))[0]!.id;
     await expect(run("backup-remove", reserved.id)).rejects.toThrow("assigned");
     await run("delete", id);
     const deleting = (await getDesired(id))!;
@@ -2947,7 +1814,7 @@ integration("Cloud Computer Account service", () => {
     expect(
       (await webhook("checkout.session.completed", order.session, "evt_fenced")).statusCode,
     ).toBe(200);
-    expect(await cloud.list(account.id)).toEqual([]);
+    expect(await cloud.listForAccount(account.id)).toEqual([]);
     expect(
       (
         await database
@@ -2980,7 +1847,7 @@ integration("Cloud Computer Account service", () => {
       deferredEvents: [],
       paidAttempts: [],
     });
-    expect(await cloud.list(account.id)).toHaveLength(1);
+    expect(await cloud.listForAccount(account.id)).toHaveLength(1);
     expect(
       (
         await database
@@ -3014,7 +1881,7 @@ integration("Cloud Computer Account service", () => {
         throw new Error("unexpected periodic billing failure");
       });
     await tick();
-    const [computer] = await cloud.list(customer.id);
+    const [computer] = await cloud.listForAccount(customer.id);
     expect(computer?.status).toBe("preparing");
     subscriptions.set(order.subscription, {
       ...order.details,
@@ -3330,169 +2197,6 @@ integration("Cloud Computer Account service", () => {
   function vm(generation: number, status: "off" | "running") {
     return { id: 6 + generation, generation, status, ipv4: "192.0.2.7", ipv6: null, firewalls: [] };
   }
-
-  it.each(["create", "power-on"] as const)(
-    "offboards after an interrupted %s that Account journaled but the provider never received",
-    async (kind) => {
-      const admin = await createAccount();
-      const org = await buyOrganization(admin, 1);
-      const result = await requestAs(admin, "POST", `${org.path}/assignments`, {
-        requestId: randomUUID(),
-        accountId: admin.id,
-      });
-      expect(result.statusCode, result.body).toBe(200);
-      const { assignmentId, computerId } = WorkAssignmentViewSchema.parse(result.json());
-      const spare = (await cloud.listBackupTargets()).find((target) => !target.computerId)!;
-      await cloud.removeBackupTarget(spare.id);
-      const id = CloudComputerIdSchema.parse(computerId);
-      const retentionSeconds = 7 * 24 * 60 * 60;
-      const journaled = Promise.withResolvers<void>();
-      const stopped = Promise.withResolvers<void>();
-      const harness = await liveReconciler({
-        id,
-        ...(kind === "power-on" ? { server: vm(1, "off") } : {}),
-        interceptCheck: async (check, response) => {
-          const allowed = await response;
-          if (check.operation === "begin-provider-write" && check.write.kind === kind) {
-            expect(allowed).toBe(true);
-            journaled.resolve();
-            await stopped.promise;
-            throw new Error("The dispatcher stopped before sending");
-          }
-          return allowed;
-        },
-      });
-      const pass = harness.pass();
-      await journaled.promise;
-      try {
-        expect((await getDesired(id))?.pendingProviderWrites).toMatchObject([
-          { kind, dispatched: false },
-        ]);
-        expect(
-          (
-            await requestAs(admin, "POST", `${org.path}/assignments/${assignmentId}/offboard`, {
-              retentionSeconds,
-            })
-          ).statusCode,
-        ).toBe(200);
-        expect((await requestAs(admin, "DELETE", "/v1/account")).statusCode).toBe(409);
-      } finally {
-        stopped.resolve();
-        await pass;
-      }
-      expect(harness.provider.create).not.toHaveBeenCalled();
-      expect(harness.provider.powerOn).not.toHaveBeenCalled();
-      await harness.pass();
-      expect((await org.read()).assignments[0]).toMatchObject({ suspended: false, deleted: false });
-      now = new Date(now.getTime() + 3 * 60_000 + 1);
-      await harness.pass();
-      expect((await getDesired(id))?.pendingProviderWrites).toBeUndefined();
-      const errors = vi.fn();
-      await organizations.reconcileOffboarding(errors);
-      expect((await org.read()).assignments[0]).toMatchObject({ suspended: true, deleted: false });
-      const deadline = now.getTime() + retentionSeconds * 1_000;
-      now = new Date(deadline - 1);
-      await harness.pass();
-      await organizations.reconcileOffboarding(errors);
-      expect(await getDesired(id)).toMatchObject({ state: "suspended" });
-      expect((await org.read()).seats.free).toBe(0);
-      now = new Date(deadline);
-      await organizations.reconcileOffboarding(errors);
-      expect(await getDesired(id)).toMatchObject({ state: "deleted" });
-      await harness.pass();
-      expect(harness.machine.server).toBeUndefined();
-      await organizations.reconcileOffboarding(errors);
-      expect(errors).not.toHaveBeenCalled();
-      expect((await org.read()).assignments[0]).toMatchObject({
-        state: "ended",
-        deleted: true,
-        deletion: {
-          computerDestroyedAt: expect.any(String),
-          backupsUnreadableAt: expect.any(String),
-        },
-      });
-      expect((await org.read()).seats).toMatchObject({ assigned: 0, free: 0 });
-      await cloud.addBackupTarget({
-        endpoint: "https://s3.example.test",
-        bucket: "test-backups",
-        prefix: "replacement-seat",
-        accessKeyId: "access-replacement-seat",
-        secretAccessKey: "secret-replacement-seat",
-      });
-      await organizations.reconcile(errors);
-      expect(errors).not.toHaveBeenCalled();
-      expect((await org.read()).seats).toMatchObject({ assigned: 0, free: 1 });
-    },
-  );
-
-  it.each(["create", "power-on"] as const)(
-    "offboards after the provider applied a work Home's %s but the reply was lost",
-    async (kind) => {
-      const admin = await createAccount();
-      const org = await buyOrganization(admin, 1);
-      const result = await requestAs(admin, "POST", `${org.path}/assignments`, {
-        requestId: randomUUID(),
-        accountId: admin.id,
-      });
-      expect(result.statusCode, result.body).toBe(200);
-      const { assignmentId, computerId } = WorkAssignmentViewSchema.parse(result.json());
-      const id = CloudComputerIdSchema.parse(computerId);
-      const applied = Promise.withResolvers<void>();
-      const loseReply = Promise.withResolvers<void>();
-      const harness = await liveReconciler({
-        id,
-        ...(kind === "power-on" ? { server: vm(1, "off") } : {}),
-      });
-      const commit = async (server: FakeVm, dispatch?: () => Promise<void>): Promise<never> => {
-        await dispatch?.();
-        harness.machine.server = server;
-        applied.resolve();
-        await loseReply.promise;
-        throw new Error("The provider reply was lost");
-      };
-      if (kind === "create")
-        harness.provider.create.mockImplementationOnce(({ generation }, _, dispatch) =>
-          commit(vm(generation, "off"), dispatch),
-        );
-      else
-        harness.provider.powerOn.mockImplementationOnce((_, __, dispatch) =>
-          commit(vm(1, "running"), dispatch),
-        );
-
-      const pass = harness.pass();
-      await applied.promise;
-      try {
-        expect((await getDesired(id))?.pendingProviderWrites).toMatchObject([
-          { kind, dispatched: true },
-        ]);
-        expect(
-          (
-            await requestAs(admin, "POST", `${org.path}/assignments/${assignmentId}/offboard`, {
-              retentionSeconds: 0,
-            })
-          ).statusCode,
-        ).toBe(200);
-      } finally {
-        loseReply.resolve();
-        await pass;
-      }
-      await harness.pass();
-      expect(harness.machine.server?.status).toBe("off");
-      expect((await getDesired(id))?.pendingProviderWrites).toBeUndefined();
-      const errors = vi.fn();
-      await organizations.reconcileOffboarding(errors);
-      await harness.pass();
-      await organizations.reconcileOffboarding(errors);
-      expect(errors).not.toHaveBeenCalled();
-      expect(harness.machine.server).toBeUndefined();
-      expect((await org.read()).assignments[0]).toMatchObject({
-        state: "ended",
-        signInCut: true,
-        suspended: true,
-        deleted: true,
-      });
-    },
-  );
 
   it.each(["create", "dns-a"] as const)(
     "keeps pools reserved when a journaled %s lands after the lease changes",
@@ -4308,38 +3012,6 @@ integration("Cloud Computer Account service", () => {
             .executeTakeFirstOrThrow()
         ).stripeSubscriptionId,
       );
-    });
-
-    it("leaves the Cloud Computer exactly as it was when the Account's Delete is refused", async () => {
-      const admin = await createAccount();
-      const org = await buyOrganization(admin, 1);
-      const { id, account } = await buy();
-      await bootable((await getDesired(id))!);
-      await invite(org.path, admin, account);
-      const assigned = await requestAs(admin, "POST", `${org.path}/assignments`, {
-        requestId: randomUUID(),
-        accountId: account.id,
-      });
-      expect(assigned.statusCode, assigned.body).toBe(200);
-      const before = await database
-        .selectFrom("cloudComputers")
-        .selectAll()
-        .where("id", "=", id)
-        .executeTakeFirstOrThrow();
-      stripe.cancel.mockClear();
-      const refused = await deleteAccount(account);
-      expect(refused.statusCode).toBe(409);
-      expect(refused.body).toContain("offboard your work Cloud Computer");
-      expect(await exists(account.id)).toBe(true);
-      expect(stripe.cancel).not.toHaveBeenCalled();
-      expect(kickBilling).not.toHaveBeenCalled();
-      expect(
-        await database
-          .selectFrom("cloudComputers")
-          .selectAll()
-          .where("id", "=", id)
-          .executeTakeFirstOrThrow(),
-      ).toEqual(before);
     });
 
     it("deletes an Account with no Cloud Computer at once, as before", async () => {

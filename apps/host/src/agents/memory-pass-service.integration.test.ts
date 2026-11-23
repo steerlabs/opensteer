@@ -1,3 +1,4 @@
+import { personTaskReader } from "@opensteer/database";
 import { DeviceIdSchema } from "@opensteer/core";
 import { sql } from "kysely";
 import {
@@ -9,18 +10,23 @@ import {
   type Thread,
 } from "@opensteer/core";
 import {
+  AgentConnectionStore,
+  ChannelStore,
   createMemoryPass,
   needsYouPage,
   threadContextLineage,
+  TriggerStore,
   type MemoryPassExecution,
 } from "@opensteer/database";
 import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
+import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import {
   describeStore,
   testContinuationIdentity,
   testReadyHarnessCatalog,
   type StoreFixture,
+  testMessagingRunnerId,
 } from "@opensteer/database/test-support/store";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import {
@@ -32,6 +38,8 @@ import {
 import { expect, vi } from "vitest";
 import { MemoryPassService, memoryPassWaitingReason } from "./memory-pass-service.js";
 import { memoryPassProgram } from "./memory-pass-program.js";
+import type { AgentCaller } from "../mcp/agent-caller.js";
+import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
 const computerZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 async function fixture(
   f: StoreFixture,
@@ -121,7 +129,7 @@ function service(
   };
 }
 async function detail(f: StoreFixture, ownerId: Trigger["createdBy"], id: Trigger["id"]) {
-  const result = await f.triggers.getForOwner(id, ownerId, 25);
+  const result = await f.triggers.getForOwner(id, ownerId, 25, personTaskReader);
   if (!result) throw new Error("Managed Trigger detail missing");
   return result;
 }
@@ -130,10 +138,7 @@ async function role(
   ownerId: Trigger["createdBy"],
   systemRole: TriggerSystemRole = "memory-light",
 ) {
-  const found = await f.triggers.listForOwner({
-    ownerId,
-    systemRole,
-  });
+  const found = await f.triggers.listForOwner({ reader: personTaskReader, ownerId, systemRole });
   if (!found[0]) throw new Error("Managed role missing");
   return detail(f, ownerId, found[0].id);
 }
@@ -346,6 +351,75 @@ async function finish(
     .where("messageId", "=", run.seedInputId)
     .execute();
 }
+/** A Run's own caller, as the Run's tool token would name it once its Runner holds it. */
+/** A subagent node on a started Run. */
+async function subagentNode(f: StoreFixture, runId: RunId) {
+  const attempt = await f.database
+    .selectFrom("runAttempts")
+    .select("id")
+    .where("runId", "=", runId)
+    .where("status", "=", "current")
+    .executeTakeFirstOrThrow();
+  const id = createId("executionNode");
+  await f.database
+    .insertInto("executionNodes")
+    .values({
+      id,
+      attemptId: attempt.id,
+      runId,
+      status: "running",
+      kind: "subagent",
+      effort: null,
+      phaseIndex: null,
+      phases: sql`'[]'::jsonb`,
+      title: "Subagent",
+      startedAt: new Date(),
+      endedAt: null,
+      nativeRef: `native:${id}`,
+      originCallId: null,
+      parentNodeId: null,
+      prompt: null,
+      result: null,
+      sessionRef: null,
+      model: null,
+    })
+    .execute();
+  return id;
+}
+async function runCaller(
+  f: StoreFixture,
+  base: Awaited<ReturnType<typeof fixture>>,
+  runId: RunId,
+  commandId: string,
+  threadId: Thread["id"],
+): Promise<AgentCaller> {
+  await f.store.claimCommand(commandId as never, `caller-${runId}`);
+  const binding = await f.bindAgentControlRun(base, runId, `caller-${runId}`, threadId);
+  await f.database.updateTable("runs").set({ status: "running" }).where("id", "=", runId).execute();
+  const thread = (await f.store.getThreadForOwner(threadId, base.userId))!;
+  const epoch = Math.floor(Date.now() / 1000);
+  return {
+    kind: "run",
+    key: `run:${runId}`,
+    userId: base.userId,
+    accessMode: thread.accessMode,
+    thread,
+    claims: {
+      aud: "opensteer-run-tools",
+      iss: "opensteer-host",
+      jti: crypto.randomUUID(),
+      exp: epoch + 60,
+      iat: epoch,
+      environmentId: binding.environmentId,
+      runnerId: binding.runnerId,
+      runId,
+      bindingGeneration: binding.bindingGeneration,
+      runnerBootId: binding.runnerBootId,
+      requestedBy: base.userId,
+      threadId,
+    },
+  } as AgentCaller;
+}
 function wakeText(admitted: Awaited<ReturnType<typeof wake>>) {
   return admitted.message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
 }
@@ -385,9 +459,7 @@ describeStore("managed memory passes", (it) => {
     });
     const s = service(f);
     await Promise.all([s.instance.ensureForPersonal(), s.instance.ensureForPersonal()]);
-    const rows = await f.triggers.listForOwner({
-      ownerId: base.userId,
-    });
+    const rows = await f.triggers.listForOwner({ reader: personTaskReader, ownerId: base.userId });
     expect(rows).toHaveLength(2);
     const light = await role(f, base.userId);
     const nightly = await role(f, base.userId, "memory-nightly");
@@ -526,9 +598,7 @@ describeStore("managed memory passes", (it) => {
     s.preview.mockRejectedValueOnce(new Error("Storage unreadable"));
     await s.instance.ensureForPersonal();
     expect(
-      await f.triggers.listForOwner({
-        ownerId: base.userId,
-      }),
+      await f.triggers.listForOwner({ reader: personTaskReader, ownerId: base.userId }),
     ).toEqual([]);
     // Unsettled, so the Host asks again on the next Runner registration or finished Run.
     expect(s.instance.settled).toBe(false);
@@ -562,7 +632,9 @@ describeStore("managed memory passes", (it) => {
     s.preview.mockRejectedValueOnce(new Error("Runner busy"));
     s.instance.wake();
     await s.instance.idle();
-    expect(await f.triggers.listForOwner({ ownerId: base.userId })).toEqual([]);
+    expect(
+      await f.triggers.listForOwner({ reader: personTaskReader, ownerId: base.userId }),
+    ).toEqual([]);
     expect(s.instance.settled).toBe(false);
     // The failed pass left a deadline: nothing else wakes it.
     expect([...timers].map((timer) => timer.at - now)).toEqual([5_000]);
@@ -587,9 +659,7 @@ describeStore("managed memory passes", (it) => {
     await service(f, {
       off: true,
     }).instance.ensureForPersonal();
-    const rows = await f.triggers.listForOwner({
-      ownerId: base.userId,
-    });
+    const rows = await f.triggers.listForOwner({ reader: personTaskReader, ownerId: base.userId });
     expect(rows).toHaveLength(2);
     for (const row of rows)
       expect(row).toMatchObject({
@@ -890,6 +960,7 @@ describeStore("managed memory passes", (it) => {
     expect(
       (
         await f.triggers.listForOwner({
+          reader: personTaskReader,
           ownerId: base.userId,
           systemRole: "memory-light",
           limit: 1,
@@ -899,13 +970,19 @@ describeStore("managed memory passes", (it) => {
     expect(
       (
         await f.triggers.listForOwner({
+          reader: personTaskReader,
           ownerId: base.userId,
           limit: 100,
         })
       ).filter(({ systemRole }) => systemRole),
     ).toHaveLength(2);
     await expect(
-      f.triggers.getForOwner(light.trigger.id, await f.store.createUser("Another person"), 1),
+      f.triggers.getForOwner(
+        light.trigger.id,
+        await f.store.createUser("Another person"),
+        1,
+        personTaskReader,
+      ),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(light.anchorThread?.id).toBe(light.trigger.anchorThreadId);
   });
@@ -1154,6 +1231,432 @@ describeStore("managed memory passes", (it) => {
     });
     expect(nextSession!.id).not.toBe(firstSession!.id);
   });
+  it("never reads a task that had no personal context into the person's memory", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "strangers");
+    await service(f).instance.ensureForPersonal();
+    const light = (await role(f, base.userId)).trigger;
+    const first = await wake(f, light, (await tick(f, base, light)).occurrence.id, "strangers-1");
+    await finish(f, first.run!, "completed");
+    const task = async (title: string) =>
+      (
+        await f.store.createThread({
+          createdBy: base.userId,
+          environmentId: base.environmentId,
+          harnessInstanceId: base.harnessInstance.id,
+          idempotencyKey: `strangers-${title}`,
+          modelSelection: base.thread.modelSelection,
+          title,
+        })
+      ).thread;
+    // A task from a channel where anyone may speak.
+    await f.enrollMessagingRunner(testMessagingRunnerId, "Messaging");
+    const account = await new ChannelStore(f.database).createConnection({
+      account: { displayName: "Team", externalAccountId: "T-strangers", routingMode: "dedicated" },
+      connection: {
+        runnerId: testMessagingRunnerId,
+        connectionMethod: "bring-your-own",
+        displayName: "Team",
+        externalIdentityId: "U-BOT-strangers",
+        externalTenantId: "T-strangers",
+        provider: "slack",
+        transportKind: "socket",
+      },
+      createdBy: base.userId,
+      credential: {
+        encryptedPayload: Buffer.from("strangers"),
+        encryptionKeyVersion: 1,
+        id: createId("credential"),
+        name: "Team",
+        ownerId: base.userId,
+        provider: "channel:slack",
+      },
+    });
+    const anyone = await new AgentConnectionStore(f.database).createBridge({
+      userId: base.userId,
+      accountId: account.account.id,
+      conversation: { id: "C-team", name: "#team" },
+      senders: "anyone",
+      accessMode: "approval-required",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const fromStrangers = await task("From the channel");
+    const own = await task("Own work");
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: anyone.id })
+      .where("id", "=", fromStrangers.id)
+      .execute();
+    await delivered(f, base, fromStrangers.id, "strangers-channel");
+    await delivered(f, base, own.id, "strangers-own");
+    const second = await wake(f, light, (await tick(f, base, light)).occurrence.id, "strangers-2");
+    const text = wakeText(second).join("\n");
+    expect(text).toContain(own.id);
+    expect(text).not.toContain(fromStrangers.id);
+  });
+
+  it("never lists or reads a task without personal context to a memory pass, through its own tools", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "memory-tools");
+    await service(f).instance.ensureForPersonal();
+    const light = (await role(f, base.userId)).trigger;
+    await serveMcp(f);
+    const task = async (title: string, extra: Record<string, unknown> = {}) =>
+      (
+        await f.store.createThread({
+          createdBy: base.userId,
+          environmentId: base.environmentId,
+          harnessInstanceId: base.harnessInstance.id,
+          idempotencyKey: `memory-tools-${title}`,
+          modelSelection: base.thread.modelSelection,
+          title,
+          ...extra,
+        })
+      ).thread;
+    // A chat where anyone may speak, its task and a task made under it.
+    await f.enrollMessagingRunner(testMessagingRunnerId, "Messaging");
+    const account = await new ChannelStore(f.database).createConnection({
+      account: { displayName: "Team", externalAccountId: "T-tools", routingMode: "dedicated" },
+      connection: {
+        runnerId: testMessagingRunnerId,
+        connectionMethod: "bring-your-own",
+        displayName: "Team",
+        externalIdentityId: "U-BOT-tools",
+        externalTenantId: "T-tools",
+        provider: "slack",
+        transportKind: "socket",
+      },
+      createdBy: base.userId,
+      credential: {
+        encryptedPayload: Buffer.from("tools"),
+        encryptionKeyVersion: 1,
+        id: createId("credential"),
+        name: "Team",
+        ownerId: base.userId,
+        provider: "channel:slack",
+      },
+    });
+    const anyone = await new AgentConnectionStore(f.database).createBridge({
+      userId: base.userId,
+      accountId: account.account.id,
+      conversation: { id: "C-tools", name: "#tools" },
+      senders: "anyone",
+      accessMode: "approval-required",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const fromStrangers = await task("From the channel", {
+      authority: {
+        kind: "connection",
+        connectionId: anyone.id,
+        userId: base.userId,
+        accessMode: "approval-required",
+      },
+    });
+    const under = await task("Under the channel's task", { parentThreadId: fromStrangers.id });
+    // A task that ran without personal context before the update.
+    const legacyId = `mcn_${crypto.randomUUID()}`;
+    await sql`insert into agent_connections (id, user_id, label, client_name, access_mode,
+        resource, token_hash, created_at, expires_at, revoked_at, "grant", grant_revision,
+        consent_version, cleanup_reason, cleanup_requested_at, bridge_senders)
+      values (${legacyId}, ${base.userId}, 'Chats from before the update', 'Messaging',
+        'approval-required', 'opensteer:bridge', null, now(), now(), now(),
+        '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(),
+        'anyone')`.execute(f.database);
+    const legacy = await task("Before the update");
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: legacyId })
+      .where("id", "=", legacy.id)
+      .execute();
+    const own = await task("Own work");
+    // The light pass's own Run, as its Runner would hold it.
+    const admitted = await wake(f, light, (await tick(f, base, light)).occurrence.id, "tools-1");
+    if (!admitted.run || !admitted.command) throw new Error("Worker Run missing");
+    const caller = await runCaller(
+      f,
+      base,
+      admitted.run.id,
+      admitted.command.id,
+      light.anchorThreadId,
+    );
+    const call = (name: string, args: Record<string, unknown>, key: string) =>
+      lastService!.callTool("", name, args, { caller, operationKey: key });
+    const listed = (await call("opensteer_task_list", { limit: 50 }, "tools-list")) as {
+      readonly tasks: readonly { readonly id: string }[];
+    };
+    const ids = listed.tasks.map(({ id }) => id);
+    expect(ids).toContain(own.id);
+    for (const hidden of [fromStrangers, under, legacy]) expect(ids).not.toContain(hidden.id);
+    // Reading one reads exactly like reading a task that does not exist.
+    const missing = await call(
+      "opensteer_task_read",
+      { taskId: createId("thread") },
+      "tools-missing",
+    ).catch((error: unknown) => error);
+    for (const hidden of [fromStrangers, under, legacy])
+      await expect(
+        call("opensteer_task_read", { taskId: hidden.id }, `tools-read-${hidden.id}`),
+      ).rejects.toMatchObject({
+        code: (missing as { code: string }).code,
+        message: (missing as Error).message,
+      });
+    // What the channel's task made: a Run with a subagent, a question, a worker and an automation.
+    const turn = await f.store.enqueueThreadInput({
+      requestedBy: base.userId,
+      threadId: fromStrangers.id,
+      content: [{ type: "text", text: "Work for #tools" }],
+      source: { kind: "human" },
+      policy: "queue",
+      idempotencyKey: "tools-strangers-turn",
+    });
+    if (!turn.run) throw new Error("The channel's task reserved no Run");
+    await startPersonalQueuedRunFixture(f.store, turn.run.id);
+    const node = await subagentNode(f, turn.run.id);
+    const question = await f.store.requests.create({
+      callId: "tools-strangers-question",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: turn.run.id,
+      originatingThreadId: fromStrangers.id,
+      requestedBy: base.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "From #tools",
+        fields: [
+          { id: "answer", prompt: "Ready?", secret: false, custom: true, multiSelect: false },
+        ],
+      },
+    });
+    const strangersWorker = await f.store.delegateThread({
+      accessMode: "approval-required",
+      createdBy: base.userId,
+      environmentId: base.environmentId,
+      harnessInstanceId: base.harnessInstance.id,
+      idempotencyKey: "tools-strangers-worker",
+      modelSelection: base.thread.modelSelection,
+      origin: { kind: "run", parentRunId: turn.run.id, parentThreadId: fromStrangers.id },
+      task: [{ type: "text", text: "Work for #tools" }],
+      title: "Worker for #tools",
+    });
+    // An automation in the chat's task, as one made before such lineages were refused one: made
+    // on the person's task, then held in the chat's task and lineage, as its row would be.
+    const automation = await new TriggerStore(f.database).create({
+      actorThreadId: null,
+      anchorThreadId: own.id,
+      createdBy: base.userId,
+      idempotencyKey: "tools-strangers-automation",
+      name: "Briefing for #tools",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default () => {}",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    await f.database
+      .updateTable("triggers")
+      .set({ anchorThreadId: fromStrangers.id, originConnectionId: anyone.id })
+      .where("id", "=", automation.trigger.id)
+      .execute();
+    const hiddenTasks = [fromStrangers, under, legacy, strangersWorker.thread];
+    // A person's automation on their own task, one of whose downstream Runs is in the chat's task.
+    const ownAutomation = await new TriggerStore(f.database).create({
+      actorThreadId: null,
+      anchorThreadId: own.id,
+      createdBy: base.userId,
+      idempotencyKey: "tools-own-automation",
+      name: "My briefing",
+      program: {
+        toolContractVersion: 5,
+        language: "javascript",
+        source: "export default () => {}",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const ownOccurrence = await new TriggerStore(f.database).enqueueManual({
+      actorThreadId: null,
+      ownerId: base.userId,
+      triggerId: ownAutomation.trigger.id,
+    });
+    const chainId = createId("causalChain");
+    await f.database
+      .insertInto("causalChains")
+      .values({
+        id: chainId,
+        maxDelegations: 10,
+        maxAutonomousRuns: 10,
+        rootMessageId: null,
+        rootOccurrenceId: ownOccurrence.id,
+        usedDelegations: 0,
+        usedAutonomousRuns: 0,
+      })
+      .execute();
+    await f.database
+      .updateTable("triggerOccurrences")
+      .set({ causalChainId: chainId })
+      .where("id", "=", ownOccurrence.id)
+      .execute();
+    await f.database
+      .updateTable("runs")
+      .set({ causalChainId: chainId })
+      .where("id", "=", turn.run.id)
+      .execute();
+    // The pass's own task tree reads as the pass: a worker it delegated to. A task it created for
+    // the person is an ordinary task of theirs, and reads as one (below).
+    const passWorker = await f.store.delegateThread({
+      accessMode: "approval-required",
+      createdBy: base.userId,
+      environmentId: base.environmentId,
+      harnessInstanceId: base.harnessInstance.id,
+      idempotencyKey: "tools-pass-worker",
+      modelSelection: base.thread.modelSelection,
+      origin: {
+        kind: "run",
+        parentRunId: admitted.run.id,
+        parentThreadId: light.anchorThreadId,
+      },
+      task: [{ type: "text", text: "Look through the tasks" }],
+      title: "Pass worker",
+    });
+    const passTask = await task("Made by the pass");
+    const sent = await f.store.enqueueThreadInput({
+      requestedBy: base.userId,
+      threadId: passTask.id,
+      content: [{ type: "text", text: "Look through the tasks" }],
+      source: { kind: "agent", runId: admitted.run.id },
+      policy: "queue",
+      idempotencyKey: "tools-pass-task",
+    });
+    if (!sent.run || !sent.command) throw new Error("The pass's task reserved no Run");
+    const readers = {
+      pass: caller,
+      "a worker the pass delegated to": await runCaller(
+        f,
+        base,
+        passWorker.run.id,
+        passWorker.command.id,
+        passWorker.thread.id,
+      ),
+    };
+    const passTaskCaller = await runCaller(f, base, sent.run.id, sent.command.id, passTask.id);
+    const outcome = (promise: Promise<unknown>) =>
+      promise.then(
+        (value) => ({ value }),
+        (error: { code?: string; message?: string }) => ({
+          error: { code: error.code, message: error.message },
+        }),
+      );
+    for (const [who, reader] of Object.entries(readers)) {
+      let key = 0;
+      const ask = (name: string, args: Record<string, unknown>) =>
+        outcome(
+          lastService!.callTool("", name, args, {
+            caller: reader,
+            operationKey: `tools-${who}-${name}-${key++}`,
+          }),
+        );
+      const tasks = (await ask("opensteer_task_list", { limit: 50 })) as {
+        value: { tasks: readonly { id: string }[] };
+      };
+      const listedIds = tasks.value.tasks.map(({ id }) => id);
+      expect.soft(listedIds, who).toContain(own.id);
+      for (const hidden of hiddenTasks) expect.soft(listedIds, who).not.toContain(hidden.id);
+      for (const hidden of hiddenTasks) {
+        expect
+          .soft(await ask("opensteer_task_read", { taskId: hidden.id }), who)
+          .toEqual(await ask("opensteer_task_read", { taskId: createId("thread") }));
+        expect
+          .soft(await ask("opensteer_task_list", { limit: 50, parentTaskId: hidden.id }), who)
+          .toEqual(
+            await ask("opensteer_task_list", { limit: 50, parentTaskId: createId("thread") }),
+          );
+      }
+      expect
+        .soft(await ask("opensteer_subagent_read", { subagentId: node }), who)
+        .toEqual(await ask("opensteer_subagent_read", { subagentId: createId("executionNode") }));
+      const delegationId = strangersWorker.assignment.id;
+      expect
+        .soft(await ask("opensteer_delegation_status", { delegationId }), who)
+        .toEqual(
+          await ask("opensteer_delegation_status", { delegationId: createId("delegation") }),
+        );
+      expect
+        .soft(await ask("opensteer_delegation_wait", { delegationId, timeoutMs: 250 }), who)
+        .toEqual(
+          await ask("opensteer_delegation_wait", {
+            delegationId: createId("delegation"),
+            timeoutMs: 250,
+          }),
+        );
+      expect
+        .soft(await ask("opensteer_request_read", { requestId: question.request.id }), who)
+        .toEqual(await ask("opensteer_request_read", { requestId: createId("request") }));
+      const automations = (await ask("opensteer_automation_list", { limit: 50 })) as {
+        value: { automations?: readonly { id: string }[]; triggers?: readonly { id: string }[] };
+      };
+      expect.soft(JSON.stringify(automations.value), who).not.toContain(automation.trigger.id);
+      expect
+        .soft(await ask("opensteer_automation_read", { automationId: automation.trigger.id }), who)
+        .toEqual(await ask("opensteer_automation_read", { automationId: createId("trigger") }));
+      // Every automation door reads a hidden one as missing, the controls among them.
+      for (const action of ["pause", "resume", "archive", "run_now", "cancel_pending"] as const)
+        expect
+          .soft(
+            await ask("opensteer_automation_control", {
+              automationId: automation.trigger.id,
+              action,
+            }),
+            `${who} ${action}`,
+          )
+          .toEqual(
+            await ask("opensteer_automation_control", {
+              automationId: createId("trigger"),
+              action,
+            }),
+          );
+      // A visible automation's work in a hidden task is not shown: neither its Run nor its title.
+      const read = (await ask("opensteer_automation_read", {
+        automationId: ownAutomation.trigger.id,
+      })) as { value?: unknown };
+      expect.soft(read.value, who).toBeDefined();
+      expect.soft(JSON.stringify(read.value), who).not.toContain(turn.run.id);
+      expect.soft(JSON.stringify(read.value), who).not.toContain("From the channel");
+    }
+    // A task the pass created for the person reads as any task of theirs: nothing is hidden.
+    const ordinary = (await lastService!.callTool(
+      "",
+      "opensteer_task_list",
+      { limit: 50 },
+      { caller: passTaskCaller, operationKey: "tools-pass-task-list" },
+    )) as { readonly tasks: readonly { readonly id: string }[] };
+    expect(ordinary.tasks.map(({ id }) => id)).toContain(fromStrangers.id);
+    // The person's own agents still see their tasks as before.
+    const ownRun = await f.enqueueHumanTrigger({
+      content: [{ type: "text", text: "Look around" }],
+      idempotencyKey: "tools-own-run",
+      requestedBy: base.userId,
+      threadId: own.id,
+    });
+    const ownCaller = await runCaller(f, base, ownRun.run.id, ownRun.command.id, own.id);
+    const ownListed = (await lastService!.callTool(
+      "",
+      "opensteer_task_list",
+      { limit: 50 },
+      { caller: ownCaller, operationKey: "tools-own-list" },
+    )) as { readonly tasks: readonly { readonly id: string }[] };
+    expect(ownListed.tasks.map(({ id }) => id)).toContain(fromStrangers.id);
+  });
+
   it("lists what a light pass must read, with no old wakes, and skips an idle wake", async ({
     storeFixture: f,
   }) => {
@@ -1527,6 +2030,7 @@ describeStore("managed memory passes", (it) => {
     expect(
       (
         await f.triggers.listForOwner({
+          reader: personTaskReader,
           ownerId: base.userId,
           systemRole: "memory-light",
         })

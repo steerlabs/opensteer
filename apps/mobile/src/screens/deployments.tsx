@@ -1,3 +1,4 @@
+import { homePickerReason } from "./settings-home-model.js";
 import { cloudComputerWebsite } from "@opensteer/client/computers";
 import { useCloudComputer } from "@opensteer/client/react";
 import { useCopy } from "../ui/copy-mark.js";
@@ -88,7 +89,7 @@ import { DeploymentMenu } from "./deployment-menu.js";
 import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
-import { useCloudComputerIds, useWorkBadges } from "./work-home.js";
+import { useCloudComputerIds } from "./cloud-computer-ids.js";
 import { deploymentsTitle } from "./deployments-title.js";
 
 const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus>([
@@ -109,8 +110,6 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
   readonly onRemove: (row: DeploymentRow) => void;
   readonly onSignOut: (row: DeploymentRow) => void;
   readonly row: DeploymentRow;
-  /** "Work · {organization}" when an organization pays for and governs this Home. */
-  readonly work?: string | undefined;
   /** The Account says this Home is an Opensteer Cloud Computer. */
   readonly cloud?: boolean;
 }): ReactNode {
@@ -142,12 +141,6 @@ export const DeploymentListRow = memo(function DeploymentListRow(props: {
     <View style={styles.copy}>
       {/* A Home's name wraps: cut to "Mock…" at a large text size, two Homes read alike. */}
       <AppText role="title">{row.name}</AppText>
-      {/* Every line under the name is a sentence or a name a person reads whole: none is cut. */}
-      {props.work ? (
-        <AppText role="caption" tone="muted">
-          {props.work}
-        </AppText>
-      ) : null}
       <View style={styles.statusLine}>
         <StatusDot
           live={row.status === "connecting" || row.status === "reconnecting"}
@@ -419,9 +412,10 @@ export function DeploymentsScreen(): ReactNode {
   const { account, directory, rows, selection } = useMobileState();
   const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId ?? null;
   const attention = useOtherComputersAttention(rows, selection.deploymentId);
-  const workBadges = useWorkBadges();
   const cloudIds = useCloudComputerIds();
   const switching = route.name === "DeploymentSwitcher";
+  // The Settings page that sent a person here, said in one sentence above the list.
+  const opening = (route.params as { readonly opening?: string } | undefined)?.opening;
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
   const [refreshing, setRefreshing] = useState(false);
@@ -729,6 +723,11 @@ export function DeploymentsScreen(): ReactNode {
           ) : undefined
         }
       >
+        {switching && opening ? (
+          <AppText role="secondary" tone="muted">
+            {homePickerReason(opening)}
+          </AppText>
+        ) : null}
         {failure === null ? null : <ActionLine line={failure} onDismiss={() => setFailure(null)} />}
         {identity === null ? null : (
           <RowGroup>
@@ -753,7 +752,6 @@ export function DeploymentsScreen(): ReactNode {
               onRemove={confirmRemove}
               onSignOut={confirmSignOut}
               row={row}
-              work={workBadges.get(row.deploymentId)}
               cloud={cloudIds.has(row.deploymentId)}
             />
           ))}

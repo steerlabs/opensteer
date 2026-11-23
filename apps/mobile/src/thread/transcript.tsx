@@ -1892,7 +1892,7 @@ function RunOutcome(props: {
           </AppText>
           {run.error === null ? null : (
             <AppText role="secondary" selectable tone="soft">
-              {run.error.message}
+              {run.error.ownerMessage ?? run.error.message}
             </AppText>
           )}
           {run.error?.retryable === true ? (

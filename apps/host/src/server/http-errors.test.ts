@@ -19,6 +19,8 @@ describe("normalizeHostError", () => {
       error: {
         code: "bad_request",
         message: "Request is invalid: input.source.schedule.at: Invalid ISO datetime",
+        // Marked, so an app never puts the validator's report in front of a person.
+        reason: "invalid-request",
         retryable: false,
       },
       status: 400,
@@ -30,6 +32,7 @@ describe("normalizeHostError", () => {
       error: {
         code: "bad_request",
         message: "Request contains invalid JSON",
+        reason: "invalid-request",
         retryable: false,
       },
       status: 400,

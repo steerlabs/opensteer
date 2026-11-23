@@ -260,8 +260,9 @@ export function LineFooter({ footer }: { readonly footer: NativeSettingsFooter }
     </Text>
   );
   if (link === null) return text;
+  // The sentence above its link: at the largest text size neither squeezes the other.
   return (
-    <HStack alignment="firstTextBaseline" spacing={6}>
+    <VStack alignment="leading" spacing={2}>
       {text}
       <Button onPress={link.onPress} modifiers={[buttonStyle("plain")]}>
         <Text
@@ -273,6 +274,6 @@ export function LineFooter({ footer }: { readonly footer: NativeSettingsFooter }
           {link.label}
         </Text>
       </Button>
-    </HStack>
+    </VStack>
   );
 }

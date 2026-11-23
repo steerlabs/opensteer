@@ -40,8 +40,7 @@ async function makeEd25519Jwk(kid: string) {
 }
 
 describe("agent directory mutations and signed GET route", () => {
-  it("bumps revision monotonically on add, update, and remove and enforces invariants", async () => {
-    const errandKey = await makeEd25519Jwk("errand-1");
+  it("bumps revision monotonically on add, update, and remove and enforces invariants", () => {
     let state: AgentDirectorySnapshot = { revision: 1, entries: [] };
 
     const afterPlatform = applyAgentDirectoryChange(
@@ -59,22 +58,16 @@ describe("agent directory mutations and signed GET route", () => {
     expect(afterPlatform.revision).toBe(2);
     state = { revision: afterPlatform.revision, entries: afterPlatform.entries };
 
-    const afterEmbedder = applyAgentDirectoryChange(
+    const afterSecond = applyAgentDirectoryChange(
       state,
       {
         kind: "add",
-        input: {
-          id: "errand",
-          displayName: "Errand",
-          origins: ["https://errand.example"],
-          keys: { keys: [errandKey.jwk] },
-          embedsVia: ["agentpay"],
-        },
+        input: { id: "errand", displayName: "Errand", origins: ["https://errand.example"] },
       },
       fixedNow,
     );
-    expect(afterEmbedder.revision).toBe(3);
-    state = { revision: afterEmbedder.revision, entries: afterEmbedder.entries };
+    expect(afterSecond.revision).toBe(3);
+    state = { revision: afterSecond.revision, entries: afterSecond.entries };
 
     // Duplicate origin across entries is refused.
     expect(() =>
@@ -92,10 +85,22 @@ describe("agent directory mutations and signed GET route", () => {
       ),
     ).toThrow(/Duplicate directory origin/u);
 
-    // Removing a platform still referenced by embedsVia is refused.
+    // An entry is a name and its origins: keys and pairings are no longer accepted.
     expect(() =>
-      applyAgentDirectoryChange(state, { kind: "remove", id: "agentpay" }, fixedNow),
-    ).toThrow(/Unknown platform entry agentpay/u);
+      applyAgentDirectoryChange(
+        state,
+        {
+          kind: "update",
+          id: "errand",
+          input: {
+            displayName: "Errand",
+            origins: ["https://errand.example"],
+            embedsVia: ["agentpay"],
+          },
+        },
+        fixedNow,
+      ),
+    ).toThrow();
 
     // Updating an entry bumps revision.
     const afterUpdate = applyAgentDirectoryChange(
@@ -103,11 +108,7 @@ describe("agent directory mutations and signed GET route", () => {
       {
         kind: "update",
         id: "errand",
-        input: {
-          displayName: "Errand App",
-          origins: ["https://errand.example"],
-          keys: { keys: [errandKey.jwk] },
-        },
+        input: { displayName: "Errand App", origins: ["https://errand.example"] },
       },
       fixedNow,
     );
@@ -115,7 +116,6 @@ describe("agent directory mutations and signed GET route", () => {
     expect(afterUpdate.entry?.displayName).toBe("Errand App");
     state = { revision: afterUpdate.revision, entries: afterUpdate.entries };
 
-    // Once embedsVia is cleared, removing agentpay succeeds and bumps revision.
     const afterRemove = applyAgentDirectoryChange(
       state,
       { kind: "remove", id: "agentpay" },

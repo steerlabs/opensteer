@@ -4,14 +4,13 @@ import {
   connectionModeDescriptions,
   agentClaim,
   agentConsentHeading,
-  agentWhoOriginLine,
+  agentWhoOriginParts,
+  phoneSentence,
   toggleDraftResource,
   workWords,
   agentBrowserOptions,
   agentHomeName,
   agentWords,
-  workHomeMark,
-  withinWorkPolicy,
   answerAgentConnection,
   connectedAgentIdentity,
   connectionDestination,
@@ -23,12 +22,13 @@ import {
   type AgentGrantDraft,
   type HostClient,
   type HostSnapshot,
+  type SentencePart,
+  agentSentence,
 } from "@opensteer/client/host";
 import {
   useAgentAppOptions,
   useAgentPluginOptions,
   useHostSelector,
-  useWorkPolicy,
 } from "@opensteer/client/react";
 import type { ThreadAccessMode } from "@opensteer/core";
 import type { AgentConnectionConsent } from "@opensteer/protocol";
@@ -68,7 +68,7 @@ export function AgentAuthorizationScreen({ route }: Props): ReactNode {
 type Load =
   | { readonly kind: "loading" }
   | { readonly kind: "ready"; readonly consent: AgentConnectionConsent }
-  | { readonly kind: "expired"; readonly agent: string | null }
+  | { readonly kind: "expired" }
   | { readonly kind: "answered" }
   | { readonly kind: "failed" };
 
@@ -98,7 +98,7 @@ function AgentAuthorization(props: {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const grantsAvailable = load.kind === "ready" && load.consent.grantsAvailable === true;
   const [label, setLabel] = useState("");
-  const [pickedMode, setMode] = useState<ThreadAccessMode>("approval-required");
+  const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
   const [draft, setDraft] = useState<AgentGrantDraft | null>(null);
   const [sheet, setSheet] = useState<AgentGrantSheet | null>(null);
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
@@ -108,8 +108,6 @@ function AgentAuthorization(props: {
   // A retried approval reuses the profile the first attempt created.
   const createdProfile = useRef<string | null>(null);
   const mounted = useRef(true);
-  // A work Home's ceiling is known before any choice is offered, so none is offered then refused.
-  const workPolicy = useWorkPolicy(host);
   const apps = useAgentAppOptions(host, sheet === "apps");
   const plugins = useAgentPluginOptions(host, sheet === "plugins");
   useEffect(() => {
@@ -132,7 +130,7 @@ function AgentAuthorization(props: {
         if (controller.signal.aborted) return;
         setLoad(
           classifyClientFailure(failure).code === "not_found"
-            ? { kind: "expired", agent: null }
+            ? { kind: "expired" }
             : { kind: "failed" },
         );
       });
@@ -140,14 +138,12 @@ function AgentAuthorization(props: {
   }, [attempt, host, requestId]);
 
   const canCreate = browser.homes === null || browser.homes.length > 0;
-  const picked: AgentGrantDraft = draft ?? {
+  const chosen: AgentGrantDraft = draft ?? {
     scope: "selected",
     tasks: false,
     resources: [],
     newProfile: canCreate ? { homeRunnerId: browser.defaultHome } : null,
   };
-  // A newer policy version can rule out what was picked; Allow asks only for what it allows.
-  const { draft: chosen, mode } = withinWorkPolicy({ draft: picked, mode: pickedMode }, workPolicy);
   const close = () => navigation.goBack();
   const decide = async (approve: boolean) => {
     if (load.kind !== "ready" || busy !== null || (approve && !label.trim())) return;
@@ -199,7 +195,7 @@ function AgentAuthorization(props: {
       setBusy(null);
       const classified = classifyClientFailure(failure);
       if (classified.code === "conflict") setLoad({ kind: "answered" });
-      else if (classified.code === "not_found") setLoad({ kind: "expired", agent: null });
+      else if (classified.code === "not_found") setLoad({ kind: "expired" });
       // A lost answer may have decided it; only a refusal says it didn't.
       else
         setError(
@@ -230,15 +226,14 @@ function AgentAuthorization(props: {
       if (!mounted.current) return;
       setLoad(
         classifyClientFailure(failure).code === "not_found"
-          ? { kind: "expired", agent: null }
+          ? { kind: "expired" }
           : { kind: "failed" },
       );
     }
     setBusy(null);
   }
 
-  if (load.kind === "loading" || (load.kind === "ready" && workPolicy === undefined))
-    return <AgentAuthorizationForm kind="loading" />;
+  if (load.kind === "loading") return <AgentAuthorizationForm kind="loading" />;
   if (load.kind !== "ready")
     return (
       <AgentAuthorizationForm
@@ -247,9 +242,7 @@ function AgentAuthorization(props: {
         {...(load.kind === "expired"
           ? {
               title: agentWords("consent.edge.expired.title"),
-              detail: load.agent
-                ? agentWords("consent.edge.expired.detail", { agent: load.agent })
-                : agentWords("consent.edge.expired.detailUnnamed"),
+              detail: agentWords("consent.edge.expired.detailUnnamed"),
               onRetry: null,
             }
           : load.kind === "answered"
@@ -277,7 +270,8 @@ function AgentAuthorization(props: {
   );
   const who = identity.who;
   const heading = agentConsentHeading(who);
-  const agent = heading.mark ? heading.title : workWords("who.thisAgent");
+  // The Home's verified name is a name; with none, Opensteer's own words for it.
+  const agent: SentencePart = heading.mark ? { name: heading.title } : workWords("who.thisAgent");
   const disabled = busy !== null;
   const context = {
     agent,
@@ -287,7 +281,6 @@ function AgentAuthorization(props: {
     apps,
     plugins,
     disabled,
-    ...(workPolicy ? { workPolicy } : {}),
   };
   const openDevices = () => {
     setSheet(null);
@@ -301,7 +294,9 @@ function AgentAuthorization(props: {
         destination={who.verified ? null : connectionDestination(consent.redirectUri)}
         error={error}
         finePrint={
-          grantsAvailable ? agentWords("consent.finePrint", { agent }) : agentAuthorizationFinePrint
+          grantsAvailable
+            ? phoneSentence(agentSentence("consent.finePrint", { agent }))
+            : agentAuthorizationFinePrint
         }
         label={label}
         mark={
@@ -338,16 +333,18 @@ function AgentAuthorization(props: {
                   mode,
                   disabled,
                   onMode: setMode,
-                  workPolicy: workPolicy ?? undefined,
                 }),
               ]
             : null
         }
         title={heading.title}
-        work={workHomeMark(workPolicy)?.badge ?? null}
         who={{
-          heading: heading.claim ?? workWords("who.verified"),
-          origins: who.verified ? who.origins.map(agentWhoOriginLine) : [],
+          heading: heading.claimParts
+            ? phoneSentence(heading.claimParts)
+            : workWords("who.verified"),
+          origins: who.verified
+            ? who.origins.map((origin) => phoneSentence(agentWhoOriginParts(origin)))
+            : [],
           verified: who.verified,
           warning: who.warning,
         }}

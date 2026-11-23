@@ -275,7 +275,7 @@ export function mockComputerUseTurn(options: {
     ...steps,
     {
       author: options.agent,
-      body: "Done — I clicked the Opensteer organization in Slack. It’s now showing the `#openai-yc-alumni-6` channel.",
+      body: "Done — I clicked the Opensteer workspace in Slack. It’s now showing the `#openai-yc-alumni-6` channel.",
       createdAt: at("29:37.000"),
       id: mockComputerUseMessageId(runId, "reply"),
       kind: "message",

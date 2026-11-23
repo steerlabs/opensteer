@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { outsideName } from "@opensteer/shared/outsideName";
 import {
   OpensteerError,
   TabIdSchema,
@@ -776,6 +777,7 @@ export class ChromeSharedTabs {
   }
 
   #share(source: ChromeSource, info: BrowserSourceTabShared): void {
+    info = { ...info, title: outsideName(info.title, 1024) };
     const old = this.#shares.get(info.shareId);
     if (old) {
       if (

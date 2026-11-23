@@ -3,16 +3,6 @@ import type {
   AgentDirectoryStateTable,
 } from "../agent-directory/tables.js";
 import type {
-  OrganizationTable,
-  OrganizationMemberTable,
-  OrganizationInvitationTable,
-  OrganizationCheckoutTable,
-  OrganizationSeatChangeTable,
-  WorkAssignmentTable,
-  WorkAuditRecordTable,
-  WorkAuditBatchTable,
-} from "../organizations/tables.js";
-import type {
   CloudComputerCheckoutTable,
   CloudComputerBackupTargetTable,
   CloudComputerBackupNamespaceTable,
@@ -527,14 +517,6 @@ export interface NotificationDeliveryTable {
 export interface ControlPlaneDatabaseSchema {
   agentDirectoryState: AgentDirectoryStateTable;
   agentDirectoryEntries: AgentDirectoryEntryTable;
-  organizations: OrganizationTable;
-  organizationMembers: OrganizationMemberTable;
-  organizationInvitations: OrganizationInvitationTable;
-  organizationCheckouts: OrganizationCheckoutTable;
-  organizationSeatChanges: OrganizationSeatChangeTable;
-  workAssignments: WorkAssignmentTable;
-  workAuditRecords: WorkAuditRecordTable;
-  workAuditBatches: WorkAuditBatchTable;
   cloudComputers: CloudComputerTable;
   browserPoolHosts: BrowserPoolHostTable;
   browserPoolSlots: BrowserPoolSlotTable;

@@ -7,7 +7,6 @@ import {
 import type { PersonalResourceRevisions } from "@opensteer/protocol/resources";
 import type { TranscriptItem, TranscriptOrderCursor } from "@opensteer/protocol/transcript";
 import { MockPersonalHost, MockPersonalSocket } from "../mock/mock-personal-host.js";
-import { mockWorkPolicy } from "../mock/mock-work-home.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HttpHostClient } from "./host-session-client.js";
 import type { ClientLifecycle } from "./lifecycle.js";
@@ -1132,51 +1131,6 @@ test("bounds explicitly loaded bodies", () => {
   for (let index = 0; index < 10; index++) bodies.put(String(index), big);
   expect(bodies.get("0", "1")).toBeUndefined();
   expect(bodies.get("9", "1")).toBe(big);
-});
-
-test("installs and refreshes work policy from the synced shell without a shell RPC", async () => {
-  const first = mockWorkPolicy("open");
-  const mock = new MockHostClient({ latencyMs: 0, workPolicy: first });
-  const host = new MockPersonalHost(mock);
-  const shellReads = vi.fn();
-  const client = new HttpHostClient({
-    baseUrl: "http://scoped-host",
-    capabilities: [],
-    fetch: (input, init) => {
-      if (new URL(String(input)).pathname.endsWith("/personal.shell.get")) shellReads();
-      return host.fetch(input, init);
-    },
-    webSocketFactory: host.connect,
-  });
-  try {
-    expect(client.getSnapshot().effectiveWorkPolicy).toBeUndefined();
-    await client.load();
-    expect(client.getSnapshot().effectiveWorkPolicy).toEqual(first);
-    const next = { ...mockWorkPolicy("strict"), appliedRevision: first.appliedRevision + 1 };
-    const socket = [...host.sockets][0]!;
-    const throughSequence = String(mock.getSnapshot().revision + 1);
-    const attach = socket.sent
-      .map((raw) => JSON.parse(raw) as ScopedClientMessage)
-      .findLast(
-        (frame) =>
-          frame.type === "client.attach" ||
-          (frame.type === "client.subscribe" && frame.scope.kind === "shell"),
-      );
-    if (!attach || !("generation" in attach)) throw new Error("Expected the shell subscription");
-    socket.deliver({
-      type: "host.snapshot",
-      subscriptionId: "shell",
-      scope: shellScope,
-      generation: attach.generation,
-      throughSequence,
-      snapshot: { ...mock.scopedShell(), effectiveWorkPolicy: next },
-    });
-    expect(client.getSnapshot().effectiveWorkPolicy).toEqual(next);
-    expect(shellReads).not.toHaveBeenCalled();
-  } finally {
-    client.dispose();
-    host.dispose();
-  }
 });
 
 test("carries a scoped task update into held rows and drops old task pages after a cursor reset", async () => {
@@ -2827,6 +2781,119 @@ test("opening a task reads each follow-up once, beside its snapshot, and the fam
       "thread.browserUsage.get",
       "triggers.list",
     ]);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a conversation's browsers that could not be read say so in the app's words, never the failure's text", async () => {
+  const calls: string[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = new URL(String(input));
+    const name = url.pathname.slice("/v1/rpc/".length);
+    calls.push(name);
+    if (name === "thread.assignments.list")
+      return Response.json({
+        ok: true,
+        data: {
+          assignments: [],
+          threadId,
+          window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
+    if (name === "thread.browserUsage.get")
+      return Response.json(
+        {
+          ok: false,
+          error: {
+            code: "bad_request",
+            message: "Request is invalid: runIds.0: Invalid string",
+            reason: "invalid-request",
+            retryable: false,
+          },
+        },
+        { status: 400 },
+      );
+    return Response.json(
+      { ok: false, error: { code: "not_found", message: "Unavailable", retryable: false } },
+      { status: 404 },
+    );
+  });
+  let socket: MockPersonalSocket;
+  let detailSent = 0;
+  const connect = () =>
+    (socket = new MockPersonalSocket((raw) => {
+      const message = JSON.parse(raw) as ScopedClientMessage;
+      const deliverDetail = (
+        subscription: Pick<
+          Extract<ScopedClientMessage, { type: "client.subscribe" }>,
+          "scope" | "subscriptionId" | "generation"
+        >,
+      ) => {
+        const address = {
+          scope: subscription.scope,
+          subscriptionId: subscription.subscriptionId,
+          generation: subscription.generation,
+          throughSequence: "1",
+        };
+        detailSent++;
+        socket.deliver({
+          ...address,
+          type: "host.snapshot",
+          snapshot: {
+            thread: detailThread(task),
+            items: [item],
+            activeItems: [],
+            pendingRequests: [],
+            nextBefore: null,
+          },
+        } as never);
+        socket.deliver({ ...address, type: "host.synchronized" } as never);
+      };
+      queueMicrotask(() => {
+        if (message.type === "client.subscribe") deliverDetail(message);
+        if (message.type !== "client.attach") return;
+        const shell = {
+          scope: shellScope,
+          subscriptionId: "shell" as const,
+          generation: message.generation,
+          throughSequence: "1",
+        };
+        socket.deliver({
+          ...shell,
+          type: "host.snapshot",
+          snapshot: {
+            deploymentId,
+            viewerId,
+            epoch,
+            session,
+            tasks: [task],
+            visits: [],
+            attention: [],
+            counts,
+            ...shellLists,
+          },
+        });
+        socket.deliver({ ...shell, type: "host.synchronized" });
+      });
+    }));
+  const client = new HttpHostClient({
+    baseUrl: "http://scoped-host",
+    fetch,
+    webSocketFactory: connect,
+    capabilities: ["task-family-v1"],
+  });
+  try {
+    await client.load();
+    calls.length = 0;
+    client.activateThread(threadId);
+    await vi.waitFor(() => expect(detailSent).toBe(1));
+    await vi.waitFor(() =>
+      expect(client.getSnapshot().browserUsage?.[threadId]?.loading).toBe(false),
+    );
+    expect(client.getSnapshot().browserUsage?.[threadId]?.error).toBe(
+      "Could not load this conversation’s browsers.",
+    );
   } finally {
     client.dispose();
   }

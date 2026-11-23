@@ -4,22 +4,27 @@ import {
   operationRequestView,
   pageSiteLabel,
   sessionAgent,
+  sessionAgentPart,
   sessionSlotFromHome,
   sessionTaskRow,
   sessionTaskView,
   tabAgentLine,
+  tabNeedsYouParts,
+  workSentence,
   workWords,
   type AgentSessionSlot,
   type AgentWho,
   type HostSnapshot,
   type OperationRequestView,
   type RequestView,
+  type SentencePart,
   type SessionAgent,
   type SessionTaskView,
+  phoneSentence,
 } from "@opensteer/client/host";
 import type { AgentOperationView } from "@opensteer/core";
 import { isAddress } from "../ui/address-words.js";
-import { sentenceAround, type SentencePart } from "../ui/sentence-parts.js";
+import { sentenceAround, type SentencePart as AddressSentencePart } from "../ui/sentence-parts.js";
 
 type AgentWorkSource = Pick<HostSnapshot, "threads">;
 
@@ -112,6 +117,9 @@ export function placeSessionLine(
   readonly agent: SessionAgent;
   readonly threadId: string;
   readonly line: string;
+  readonly lineParts: readonly SentencePart[];
+  readonly needsYouParts: readonly SentencePart[];
+  readonly stopLabelParts: readonly SentencePart[];
   readonly stop: { readonly sessionId: string } | null;
 } | null {
   if (input.tabId === null) return null;
@@ -124,18 +132,23 @@ export function placeSessionLine(
       sharedFromChrome: input.sharedFromChrome === true,
     });
     if (said === null) continue;
+    const agent = sessionAgent(slot.connection);
     return {
-      agent: sessionAgent(slot.connection),
+      agent,
       threadId: occupant.threadId,
+      needsYouParts: tabNeedsYouParts(slot.connection),
+      stopLabelParts: workSentence("work.stop", { agent: sessionAgentPart(agent) }),
       ...said,
     };
   }
   return null;
 }
 
-/** "Says it is Grok" for a self-given name; the Home's own heading otherwise. */
+/** "Says it is “Grok”" for a self-given name; the Home's own heading otherwise. */
 export function whoHeading(who: AgentWho): string {
-  return who.selfAsserted ? workWords("who.saysItIs", { name: who.heading }) : who.heading;
+  return who.selfAsserted
+    ? phoneSentence(workSentence("who.saysItIs", { name: { name: who.heading } }))
+    : who.heading;
 }
 
 /** The identity lines a consent screen or an agent's page shows, in order. */
@@ -154,7 +167,7 @@ export function whoLines(
   const line = agentWithdrawnLine(who);
   return {
     heading: whoHeading(who),
-    detail: who.detail,
+    detail: phoneSentence(who.detailParts),
     verified: who.verified,
     withdrawn: line === null ? null : { line, detail: workWords("who.withdrawnDetail") },
     warning: options.consent ? who.warning : null,
@@ -173,16 +186,18 @@ export function sourceLines(view: Pick<SessionTaskView, "agent" | "header">): {
   readonly short: string;
   /** The title names a host, so it keeps that end when it does not fit. */
   readonly endsInHost: boolean;
-  readonly whole: readonly SentencePart[];
+  readonly whole: readonly AddressSentencePart[];
 } {
   const who = view.agent.who;
   const words = { endsInHost: false, short: view.header, whole: [view.header] };
   if (who === null || who.local) return words;
   const header = (origin: string) => workWords("work.header", { origin });
-  // A pair's detail is a sentence: the title names the platform that holds the access.
+  // When detail is a sentence rather than an origin, the title falls back to a verified origin.
   const origin = isAddress(who.detail)
     ? who.detail
-    : (who.origins.find(({ role }) => role === "platform")?.origin ?? null);
+    : (who.origins.find(({ role }) => role === "verified")?.origin ??
+      who.origins[0]?.origin ??
+      null);
   const host = origin === null ? null : pageSiteLabel(origin, { origin: true });
   return {
     endsInHost: host !== null,

@@ -22,8 +22,14 @@ import { runProviderRetryMigrationName } from "../packages/database/src/personal
 import { agentGrantsMigrationName } from "../packages/database/src/agent-grants-migration.js";
 import { agentSessionsMigrationName } from "../packages/database/src/agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "../packages/database/src/agent-directory-migration.js";
-import { workHomeMigrationName } from "../packages/database/src/work-home-migration.js";
+import {
+  removeOrganizationsMigrationName,
+  workHomeMigrationName,
+} from "../packages/database/src/one-person-home-migration.js";
+import { removePlatformVerificationMigrationName } from "../packages/database/src/platform-verification-removal-migration.js";
 import { browserPoolMigrationName } from "../packages/database/src/browser-pool-migration.js";
+import { bridgeConnectionsMigrationName } from "../packages/database/src/bridge-connections-migration.js";
+import { chatRoutesEndMigrationName } from "../packages/database/src/chat-routes-end-migration.js";
 import { OpensteerStore } from "../packages/database/src/store.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
 import { TabStore } from "../packages/database/src/tab-store.js";
@@ -256,6 +262,10 @@ test("carries a person's work from a database the released Home last migrated th
       workHomeMigrationName,
       browserPoolMigrationName,
       "0107_needs_you_counts_requests",
+      bridgeConnectionsMigrationName,
+      chatRoutesEndMigrationName,
+      removeOrganizationsMigrationName,
+      removePlatformVerificationMigrationName,
       "0114_thread_inputs_written_by_connection",
       "0115_provider_session_person_lineage",
     ]);

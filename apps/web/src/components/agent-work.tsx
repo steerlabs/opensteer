@@ -1,14 +1,15 @@
 import {
+  isolatedPlainSentence,
   sessionSlotFromHome,
   agentSessionSlot,
   mutationIdempotencyKey,
   operationRequestView,
   requestDecision,
   requestsWaitingOn,
-  sessionAgent,
   sessionTaskRow,
   sessionTaskView,
   tabAgentLine,
+  tabNeedsYouParts,
   threadInDirectory,
   type OperationGlyph,
   type OperationRequestView,
@@ -24,6 +25,7 @@ import { useCallback, useMemo, useState } from "react";
 import { ActionLine } from "./action-line.js";
 import { useOptionalShell, useShell } from "./app-shell.js";
 import { Icon, type IconName } from "./icon.js";
+import { SentenceText } from "../ui/address-text.js";
 import { AgentMark } from "./settings/agent-mark.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { requestAnswer, useAction } from "./use-action.js";
@@ -85,19 +87,23 @@ export function SessionTaskBar({
       <div className="session-bar__row">
         <AgentMark identity={view.agent} />
         <span className="session-bar__body">
-          <span className="session-bar__status">{view.statusLine}</span>
-          <span className="session-bar__note">{view.noComposer}</span>
+          <span className="session-bar__status">
+            <SentenceText parts={view.statusLineParts} />
+          </span>
+          <span className="session-bar__note">
+            <SentenceText parts={view.noComposerParts} />
+          </span>
         </span>
         {view.stop ? (
           <button
             className="btn btn--small session-bar__stop"
             disabled={stop.running}
             onClick={() => void stop.run(undefined)}
-            title={view.stop.detail}
+            title={isolatedPlainSentence(view.stop.detailParts)}
             type="button"
           >
             <Icon name="stop" />
-            {view.stop.label}
+            <SentenceText parts={view.stop.labelParts} />
           </button>
         ) : null}
       </div>
@@ -205,7 +211,7 @@ export function OperationRequestPanel({
   };
   return (
     <fieldset
-      aria-label={view.listTitle}
+      aria-label={isolatedPlainSentence(view.listTitleParts)}
       className="action-panel operation-request"
       data-request-id={request.id}
       disabled={disabled}
@@ -220,7 +226,9 @@ export function OperationRequestPanel({
       ) : null}
       {view.agentWords ? (
         <blockquote className="operation-request__says">
-          <span className="operation-request__says-label">{view.agentWords.label}</span>
+          <span className="operation-request__says-label">
+            <SentenceText parts={view.agentWords.labelParts} />
+          </span>
           <span className="operation-request__says-text">{view.agentWords.text}</span>
         </blockquote>
       ) : null}
@@ -257,11 +265,13 @@ export function OperationRequestPanel({
               {view.answers.allow.label}
             </button>
           </div>
-          <p className="operation-request__after">{view.after}</p>
+          <p className="operation-request__after">
+            <SentenceText parts={view.afterParts} />
+          </p>
         </>
       ) : (
         <p className="operation-request__settled" role="status">
-          {view.settled}
+          {view.settledParts ? <SentenceText parts={view.settledParts} /> : null}
         </p>
       )}
       {answer.line ? <ActionLine line={answer.line} wrap /> : null}
@@ -293,10 +303,12 @@ export function TabAgentStatus({
   const waiting =
     occupant && line.stop ? requestsWaitingOn(snapshot.waitingRequests, occupant.threadId) : [];
   const asked = waiting[0]?.request ?? null;
-  const needsYou = workWords("tab.needsYou", { agent: sessionAgent(slot?.connection).name });
+  const needsYou = isolatedPlainSentence(tabNeedsYouParts(slot?.connection));
   return (
     <div className={`tab-agent-status${asked ? " tab-agent-status--needs-you" : ""}`} role="status">
-      <span>{line.line}</span>
+      <span>
+        <SentenceText parts={line.lineParts} />
+      </span>
       {asked && occupant && workspace ? (
         <button
           aria-label={`${needsYou}. ${workWords("tab.answer")}`}

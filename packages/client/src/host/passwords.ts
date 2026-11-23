@@ -589,7 +589,7 @@ export function passwordsElsewhere(input: {
   readonly homeName: string;
   readonly personal: boolean;
   /**
-   * The Home is on the person's Mac. False for a Cloud Computer, a work Home or a server:
+   * The Home is on the person's Mac. False for a Cloud Computer or a server:
    * there is no Passwords there, and a site is signed in to in that Home's own browser.
    */
   readonly onMac?: boolean;

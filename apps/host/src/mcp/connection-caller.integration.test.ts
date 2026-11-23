@@ -1,4 +1,8 @@
 import { PluginAgentStore, TriggerStore } from "@opensteer/database";
+import { assertEngineMayRun } from "@opensteer/harness";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PluginExecutions } from "../plugins/plugin-executions.js";
 import { pluginCaller } from "../plugins/plugin-authority.js";
 import type { RunCaller } from "./agent-caller.js";
@@ -41,6 +45,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, vi } from "vitest";
 import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
+import { readableTabTasks } from "../tabs/tab-authority.js";
 import { connectionCredentialPrefix } from "./connections/connection-authenticator.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
 import {
@@ -135,6 +140,71 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       agent.client.callTool({ name: "discover", arguments: { id } });
     expect((await read(theirs)).structuredContent).toMatchObject({ item: { id: theirs } });
     expect(await read(direct.session.threadId)).toEqual(await read(createId("thread")));
+  });
+
+  it("refuses with Everything any change to another connected agent's task, the same way whatever its state or mode", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("other-agent-task");
+    const url = await serveMcp(storeFixture);
+    const bold = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "everything" },
+    });
+    const cautious = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "approval-required",
+      grant: { scope: "everything" },
+    });
+    const other = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const theirs = await createTask(other, f, "theirs");
+    // It can read it: Everything reads every task, so nothing about it is hidden.
+    const read = await bold.client.callTool({ name: "discover", arguments: { id: theirs } });
+    expect(read.structuredContent).toMatchObject({ item: { id: theirs } });
+    // A change is refused before its state (idle) or its mode (stronger than Supervised) is
+    // looked at, in the same body for every caller and every write tool.
+    const interrupt = (agent: typeof bold) =>
+      agent.client.callTool({ name: "opensteer_task_interrupt", arguments: { taskId: theirs } });
+    const steer = (agent: typeof bold) =>
+      agent.client.callTool({
+        name: "opensteer_task_send",
+        arguments: { taskId: theirs, message: "More", delivery: "steer", operationKey: "steer" },
+      });
+    const idle = await interrupt(bold);
+    expect(idle.isError).toBe(true);
+    expect(await interrupt(cautious)).toEqual(idle);
+    expect(await steer(bold)).toEqual(idle);
+    expect(await steer(cautious)).toEqual(idle);
+    expect(JSON.stringify(idle)).not.toContain("access mode");
+  });
+
+  it("shows a disconnected agent no task in a tab's users, not even its own task's", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("tab-users-ended");
+    const url = await serveMcp(storeFixture);
+    const agent = await connection(storeFixture.store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const own = await createTask(agent, f, "tab-users-own");
+    const actor = {
+      kind: "connection",
+      caller: { connectionId: agent.id, userId: f.userId },
+    } as never;
+    expect(await readableTabTasks(actor, [own, f.threadId], storeFixture.database)).toEqual(
+      new Set([own]),
+    );
+    await agent.revoke();
+    expect(await readableTabTasks(actor, [own, f.threadId], storeFixture.database)).toEqual(
+      new Set(),
+    );
   });
 
   it("keeps an approval-required connection out of full-access changes", async ({
@@ -758,7 +828,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       requestedBy: f.userId,
       threadId: created,
       runId: pendingRun.id,
-      auditOwnerStop: true,
       idempotencyKey: "person-pauses-created-task",
     });
     const newTaskQueue = () =>
@@ -2851,5 +2920,188 @@ describeStore("connection grants and lineage", (it) => {
         .where("type", "=", "run.interrupt")
         .execute(),
     ).toEqual([{ runId: run.id }]);
+  });
+
+  it("gives a connected agent identical neutral bytes for every engine refusal while showing the person the exact reason", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("engine-refusal-audiences");
+    const url = await serveMcp(storeFixture);
+    const { database, store } = storeFixture;
+    const agent = await connection(store, url, {
+      userId: f.userId,
+      accessMode: "full-access",
+      grant: tasksOnly,
+    });
+    const root = await mkdtemp(join(tmpdir(), "opensteer-refusal-contract-"));
+    try {
+      const piHome = join(root, "pi-home");
+      await mkdir(join(piHome, ".pi", "agent"), { recursive: true });
+      await writeFile(
+        join(piHome, ".pi", "agent", "models.json"),
+        JSON.stringify({ providers: { corp: { apiKey: "!op read op://vault/key" } } }),
+      );
+      const codexHome = join(root, "codex-home");
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(join(codexHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+
+      const cases = [
+        {
+          engine: "pi",
+          context: {
+            environment: { HOME: piHome },
+            personalContext: true,
+            personLineage: false,
+            providerState: { kind: "ambient" as const },
+          },
+          expectedOwnerFragment: 'a "!" value in models.json or auth.json',
+        },
+        {
+          engine: "codex",
+          context: {
+            environment: { CODEX_HOME: codexHome },
+            personalContext: true,
+            personLineage: false,
+            providerState: { kind: "ambient" as const },
+          },
+          expectedOwnerFragment: 'cli_auth_credentials_store = "file"',
+        },
+        {
+          engine: "opencode",
+          context: { personalContext: true, personLineage: false },
+          expectedOwnerFragment:
+            "OpenCode is not yet verified to keep your settings out of tasks a connected agent or chat started",
+        },
+        {
+          engine: "antigravity",
+          context: { personalContext: true, personLineage: false },
+          expectedOwnerFragment:
+            "Antigravity is not yet verified to keep your settings out of tasks a connected agent or chat started",
+        },
+      ] as const;
+
+      const normalize = (value: unknown) =>
+        JSON.stringify(value)
+          .replace(/\b(?:thr|run|msg|itm|asg|psn|req|cmd)_[0-9a-f-]{36}\b/gu, "<ID>")
+          .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/gu, "<TS>");
+
+      const observedConnectionPayloads: string[] = [];
+      for (const testCase of cases) {
+        let caught: (Error & { code?: string; ownerMessage?: string }) | undefined;
+        try {
+          assertEngineMayRun(testCase.engine, testCase.context);
+        } catch (error) {
+          caught = error as Error & { code?: string; ownerMessage?: string };
+        }
+        expect(caught, testCase.engine).toBeDefined();
+        expect(caught!.code, testCase.engine).toBe("forbidden");
+
+        const created = await agent.client.callTool({
+          name: "opensteer_task_create",
+          arguments: {
+            title: "Same refusal task",
+            message: "Work on it",
+            operationKey: `refusal-case:${testCase.engine}`,
+          },
+        });
+        expect(created.isError, JSON.stringify(created.content)).not.toBe(true);
+        const taskId = ThreadIdSchema.parse(
+          (created.structuredContent as { taskId: string }).taskId,
+        );
+        const run = await queuedRun(storeFixture, taskId);
+        const execution = await startPersonalQueuedRunFixture(store, run.id);
+        await store.commitRunnerEvent({
+          runnerId: f.runnerId,
+          runnerBootId: execution.runnerBootId,
+          environmentId: f.environmentId,
+          event: pendingEvent({
+            type: "run.failed",
+            runId: run.id,
+            threadId: taskId,
+            ordinal: 1,
+            bindingGeneration: execution.bindingGeneration,
+            environmentId: f.environmentId,
+            data: {
+              status: "failed",
+              code: "forbidden",
+              message: caught!.message,
+              ...(caught!.ownerMessage ? { ownerMessage: caught!.ownerMessage } : {}),
+              retryable: false,
+            },
+          }),
+        });
+
+        const messagesRead = await agent.client.callTool({
+          name: "opensteer_task_read",
+          arguments: { taskId },
+        });
+        const activityRead = await agent.client.callTool({
+          name: "opensteer_task_read",
+          arguments: { taskId, view: "activity" },
+        });
+        const waited = await agent.client.callTool({
+          name: "opensteer_task_wait",
+          arguments: { taskId, timeoutMs: 2_000 },
+        });
+
+        // Person reads the exact reason in their task transcript card and task list preview.
+        const card = await database
+          .selectFrom("transcriptItems")
+          .select("view")
+          .where("id", "=", `run:${run.id}`)
+          .executeTakeFirstOrThrow();
+        expect(
+          (card.view as { failure?: { message?: string; ownerMessage?: string } }).failure,
+        ).toMatchObject({
+          message: "This engine is not available for this task.",
+          ownerMessage: expect.stringContaining(testCase.expectedOwnerFragment),
+        });
+        const threadRow = await database
+          .selectFrom("threads")
+          .select("failurePreview")
+          .where("id", "=", taskId)
+          .executeTakeFirstOrThrow();
+        expect(threadRow.failurePreview).toContain(testCase.expectedOwnerFragment);
+
+        // Enqueue a follow-up Run so we also observe what its engine context sees in `previousRun.failure`.
+        const followUp = await store.enqueueThreadInput({
+          requestedBy: f.userId,
+          threadId: taskId,
+          content: [{ type: "text", text: "Follow up" }],
+          source: { kind: "human" },
+          policy: "queue",
+          idempotencyKey: `refusal-followup:${testCase.engine}`,
+        });
+        const nextRunState = await store.loadRunThreadState({
+          runId: followUp.run!.id,
+          viewerId: f.userId,
+        });
+        const connectionBytes = normalize({ messagesRead, activityRead, waited, nextRunState });
+        observedConnectionPayloads.push(connectionBytes);
+
+        // Connected agent and follow-up Run see only the neutral refusal, never setup details.
+        expect(nextRunState.previousRun?.failure).toEqual({
+          code: "forbidden",
+          message: "This engine is not available for this task.",
+        });
+        expect(connectionBytes).toContain("This engine is not available for this task.");
+        for (const forbidden of [
+          "keyring",
+          "auth.json",
+          "models.json",
+          "codex login",
+          "OpenCode",
+          "Antigravity",
+          "shell command",
+        ]) {
+          expect(connectionBytes).not.toContain(forbidden);
+        }
+      }
+
+      // Byte-for-byte identical across Pi, Codex, OpenCode, and Antigravity.
+      expect(new Set(observedConnectionPayloads).size).toBe(1);
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
   });
 });

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentConnectionIdentityAtConsentViewSchema } from "@opensteer/control-plane-protocol";
 import {
   AgentGrantViewSchema,
+  RunIdSchema,
   ThreadAccessModeSchema,
   UserIdSchema,
   DeploymentIdSchema,
@@ -16,10 +17,12 @@ export const AgentConnectionIdSchema = z.string().regex(/^mcn_[0-9a-f-]{36}$/);
 /**
  * Where a connection stands. `revoked` holds from the moment authority ends;
  * `stopping` while handed-off work in its lineage has not yet confirmed it
- * ended; `stopped` once every one of them has.
+ * ended; `stopped` once every one of them has. `paused` is a chat whose account
+ * is paused: it holds what it receives and makes until it is back.
  */
 export const AgentConnectionStateSchema = z.enum([
   "active",
+  "paused",
   "expired",
   "revoked",
   "stopping",
@@ -28,11 +31,11 @@ export const AgentConnectionStateSchema = z.enum([
 export type AgentConnectionState = z.infer<typeof AgentConnectionStateSchema>;
 
 /**
- * How the Home words who asked, from what it could prove at consent: a verified embedder via a
- * verified platform, a verified platform, or the name the client gave itself.
+ * How the Home words who asked, from what it could prove at consent: verified by the origin it is
+ * reached at, or the name the client gave itself.
  */
 export const AgentConnectionIdentityPresentationSchema = z.object({
-  evidenceKind: z.enum(["platform-and-embedder", "platform", "unverified"]),
+  evidenceKind: z.enum(["verified", "unverified"]),
   verified: z.boolean(),
   selfAsserted: z.boolean(),
   heading: z.string().min(1).max(300),
@@ -40,7 +43,7 @@ export const AgentConnectionIdentityPresentationSchema = z.object({
   origins: z
     .array(
       z.object({
-        role: z.enum(["embedder", "platform", "redirect"]),
+        role: z.enum(["verified", "redirect"]),
         label: z.string().min(1).max(200),
         origin: z.string().max(2048),
       }),
@@ -51,6 +54,75 @@ export const AgentConnectionIdentityPresentationSchema = z.object({
 export type AgentConnectionIdentityPresentation = z.infer<
   typeof AgentConnectionIdentityPresentationSchema
 >;
+
+/** Who may message a bridge: the person's linked account only, or anyone in its one conversation. */
+export const BridgeSendersSchema = z.enum(["owner", "anyone"]);
+export type BridgeSenders = z.infer<typeof BridgeSendersSchema>;
+/** Why a chat ended, in the person's terms. */
+export const ChatEndedBySchema = z.enum(["you", "account", "computer"]);
+export type ChatEndedBy = z.infer<typeof ChatEndedBySchema>;
+export const AgentConnectionBridgeSchema = z.object({
+  accountId: z.string().min(1).max(255),
+  /** What the provider is called ("Slack", "iMessage"). */
+  provider: z.string().min(1).max(100),
+  conversationId: z.string().min(1).max(512).nullable(),
+  senders: BridgeSendersSchema,
+  /**
+   * What its grant may contain (core's `chatGrantShape`): whether everything may be chosen,
+   * which kinds of resource, and that Tasks is required. A screen offers only this.
+   */
+  grantShape: z
+    .object({
+      everything: z.boolean(),
+      resources: z.array(z.string().min(1).max(64)).max(16),
+      tasks: z.literal("required"),
+    })
+    .optional(),
+  /** The chat account it speaks through, by its display name: the Slack workspace's name. */
+  accountName: z.string().min(1).max(160).optional(),
+  /** The account's handle, where it has one (the Mac's iMessage address): an address, not a name. */
+  accountHandle: z.string().min(1).max(160).optional(),
+  /** The channel's name, for a chat in one channel; null for direct messages. */
+  conversationName: z.string().min(1).max(160).nullable().optional(),
+  /** The chat account's channel connection, which pausing and resuming act on. */
+  channelConnectionId: z.string().min(1).max(255).optional(),
+  /** Who "me" is on the account: the one identity linked to the person, or null. */
+  me: z
+    .object({
+      displayName: z.string().min(1).max(160),
+      externalUserId: z.string().min(1).max(512),
+    })
+    .nullable()
+    .optional(),
+  /** Why a paused chat is paused: the person paused it, or its account needs attention. */
+  // A value from a newer Home reads as not said, never as a list that can't be read.
+  pausedBy: z.enum(["you", "needs-attention"]).optional().catch(undefined),
+  /** What the account needs, when it needs attention, as the account reports it. */
+  pauseDetail: z.string().max(500).nullable().optional(),
+  /**
+   * What happens to a message sent to a paused chat: `kept`, it arrives when the chat is back
+   * (one more than an hour old is answered that it came too late); `lost`, it is not delivered.
+   */
+  pausedMessages: z.enum(["kept", "lost"]).optional().catch(undefined),
+  /** Why an ended chat ended; a cause from a newer Home reads as not said. */
+  endedBy: ChatEndedBySchema.optional().catch(undefined),
+  /** Replies whose delivery is not known: they may have been sent, and are never sent again. */
+  unknownReplies: z.number().int().nonnegative().optional(),
+  /** Its most recent tasks, newest first: its recent work, and what Stop can stop. */
+  tasks: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(255),
+        title: z.string().max(500),
+        running: z.boolean(),
+        /** The Run it is doing, which Stop interrupts; null when it runs none. */
+        runId: RunIdSchema.nullable(),
+      }),
+    )
+    .max(5)
+    .optional(),
+});
+export type AgentConnectionBridge = z.infer<typeof AgentConnectionBridgeSchema>;
 
 export const AgentConnectionSchema = z.object({
   id: AgentConnectionIdSchema,
@@ -69,7 +141,12 @@ export const AgentConnectionSchema = z.object({
       redirectOrigin: z.string().max(2048).nullable(),
     })
     .optional(),
-  state: AgentConnectionStateSchema.optional(),
+  /**
+   * Where it stands. A state from a newer Home is kept as it was said, so the row reads as
+   * unknown (`connectedAgentPhase`), never as active or ended, and the rest of the list still
+   * reads; nothing here may turn it into undefined, which means active.
+   */
+  state: z.union([AgentConnectionStateSchema, z.string().min(1).max(64)]).optional(),
   /** Contact was lost with work in its lineage mid-effect while it was being stopped. */
   lastActionUncertain: z.boolean().optional(),
   /** What to check: the Device, the task or tool, and when contact was lost. */
@@ -90,9 +167,16 @@ export const AgentConnectionSchema = z.object({
   verificationWithdrawnAt: z.iso.datetime({ offset: true }).optional(),
   identity: AgentConnectionIdentityPresentationSchema.optional(),
 
+  /**
+   * Present when this connection is a messaging bridge: reached through a chat, not over MCP.
+   * A bridge covers direct messages (`conversationId` null) or one named channel or group.
+   */
+  bridge: AgentConnectionBridgeSchema.optional(),
+
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),
-  expiresAt: z.iso.datetime({ offset: true }),
+  /** Null when it does not expire: a bridge ends only when it is disconnected. */
+  expiresAt: z.iso.datetime({ offset: true }).nullable(),
 });
 export type AgentConnection = z.infer<typeof AgentConnectionSchema>;
 export const AgentConnectionConsentSchema = ChromeTabGrantCatalogSchema.extend({

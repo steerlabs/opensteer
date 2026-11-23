@@ -70,9 +70,6 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
     <>
       <Section>
         <VStack alignment="leading" spacing={8}>
-          {props.work === null ? null : (
-            <Text modifiers={[secondary, font({ textStyle: "footnote" })]}>{props.work}</Text>
-          )}
           {props.mark === null ? null : (
             <RNHostView matchContents>
               <ExternalAgentMark

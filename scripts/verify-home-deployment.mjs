@@ -1151,11 +1151,6 @@ async function managedProof(directory, shipped) {
   const feedUrl = `https://${feedAddress}:${feedPort}/manifest.json`;
   let feedAddressAdded = false;
   let feedServerAttempted = false;
-  const work = {
-    organizationId: `org_${randomUUID()}`,
-    organizationName: "Fixture's Work Home",
-    assignmentId: `was_${randomUUID()}`,
-  };
   const unit = managedProject;
   let bootRequests = 0;
   let completeRequests = 0;
@@ -1190,7 +1185,6 @@ async function managedProof(directory, shipped) {
           ipv6Enabled: false,
           release,
           releaseManifestUrl: feedUrl,
-          work,
           backup: {
             endpoint: backupFixture.endpoint,
             bucket: backupFixture.bucket,
@@ -1334,7 +1328,6 @@ async function managedProof(directory, shipped) {
         hostKeyFingerprint: hostKeyFingerprint(discovered.publicKey.spki),
       },
       claim: { cloudComputerId, generation: managedHome.generation },
-      work,
       owner,
       link: {
         generation: linkGeneration,
@@ -1442,12 +1435,6 @@ async function managedProof(directory, shipped) {
     assert.equal(bootRequests, 2);
     assert.equal(completeRequests, 2);
     vm(`test -e /etc/systemd/system/${unit}-update.timer`, { managed: true });
-    assert.deepEqual(
-      JSON.parse(
-        docker(["exec", container("host", true), "printenv", "OPENSTEER_MANAGED_HOME_WORK_JSON"]),
-      ),
-      work,
-    );
     for (const [service, image] of Object.entries(release.images)) {
       assert.equal(
         docker(["inspect", "--format", "{{.Config.Image}}", container(service, true)]),

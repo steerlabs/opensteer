@@ -25,10 +25,9 @@ import { PlaceList } from "./place-list.js";
 import { PlaceAccountFooter, SignOutDialog } from "./place-account.js";
 import {
   SetupSteps,
+  cloudComputerAccountFor,
   usePlaceCloudComputers,
-  usePlaceWorkBadges,
-} from "../settings/sections/work-home.js";
-import { cloudComputerAccountFor } from "../settings/sections/cloud-computer.js";
+} from "../settings/sections/cloud-computer.js";
 
 export type ConnectKind = "pairing" | "address";
 
@@ -604,9 +603,8 @@ export function DesktopChooser({
   const [otherWays, setOtherWays] = useState(false);
   usePlaceChecks(bridge, true);
   const facts = useComputerFacts(places.facts, snapshot.deployments);
-  const work = usePlaceWorkBadges(bridge);
   const cloud = usePlaceCloudComputers(bridge);
-  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts, work, cloud });
+  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts, cloud });
   const thisMac = thisComputerLabel().replace(/^This /u, "this ");
   // Opensteers elsewhere this person could mean instead of a new one here. An
   // Account listing that can't be opened right now still counts: its kind is
@@ -781,7 +779,8 @@ export function DesktopConnect({
         : { kind: "address", origin: origin.trim() },
     );
     if (!parsed.success) {
-      setFormError(parsed.error.issues[0]?.message ?? "Enter a valid Opensteer address.");
+      // A validator's issue is never drawn as it is: the form says what to enter.
+      setFormError("Enter a valid Opensteer address.");
       return;
     }
     setFormError(null);

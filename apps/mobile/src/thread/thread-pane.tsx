@@ -35,6 +35,7 @@ import {
   threadRequester,
   threadStartsRunForMessage,
   threadStopTarget,
+  taskOriginEndedMessage,
   transcriptVoice,
   turnFolds,
   turnWords,
@@ -1253,7 +1254,7 @@ function ThreadPaneForUser(
             local={local.afterQueue}
             onOpenThread={props.onOpenThread}
             paused={inputQueue?.paused ?? false}
-            resumable={thread.status !== "archived"}
+            resumable={thread.status !== "archived" && !thread.endedOrigin}
             threadId={threadId}
             transcript={withOutbox}
             viewerUserId={viewerUserId}
@@ -1686,6 +1687,12 @@ function ThreadPaneForUser(
               )}
               <UsageNotice notice={usageNotice} onOpen={openSettings} />
             </>
+          ) : thread.endedOrigin ? (
+            <View style={{ paddingHorizontal: 16, paddingVertical: 12 }}>
+              <AppText role="secondary" tone="muted">
+                {taskOriginEndedMessage(thread.endedOrigin)}
+              </AppText>
+            </View>
           ) : (
             <>
               {waitingEdit?.replyFull ? (

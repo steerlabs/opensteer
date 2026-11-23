@@ -659,8 +659,9 @@ it("refuses a task that is not the person's own before starting Antigravity", as
         adapter.startSession({ ...fixture.context, personLineage: false }),
       ).rejects.toMatchObject({
         code: "forbidden",
-        message:
-          "Antigravity starts with your own Antigravity settings, so it runs only tasks you started yourself that no connected agent or chat has written to.",
+        message: "This engine is not available for this task.",
+        ownerMessage:
+          "Antigravity is not yet verified to keep your settings out of tasks a connected agent or chat started, so it runs only tasks you started yourself that no connected agent or chat has written to.",
       });
     } finally {
       await adapter.close();

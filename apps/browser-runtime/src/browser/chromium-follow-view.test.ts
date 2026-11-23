@@ -3302,3 +3302,55 @@ console.log(JSON.stringify(await js("window.answers")));`);
     }
   }, 30_000);
 });
+
+it("shows a viewer no blank frame across the wake of the tab it follows: the last picture until the page is back (TS5)", async () => {
+  const session = await startFollowSession({ path: "/scrollbar" });
+  const root = session.rootSurfaceId;
+  // A second live tab decodes pictures while the followed one sleeps.
+  const decoder = (await session.ledger.openSurface()).id;
+  const pictured = (frame: TimedFrame) =>
+    redBoxInFrame((expression) => session.read(decoder, expression), frame);
+  // The person's view of this one tab, as the web's targeted stream subscribes.
+  await session.controller.handle({ type: "stream.subscribe", surfaceId: root });
+  await session.follow(root, defaultBrowserViewport);
+  const shown = await session.frameAt(root, defaultBrowserViewport);
+  expect(await pictured(shown)).not.toBeNull();
+  expect(await session.ledger.sleep(root, () => null)).toBe(true);
+  const since = performance.now();
+  const requestId = randomUUID();
+  await session.controller.handle({
+    type: "cdp.command",
+    requestId,
+    command: { method: "Opensteer.resumeTab", parameters: { surfaceId: root } },
+  });
+  await session.follow(root, defaultBrowserViewport);
+  await session.loaded(root);
+  // Every frame from the wake on, until the page is pictured again, shows the page: none is blank.
+  const after: { at: number; pictured: boolean }[] = [];
+  await waitForAsync(async () => {
+    for (const frame of session.frames.filter(
+      (candidate) => candidate.at >= since && candidate.header.surfaceId === root,
+    )) {
+      if (after.some((entry) => entry.at === frame.at)) continue;
+      after.push({ at: frame.at, pictured: (await pictured(frame)) !== null });
+    }
+    return after.some((entry) => entry.pictured);
+  }, 10_000).catch((error: unknown) => {
+    process.stdout.write(
+      `${JSON.stringify({
+        event: "ts5.no-picture",
+        after,
+        all: session.frames
+          .filter((candidate) => candidate.at >= since)
+          .map((candidate) => ({
+            at: Math.round(candidate.at - since),
+            surface: candidate.header.surfaceId,
+          })),
+      })}\n`,
+    );
+    throw error;
+  });
+  process.stdout.write(`${JSON.stringify({ event: "ts5.frames-across-wake", after })}\n`);
+  const first = after.findIndex((entry) => entry.pictured);
+  expect(after.slice(0, first)).toEqual([]);
+}, 60_000);
