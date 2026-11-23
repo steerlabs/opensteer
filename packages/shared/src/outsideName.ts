@@ -31,7 +31,9 @@ function keepEmojiJoiner(chars: readonly string[], index: number): boolean {
 function keepEmojiSelector(chars: readonly string[], index: number): boolean {
   const prev = chars[index - 1];
   if (!prev) return false;
-  return extendedPictographic.test(prev) || (keycapBase.test(prev) && chars[index + 1] === "\u20E3");
+  return (
+    extendedPictographic.test(prev) || (keycapBase.test(prev) && chars[index + 1] === "\u20E3")
+  );
 }
 
 function keepScriptJoiner(chars: readonly string[], index: number): boolean {
@@ -96,7 +98,9 @@ export function outsideName(value: string, maximum: number): string {
     const regional = regionalIndicator.test(ch);
     const continues =
       i > 0 &&
-      (continuation.test(ch) || flatChars[i - 1] === "\u200D" || (regional && regionalRun % 2 === 1));
+      (continuation.test(ch) ||
+        flatChars[i - 1] === "\u200D" ||
+        (regional && regionalRun % 2 === 1));
     regionalRun = regional ? regionalRun + 1 : 0;
     if (!continues) {
       if (out.length + character.length > maximum) break;
