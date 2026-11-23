@@ -307,7 +307,11 @@ integration("workspace tabs", () => {
       }),
     ).toBe(true);
     const next = { ...binding, sessionId: later };
-    expect(await tabs.bindPage(ownerId, tabId, 1, binding, next)).toBe(true);
+    expect(await tabs.bindPage(ownerId, tabId, 1, binding, next)).toMatchObject({
+      id: tabId,
+      generation: 1,
+      pageBinding: next,
+    });
     expect(
       await tabs.updatePage(ownerId, tabId, 1, binding, {
         title: "Retired",
@@ -321,7 +325,7 @@ integration("workspace tabs", () => {
         url: "https://example.com/late",
       }),
     ).toBe(false);
-    expect(await tabs.bindPage(ownerId, tabId, 1, next, next)).toBe(false);
+    expect(await tabs.bindPage(ownerId, tabId, 1, next, next)).toBeNull();
     const automation = createBrowserSessionId();
     await store.createBrowserSession({
       id: automation,

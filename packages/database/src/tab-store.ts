@@ -842,11 +842,11 @@ export class TabStore {
     generation: number,
     previous: PageBinding | null,
     binding: PageBinding,
-  ): Promise<boolean> {
+  ): Promise<TabRecord | null> {
     PageBindingSchema.parse(binding);
     return commitPersonalMutation(this.database, async (tx, mutation) => {
       await this.#lock(tx, ownerId, [], [tabId]);
-      if (!(await this.#latest(tx, binding))) return false;
+      if (!(await this.#latest(tx, binding))) return null;
       const row = await this.get(ownerId, tabId, false, tx);
       if (
         !row ||
@@ -855,7 +855,7 @@ export class TabStore {
         canonicalJson(row.pageBinding) !== canonicalJson(previous) ||
         tabId !== binding.surfaceId
       )
-        return false;
+        return null;
       await tx
         .updateTable("personalTabs")
         .set({ pageBinding: sql`${JSON.stringify(binding)}::jsonb`, updatedAt: new Date() })
@@ -863,7 +863,8 @@ export class TabStore {
         .execute(databaseOperationOptions());
       mutation.bumpResource("tab");
       mutation.changeTabs([tabId]);
-      return true;
+      // The row as this bind left it: the witness anything later acting on this binding checks.
+      return await this.get(ownerId, tabId, false, tx);
     });
   }
   async updatePage(
