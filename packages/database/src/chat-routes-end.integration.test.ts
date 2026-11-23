@@ -62,33 +62,31 @@ async function restoreRoutes(database: Kysely<DatabaseSchema>): Promise<void> {
       routeTables.includes(/ on (\S+) /u.exec(part)![1]!)
     )
       await sql.raw(part).execute(database);
-  // Its migration has not run on this database yet.
-  await sql`delete from kysely_migration where name = ${chatRoutesEndMigrationName}`.execute(
-    database,
-  );
 }
 
 /**
- * Re-runs `chatRoutesEndMigrationName` through `migrateToLatest` without re-running non-idempotent
- * later migrations (such as `0112_command_requests` or `0113_automations_contract`).
+ * Runs migration `0109_chat_routes_end_contract` once more, and only it, through the migrator:
+ * the ledger rows from 0109 on are set aside, the migrator sees the list cut after 0109, and the
+ * rows of the later migrations are put back. No later migration is ever run a second time, so
+ * nothing a later migration adds has to be undone here.
  */
-async function runChatRoutesEndMigration(database: Kysely<DatabaseSchema>): Promise<void> {
-  const later = await sql<{ name: string; timestamp: string }>`
-    delete from kysely_migration where name > ${chatRoutesEndMigrationName} returning name, timestamp
-  `.execute(database);
+async function replayFromChatRoutesEnd(database: Kysely<DatabaseSchema>): Promise<void> {
+  const ledger = await sql<{ name: string; timestamp: string }>`
+    select name, timestamp from kysely_migration where name > ${chatRoutesEndMigrationName}`.execute(
+    database,
+  );
+  await sql`delete from kysely_migration where name >= ${chatRoutesEndMigrationName}`.execute(
+    database,
+  );
   const all = await migrationProvider().getMigrations();
-  const upToRoutesEnd = Object.fromEntries(
+  const throughChatRoutesEnd = Object.fromEntries(
     Object.entries(all).filter(([name]) => name <= chatRoutesEndMigrationName),
   );
-  try {
-    await migrateToLatest(database, { getMigrations: async () => upToRoutesEnd });
-  } finally {
-    for (const row of later.rows) {
-      await sql`insert into kysely_migration (name, timestamp) values (${row.name}, ${row.timestamp}) on conflict do nothing`.execute(
-        database,
-      );
-    }
-  }
+  await migrateToLatest(database, { getMigrations: async () => throughChatRoutesEnd });
+  for (const row of ledger.rows)
+    await sql`insert into kysely_migration (name, timestamp) values (${row.name}, ${row.timestamp})`.execute(
+      database,
+    );
 }
 
 describeStore("the update ends chat routes, and the work they ran keeps what it had", (it) => {
@@ -207,7 +205,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         name: key,
         script: {
           interpreter: null,
-          text: "console.log('tick')",
+          text: "console.log('ok')",
         },
         source: {
           kind: "schedule",
@@ -253,7 +251,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       .where("id", "=", under.id)
       .execute();
 
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     expect(
       (
@@ -503,7 +501,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
         active_thread_id, provider_state, personal_context)
       values (${direct}, ${configured.account.id}, 'slack', 'T-routes-me', ${route}, 1, ${direct},
         'dm', ${fromPhone}, '{}'::jsonb, true)`.execute(database);
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
     // The phone, used last, stays "me".
     expect(
       await database
@@ -601,7 +599,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       values (${channel}, ${configured.account.id}, 'slack', 'T-routes-disconnect', ${route}, 1,
         ${channel}, 'channel', ${running.thread.id}, '{}'::jsonb, false)`.execute(database);
 
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     const ended = (
       await database
@@ -853,7 +851,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       name: "Clean trigger",
       script: {
         interpreter: null,
-        text: "console.log('tick')",
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -937,7 +935,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       where id = ${fallbackIngressId}`.execute(database);
 
     await restoreRoutes(database);
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     // Every stored value equals outsideName(old, cap) || fallback, preserving real writing joiners & flags.
     const listedAgents = AgentConnectionSchema.array().parse(
@@ -1137,7 +1135,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     await sql`update runs set reply_target = ${JSON.stringify(staleReplyTarget)}::jsonb
       where id = ${dmRunning.run.id}`.execute(database);
 
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     // Orphaned channel-ingress MUST fail closed: tied to the ended row, never user-session.
     const orphanAfter = await database
@@ -1330,7 +1328,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       values (${channel}, ${configured.account.id}, 'slack', 'T-sweep', ${route}, 1, ${channel},
         'channel', ${root}, '{}'::jsonb, false)`.execute(database);
 
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     const ended = (
       await database
@@ -1762,7 +1760,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       name: "seed-trig-dirty",
       script: {
         interpreter: null,
-        text: "console.log('tick')",
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1777,7 +1775,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       name: "seed-trig-clean",
       script: {
         interpreter: null,
-        text: "console.log('tick')",
+        text: "console.log('ok')",
       },
       source: {
         kind: "schedule",
@@ -1793,7 +1791,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
 
     // Re-run 0109 directly on this populated database.
     await restoreRoutes(database);
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     const readOne = async <T>(query: ReturnType<typeof sql<T>>) =>
       (await query.execute(database)).rows[0]!;
@@ -2255,7 +2253,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       cancel_reason = 'cancelled'
       where message_id = ${strangerInput.message.id}`.execute(database);
 
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     // The person's own task stays theirs and their own DM input becomes user-session.
     expect(
@@ -2336,7 +2334,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
     `.execute(database);
 
     await restoreRoutes(database);
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
 
     // Raw JSONB text must keep 9007199254740993 exact (not 9007199254740992) while cleaning names.
     const rawConn = (
@@ -2385,7 +2383,7 @@ describeStore("the update ends chat routes, and the work they ran keeps what it 
       `.execute(database)
     ).rows[0]!;
     await restoreRoutes(database);
-    await runChatRoutesEndMigration(database);
+    await replayFromChatRoutesEnd(database);
     const afterXmins = (
       await sql<{
         readonly connXmin: string;
