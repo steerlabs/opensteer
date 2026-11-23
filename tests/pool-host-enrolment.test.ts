@@ -449,7 +449,10 @@ if [[ $fmt == "%F" ]]; then
   exit 1
 fi
 if [[ $fmt == "%u" ]]; then echo 0; exit 0; fi
-if [[ $fmt == "%a" ]]; then /usr/bin/stat -f '%Lp' "$target" 2>/dev/null || echo 600; exit 0; fi
+if [[ $fmt == "%a" ]]; then
+  ${process.platform === "darwin" ? `/usr/bin/stat -f '%Lp' "$target"` : `/usr/bin/stat -c '%a' "$target"`}
+  exit $?
+fi
 exit 1
 `,
     );
@@ -1589,8 +1592,12 @@ exec /bin/rm "\${clean[@]}"
         writeExecutable(
           h.binDir,
           "sed",
-          `#!/usr/bin/env bash
+          process.platform === "darwin"
+            ? `#!/usr/bin/env bash
 if [[ $1 == -i ]]; then shift; exec /usr/bin/sed -i '' "$@"; fi
+exec /usr/bin/sed "$@"
+`
+            : `#!/usr/bin/env bash
 exec /usr/bin/sed "$@"
 `,
         );
