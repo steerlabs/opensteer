@@ -123,6 +123,14 @@ async function admitTabActor(
 /** One authority view for a projection; mutations build it again under the personal commit fence. */
 export async function tabReadAuthority(actor: TabActor, database: TabDatabase) {
   const lineage = await admitTabActor(actor, database, "read");
+  return tabTargetAuthority(actor, database, lineage);
+}
+
+function tabTargetAuthority(
+  actor: TabActor,
+  database: TabDatabase,
+  lineage: AgentConnectionAuthority | null,
+) {
   const selected = lineage?.grant.scope === "selected" ? lineage : null;
   const lineageTasks = new Map<string, Promise<boolean>>();
   // A selected grant sees only tabs its own lineage's tasks opened.
@@ -282,8 +290,13 @@ export async function authorizeTabTarget(
   target: TabTarget | TabWrite,
   database: TabDatabase,
 ): Promise<void> {
-  await authorizeTabActor(actor, database, "read-write");
-  if (!(await (await tabReadAuthority(actor, database))(target, "read-write"))) deny();
+  if (actor.kind === "person") {
+    await authorizeTabActor(actor, database, "read-write");
+    if (!(await (await tabReadAuthority(actor, database))(target, "read-write"))) deny();
+    return;
+  }
+  const lineage = await admitTabActor(actor, database, "read-write");
+  if (!(await tabTargetAuthority(actor, database, lineage)(target, "read-write"))) deny();
 }
 export async function canReadTab(
   actor: TabActor,
@@ -321,7 +334,7 @@ export async function deniedTabRows(
   if (!agentConnectionId) return new Set();
   const connection = await admitTabActor(actor, database, "read-write");
   if (connection?.grant.scope !== "selected") return new Set();
-  const check = await tabReadAuthority(actor, database);
+  const check = tabTargetAuthority(actor, database, connection);
   const denied = new Set<TabRecord["id"]>();
   for (const row of rows) if (!(await check(row, "read-write"))) denied.add(row.id);
   return denied;

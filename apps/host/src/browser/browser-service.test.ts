@@ -78,6 +78,7 @@ import {
   BrowserService,
   BrowserConsumerOutlet,
   HostedBrowserBroker,
+  loadOwnedBrowserSession,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
   type BrowserRuntimeTarget,
@@ -86,6 +87,7 @@ import {
   type BrowserSessionRepository,
   type BrowserUsageCredit,
   type BrowserUsePage,
+  type OwnedBrowserSessionRecord,
 } from "./browser-service.js";
 import { BrowserAttachTicketSigner } from "./browser-ticket.js";
 import { RunnerBrowserHub, type RunnerBrowserPeer } from "./runner-browser-hub.js";
@@ -9458,5 +9460,510 @@ describe("work under a connection's authority never uses the clipboard or change
     // The person's own work, and any runtime that does not say it holds them, are sent nothing new.
     expect(await send("run:own", true)).toBeUndefined();
     expect(await send("run:lineage", false)).toBeUndefined();
+  });
+
+  it("checks authority, session ownership, and device access once per dispatched CDP command", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    repository.scope = "everything";
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const requireAgentAccess = vi.fn(async () => undefined);
+    const service = freshService({ keys, runtime, repository, requireAgentAccess });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: "session:direct", ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    const resolveAccess = vi.spyOn(repository, "resolveResourceAccess");
+    const getSession = vi.spyOn(repository, "getBrowserSessionForOwner");
+    requireAgentAccess.mockClear();
+
+    const request = cdp.request({ method: "Browser.getVersion" });
+    const command = await runtime.nextCommand();
+    runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+    await request;
+
+    expect(resolveAccess).toHaveBeenCalledTimes(1);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    expect(requireAgentAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a CDP command when the session profile is deleted during resolveResourceAccess", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+
+    let profileDeleted = false;
+    const origGetSession = repository.getBrowserSessionForOwner.bind(repository);
+    vi.spyOn(repository, "getBrowserSessionForOwner").mockImplementation(async (id, owner) =>
+      profileDeleted ? null : origGetSession(id, owner),
+    );
+    const origResolve = repository.resolveResourceAccess.bind(repository);
+    vi.spyOn(repository, "resolveResourceAccess").mockImplementation(async (...args) => {
+      const result = await origResolve(...args);
+      profileDeleted = true;
+      return result;
+    });
+
+    const forwardedBefore = runtime.receivedCommands().length;
+    await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toThrow();
+    expect(runtime.receivedCommands()).toHaveLength(forwardedBefore);
+  });
+
+  it("brands owned session records via loadOwnedBrowserSession and exposes no unchecked boolean on admitAgentBrowser", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+
+    const owned = await loadOwnedBrowserSession(repository, opened.session.id, ownerId);
+    expect(owned?.id).toBe(opened.session.id);
+    const acceptOwned = (record: OwnedBrowserSessionRecord) => record.id;
+    expect(acceptOwned(owned!)).toBe(opened.session.id);
+    const unbranded = (await repository.listBrowserSessions(ownerId))[0]!;
+    // @ts-expect-error An unverified BrowserSessionRecord cannot be treated as an OwnedBrowserSessionRecord.
+    acceptOwned(unbranded);
+    void (() =>
+      service.admitAgentBrowser(
+        authority,
+        "read-write",
+        [unbranded],
+        repository,
+        false,
+        undefined,
+        undefined,
+        // @ts-expect-error Public admitAgentBrowser accepts no unchecked ownedRecordsVerified boolean.
+        true,
+      ));
+  });
+
+  it.each(["session", "run"] as const)(
+    "refuses a second CDP command when grant, device switch, or profile changes between commands (%s binding)",
+    async (bindingKind) => {
+      const startSession = async (
+        requireAgentAccess: (runnerId: RunnerId) => Promise<void> = async () => undefined,
+      ) => {
+        const ownerId = createId("user");
+        const repository = new SelectedGrantRepository(ownerId);
+        const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+        const other = await repository.createBrowserProfile({ ownerId, name: "Other" });
+        repository.granted = [profile.id];
+        const keys = generateKeyPairSync("ed25519");
+        const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+        const service = freshService({ keys, runtime, repository, requireAgentAccess });
+        cleanups.push(async () => service.close());
+        const authority = {
+          agentBindingId: bindingKind === "session" ? "session:selected" : `run:${createId("run")}`,
+          ownerId,
+        };
+        const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+        const cdp = await service.attachCdpForAgent(
+          { ...authority, sessionId: opened.session.id },
+          () => undefined,
+        );
+        const first = cdp.request({ method: "Browser.getVersion" });
+        const cmd = await runtime.nextCommand();
+        runtime.sendServer({ type: "cdp.result", requestId: cmd.requestId, result: {} });
+        await first;
+        return { ownerId, repository, profile, other, runtime, service, authority, opened, cdp };
+      };
+
+      // 1. Grant narrowed between two commands on the same session.
+      {
+        const { repository, other, runtime, cdp } = await startSession();
+        const before = runtime.receivedCommands().length;
+        repository.granted = [other.id];
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject(
+          bindingKind === "session"
+            ? { code: "not_found", message: "Tab not found." }
+            : { code: "forbidden" },
+        );
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+
+      // 2. Device switch turned off between two commands on the same session.
+      {
+        let deviceOff = false;
+        const machineId = DeviceIdSchema.parse(createId("device"));
+        const { runtime, cdp } = await startSession(async () => {
+          if (deviceOff) throw new DeviceAccessRefusal("device-access-off", machineId, "browser");
+        });
+        const before = runtime.receivedCommands().length;
+        deviceOff = true;
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject({
+          code: "forbidden",
+          reason: "device-access-off",
+        });
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+
+      // 3. Profile removed between two commands on the same session.
+      {
+        const { repository, runtime, cdp } = await startSession();
+        const before = runtime.receivedCommands().length;
+        vi.spyOn(repository, "getBrowserSessionForOwner").mockResolvedValue(null);
+        await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toThrow();
+        expect(runtime.receivedCommands()).toHaveLength(before);
+      }
+    },
+  );
+
+  it("refuses an ended Run's late CDP command when device access is off", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    let deviceOff = false;
+    const machineId = DeviceIdSchema.parse(createId("device"));
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (deviceOff) throw new DeviceAccessRefusal("device-access-off", machineId, "browser");
+      },
+    });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Saved" });
+    const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
+    const cdp = await service.attachCdpForAgent(
+      { ...authority, sessionId: opened.session.id },
+      () => undefined,
+    );
+    await service.detachAgentSessionsForBinding(authority.agentBindingId);
+    const before = runtime.receivedCommands().length;
+    deviceOff = true;
+    await expect(cdp.dispatch({ method: "Browser.getVersion" })).rejects.toMatchObject({
+      code: "forbidden",
+      reason: "device-access-off",
+    });
+    expect(runtime.receivedCommands()).toHaveLength(before);
+  });
+
+  it("answers not_found before device-offline on issueStandardCdpTicket for a tab outside a selected grant", async () => {
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const hidden = await repository.createBrowserProfile({ ownerId, name: "Hidden" });
+    repository.granted = [kept.id, hidden.id];
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    let offline = false;
+    const machineId = DeviceIdSchema.parse(createId("device"));
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (offline)
+          throw new DeviceAccessRefusal("device-offline", machineId, "browser", "Work Mac");
+      },
+    });
+    cleanups.push(async () => service.close());
+    const authority = { agentBindingId: "session:selected", ownerId, threadId: createId("thread") };
+    const opened = await service.openAgentSession({ ...authority, profileId: hidden.id });
+    repository.granted = [kept.id];
+    offline = true;
+
+    await expect(
+      service.issueStandardCdpTicket({
+        authority,
+        browserSessionId: opened.session.id,
+        mode: "whole-context",
+      }),
+    ).rejects.toMatchObject({
+      code: "not_found",
+      message: "Tab not found.",
+    });
+  });
+
+  it("skips duplicate agent use writes for consecutive holds by the same binding and writes again when another actor intervenes", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Shared" });
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const bindingA = { agentBindingId: `run:${createId("run")}`, ownerId };
+    const bindingB = { agentBindingId: `run:${createId("run")}`, ownerId };
+
+    const opened = await service.openAgentSession({ ...bindingA, profileId: profile.id });
+    const countAfterOpen = recordUse.mock.calls.length;
+    expect(countAfterOpen).toBe(1);
+
+    const cdpA = await service.attachCdpForAgent(
+      { ...bindingA, sessionId: opened.session.id },
+      () => undefined,
+    );
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen);
+
+    const reopened = await service.openAgentSession({
+      ...bindingA,
+      sessionId: opened.session.id,
+    });
+    expect(reopened.session.id).toBe(opened.session.id);
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen);
+
+    const cdpB = await service.attachCdpForAgent(
+      { ...bindingB, sessionId: opened.session.id },
+      () => undefined,
+    );
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen + 1);
+
+    await service.openAgentSession({ ...bindingA, sessionId: opened.session.id });
+    expect(recordUse.mock.calls.length).toBe(countAfterOpen + 2);
+
+    cdpA.close();
+    cdpB.close();
+  });
+
+  it("refuses bindPage and openAgentTab when the Run's mode is lowered while #holdForAgent awaits attachBrowserSession", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    const keptTwo = await repository.createBrowserProfile({ ownerId, name: "Kept Two" });
+    repository.granted = [kept.id, keptTwo.id];
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+    cleanups.push(async () => service.close());
+
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", profileId: kept.id, url: "https://example.com/" },
+      "mode-lower-bind",
+    );
+    await memory.add(descriptor);
+
+    // 1. bindPage: lower mode during #holdForAgent's attachBrowserSession await.
+    const enteredBind = Promise.withResolvers<void>();
+    const releaseBind = Promise.withResolvers<void>();
+    const originalAttach = repository.attachBrowserSession.bind(repository);
+    vi.spyOn(repository, "attachBrowserSession").mockImplementationOnce(async (input) => {
+      enteredBind.resolve();
+      await releaseBind.promise;
+      return originalAttach(input);
+    });
+    const claims = {
+      requestedBy: ownerId,
+      runId: createId("run"),
+      threadId: createId("thread"),
+    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+    const binding = service.bindPage(claims, memory.rows.get(descriptor.id)!);
+    await enteredBind.promise;
+    repository.mode = "approval-required";
+    releaseBind.resolve();
+    await expect(binding).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+
+    // 2. openAgentTab: lower mode during #holdForAgent's attachBrowserSession await.
+    repository.mode = "full-access";
+    const enteredOpen = Promise.withResolvers<void>();
+    const releaseOpen = Promise.withResolvers<void>();
+    vi.spyOn(repository, "attachBrowserSession").mockImplementationOnce(async (input) => {
+      enteredOpen.resolve();
+      await releaseOpen.promise;
+      return originalAttach(input);
+    });
+    const opening = service.openAgentTab(
+      {
+        ownerId,
+        agentBindingId: `run:${createId("run")}`,
+        threadId: createId("thread"),
+      },
+      {
+        identity: { kind: "profile", profile: keptTwo.id },
+        operationKey: "mode-lower-open-agent-tab",
+      },
+    );
+    await enteredOpen.promise;
+    repository.mode = "approval-required";
+    releaseOpen.resolve();
+    await expect(opening).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+  });
+
+  it("refuses bindPage when the Run's mode is lowered while pageTabs.admitted awaits", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    repository.granted = [kept.id];
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+    cleanups.push(async () => service.close());
+
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", profileId: kept.id, url: "https://example.com/" },
+      "mode-lower-admitted",
+    );
+    await memory.add(descriptor);
+
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const originalAdmitted = service.pageTabs.admitted!;
+    vi.spyOn(service.pageTabs, "admitted").mockImplementationOnce(async (write) => {
+      entered.resolve();
+      await release.promise;
+      return originalAdmitted(write);
+    });
+    const claims = {
+      requestedBy: ownerId,
+      runId: createId("run"),
+      threadId: createId("thread"),
+    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+
+    const binding = service.bindPage(claims, memory.rows.get(descriptor.id)!);
+    await entered.promise;
+    repository.mode = "approval-required";
+    release.resolve();
+    await expect(binding).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+    expect(recordUse.mock.calls.filter(([input]) => input.tabId !== null)).toEqual([]);
+  });
+
+  it("records usage again when the same Run revisits an earlier session after holding another session", async () => {
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profileOne = await repository.createBrowserProfile({ ownerId, name: "First" });
+    const profileTwo = await repository.createBrowserProfile({ ownerId, name: "Second" });
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const runBinding = { agentBindingId: `run:${createId("run")}`, ownerId };
+
+    const first = await service.openAgentSession({ ...runBinding, profileId: profileOne.id });
+    const second = await service.openAgentSession({ ...runBinding, profileId: profileTwo.id });
+    await service.openAgentSession({ ...runBinding, sessionId: first.session.id });
+
+    expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+      first.session.id,
+      second.session.id,
+      first.session.id,
+    ]);
+  });
+
+  it("records usage again when a Run re-holds a session after a per-command use in another session", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const backing: BrowserSessionRepository = repository;
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profileOne = await repository.createBrowserProfile({ ownerId, name: "First" });
+    const profileTwo = await repository.createBrowserProfile({ ownerId, name: "Second" });
+    const runBinding = { agentBindingId: `run:${runId}`, ownerId };
+    vi.spyOn(backing, "resolvePlaceActors").mockResolvedValue([
+      {
+        agentBindingId: runBinding.agentBindingId,
+        ownerId,
+        runId,
+        threadId,
+        generation: 1,
+        lineageThreadIds: [threadId],
+      },
+    ]);
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+
+    const first = await service.openAgentSession({ ...runBinding, profileId: profileOne.id });
+    const cdpFirst = await service.attachCdpForAgent(
+      { ...runBinding, sessionId: first.session.id },
+      () => undefined,
+    );
+    const second = await service.openAgentSession({ ...runBinding, profileId: profileTwo.id });
+
+    runtime.publishTabs({
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "First",
+          url: "https://first.example/",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    const attachRequest = cdpFirst.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "page-1", flatten: true },
+    });
+    const forwarded = await runtime.nextCommand();
+    expect(forwarded).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.attachToTarget" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forwarded.requestId,
+      result: { sessionId: "cdp-page-1", surfaceId: "page-1" },
+    });
+    await attachRequest;
+    await vi.waitFor(() =>
+      expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+        first.session.id,
+        second.session.id,
+        first.session.id,
+      ]),
+    );
+
+    await service.openAgentSession({ ...runBinding, sessionId: second.session.id });
+    expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+      first.session.id,
+      second.session.id,
+      first.session.id,
+      second.session.id,
+    ]);
+    cdpFirst.close();
   });
 });

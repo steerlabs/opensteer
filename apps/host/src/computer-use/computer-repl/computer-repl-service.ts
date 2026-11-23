@@ -85,6 +85,8 @@ type ReplOptions<Request> = {
   readonly invoke: (request: ReplInvocation<Request>) => Promise<ReplReply>;
   readonly clock?: Clock;
   readonly wait?: typeof delay;
+  /** Override the worker module URL; test Hosts pass the prebuilt worker to skip tsx cold start. */
+  readonly workerEntry?: URL;
 };
 type ReplEvents = {
   batch: (context: ComputerReplContext) => string | undefined;
@@ -100,6 +102,7 @@ export class ReplService<Request extends AnyReplRequest> {
   readonly #invoke: (request: ReplInvocation<Request>) => Promise<ReplReply>;
   readonly #clock: Clock;
   readonly #wait: typeof delay;
+  readonly #workerEntry: URL | undefined;
   readonly #contexts = new Map<string, Resident<Request>>();
   readonly #ended = new Set<string>();
   readonly #revoked = new Set<string>();
@@ -125,6 +128,7 @@ export class ReplService<Request extends AnyReplRequest> {
     this.#label = options.browser ? "Browser" : "Computer";
     this.#clock = options.clock ?? systemClock;
     this.#wait = options.wait ?? delay;
+    this.#workerEntry = options.workerEntry;
   }
 
   #scheduleExpiry(): void {
@@ -268,8 +272,9 @@ export class ReplService<Request extends AnyReplRequest> {
   }
   #ensureWorker(): void {
     if (this.#worker) return;
-    const source = import.meta.url.endsWith(".ts");
-    const worker = new Worker(hostWorkerUrl("computer-repl-worker", import.meta.url), {
+    const workerUrl = this.#workerEntry ?? hostWorkerUrl("computer-repl-worker", import.meta.url);
+    const source = workerUrl.pathname.endsWith(".ts");
+    const worker = new Worker(workerUrl, {
       ...(this.#events ? { workerData: "browser" } : {}),
       resourceLimits: { maxOldGenerationSizeMb: 512 },
       ...(source ? { execArgv: ["--import", "tsx"] } : {}),
