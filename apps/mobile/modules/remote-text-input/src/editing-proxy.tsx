@@ -59,7 +59,7 @@ export function NativeEditingProxy({
   readonly label?: string;
   readonly ref?: Ref<NativeEditingProxyHandle>;
 }) {
-  const { step, late, current } = useMemo(() => {
+  const { step, late } = useMemo(() => {
     let state = createEditingState(Platform.OS === "ios" ? "ios" : "android", abilities);
     /**
      * The contexts lately left, as the reducer had each: their late events are reduced there.
@@ -69,7 +69,6 @@ export function NativeEditingProxy({
     const retired = new Map<string, typeof state>();
     return {
       /** The context the reducer is in now. */
-      current: () => state.context?.contextId,
       step: (event: EditingProxyEvent) => {
         if (
           event.type === "context" &&
