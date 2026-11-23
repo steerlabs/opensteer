@@ -6,11 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, type RunId, type ThreadId } from "@opensteer/core";
-import {
-  HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
-} from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
 import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -114,7 +110,6 @@ integration("Warm engines", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const threadId = await stack.createThread({
@@ -183,7 +178,6 @@ integration("Warm engines", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const model = stack.catalog.models[0]!;

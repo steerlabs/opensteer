@@ -30,7 +30,6 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
     instructions: "Agent home instructions",
     machineAccessLaunch: "",
     providerSessionReference: null,
-    runtimeBoundary: "native-user",
     skills: undefined,
     homeSkillsDigest: "home:folder",
     workspacePath: "/task",
@@ -74,7 +73,6 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [
     { ...input, baseEnvironment: { MODE: "changed" } },
-    { ...input, runtimeBoundary: "isolated-service" },
     { ...input, providerSessionReference: "different-thread" },
     { ...input, context: { ...context, harnessInstanceId: createId("harnessInstance") } },
     {

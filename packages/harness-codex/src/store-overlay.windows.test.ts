@@ -1,8 +1,4 @@
-import {
-  linkNames,
-  nativeUserHarnessRuntimeBoundary,
-  type SupervisedProcess,
-} from "@opensteer/harness";
+import { linkNames, type SupervisedProcess } from "@opensteer/harness";
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,7 +71,6 @@ describe("the Codex session store overlay on Windows", () => {
         config: {},
         environment: {},
         providerState: profile,
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,

@@ -11,7 +11,7 @@ import {
   type ModelSelection,
   type ThreadId,
 } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AutomaticModelsView } from "@opensteer/protocol";
@@ -118,7 +118,6 @@ integration("Task naming through the Runner", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const active = stack;

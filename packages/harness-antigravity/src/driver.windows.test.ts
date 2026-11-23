@@ -1,4 +1,3 @@
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +23,6 @@ describe("Antigravity on Windows", () => {
         providerHomeDirectory: join(directory, "profile"),
         store: { directory: join(directory, "store"), id: "test" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: AbortSignal.timeout(5_000),
       sourceId: "google",
       workingDirectory: directory,

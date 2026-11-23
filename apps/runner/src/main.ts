@@ -15,7 +15,6 @@ import {
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
 import type { EnvironmentId, RunnerId } from "@opensteer/core";
-import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
 import {
   consumeRunnerApplicationConfig,
@@ -46,7 +45,6 @@ import { ExecutionContainment, type RunnerShutdownProof } from "./runtime/execut
 import { RunnerReadinessFile } from "./runtime/readiness-file.js";
 import { describeRunnerDevice } from "./device.js";
 import { harnessLaunchValidationHook } from "./shell/machine-access-setup.js";
-import { HarnessSandbox, harnessSandboxRequired } from "./sandbox/harness-sandbox.js";
 import { prepareShellModule, type PreparedShellModule } from "./shell/shell-host-key.js";
 import {
   prepareIntegrationsModule,
@@ -141,9 +139,6 @@ export async function runRunnerDaemon(
 ): Promise<void> {
   const config = consumeRunnerConfig(environment, options.secrets);
   const applicationConfig = consumeRunnerApplicationConfig(environment);
-  if (applicationConfig.isolateHarnesses && process.platform !== "linux") {
-    throw new Error("OPENSTEER_RUNNER_ISOLATE_HARNESSES requires a Linux Runner.");
-  }
   const readiness = applicationConfig.readinessPath
     ? new RunnerReadinessFile(applicationConfig.readinessPath)
     : undefined;
@@ -350,30 +345,6 @@ async function startAgentsRunner(input: {
   });
   await attachmentCache.reset();
   const agentSkills = await loadAgentSkillBundle(execution.agentSkillsDirectory);
-  const harnessRuntimeBoundary = harnessRuntimeBoundaryForRunner({
-    isolateHarnesses: applicationConfig.isolateHarnesses,
-    deploymentKind: config.deploymentShape.kind,
-    runnerKind: config.runnerKind,
-  });
-  const harnessSandbox = harnessSandboxRequired(process.platform, harnessRuntimeBoundary)
-    ? await HarnessSandbox.create({
-        attachmentRoot: attachmentCache.root,
-        dataDirectory: config.dataDirectory,
-        environment: Object.fromEntries(
-          ["HOME", "PATH", "TMPDIR"].flatMap((name) =>
-            environment[name] ? [[name, environment[name]]] : [],
-          ),
-        ),
-        requireFreshProc: applicationConfig.isolateHarnesses,
-        stateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
-        workspaceRoots: [],
-      })
-    : undefined;
-  if (harnessSandbox)
-    logger.info("Runner harness sandbox verified", {
-      freshProc: harnessSandbox.layout.freshProc,
-      runnerId: identity.runnerId,
-    });
   // The data directory is this process's now, so a Run another boot of it
   // left running is a dead Runner's: it ends before this one takes work.
   await prunePluginCache(resolve(config.dataDirectory, "private", "harness-state"));
@@ -406,8 +377,6 @@ async function startAgentsRunner(input: {
       },
       logger,
     ),
-    harnessRuntimeBoundary,
-    ...(harnessSandbox ? { harnessSandbox } : {}),
     plugins: cacheRunPlugins,
     logger,
     maxConcurrentRuns: config.maxConcurrentRuns,

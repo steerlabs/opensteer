@@ -69,7 +69,6 @@ import {
   HarnessSessionRegistry,
   SubagentNodes,
   TurnPublisher,
-  attachmentSandboxPaths,
   assertFreshProviderSessionContext,
   initialContinuationContextPrompt,
   boundedDenialNote,
@@ -166,12 +165,6 @@ import {
 
 type SessionMode =
   { readonly type: "start" } | { readonly reference: string; readonly type: "resume" };
-
-const codexIsolatedPermissionProfile = Object.freeze({
-  fullAccess: "opensteer_full_access",
-  readOnly: "opensteer_read_only",
-  workspaceWrite: "opensteer_workspace_write",
-});
 
 /**
  * The output budget Codex gives `computer_use`, in its own approximate tokens
@@ -301,7 +294,6 @@ const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
   approvals: true,
   attachments: true,
   messageAttachments: {
-    darwinIsolatedServiceSandbox: true as const,
     nativeImages: {
       maxBytes: attachmentMaxBytes,
       maxPixels: attachmentImageMaxPixels,
@@ -381,7 +373,7 @@ export class CodexHarnessDriver implements HarnessDriver {
    */
   readonly providerStoreScope: HarnessProviderStoreScope = {
     kind: "driver-shared",
-    nativeUserHome: { environmentVariable: "CODEX_HOME", relativeHomePath: ".codex" },
+    ambientHome: { environmentVariable: "CODEX_HOME", relativeHomePath: ".codex" },
   };
   readonly #dependencies: CodexHarnessDependencies;
 
@@ -391,14 +383,14 @@ export class CodexHarnessDriver implements HarnessDriver {
 
   /**
    * Replays the command sandbox a Run's model commands get, through the
-   * `codex sandbox` subcommand with the same process boundary and permission
-   * profile the app-server would apply. Native full access is `dangerFullAccess`,
-   * which has no sandbox to replay.
+   * `codex sandbox` subcommand with the same process boundary and sandbox mode
+   * the app-server would apply. Full access is `dangerFullAccess`, which has no
+   * sandbox to replay.
    */
   async modelCommandLaunch(
     context: HarnessModelCommandContext,
   ): Promise<HarnessProcessLaunchWrapper> {
-    if (context.runtimeBoundary.kind === "native-user" && context.accessMode === "full-access") {
+    if (context.accessMode === "full-access") {
       return (launch) => launch;
     }
     const environment = await codexProcessEnvironment(
@@ -408,31 +400,20 @@ export class CodexHarnessDriver implements HarnessDriver {
       {
         config: CodexHarnessConfigSchema.parse({}),
         launch: this.#dependencies.launch,
-        runtimeBoundary: context.runtimeBoundary,
         signal: new AbortController().signal,
         workingDirectory: context.workspacePath,
       },
     );
     const boundary = codexProcessBoundaryArgs(
       await codexFeatureBoundary(this.#dependencies.launch),
-      context.runtimeBoundary,
       context.providerState,
-      environment,
-      context.writableRoots,
-      context,
     );
-    const selection =
-      context.runtimeBoundary.kind === "isolated-service"
-        ? [
-            "-c",
-            `default_permissions=${JSON.stringify(codexPermissionProfile(context.accessMode))}`,
-          ]
-        : [
-            "-c",
-            `sandbox_mode=${JSON.stringify(
-              context.accessMode === "approval-required" ? "read-only" : "workspace-write",
-            )}`,
-          ];
+    const selection = [
+      "-c",
+      `sandbox_mode=${JSON.stringify(
+        context.accessMode === "approval-required" ? "read-only" : "workspace-write",
+      )}`,
+    ];
     const launch = this.#dependencies.launch;
     // The command's own environment wins (machine access puts its shims first
     // on PATH); only the profile's home variables are the driver's to set.
@@ -785,10 +766,7 @@ async function authenticateCodexHarness(
     client = await CodexStdioClient.start({
       appServerArgs: codexProcessBoundaryArgs(
         await codexFeatureBoundary(launch),
-        context.runtimeBoundary,
         context.providerState,
-        processEnvironment,
-        [context.workingDirectory],
       ),
       config,
       cwd: context.workingDirectory,
@@ -945,13 +923,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
             cwd: directory,
             environment,
             appServerArgs: [
-              ...codexProcessBoundaryArgs(
-                features,
-                context.runtimeBoundary,
-                context.providerState,
-                environment,
-                [directory],
-              ),
+              ...codexProcessBoundaryArgs(features, context.providerState),
               "-c",
               `log_dir=${JSON.stringify(directory)}`,
               "-c",
@@ -1100,14 +1072,14 @@ class CodexHarnessAdapter implements HarnessAdapter {
 
   /**
    * The app-server a session runs on. Runs of one account share one, started
-   * from nothing that belongs to a Run. A voice call, or a Run whose engine
-   * must start inside its own sandbox, gets a process of its own, which lives
-   * until `lifetime` ends.
+   * from nothing that belongs to a Run. A voice call, or a Run the Runner gives
+   * no shared engine, gets a process of its own, which lives until `lifetime`
+   * ends.
    */
   async #server(context: HarnessSessionContext, lifetime: AbortSignal): Promise<CodexAppServer> {
     this.#sessions.assertOpen();
     const shared = context.sharedEngine;
-    if (!shared || context.voiceCall || context.runtimeBoundary.kind !== "native-user") {
+    if (!shared || context.voiceCall) {
       return this.#startServer(
         context,
         undefined,
@@ -1175,14 +1147,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
     if (callLog) await mkdir(callLog, { recursive: true, mode: 0o700 });
     const server = await CodexAppServer.start({
       appServerArgs: [
-        ...codexProcessBoundaryArgs(
-          features,
-          context.runtimeBoundary,
-          context.providerState,
-          environment,
-          context.writableRoots,
-          context,
-        ),
+        ...codexProcessBoundaryArgs(features, context.providerState),
         // A conversation no session holds unloads at once, so its next load
         // takes that Run's configuration and nothing it ran outlives it.
         "-c",
@@ -1842,22 +1807,18 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
             model_reasoning_effort:
               this.#context.modelSelection.options[codexEffortOptionId] ?? null,
             service_tier: this.#context.modelSelection.options[codexSpeedOptionId] ?? null,
-            ...(this.#context.runtimeBoundary.kind === "native-user"
-              ? {
-                  sandbox_mode:
-                    this.#context.accessMode === "full-access"
-                      ? "danger-full-access"
-                      : this.#context.accessMode === "approval-required"
-                        ? "read-only"
-                        : "workspace-write",
-                  sandbox_workspace_write: {
-                    writable_roots: [...this.#context.writableRoots],
-                    network_access: false,
-                    exclude_tmpdir_env_var: false,
-                    exclude_slash_tmp: false,
-                  },
-                }
-              : {}),
+            sandbox_mode:
+              this.#context.accessMode === "full-access"
+                ? "danger-full-access"
+                : this.#context.accessMode === "approval-required"
+                  ? "read-only"
+                  : "workspace-write",
+            sandbox_workspace_write: {
+              writable_roots: [...this.#context.writableRoots],
+              network_access: false,
+              exclude_tmpdir_env_var: false,
+              exclude_slash_tmp: false,
+            },
           }
         : runtimeConfig,
       // The provider owns its compacted context; attachment must not serialize
@@ -3225,10 +3186,7 @@ async function inspectCodexHarness(
     client = await CodexStdioClient.start({
       appServerArgs: codexProcessBoundaryArgs(
         await codexFeatureBoundary(launch),
-        context.runtimeBoundary,
         context.providerState,
-        processEnvironment,
-        [context.workingDirectory],
       ),
       config,
       cwd: context.workingDirectory,
@@ -3647,13 +3605,9 @@ function identityString(value: unknown): string | undefined {
 
 function codexProcessBoundaryArgs(
   features: CodexFeatureBoundary,
-  runtimeBoundary: HarnessSessionContext["runtimeBoundary"],
   providerState: HarnessProviderState,
-  environment: Readonly<Record<string, string>>,
-  writableRoots: readonly string[],
-  attachments?: Pick<HarnessSessionContext, "attachmentDirectory" | "attachmentRoot">,
 ): string[] {
-  const args = [
+  return [
     "-c",
     codexFeatureBoundaryArgument(features),
     "-c",
@@ -3675,88 +3629,11 @@ function codexProcessBoundaryArgs(
     `shell_environment_policy.inherit=${JSON.stringify(codexShellEnvironmentInherit)}`,
     "-c",
     `shell_environment_policy.exclude=${JSON.stringify(codexShellEnvironmentExclude)}`,
-    // The credential store follows the profile, not the runtime boundary: an
-    // isolated profile on a person's own computer must keep its credentials in
-    // its private provider home instead of the machine-wide store that login,
-    // logout, and inspection would otherwise disagree about.
+    // The credential store follows the profile: an isolated profile must keep
+    // its credentials in its private provider home instead of the machine-wide
+    // store that login, logout, and inspection would otherwise disagree about.
     ...codexCredentialStoreArgs(providerState),
   ];
-  if (runtimeBoundary.kind === "native-user") return args;
-
-  const privateStateRoot = resolve(providerState.privateStateRoot);
-  const attachmentPaths = attachmentSandboxPaths({
-    attachmentDirectory: attachments?.attachmentDirectory,
-    attachmentRoot: attachments?.attachmentRoot,
-    privateStateRoot,
-  });
-  const sqliteHome = environment.CODEX_SQLITE_HOME;
-  if (!sqliteHome) {
-    throw new OpensteerError({
-      code: "harness_error",
-      message: "Codex isolated service state was not initialized",
-    });
-  }
-  // The private state root is the Runner's whole data directory: its identity
-  // keys and every profile's provider state, this profile's session store and
-  // sqlite index included, so denying the root already denies them. The sqlite
-  // home is still named explicitly: it is the one path whose location is a
-  // policy choice, and the denial must not depend on where that choice lands.
-  const deniedState = minimalPathRoots([
-    privateStateRoot,
-    resolve(providerState.store.directory),
-    resolve(sqliteHome),
-  ]);
-  const deniedFilesystem = [
-    ...deniedState.map((path) => `${JSON.stringify(path)}="deny"`),
-    ...(attachmentPaths
-      ? [
-          `${JSON.stringify(attachmentPaths.root)}="deny"`,
-          `${JSON.stringify(attachmentPaths.directory)}="read"`,
-        ]
-      : []),
-  ].join(",");
-  const workspaceAccess = new Map<string, "deny" | "read" | "write">(
-    writableRoots.map((path) => [resolve(path), "write"]),
-  );
-  // Inspection intentionally uses the private-state root as its throwaway
-  // working directory. A TOML inline table cannot name that path once as
-  // writable and again as denied, and private state must win regardless of
-  // which working roots a caller supplies.
-  for (const path of deniedState) workspaceAccess.set(path, "deny");
-  if (attachmentPaths) {
-    workspaceAccess.set(attachmentPaths.root, "deny");
-    workspaceAccess.set(attachmentPaths.directory, "read");
-  }
-  const workspaceFilesystem = [...workspaceAccess]
-    .map(([path, access]) => `${JSON.stringify(path)}=${JSON.stringify(access)}`)
-    .join(",");
-  return [
-    ...args,
-    "-c",
-    `default_permissions=${JSON.stringify(codexIsolatedPermissionProfile.readOnly)}`,
-    "-c",
-    `permissions.${codexIsolatedPermissionProfile.readOnly}={extends=":read-only",filesystem={${deniedFilesystem}}}`,
-    "-c",
-    `permissions.${codexIsolatedPermissionProfile.workspaceWrite}={extends=":workspace",filesystem={${workspaceFilesystem}}}`,
-    "-c",
-    `permissions.${codexIsolatedPermissionProfile.fullAccess}={extends=":workspace",filesystem={${workspaceFilesystem}},network={enabled=true}}`,
-  ];
-}
-
-/**
- * Bubblewrap cannot mount a second denied path beneath a parent it already
- * replaced with a read-only mask. The outer deny has the same security effect,
- * so retain only paths that are not descendants of another denied root.
- */
-function minimalPathRoots(paths: readonly string[]): readonly string[] {
-  const unique = [...new Set(paths)];
-  return unique.filter((candidate) =>
-    unique.every((parent) => {
-      if (parent === candidate) return true;
-      const path = relative(parent, candidate);
-      return path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path);
-    }),
-  );
 }
 
 function codexCredentialStoreArgs(providerState: Pick<HarnessProviderState, "kind">): string[] {
@@ -3788,10 +3665,7 @@ function isolatedCodexProviderHome(providerState: HarnessProviderState): string 
 const providerHomeMaterializations = new Map<string, Promise<void>>();
 const providerHomesAwaitingSeed = new Set<string>();
 
-type CodexHomePreparation = Pick<
-  HarnessInspectionContext,
-  "runtimeBoundary" | "signal" | "workingDirectory"
-> & {
+type CodexHomePreparation = Pick<HarnessInspectionContext, "signal" | "workingDirectory"> & {
   readonly config: CodexHarnessConfig;
   readonly launch: CodexLaunch;
 };
@@ -3804,10 +3678,7 @@ async function initializeCodexHome(
   const client = await CodexStdioClient.start({
     appServerArgs: codexProcessBoundaryArgs(
       await codexFeatureBoundary(preparation.launch),
-      preparation.runtimeBoundary,
       providerState,
-      environment,
-      [preparation.workingDirectory],
     ),
     config: preparation.config,
     cwd: preparation.workingDirectory,
@@ -4494,26 +4365,22 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
     cwd: context.workspacePath,
     ...(context.voiceCall && developerInstructions ? { developerInstructions } : {}),
     model: harnessModelId(context.modelSelection),
-    // Native-user preserves Codex's trust-write boundary. Isolated services use
-    // a session-flag permission profile that cannot expose Runner private state.
-    ...(context.runtimeBoundary.kind === "isolated-service"
-      ? { permissions: codexPermissionProfile(context.accessMode) }
-      : {
-          sandbox: context.voiceCall
-            ? context.accessMode === "full-access"
-              ? "danger-full-access"
-              : context.accessMode === "approval-required"
-                ? "read-only"
-                : "workspace-write"
-            : "read-only",
-        }),
+    // Codex's own sandbox: a thread starts read-only and each turn states its
+    // policy; a voice call starts no turns of its own, so it starts with its mode's.
+    sandbox: context.voiceCall
+      ? context.accessMode === "full-access"
+        ? "danger-full-access"
+        : context.accessMode === "approval-required"
+          ? "read-only"
+          : "workspace-write"
+      : "read-only",
   };
 }
 
 function turnOverrides(
   context: Pick<
     HarnessSessionContext,
-    "accessMode" | "modelSelection" | "runtimeBoundary" | "workspacePath" | "writableRoots"
+    "accessMode" | "modelSelection" | "workspacePath" | "writableRoots"
   >,
 ): JsonObject {
   const { options } = context.modelSelection;
@@ -4530,22 +4397,8 @@ function turnOverrides(
     // Host states a listed option's default when a selection names none, so
     // null reaches Codex only for a model that offers no tier, and clears it.
     serviceTier: typeof serviceTier === "string" ? serviceTier : null,
-    ...(context.runtimeBoundary.kind === "isolated-service"
-      ? { permissions: codexPermissionProfile(context.accessMode) }
-      : { sandboxPolicy: access.sandboxPolicy }),
+    sandboxPolicy: access.sandboxPolicy,
   };
-}
-
-function codexPermissionProfile(accessMode: ThreadAccessMode): string {
-  switch (accessMode) {
-    case "approval-required":
-      return codexIsolatedPermissionProfile.readOnly;
-    case "auto-accept-edits":
-    case "auto":
-      return codexIsolatedPermissionProfile.workspaceWrite;
-    case "full-access":
-      return codexIsolatedPermissionProfile.fullAccess;
-  }
 }
 
 export function codexAccessModeConfiguration(

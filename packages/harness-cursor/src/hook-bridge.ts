@@ -27,9 +27,9 @@ export function createCursorHookEndpoint(
  * and a Thread state directory under the Runner's data directory routinely
  * exceeds that on its own, so the socket cannot live beside the plugin. It
  * gets a short private directory of its own instead, mode 0700 and removed
- * when the session stops. On a native-user Runner the person's own temporary
- * directory is the same trust domain as the plugin directory, so this changes
- * nothing about who can reach the socket.
+ * when the session stops. The Runner user's own temporary directory is the
+ * same trust domain as the plugin directory, so this changes nothing about who
+ * can reach the socket.
  */
 async function unixHookEndpoint(): Promise<CursorHookEndpoint> {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-cursor-"));

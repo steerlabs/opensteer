@@ -148,20 +148,9 @@ describe("container build context", () => {
     expect(runnerStage).toContain(
       "apt-get install --no-install-recommends --yes libcap2 openssh-client openssl rsync socat",
     );
-    expect(containerfile).toContain("AS bubblewrap-build");
-    expect(containerfile).toContain(
-      "69abc30005d2186baf7737feacd8da35633b93cf5af38838ecff17c5f8e924f6",
-    );
-    expect(containerfile).toContain("-Dsupport_setuid=false");
-    expect(runnerStage).toContain(
-      "COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap",
-    );
-    // bubblewrap is LGPL, so its licence text has to travel with the binary.
-    expect(runnerStage).toContain(
-      "COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING",
-    );
-    expect(runnerStage).toContain('test "$(bwrap --version)" = "bubblewrap 0.11.2"');
-    expect(runnerStage).toContain("test ! -u /usr/local/bin/bwrap");
+    // Codex brings its own bubblewrap; the image ships none of its own.
+    expect(containerfile).not.toContain("bubblewrap");
+    expect(runnerStage).not.toContain("bwrap");
     expect(runnerStage).toContain("test -x /usr/bin/socat");
     expect(containerfile).toContain("AS process-supervisor-build");
     expect(runnerStage).toContain(

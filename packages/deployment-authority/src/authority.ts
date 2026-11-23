@@ -166,7 +166,7 @@ export const HostCapabilitySchema = z.enum([
    * reopen rather than refusing their message.
    */
   "quiet-tasks-v1",
-  /** A native-user Runner can inspect and update a person's installed engine CLI. */
+  /** A Runner can inspect and update a person's installed engine CLI. */
   "harness-update-v1",
   /** `asset.urls` and `/media` serve image files on the hosting computer. */
   "agent-images-v1",

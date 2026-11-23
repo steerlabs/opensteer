@@ -17,11 +17,7 @@ import {
   type RunnerId,
   type ThreadId,
 } from "@opensteer/core";
-import {
-  HarnessRegistry,
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessAdapter,
-} from "@opensteer/harness";
+import { HarnessRegistry, type HarnessAdapter } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import type { MachineAccessPolicy } from "@opensteer/protocol";
 import { harnessLaunchValidationHook, type MachineAccessValidationHook } from "@opensteer/runner";
@@ -755,7 +751,6 @@ async function startRig(
         );
         return registry;
       },
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       machineAccess: {
         helperBinary: nativeFsHelperBinary,
         hostUrl: hop.url,

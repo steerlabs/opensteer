@@ -7,7 +7,6 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createId, ModelSelectionSchema } from "@opensteer/core";
 import {
   meetsMinimumVersion,
-  nativeUserHarnessRuntimeBoundary,
   type HarnessEvent,
   type HarnessSessionContext,
 } from "@opensteer/harness";
@@ -138,8 +137,6 @@ console.log(JSON.stringify({ hookSpecificOutput: {
       instructions: "",
       platformGuide: "",
       machineAccessNotice: "No other computers are reachable.",
-      machineAccessPlatform: undefined,
-      machineAccessRelaySocket: undefined,
       providerState: {
         continuationKey: directory,
         providerHomeDirectory: undefined,
@@ -147,7 +144,6 @@ console.log(JSON.stringify({ hookSpecificOutput: {
         privateStateRoot: state,
         store: { directory: join(state, "store"), id: "fixture" },
       },
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       modelSelection: ModelSelectionSchema.parse({
         modelId: "sonnet",
         providerId: "anthropic",

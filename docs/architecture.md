@@ -475,10 +475,11 @@ The same Home on a Linux server, packaged in `deploy/home` ([operator guide](../
   Host, PostgreSQL (no network listener), the gateway, the Runner, the browser, the browser's
   egress proxy and the messaging runtime, run as one Compose pod.
 - **Separation.** The Host's keys and database credentials live in a volume the Runner does not
-  mount. The Runner has no capabilities and a seccomp policy. Agent shells run in bubblewrap with
-  the Runner's data masked.
-- **Your own agents** on a Linux Home are Codex and Claude Code (pinned in the image). The other
-  engines refuse to run on that shared Runner.
+  mount. The Runner has no capabilities and a seccomp policy. Engines run as the Runner's own user
+  under their own sandbox and safety modes, exactly as on a Mac.
+- **Your own agents** on a Linux Home: the image ships Codex, Claude Code, OpenCode and Pi, and
+  Antigravity downloads itself. Grok, Muse Code and Cursor are not in the image; they show as not
+  installed.
 - **Claim.** A self-hosted Home prints a single-use setup link for the first owner (24 hours by
   default). A managed Home is claimed through the person's Opensteer account. There is no local
   bootstrap.
@@ -510,8 +511,8 @@ each provider write, and reports back. See [cloud-computer-operations.md](cloud-
 **What the verifier proves.** `scripts/verify-home-deployment.mjs` builds the images and runs 34
 checks against a real Linux Home in a local VM, or on the Linux server it runs on with
 `OPENSTEER_HOME_VERIFIER_TARGET=local`: the seven services, HTTPS, no local bootstrap,
-single-use setup and claim, Runner enrollment, sandboxed Codex that cannot read another profile or
-the Runner's credentials, CDP through the gateway with a one-use ticket, egress through the
+single-use setup and claim, Runner enrollment, Codex running as the Runner user in Agent home with
+its account's own home, CDP through the gateway with a one-use ticket, egress through the
 pinned proxy failing closed, no PostgreSQL listener, firewall rules, a Host restart keeping the
 claim, backup, restore, refusal without `--replace`, image-only rollback and the managed install.
 On Colima it runs arm64; locally it runs the server's own architecture. It does not prove

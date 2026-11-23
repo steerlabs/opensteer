@@ -1,6 +1,5 @@
 import { dirname } from "node:path";
 import { createId } from "@opensteer/core";
-import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import type { RunnerCommand } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
@@ -118,9 +117,7 @@ function runtimeFixture(input: {
       kind: "personal" as const,
     },
     environmentId,
-    harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
     harnesses: {
-      adoptRuntimeBoundary: () => undefined,
       canRunDriver: () => true,
       close: async () => undefined,
       listDrivers: () => [],

@@ -1,10 +1,6 @@
 import type { RunnerConfig } from "@opensteer/config";
 import { createId, harnessCatalogEntry, type ThreadAccessMode } from "@opensteer/core";
-import {
-  spawnSupervised,
-  type HarnessProcessLaunchWrapper,
-  type HarnessRuntimeBoundary,
-} from "@opensteer/harness";
+import { spawnSupervised, type HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import type { MachineAccessRunContext, MachineAccessRunMachine } from "@opensteer/protocol";
 import {
   setFileMode,
@@ -49,8 +45,6 @@ export type MachineAccessPlan = MachineAccessRoutes | MachineAccessUnavailable;
  */
 export interface MachineAccessSetup {
   readonly environment: Readonly<Record<string, string>>;
-  readonly machineAccessPlatform: "darwin" | "linux";
-  readonly machineAccessRelaySocket: string;
   readonly launchDirectory: string;
   readonly relay: Pick<ShellRelay, "bind" | "suspend">;
   /** The exact launch seam the probe went through; the harness must start through the same one. */
@@ -79,7 +73,7 @@ export interface MachineAccessUnavailable {
 export type MachineAccessOutcome = MachineAccessSetup | MachineAccessUnavailable;
 
 export function isMachineAccessSetup(outcome: MachineAccessOutcome): outcome is MachineAccessSetup {
-  return "machineAccessRelaySocket" in outcome;
+  return "launchDirectory" in outcome;
 }
 
 export function isMachineAccessRoutes(plan: MachineAccessPlan): plan is MachineAccessRoutes {
@@ -197,7 +191,6 @@ export async function setupMachineAccess(options: {
   readonly logger?: RunnerLogger;
   readonly plan: MachineAccessRoutes;
   readonly privateStateRoot: string;
-  readonly runtimeBoundary: HarnessRuntimeBoundary;
   readonly temporaryDirectory?: string;
   readonly transport: Pick<RunnerConfig, "controlCaPath" | "hostUrl" | "mode">;
   readonly validationHook?: MachineAccessValidationHook;
@@ -210,11 +203,8 @@ export async function setupMachineAccess(options: {
    * will find.
    */
   readonly wrapModelCommand: HarnessProcessLaunchWrapper;
-  /**
-   * The Runner's process-launch seam for this Run, given the launch directory
-   * once it exists.
-   */
-  readonly wrapProcessLaunch: (launchDirectory: string) => Promise<HarnessProcessLaunchWrapper>;
+  /** The Runner's process-launch seam for this Run. */
+  readonly wrapProcessLaunch: HarnessProcessLaunchWrapper;
 }): Promise<MachineAccessOutcome> {
   const { plan } = options;
   const path = options.environment.PATH ?? "";
@@ -246,7 +236,6 @@ export async function setupMachineAccess(options: {
         helperBinary: plan.helperBinary,
         knownHostsPath,
         machines,
-        nativeUser: options.runtimeBoundary.kind === "native-user",
         relaySocket,
       }),
     );
@@ -276,15 +265,7 @@ export async function setupMachineAccess(options: {
     // v3.2: one probe for every Runner kind, launched the way the Runner
     // launches harness commands. The test harness may inject its own.
     const validationHook = options.validationHook ?? harnessLaunchValidationHook;
-    // A sandbox that cannot be planned is a Run that cannot start, not a probe
-    // that failed; it is cleaned up here and reported by the caller.
-    const wrapProcessLaunch = await options
-      .wrapProcessLaunch(canonicalLaunch)
-      .catch(async (error: unknown) => {
-        await relay?.close().catch(() => undefined);
-        await rm(canonicalLaunch, { force: true, recursive: true }).catch(() => undefined);
-        throw new SandboxPlanError(error);
-      });
+    const { wrapProcessLaunch } = options;
     const relayProbeError = await validateMachineAccessSetup({
       alias: machines[0]?.alias,
       environment,
@@ -330,13 +311,10 @@ export async function setupMachineAccess(options: {
       },
       environment,
       launchDirectory: canonicalLaunch,
-      machineAccessPlatform: plan.platform,
-      machineAccessRelaySocket: relaySocket,
       relay: activeRelay,
       wrapProcessLaunch,
     };
   } catch (error) {
-    if (error instanceof SandboxPlanError) throw error.cause;
     await relay?.close().catch(() => undefined);
     if (launchDirectory)
       await rm(launchDirectory, { force: true, recursive: true }).catch(() => undefined);
@@ -351,7 +329,6 @@ export function renderSshConfig(options: {
   readonly helperBinary: string;
   readonly knownHostsPath: string;
   readonly machines: readonly MachineAccessRunMachine[];
-  readonly nativeUser: boolean;
   readonly relaySocket: string;
 }): string {
   const blocks = options.machines.map((machine) => {
@@ -388,10 +365,8 @@ export function renderSshConfig(options: {
       "  CanonicalizeHostname no",
     ].join("\n");
   });
-  if (options.nativeUser) {
-    const patterns = [...options.machines.map((machine) => `!${machine.alias}`), "*"].join(",");
-    blocks.push(`Match originalhost ${patterns}\n  Include ~/.ssh/config`);
-  }
+  const patterns = [...options.machines.map((machine) => `!${machine.alias}`), "*"].join(",");
+  blocks.push(`Match originalhost ${patterns}\n  Include ~/.ssh/config`);
   return `${blocks.join("\n\n")}\n`;
 }
 
@@ -538,15 +513,6 @@ export function renderMachineAccessNotice(
     "Paths are absolute or relative to that computer's home. Commands run as that computer's Opensteer account. A refusal means the owner's access settings said no, not that your command was wrong. Sessions end when your Run ends. Details: the opensteer:computers skill.",
   );
   return lines.join("\n");
-}
-
-/** Carries a sandbox planning failure past the probe-failure handling that follows it. */
-class SandboxPlanError extends Error {
-  override readonly cause: unknown;
-  constructor(cause: unknown) {
-    super("The Runner sandbox could not be planned for this Run");
-    this.cause = cause;
-  }
 }
 
 /**

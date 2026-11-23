@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, type RunAttempt, type RunId, type ThreadId } from "@opensteer/core";
-import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { OpencodeHarnessDriver } from "@opensteer/harness-opencode";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
@@ -76,7 +76,6 @@ integration("Run attempts", () => {
         );
         return registry;
       },
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
     const model = stack.catalog.models[0]!;

@@ -35,7 +35,6 @@ import {
 import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import {
   HarnessRegistry,
-  isolatedServiceHarnessRuntimeBoundary,
   type HarnessAdapter,
   type HarnessDriver,
   type HarnessEvent,
@@ -358,7 +357,6 @@ it("serves Agent home files, published output images, folder plugins, static app
       deploymentShape: { kind: "personal" },
       environmentId,
       harnesses,
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       maxConcurrentRuns: 1,
       maxConcurrentTriggerPrograms: 1,
       mode: "development",

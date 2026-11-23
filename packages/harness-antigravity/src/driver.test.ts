@@ -8,7 +8,6 @@ import {
 import { AcpHarnessAdapter, type AcpSessionConfigOption } from "@opensteer/harness-acp";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
-  nativeUserHarnessRuntimeBoundary,
   spawnSupervised,
   type HarnessEvent,
   type HarnessRunInput,
@@ -495,8 +494,6 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gemini-test",
       options: {},
@@ -510,7 +507,6 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
       providerHomeDirectory: join(directory, "profile"),
       store: { directory, id: "test-store" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),

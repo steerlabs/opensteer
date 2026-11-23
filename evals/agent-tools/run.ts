@@ -149,7 +149,6 @@ async function main() {
     identity = {
       engine,
       accessMode: "full-access",
-      runtimeBoundary: "isolated-service",
       engineVersion: await engineVersion(engine),
       model: selection.modelId,
       providerId: selection.providerId,

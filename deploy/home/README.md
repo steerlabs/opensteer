@@ -151,15 +151,12 @@ not a boundary against an agent that controls Chromium. Task shells intentionall
 use the VM's public IP. The pod firewall blocks private and link-local destinations
 outside loopback, including instance metadata.
 
-Task shells run in bubblewrap. The Runner identity and its enrollment and
-browser bridge secret mounts are under the masked Runner data directory. The
-sandbox re-exposes Agent home, the active engine profile, and Run-specific files
-and keeps the loopback network for browser and MCP access. Linux must support
-unprivileged user namespaces. On AppArmor hosts, install `apparmor` so the
-operator can load the Runner user-namespace profile. The Runner container runs
-with zero capabilities and the image's seccomp policy. The Runner requires a
-private PID namespace and a fresh `/proc` for each sandbox. In Compose,
-`systempaths=unconfined` allows bubblewrap to mount that procfs.
+Engines run as the Runner container's own user, under each engine's own sandbox
+and safety modes, exactly as on a Mac; their sign-ins and settings stay in that
+user's home, the `engine-home` volume. Codex's sandbox needs unprivileged user
+namespaces: on AppArmor hosts, install `apparmor` so the operator can load the
+Runner user-namespace profile. The Runner container runs with zero capabilities
+and the image's seccomp policy.
 
 ### Shared loopback
 

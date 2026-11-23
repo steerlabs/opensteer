@@ -127,8 +127,6 @@ services:
     security_opt:
       - no-new-privileges:true
       - seccomp:./runner-oci.json
-      # Docker masks paths in /proc by default, preventing bubblewrap from mounting its own procfs.
-      - systempaths=unconfined
     environment:
       HOME: /home/opensteer
       OPENSTEER_DEPLOYMENT_KIND: personal
@@ -136,7 +134,6 @@ services:
       OPENSTEER_HOST_URL: http://127.0.0.1:4310
       OPENSTEER_ENVIRONMENT_ID_FILE: /var/lib/opensteer/.secrets/environment_id
       OPENSTEER_RUNNER_KIND: main
-      OPENSTEER_RUNNER_ISOLATE_HARNESSES: "true"
       OPENSTEER_RUNNER_DATA_DIR: /var/lib/opensteer
       OPENSTEER_RUNNER_READINESS_PATH: /var/lib/opensteer/readiness/connected.json
       OPENSTEER_RUNNER_ENROLLMENT_TOKEN_FILE: /var/lib/opensteer/.secrets/main_token

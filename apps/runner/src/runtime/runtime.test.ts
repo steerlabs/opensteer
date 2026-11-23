@@ -39,7 +39,6 @@ import {
   runTitleProcess,
   HarnessSteerDeliveryUnknownError,
   HarnessRegistry,
-  nativeUserHarnessRuntimeBoundary,
   SubagentNodes,
   type HarnessAdapter,
   type HarnessAuthenticationStart,
@@ -73,7 +72,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getCurrentTest } from "vitest/suite";
 import { prepareHarnessProviderState } from "../harness/harness-provider-state.js";
 import { createHarnessRegistry } from "../harness/harness-registry.js";
-import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
 import { RunnerRuntime, harnessProcessEnvironment, type RunnerMessageSink } from "./runtime.js";
 import { warmEngineKey, WarmEnginePool } from "./warm-engine-pool.js";
@@ -573,18 +571,7 @@ describe("RunnerRuntime", () => {
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
-    const plans: HarnessSandboxRunPlan[] = [];
-    const runtime = configuredRuntime({
-      environmentId,
-      harnessSandbox: {
-        plan: async (plan) => {
-          plans.push(plan);
-          return (launch) => launch;
-        },
-        planProgram: async () => (launch) => launch,
-      },
-      registry,
-    });
+    const runtime = configuredRuntime({ environmentId, registry });
     const base = executeCommand(environmentId);
     const sessionId = randomUUID();
     const execute = {
@@ -606,11 +593,6 @@ describe("RunnerRuntime", () => {
       expect(await call.offer).toBe("private-offer");
       expect(driver.context?.agentTools.token).not.toBe(execute.context.agentTools.token);
       expect(driver.context?.threadStateDirectory).toContain(`call-${execute.context.runId}`);
-      // The call's own directory is writable in the sandbox: its engine logs there.
-      expect(plans[0]).toMatchObject({
-        threadStateDirectory: driver.context?.threadStateDirectory,
-        threadStateWritable: true,
-      });
       call.answer("private-answer");
       expect(await relay).toEqual({ ok: true, answer: "private-answer" });
       await runtime.handleCommand(
@@ -635,27 +617,12 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("starts the harness through the Runner sandbox's plan for this Run", async () => {
+  it("starts the harness as the driver built it, carrying this Run's scope", async () => {
     const driver = new FakeHarnessDriver();
     const registry = new HarnessRegistry();
     registry.registerDriver(driver);
     const environmentId = createId("environment");
-    const plans: HarnessSandboxRunPlan[] = [];
-    const runtime = configuredRuntime({
-      environmentId,
-      harnessSandbox: {
-        plan: async (plan) => {
-          plans.push(plan);
-          return (launch) => ({
-            ...launch,
-            executable: "bwrap",
-            args: ["--", launch.executable, ...launch.args],
-          });
-        },
-        planProgram: async () => (launch) => launch,
-      },
-      registry,
-    });
+    const runtime = configuredRuntime({ environmentId, registry });
     const execute = executeCommand(environmentId);
     try {
       await reconcile(registry, execute);
@@ -665,35 +632,26 @@ describe("RunnerRuntime", () => {
       expect(context?.threadStateDirectory).toBe(
         join(testPrivateStateRoot, "threads", execute.context.threadId),
       );
-      expect(plans).toHaveLength(1);
-      expect(plans[0]?.threadStateWritable).toBeUndefined();
-      expect(plans[0]).toMatchObject({
-        launchDirectory: undefined,
-        threadStateDirectory: context?.threadStateDirectory,
-        workspacePath: context?.workspacePath,
-        writableRoots: context?.writableRoots,
-      });
-      expect(plans[0]?.providerState).toBe(context?.providerState);
       const wrapped = context?.wrapProcessLaunch({
         args: ["app-server"],
         cwd: "/runner/runs/control/workspace",
         environment: {},
         executable: "/opt/codex",
       });
-      // Inside the sandbox the engine carries this Run's scope, by which the
-      // Runner finds and ends whatever it starts.
+      // The engine carries this Run's scope, by which the Runner finds and ends
+      // whatever it starts; nothing else wraps it.
       expect(wrapped).toEqual({
-        args: ["--", "/opt/codex", "app-server"],
+        args: ["app-server"],
         cwd: "/runner/runs/control/workspace",
         environment: {
           [executionScopeVariable]: expect.stringMatching(
             new RegExp(`\\.${execute.context.runId}-${execute.context.bindingGeneration}$`, "u"),
           ),
         },
-        executable: "bwrap",
+        executable: "/opt/codex",
       });
-      // A sandbox wraps each Run's own engine process, so none is shared.
-      expect(context?.sharedEngine).toBeUndefined();
+      // The account's Runs may share one engine process.
+      expect(context?.sharedEngine).toBeDefined();
       expect(context?.commandEnvironment[executionScopeVariable]).toBe(
         wrapped?.environment[executionScopeVariable],
       );
@@ -840,7 +798,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId: createId("environment"),
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       plugins: noPlugins,
       maxConcurrentRuns: 1,
@@ -954,7 +911,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId: createId("environment"),
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       plugins: noPlugins,
       maxConcurrentRuns: 1,
@@ -2714,7 +2670,6 @@ describe("RunnerRuntime", () => {
             environment: {},
             privateStateRoot: dirname(stateRoot),
             stateDirectory: stateRoot,
-            runtimeBoundary: nativeUserHarnessRuntimeBoundary,
             storeScope: driver.providerStoreScope,
           },
         );
@@ -3461,7 +3416,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: dirname(testPrivateStateRoot),
@@ -3543,7 +3497,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       plugins: noPlugins,
       maxConcurrentRuns: 1,
@@ -3691,7 +3644,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       plugins: noPlugins,
       maxConcurrentRuns: 2,
@@ -3780,7 +3732,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: dirname(testPrivateStateRoot),
@@ -4017,7 +3968,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: dirname(stateRoot),
@@ -4040,7 +3990,6 @@ describe("RunnerRuntime", () => {
       expect(driver.context?.environment.OPENSTEER_RUNNER_STATE_DIR).toBeUndefined();
       expect(driver.context?.environment.CLAUDE_CONFIG_DIR).toBe(claudeConfigDirectory);
       expect(driver.context?.environment.NODE_EXTRA_CA_CERTS).toBe("/control-ca/root.crt");
-      expect(driver.context?.runtimeBoundary).toEqual({ kind: "native-user" });
     } finally {
       if (previousClaudeConfigDirectory === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDirectory;
@@ -4073,7 +4022,6 @@ describe("RunnerRuntime", () => {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: testDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       plugins: async () => ({
         cleanup: async () => undefined,
@@ -5537,7 +5485,7 @@ class FakeHarnessDriver implements HarnessDriver {
   /** Mirrors Codex: one native session store for every profile of this driver. */
   readonly providerStoreScope: HarnessProviderStoreScope = {
     kind: "driver-shared",
-    nativeUserHome: { environmentVariable: "TEST_DRIVER_HOME", relativeHomePath: ".test-driver" },
+    ambientHome: { environmentVariable: "TEST_DRIVER_HOME", relativeHomePath: ".test-driver" },
   };
   readonly #sessionFactory: (context: HarnessSessionContext) => HarnessSession;
   context: HarnessSessionContext | undefined;
@@ -6490,7 +6438,6 @@ function configuredRuntime(input: {
   readonly attachmentCache?: AttachmentCache;
   readonly containment?: ConstructorParameters<typeof RunnerRuntime>[0]["containment"];
   readonly manualLeaseGrants?: boolean;
-  readonly harnessSandbox?: HarnessProcessSandbox;
   readonly deploymentShape?: ConstructorParameters<typeof RunnerRuntime>[0]["deploymentShape"];
   readonly environmentId: ReturnType<typeof createId<"environment">>;
   readonly logger?: ConstructorParameters<typeof RunnerRuntime>[0]["logger"];
@@ -6515,8 +6462,6 @@ function configuredRuntime(input: {
       browserHarnessExecutable: testBrowserHarnessExecutable,
       deploymentShape: input.deploymentShape ?? testDeploymentShape,
       environmentId: input.environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
-      ...(input.harnessSandbox ? { harnessSandbox: input.harnessSandbox } : {}),
       harnesses: input.registry,
       ...(input.containment ? { containment: input.containment } : {}),
       ...(input.logger ? { logger: input.logger } : {}),
@@ -6595,7 +6540,6 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
     instructions: null,
     machineAccessLaunch: "",
     providerSessionReference: null,
-    runtimeBoundary: "native-user",
     skills: undefined,
     homeSkillsDigest: "",
     workspacePath: "/workspace",
@@ -6647,7 +6591,7 @@ it("creates the attachment directory before launch and drains file work before R
   Object.defineProperty(driver, "capabilities", {
     value: {
       ...fakeHarnessCapabilities,
-      messageAttachments: { darwinIsolatedServiceSandbox: true },
+      messageAttachments: {},
     },
   });
   registry.registerDriver(driver);

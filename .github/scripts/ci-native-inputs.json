@@ -540,7 +540,6 @@
     "apps/runner/src/runtime/readiness-file.ts",
     "apps/runner/src/runtime/runtime.ts",
     "apps/runner/src/runtime/warm-engine-pool.ts",
-    "apps/runner/src/sandbox/harness-sandbox.ts",
     "apps/runner/src/settings/agent-home-settings.ts",
     "apps/runner/src/shell/full-disk-access.ts",
     "apps/runner/src/shell/machine-access-setup.ts",

@@ -1,9 +1,5 @@
 import { ModelSelectionSchema, createId, type HarnessInstanceId } from "@opensteer/core";
-import {
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessEvent,
-  type HarnessSessionContext,
-} from "@opensteer/harness";
+import { type HarnessEvent, type HarnessSessionContext } from "@opensteer/harness";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -329,7 +325,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         config: {},
         environment: context.environment,
         providerState: context.providerState,
-        runtimeBoundary: context.runtimeBoundary,
         signal: context.signal,
         sourceId: "xai",
         workingDirectory: workspace,
@@ -408,49 +403,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     expect(requestHeaders?.get("X-XAI-Token-Auth")).toBe("xai-grok-cli");
     expect(requestHeaders?.get("x-grok-client-mode")).toBe("cli");
   });
-
-  it("refuses shared Runner inspection, authentication, and session creation", async () => {
-    const root = await temporaryDirectory();
-    const workspace = join(root, "workspace");
-    await mkdir(workspace);
-    const context = {
-      ...sessionContext(root, workspace, {}),
-      runtimeBoundary: { kind: "isolated-service" as const },
-    };
-    const driver = new GrokHarnessDriver({ executable: "must-not-run" });
-    await expect(
-      driver.inspect({
-        config: {},
-        environment: context.environment,
-        providerState: context.providerState,
-        runtimeBoundary: context.runtimeBoundary,
-        signal: context.signal,
-        sourceId: "xai",
-        workingDirectory: workspace,
-      }),
-    ).resolves.toMatchObject({ status: "unavailable" });
-    await expect(
-      driver.authenticate(
-        {
-          config: {},
-          environment: context.environment,
-          providerState: context.providerState,
-          runtimeBoundary: context.runtimeBoundary,
-          signal: context.signal,
-          sourceId: "xai",
-          workingDirectory: workspace,
-        },
-        { methodId: "grok-device-code" },
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    const adapter = await driver.create({
-      config: {},
-      instanceId: context.harnessInstanceId,
-      sourceId: "xai",
-    });
-    await expect(adapter.startSession(context)).rejects.toMatchObject({ code: "forbidden" });
-    await adapter.close();
-  });
 });
 
 function sessionContext(
@@ -477,8 +429,6 @@ function sessionContext(
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: undefined,
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "grok-4.6",
       options: { effort: "high" },
@@ -492,7 +442,6 @@ function sessionContext(
       providerHomeDirectory: undefined,
       store: { directory: join(root, "store"), id: "grok-test" },
     },
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),

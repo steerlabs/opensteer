@@ -177,7 +177,6 @@ export function warmEngineKey(input: {
   /** What the engine's launch directory for other computers was written from. */
   readonly machineAccessLaunch: string;
   readonly providerSessionReference: string | null;
-  readonly runtimeBoundary: string;
   /** The skill catalog the engine was started with; an engine reads it at startup. */
   readonly skills: HarnessSkillPlan | undefined;
   readonly homeSkillsDigest: string;
@@ -228,7 +227,6 @@ export function warmEngineKey(input: {
         context.browserCdp.url,
         input.attachmentRoot,
         input.baseEnvironment,
-        input.runtimeBoundary,
         input.machineAccessLaunch,
       ]),
     )

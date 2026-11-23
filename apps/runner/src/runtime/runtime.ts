@@ -18,7 +18,7 @@ import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { platform, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
@@ -72,7 +72,6 @@ import {
   spawnSupervised,
   type HarnessProcessLaunchWrapper,
   type HarnessSharedEngineLaunch,
-  type HarnessRuntimeBoundary,
   type HarnessSession,
   type ResolvedAttachment,
 } from "@opensteer/harness";
@@ -134,11 +133,6 @@ import {
   type MachineAccessValidationHook,
 } from "../shell/machine-access-setup.js";
 import {
-  harnessSandboxRequired,
-  type HarnessProcessSandbox,
-  type HarnessSandboxRunPlan,
-} from "../sandbox/harness-sandbox.js";
-import {
   existingIsolatedHarnessProviderState,
   prepareHarnessProviderState,
   removeHarnessProviderState,
@@ -184,10 +178,7 @@ export interface RunnerRuntimeOptions {
   readonly deploymentShape: RunnerConfig["deploymentShape"];
   readonly environmentId: RunnerCommand["environmentId"];
   readonly harnesses: HarnessRegistry;
-  /** Present exactly when {@link harnessSandboxRequired} says so for this Runner. */
-  readonly harnessSandbox?: HarnessProcessSandbox;
   readonly plugins: typeof cacheRunPlugins;
-  readonly harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly logger?: RunnerLogger;
   readonly maxConcurrentRuns: number;
   /**
@@ -403,7 +394,6 @@ export class RunnerRuntime {
   readonly #deploymentShape: RunnerConfig["deploymentShape"];
   readonly #environmentId: RunnerCommand["environmentId"];
   readonly #harnesses: HarnessRegistry;
-  readonly #harnessSandbox: HarnessProcessSandbox | undefined;
   readonly #harnessAuthenticationLifetime = new AbortController();
   readonly #harnessAuthenticationStartups = new Set<Promise<void>>();
   readonly #harnessAuthenticationStartupsByInstance = new Map<string, Promise<void>>();
@@ -419,7 +409,6 @@ export class RunnerRuntime {
   readonly #installationLifetime = new AbortController();
   readonly #installationTasks = new Set<Promise<void>>();
   readonly #plugins: typeof cacheRunPlugins;
-  readonly #harnessRuntimeBoundary: HarnessRuntimeBoundary;
   readonly #ledger = new CommandLedger();
   readonly #logger: RunnerLogger | undefined;
   readonly #maxConcurrentRuns: number;
@@ -604,15 +593,6 @@ export class RunnerRuntime {
     this.#environmentId = options.environmentId;
     this.#harnesses = options.harnesses;
     this.#plugins = options.plugins;
-    this.#harnessRuntimeBoundary = options.harnessRuntimeBoundary;
-    options.harnesses.adoptRuntimeBoundary(options.harnessRuntimeBoundary);
-    if (
-      harnessSandboxRequired(platform(), options.harnessRuntimeBoundary) &&
-      !options.harnessSandbox
-    ) {
-      throw new Error("An isolated-service Linux Runner requires the Runner-owned harness sandbox");
-    }
-    this.#harnessSandbox = options.harnessSandbox;
     this.#logger = options.logger;
     this.#maxConcurrentRuns = boundedPositiveInteger(
       options.maxConcurrentRuns,
@@ -930,10 +910,7 @@ export class RunnerRuntime {
 
   #canDeliverMessageAttachments(driverKind: HarnessId): boolean {
     const capability = this.#harnesses.driverCapabilities(driverKind)?.messageAttachments;
-    if (!this.#attachmentCache || !capability) return false;
-    if (this.#harnessRuntimeBoundary.kind === "native-user" || process.platform === "linux")
-      return true;
-    return process.platform === "darwin" && capability.darwinIsolatedServiceSandbox === true;
+    return Boolean(this.#attachmentCache && capability);
   }
 
   subscribeHarnessPreparation(listener: (instanceId: HarnessInstanceId) => void): () => void {
@@ -941,9 +918,7 @@ export class RunnerRuntime {
   }
 
   providerStateModes(): readonly ("ambient" | "isolated")[] {
-    return this.#harnessRuntimeBoundary.kind === "native-user"
-      ? ["ambient", "isolated"]
-      : ["isolated"];
+    return ["ambient", "isolated"];
   }
 
   /**
@@ -985,7 +960,6 @@ export class RunnerRuntime {
           const result = await this.#harnesses.inspectDefinition(
             definition,
             options.environment,
-            this.#harnessRuntimeBoundary,
             providerState,
             this.#privateStateDirectory,
             signal,
@@ -1065,20 +1039,12 @@ export class RunnerRuntime {
   }
 
   /**
-   * The model servers on this computer, or the one at `address`. Only a
-   * computer the person owns looks: on a shared Runner the servers belong to
-   * whoever runs the machine, and no engine that talks to them runs there.
+   * The model servers on this computer, or the one at `address`.
    */
   async discoverModelServers(
     address: string | undefined,
     signal: AbortSignal,
   ): Promise<readonly ModelServer[]> {
-    if (this.#harnessRuntimeBoundary.kind !== "native-user") {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Model servers are used only on a computer you own.",
-      });
-    }
     const options = {
       ...(this.#modelServerHome ? { home: this.#modelServerHome } : {}),
       signal,
@@ -1140,22 +1106,12 @@ export class RunnerRuntime {
           mode: 0o700,
         });
         directory = await mkdtemp(join(this.#privateStateDirectory, "background", "text-"));
-        const wrapProcessLaunch = await this.#wrapProcessLaunch({
-          environment: options.environment,
-          providerState,
-          launchDirectory: undefined,
-          pluginCacheDirectories: [],
-          threadStateDirectory: directory,
-          workspacePath: directory,
-          writableRoots: [directory],
-        });
         abort.signal.throwIfAborted();
         return await adapter.generateText({
           context: {
             environment: options.environment,
             providerState,
-            runtimeBoundary: this.#harnessRuntimeBoundary,
-            wrapProcessLaunch,
+            wrapProcessLaunch: (launch) => launch,
             scratchDirectory: directory,
           },
           modelSelection: request.modelSelection,
@@ -1290,7 +1246,6 @@ export class RunnerRuntime {
           await this.#harnesses.removeDefinition(
             harness,
             options.environment,
-            this.#harnessRuntimeBoundary,
             providerState,
             this.#privateStateDirectory,
             this.#harnessAuthenticationLifetime.signal,
@@ -1315,7 +1270,6 @@ export class RunnerRuntime {
         await this.#harnesses.logoutDefinition(
           harness,
           options.environment,
-          this.#harnessRuntimeBoundary,
           providerState,
           this.#privateStateDirectory,
           this.#harnessAuthenticationLifetime.signal,
@@ -1464,7 +1418,6 @@ export class RunnerRuntime {
         const started = await this.#harnesses.authenticateDefinition(
           harness,
           options.environment,
-          this.#harnessRuntimeBoundary,
           providerState,
           this.#privateStateDirectory,
           startupSignal,
@@ -1835,13 +1788,6 @@ export class RunnerRuntime {
     driverKind: HarnessId,
     sink: RunnerMessageSink,
   ): Promise<CommandDecision> {
-    if (this.#harnessRuntimeBoundary.kind !== "native-user") {
-      return reject(
-        "forbidden",
-        "Installed AI engines can only be updated on a person's computer",
-        false,
-      );
-    }
     if (this.#driverMaintenance.has(driverKind)) {
       return reject("conflict", "This AI engine is already updating", true);
     }
@@ -2690,18 +2636,14 @@ export class RunnerRuntime {
   }
 
   /**
-   * A Trigger or Watch program's launch: in the Runner sandbox where Runs are
-   * sandboxed, and marked with its execution's scope so nothing it starts
-   * outlives it.
+   * A Trigger or Watch program's launch, marked with its execution's scope so
+   * nothing it starts outlives it.
    */
   async #planProgramLaunch(
     executionId: string,
-    launch: Parameters<ProgramLaunchPlanner>[0],
+    _launch: Parameters<ProgramLaunchPlanner>[0],
   ): Promise<HarnessProcessLaunchWrapper> {
-    return this.#containment.wrap(
-      executionId,
-      this.#harnessSandbox ? await this.#harnessSandbox.planProgram(launch) : (input) => input,
-    );
+    return this.#containment.wrap(executionId, (input) => input);
   }
 
   async #execute(active: ActiveRun): Promise<void> {
@@ -2882,7 +2824,6 @@ export class RunnerRuntime {
           providerSessionReference,
           skills,
           homeSkillsDigest: homeSkills.digest,
-          runtimeBoundary: this.#harnessRuntimeBoundary.kind,
           workspacePath,
           writableRoots,
         });
@@ -2970,18 +2911,6 @@ export class RunnerRuntime {
       active.credentialProxy = credentialProxy;
       const warmScope = warmEngine?.scope ?? (warmKey ? `warm-${randomUUID()}` : undefined);
       if (warmScope) active.containmentScope = warmScope;
-      // Everything the sandbox must expose is known before the harness starts;
-      // only the machine-access launch directory arrives during setup.
-      const sandboxPlan = {
-        ...(attachmentDirectory ? { attachmentDirectory } : {}),
-        environment: baseEnvironment,
-        pluginCacheDirectories: runSkills.directories,
-        providerState,
-        threadStateDirectory,
-        ...(context.voiceCall ? { threadStateWritable: true as const } : {}),
-        workspacePath: workingDirectory,
-        writableRoots,
-      } satisfies Omit<HarnessSandboxRunPlan, "launchDirectory">;
       let machineAccessUnavailable: MachineAccessUnavailableReason | undefined =
         machineAccessPlan && !isMachineAccessRoutes(machineAccessPlan)
           ? machineAccessPlan.reason
@@ -2996,7 +2925,6 @@ export class RunnerRuntime {
             ...attachmentContext,
             environment: baseEnvironment,
             providerState,
-            runtimeBoundary: this.#harnessRuntimeBoundary,
             workspacePath: workingDirectory,
             writableRoots,
           },
@@ -3006,7 +2934,6 @@ export class RunnerRuntime {
           ...(this.#logger ? { logger: this.#logger } : {}),
           plan: machineAccessRoutes,
           privateStateRoot: this.#dataDirectory,
-          runtimeBoundary: this.#harnessRuntimeBoundary,
           ...(machineAccess.validationHook ? { validationHook: machineAccess.validationHook } : {}),
           transport: {
             controlCaPath: machineAccess.controlCaPath,
@@ -3017,11 +2944,7 @@ export class RunnerRuntime {
           // proves is what the harness finds.
           workspacePath: workingDirectory,
           wrapModelCommand,
-          wrapProcessLaunch: async (launchDirectory) =>
-            this.#containment.wrap(
-              active.containmentScope,
-              await this.#wrapProcessLaunch({ ...sandboxPlan, launchDirectory }),
-            ),
+          wrapProcessLaunch: this.#containment.wrap(active.containmentScope, (launch) => launch),
         });
         if (isMachineAccessSetup(outcome)) machineAccessSetup = outcome;
         else machineAccessUnavailable = outcome.reason;
@@ -3032,8 +2955,7 @@ export class RunnerRuntime {
       // every process it starts carries this Run's scope.
       const wrapProcessLaunch = this.#containment.wrap(
         active.containmentScope,
-        launch?.wrapProcessLaunch ??
-          (await this.#wrapProcessLaunch({ ...sandboxPlan, launchDirectory: undefined })),
+        launch?.wrapProcessLaunch ?? ((input) => input),
       );
       const runVariables = {
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
@@ -3051,9 +2973,10 @@ export class RunnerRuntime {
         ...runVariables,
         [executionScopeVariable]: this.#containment.scope(active.containmentScope),
       });
-      const sharedEngine = this.#harnessSandbox
-        ? undefined
-        : await this.#sharedEngineLaunch(context.harnessInstanceId, baseEnvironment);
+      const sharedEngine = await this.#sharedEngineLaunch(
+        context.harnessInstanceId,
+        baseEnvironment,
+      );
       const machineAccessContext = context.machineAccess;
       if (context.voiceCall && !adapter.capabilities.voiceCalls)
         throw new OpensteerError({
@@ -3093,8 +3016,6 @@ export class RunnerRuntime {
                 },
                 machineAccessUnavailable,
               ),
-        machineAccessPlatform: launch?.machineAccessPlatform,
-        machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
         imageStore: this.#imageStore,
         platformGuide: [
@@ -3104,8 +3025,7 @@ export class RunnerRuntime {
           .filter(Boolean)
           .join("\n\n"),
         providerState,
-        runtimeBoundary: this.#harnessRuntimeBoundary,
-        ...(sharedEngine ? { sharedEngine } : {}),
+        sharedEngine,
         signal: engineLifetime.signal,
         skills,
         threadId: context.threadId,
@@ -3947,14 +3867,13 @@ export class RunnerRuntime {
 
   /**
    * Everything the Runner needs to resolve one profile's private storage. The
-   * environment is part of it because a `native-user` Runner's store is the
-   * ambient provider home, which the harness environment may relocate.
+   * environment is part of it because a driver-shared store is the ambient
+   * provider home, which the harness environment may relocate.
    */
   async #providerStateOptions(driverKind: HarnessId): Promise<HarnessProviderStateOptions> {
     return {
       environment: await this.#harnessEnvironment(driverKind),
       privateStateRoot: this.#dataDirectory,
-      runtimeBoundary: this.#harnessRuntimeBoundary,
       stateDirectory: this.#privateStateDirectory,
       storeScope: this.#harnesses.providerStoreScope(driverKind),
     };
@@ -3976,15 +3895,6 @@ export class RunnerRuntime {
       workingDirectory,
       wrapProcessLaunch: this.#containment.wrap(`engine-${harnessInstanceId}`, (launch) => launch),
     };
-  }
-
-  /**
-   * The Runner's one decision about where a Run's harness process tree runs.
-   * With a sandbox it is the sandbox's plan for this Run; without one the
-   * launch is returned as the driver built it.
-   */
-  async #wrapProcessLaunch(plan: HarnessSandboxRunPlan): Promise<HarnessProcessLaunchWrapper> {
-    return this.#harnessSandbox ? this.#harnessSandbox.plan(plan) : (launch) => launch;
   }
 
   async #harnessEnvironment(driverKind: HarnessId): Promise<Readonly<Record<string, string>>> {

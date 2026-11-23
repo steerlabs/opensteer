@@ -6,8 +6,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelSelectionSchema, createId, type HarnessInstanceId } from "@opensteer/core";
 import {
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   type HarnessEvent,
   type HarnessInput,
   type HarnessRunInput,
@@ -96,21 +94,6 @@ describe("Muse Code inspection", () => {
     expect(await fixture.driver.inspect?.(fixture.inspection)).toMatchObject({
       status: "authentication-required",
     });
-  });
-
-  it("refuses a shared isolated-service Runner before spawning Muse", async () => {
-    const fixture = await setup("happy");
-    expect(
-      await fixture.driver.inspect?.({
-        ...fixture.inspection,
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      }),
-    ).toEqual({
-      detail:
-        "Muse Code keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.",
-      status: "unavailable",
-    });
-    expect(await fixture.messages()).toEqual([]);
   });
 });
 
@@ -710,8 +693,6 @@ async function setup(scenario: string) {
     historyWindow: { byteCount: 0, hasEarlier: false, itemCount: 0 },
     instructions: "Workspace instructions.",
     machineAccessNotice: "No other computers are reachable.",
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     modelSelection: ModelSelectionSchema.parse({
       modelId: "muse-test",
       options: { effort: "high" },
@@ -719,7 +700,6 @@ async function setup(scenario: string) {
     }),
     platformGuide: "Opensteer platform guide.",
     providerState,
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     skills: undefined,
     threadId: createId("thread"),
@@ -737,7 +717,6 @@ async function setup(scenario: string) {
       config: {},
       environment,
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "meta",
       workingDirectory: directory,

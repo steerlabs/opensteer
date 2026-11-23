@@ -4,10 +4,8 @@ import type {
   AgentEventType,
   AssignmentRunContext,
   DelegationModelChoice,
-  DeploymentKind,
   EnvironmentId,
   RunnerEventData,
-  ExecutionEnvironmentKind,
   HarnessId,
   HarnessInstanceId,
   HarnessInstanceStateKind,
@@ -37,8 +35,6 @@ export interface HarnessCapabilities {
   readonly approvals: boolean;
   readonly attachments: boolean;
   readonly messageAttachments?: {
-    /** The provider sandbox denies sibling Thread caches on a shared macOS Runner. */
-    readonly darwinIsolatedServiceSandbox?: true;
     /**
      * The largest stored image the driver guarantees to deliver on every path it
      * offers, prompt and (with `steering`) a running turn. The driver fits what
@@ -92,18 +88,6 @@ export interface HarnessCapabilities {
 }
 
 /**
- * One physical trust boundary for provider state and model-executed tools.
- *
- * `native-user` means the Runner process belongs to exactly one person and runs
- * as them, so the provider sign-ins already on that computer are theirs to use.
- * `isolated-service` means the Runner protects its own state from engines and
- * gives each profile a Runner-managed provider home.
- */
-export interface HarnessRuntimeBoundary {
-  readonly kind: "native-user" | "isolated-service";
-}
-
-/**
  * The native session store one or more profiles share. It is the unit that can
  * resume a provider conversation, which is why the continuation identity is
  * derived from `id` and never from a profile or a credential.
@@ -120,13 +104,13 @@ export interface HarnessProviderStore {
  * store; `profile` keeps each profile's conversations to itself.
  *
  * A `driver-shared` driver must also say where its ambient home lives, because
- * on a `native-user` Runner the person's own CLI home is the store.
+ * an ambient profile's store is the Runner user's own CLI home.
  */
 export type HarnessProviderStoreScope =
   | { readonly kind: "profile" }
   | {
       readonly kind: "driver-shared";
-      readonly nativeUserHome: {
+      readonly ambientHome: {
         readonly environmentVariable: string;
         /** Resolved against the operating-system home directory. */
         readonly relativeHomePath: string;
@@ -147,9 +131,7 @@ export interface HarnessProviderState {
   /**
    * The Runner's whole data directory: its identity key, shell host key,
    * Workspace mount credentials, and every profile's provider state live under
-   * it. Model-executed tools must never read it; a driver's own sandbox denies
-   * it, and on an isolated-service Linux Runner the Runner's sandbox masks it
-   * before the harness process even starts.
+   * it.
    */
   readonly privateStateRoot: string;
   readonly store: HarnessProviderStore;
@@ -167,12 +149,12 @@ export interface HarnessProcessLaunch {
 }
 
 /**
- * The Runner's one seam into how a Run's harness process tree is started. On an
- * isolated-service Linux Runner it wraps the launch in the Runner-owned sandbox
- * that masks Runner-private state; elsewhere it returns the launch unchanged. A
- * driver applies it to the exact command it spawns for the Run's harness
- * process and its private title process, after every provider flag is in place: sign-in,
- * inspection, and sign-out run Runner-side and are not model-driven.
+ * The Runner's one seam into how a Run's harness process tree is started: it
+ * places the launch under the execution's containment, so the Runner can prove
+ * every process of the Run gone. A driver applies it to the exact command it
+ * spawns for the Run's harness process and its private title process, after
+ * every provider flag is in place: sign-in, inspection, and sign-out run
+ * Runner-side and are not model-driven.
  */
 export type HarnessProcessLaunchWrapper = (launch: HarnessProcessLaunch) => HarnessProcessLaunch;
 
@@ -183,27 +165,8 @@ export interface HarnessModelCommandContext {
   readonly attachmentRoot?: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly providerState: HarnessProviderState;
-  readonly runtimeBoundary: HarnessRuntimeBoundary;
   readonly workspacePath: string;
   readonly writableRoots: readonly string[];
-}
-
-export const nativeUserHarnessRuntimeBoundary: HarnessRuntimeBoundary = Object.freeze({
-  kind: "native-user",
-});
-
-export const isolatedServiceHarnessRuntimeBoundary: HarnessRuntimeBoundary = Object.freeze({
-  kind: "isolated-service",
-});
-
-export function harnessRuntimeBoundaryForRunner(runner: {
-  readonly isolateHarnesses?: boolean;
-  readonly deploymentKind: DeploymentKind;
-  readonly runnerKind: ExecutionEnvironmentKind;
-}): HarnessRuntimeBoundary {
-  return runner.isolateHarnesses
-    ? isolatedServiceHarnessRuntimeBoundary
-    : nativeUserHarnessRuntimeBoundary;
 }
 
 /**
@@ -294,7 +257,7 @@ export interface HarnessSessionContext {
   readonly voiceCall?: HarnessVoiceCall;
   /** Model-visible, verified per-Thread attachment directory, outside private state. */
   readonly attachmentDirectory?: string;
-  /** Shared cache root that a provider sandbox must deny on a shared Runner. */
+  /** The attachment cache root `attachmentDirectory` is a child of. */
   readonly attachmentRoot?: string;
   /** Durable per-Thread access policy snapshotted onto this Run. */
   readonly accessMode: ThreadAccessMode;
@@ -314,10 +277,6 @@ export interface HarnessSessionContext {
    * conversation is new or resumed.
    */
   readonly machineAccessNotice: string;
-  /** The caller platform controls Claude's isolated Unix-socket sandbox setting. */
-  readonly machineAccessPlatform: "darwin" | "linux" | undefined;
-  /** Model-visible launch socket path, never a Runner credential. */
-  readonly machineAccessRelaySocket: string | undefined;
   /** Host-independent Opensteer product facts and capability scope. */
   readonly platformGuide: string;
   /** Runner-owned Agent Skills the Host's Run plan selected. */
@@ -326,13 +285,11 @@ export interface HarnessSessionContext {
   readonly modelSelection: ModelSelection;
   /** Runner-owned storage for this profile. */
   readonly providerState: HarnessProviderState;
-  readonly runtimeBoundary: HarnessRuntimeBoundary;
   readonly threadId: ThreadId;
   /**
    * Runner-private, per-ProviderSession, deterministic across Runs: the one place a
    * driver keeps native-session helper files (a skill plugin wrapper, for
-   * example). The path remains stable for a ProviderSession; the Runner's sandbox exposes it to the harness process
-   * and the driver's own sandbox keeps it from the model's commands.
+   * example). The path remains stable for a ProviderSession.
    */
   readonly threadStateDirectory: string;
   /** See {@link HarnessProcessLaunchWrapper}. */
@@ -505,7 +462,6 @@ export interface HarnessSession {
 export interface HarnessGenerateTextContext {
   readonly environment: Readonly<Record<string, string>>;
   readonly providerState: HarnessProviderState;
-  readonly runtimeBoundary: HarnessRuntimeBoundary;
   readonly wrapProcessLaunch: HarnessProcessLaunchWrapper;
   readonly scratchDirectory: string;
 }
@@ -645,7 +601,6 @@ export interface HarnessInspectionContext {
   /** The source this account was added for; always one the driver declares. */
   readonly sourceId: string;
   readonly providerState: HarnessProviderState;
-  readonly runtimeBoundary: HarnessRuntimeBoundary;
   readonly signal: AbortSignal;
   readonly workingDirectory: string;
 }
@@ -838,12 +793,6 @@ export interface HarnessDriver {
   /** Additional process-environment variables this provider may inherit. */
   readonly environmentVariables?: readonly string[];
   /**
-   * Why this engine cannot run on an `isolated-service` Runner, when it cannot.
-   * The Runner reports the engine unavailable with it, so nobody adds an
-   * account there that could never run.
-   */
-  readonly isolatedServiceRefusal?: string;
-  /**
    * How wide this driver's native session store reaches. Defaulting to
    * `profile` keeps a driver that has never thought about account switching on
    * the conservative side: its profiles stay mutually unresumable.
@@ -886,8 +835,6 @@ export interface HarnessInstalledEngine {
   readonly create: (executable: string) => HarnessDriver;
   /** Why an account using the person's own sign-in cannot run on this computer. */
   readonly missing: string;
-  /** Said instead of `missing` on an `isolated-service` Runner, where nobody installs anything. */
-  readonly missingWhereIsolated?: string;
   /** Which profiles use this executable: shipped alternatives are ambient-only. */
   readonly scope?: "ambient" | "all";
   readonly update?: InstalledEngineUpdateFacts;

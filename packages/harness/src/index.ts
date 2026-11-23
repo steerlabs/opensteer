@@ -1,5 +1,4 @@
 export * from "./cli-logout.js";
-export * from "./attachment-sandbox.js";
 export * from "./compatible-endpoint.js";
 export * from "./deferred.js";
 export * from "./directory-links.js";

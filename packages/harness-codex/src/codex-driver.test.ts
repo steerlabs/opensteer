@@ -32,8 +32,6 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
-  isolatedServiceHarnessRuntimeBoundary,
-  nativeUserHarnessRuntimeBoundary,
   threadTitlePrompt,
   type HarnessAdapter,
   type HarnessEvent,
@@ -187,111 +185,105 @@ describe("Codex app-server harness", () => {
     }
   });
 
-  it.each([nativeUserHarnessRuntimeBoundary, isolatedServiceHarnessRuntimeBoundary])(
-    "runs realtime on the Run thread at $kind with no seed turn",
-    async (runtimeBoundary) => {
-      const fixture = await setup("voice-run", {
-        runtimeBoundary,
-        accessMode: "auto-accept-edits",
+  it("runs realtime on the Run thread with no seed turn", async () => {
+    const fixture = await setup("voice-run", {
+      accessMode: "auto-accept-edits",
+    });
+    const offer = new Deferred<string>(),
+      answer = new Deferred<string>();
+    const lifetime = new AbortController();
+    const spoken: string[] = [];
+    let writer:
+      { speak(text: string): Promise<void>; note(text: string): Promise<void> } | undefined;
+    const call = {
+      offer: offer.promise,
+      signal: lifetime.signal,
+      answer: (sdp: string) => answer.resolve(sdp),
+      connect: (value: typeof writer) => {
+        writer = value;
+      },
+      speak: async (_id: string, text: string) => {
+        spoken.push(text);
+        await writer!.speak(text);
+      },
+      end: () => lifetime.abort(),
+    };
+    const session = await fixture.adapter.startSession({ ...fixture.context, voiceCall: call });
+    const events: HarnessEvent[] = [];
+    const consume = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    const execution = session.execute(fixture.turn(voiceCallSeed));
+    try {
+      offer.resolve("private-offer");
+      await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
+        timeout: 2000,
       });
-      const offer = new Deferred<string>(),
-        answer = new Deferred<string>();
-      const lifetime = new AbortController();
-      const spoken: string[] = [];
-      let writer:
-        { speak(text: string): Promise<void>; note(text: string): Promise<void> } | undefined;
-      const call = {
-        offer: offer.promise,
-        signal: lifetime.signal,
-        answer: (sdp: string) => answer.resolve(sdp),
-        connect: (value: typeof writer) => {
-          writer = value;
-        },
-        speak: async (_id: string, text: string) => {
-          spoken.push(text);
-          await writer!.speak(text);
-        },
-        end: () => lifetime.abort(),
-      };
-      const session = await fixture.adapter.startSession({ ...fixture.context, voiceCall: call });
-      const events: HarnessEvent[] = [];
-      const consume = (async () => {
-        for await (const event of session.events) events.push(event);
-      })();
-      const execution = session.execute(fixture.turn(voiceCallSeed));
-      try {
-        offer.resolve("private-offer");
-        await vi.waitFor(() => expect(answer.promise).resolves.toBe("fake-answer"), {
-          timeout: 2000,
-        });
-        await vi.waitFor(() =>
-          expect(
-            events.flatMap((event) => (event.type === "voice.heard" ? [event.data.text] : [])),
-          ).toEqual(["user words"]),
-        );
-        // A failed turn is spoken as such and leaves the call up.
-        await vi.waitFor(
-          () =>
-            expect(spoken).toEqual([
-              "first answer",
-              "second answer",
-              "Sorry, that didn't go through.",
+      await vi.waitFor(() =>
+        expect(
+          events.flatMap((event) => (event.type === "voice.heard" ? [event.data.text] : [])),
+        ).toEqual(["user words"]),
+      );
+      // A failed turn is spoken as such and leaves the call up.
+      await vi.waitFor(
+        () =>
+          expect(spoken).toEqual([
+            "first answer",
+            "second answer",
+            "Sorry, that didn't go through.",
+          ]),
+        { timeout: 2000 },
+      );
+      expect(lifetime.signal.aborted).toBe(false);
+      expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(0);
+      // The failed turn's open streams are settled, so nothing it began still looks live.
+      await vi.waitFor(
+        () =>
+          expect(events).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: "assistant.message",
+                data: expect.objectContaining({
+                  content: [{ text: "Let me che", type: "text" }],
+                }),
+              }),
+              expect.objectContaining({
+                type: "reasoning.completed",
+                data: { blockId: "thought-v3", text: "Looking" },
+              }),
+              expect.objectContaining({
+                type: "tool.completed",
+                data: expect.objectContaining({ callId: "tool-v3", isError: true }),
+              }),
             ]),
-          { timeout: 2000 },
-        );
-        expect(lifetime.signal.aborted).toBe(false);
-        expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(0);
-        // The failed turn's open streams are settled, so nothing it began still looks live.
-        await vi.waitFor(
-          () =>
-            expect(events).toEqual(
-              expect.arrayContaining([
-                expect.objectContaining({
-                  type: "assistant.message",
-                  data: expect.objectContaining({
-                    content: [{ text: "Let me che", type: "text" }],
-                  }),
-                }),
-                expect.objectContaining({
-                  type: "reasoning.completed",
-                  data: { blockId: "thought-v3", text: "Looking" },
-                }),
-                expect.objectContaining({
-                  type: "tool.completed",
-                  data: expect.objectContaining({ callId: "tool-v3", isError: true }),
-                }),
-              ]),
-            ),
-          { timeout: 2000 },
-        );
-        const captured = await fixture.capture();
-        expect(captured.some((r) => r.method === "turn/start")).toBe(false);
-        const start = captured.find((r) => r.method === "thread/start")!.params as JsonRecord;
-        expect(start).toMatchObject({
-          approvalPolicy: "on-request",
-          model: "gpt-5.6-sol",
-          developerInstructions: expect.stringContaining("workspace instructions"),
-        });
-        expect(start.config).toMatchObject({ model_reasoning_effort: "low" });
-        if (runtimeBoundary.kind === "native-user")
-          expect(start).toMatchObject({
-            sandbox: "workspace-write",
-            config: { sandbox_workspace_write: { writable_roots: fixture.context.writableRoots } },
-          });
-        else expect(start.permissions).toBeTruthy();
-      } finally {
-        lifetime.abort();
-        await execution;
-        await session.stop();
-        await consume;
-        await fixture.adapter.close();
-      }
-      expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(1);
+          ),
+        { timeout: 2000 },
+      );
       const captured = await fixture.capture();
-      expect(captured.filter((r) => r.method === "thread/realtime/stop")).toHaveLength(1);
-      expect(captured.some((r) => r.method === "turn/interrupt")).toBe(true);
-    },
-  );
+      expect(captured.some((r) => r.method === "turn/start")).toBe(false);
+      const start = captured.find((r) => r.method === "thread/start")!.params as JsonRecord;
+      expect(start).toMatchObject({
+        approvalPolicy: "on-request",
+        model: "gpt-5.6-sol",
+        developerInstructions: expect.stringContaining("workspace instructions"),
+      });
+      expect(start.config).toMatchObject({ model_reasoning_effort: "low" });
+      expect(start).toMatchObject({
+        sandbox: "workspace-write",
+        config: { sandbox_workspace_write: { writable_roots: fixture.context.writableRoots } },
+      });
+    } finally {
+      lifetime.abort();
+      await execution;
+      await session.stop();
+      await consume;
+      await fixture.adapter.close();
+    }
+    expect(events.filter((e) => e.type === "run.interrupted")).toHaveLength(1);
+    const captured = await fixture.capture();
+    expect(captured.filter((r) => r.method === "thread/realtime/stop")).toHaveLength(1);
+    expect(captured.some((r) => r.method === "turn/interrupt")).toBe(true);
+  });
 
   it("keeps a call's context out of a running turn, so its reply is still spoken", async () => {
     const fixture = await setup("voice-note", { accessMode: "auto-accept-edits" });
@@ -515,14 +507,9 @@ describe("Codex app-server harness", () => {
     ).rejects.toThrow();
   });
 
-  it.each([
-    ["approval-required", "opensteer_read_only"],
-    ["auto-accept-edits", "opensteer_workspace_write"],
-    ["auto", "opensteer_workspace_write"],
-    ["full-access", "opensteer_full_access"],
-  ] as const)(
-    "isolates Codex provider state and selects native permissions for %s",
-    async (accessMode, permissionProfile) => {
+  it.each(["approval-required", "auto-accept-edits", "auto", "full-access"] as const)(
+    "keeps an isolated profile's Codex state in its own home and runs %s under Codex's own sandbox",
+    async (accessMode) => {
       const fixture = await setup("reasoning", {
         accessMode,
         additionalWritableRoot: "attached-workspace",
@@ -530,10 +517,11 @@ describe("Codex app-server harness", () => {
           CODEX_HOME: "/ambient/codex-home",
           CODEX_SQLITE_HOME: "/ambient/codex-sqlite",
         },
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+        providerStateKind: "isolated",
+        sharedEngine: false,
       });
       const session = await fixture.adapter.startSession(fixture.context);
-      await session.execute(fixture.turn("Check the isolated boundary"));
+      await session.execute(fixture.turn("Check the sandbox"));
       await session.stop();
 
       const captured = await fixture.capture();
@@ -541,102 +529,35 @@ describe("Codex app-server harness", () => {
         ?.fakeCodexProcess as JsonRecord | undefined;
       const expectedCodexHome = fixture.context.providerState.providerHomeDirectory;
       if (!expectedCodexHome) throw new Error("Expected an isolated Codex home");
-      const expectedSqliteHome = join(expectedCodexHome, "sqlite");
       expect(processBoundary?.environment).toEqual({
         CODEX_HOME: expectedCodexHome,
-        CODEX_SQLITE_HOME: expectedSqliteHome,
+        CODEX_SQLITE_HOME: join(expectedCodexHome, "sqlite"),
       });
       const argv = processBoundary?.argv as unknown[] | undefined;
       expect(argv).toEqual(expect.arrayContaining(["app-server", "--stdio"]));
-      expect(argv).toContain('default_permissions="opensteer_read_only"');
-      const profileDefinitions = (argv ?? []).filter(
-        (argument): argument is string =>
-          typeof argument === "string" && argument.startsWith("permissions.opensteer_"),
-      );
-      expect(profileDefinitions).toHaveLength(3);
-      for (const definition of profileDefinitions) {
-        expect(definition).toContain(
-          `${JSON.stringify(fixture.context.providerState.privateStateRoot)}="deny"`,
-        );
-        // The store is already denied by its parent. Emitting both makes
-        // bubblewrap mask the parent read-only before mounting the child.
-        expect(definition).not.toContain(
-          `${JSON.stringify(fixture.context.providerState.store.directory)}="deny"`,
-        );
-        // This fixture keeps SQLite outside the private root, so its independent
-        // deny must survive the redundant-descendant reduction.
-        expect(definition).toContain(`${JSON.stringify(expectedSqliteHome)}="deny"`);
-        expect(definition).not.toContain("/tmp/arg0");
-      }
-      const workspaceWriteProfile = profileDefinitions.find((definition) =>
-        definition.startsWith("permissions.opensteer_workspace_write"),
-      );
-      const fullAccessProfile = profileDefinitions.find((definition) =>
-        definition.startsWith("permissions.opensteer_full_access"),
-      );
-      for (const root of fixture.context.writableRoots) {
-        expect(workspaceWriteProfile).toContain(`${JSON.stringify(root)}="write"`);
-        expect(fullAccessProfile).toContain(`${JSON.stringify(root)}="write"`);
-      }
-      expect(fullAccessProfile).toContain('extends=":workspace"');
-      expect(fullAccessProfile).toContain("network={enabled=true}");
-      expect(fullAccessProfile).not.toContain(":root");
-      expect(fullAccessProfile).toContain(
-        `${JSON.stringify(fixture.context.providerState.privateStateRoot)}="deny"`,
-      );
-      expect(fullAccessProfile).toContain(`${JSON.stringify(expectedSqliteHome)}="deny"`);
-      expect(captured.find((message) => message.method === "thread/start")).toMatchObject({
-        params: { permissions: permissionProfile },
-      });
       expect(
-        captured.find((message) => message.method === "thread/start")?.params,
-      ).not.toHaveProperty("sandbox");
-      expect(captured.find((message) => message.method === "turn/start")).toMatchObject({
-        params: { permissions: permissionProfile },
+        (argv ?? []).some(
+          (argument) =>
+            typeof argument === "string" &&
+            (argument.startsWith("permissions.") || argument.startsWith("default_permissions=")),
+        ),
+      ).toBe(false);
+      const threadStart = captured.find((message) => message.method === "thread/start");
+      expect(threadStart).toMatchObject({ params: { sandbox: "read-only" } });
+      expect(threadStart?.params).not.toHaveProperty("permissions");
+      const turnStart = captured.find((message) => message.method === "turn/start");
+      expect(turnStart).toMatchObject({
+        params: {
+          sandboxPolicy: codexAccessModeConfiguration(accessMode, fixture.context.writableRoots)
+            .sandboxPolicy,
+        },
       });
-      expect(
-        captured.find((message) => message.method === "turn/start")?.params,
-      ).not.toHaveProperty("sandboxPolicy");
+      expect(turnStart?.params).not.toHaveProperty("permissions");
       await fixture.adapter.close();
     },
   );
 
-  it("emits one outer deny for production-shaped isolated Codex state", async () => {
-    const fixture = await setup("reasoning", {
-      accessMode: "auto",
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-    });
-    const privateStateRoot = fixture.context.providerState.privateStateRoot;
-    const providerHomeDirectory = join(
-      privateStateRoot,
-      "harness-profiles",
-      "isolated",
-      "provider-home",
-    );
-    const providerState = { ...fixture.context.providerState, providerHomeDirectory };
-    const session = await fixture.adapter.startSession({ ...fixture.context, providerState });
-    await session.execute(fixture.turn("Check the production-shaped isolated boundary"));
-    await session.stop();
-
-    const captured = await fixture.capture();
-    const processBoundary = captured.find((message) => message.fakeCodexProcess)
-      ?.fakeCodexProcess as JsonRecord | undefined;
-    const profileDefinitions = ((processBoundary?.argv as unknown[] | undefined) ?? []).filter(
-      (argument): argument is string =>
-        typeof argument === "string" && argument.startsWith("permissions.opensteer_"),
-    );
-    expect(profileDefinitions).toHaveLength(3);
-    for (const definition of profileDefinitions) {
-      expect(definition).toContain(`${JSON.stringify(privateStateRoot)}="deny"`);
-      expect(definition).not.toContain(`${JSON.stringify(providerState.store.directory)}="deny"`);
-      expect(definition).not.toContain(
-        `${JSON.stringify(join(providerHomeDirectory, "sqlite"))}="deny"`,
-      );
-    }
-    await fixture.adapter.close();
-  });
-
-  it("replays the model's command sandbox for a Run, and none at native full access", async () => {
+  it("replays the model's command sandbox for a Run, and none at full access", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-model-command-"));
     temporaryDirectories.push(directory);
     const driver = new CodexHarnessDriver({ launch: fakeLaunch() });
@@ -652,19 +573,21 @@ describe("Codex app-server harness", () => {
     };
 
     const wrapIsolated = await driver.modelCommandLaunch({
-      accessMode: "full-access",
+      accessMode: "auto",
       environment: { PATH: "/usr/bin" },
       providerState: isolated,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       workspacePath: directory,
       writableRoots: [directory],
     });
     const replayed = wrapIsolated(command);
     expect(replayed.executable).toBe(process.execPath);
-    expect(replayed.args).toContain('default_permissions="opensteer_full_access"');
+    expect(replayed.args).toContain('sandbox_mode="workspace-write"');
     expect(
-      replayed.args.some((argument) => argument.startsWith("permissions.opensteer_full_access=")),
-    ).toBe(true);
+      replayed.args.some(
+        (argument) =>
+          argument.startsWith("permissions.") || argument.startsWith("default_permissions="),
+      ),
+    ).toBe(false);
     const separator = replayed.args.indexOf("--");
     expect(replayed.args[separator - 1]).toBe("sandbox");
     expect(replayed.args.slice(separator + 1)).toEqual(["/opt/helper", ...command.args]);
@@ -672,22 +595,33 @@ describe("Codex app-server harness", () => {
     expect(replayed.environment.CODEX_HOME).toBe(isolated.providerHomeDirectory);
     expect(replayed.environment.PATH).toBe("/launch/bin:/usr/bin");
 
-    const wrapNative = await driver.modelCommandLaunch({
+    const readOnly = (
+      await driver.modelCommandLaunch({
+        accessMode: "approval-required",
+        environment: { PATH: "/usr/bin" },
+        providerState: isolated,
+        workspacePath: directory,
+        writableRoots: [directory],
+      })
+    )(command);
+    expect(readOnly.args).toContain('sandbox_mode="read-only"');
+
+    const wrapFullAccess = await driver.modelCommandLaunch({
       accessMode: "full-access",
       environment: { PATH: "/usr/bin" },
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       workspacePath: directory,
       writableRoots: [directory],
     });
-    expect(wrapNative(command)).toEqual(command);
+    expect(wrapFullAccess(command)).toEqual(command);
   });
 
   it("wraps the Run's app-server launch and nothing the Runner runs for itself", async () => {
     const sandboxMarker = "opensteer_sandbox_probe=true";
     const wrapped: HarnessProcessLaunch[] = [];
     const fixture = await setup("happy", {
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+      providerStateKind: "isolated",
+      sharedEngine: false,
       wrapProcessLaunch: (launch: import("@opensteer/harness").HarnessProcessLaunch) => {
         wrapped.push(launch);
         const [script, ...rest] = launch.args;
@@ -728,7 +662,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: {},
       providerState: fixture.context.providerState,
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: fixture.context.workspacePath,
@@ -758,7 +691,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -815,7 +747,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment(process.env),
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -832,7 +763,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment(process.env),
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -862,7 +792,6 @@ describe("Codex app-server harness", () => {
       config: { model: "gpt-9-retired", reasoningEffort: "high" },
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -883,7 +812,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment({ ...process.env, FAKE_CODEX_CAPTURE_PATH: capturePath }),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -911,7 +839,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -945,7 +872,6 @@ describe("Codex app-server harness", () => {
         FAKE_CODEX_INITIALIZE_DELAY_MS: "250",
       }),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -998,39 +924,6 @@ describe("Codex app-server harness", () => {
     },
   );
 
-  it("keeps the inspection workspace writable while denying Runner-private state", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-managed-inspection-"));
-    temporaryDirectories.push(directory);
-    const capturePath = join(directory, "capture.jsonl");
-    const inspected = await new CodexHarnessDriver({
-      launch: fakeLaunch("vertical"),
-    }).inspect?.({
-      config: {},
-      environment: stringEnvironment({
-        ...process.env,
-        FAKE_CODEX_CAPTURE_PATH: capturePath,
-      }),
-      providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
-      signal: new AbortController().signal,
-      sourceId: "openai",
-      workingDirectory: directory,
-    });
-
-    expect(inspected?.status).toBe("ready");
-    const captured = parseCaptureJsonl<JsonRecord>(await readFile(capturePath, "utf8"));
-    const processBoundary = captured.find((message) => message.fakeCodexProcess)
-      ?.fakeCodexProcess as JsonRecord | undefined;
-    const deploymentShape = (processBoundary?.argv as unknown[] | undefined)?.find(
-      (argument): argument is string =>
-        typeof argument === "string" &&
-        argument.startsWith("permissions.opensteer_workspace_write"),
-    );
-    expect(deploymentShape).toBeDefined();
-    expect(deploymentShape).toContain(`${JSON.stringify(directory)}="write"`);
-    expect(deploymentShape).toContain(`${JSON.stringify(join(directory, "state"))}="deny"`);
-  });
-
   it("reports authentication as provider state rather than a generic failure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-auth-inspection-"));
     temporaryDirectories.push(directory);
@@ -1040,7 +933,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1087,7 +979,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: {},
         providerState: testProviderState(directory, "isolated"),
-        runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1136,7 +1027,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment({ ...process.env, FAKE_CODEX_CAPTURE_PATH: capturePath }),
         providerState: testProviderState(directory, kind),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1172,7 +1062,6 @@ describe("Codex app-server harness", () => {
     const authentication = {
       config: {},
       environment: {},
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1208,7 +1097,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: {},
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1236,7 +1124,6 @@ describe("Codex app-server harness", () => {
       },
       environment: { ...stringEnvironment(process.env), FAKE_CODEX_CAPTURE_PATH: capturePath },
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1265,7 +1152,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: { ...stringEnvironment(process.env), FAKE_CODEX_CAPTURE_PATH: capturePath },
       providerState: testProviderState(directory, "isolated"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: lifetime.signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1384,7 +1270,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: {},
         providerState,
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1428,7 +1313,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: stringEnvironment(process.env),
         providerState: testProviderState(directory, "ambient"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1470,7 +1354,6 @@ describe("Codex app-server harness", () => {
         config: {},
         environment: {},
         providerState: testProviderState(directory, "isolated"),
-        runtimeBoundary: nativeUserHarnessRuntimeBoundary,
         signal: new AbortController().signal,
         sourceId: "openai",
         workingDirectory: directory,
@@ -1496,7 +1379,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1523,7 +1405,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -1549,7 +1430,6 @@ describe("Codex app-server harness", () => {
       config: {},
       environment: stringEnvironment(process.env),
       providerState: testProviderState(directory, "ambient"),
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory: directory,
@@ -2514,64 +2394,58 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
-  it.each([nativeUserHarnessRuntimeBoundary, isolatedServiceHarnessRuntimeBoundary])(
-    "resumes a compacted provider conversation larger than the transport budget on $kind",
-    async (runtimeBoundary) => {
-      const fixture = await setup("resume-large-history", {
-        history: [historyMessage("assistant", "An earlier digest that must not be replayed")],
-        runtimeBoundary,
-      });
-      const reference = "saved-morning-summary";
-      try {
-        for (const modelId of ["gpt-5.6-sol", "gpt-5.6-luna"]) {
-          const session = await fixture.adapter.resumeSession(reference, {
-            ...fixture.context,
-            historyWindow: { ...fixture.context.historyWindow, hasEarlier: true },
-            modelSelection: ModelSelectionSchema.parse({
-              ...fixture.context.modelSelection,
-              modelId,
-            }),
-          });
-          const observer = observe(session.events);
-          await session.execute(fixture.turn("Summarize today's new email"));
-          await session.stop();
-          await observer.done;
-
-          expect(session.providerSessionReference).toBe(reference);
-          expect(observer.error).toBeUndefined();
-          expect(observer.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
-          expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
-          expect(JSON.stringify(observer.events)).not.toContain("historical-output");
-        }
-
-        const captured = await fixture.capture();
-        expect(
-          captured
-            .filter((message) => message.method === "thread/resume")
-            .map((message) => message.params),
-        ).toEqual([
-          expect.objectContaining({
-            excludeTurns: true,
-            model: "gpt-5.6-sol",
-            threadId: reference,
+  it("resumes a compacted provider conversation larger than the transport budget", async () => {
+    const fixture = await setup("resume-large-history", {
+      history: [historyMessage("assistant", "An earlier digest that must not be replayed")],
+    });
+    const reference = "saved-morning-summary";
+    try {
+      for (const modelId of ["gpt-5.6-sol", "gpt-5.6-luna"]) {
+        const session = await fixture.adapter.resumeSession(reference, {
+          ...fixture.context,
+          historyWindow: { ...fixture.context.historyWindow, hasEarlier: true },
+          modelSelection: ModelSelectionSchema.parse({
+            ...fixture.context.modelSelection,
+            modelId,
           }),
-          expect.objectContaining({
-            excludeTurns: true,
-            model: "gpt-5.6-luna",
-            threadId: reference,
-          }),
-        ]);
-        expect(captured.filter((message) => message.method === "turn/start")).toHaveLength(2);
-        expect(captured.some((message) => message.method === "thread/start")).toBe(false);
-        expect(captured.some((message) => message.method === "thread/inject_items")).toBe(false);
-        expect(JSON.stringify(captured)).not.toContain(
-          "An earlier digest that must not be replayed",
-        );
-      } finally {
-        await fixture.adapter.close();
+        });
+        const observer = observe(session.events);
+        await session.execute(fixture.turn("Summarize today's new email"));
+        await session.stop();
+        await observer.done;
+
+        expect(session.providerSessionReference).toBe(reference);
+        expect(observer.error).toBeUndefined();
+        expect(observer.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+        expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+        expect(JSON.stringify(observer.events)).not.toContain("historical-output");
       }
-    },
-  );
+
+      const captured = await fixture.capture();
+      expect(
+        captured
+          .filter((message) => message.method === "thread/resume")
+          .map((message) => message.params),
+      ).toEqual([
+        expect.objectContaining({
+          excludeTurns: true,
+          model: "gpt-5.6-sol",
+          threadId: reference,
+        }),
+        expect.objectContaining({
+          excludeTurns: true,
+          model: "gpt-5.6-luna",
+          threadId: reference,
+        }),
+      ]);
+      expect(captured.filter((message) => message.method === "turn/start")).toHaveLength(2);
+      expect(captured.some((message) => message.method === "thread/start")).toBe(false);
+      expect(captured.some((message) => message.method === "thread/inject_items")).toBe(false);
+      expect(JSON.stringify(captured)).not.toContain("An earlier digest that must not be replayed");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 
   it.each([
     ["resume-missing", "no rollout found"],
@@ -3762,7 +3636,6 @@ function compatibleContext(directory: string, kind: "ambient" | "isolated") {
     config: { baseUrl: "https://openrouter.ai/api/v1" },
     environment: {},
     providerState: testProviderState(directory, kind),
-    runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId: "openai-compatible",
     workingDirectory: directory,
@@ -3795,7 +3668,7 @@ interface SetupOptions {
   readonly accessMode?: HarnessSessionContext["accessMode"];
   readonly additionalWritableRoot?: string;
   readonly commandEnvironment?: Readonly<Record<string, string>>;
-  /** Without one the session gets an app-server of its own, as a sandboxed Run does. */
+  /** Without one the session gets an app-server of its own. */
   readonly sharedEngine?: false;
   readonly environmentOverrides?: Readonly<Record<string, string>>;
   readonly executable?: string;
@@ -3807,7 +3680,6 @@ interface SetupOptions {
   readonly machineAccessNotice?: string;
   readonly requestTimeoutMs?: number;
   readonly providerStateKind?: "ambient" | "isolated";
-  readonly runtimeBoundary?: HarnessSessionContext["runtimeBoundary"];
   readonly shutdownGraceMs?: number;
   readonly startupTimeoutMs?: number;
   readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
@@ -3864,8 +3736,6 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
   });
   const context: HarnessSessionContext = {
     machineAccessNotice: options.machineAccessNotice ?? noComputersNotice,
-    machineAccessPlatform: undefined,
-    machineAccessRelaySocket: undefined,
     accessMode: options.accessMode ?? "full-access",
     agentTools: {
       tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
@@ -3897,12 +3767,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     },
     instructions: "Follow the workspace instructions.",
     platformGuide: "Opensteer platform guide.",
-    providerState: testProviderState(
-      directory,
-      options.providerStateKind ??
-        (options.runtimeBoundary?.kind === "isolated-service" ? "isolated" : "ambient"),
-    ),
-    runtimeBoundary: options.runtimeBoundary ?? nativeUserHarnessRuntimeBoundary,
+    providerState: testProviderState(directory, options.providerStateKind ?? "ambient"),
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.6-sol",
       options: { effort: "low" },
@@ -4101,7 +3966,6 @@ async function codexEnvironments(
       config: {},
       environment: {},
       providerState,
-      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
       signal: new AbortController().signal,
       sourceId: "openai",
       workingDirectory,
@@ -4118,7 +3982,6 @@ async function inspectScenario(scenario: string): Promise<HarnessInspectionResul
     config: {},
     environment: stringEnvironment(process.env),
     providerState: testProviderState(directory, "ambient"),
-    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: new AbortController().signal,
     sourceId: "openai",
     workingDirectory: directory,

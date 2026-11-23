@@ -11,7 +11,6 @@ import {
 import {
   BoundedEventStream,
   HarnessRegistry,
-  nativeUserHarnessRuntimeBoundary,
   type HarnessDriver,
   type HarnessEvent,
   type HarnessRunInput,
@@ -216,7 +215,6 @@ describe("RunnerRuntime output image publishing", () => {
         dataDirectory,
         deploymentShape: { kind: "personal" },
         environmentId,
-        harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
         harnesses: registry,
         maxConcurrentRuns: 1,
         nativeFsHelperBinary: testNativeFsHelperBinary,

@@ -40,7 +40,7 @@ import {
   stopShellData,
 } from "./mac-stop.test-support.js";
 import type { VerticalStackOptions } from "./vertical-stack.test-support.js";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
@@ -272,7 +272,6 @@ integration("Runs that outlive their connection", () => {
             },
           }
         : {}),
-      harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
       runTimeoutMs: 60_000,
     });

@@ -18,11 +18,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@opensteer/core";
-import {
-  HarnessRegistry,
-  nativeUserHarnessRuntimeBoundary,
-  type HarnessDriver,
-} from "@opensteer/harness";
+import { HarnessRegistry, type HarnessDriver } from "@opensteer/harness";
 import { z } from "zod";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { getDeviceDefinition } from "@opensteer/integration-catalog/devices";
@@ -778,7 +774,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: new HarnessRegistry(),
       maxConcurrentRuns: 1,
       dataDirectory: "/tmp/opensteer-browser-agents-test",
@@ -972,7 +967,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: dirname("/tmp/opensteer-runner-connection-test/state"),
@@ -1964,7 +1958,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: new HarnessRegistry(),
       maxConcurrentRuns: 1,
       dataDirectory: join(agentHome, ".runner"),
@@ -2108,7 +2101,6 @@ describe("runnerWebSocketUrl", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: dirname("/tmp/opensteer-runner-reenroll-test/state"),
@@ -2508,7 +2500,6 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       bootId,
       deploymentShape: serverDeploymentShape,
       environmentId,
-      harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
       harnesses: registry,
       maxConcurrentRuns: 1,
       dataDirectory: home ?? "/tmp/opensteer-engine-recheck-test",

@@ -23,7 +23,7 @@ import {
   type ThreadId,
   type MessageId,
 } from "@opensteer/core";
-import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import {
   PendingAgentEventSchema,
@@ -355,7 +355,6 @@ integration.sequential("Run recovery acceptance", () => {
           );
           return registry;
         },
-        harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       });
     } catch (error) {
       await rm(scratch, {

@@ -162,8 +162,6 @@ export interface CursorRunFailure {
 /** How long a denial note may be, in the bytes the Request schema counts. */
 const cursorDenialNoteMaxBytes = 20_000;
 
-const cursorIsolatedServiceDetail =
-  "Cursor keeps its sign-in in the computer's own account, so it runs only on a computer where Opensteer runs as you.";
 const cursorSignInDetail = "Sign in to use Cursor. Run `agent login` on this computer.";
 
 export interface CursorHarnessDependencies {
@@ -178,7 +176,6 @@ export interface CursorHarnessDependencies {
 
 export class CursorHarnessDriver implements HarnessDriver {
   readonly kind = HarnessIdSchema.parse("cursor");
-  readonly isolatedServiceRefusal = cursorIsolatedServiceDetail;
   readonly sources = cursorSources;
   /**
    * `cursorAccessModeHooks` translates each of them into hook events, all
@@ -212,9 +209,6 @@ export class CursorHarnessDriver implements HarnessDriver {
 
   async inspect(context: HarnessInspectionContext): Promise<HarnessInspectionResult> {
     const config = CursorHarnessConfigSchema.parse(context.config);
-    if (context.runtimeBoundary.kind === "isolated-service") {
-      return { detail: cursorIsolatedServiceDetail, status: "unavailable" };
-    }
     const entry = harnessCatalogEntry("cursor");
     const runtime = entry?.runtime.shape === "installed" ? entry.runtime : undefined;
     if (!runtime) {
@@ -371,8 +365,6 @@ class CursorHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
-    if (context.runtimeBoundary.kind !== "native-user")
-      return { ok: false, failure: "unavailable" };
     return backgroundTextResult(signal, async () => {
       return withBackgroundTextDirectory(context, signal, async (directory) => {
         const workspace = join(directory, "workspace");
@@ -451,7 +443,6 @@ class CursorHarnessAdapter implements HarnessAdapter {
 
   async startSession(context: HarnessSessionContext): Promise<HarnessSession> {
     this.#sessions.assertOpen();
-    assertNativeUserBoundary(context);
     assertFreshProviderSessionContext(context);
     // `agent create-chat` mints the id without contacting a model and without
     // writing a transcript, and `--resume` accepts it for the very first turn
@@ -482,7 +473,6 @@ class CursorHarnessAdapter implements HarnessAdapter {
     context: HarnessSessionContext,
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
-    assertNativeUserBoundary(context);
     const reference = validateProviderReference(providerSessionReference);
     return this.#sessions.open(reference, () =>
       CursorHarnessSession.open(
@@ -585,7 +575,6 @@ class CursorHarnessSession implements HarnessSession {
         message: "Cursor session was cancelled before startup",
       });
     }
-    assertNativeUserBoundary(context);
     const session = new CursorHarnessSession(config, dependencies, context, reference, onClose);
     try {
       if (resume) await assertCursorTranscriptExists(context, reference);
@@ -1495,19 +1484,6 @@ export function cursorExitFailure(code: number | null, stderr: string): CursorRu
     message: detail || `Cursor exited with status ${code ?? "unknown"}`,
     retryable: false,
   };
-}
-
-/**
- * The same refusal `inspect` gives. Cursor's sign-in is the person's own
- * keychain entry, and the plugin hands the model's commands a Runner-owned
- * tool credential, so a Runner that executes for a Deployment at large has no
- * honest way to run it: a session that opened anyway would spend whichever
- * person's plan the Runner's own account happens to be. It is asserted on both
- * ways in and again inside `open`, which is the one path neither can skip.
- */
-function assertNativeUserBoundary(context: HarnessSessionContext): void {
-  if (context.runtimeBoundary.kind === "native-user") return;
-  throw new OpensteerError({ code: "forbidden", message: cursorIsolatedServiceDetail });
 }
 
 function validateProviderReference(reference: string): string {
