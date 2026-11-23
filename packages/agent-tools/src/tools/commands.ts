@@ -9,7 +9,7 @@ export const opensteer_commands = defineAgentTool({
   name: "opensteer_commands",
   title: "List what you can change",
   description:
-    "List what you can change in Opensteer. No input: the families. family: its commands, each now or asks the person. type: one command's input. A command not listed is unavailable.",
+    "List what you can change in Opensteer. No input: the families. family: its commands, each now or asks the person. type: one command's input. A command not listed is unavailable. What is set up now is in opensteer_state.",
   input: z.strictObject({
     family: z.string().min(1).max(40).optional(),
     type: z.string().min(1).max(100).optional(),
@@ -93,9 +93,9 @@ export const stateAreas = [
 
 export const opensteer_state = defineAgentTool({
   name: "opensteer_state",
-  title: "Read Opensteer",
+  title: "See what is set up",
   description:
-    "Read one area of Opensteer as the person's apps show it, cut to what you may see: settings, connections, devices, chats, engines, requests, activity or policy. An area you cannot see is unavailable.",
+    "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. settings and policy. Read here what an agent, a device or a chat can use. An area you cannot see is unavailable.",
   input: z.strictObject({ area: z.enum(stateAreas) }),
   output: z.object({ area: z.string(), view: z.record(z.string(), z.unknown()) }),
   access: "read",

@@ -89,7 +89,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "List what you can change in Opensteer. No input: the families. family: its commands, each now or asks the person. type: one command's input. A command not listed is unavailable.",
+    "description": "List what you can change in Opensteer. No input: the families. family: its commands, each now or asks the person. type: one command's input. A command not listed is unavailable. What is set up now is in opensteer_state.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -160,7 +160,7 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
       "program",
       "connection",
     ],
-    "description": "Read one area of Opensteer as the person's apps show it, cut to what you may see: settings, connections, devices, chats, engines, requests, activity or policy. An area you cannot see is unavailable.",
+    "description": "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see. connections: connected agents and what each may use. devices: the person's devices and what each allows. chats: chat accounts and their chats. engines: AI engine accounts. requests: what waits for the person. activity: what agents did. settings and policy. Read here what an agent, a device or a chat can use. An area you cannot see is unavailable.",
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
