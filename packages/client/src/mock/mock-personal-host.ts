@@ -1,4 +1,8 @@
-import { expectedMutationSessionHeader, hostApi, type HostToClientMessage } from "@opensteer/protocol";
+import {
+  expectedMutationSessionHeader,
+  hostApi,
+  type HostToClientMessage,
+} from "@opensteer/protocol";
 import {
   ScopedClientMessageSchema,
   ScopedHostMessageSchema,

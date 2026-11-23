@@ -146,7 +146,10 @@ it("sends both PersonalRemote authorization and the Host AuthSessionId on mobile
   const viewLoginId = stored!.viewLoginId!;
   expect(viewLoginId).not.toBe(hostSessionId);
 
-  const seenHeaders: { readonly authorization: string | null; readonly expectedSession: string | null }[] = [];
+  const seenHeaders: {
+    readonly authorization: string | null;
+    readonly expectedSession: string | null;
+  }[] = [];
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const headers = new Headers(init?.headers);
