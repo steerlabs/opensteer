@@ -1803,6 +1803,73 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     },
   });
   /**
+   * What each refused agent command was refused for before the controller put it into a runtime
+   * error: `normalizeControllerError` keeps only "The browser runtime could not complete the
+   * command." on the wire for anything that is not already one, and the cause stays behind. Read
+   * here from the two places a command's error comes out of: the controller's dispatch (by the
+   * command's request) and the ledger's hold on the tab around it (by the tab, and when).
+   */
+  const dispatchErrors = new Map<string, readonly Record<string, unknown>[]>();
+  const ledgerErrors: Array<{
+    readonly at: number;
+    readonly surfaceId: string;
+    readonly error: readonly Record<string, unknown>[];
+  }> = [];
+  /** The error and each of its causes, outermost first: name, message, code, reason. */
+  const errorChain = (error: unknown): readonly Record<string, unknown>[] => {
+    const chain: Record<string, unknown>[] = [];
+    for (let cause = error; cause !== undefined && chain.length < 6;) {
+      if (!(cause instanceof Error)) {
+        chain.push({ value: String(cause) });
+        break;
+      }
+      const { code, reason } = cause as Error & { code?: unknown; reason?: unknown };
+      chain.push({
+        name: cause.name,
+        message: cause.message.slice(0, 500),
+        ...(code === undefined ? {} : { code }),
+        ...(reason === undefined ? {} : { reason }),
+      });
+      cause = cause.cause;
+    }
+    return chain;
+  };
+  {
+    const internals = controller as unknown as {
+      dispatch(
+        message: Parameters<BrowserController["handle"]>[0],
+        admitted: unknown,
+      ): Promise<void>;
+    };
+    const dispatch = internals.dispatch.bind(controller);
+    internals.dispatch = (message, admitted) =>
+      dispatch(message, admitted).catch((error: unknown) => {
+        if (message.type === "cdp.command")
+          dispatchErrors.set(message.requestId, errorChain(error));
+        throw error;
+      });
+    const use = ledger.use.bind(ledger);
+    ledger.use = <T>(
+      id: Parameters<SurfaceLedger["use"]>[0],
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      let fromOperation = false;
+      return use(id, () =>
+        operation().catch((error: unknown) => {
+          fromOperation = true;
+          throw error;
+        }),
+      ).catch((error: unknown) => {
+        // Only the ledger's own refusals: an operation's error is the dispatch's to record.
+        if (!fromOperation)
+          ledgerErrors.push({ at: performance.now(), error: errorChain(error), surfaceId: id });
+        throw error;
+      });
+    };
+  }
+  /** Every agent command in this phase that came back refused, with what it was refused for. */
+  const agentRefusals: Array<Record<string, unknown>> = [];
+  /**
    * The follow view's own record of its casts (`ScreencastController.diagnostics`): each start and
    * why, each frame it set aside and why. Read from the controller the smoke drives.
    */
@@ -1823,6 +1890,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     );
   const phaseStart = performance.now();
   followEvidence = () => ({
+    agentRefusals: agentRefusals.slice(-20),
     followView: followDiagnostics().slice(-60),
     tabs: [...new Set(debuggerCommands.map((command) => command.target))].map((target) => ({
       url: webContents
@@ -2194,6 +2262,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     sessionId?: string,
   ): Promise<unknown> => {
     const requestId = randomUUID();
+    const sentAt = performance.now();
     await controller.handle({
       command: {
         method,
@@ -2209,9 +2278,19 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         message.requestId === requestId,
     );
     if (reply?.type === "cdp.error") {
-      throw Object.assign(new Error(reply.error.message), {
-        code: reply.error.code,
+      const cause = {
+        dispatch: dispatchErrors.get(requestId) ?? null,
+        ledger: ledgerErrors.filter((entry) => entry.at >= sentAt),
+      };
+      agentRefusals.push({
+        at: Math.round(sentAt - phaseStart),
+        cause,
+        method,
+        refusedAfterMs: Math.round(performance.now() - sentAt),
+        wire: reply.error,
+        ...(sessionId ? { sessionId } : {}),
       });
+      throw Object.assign(new Error(reply.error.message), { code: reply.error.code, cause });
     }
     if (reply?.type !== "cdp.result") throw new Error(`${method} was not answered.`);
     return reply.result;
@@ -3734,7 +3813,10 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         },
         (error: unknown) => {
           writeSettledAt = performance.now();
-          return error instanceof Error ? error.message : String(error);
+          // The wire's sentence, and what the controller was given before it said it.
+          return error instanceof Error
+            ? { message: error.message, cause: error.cause ?? null }
+            : String(error);
         },
       );
       await waitFor(() => dialogOpenedAt !== null, 5_000).catch(() => undefined);
