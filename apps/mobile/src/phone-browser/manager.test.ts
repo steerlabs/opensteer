@@ -1344,6 +1344,84 @@ describe("phone browser manager", () => {
     });
   });
 
+  test("refused or abandoned clipboard pastes do not leak #clipboard past the 32-operation cap", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    const contextId = uuid();
+    await fixture.native.emit({
+      ...fixture.reference(),
+      type: "editing",
+      channelId: fixture.currentEnvelope().channelId,
+      context: { contextId, field: null, caret: null },
+    });
+    const originalApply = fixture.native.applyViewerInput.bind(fixture.native);
+    let failPaste = true;
+    fixture.native.applyViewerInput = async (input) => {
+      if (failPaste && input.message.type === "clipboard.paste-data")
+        throw new PhoneBrowserError("stale-document", "The field changed.");
+      return originalApply(input);
+    };
+    for (let i = 0; i < 33; i++) {
+      await fixture.client({
+        type: "clipboard.paste-data",
+        surfaceId: fixture.surfaceId,
+        operationId: uuid(),
+        items: [{ type: "text/plain", size: 5 }],
+        contextId,
+      });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "browser.error",
+        error: { reason: "stale-document" },
+      });
+    }
+    // After 33 native refusals, a valid 34th paste must still be admitted (not "too-large").
+    failPaste = false;
+    const beforeValid = fixture.server().length;
+    const operationId = uuid();
+    await fixture.client({
+      type: "clipboard.paste-data",
+      surfaceId: fixture.surfaceId,
+      operationId,
+      items: [{ type: "text/plain", size: 5 }],
+      contextId,
+    });
+    expect(fixture.server().slice(beforeValid)).toEqual([]);
+    // Document change purges any pending clipboard pastes for that tab.
+    for (let i = 0; i < 31; i++) {
+      await fixture.client({
+        type: "clipboard.paste-data",
+        surfaceId: fixture.surfaceId,
+        operationId: uuid(),
+        items: [{ type: "text/plain", size: 5 }],
+        contextId,
+      });
+    }
+    const metadata = fixture.native.tabs.get(fixture.surfaceId)!.metadata;
+    const next = {
+      ...metadata,
+      documentId: "purged-document",
+      revision: metadata.revision + 1,
+    };
+    fixture.native.tabs.get(fixture.surfaceId)!.metadata = next;
+    await fixture.native.emit({ ...fixture.reference(), type: "documentChanged", metadata: next });
+    const nextContextId = uuid();
+    await fixture.native.emit({
+      ...fixture.reference(),
+      type: "editing",
+      channelId: fixture.currentEnvelope().channelId,
+      context: { contextId: nextContextId, field: null, caret: null },
+    });
+    const beforeAfterDoc = fixture.server().length;
+    await fixture.client({
+      type: "clipboard.paste-data",
+      surfaceId: fixture.surfaceId,
+      operationId: uuid(),
+      items: [{ type: "text/plain", size: 5 }],
+      contextId: nextContextId,
+    });
+    expect(fixture.server().slice(beforeAfterDoc)).toEqual([]);
+  });
+
   test("revocation fences before acknowledgement; old grants and old auxiliary streams cannot return", async () => {
     const fixture = await setup("android");
     await fixture.present();

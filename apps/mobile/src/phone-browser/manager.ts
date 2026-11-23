@@ -1097,17 +1097,26 @@ export class PhoneBrowserManager {
           "unsupported-operation",
           "Only basic phone input is available.",
         );
-      if (message.type === "clipboard.paste-data") {
+      const clipboardKey =
+        message.type === "clipboard.paste-data" ? `${channel.id}:${message.operationId}` : null;
+      if (clipboardKey) {
         if (this.#clipboard.size >= 32)
           throw new PhoneBrowserError("too-large", "Too many clipboard operations are pending.");
-        this.#clipboard.set(`${channel.id}:${message.operationId}`, {
+        this.#clipboard.set(clipboardKey, {
           tab,
           documentId: tab.metadata.documentId,
         });
       }
-      await this.#tabOperation(tab, () =>
-        this.#native.applyViewerInput({ ...this.#ref(tab), channelId: channel.id, message }),
-      );
+      try {
+        await this.#tabOperation(tab, () =>
+          this.#native.applyViewerInput({ ...this.#ref(tab), channelId: channel.id, message }),
+        );
+      } catch (error) {
+        if (clipboardKey) this.#clipboard.delete(clipboardKey);
+        if (message.type === "clipboard.part")
+          this.#clipboard.delete(`${channel.id}:${message.part.operationId}`);
+        throw error;
+      }
       return;
     }
     throw new PhoneBrowserError("unsupported-operation", "The phone does not offer this ability.");
@@ -1889,6 +1898,8 @@ export class PhoneBrowserManager {
     session.tabs.delete(tab.id);
     this.#tabs.delete(tab.id);
     this.#localIntents.delete(tab.id);
+    for (const [key, entry] of this.#clipboard)
+      if (entry.tab === tab) this.#clipboard.delete(key);
     session.revision++;
     tab.state = "closed";
     tab.dialog = null;
@@ -1917,6 +1928,8 @@ export class PhoneBrowserManager {
       await this.#releaseCovered(undefined, covered.tabId);
     for (const [id, attachment] of this.#attachments)
       if (attachment.channel === channel) this.#attachments.delete(id);
+    for (const key of this.#clipboard.keys())
+      if (key.startsWith(`${channel.id}:`)) this.#clipboard.delete(key);
     for (const [key, pending] of this.#cdp)
       if (key.startsWith(`${channel.id}:`)) {
         this.#cdp.delete(key);
@@ -1972,6 +1985,8 @@ export class PhoneBrowserManager {
     if (metadata.documentId !== tab.metadata.documentId) {
       tab.dialog = null;
       tab.editingContextId = null;
+      for (const [key, entry] of this.#clipboard)
+        if (entry.tab === tab) this.#clipboard.delete(key);
     }
     tab.metadata = metadata;
     if (metadata.documentId) tab.lastDocumentId = metadata.documentId;

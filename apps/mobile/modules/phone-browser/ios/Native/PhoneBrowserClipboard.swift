@@ -68,7 +68,11 @@ import Foundation
         let size = BrowserWireNumber.integer(items[0]["size"]), (0...16 * 1024 * 1024).contains(size),
         tab.clipboardPastes.count < 32 else { throw BrowserRefusal.invalidArgument }
       // A paste is made for one field's context; one that arrives after focus moved lands nowhere.
-      guard let contextId = message["contextId"] as? String, contextId == tab.contextId else { throw BrowserRefusal.notActionable }
+      guard let contextId = message["contextId"] as? String, contextId == tab.contextId else {
+        clipboardReply(tab, channel: input.channelId, operation: operation,
+          consumer: message["consumerToken"] as? String, outcome: "refused")
+        return
+      }
       let key = "\(input.channelId):\(operation)"
       guard tab.clipboardPastes[key] == nil else { throw BrowserRefusal.invalidArgument }
       let paste = try BrowserClipboardPaste(input: input, tab: tab, operationId: operation, size: size)
@@ -91,7 +95,7 @@ import Foundation
       encoded.utf8.count <= 699052, let bytes = Data(base64Encoded: encoded),
       bytes.count == min(512 * 1024, paste.size - paste.bytes.count) else {
       tab.clipboardPastes.removeValue(forKey: key)
-      clipboardReply(tab, channel: paste.channelId, operation: operation, consumer: paste.consumerToken, outcome: "stale")
+      clipboardReply(tab, channel: paste.channelId, operation: operation, consumer: paste.consumerToken, outcome: "refused")
       return
     }
     paste.bytes.append(bytes); paste.index += 1
@@ -102,7 +106,11 @@ import Foundation
     primitive.epoch = input.epoch; primitive.tabId = tab.id; primitive.documentId = tab.documentId
     primitive.contextId = paste.contextId; primitive.action.kind = "text.paste"; primitive.action.text = text
     _ = try authorize(input, viewer: true)
-    _ = try await perform(primitive, viewer: true, authorization: { _ = try self.authorize(input, viewer: true) })
-    clipboardReply(tab, channel: paste.channelId, operation: operation, consumer: paste.consumerToken, outcome: "pasted")
+    do {
+      _ = try await perform(primitive, viewer: true, authorization: { _ = try self.authorize(input, viewer: true) })
+      clipboardReply(tab, channel: paste.channelId, operation: operation, consumer: paste.consumerToken, outcome: "pasted")
+    } catch BrowserRefusal.notActionable, BrowserRefusal.staleDocument {
+      clipboardReply(tab, channel: paste.channelId, operation: operation, consumer: paste.consumerToken, outcome: "refused")
+    }
   }
 }

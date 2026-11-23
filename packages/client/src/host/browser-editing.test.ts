@@ -275,6 +275,44 @@ describe("browser editing transport", () => {
     });
     store.dispose();
   });
+  it("settles pending clipboard operations immediately on browser.error instead of timing out", async () => {
+    const { store, target } = setup();
+    const paste = target.send({
+      kind: "paste",
+      items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
+      contextId: crypto.randomUUID(),
+    });
+    store.receive(sessionId, {
+      type: "browser.error",
+      error: {
+        code: "conflict",
+        reason: "stale-document",
+        message: "The field changed.",
+        retryable: false,
+      },
+    });
+    const outcome = await Promise.race([
+      paste,
+      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 50)),
+    ]);
+    expect(outcome).toEqual({ outcome: "refused", items: [] });
+    const large = target.send({
+      kind: "paste",
+      items: [{ type: "text/plain", bytes: encoder.encode("hi") }],
+      contextId: crypto.randomUUID(),
+    });
+    store.receive(sessionId, {
+      type: "browser.error",
+      error: {
+        code: "invalid_argument",
+        reason: "too-large",
+        message: "Too large.",
+        retryable: false,
+      },
+    });
+    expect(await large).toEqual({ outcome: "too-large", items: [] });
+    store.dispose();
+  });
 });
 
 describe("browser autofill offers", () => {

@@ -524,18 +524,36 @@ export class BrowserEditingStore {
     pending.resolve({ outcome: pending.outcome, items });
   }
   receive(sessionId: string, message: BrowserServerMessage, surfaceId?: string): void {
-    if (
-      message.type === "browser.error" &&
-      (message.error.reason === "unsupported-operation" ||
-        message.error.reason === "target-suspended")
-    ) {
+    if (message.type === "browser.error") {
       for (const [id, pending] of this.#pending) {
         if (
+          pending.kind === "written" ||
           pending.target.sessionId !== sessionId ||
           (surfaceId && pending.target.surfaceId !== surfaceId)
         )
           continue;
-        this.#take(id)?.resolve({ outcome: "empty", items: [] });
+        const reason = message.error.reason;
+        if (reason === "unsupported-operation" || reason === "target-suspended")
+          this.#take(id)?.resolve({ outcome: "empty", items: [] });
+        else if (reason === "too-large") {
+          this.#count(this.diagnostics.clipboard, "too-large");
+          this.#take(id)?.resolve({ outcome: "too-large", items: [] });
+        } else if (
+          reason === "stale-document" ||
+          reason === "not-actionable" ||
+          reason === "forbidden" ||
+          reason === "stale-input" ||
+          reason === "dialog-open" ||
+          reason === "target-closed"
+        ) {
+          this.#count(this.diagnostics.clipboard, "refused");
+          this.#take(id)?.resolve({ outcome: "refused", items: [] });
+        } else {
+          this.#fail(
+            id,
+            new Error(message.error.message || "The remote clipboard operation failed."),
+          );
+        }
       }
       return;
     }
