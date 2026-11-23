@@ -200,7 +200,7 @@ export async function runTabRestoreTrial(input: {
     }
   };
   const select = async (id: string) => {
-    const selector = `li[data-place-key$=":${id}"] .side-tab__main`;
+    const selector = `li[data-place-key="${id}"] .side-tab__main`;
     await wait(
       async () =>
         Boolean(
@@ -299,7 +299,7 @@ export async function runTabRestoreTrial(input: {
           await window.webContents.executeJavaScript(`(() => {
       const images=${JSON.stringify(images)};
       return images.every(({id,src}) => {
-        const row=[...document.querySelectorAll('li[data-place-key]')].find(node=>node.dataset.placeKey.endsWith(':'+id));
+        const row=[...document.querySelectorAll('li[data-place-key]')].find(node=>node.dataset.placeKey===id);
         if (!row) return false;
         const image=row.querySelector('img');
         return image?.complete && image.src===src && image.naturalWidth===32 && image.naturalHeight===32;
@@ -354,7 +354,7 @@ export async function runTabRestoreTrial(input: {
     window.webContents.sendInputEvent({ type: "keyUp", keyCode });
   };
   const addMenu = async (id: string) => {
-    const selector = `li[data-place-key$=":${id}"] .side-tab__main`;
+    const selector = `li[data-place-key="${id}"] .side-tab__main`;
     await wait(() => has(selector), `tab menu row ${id}`);
     await click(selector, window.webContents, { button: "right" });
     await wait(() => has(".popover--tab-menu"), "tab menu opened");
@@ -395,7 +395,7 @@ export async function runTabRestoreTrial(input: {
         expanded:header?.querySelector('.side-tab-group__main')?.getAttribute('aria-expanded')??null,
         active:header?.classList.contains('is-active')??false,
         color:header?.style.getPropertyValue('--tab-group-color').trim()??null,
-        members:${JSON.stringify(memberIds())}.map(id=>{const row=rows.find(node=>node.dataset.placeKey.endsWith(':'+id)); return {id,present:!!row,grouped:row?.classList.contains('side-tab--grouped')??false};})
+        members:${JSON.stringify(memberIds())}.map(id=>{const row=rows.find(node=>node.dataset.placeKey===id); return {id,present:!!row,grouped:row?.classList.contains('side-tab--grouped')??false};})
       };
     })()`),
       );
@@ -445,7 +445,7 @@ export async function runTabRestoreTrial(input: {
     await screenshot(phase, true);
     return value;
   };
-  const tabRow = (id: string) => `li[data-place-key$=":${id}"]`;
+  const tabRow = (id: string) => `li[data-place-key="${id}"]`;
   const headerRow = () => {
     assert(state?.tabGroup);
     return `li[data-tab-group-id="${state.tabGroup.id}"]`;
@@ -464,7 +464,7 @@ export async function runTabRestoreTrial(input: {
       .array(z.string())
       .parse(
         await dom(
-          `[...document.querySelector('.side-section--tabs .side-list').children].flatMap(node => node.dataset.tabGroupId ? ['group:'+node.dataset.tabGroupId] : node.dataset.group==='web' ? [node.dataset.placeKey.split(':').pop()] : [])`,
+          `[...document.querySelector('.side-section--tabs .side-list').children].flatMap(node => node.dataset.tabGroupId ? ['group:'+node.dataset.tabGroupId] : node.dataset.kind==='page' ? [node.dataset.placeKey] : [])`,
         ),
       );
   const pointer = (type: "mouseMove" | "mouseDown" | "mouseUp", x: number, y: number) =>
@@ -804,7 +804,7 @@ export async function runTabRestoreTrial(input: {
       await expectOrder("keyboard-into-group", [group, pop, p1, f1], [pop, p1, f1]);
       assert(
         await dom(
-          `document.activeElement?.closest('li')?.dataset.placeKey?.endsWith(':${pop}') ?? false`,
+          `document.activeElement?.closest('li')?.dataset.placeKey === ${JSON.stringify(pop)}`,
         ),
         "the moved tab keeps focus",
       );
@@ -1002,7 +1002,7 @@ export async function runTabRestoreTrial(input: {
             .sort(),
         );
         assert.deepEqual(liveIds(after), liveIds(before));
-        for (const id of memberIds()) assert(await has(`li[data-place-key$=":${id}"]`));
+        for (const id of memberIds()) assert(await has(`li[data-place-key="${id}"]`));
         await screenshot("tab-groups-ungrouped", true);
       });
       await groupPhase("groups-close-exact-members", async () => {
@@ -1037,7 +1037,7 @@ export async function runTabRestoreTrial(input: {
           liveIds(before).filter((id) => !ids.has(id)),
         );
         assert(rows(after).some((tab) => tab.id === control.tabId));
-        for (const id of memberIds()) assert(!(await has(`li[data-place-key$=":${id}"]`)));
+        for (const id of memberIds()) assert(!(await has(`li[data-place-key="${id}"]`)));
         await screenshot("tab-groups-closed", true);
       });
     } else throw new Error(`Unknown restore phase ${trial}`);
