@@ -382,7 +382,7 @@ extension WireJourney {
     var cases: [String: String] = [:]
     var active: String?
     let planned = ["negotiation", "helper-baseline-negotiation", "capture-ready", "person-waits-for-agent-mutation", "two-idle-attachments-share-app", "agent-refused-held-button", "another-app-agent-unaffected",
-      "native-text-key", "IME-commit", "external-caret-stale", "verified-replacement", "stale-replacement", "rich-paste-refusal",
+      "native-text-key", "IME-commit-at-once", "IME-commit", "external-caret-stale", "verified-replacement", "stale-replacement", "rich-paste-refusal",
       "multiline-paste", "AX-copy", "save-chord", "undo-chord", "stable-generation", "native-fixture-pixel-latency", "secure-refusal", "guest-pasteboard-unchanged",
       "resize-stale-input", "sibling-joins-composition", "sibling-leaves-composition", "contained-child-joins-composition", "contained-child-leaves-composition", "reset-preserves-agent-observation", "lost-keyup-cleanup", "hide-cleanup", "Stop-without-session", "local-cover-invariants", "disconnect-cleanup"]
     for name in planned { cases[name] = "not-run" }
@@ -654,14 +654,24 @@ extension WireJourney {
       ["kind": "key", "action": "up", "code": "KeyQ", "key": "q", "modifiers": []]])
     try require(key["outcome"] as? String == "dispatched", "Unicode-carrying key was refused")
     try require(try await note() == "q", "AppKit key did not insert exactly once")
-    // The fixture now shows the key, but its receipt came first: Electron
-    // applies a key in its renderer, so the context the helper read at once
-    // can name the field before "q" landed, and an edit against it is rightly
-    // stale. A person commits into a settled field.
     let afterKey = editingMark
     passed()
+    // CY13: a person commits at once after a key. Electron applies the key in its renderer,
+    // after its receipt; the helper publishes the field's context only once the field shows
+    // the key, and an insertion under an earlier context of the same field goes in at the
+    // caret. Committed under the first context published after the key, it lands, once.
+    start("IME-commit-at-once")
+    let atOnce = try await editingContext(streamA, after: afterKey) { context in
+      (context["field"] as? [String: Any])?["sensitive"] as? Bool == false
+    }
+    let immediate = try await input([["kind": "edit", "edit": ["contextId": atOnce["contextId"] as Any, "text": "漢字", "before": "", "after": ""]]])
+    try require(immediate["outcome"] as? String == "dispatched", "An IME commit at once after a key was refused")
+    try require(try await note() == "q漢字", "An IME commit at once after a key did not insert once")
+    let afterCommit = editingMark
+    passed()
+    // And into a field that has settled, as before.
     start("IME-commit")
-    let ime = try await input([["kind": "edit", "edit": ["contextId": try await settledEditingContext(streamA, after: afterKey), "text": "漢字!", "before": "", "after": ""]]])
+    let ime = try await input([["kind": "edit", "edit": ["contextId": try await settledEditingContext(streamA, after: afterCommit), "text": "!", "before": "", "after": ""]]])
     try require(ime["outcome"] as? String == "dispatched", "IME commit was refused")
     try require(try await note() == "q漢字!", "IME commit did not insert once")
     passed()

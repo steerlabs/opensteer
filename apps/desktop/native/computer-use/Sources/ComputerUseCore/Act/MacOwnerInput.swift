@@ -246,7 +246,13 @@ final class MacOwnerInputWorker {
   private var buttons: [String: HeldButton] = [:]
   private var generation: Int?
   private var contextRevision = -1
-  private var contextID = UUID().uuidString
+  /// CY13: the field's contexts, by the page's rule: earlier ones of the same field stay valid
+  /// for insertions (OwnerEditingContexts).
+  private var contexts = OwnerEditingContexts()
+  private var contextID: String { contexts.current }
+  /// CY13: a person's edit dispatched whose effect the field has not shown yet: what it showed
+  /// before, and since when. No context is published until it shows (or the wait is over).
+  private var awaitingEffect: (before: OwnerEditingContexts.FieldState, since: TimeInterval)?
   private var element: AXUIElement?
   private var selection: CFRange?
   private var contextUnpublished = false
@@ -257,7 +263,7 @@ final class MacOwnerInputWorker {
   func cleanup(_ lease: MacOwnerAttachment) async {
     let keys = keys, buttons = buttons
     self.keys.removeAll(); self.buttons.removeAll(); element = nil; selection = nil
-    contextID = UUID().uuidString
+    contexts.rotate(sameField: false); awaitingEffect = nil
     lease.heldDeadline.withLock { $0 = nil }
     defer { lease.mutations.setHeld(false, attachment: lease.id) }
     guard lease.binding.target.process.isCurrent else { return }
@@ -372,18 +378,21 @@ final class MacOwnerInputWorker {
         "uptimeUs": DispatchTime.now().uptimeNanoseconds / 1000])
       try proceed()
       let changesEditing = MacOwnerInput.changesEditing(params.events, buttonsHeld: !buttons.isEmpty)
+      let shownBefore = changesEditing ? fieldState(lease, map: map) : nil
       try await dispatch(params, lease: lease, map: map, proceed: proceed)
       if changesEditing {
         lease.mutations.notePersonEdit()
-        // Not published from here: input still queued would invalidate it at once.
-        contextID = UUID().uuidString
+        // Not published from here: input still queued would invalidate it at once. The same
+        // field: the context before stays valid for insertions (CY13).
+        contexts.rotate(sameField: true)
         contextUnpublished = true
+        if let shownBefore { awaitingEffect = (shownBefore, ProcessInfo.processInfo.systemUptime) }
       }
       lease.count("outcome.dispatched")
       return MacOwnerInput.Result(sequence: params.sequence, outcome: "dispatched")
     } catch let refusal as MacOwnerInput.Refusal {
       lease.count("refused." + refusal.reason)
-      if refusal.reason == "stale" { contextID = UUID().uuidString }
+      if refusal.reason == "stale" { contexts.rotate(sameField: true) }
       await cleanup(lease)
       if let map = lease.producer.inputMap { await publishContext(lease, map: map) }
       return MacOwnerInput.Result(sequence: params.sequence,
@@ -580,21 +589,38 @@ final class MacOwnerInputWorker {
     return range
   }
   private func refresh(_ focused: Focused, revision: Int) {
-    if revision != contextRevision { contextID = UUID().uuidString }
-    contextRevision = revision
     let next = focused.secure ? nil : range(focused.element)
+    // Another element (or the first): no earlier context carries over. The same element whose
+    // text or selection moved: a new context, the one before an earlier one of it (CY13).
     if element.map({ !CFEqual($0, focused.element) }) ?? true {
-      contextID = UUID().uuidString
-    } else if selection?.location != next?.location || selection?.length != next?.length {
-      contextID = UUID().uuidString
+      contexts.rotate(sameField: false)
+    } else if revision != contextRevision || selection?.location != next?.location || selection?.length != next?.length {
+      contexts.rotate(sameField: true)
     }
+    contextRevision = revision
     element = focused.element; selection = next
+  }
+  /// What the focused field shows now (its text and selection), or nothing where it cannot be read.
+  private func fieldState(_ lease: MacOwnerAttachment, map: MacOwnerInputMap) -> OwnerEditingContexts.FieldState? {
+    guard let focused = try? keyboard(lease, map: map), !focused.secure else { return nil }
+    let selected = range(focused.element)
+    return .init(value: AXValueReader.copyString(focused.element, kAXValueAttribute),
+      selectionLocation: selected?.location, selectionLength: selected?.length)
   }
   /// Checked on this actor: a context read between a dispatch and its effect
   /// is never offered while that or later input is still queued.
   func publishUnlessPending(_ lease: MacOwnerAttachment, idle: Bool = false) async {
     guard lease.admission.pendingBatches == 0, !idle || !lease.burstActive.current,
       let map = lease.producer.inputMap else { return }
+    // CY13: after a person's edit, a context for the field once it shows the edit (an app that
+    // applies a key late shows the field before the key at the key's receipt); the idle tick
+    // looks again until it does, or the wait is over.
+    if let waiting = awaitingEffect {
+      let now = fieldState(lease, map: map)
+      if let now, !OwnerEditingContexts.effectShown(before: waiting.before, now: now,
+        waited: ProcessInfo.processInfo.systemUptime - waiting.since) { return }
+      awaitingEffect = nil
+    }
     contextUnpublished = false
     await publishContext(lease, map: map)
   }
@@ -626,7 +652,7 @@ final class MacOwnerInputWorker {
             ? .init(kind: focused.role == "AXWebArea" ? "rich" : "text", multiline: focused.role == "AXTextArea", sensitive: focused.secure) : nil,
           caret: caret)))
     } catch {
-      element = nil; selection = nil; contextID = UUID().uuidString
+      element = nil; selection = nil; contexts.rotate(sameField: false)
       lease.emit(.init(type: "display.editing", generation: map.generation,
         context: .init(contextId: contextID, field: nil, caret: nil)))
     }
@@ -675,7 +701,10 @@ final class MacOwnerInputWorker {
     refresh(focused, revision: lease.mutations.revision)
     // Choose and qualify the insertion route before selecting any range.
     let route = try insertionRoute(focused, lease: lease)
-    guard contextID == edit.contextId, let selected = selection else { throw MacOwnerInput.Refusal("stale") }
+    // CY13: by the page's rule: an insertion under an earlier context of this field goes in at the
+    // caret; a replacement needs the current one.
+    let insertion = edit.before.isEmpty && edit.after.isEmpty && !edit.text.isEmpty
+    guard contexts.admits(edit.contextId, insertion: insertion), let selected = selection else { throw MacOwnerInput.Refusal("stale") }
     let before = edit.before.utf16.count, after = edit.after.utf16.count
     if before > 0 || after > 0 {
       guard selected.length == 0, selected.location >= before else { throw MacOwnerInput.Refusal("stale") }
