@@ -51,11 +51,7 @@ Customer (Desktop / Mobile / Web)
 
 Cloud Computer turns on in Account as soon as any `OPENSTEER_CLOUD_COMPUTER_*` variable is present. Every `OPENSTEER_CLOUD_COMPUTER_*` variable also accepts a `<NAME>_FILE` variant that reads the value from a file and trims trailing whitespace. Setting both `<NAME>` and `<NAME>_FILE` fails startup.
 
-In the Kubernetes manifest, put non-secret settings in the `account-env` ConfigMap and Stripe secrets in the existing `opensteer-account-runtime` JSON secret. Use the base names as JSON keys, such as `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`. The init container stages present `OPENSTEER_CLOUD_COMPUTER_*` and `OPENSTEER_ORGANIZATION_*` keys as mode `0600` files. Account uses the file when there is no explicit environment or `_FILE` setting for that key. Publish a new version of the runtime secret and point the manifest's SecretProviderClass to it when the values change.
-
-To enable organization seats, set `OPENSTEER_ORGANIZATION_STRIPE_PRICE_ID` to a recurring price distinct from the personal price, plus `OPENSTEER_ORGANIZATION_CURRENCY` and `OPENSTEER_ORGANIZATION_PRICE_MINOR`. `OPENSTEER_ORGANIZATION_PRICE_INTERVAL` defaults to `month`. Organization billing uses the same Stripe credentials and webhook as personal Cloud Computers. Set `OPENSTEER_ORGANIZATION_STRIPE_PORTAL_CONFIGURATION_ID` to a separate, non-default portal configuration that enables only payment method updates and invoice history.
-
-When an organization admin creates an invitation, the website shows a link for the admin to share with the invitee. Sending the link is manual. The invitee accepts while signed in with the invited, verified email address.
+In the Kubernetes manifest, put non-secret settings in the `account-env` ConfigMap and Stripe secrets in the existing `opensteer-account-runtime` JSON secret. Use the base names as JSON keys, such as `OPENSTEER_CLOUD_COMPUTER_STRIPE_SECRET_KEY`. The init container stages present `OPENSTEER_CLOUD_COMPUTER_*` keys as mode `0600` files. Account uses the file when there is no explicit environment or `_FILE` setting for that key. Publish a new version of the runtime secret and point the manifest's SecretProviderClass to it when the values change.
 
 Account also requires its core variables to be valid for Cloud Computer: `OPENSTEER_CONTROL_PLANE_DATABASE_URL`, `OPENSTEER_CONTROL_PLANE_PUBLIC_URL` (must be `https://`), `OPENSTEER_PORTAL_ORIGIN` (must be `https://` and differ from the Account origin), and `OPENSTEER_ADOPTION_OPERATION_KEY` (seals pool credentials, bootstrap tokens, setup codes, at rest).
 
@@ -181,14 +177,14 @@ Commands print JSON to stdout. Invalid operations print an error to stderr and e
 
 ### Diagnostics and recovery
 
-| Command                     | What it shows or changes                                                                                                                                                                                                                                                                                                                          |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list` / `show <id>`        | Account and work assignment IDs, desired state and observed phase, generation and revision, hostname, current and previous provider server IDs, IPs, pinned deployment ID and key fingerprint, bootstrap expiry and completion, deletion intent and tombstone, billing and egress status, claim attempt/receipt/error, and last reconciler error. |
-| `lease-show`                | Holder UUID, expiry, and whether the lease expired. Returns `null` if no lease is recorded.                                                                                                                                                                                                                                                       |
-| `lease-release <holder>`    | Removes the named holder's lease only after expiry. A renewed lease or a different holder is refused.                                                                                                                                                                                                                                             |
-| `checkout-list`             | Open attempts known to be paid and deferred webhook completions, with Account and Stripe IDs for investigation. Checkout URLs and raw event bodies are omitted.                                                                                                                                                                                   |
-| `billing-reconcile`         | Runs the same personal and organization billing reconciliation as the Account worker. `ran: false` means another worker holds the billing lock. Inspect the `errors` array even when `ran: true`.                                                                                                                                                 |
-| `claim-retry <computer-id>` | Clears a recorded claim failure on an active, provisioned Home, starts a fresh claim deadline, and queues it for the worker. Run after diagnosing the error. The existing Home identity and generation are retained.                                                                                                                              |
+| Command                     | What it shows or changes                                                                                                                                                                                                                                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list` / `show <id>`        | Account ID, desired state and observed phase, generation and revision, hostname, current and previous provider server IDs, IPs, pinned deployment ID and key fingerprint, bootstrap expiry and completion, deletion intent and tombstone, billing and egress status, claim attempt/receipt/error, and last reconciler error. |
+| `lease-show`                | Holder UUID, expiry, and whether the lease expired. Returns `null` if no lease is recorded.                                                                                                                                                                                                                                  |
+| `lease-release <holder>`    | Removes the named holder's lease only after expiry. A renewed lease or a different holder is refused.                                                                                                                                                                                                                        |
+| `checkout-list`             | Open attempts known to be paid and deferred webhook completions, with Account and Stripe IDs for investigation. Checkout URLs and raw event bodies are omitted.                                                                                                                                                              |
+| `billing-reconcile`         | Runs the same billing reconciliation as the Account worker. `ran: false` means another worker holds the billing lock. Inspect the `errors` array even when `ran: true`.                                                                                                                                                      |
+| `claim-retry <computer-id>` | Clears a recorded claim failure on an active, provisioned Home, starts a fresh claim deadline, and queues it for the worker. Run after diagnosing the error. The existing Home identity and generation are retained.                                                                                                         |
 
 Claim error codes are `timeout`, `setup-failed`, and `claim-failed`. The operator output omits credentials and raw failure payloads.
 
@@ -306,7 +302,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 
 1. **Checkout**:
    - The customer starts checkout through `POST /v1/account/cloud-computers/checkout` with a UUID `requestId`.
-   - Account validates the Stripe offer and reserves capacity before creating a Checkout Session. Personal Checkout reserves one backup target. Organization Checkout reserves a target per unassigned seat, and a seat increase reserves the additional targets before it can charge.
+   - Account validates the Stripe offer and reserves capacity before creating a Checkout Session. Checkout reserves one backup target.
    - Customer sees the checkout page in their browser; the app polls `GET /v1/account/cloud-computers` every 5 seconds.
 2. **Desired state**:
    - Stripe sends `checkout.session.completed` (or `checkout.session.async_payment_succeeded`) to `POST /v1/cloud-computers/stripe-webhook`.
@@ -383,7 +379,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   - Reconciler removes the Cloudflare DNS record, deletes the Hetzner server, waits until it is absent, and reports `phase: "deleted"`.
   - Account records the provider confirmation, then destroys the Home's Secret Manager secret. It records the tombstone and reports `status: "deleted"` only when both facts are confirmed.
   - Account purges stored object versions and delete markers using the corresponding Home's own S3 credential, including retired targets. It confirms removal with a fresh empty listing before releasing the target for rotation. A durable purge reservation holds each target through failures. The provisioner never receives storage credentials.
-  - The personal or organization page shows **Computer and disk destroyed**, **Backups made unreadable**, and **Stored backup data removed** with separate dates. An offboarded seat stops counting as assigned after the first two facts are confirmed. A free seat requires an independently reserved usable backup target.
+  - The Cloud Computer page shows **Computer and disk destroyed**, **Backups made unreadable**, and **Stored backup data removed** with separate dates.
   - **Settling with Stripe**: this is the same whether the owner deleted the Cloud Computer or deleted their Account. The 60-second billing pass settles each personal row with `deletionRequestedAt` set and `billingSettledAt` empty, in a few Stripe calls, retried every pass:
     - `cancel`: if the row isn't deleted yet, the pass cancels its subscription (`invoice_now=false`, `prorate=false`). It won't renew, and the rest of the period already paid isn't refunded. A failed attempt sets `cancelFailedAt`. Then Stripe must show the subscription cancelled.
     - `customer`: the Stripe customer that subscription belongs to is deleted, with the payment details saved on it, unless Stripe lists another subscription on it that is not cancelled. Stripe keeps its own records of past payments.
@@ -392,7 +388,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
     - A row still unsettled an hour after its request is logged the same way with `CloudComputerDeletionUnsettled`, the `computerId` and the `step` that is failing.
 - **Account deletion**:
   - The account deletion page says the person's Cloud Computer goes with the Account, with the same billing words as the Cloud Computer's own Delete.
-  - `AccountDeletionService.delete` contacts no Cloud Computer before the Account's own transaction. When the Account's row goes, the database records each of its Cloud Computers' deletion requests in that same transaction (the `zz_cloud_computer_revision` trigger). The refusals are the existing ones: a work Home its organization hasn't offboarded, the last organization admin, an open organization checkout. A refused deletion leaves the Cloud Computer as it was.
+  - `AccountDeletionService.delete` contacts no Cloud Computer before the Account's own transaction. When the Account's row goes, the database records each of its Cloud Computers' deletion requests in that same transaction (the `zz_cloud_computer_revision` trigger). A deletion refused because another attempt is already deleting the Account leaves the Cloud Computer as it was.
   - Right after the deletion commits, the service asks the billing pass to run now (best effort; otherwise it runs within a minute). The pass cancels and settles the row as above, and the reconciler destroys the machine, the backup key and the stored backups.
   - The page after deletion says the Account is deleted and that the Cloud Computer's deletion is being finished.
 
@@ -426,7 +422,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 ### Replacing a broken Home from a snapshot
 
 - **How to recognise it**: A Home that was previously ready (`everReady`) is unrecoverable in place (corrupted disk, broken VM, failed host) and the customer needs a fresh VM restored from a known-good restic snapshot.
-- **What the system does**: No automatic path replaces a ready Home. This hosted `replace` procedure is for personal Homes only; the Account refuses it for work assignments.
+- **What the system does**: No automatic path replaces a ready Home. This hosted `replace` procedure replaces a person's Home.
 - **What the operator does**:
   1. On the source VM, run `sudo opensteer-home snapshots` to find a restic snapshot ID (8–64 lowercase hex characters). It reads the repository using the VM's root-only credential files. Account has no snapshot list. If the source VM is unavailable, use a previously recorded snapshot ID or the existing backup recovery procedure with the repository credentials.
   2. Run:
@@ -486,11 +482,8 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
   2. Once Stripe is reachable again, wait up to 60 seconds for the billing reconciler to finish the cancellation, or re-run `node dist/cloud-computer-operator-main.js delete <id>` to trigger the cancellation immediately.
   3. Confirm `show <id>` reaches `phase: "deleted"` and has a `tombstonedAt` timestamp. Check the separate stored-data removal timestamp before rotating the backup target.
 
-### Organization billing and offboarding
+### Interrupted provider writes
 
-- A new work assignment requires a Stripe refresh within five minutes. Finalization failure, past-due or unpaid billing, and paused collection suspend work Homes without deleting them. A seat increase remains pending until Stripe confirms its invoice is paid and the matching quantity is applied. Use the invoice link to complete payment or the Abandon seat change action to void the pending invoice.
-- The organization billing portal provides payment-method updates and invoice history. Organization closure is an explicit website action after all work Homes are offboarded. If a subscription ends separately, use **Pay for this organization again** to restore billing to the same organization.
-- The offboarding worker runs separately from billing. Retention starts when suspension is confirmed. The final audit flush can fail, in which case the page shows **Final records not confirmed**.
 - For an interrupted provider mutation, Account records the write before it can be sent. An unsent write can be recovered after three minutes. A dispatched write can be recovered after fifteen minutes if a fresh deterministic provider lookup confirms the outcome. Suspend and delete reports remain fenced until pending writes are resolved.
 
 ### Missed webhook
@@ -505,7 +498,7 @@ Each backup target must have a unique S3 `accessKeyId` and a prefix that does no
 ### No free backup target or egress endpoint
 
 - **How to recognise it**:
-  - **Backup pool empty**: Customer checkout fails with HTTP `503` (`"Cloud Computer checkout is not available right now"`). `node dist/cloud-computer-operator-main.js backup-list` shows every row is assigned or reserved (`computerId`, `reserved`, or `reservedOrganizationId`), awaiting purge (`purgeComputerId`), or marked `needsRotation`.
+  - **Backup pool empty**: Customer checkout fails with HTTP `503` (`"Cloud Computer checkout is not available right now"`). `node dist/cloud-computer-operator-main.js backup-list` shows every row is assigned or reserved (`computerId` or `reserved`), awaiting purge (`purgeComputerId`), or marked `needsRotation`.
   - **Egress pool empty**: `show <id>` shows `egressUnavailable: true` (customer sees Browser IP: "Browsing paused"). `node dist/cloud-computer-operator-main.js egress-list` shows every row has a non-null `computerId` or `needsRotation: true`.
 - **What the system does**:
   - With no free backup target, Account refuses new checkouts.

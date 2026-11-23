@@ -45,8 +45,8 @@ Required query parameters: `response_type=code`, `client_id`, `redirect_uri` (ex
 The browser redirects to `/mcp-authorization`, where the person sees:
 
 1. **Who is asking.** If your `redirect_uri` origin is in Opensteer's signed agent directory (from the Opensteer account service), it shows the verified name and origin (or verified embedder via platform with a verified `opensteer_embedder_assertion` JWS). Otherwise it shows your self-claimed `client_name`, your redirect origin (or `"an app on this computer"` for loopback), and `"Only allow this if you started it yourself."`
-2. **What it can use.** **Choose what it can use** (specific browser profiles, shared Chrome tabs, apps or phone screens, plugins, and/or Tasks) or **Everything my own agents can do**. On a work Home, organization policy may forbid `everything` or Tasks.
-3. **Safety mode** (capped by organization policy on a work Home) and connection **Name**.
+2. **What it can use.** **Choose what it can use** (specific browser profiles, shared Chrome tabs, apps or phone screens, plugins, and/or Tasks) or **Everything my own agents can do**.
+3. **Safety mode** and connection **Name**.
 4. **Terms.** Access lasts 30 days and can be ended any time in **Settings → Connected agents**.
 
 Approval redirects to `redirect_uri` with `code`, `iss`, and `state`; denial redirects with `error=access_denied`, `iss`, and `state`. Codes expire in **60 seconds**, are single-use, and are burned on any failed exchange.
@@ -177,10 +177,6 @@ Tools outside your grant are neither listed by `tools/list` nor callable. Connec
 
 A connected agent does work inside what the person shared and asks the person's own agents for work; it does not administer the Home. It has no tools to change Home settings, rename or remove devices or browser profiles, install or remove plugins, manage automations, request wider access, inspect or reorder a task's queue, rename or close tasks, or pick a different AI account or model (`opensteer_task_create` always uses the person's defaults). Ask the person to adjust your grant in **Settings → Connected agents** if wider access is needed. A person's pause also sticks: `opensteer_task_interrupt` stops the current turn and pauses the task's queue, and only the person can resume it (`opensteer_task_send` with `delivery: "queue"` waits while paused). Calling a tool outside your listing returns the MCP error text `Tool <name> not found` for the name you sent. If the grant has no tools, the MCP call method can be unavailable.
 
-### Work Homes and organization policy
-
-On a **work Home**, organization policy caps the safety mode (`externalMaxMode`) and may forbid `everything`, `tasks`, or enrolling extra devices. A forbidden choice — or an offboarding/ended work Home — fails with `code: "organization_not_allowed"`.
-
 ### Unshared resources look nonexistent
 
 Naming a browser profile, tab, task, app, device, plugin, or `operationId` outside a `selected` grant returns `code: "not_found"`, identical to a nonexistent or malformed ID. `discover` omits unshared items and hides device details your grant does not cover.
@@ -216,7 +212,7 @@ In `auto` mode with a review model, ordinary URL query strings (such as `?page=2
 
 Two rules always hold:
 
-1. **Lowest ceiling wins.** Effective mode is the lowest of connection mode, task mode, and (on a work Home) organization policy. Lowering a task's mode ends in-flight direct work and browser connections admitted under a higher mode.
+1. **Lowest ceiling wins.** Effective mode is the lower of connection mode and task mode. Lowering a task's mode ends in-flight direct work and browser connections admitted under a higher mode.
 2. **Person-only tools always ask.** Even in `full-access`, `ask_person`, `saved_login_request`, and `card_request` always ask the person in **Needs you**.
 
 ### Reads vs writes
@@ -681,7 +677,6 @@ Tool failures return `isError: true` with identical JSON in `structuredContent` 
 | `declined_by_person`                                      | The person clicked **Don't allow** on this action.                                                      | Respect it; do not retry the same action.                                                                              |
 | `stopped_by_person`                                       | The person clicked **Stop** on this task. If `status === "unknown"`, work was interrupted mid-flight.   | Stop this task immediately. If `status === "unknown"`, check state before any later action. Ask before starting again. |
 | `access_changed`                                          | Grant narrowed, task mode lowered, Request expired, or access ended in flight (`status === "unknown"`). | If `status === "unknown"`, check current state first. Reconnect if your transport closed to read the new grant.        |
-| `organization_not_allowed`                                | Work Home organization policy forbids this action, or the work Home has ended.                          | Do not retry. Tell the person their organization's policy does not allow it.                                           |
 | `not_found`                                               | Resource or tool is outside your grant or does not exist (indistinguishable on purpose).                | Do not probe other IDs. Tell the person if you need something shared in **Settings → Connected agents**.               |
 | `computer_stopped` (**Stopped on this Mac** / **{name}**) | The person turned on Stop on that device.                                                               | Do not retry in a loop. Wait until they resume agents there, or do other work.                                         |
 | `computer_asleep` / `computer_offline`                    | The device is asleep or offline.                                                                        | Wait until it wakes or reconnects; never substitute another profile or device.                                         |
