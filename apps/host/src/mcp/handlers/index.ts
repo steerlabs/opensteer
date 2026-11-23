@@ -16,6 +16,8 @@ import type { AgentToolHandlers, ToolCall } from "./types.js";
 import type { PluginToolHandlers } from "./plugins.js";
 import { localServerToolHandlers } from "./local-servers.js";
 import type { LocalServerRegistry } from "../../local-servers/local-server-registry.js";
+import type { CommandTools } from "./commands.js";
+
 export function agentToolHandlers(options: {
   readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
@@ -29,6 +31,8 @@ export function agentToolHandlers(options: {
   readonly browser?: BrowserToolHandlers;
   readonly plugins?: PluginToolHandlers;
   readonly localServers?: LocalServerRegistry;
+  /** Home commands through the one door; absent on a Home without the door wired. */
+  readonly commands?: CommandTools;
 }): Partial<AgentToolHandlers> {
   const p = options.product,
     d = options.devices,
@@ -38,8 +42,16 @@ export function agentToolHandlers(options: {
       throw refused("conflict", "This Home cannot open a Request for direct work.");
     return options.sessionPerson;
   };
+  const commands = options.commands;
   const handlers: Partial<AgentToolHandlers> = {
     ...administrationToolHandlers(options.administration),
+    ...(commands
+      ? {
+          opensteer_commands: (c: ToolCall<"opensteer_commands">) => commands.opensteer_commands(c),
+          opensteer_command: (c: ToolCall<"opensteer_command">) => commands.opensteer_command(c),
+          opensteer_state: (c: ToolCall<"opensteer_state">) => commands.opensteer_state(c),
+        }
+      : {}),
     ...options.plugins?.handlers(),
     ...(options.localServers ? localServerToolHandlers(options.localServers) : {}),
     ...appToolHandlers(options.apps),

@@ -80,6 +80,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0109_chat_routes_end_contract",
     "0110_remove_organizations_contract",
     "0111_remove_platform_verification_contract",
+    "0112_command_requests",
     "0114_thread_inputs_written_by_connection",
     "0115_provider_session_person_lineage",
   ]);

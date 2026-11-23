@@ -5,6 +5,7 @@ import { expect, test, vi } from "vitest";
 import { createDatabase } from "./connection.js";
 import { ensureDeployment } from "./deployment-store.js";
 import {
+  commandRequestsMigrationName,
   migrateToLatest,
   migrationProvider,
   personalCurrentStateMigrationName,
@@ -116,6 +117,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         chatRoutesEndMigrationName,
         removeOrganizationsMigrationName,
         removePlatformVerificationMigrationName,
+        commandRequestsMigrationName,
         "0114_thread_inputs_written_by_connection",
         "0115_provider_session_person_lineage",
       ]);

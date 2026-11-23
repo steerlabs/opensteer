@@ -24,6 +24,8 @@ const allowed: Readonly<Record<string, string>> = {
   "channels/channel-service.ts":
     "A messaging provider's inspection issues (sentences for the person), not a validator's.",
   "local-servers/local-server-registry.ts": "A plugin's own list of issues, not a validator's.",
+  "commands/dispatch.ts":
+    "An agent's command it sent wrong, told to that agent; the person's commands are run before it is read.",
 };
 
 it("writes a validator's issues into text only where each place says why it may", () => {

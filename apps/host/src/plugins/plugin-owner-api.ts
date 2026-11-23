@@ -43,6 +43,7 @@ import {
   type PluginCaller,
   type PluginConsent,
   type PluginJson,
+  type PluginInput,
 } from "./engine-protocol.js";
 import type { PluginService, PluginServiceState } from "./plugin-service.js";
 import { keysetPage } from "./keyset-page.js";
@@ -78,6 +79,13 @@ type Service = Pick<
 
 export interface PluginOwnerApiOptions {
   readonly service: Service;
+  /**
+   * Reads plugin source from a folder inside Agent home, as today's install tool does: an install
+   * your own agent proposed from its folder runs it once the person approves.
+   */
+  readonly folder?: (
+    directory: string,
+  ) => Promise<Extract<PluginInput<"install">, { readonly kind: "files" }>>;
   readonly pages?: import("./plugin-pages.js").PluginPages;
   readonly webhooks?: {
     service: Pick<PluginService, "webhook" | "readStream">;
@@ -308,6 +316,12 @@ export class PluginOwnerApi {
     return pluginEngineStateView(this.#options.service.state());
   }
   readonly #options: PluginOwnerApiOptions;
+  /** A folder install needs Agent home's files; a Home without them has no folder to read. */
+  #folder(directory: string) {
+    if (!this.#options.folder)
+      throw new OpensteerError({ code: "not_found", message: "Folder not found" });
+    return this.#options.folder(directory);
+  }
   readonly pages: PluginOwnerApiOptions["pages"];
   readonly webhooks: PluginOwnerApiOptions["webhooks"];
   #gateway: import("../apps/app-gateway.js").AppGateway | undefined;
@@ -1049,7 +1063,14 @@ export class PluginOwnerApi {
           service.install(
             source.kind === "catalog"
               ? { kind: "catalog", id: source.catalogId, key: creationKey }
-              : { kind: source.kind, url: source.url, name: source.name, key: creationKey },
+              : source.kind === "folder"
+                ? {
+                    ...(await this.#folder(source.directory)),
+                    ...(source.pluginId ? { plugin: source.pluginId } : {}),
+                    ...(source.name ? { name: source.name } : {}),
+                    key: creationKey,
+                  }
+                : { kind: source.kind, url: source.url, name: source.name, key: creationKey },
             owner,
           ),
         );

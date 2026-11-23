@@ -17,7 +17,11 @@ import {
   installPersonalMutationHooks,
   type PersonalCommitReaction,
 } from "@opensteer/database/personal-mutation";
-import { createRunFinishDrain, republishThreads } from "@opensteer/database";
+import {
+  createRunFinishDrain,
+  recoverCommandAttempts,
+  republishThreads,
+} from "@opensteer/database";
 import { shadowRunsTouched } from "../browser/shadow-host.js";
 import { createReturnHintRefresh } from "./personal-return-hints.js";
 import { withUpgradeHeartbeat } from "./upgrade-heartbeat.js";
@@ -248,6 +252,10 @@ import {
   type NotificationPublicationTarget,
 } from "../notifications/notification-publication-client.js";
 import { createHostServer } from "../server.js";
+import { CommandRequestService } from "../commands/requests.js";
+import { agentCommandRegistry } from "../commands/agent-door.js";
+import { CommandTools } from "../mcp/handlers/commands.js";
+import { CommandRequestStore } from "@opensteer/database";
 import { EgressService } from "../server/egress-service.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
 import { machineAccessNotifier, notifyComputerPresence } from "../shell/machine-access-events.js";
@@ -520,6 +528,10 @@ export async function createHostRuntime(
   let notificationDispatcher: NotificationDispatcher | undefined;
   let removeMutationHooks: (() => void) | undefined;
   let deadlines: RequestDeadlines | undefined;
+  // The agents' tools are built before the Home's command Requests; they read it when called.
+  let commandRequestsForTools: CommandRequestService | undefined;
+  // The person's read handlers, handed over when the server builds them; read by the state tool.
+  let personReadHandlers: Readonly<Record<string, unknown>> | undefined;
   let executionLeaseLoop: DeadlineDrain | undefined;
   let finishLoop: DeadlineDrain | undefined;
   let connectionMaintenance: DeadlineDrain | undefined;
@@ -3188,6 +3200,8 @@ export async function createHostRuntime(
     });
     const pluginOwnerApi = new PluginOwnerApi({
       service: pluginService,
+      folder: (directory) =>
+        withFolderPluginPackage({ directory, files, install: pluginSourceFiles }),
       pages: pluginPages,
       webhooks: { service: pluginService, origin: () => pluginService!.webhookOrigin() },
       settings: pluginAgentStore,
@@ -3281,6 +3295,14 @@ export async function createHostRuntime(
       store,
       handlers: agentToolHandlers({
         administration,
+        commands: new CommandTools({
+          database,
+          reads: () => personReadHandlers,
+          registry: agentCommandRegistry(administration.service),
+          requests: () => commandRequestsForTools,
+          sessions: agentSessions,
+          administration,
+        }),
         plugins: pluginTools,
         localServers: localServerRegistry,
         apps,
@@ -3465,8 +3487,22 @@ export async function createHostRuntime(
     });
     const driveConnectionCleanups = () =>
       connectionEffects.driveCleanups().finally(() => connectionMaintenance?.wake());
+    const commandRequestStore = new CommandRequestStore(store.database, store.requests);
+    const commandRequests = (commandRequestsForTools = new CommandRequestService({
+      store: commandRequestStore,
+      database: store.database,
+      requests: store.requests,
+    }));
+    // An approval cut off by a restart may have taken effect: it is unknown, never run again.
+    await commandRequestStore.recoverRunning();
+    // A command that was acting outside the database when the Home stopped may have happened.
+    await recoverCommandAttempts(store.database);
     const app = await createHostServer(
       {
+        commandRequests,
+        personReads: (handlers) => {
+          personReadHandlers = handlers;
+        },
         connections,
         connectionEffects: { stopLineage: driveConnectionCleanups },
         agentOperations: agentSessions,

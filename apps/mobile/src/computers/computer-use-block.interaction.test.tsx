@@ -196,11 +196,11 @@ describe("ComputerUseBlock on the phone", () => {
   });
 
   it("lists each live session in the agent's ember with its thread and Stop", async () => {
-    const stop = vi.fn(async () => ({ data: {}, ok: true }));
+    const stop = vi.fn(async (command: { type: string }) => ({ type: command.type }));
     const onOpenThread = vi.fn();
     await mount({
       onOpenThread,
-      rpc: { "integration.computer.session.stop": stop },
+      dispatch: stop,
       view: view({ apps: [{ ...row(notes), inUse: true }], sessions: [session()] }),
     });
     expect(document.querySelector('[data-tone="ember"][data-live="true"]')).not.toBeNull();
@@ -211,7 +211,9 @@ describe("ComputerUseBlock on the phone", () => {
     expect(onOpenThread).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-000000000001");
 
     await click(button("Stop Using Notes on Studio"));
-    expect(stop).toHaveBeenCalledWith({ sessionId: "cus_1" }, { signal: expect.any(AbortSignal) });
+    expect(stop).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "integration.computer.session.stop", sessionId: "cus_1" }),
+    );
     // The shared Stop: the Thread's line and Watch read the same receipt.
     expect(button("Stopping…").disabled).toBe(true);
   });

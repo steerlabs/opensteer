@@ -113,6 +113,10 @@ export async function startPrivateMachineHost(
   > & {
     readonly remoteAccess?: boolean;
     readonly deploymentName?: string;
+    /** Points the built plugin engine elsewhere, such as at a fixture npm registry and catalog. */
+    readonly pluginEngine?: Partial<
+      NonNullable<NonNullable<Parameters<typeof createHostRuntime>[1]>["pluginEngine"]>
+    >;
     readonly canonicalOrigin?: URL;
   } = {},
 ): Promise<PrivateMachineHost> {
@@ -142,7 +146,7 @@ export async function startPrivateMachineHost(
       const created = await createHostRuntime(config, {
         ...options,
         ...(replWorkerEntry ? { replWorkerEntry } : {}),
-        pluginEngine: builtPluginEngine,
+        pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal") {
         await created.close();
@@ -369,6 +373,31 @@ function primaryFence(message: RunnerConnectionFence): RunnerConnectionFence {
   };
 }
 
+/**
+ * Refuses, before admission, every Run sent to this computer that the test is not starting itself
+ * (a reminder's, a message's): a Run sent and never answered ends the computer's connection when
+ * its acknowledgement times out, and every answer after that would be a disconnected computer's.
+ */
+export function rejectRunsExcept(
+  primary: PrimaryConnection,
+  starting: (threadId: string) => boolean,
+): void {
+  primary.socket.on("message", (raw: WebSocket.RawData) => {
+    const message = JSON.parse(raw.toString()) as HostToRunnerMessage;
+    if (message.type !== "host.command" || message.command.type !== "run.execute") return;
+    if (starting(message.command.context.threadId)) return;
+    primary.socket.send(
+      JSON.stringify({
+        ...primaryFence(message),
+        commandId: message.command.commandId,
+        correlationId: message.command.correlationId,
+        error: { code: "internal", message: "This test does not run it", retryable: false },
+        type: "runner.command-rejected",
+      }),
+    );
+  });
+}
+
 export function acknowledgeCommands(
   primary: PrimaryConnection,
   accepts: (command: { readonly type: string }) => boolean,
@@ -414,12 +443,16 @@ export async function connectCallerMachine(
      * cannot steer mid-turn does.
      */
     readonly restartsRuns?: boolean;
+    /** Its engine takes a steered message into the running turn itself. */
+    readonly steers?: boolean;
     /**
      * Its engine shows a tool result's pictures and its model reads them, so
      * a computer-use observation reaches the agent with its screenshot.
      */
     readonly rendersImages?: boolean;
     readonly computerTool?: 1;
+    /** Its OpenAI source offers model settings, so a model's limits can be set. */
+    readonly modelSettings?: boolean;
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
   } & (
@@ -468,6 +501,7 @@ export async function connectCallerMachine(
               : { longRequestHold: input.longRequestHold }),
             ...(input.rendersImages ? { mcpImageContent: true } : {}),
             readiness: "configured",
+            ...(input.steers ? { steering: true } : {}),
             sources: [
               {
                 fields: [],
@@ -476,6 +510,7 @@ export async function connectCallerMachine(
                 quota: "windows",
                 sourceId: "openai",
                 stateKinds: ["ambient", "isolated"],
+                ...(input.modelSettings ? { modelSettings: true } : {}),
               },
             ],
           },
@@ -677,7 +712,8 @@ export async function dispatchCallerRun(
 ): Promise<CallerRun> {
   const threadId = input.threadId ?? (await createCallerThread(host, caller, input));
 
-  const executed = waitForExecute(caller.primary.socket);
+  // This task's Run: another Run the Host sends meanwhile (a reminder's, say) is not taken for it.
+  const executed = waitForExecute(caller.primary.socket, undefined, threadId);
   const turn = await testRpcData(
     host.origin,
     "commands.dispatch",
@@ -957,6 +993,7 @@ function executesFor(
 export function waitForExecute(
   socket: WebSocket,
   runId?: RunId,
+  threadId?: ThreadId,
 ): Promise<
   Extract<HostToRunnerMessage, { type: "host.command" }> & {
     readonly command: Extract<
@@ -974,6 +1011,7 @@ export function waitForExecute(
       const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
       if (message.type !== "host.command" || message.command.type !== "run.execute") return;
       if (runId && message.command.context.runId !== runId) return;
+      if (threadId && message.command.context.threadId !== threadId) return;
       clearTimeout(timeout);
       socket.off("message", receive);
       resolve(message as Parameters<typeof resolve>[0]);

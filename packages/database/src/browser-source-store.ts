@@ -181,6 +181,9 @@ export class BrowserSourceStore {
   }): Promise<BrowserSourceRecord> {
     return commitPersonalMutation(this.#database, async (transaction, mutation) => {
       const now = new Date();
+      // The extension's side of the person's `browser.source.pair` (AD10): it stands only on
+      // that pairing, unconsumed, unexpired and for this destination, consumed here as the new
+      // source is written. This is the one check; nothing else admits a source.
       const prospective = await transaction
         .selectFrom("browserSourcePairings")
         .select("ownerId")

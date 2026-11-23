@@ -1071,6 +1071,20 @@ export interface WatchControlRequestTable {
   createdAt: Timestamp;
 }
 
+/** A command with an effect outside the database: recorded before it acts, settled after (G4). */
+export interface CommandAttemptTable {
+  id: string;
+  requestedBy: UserId;
+  callerKey: string;
+  /** The connection whose Disconnect waits on it, when a connection (or its lineage) asked. */
+  connectionId: string | null;
+  type: string;
+  idempotencyKey: string;
+  state: Generated<"running" | "done" | "failed" | "unknown">;
+  startedAt: Generated<Date>;
+  settledAt: Date | null;
+}
+
 export interface RequestTable {
   revision: Generated<string>;
   id: RequestId;
@@ -1089,6 +1103,8 @@ export interface RequestTable {
   originatingAgentSessionId: Generated<AgentSessionId | null>;
   /** The direct operation this Request decides, in its parts (`Request.agentOperation`). */
   agentOperation: Generated<Readonly<Record<string, unknown>> | null>;
+  /** The Home command an agent proposed, in its parts (`Request.command`). */
+  command: Generated<Readonly<Record<string, unknown>> | null>;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
@@ -2182,6 +2198,7 @@ export interface DatabaseSchema {
   grants: GrantTable;
   delegations: DelegationTable;
   requests: RequestTable;
+  commandAttempts: CommandAttemptTable;
   taskQuestionNotices: {
     requestId: RequestId;
     messageId: MessageId | null;

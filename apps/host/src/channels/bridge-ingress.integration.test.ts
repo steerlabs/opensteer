@@ -13,6 +13,7 @@ import {
   testMessagingRunnerId,
 } from "@opensteer/database/test-support/store";
 import { describe, expect, it, vi } from "vitest";
+import { agentToolFailure } from "../mcp/agent-tool-failure.js";
 import { lastService, serveMcp } from "../mcp/connection-caller.test-support.js";
 import { ChannelService } from "./channel-service.js";
 
@@ -263,9 +264,10 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
         { kind: "chrome-tabs", sourceId: createId("browserSource") },
       ] as const)
         expect(authorizeTarget(admitted, target as never)).toBeNull();
-      // And it never reaches the person's own tasks.
-      await expect(
-        lastService!.callTool(
+      // And it never reaches the person's own tasks: it reads as not there, as the tools' one
+      // refusal under a grant says it (AD11).
+      const outside = await lastService!
+        .callTool(
           "",
           "opensteer_task_send",
           { taskId: f.fixture.thread.id, message: "Hi", delivery: "queue" },
@@ -282,8 +284,14 @@ describe("a message from a chat reaches your own agents only as its bridge", () 
             },
             operationKey: "outside",
           },
-        ),
-      ).rejects.toMatchObject({ code: "not_found" });
+        )
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(agentToolFailure(outside, "write", undefined, true)).toMatchObject({
+        code: "not_found",
+      });
     } finally {
       await f.service.close();
       await storeFixture.close();

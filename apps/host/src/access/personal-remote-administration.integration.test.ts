@@ -1,3 +1,4 @@
+import { asRemoteAccessStep } from "./remote-access-operation.test-support.js";
 import { sealOAuthBrokerPayload } from "@opensteer/control-plane-protocol/broker-sealing";
 import {
   PersonalHostAccountLinkCompletionGrantClaimsSchema,
@@ -210,9 +211,15 @@ describe("Personal remote administration intents", () => {
     async (mutation) => {
       const fixture = await sealedLinkCompletion();
       const access = fixture.access;
-      await access.configure(
-        { session },
-        { mode: "private", routeOrigin: "https://private.test", schemaVersion: 1 },
+      await asRemoteAccessStep(
+        database,
+        "private",
+        () =>
+          access.configure(
+            { session },
+            { mode: "private", routeOrigin: "https://private.test", schemaVersion: 1 },
+          ),
+        "https://private.test",
       );
       if (
         ["complete-replay", "resume", "unlink", "projection", "revoke-connect"].includes(mutation)
@@ -234,7 +241,9 @@ describe("Personal remote administration intents", () => {
         complete: () => access.consumeAccountLink({ session }, fixture.completion),
         "complete-replay": () => access.consumeAccountLink({ session }, fixture.completion),
         configure: () =>
-          access.configure({ session }, { mode: "off", routeOrigin: null, schemaVersion: 1 }),
+          asRemoteAccessStep(database, "off", () =>
+            access.configure({ session }, { mode: "off", routeOrigin: null, schemaVersion: 1 }),
+          ),
         "configure-noop": () =>
           access.configure(
             { session },

@@ -2197,9 +2197,9 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "connections.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ connectionId: input.connectionId })),
+      rpcSuccess({ ...client.agentActivity({ connectionId: input.connectionId }), commands: [] }),
     "threads.activity": async (input) =>
-      rpcSuccess(client.agentActivity({ threadId: input.threadId })),
+      rpcSuccess({ ...client.agentActivity({ threadId: input.threadId }), commands: [] }),
     "connections.list": async (input) => {
       if (client.unreadable) throw new Error("The preview Home can't be reached.");
       const connections = client.listConnections(input.includeRevoked === true);
@@ -2661,10 +2661,6 @@ function mockHostApiHandlers(client: MockHostState, failureId?: ReferenceId): Ho
       } catch (error) {
         return mockRefusal(error);
       }
-    },
-    "integration.computer.session.stop": async (input) => {
-      await client.stopComputerUseSession(input.sessionId);
-      return rpcSuccess({});
     },
     "integration.computer.apps.installed": async (input) => {
       try {
@@ -3526,6 +3522,9 @@ async function executeMockCommand(
       });
     case "integration.computer.setup.cancel":
       client.cancelComputerAppSetup(command.requestId);
+      return rpcSuccess({ type: command.type });
+    case "integration.computer.session.stop":
+      await client.stopComputerUseSession(command.sessionId);
       return rpcSuccess({ type: command.type });
     case "integration.computer.setup.set":
       if ("deviceId" in command.input) return client.executeCommandOnce(command);

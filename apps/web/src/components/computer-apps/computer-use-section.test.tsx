@@ -606,7 +606,7 @@ describe("ComputerUseBlock", () => {
     const answer = deferred<unknown>();
     const stop = vi.fn(async () => answer.promise);
     const { container } = await mount({
-      rpc: { "integration.computer.session.stop": stop },
+      dispatch: stop,
       view: view({
         sessions: [session("cus_00000000-0000-4000-8000-000000000001", [notes], "Plan")],
       }),

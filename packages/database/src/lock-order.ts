@@ -210,6 +210,8 @@ export const databaseLockOrder = [
   // Assignment projections precede Commands, Inputs, Messages and their derived state.
   "delegations",
   "commands",
+  // Written after the admission holds its connection, before the command acts (G4).
+  "command_attempts",
   "trigger_occurrence_attempts",
   "thread_inputs",
   "messages",
