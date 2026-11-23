@@ -606,6 +606,10 @@ export class AdministrationService {
             idempotency: {
               key: command.idempotencyKey,
               requestedBy: userId,
+              // An agent's Stop: its record names it, and it is admitted where it commits.
+              ...(administration
+                ? { authoritySource: administration.authoritySource, admit: administration.admit }
+                : {}),
             },
           },
         );

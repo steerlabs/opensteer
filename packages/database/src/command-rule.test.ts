@@ -362,3 +362,16 @@ describe("the command rule, generated from the table", () => {
     }).toEqual({ a: 51, b: 19, c: 46, d: 22 });
   });
 });
+
+describe("a command whose effect a store cannot admit, for an agent (AD3)", () => {
+  it("never runs the owner's name change for an agent: every caller, every mode, asks or finds nothing", () => {
+    // `viewer.name.update` goes through `ownerProfile.update`, which takes no identity: so no agent
+    // may reach it as `now`. An approval runs it as the person, on the person's session.
+    for (const column of ["a", "b", "c", "d"] as const)
+      for (const mode of ThreadAccessModeSchema.options)
+        expect(
+          answer("viewer.name.update", 0, callers[column](mode)),
+          `${column} ${mode}`,
+        ).not.toBe("now");
+  });
+});

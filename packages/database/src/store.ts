@@ -540,10 +540,7 @@ export class OpensteerStore {
     readonly bytesOut?: number;
     readonly endedAt?: Date;
     /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: {
-      readonly key: string;
-      readonly requestedBy: UserId;
-    };
+    readonly idempotency?: machineStore.ShellStopIdempotency;
     readonly reason: ShellCloseReason;
     readonly sessionId: ShellSessionId;
   }): Promise<{

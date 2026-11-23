@@ -81,10 +81,21 @@ function machineAccessCommandPayload(
   return { ...(payload as { readonly request: unknown; readonly result: unknown }), type };
 }
 
+/**
+ * A Stop's key, and for an agent's Stop who sent it: its record names the agent, and where the
+ * row is the whole effect its live authority is admitted in the same transaction.
+ */
+export interface ShellStopIdempotency {
+  readonly key: string;
+  readonly requestedBy: UserId;
+  readonly authoritySource?: Readonly<Record<string, unknown>>;
+  readonly admit?: (transaction: Transaction<DatabaseSchema>) => Promise<void>;
+}
+
 async function recordMachineAccessCommand(
   transaction: Transaction<DatabaseSchema>,
   input: {
-    readonly idempotency: { readonly key: string; readonly requestedBy: UserId };
+    readonly idempotency: ShellStopIdempotency;
     readonly request: unknown;
     readonly result: unknown;
     readonly type: MachineAccessCommandType;
@@ -95,7 +106,9 @@ async function recordMachineAccessCommand(
     .insertInto("commands")
     .values({
       actorPrincipalId: await principalIdForUser(transaction, requestedBy),
-      authoritySource: jsonValue({ kind: "user-session", userId: requestedBy }),
+      authoritySource: jsonValue(
+        input.idempotency.authoritySource ?? { kind: "user-session", userId: requestedBy },
+      ),
       dispatcherId: null,
       environmentId: null,
       id: createId("command"),
@@ -753,7 +766,7 @@ export async function endShellSession(
     readonly bytesOut?: number;
     readonly endedAt?: Date;
     /** A Stop the person may click twice; the second click reports the first. */
-    readonly idempotency?: { readonly key: string; readonly requestedBy: UserId };
+    readonly idempotency?: ShellStopIdempotency;
     readonly reason: ShellCloseReason;
     readonly sessionId: ShellSessionId;
   },
@@ -763,6 +776,8 @@ export async function endShellSession(
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
+      // An agent's Stop is admitted where it commits, under its own key (AD3).
+      await input.idempotency.admit?.(transaction);
       const existing = await findCommandByIdempotency(transaction, requestedBy, key);
       if (existing) {
         const stored = machineAccessCommandPayload(existing, "machine.access.session.stop", key);
