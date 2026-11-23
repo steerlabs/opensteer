@@ -1782,6 +1782,25 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       },
     },
   });
+  /**
+   * The follow view's own record of its casts (`ScreencastController.diagnostics`): each start and
+   * why, each frame it set aside and why. Read from the controller the smoke drives.
+   */
+  const followDiagnostics = () =>
+    (
+      controller as unknown as {
+        readonly screencast: {
+          readonly diagnostics: readonly {
+            readonly stage: string;
+            readonly reason?: string;
+            readonly castId?: number;
+          }[];
+        };
+      }
+    ).screencast.diagnostics.map(
+      (record) =>
+        `${record.stage}${record.reason === undefined ? "" : ` ${record.reason}`}${record.castId === undefined ? "" : ` #${record.castId}`}`,
+    );
   await controller.start();
   const root = ledger.active();
   if (!root) throw new Error("The follow-view session has no page.");
@@ -3171,6 +3190,8 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         answerA: await answerOf(surfaceId, read),
         dialogBShown: ledger.dialogOf(tabB)?.id === dialogB,
       };
+      // What the follow view did from here, in its own words (its diagnostics, newest last).
+      const followSeen = followDiagnostics().length;
       const answeredAt = performance.now();
       const own = await answerWith(dialogB, false);
       await waitForAsync(async () => (await answerOf(tabB, readB)) !== null, 2_000).catch(
@@ -3189,6 +3210,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           turnedToB: Math.round(turnedToBAt - turnedAwayAt),
           answeredB: Math.round(answeredAt - turnedAwayAt),
         },
+        followView: followDiagnostics().slice(followSeen),
         debuggerLog: watchB.log(turnedAwayAt),
         streamed: frames
           .filter((frame) => frame.at >= answeredAt && frame.header.surfaceId === tabB)
