@@ -1281,15 +1281,24 @@ describe("a person's caret moves and selections in the native field", () => {
     end?: { text: string; caret: number };
   }
   type Kind = "typed" | "delete" | "move" | "other";
+  /**
+   * CY13: a Mac app that applies input late (Electron), as the helper takes it. "before": the
+   * helper as it was, a new context after every edit published at once (the field as it was
+   * before the edit), then the true one a moment later, and only the current one admitted.
+   * "after": its fix, one context published once the field shows the edit, the field's earlier
+   * contexts kept for insertions (the page's rule, which the far field already has).
+   */
+  type MacApp = "before" | "after";
   async function regime(
     seed: number,
     which: "B" | "C",
+    mac?: MacApp,
   ): Promise<{ target: string; failure: string | null; changes: number; refused: number }> {
     const next = random(seed * (which === "B" ? 69069 : 1103515245));
     const pick = <T,>(items: readonly T[]) => items[Math.floor(next() * items.length)]!;
     const drawn = pick(["full", "textClipboard", "basic", "baseline", "display"] as const);
     const only = process.env.OPENSTEER_TYPING_TARGET as keyof typeof targets | undefined;
-    const name = only && only in targets ? only : drawn;
+    const name = mac ? "display" : only && only in targets ? only : drawn;
     const target = targets[name];
     const display = !target.rangeEdits;
     const run = await person(target);
@@ -1547,6 +1556,17 @@ describe("a person's caret moves and selections in the native field", () => {
         focused.take(made);
         took(again);
       }
+      // CY13: the Mac app's helper gives the field a new context after each edit it applies.
+      if (mac && applied(entry) && made.kind === "edit") {
+        // A change of context, as the page's acts are: an open composition is committed by it.
+        clock += 1;
+        focused.rotate();
+        if (mac === "before") {
+          // Only the current context admitted, and the true one published a moment later.
+          focused.earlier.clear();
+          republish = true;
+        }
+      }
       rotated();
       return result;
     };
@@ -1555,7 +1575,16 @@ describe("a person's caret moves and selections in the native field", () => {
       entry.field.sent.includes(entry.operation) && !entry.field.refused.includes(entry.operation);
     let acted = false;
     const length = 1 + Math.floor(next() * 28);
+    let republish = false;
     for (let step = 0; step < length; step++) {
+      // CY13, "before": the helper's second publication once the app has shown the edit.
+      if (republish) {
+        republish = false;
+        clock += 1;
+        focused.rotate();
+        focused.earlier.clear();
+        rotated();
+      }
       if (next() < 0.12) {
         acted = true;
         // CV3: the field resigns and takes focus again, while nothing is marked (what UIKit does
@@ -2368,6 +2397,24 @@ describe("a person's caret moves and selections in the native field", () => {
       }
     }
     expect(failure).not.toBeNull();
+  });
+
+  // CY13: on a Mac app that applies input late (Electron), what the person types keeps regime C's
+  // promise by the page's rule; the helper as it was refuses what was typed under the context it
+  // published at a key's receipt, and the regime fails on it.
+  it("keeps regime C's promise on a Mac app that applies input late, by the page's rule", async () => {
+    const failures: string[] = [];
+    for (let seed = 1; seed <= 200; seed++) {
+      const result = await regime(seed, "C", "after");
+      if (result.failure) failures.push(result.failure);
+    }
+    expect(failures).toEqual([]);
+  });
+  it("fails regime C on a Mac app that applies input late, with the helper as it was", async () => {
+    let failed = 0;
+    for (let seed = 1; seed <= 200 && failed === 0; seed++)
+      if ((await regime(seed, "C", "before")).failure) failed += 1;
+    expect(failed).toBeGreaterThan(0);
   });
 
   // CZ8: the regime fails for faults of the product itself, in what it sends, which the far field
