@@ -6,6 +6,7 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
+  callerAuthoritySource,
   lockThreadCaller,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
@@ -119,6 +120,8 @@ export type RunnerControlInput =
       readonly expectedBindingGeneration?: number | null;
       readonly stop?: { readonly id: CommandRow["id"]; readonly bootId: string };
       readonly authority?: ThreadCallerAuthority;
+      /** The teammate whose ask this task answers withdrew it; no one here stopped it. */
+      readonly teamCancel?: { readonly teamId: string; readonly requestId: string };
     }
   | {
       readonly idempotencyKey: string;
@@ -1061,17 +1064,12 @@ export async function enqueueRunnerControlInTransaction(
   const command = await persistRunnerControlCommand(transaction, {
     actorPrincipalId,
     authoritySource: jsonValue(
-      input.type === "request.respond" && input.agentResponder
-        ? {
-            kind: "thread-agent",
-            runId: input.agentResponder.authority.scope.runId,
-            threadId: input.agentResponder.authority.scope.threadId,
-            userId: input.requestedBy,
-          }
-        : {
-            kind: "user-session",
-            userId: input.requestedBy,
-          },
+      input.type === "run.interrupt" && input.teamCancel
+        ? { kind: "team-cancel", ...input.teamCancel }
+        : callerAuthoritySource(
+            input.type === "request.respond" ? input.agentResponder?.authority : input.authority,
+            input.requestedBy,
+          ),
     ),
     dispatcherId: null,
     environmentId: thread.environmentId,

@@ -70,6 +70,9 @@ type Manager struct {
 	inspecting     bool
 	inspectionWake chan struct{}
 	publish        func(wire.Roster)
+	mediaFactory   MediaPipelineFactory
+	visionOCR      VisionOCRFunc
+	publishDisplay func(wire.DisplayStateEvent)
 	wg             sync.WaitGroup
 	operations     sync.WaitGroup
 	closed         bool
@@ -210,6 +213,8 @@ func (m *Manager) Call(ctx context.Context, r wire.Request) (interface{}, error)
 	// N2 screen operations.
 	case "phone.observe", "phone.perform", "phone.installedApps":
 		return m.screenOperation(ctx, p)
+	case "display.start", "display.demand", "display.refresh", "display.stop", "display.input", "display.inputReset", "display.power":
+		return m.displayOperation(ctx, r.Method, p)
 	case "phone.forget":
 		params := p.(*wire.ForgetParams)
 		return wire.Empty{}, m.forget(params)

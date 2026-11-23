@@ -275,6 +275,7 @@ export class MuseHarnessDriver implements HarnessDriver {
         };
       }
       const observed = usage ? observedUsage(usage) : undefined;
+      const billingLabel = usage?.tier ? safeLabel(usage.tier) : "";
       return {
         connections: [
           {
@@ -284,7 +285,7 @@ export class MuseHarnessDriver implements HarnessDriver {
             logoutSupported: true,
             status: "connected",
             ...(observed ? { usage: observed } : {}),
-            ...(usage?.tier ? { billingLabel: safeLabel(usage.tier) } : {}),
+            ...(billingLabel ? { billingLabel } : {}),
           },
         ],
         detail: "Muse Code is ready",

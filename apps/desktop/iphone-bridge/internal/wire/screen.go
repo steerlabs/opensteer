@@ -55,15 +55,20 @@ type Target struct {
 	NodeID string `json:"nodeId,omitempty"`
 }
 type Action struct {
-	Kind       string  `json:"kind"`
-	Target     *Target `json:"target,omitempty"`
-	To         *Point  `json:"to,omitempty"`
-	DurationMs int     `json:"durationMs,omitempty"`
-	HoldMs     int     `json:"holdMs,omitempty"`
-	Text       *string `json:"text,omitempty"`
-	Submit     *bool   `json:"submit,omitempty"`
-	Button     string  `json:"button,omitempty"`
-	AppID      string  `json:"appId,omitempty"`
+	Kind       string   `json:"kind"`
+	Target     *Target  `json:"target,omitempty"`
+	To         *Point   `json:"to,omitempty"`
+	DurationMs int      `json:"durationMs,omitempty"`
+	HoldMs     int      `json:"holdMs,omitempty"`
+	Text       *string  `json:"text,omitempty"`
+	Submit     *bool    `json:"submit,omitempty"`
+	Button     string   `json:"button,omitempty"`
+	AppID      string   `json:"appId,omitempty"`
+	Count      int      `json:"count,omitempty"`
+	Edge       string   `json:"edge,omitempty"`
+	Scale      float64  `json:"scale,omitempty"`
+	Key        string   `json:"key,omitempty"`
+	Modifiers  []string `json:"modifiers,omitempty"`
 }
 
 func (a *Action) UnmarshalJSON(b []byte) error {
@@ -80,6 +85,10 @@ func (a *Action) UnmarshalJSON(b []byte) error {
 	required := []string{}
 	switch v.Kind {
 	case "tap":
+		allowed["count"] = true
+		if _, ok := fields["count"]; ok && v.Count != 1 && v.Count != 2 {
+			return ErrProtocol
+		}
 		allowed["target"] = true
 		required = []string{"target"}
 	case "longPress":
@@ -91,6 +100,12 @@ func (a *Action) UnmarshalJSON(b []byte) error {
 			allowed[k] = true
 		}
 		required = []string{"target", "to", "durationMs"}
+		if v.Kind == "swipe" {
+			allowed["edge"] = true
+			if _, ok := fields["edge"]; ok && !oneOf(v.Edge, "none", "top", "left", "bottom", "right") {
+				return ErrProtocol
+			}
+		}
 		if v.Kind == "drag" {
 			allowed["holdMs"] = true
 			required = append(required, "holdMs")
@@ -105,13 +120,27 @@ func (a *Action) UnmarshalJSON(b []byte) error {
 	case "navigate":
 		allowed["button"] = true
 		required = []string{"button"}
-		if v.Button != "home" && v.Button != "lock" && v.Button != "volumeUp" && v.Button != "volumeDown" {
+		if !ValidButton(v.Button) {
 			return ErrProtocol
 		}
-	case "launch":
+	case "launch", "terminate":
 		allowed["appId"] = true
 		required = []string{"appId"}
 		if !validID(v.AppID) {
+			return ErrProtocol
+		}
+	case "pinch":
+		required = []string{"target", "scale", "durationMs"}
+		for _, name := range required {
+			allowed[name] = true
+		}
+		if v.Scale < 0.1 || v.Scale > 10 {
+			return ErrProtocol
+		}
+	case "key":
+		required = []string{"key"}
+		allowed["key"], allowed["modifiers"] = true, true
+		if !validString(v.Key, 1, 32) || !validModifiers(v.Modifiers, 4, "command", "shift", "option", "control") {
 			return ErrProtocol
 		}
 	case "wake":
@@ -145,7 +174,7 @@ func (a *Action) UnmarshalJSON(b []byte) error {
 	if v.DurationMs < 0 || v.DurationMs > 10000 || v.HoldMs < 0 || v.HoldMs > 2000 {
 		return ErrProtocol
 	}
-	if v.Kind == "longPress" || v.Kind == "swipe" || v.Kind == "drag" || v.Kind == "wait" {
+	if v.Kind == "longPress" || v.Kind == "swipe" || v.Kind == "drag" || v.Kind == "wait" || v.Kind == "pinch" {
 		if v.DurationMs < 1 {
 			return ErrProtocol
 		}
@@ -168,7 +197,7 @@ func screenParams(method string) interface{} {
 	case "phone.installedApps":
 		return &AppsParams{}
 	}
-	return nil
+	return displayParams(method)
 }
 func validScreenRef(p ScreenRef) bool {
 	return validID(p.BindingToken) && validID(p.SessionID) && p.NativeEpoch > 0 && p.NativeEpoch <= 9007199254740991
@@ -188,5 +217,9 @@ func validateScreenParams(v interface{}) error {
 			return ErrProtocol
 		}
 	}
-	return nil
+	return validateDisplayParams(v)
+}
+
+func ValidButton(s string) bool {
+	return oneOf(s, "home", "lock", "volumeUp", "volumeDown", "recents", "notifications", "quickSettings", "action", "siri")
 }

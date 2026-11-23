@@ -25,6 +25,7 @@ import {
   taskExternalWorkSelection,
   taskPageThreadSelections,
   taskPageThreadsFromRows,
+  threadProviderRetry,
   threadRunQueued,
   threadRunStartHoldReason,
   type TaskExternalWork,
@@ -67,6 +68,7 @@ export function taskView(task: Task) {
       ? { agentSessionId: task.externalWork.sessionId }
       : {}),
     ...(task.externalWork ? { externalWork: externalWorkView(task.externalWork) } : {}),
+    retry: task.retry ?? null,
   };
 }
 
@@ -129,6 +131,7 @@ export async function detailThreadValue(tx: Tx, viewerId: UserId, threadId: Thre
     .select(threadRunQueued.as("runQueued"))
     .select(threadRunStartHoldReason.as("runStartHoldReason"))
     .select(taskExternalWorkSelection)
+    .select(threadProviderRetry.as("retry"))
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", viewerId)
     .where("threads.removedAt", "is", null)

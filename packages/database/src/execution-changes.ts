@@ -32,6 +32,7 @@ export function transcriptRuns(database: Kysely<DatabaseSchema>) {
       "failure",
       "interruptedCause",
       "stopConfirmedAt",
+      "providerRetry",
       "maintenance",
       "phase",
       "finishIntent",
@@ -65,12 +66,25 @@ export function describeTranscriptRun(
     ...(run.failure
       ? { failure: { ...run.failure, message: utf8Prefix(run.failure.message, 512) } }
       : {}),
+    ...(active && !run.finishIntent && run.providerRetry?.status === "retrying"
+      ? {
+          retry: {
+            ...run.providerRetry,
+            message: utf8Prefix(run.providerRetry.message, 256),
+          },
+        }
+      : {}),
   };
   while (utf8ByteLength(JSON.stringify(view)) > 1_920) {
     if (view.failure?.message) {
       view.failure.message = utf8Prefix(
         view.failure.message,
         Math.floor(utf8ByteLength(view.failure.message) / 2),
+      );
+    } else if (view.retry?.message) {
+      view.retry.message = utf8Prefix(
+        view.retry.message,
+        Math.floor(utf8ByteLength(view.retry.message) / 2),
       );
     } else {
       if (view.failure) view.failure.code = utf8Prefix(view.failure.code, 128);

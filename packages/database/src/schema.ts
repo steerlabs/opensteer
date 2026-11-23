@@ -75,6 +75,7 @@ import type {
   RunnerId,
   SecurityAuditId,
   ThreadAccessMode,
+  ThreadDoneBy,
   ThreadDoneReason,
   QuietTaskDays,
   ThreadIconSource,
@@ -705,6 +706,8 @@ export interface ThreadTable {
   doneAt: Generated<Date | null>;
   /** Set only while Done, when the Host moved the task there because nothing touched it. */
   doneReason: Generated<ThreadDoneReason | null>;
+  /** Who marked the task Done: the person, an agent/automation, or quiet auto-close. */
+  doneBy: Generated<ThreadDoneBy | null>;
   pendingRequestCount: Generated<number>;
   revision: Generated<string>;
   nextTranscriptPosition: Generated<string>;
@@ -888,6 +891,11 @@ export interface RunTable {
   threadId: ThreadId;
   environmentId: EnvironmentId;
   failure: ColumnType<RunFailure | null, RunFailure | null | undefined, RunFailure | null>;
+  providerRetry: ColumnType<
+    import("@opensteer/core").RunRetry | null,
+    import("@opensteer/core").RunRetry | null | undefined,
+    import("@opensteer/core").RunRetry | null
+  >;
   harnessInstanceId: HarnessInstanceId;
   modelSelection: JsonColumn<ModelSelection>;
   replyTarget: JsonColumn<ReplyTarget | null>;

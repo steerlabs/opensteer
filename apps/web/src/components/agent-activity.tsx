@@ -18,7 +18,12 @@ import { MessageDelivery } from "./message-delivery.js";
 import { Refusal, useAction } from "./use-action.js";
 import { TranscriptImageContext, useClientConnectionName } from "@opensteer/client/react";
 import { AssetImage } from "./asset-image.js";
-import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
+import {
+  compactionDisclosure,
+  compactionLabel,
+  providerRetryDetail,
+  providerRetryLabel,
+} from "@opensteer/client/host";
 import { useToolOutput, useTranscriptMessage, useTranscriptText } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { voiceCallSeed } from "@opensteer/core";
@@ -793,6 +798,7 @@ function TurnView({
   return (
     <div className="turn" data-run-id={turn.runId ?? undefined}>
       {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
+      {turn.run?.retry?.status === "retrying" ? <ProviderRetryNotice run={turn.run} /> : null}
       <AgentByline author={spoken?.kind === "message" ? spoken.author : null} />
       <TurnContent
         fold={turnFolds(turn) ? { open, onToggle: () => setChosen(!open) } : undefined}
@@ -1130,6 +1136,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   // card for.
   if (
     !turn.run?.compaction &&
+    turn.run?.retry?.status !== "retrying" &&
     !now &&
     !kept &&
     !composing &&
@@ -1143,6 +1150,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   return (
     <div className="turn turn--conversation">
       {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
+      {turn.run?.retry?.status === "retrying" ? <ProviderRetryNotice run={turn.run} /> : null}
       {now ? (
         <ComputerUseLine key={now.session.sessionId} now={now} />
       ) : kept ? (
@@ -3235,6 +3243,44 @@ function CompactionDivider({ run }: { run: RunEntry }) {
               () => client.stopRun(threadId),
             )
               .catch((e: unknown) => setError(failureWords(e) ?? "Could not stop summary."))
+              .finally(() => setBusy(false));
+          }}
+        >
+          Stop
+        </button>
+      ) : null}
+      {error ? <span role="alert">{error}</span> : null}
+    </div>
+  );
+}
+
+function ProviderRetryNotice({ run }: { run: RunEntry }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const retry = run.retry;
+  if (!retry || retry.status !== "retrying") return null;
+  const active = !isTerminalRunEntryStatus(run.status);
+  return (
+    <div className="run-restart" role="status">
+      <span>
+        <strong>{providerRetryLabel(retry)}</strong> — {providerRetryDetail(retry)}
+      </span>
+      {active && client && threadId ? (
+        <button
+          className="btn btn--small btn--ghost"
+          disabled={busy}
+          type="button"
+          onClick={() => {
+            setBusy(true);
+            setError(null);
+            void act(
+              client,
+              { label: "stop this run", done: "stopped", happened: "this run stopped" },
+              () => client.stopRun(threadId, run.runId ?? undefined),
+            )
+              .catch((e: unknown) => setError(failureWords(e) ?? "Could not stop run."))
               .finally(() => setBusy(false));
           }}
         >

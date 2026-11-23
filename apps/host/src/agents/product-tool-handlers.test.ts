@@ -24,12 +24,29 @@ import { HarnessInstanceCatalogSchema, type HarnessInstanceCatalog } from "@open
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import { type RunToolTokenService } from "./run-tool-tokens.js";
+const mockActivityReader = vi.hoisted(() => ({
+  read: null as null | ((input: { threadId: Thread["id"]; limit: number }) => Promise<unknown>),
+}));
 vi.mock("@opensteer/database", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@opensteer/database")>()),
   readAgentThreadRecent: async () => ({
     runs: [],
     places: [],
+    pendingRequests: [],
   }),
+  readAgentThreadActivity: async (
+    _db: unknown,
+    input: { threadId: Thread["id"]; limit: number },
+  ) => {
+    if (mockActivityReader.read) return mockActivityReader.read(input);
+    return {
+      items: [],
+      node: null,
+      hasMore: false,
+      nextBefore: null,
+      encodeCursor: () => "cursor",
+    };
+  },
 }));
 const now = "2026-08-09T09:00:00.000Z";
 const ownerId = createId("user");
@@ -90,7 +107,7 @@ describe("Product tool handlers", () => {
   it("lists the Requests visible to the current task", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Owner task", null, {});
     const pending = pendingRequest();
-    const visiblePage = vi.fn(async () => ({
+    const agentPage = vi.fn(async () => ({
       requests: [pending],
       window: {
         byteCount: 1,
@@ -107,7 +124,7 @@ describe("Product tool handlers", () => {
       },
       messages: [],
       requests: {
-        visiblePage,
+        agentPage,
       },
       threads: [current],
     });
@@ -131,10 +148,13 @@ describe("Product tool handlers", () => {
         nextCursor: "next_request_page",
       },
     });
-    expect(visiblePage).toHaveBeenCalledWith({
+    expect(agentPage).toHaveBeenCalledWith({
+      ownerId,
+      scope: { kind: "personal" },
+      scopeId: claims.threadId,
+      status: "all",
       before: "current_request_page",
       limit: 1,
-      originatingThreadId: claims.threadId,
     });
   });
   it("keeps settlement sessions out of the Requests it lists", async () => {
@@ -146,7 +166,7 @@ describe("Product tool handlers", () => {
         deviceLabel: "iPhone",
       },
     };
-    const visiblePage = vi.fn(async () => ({
+    const agentPage = vi.fn(async () => ({
       requests: [pending],
       window: {
         byteCount: 1,
@@ -163,7 +183,7 @@ describe("Product tool handlers", () => {
       },
       messages: [],
       requests: {
-        visiblePage,
+        agentPage,
       },
       threads: [current],
     });
@@ -190,10 +210,13 @@ describe("Product tool handlers", () => {
         nextCursor: "next_request_page",
       },
     });
-    expect(visiblePage).toHaveBeenCalledWith({
+    expect(agentPage).toHaveBeenCalledWith({
+      ownerId,
+      scope: { kind: "personal" },
+      scopeId: claims.threadId,
+      status: "all",
       before: "current_request_page",
       limit: 1,
-      originatingThreadId: claims.threadId,
     });
   });
   it.each(["saved_login_request", "chrome_cookies_request"] as const)(
@@ -943,6 +966,7 @@ function makeService(options: {
   messages: readonly Message[];
   listHarnessInstances?: OpensteerStore["listHarnessInstances"];
   requests?: {
+    agentPage?: OpensteerStore["requests"]["agentPage"];
     get?: OpensteerStore["requests"]["get"];
     visiblePage?: OpensteerStore["requests"]["visiblePage"];
     withdraw?: OpensteerStore["requests"]["withdraw"];
@@ -1204,6 +1228,11 @@ function makeService(options: {
     requests: {
       get: options.requests?.get ?? vi.fn(async () => null),
       findByCallIdentity: vi.fn(async () => null),
+      agentPage:
+        options.requests?.agentPage ??
+        vi.fn(async () => {
+          throw new Error("Unexpected Request listing");
+        }),
       visiblePage:
         options.requests?.visiblePage ??
         vi.fn(async () => {
@@ -1215,6 +1244,7 @@ function makeService(options: {
           throw new Error("Unexpected Request withdrawal");
         }),
     },
+    effectiveDeviceOwners: async () => new Map(),
     threadMessagePageForOwner: async (input: {
       maxItems: number;
       ownerId: typeof ownerId;
@@ -1240,6 +1270,29 @@ function makeService(options: {
       };
     },
   } as unknown as OpensteerStore;
+  mockActivityReader.read = async (input) => {
+    const value = options.threads.find((candidate) => candidate.id === input.threadId);
+    if (!value) return null;
+    const allMessages = options.messages
+      .filter((candidate) => candidate.threadId === input.threadId)
+      .slice()
+      .reverse();
+    const page = allMessages.slice(0, input.limit);
+    return {
+      items: page.map((msg, idx) => ({
+        id: msg.id,
+        position: String(allMessages.length - idx),
+        runId: msg.runId,
+        createdAt: msg.createdAt,
+        type: "message" as const,
+        message: msg,
+      })),
+      node: null,
+      hasMore: allMessages.length > page.length,
+      nextBefore: allMessages.length > page.length ? "test_cursor" : null,
+      encodeCursor: () => "test_cursor",
+    };
+  };
   store.listAgentHarnessInstancesForUser = vi.fn(async (_requestedBy, input = {}) => {
     const visible = await listEnvironmentsForUser();
     const rows = await store.listHarnessInstances({

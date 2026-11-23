@@ -70,7 +70,7 @@ it("validates every method's result and never resends an invalid reply", async (
   expect(f.requests).toHaveLength(1);
 });
 
-it("refreshes roster gaps without replaying work or restarting the helper", async () => {
+it("routes display events and recovers a sequence gap with a clean roster event", async () => {
   const f = fake();
   const hello = f.client.request("hello", {}, iphoneNativeHelloSchema);
   f.reply({
@@ -95,12 +95,24 @@ it("refreshes roster gaps without replaying work or restarting the helper", asyn
     kind: "event",
     bootId: "boot",
     sequence: 2,
-    event: "roster.changed",
-    roster: { revision: 1, candidates: [] },
+    event: "display.state",
+    displayState: {
+      streamId: "dsp_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      state: "protected",
+      generation: 1,
+      width: 0,
+      height: 0,
+      rotation: 0,
+    },
   });
   await vi.waitFor(() => expect(f.requests.at(-1)?.method).toBe("roster.get"), { timeout: 1000 });
   f.reply({ kind: "response", id: 2, result: { revision: 2, candidates: [] } });
   await vi.waitFor(() => expect(events).toHaveLength(2), { timeout: 1000 });
+  expect(events).toMatchObject([
+    { event: "display.state", displayState: { state: "protected" } },
+    { event: "roster.changed", roster: { revision: 2, candidates: [] } },
+  ]);
+  expect(events[1]).not.toHaveProperty("displayState");
   expect(gap).toHaveBeenCalledTimes(1);
   expect(lost).not.toHaveBeenCalled();
   expect(f.requests.map(({ method }) => method)).toEqual(["hello", "roster.get"]);

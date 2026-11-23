@@ -16,6 +16,7 @@ import {
   ToolOutputViewSchema,
   ExecutionNodeViewSchema,
   RunViewSchema,
+  RunRetryViewSchema,
   RunUsageViewSchema,
   RunFailureViewSchema,
   RunInterruptedCauseSchema,
@@ -161,6 +162,7 @@ export const TranscriptItemSchema = z.discriminatedUnion("kind", [
     stopConfirmedAt: z.iso.datetime().optional(),
     usage: RunUsageViewSchema.optional(),
     failure: RunFailureViewSchema.optional(),
+    retry: RunRetryViewSchema.optional(),
   }),
   z.object({
     ...card,

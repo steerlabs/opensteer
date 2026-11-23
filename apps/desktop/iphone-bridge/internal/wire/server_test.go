@@ -121,12 +121,13 @@ func TestHandshakeAndIDs(t *testing.T) {
 	}
 }
 func TestEventCoalescing(t *testing.T) {
-	s := &Server{BootID: "fixture", events: make(chan Event, 1)}
+	s := &Server{BootID: "fixture", eventReady: make(chan struct{}, 1)}
 	for revision := uint64(1); revision <= 100; revision++ {
 		s.Publish(Roster{Revision: revision, Candidates: []Candidate{}})
 	}
-	e := <-s.events
-	if e.Sequence != 100 || e.Roster.Revision != 100 || len(s.events) != 0 {
+	<-s.eventReady
+	e := s.nextEvent()
+	if e.Sequence != 1 || e.Roster.Revision != 100 || len(s.events) != 0 {
 		t.Fatalf("not bounded/latest: %+v", e)
 	}
 }
@@ -145,7 +146,7 @@ func TestGoldenRequests(t *testing.T) {
 		Response{"response", 1, HelloResult("fixture-boot")},
 		Request{"request", 1, 2, 30000, "setup.inspect", json.RawMessage(`{"localPhoneId":"fixture-phone","nativeEpoch":2}`)},
 		Response{"response", 2, ErrorResult{Fail(TrustRequired)}},
-		Event{"event", "fixture-boot", 1, "roster.changed", Roster{1, []Candidate{{Trust: "checking", LocalPhoneID: "fixture-phone", NativeEpoch: 2, Name: "Test iPhone 한글", Model: "iPhoneFixture", OSVersion: "27.0", Build: "TEST", Transport: "usb", Capabilities: &Capabilities{Observe: &reason, Act: &reason, Launch: &reason, InstalledApps: &reason, Text: UnsupportedText, Clear: UnsupportedClear, IndexedTargets: GeometryUnavailable, LiveVideo: Unsupported}}}}},
+		Event{Kind: "event", BootID: "fixture-boot", Sequence: 1, Event: "roster.changed", Roster: &Roster{1, []Candidate{{Trust: "checking", LocalPhoneID: "fixture-phone", NativeEpoch: 2, Name: "Test iPhone 한글", Model: "iPhoneFixture", OSVersion: "27.0", Build: "TEST", Transport: "usb", Capabilities: &Capabilities{Observe: &reason, Act: &reason, Launch: &reason, InstalledApps: &reason, Text: reasonRef(UnsupportedText), Clear: reasonRef(UnsupportedClear), IndexedTargets: reasonRef(GeometryUnavailable), LiveVideo: reasonRef(Unsupported), Wake: &reason}}}}},
 	}
 	if len(fixtures) != len(expected) {
 		t.Fatal("golden count changed")
@@ -258,3 +259,5 @@ func TestShutdownCancelsWork(t *testing.T) {
 		t.Fatal("shutdown left work active")
 	}
 }
+
+func reasonRef(r Reason) *Reason { return &r }

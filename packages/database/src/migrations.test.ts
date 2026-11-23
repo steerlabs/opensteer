@@ -12,6 +12,9 @@ import {
   browserSessionTabsIndexMigrationName,
   dropDeviceAccessCountMigrationName,
   inlineTranscriptMessagesMigrationName,
+  stoppedRunsNotNewsMigrationName,
+  threadDoneByMigrationName,
+  runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
@@ -62,15 +65,18 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     dropDeviceAccessCountMigrationName,
     browserSessionTabsIndexMigrationName,
     inlineTranscriptMessagesMigrationName,
+    stoppedRunsNotNewsMigrationName,
+    threadDoneByMigrationName,
+    runProviderRetryMigrationName,
     agentGrantsMigrationName,
     agentSessionsMigrationName,
-    "0046_chrome_live_tabs_source",
+    "0102_chrome_live_tabs_source",
     agentDirectoryMigrationName,
-    "0048_shared_chrome_grants",
-    "0049_work_home",
-    "0050_browser_pool",
-    "0051_needs_you_counts_requests",
-    "0052_stop_truth_and_recovery",
+    "0104_shared_chrome_grants",
+    "0105_work_home",
+    "0106_browser_pool",
+    "0107_needs_you_counts_requests",
+    "0117_stop_truth_and_recovery",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

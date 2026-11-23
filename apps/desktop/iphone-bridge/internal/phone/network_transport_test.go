@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
@@ -468,5 +470,28 @@ func TestDirectAdapterRunsOnlyAfterSystemProbeFails(t *testing.T) {
 	_, err := m.openTransport(context.Background(), context.Background(), m.phones[m.identities[id]])
 	if !browsed || !dialed || networkFailure(err).Code != wire.LocalNetworkPermissionRequired {
 		t.Fatal("direct contingency or permission reason missing")
+	}
+}
+
+func TestWifiPairingFailuresStayRetryable(t *testing.T) {
+	cases := []struct {
+		err  error
+		want wire.Reason
+	}{
+		{errors.New("receiveOnStream: Read: stream 1 was reset by the peer (STREAM_CLOSED)"), wire.WifiPairingFailed},
+		{tunnel.ErrRemotePairingProtocol, wire.WifiPairingFailed},
+		{tunnel.ErrRemotePairingBusy, wire.WifiPairingFailed},
+		{fmt.Errorf("pairSetup: M2: %w: declined", tunnel.ErrRemotePairingDenied), wire.WifiPairingDenied},
+		{tunnel.ErrRemotePeerProof, wire.WifiIdentityMismatch},
+		{context.Canceled, wire.Cancelled},
+	}
+	for _, c := range cases {
+		if got := pairingFailure(c.err).Code; got != c.want {
+			t.Errorf("pairingFailure(%v) = %s, want %s", c.err, got, c.want)
+		}
+	}
+	// A network error nobody recognised is a failed attempt, not a permanent limitation.
+	if got := networkFailure(errors.New("read: connection reset by peer")).Code; got != wire.TunnelFailed {
+		t.Fatalf("unrecognised network error became %s", got)
 	}
 }

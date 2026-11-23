@@ -638,6 +638,20 @@ async function runTurn(prompt) {
   if (scenario === "late-answer") await lateAnswerSteer;
 
   if (scenario === "retry") {
+    // Real Pi emits the failed assistant `message_end` before `auto_retry_start`.
+    send({
+      message: {
+        api: "openai-completions",
+        content: [],
+        errorMessage: "529 overloaded",
+        model: model.id,
+        provider: model.provider,
+        role: "assistant",
+        stopReason: "error",
+        timestamp: 2,
+      },
+      type: "message_end",
+    });
     send({
       attempt: 1,
       delayMs: 10,

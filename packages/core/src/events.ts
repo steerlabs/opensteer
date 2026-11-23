@@ -36,6 +36,8 @@ import {
   RunFailureViewSchema,
   RunFailureSchema,
   RunInterruptedCauseSchema,
+  RunRetrySchema,
+  RunRetryViewSchema,
   RunStatusSchema,
   RunUsageSchema,
   RunUsageViewSchema,
@@ -380,6 +382,7 @@ const eventDataSchemas = {
   "run.usage": RunUsageSchema,
   "run.context-measured": ProviderContextMeasurementSchema,
   "run.compaction": NativeCompactionActivitySchema,
+  "run.retry": RunRetrySchema,
   /**
    * The engine finished a turn while work it started in the background is
    * still running (`background`), or began another turn in the same Run
@@ -605,6 +608,7 @@ const eventDataViewSchemas = {
   }),
   "run.context-measured": z.object(ProviderContextMeasurementSchema.shape),
   "run.compaction": z.object(NativeCompactionActivitySchema.shape),
+  "run.retry": RunRetryViewSchema,
   "run.usage": RunUsageViewSchema,
   "run.phase": z.object({
     ...eventDataSchemas["run.phase"].shape,
@@ -697,6 +701,7 @@ export const AgentEventSchema = z
     makeEventVariant("run.status"),
     makeEventVariant("run.context-measured"),
     makeEventVariant("run.compaction"),
+    makeEventVariant("run.retry"),
     makeEventVariant("run.usage"),
     makeEventVariant("run.phase"),
     makeEventVariant("node.started"),
@@ -754,6 +759,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("run.status"),
     makeEventViewVariant("run.context-measured"),
     makeEventViewVariant("run.compaction"),
+    makeEventViewVariant("run.retry"),
     makeEventViewVariant("run.usage"),
     makeEventViewVariant("run.phase"),
     makeEventViewVariant("node.started"),

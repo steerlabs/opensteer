@@ -92,7 +92,10 @@ import {
   renderHarnessSkillCatalog,
   durableHistoryWindowNotice,
   opensteerToolIdentity,
+  ProviderRetryTracker,
+  formatRetryBudgetMessage,
   providerSecretFile,
+  type ProviderRetryRecord,
   reasoningEffortLabel,
   runHarnessCliLogout,
   secretInputAuthentication,
@@ -251,6 +254,9 @@ interface ActiveTurn {
   /** Codex is running the root's turn: it started and has not completed. */
   providerTurnOpen: boolean;
   readonly requestedBy: UserId;
+  readonly retry: ProviderRetryTracker;
+  latestError?: { readonly message: string; readonly codexErrorInfo?: unknown };
+  stalledCleanup?: Promise<void>;
   readonly runId: HarnessRunInput["runId"];
   started: boolean;
   terminal: boolean;
@@ -283,6 +289,8 @@ export interface CodexHarnessDependencies {
   /** How a foreign endpoint's model list is fetched; injected by tests. */
   readonly fetchModels?: typeof fetch;
   readonly launch: CodexLaunch;
+  /** Wall-clock retry budget override; injected by tests. */
+  readonly retryBudgetMs?: number;
   readonly spawnAuthenticationProcess?: typeof spawnSupervised;
   /** Upper bound on waiting for a conversation to close on Stop; tests may shorten it. */
   readonly threadCloseMaxMs?: number;
@@ -552,6 +560,7 @@ export class CodexHarnessDriver implements HarnessDriver {
       codexSourceSelection(config, context.sourceId),
       context.log,
       this.#dependencies.threadCloseMaxMs,
+      this.#dependencies.retryBudgetMs,
     );
   }
 }
@@ -851,6 +860,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
   readonly #log: HarnessLog | undefined;
   readonly #source: CodexSourceSelection;
   readonly #threadCloseMaxMs: number;
+  readonly #retryBudgetMs: number | undefined;
   readonly #sessions = new HarnessSessionRegistry<CodexHarnessSession>("Codex");
   /** Every app-server this adapter started that has not ended. */
   readonly #servers = new Set<CodexAppServer>();
@@ -870,6 +880,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
     source: CodexSourceSelection,
     log: HarnessLog | undefined,
     threadCloseMaxMs = codexThreadCloseMaxMs,
+    retryBudgetMs?: number,
   ) {
     this.instanceId = instanceId;
     this.#config = config;
@@ -877,6 +888,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
     this.#log = log;
     this.#source = source;
     this.#threadCloseMaxMs = threadCloseMaxMs;
+    this.#retryBudgetMs = retryBudgetMs;
   }
 
   recycle(): void {
@@ -1086,6 +1098,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
       this.#log,
       (closed) => this.#sessions.release(closed),
       this.#threadCloseMaxMs,
+      this.#retryBudgetMs,
     );
   }
 
@@ -1227,6 +1240,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   readonly #processLifetime = new AbortController();
   readonly #config: CodexHarnessConfig;
   readonly #log: HarnessLog | undefined;
+  readonly #retryBudgetMs: number | undefined;
   /** Each kind of frame this session could not read, warned of once. */
   readonly #unreadable = new Set<string>();
   #context: HarnessSessionContext;
@@ -1276,10 +1290,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
     threadCloseMaxMs: number,
+    retryBudgetMs?: number,
   ) {
     this.#acquire = acquire;
     this.#config = config;
     this.#log = log;
+    this.#retryBudgetMs = retryBudgetMs;
     this.#context = context;
     this.#onClose = onClose;
     this.#threadCloseMaxMs = threadCloseMaxMs;
@@ -1300,6 +1316,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
     threadCloseMaxMs = codexThreadCloseMaxMs,
+    retryBudgetMs?: number,
   ): Promise<CodexHarnessSession> {
     if (context.signal.aborted) {
       throw markOpenStopProven(
@@ -1316,6 +1333,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       log,
       onClose,
       threadCloseMaxMs,
+      retryBudgetMs,
     );
     try {
       await session.#initialize(mode);
@@ -1428,6 +1446,13 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       turnStartInFlight: false,
       providerTurnOpen: false,
       requestedBy: run.requestedBy,
+      retry: new ProviderRetryTracker({
+        publish: (event) => this.#publish(event),
+        onBudgetExceeded: (record) => this.#failStalledRetry(active, record),
+        ...(this.#retryBudgetMs !== undefined ? { budgetMs: this.#retryBudgetMs } : {}),
+        log: this.#log,
+        logContext: { harness: "codex", runId: run.runId },
+      }),
       runId: run.runId,
       started: false,
       terminal: false,
@@ -1438,6 +1463,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#activeTurn = active;
     const abort = () => {
       active.interruptRequested = true;
+      active.retry.dispose();
       this.#cancelImageGenerations(active);
       active.toolLifetime.abort(run.signal.reason ?? new Error("Codex turn interrupted"));
       if (this.#context.voiceCall) this.#context.voiceCall.end();
@@ -1477,7 +1503,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     } finally {
       active.turnStartInFlight = false;
       active.idReady.resolve();
+      active.retry.dispose();
       run.signal.removeEventListener("abort", abort);
+      if (active.stalledCleanup) await active.stalledCleanup;
       if (this.#activeTurn === active) this.#activeTurn = undefined;
     }
   }
@@ -1645,10 +1673,13 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       for (const input of run.inputs)
         if (!isVoiceCallSeed(input))
           await this.steer({ input, ...(run.attachments ? { attachments: run.attachments } : {}) });
-      await new Promise<void>((resolve) => {
-        if (call.signal.aborted) resolve();
-        else call.signal.addEventListener("abort", () => resolve(), { once: true });
-      });
+      await Promise.race([
+        active.completion.promise,
+        new Promise<void>((resolve) => {
+          if (call.signal.aborted) resolve();
+          else call.signal.addEventListener("abort", () => resolve(), { once: true });
+        }),
+      ]);
     } finally {
       signal.removeEventListener("abort", abort);
       call.end();
@@ -1673,6 +1704,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
     active.interruptRequested = true;
+    active.retry.dispose();
     this.#cancelImageGenerations(active);
     active.toolLifetime.abort(new Error("Codex turn interrupted"));
     if (this.#context.voiceCall) {
@@ -2082,6 +2114,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const closesConversation = server !== undefined && !server.dedicated;
     if (active && !active.terminal) {
       active.interruptRequested = true;
+      active.retry.dispose();
       this.#cancelImageGenerations(active);
       active.toolLifetime.abort(new Error("Codex session stopped"));
       if (this.#context.voiceCall) {
@@ -2398,21 +2431,59 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       case "turn/completed":
         this.#handleTurnCompleted(params);
         break;
+      case "error": {
+        const active = this.#activeTurn;
+        if (!active || active.terminal) return;
+        const turnId = optionalString(params.turnId);
+        if (turnId && active.providerTurnId && active.providerTurnId !== turnId) return;
+        const error = isRecord(params.error) ? params.error : {};
+        const rawMessage = optionalString(error.message) ?? "Codex provider error";
+        const additionalDetails = optionalString(error.additionalDetails)?.trim();
+        const detailMessage = additionalDetails || rawMessage;
+        const codexErrorInfo = error.codexErrorInfo;
+        if (params.willRetry !== true) {
+          active.latestError = { message: detailMessage, codexErrorInfo };
+          break;
+        }
+        const progress = parseCodexRetryProgress(rawMessage);
+        this.#ensureRunStarted(active);
+        active.retry.noteRetry({
+          attempt: progress?.attempt ?? null,
+          maxAttempts: progress?.maxAttempts ?? null,
+          code: codexErrorVariant(codexErrorInfo) ?? null,
+          message: detailMessage,
+          ...(codexErrorInfo === undefined ? {} : { meta: { codexErrorInfo } }),
+        });
+        break;
+      }
       case "item/agentMessage/delta": {
         if (!this.#isActiveTurn(params)) return;
         const delta = typeof params.delta === "string" ? params.delta : "";
+        if (delta.length > 0) this.#activeTurn?.retry.recover();
         this.#publish({ data: { text: delta }, type: "assistant.delta" });
         break;
       }
       case "item/reasoning/summaryTextDelta":
       case "item/reasoning/textDelta":
-        if (this.#isActiveTurn(params)) this.#publishReasoningDelta(params);
+        if (this.#isActiveTurn(params)) {
+          if (typeof params.delta === "string" && params.delta.length > 0) {
+            this.#activeTurn?.retry.recover();
+          }
+          this.#publishReasoningDelta(params);
+        }
         break;
       case "item/reasoning/summaryPartAdded":
         // The paragraph break is derived from the delta indexes instead.
         break;
       case "item/started":
         if (this.#isActiveTurn(params)) {
+          if (
+            isRecord(params.item) &&
+            typeof params.item.type === "string" &&
+            codexModelProgressStartItems.has(params.item.type)
+          ) {
+            this.#activeTurn?.retry.recover();
+          }
           if (!isRecord(params.item) || params.item.type !== "imageGeneration")
             this.#continueAnsweredTurn();
           this.#noteSubagentActivity(params.item, this.#requireCodexThreadId());
@@ -2421,6 +2492,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         break;
       case "item/completed":
         if (this.#isActiveTurn(params)) {
+          if (
+            isRecord(params.item) &&
+            (params.item.type === "agentMessage" || params.item.type === "reasoning")
+          ) {
+            this.#activeTurn?.retry.recover();
+          }
           if (isRecord(params.item) && params.item.type === "contextCompaction")
             this.#contextCompacted = true;
           if (!isRecord(params.item) || params.item.type !== "imageGeneration")
@@ -2530,7 +2607,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
 
   #replayChild(context: CodexChildContext): void {
     for (const frame of context.pending.splice(0))
-      this.#handleChildNotification(frame.method, frame.params);
+      this.#handleChildNotification(frame.method, frame.params, true);
   }
 
   /** A child nothing named the spawner of belongs to the Run, never to a guessed parent. */
@@ -2543,7 +2620,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * A child agent's own thread. Its tools are the subagent's steps; its text is
    * its result, never the Run's message; its turn ending ends the node.
    */
-  #handleChildNotification(method: string, params: JsonObject): void {
+  #handleChildNotification(method: string, params: JsonObject, replayed = false): void {
     const active = this.#activeTurn;
     const thread = params.thread ? requireObject(params.thread, "thread") : undefined;
     const childThreadId = optionalString(params.threadId) ?? optionalString(thread?.id);
@@ -2603,7 +2680,51 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       active.nodes.update(childThreadId, { stopSupported: true });
       this.#ownTurn(active, childThreadId, turnId);
     }
+    if (method === "error") {
+      if (
+        params.willRetry === true &&
+        (active.childTurns.has(childThreadId) || context.parentKey !== undefined)
+      ) {
+        const error = isRecord(params.error) ? params.error : {};
+        const rawMessage = optionalString(error.message) ?? "Codex provider error";
+        const additionalDetails = optionalString(error.additionalDetails)?.trim();
+        const detailMessage = additionalDetails || rawMessage;
+        const codexErrorInfo = error.codexErrorInfo;
+        const progress = parseCodexRetryProgress(rawMessage);
+        this.#ensureRunStarted(active);
+        active.retry.noteRetry({
+          source: childThreadId,
+          attempt: progress?.attempt ?? null,
+          maxAttempts: progress?.maxAttempts ?? null,
+          code: codexErrorVariant(codexErrorInfo) ?? null,
+          message: detailMessage,
+          ...(codexErrorInfo === undefined ? {} : { meta: { codexErrorInfo } }),
+        });
+      }
+      return;
+    }
+    if (
+      method === "item/agentMessage/delta" ||
+      method === "item/reasoning/summaryTextDelta" ||
+      method === "item/reasoning/textDelta"
+    ) {
+      if (typeof params.delta === "string" && params.delta.length > 0) {
+        active.retry.recover(childThreadId);
+      }
+      return;
+    }
     if (context.parentKey === undefined) {
+      if (method === "item/started" && isRecord(params.item)) {
+        const type = optionalString(params.item.type);
+        if (type && codexModelProgressStartItems.has(type)) {
+          active.retry.recover(childThreadId);
+        }
+      } else if (method === "item/completed" && isRecord(params.item)) {
+        const type = optionalString(params.item.type);
+        if (type === "agentMessage" || type === "reasoning") {
+          active.retry.recover(childThreadId);
+        }
+      }
       if (
         method === "turn/started" ||
         method === "turn/completed" ||
@@ -2616,12 +2737,15 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       return;
     }
     if (method === "turn/completed" && context.selection) {
+      if (active.childTurns.get(childThreadId) === nativeTurn) {
+        active.retry.recover(childThreadId);
+      }
       context.finishing = true;
       void context.selection.then(() => {
         delete context.finishing;
         if (this.#activeTurn !== active || active.terminal) return;
         const pending = context.pending;
-        this.#handleChildNotification(method, params);
+        this.#handleChildNotification(method, params, true);
         for (const frame of pending.splice(0))
           this.#handleChildNotification(frame.method, frame.params);
         this.#settleIfDone(active);
@@ -2657,6 +2781,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         const status = optionalString(turn.status);
         if (nativeTurn) context.completedTurns.add(nativeTurn);
         if (active.childTurns.get(childThreadId) !== nativeTurn) return;
+        active.retry.recover(childThreadId);
         active.childTurns.delete(childThreadId);
         if (this.#openTurns.get(childThreadId) === nativeTurn)
           this.#openTurns.delete(childThreadId);
@@ -2680,6 +2805,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
           return;
         }
         if (type === "agentMessage") {
+          if (!replayed) active.retry.recover(childThreadId);
           if (method === "item/completed" && typeof item.text === "string") {
             ensure(invocation);
             active.nodes.message(childThreadId, item.text);
@@ -2687,6 +2813,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
           return;
         }
         if (type === "reasoning") {
+          if (!replayed) active.retry.recover(childThreadId);
           if (method === "item/completed" && itemId) {
             ensure(invocation);
             const content = stringArray(item.content);
@@ -2697,6 +2824,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
             );
           }
           return;
+        }
+        if (
+          !replayed &&
+          method === "item/started" &&
+          type &&
+          codexModelProgressStartItems.has(type)
+        ) {
+          active.retry.recover(childThreadId);
         }
         if (type === "subAgentActivity") {
           ensure(invocation);
@@ -2940,6 +3075,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#restoreAdditionalContext();
     if (this.#context.voiceCall) {
       // A failed turn is one request that didn't go through, not the end of the call.
+      // Clear any retry timer scoped to this settled turn so it cannot fire later.
+      active.retry.recover();
       this.#settleVoiceTurn();
       const spoken =
         status === "completed"
@@ -2958,12 +3095,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       return;
     }
     if (status === "completed" && active.imageGenerations.size > 0) {
+      active.retry.recover();
       active.root = "idle";
       return;
     }
     // The root answered while children it started still run: the Run waits
     // for them in the background. Codex never wakes the root on their own.
     if (status === "completed" && active.childTurns.size > 0) {
+      active.retry.recover();
       active.root = "idle";
       this.#publish({ data: { phase: "background" }, type: "run.phase" });
       return;
@@ -2973,13 +3112,23 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     else if (status === "failed") {
       const error =
         typeof turn.error === "object" && turn.error !== null ? (turn.error as JsonObject) : {};
+      const codexErrorInfo = error.codexErrorInfo ?? active.latestError?.codexErrorInfo;
+      const mergedError: JsonObject =
+        codexErrorInfo !== undefined ? { ...error, codexErrorInfo } : error;
+      const turnMessage = optionalString(error.message)?.trim();
+      const message =
+        optionalString(error.additionalDetails)?.trim() ||
+        (turnMessage && turnMessage !== "Turn failed" ? turnMessage : undefined) ||
+        active.latestError?.message ||
+        turnMessage ||
+        "Codex turn failed";
       this.#publishFailure(
         active,
         new OpensteerError({
           code: "harness_error",
-          details: { codexError: error },
-          message: optionalString(error.message) ?? "Codex turn failed",
-          retryable: codexErrorIsRetryable(error.codexErrorInfo),
+          details: { codexError: mergedError },
+          message,
+          retryable: codexErrorIsRetryable(codexErrorInfo),
         }),
       );
     } else {
@@ -3221,11 +3370,65 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     active.imageGenerations.clear();
   }
 
+  #failStalledRetry(active: ActiveTurn, record: ProviderRetryRecord): void {
+    if (active.terminal || active.interruptRequested) return;
+    active.interruptRequested = true;
+    // Preserve Codex's own structured error info without promoting generic
+    // HTTP 429 rate limits into account-quota usageLimitExceeded failures.
+    const codexErrorInfo = record.meta?.codexErrorInfo;
+    const failure = new OpensteerError({
+      code: "harness_error",
+      details: {
+        codexError: {
+          ...(codexErrorInfo !== undefined ? { codexErrorInfo } : {}),
+          message: record.message,
+        },
+      },
+      message: formatRetryBudgetMessage(record, active.retry.budgetMs),
+      retryable: false,
+    });
+    // Always schedule provider interruption, retire this session from warm reuse,
+    // and end any live voice call BEFORE terminal publication so cleanup runs
+    // even if the event buffer rejects the terminal event.
+    active.stalledCleanup = this.#interruptStalledTurn(active, failure);
+    this.#publisher.latchUnusable(failure);
+    this.#context.voiceCall?.end();
+    this.#publishFailure(active, failure);
+  }
+
+  async #interruptStalledTurn(active: ActiveTurn, failure: OpensteerError): Promise<void> {
+    try {
+      const client = this.#server?.client;
+      if (!client || this.#closed) return;
+      const requests: Promise<unknown>[] = [...active.childTurns].map(([threadId, turnId]) =>
+        client.request("turn/interrupt", { threadId, turnId }, 10_000),
+      );
+      if (active.providerTurnId && this.#codexThreadId) {
+        requests.push(
+          client.request(
+            "turn/interrupt",
+            { threadId: this.#codexThreadId, turnId: active.providerTurnId },
+            10_000,
+          ),
+        );
+      }
+      const results = await Promise.allSettled(requests);
+      if (results.some((result) => result.status === "rejected")) {
+        this.#publisher.latchUnusable(failure);
+        this.#closeEventStream(failure);
+      }
+    } catch {
+      this.#publisher.latchUnusable(failure);
+      this.#closeEventStream(failure);
+    }
+  }
+
   #publishTerminal(
     active: ActiveTurn,
     status: "completed" | "interrupted",
     options?: { readonly cause?: import("@opensteer/core").RunInterruptedCause },
   ): void {
+    active.retry.dispose();
     this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     void this.#trackCancellation(this.#drainPendingRequests("run-ended"));
@@ -3242,6 +3445,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   }
 
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
+    active.retry.dispose();
     this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     void this.#trackCancellation(this.#drainPendingRequests("run-ended"));
@@ -3826,9 +4030,15 @@ async function readCodexUsage(client: CodexStdioClient): Promise<HarnessObserved
   const parsed = CodexRateLimitsResponseSchema.safeParse(response);
   const limits = parsed.success ? parsed.data.rateLimits : null;
   if (!limits) return undefined;
-  const windows = [limits.primary, limits.secondary].flatMap((window) =>
-    window ? codexUsageWindow(window) : [],
+  const windows: HarnessObservedUsageWindow[] = [limits.primary, limits.secondary].flatMap(
+    (window) => (window ? codexUsageWindow(window) : []),
   );
+  // A spend control cap has no rate-limit reset timer; represent it as its own
+  // non-expiring account window so resetting an exhausted 5h/weekly window
+  // never clears an active spending block.
+  if (limits.spendControlReached === true) {
+    windows.push({ label: "Spend limit", resetsAt: null, usedPercent: 100 });
+  }
   const limitReached =
     (limits.rateLimitReachedType ?? null) !== null ||
     limits.spendControlReached === true ||
@@ -5334,6 +5544,17 @@ function codexErrorVariant(value: unknown): string | undefined {
   return undefined;
 }
 
+function parseCodexRetryProgress(
+  message: string,
+): { readonly attempt: number; readonly maxAttempts: number } | null {
+  const match = /\b(\d+)\s*\/\s*(\d+)\b/u.exec(message);
+  if (match?.[1] === undefined || match[2] === undefined) return null;
+  const attempt = Number.parseInt(match[1], 10);
+  const maxAttempts = Number.parseInt(match[2], 10);
+  if (attempt < 1 || maxAttempts < 1) return null;
+  return { attempt, maxAttempts };
+}
+
 /**
  * Failures that sending again can get past: capacity, rate limits, provider
  * faults, and transport failures Codex already retried until its own budget
@@ -5360,6 +5581,19 @@ function codexErrorIsRetryable(value: unknown): boolean {
  * offered another account instead of a provider word only this driver knows.
  */
 const codexUsageLimitError = "usageLimitExceeded";
+
+/** Codex `item/started` item types that prove the model produced fresh output or a new tool call. */
+const codexModelProgressStartItems = new Set([
+  "agentMessage",
+  "reasoning",
+  "commandExecution",
+  "fileChange",
+  "mcpToolCall",
+  "webSearch",
+  "imageGeneration",
+  "collabAgentToolCall",
+  "subAgentActivity",
+]);
 
 function codexErrorCode(error: OpensteerError): string {
   const codexError = error.details?.codexError;

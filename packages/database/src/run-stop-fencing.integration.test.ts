@@ -404,11 +404,13 @@ integration.sequential("Run stop fencing", () => {
   it("ends a Run stopped before it was bound, and the Thread's next Run starts", async ({
     storeFixture,
   }) => {
-    const { fixture, claim, stop, runStatus, bind, commandStatus, resume } = storeFixture;
+    const { fixture, claim, stop, runStatus, bind, commandStatus, resume, store } = storeFixture;
     const f = await fixture("unbound");
     const run = await claim(f, "unbound");
     const stopped = await stop(f, run.id, "unbound");
     expect(await runStatus(run.id)).toBe("interrupted");
+    // The person stopped it, so its end is no news to them.
+    expect((await store.getThreadForOwner(f.thread.id, f.userId))?.latestRunCompletedAt).toBeNull();
     expect(stopped.command.status).toBe("succeeded");
     await expect(bind(f, run.id)).rejects.toMatchObject({
       code: "conflict",
@@ -444,6 +446,7 @@ integration.sequential("Run stop fencing", () => {
       runnerId: f.runnerId,
     });
     expect(await runStatus(run.id)).toBe("interrupted");
+    expect((await store.getThreadForOwner(f.thread.id, f.userId))?.latestRunCompletedAt).toBeNull();
     await resume(f, "unheld");
     const next = await claim(f, "unheld-next");
     await expect(bind(f, next.id)).resolves.toMatchObject({

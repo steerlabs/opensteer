@@ -27,6 +27,7 @@ import {
   type PlaceIdentity,
   RequestKindSchema,
   PendingRequestSchema,
+  SequenceSchema,
   type RequestPayload,
   type RequestResponse,
 } from "@opensteer/core";
@@ -38,8 +39,10 @@ import {
   show_to_person,
   opensteer_task_queue,
   opensteer_task_delegate,
+  opensteer_task_update,
   opensteer_task_interrupt,
   opensteer_delegation_wait,
+  opensteer_request_list,
   opensteer_request_read,
   opensteer_task_wait,
   opensteer_request_answer,
@@ -54,6 +57,7 @@ import {
   AgentConnectionStore,
   deliverTaskQuestionNotice,
   cancelSettledTaskQuestionNotice,
+  encodeThreadHistoryCursor,
   requestInsert,
   createDatabase,
   OpensteerStore,
@@ -2071,16 +2075,35 @@ describeStore("shaped agent task tools", (it) => {
       .selectAll()
       .where("id", "=", f.turn.message.id)
       .executeTakeFirstOrThrow();
-    for (let i = 1; i <= 20; i++)
+    for (let i = 1; i <= 20; i++) {
+      const id = createId("message");
       await storeFixture.database
         .insertInto("messages")
         .values({
           ...original,
-          id: createId("message"),
+          id,
           sequence: String(BigInt(original.sequence) + BigInt(i)),
           content: sql`${JSON.stringify([{ type: "text", text: "z".repeat(50000) }])}::jsonb`,
         })
         .execute();
+      await storeFixture.database
+        .insertInto("transcriptItems")
+        .values({
+          id,
+          threadId: original.threadId,
+          runId: original.runId,
+          attemptId: null,
+          nodeId: null,
+          kind: "message",
+          position: String(1000 + i),
+          messageId: id,
+          visible: true,
+          isTurnStart: false,
+          createdAt: original.createdAt,
+          view: { preview: "z".repeat(200) },
+        })
+        .execute();
+    }
     const page = await s.read({ limit: 100, maxCharsPerItem: 50000 });
     expect(Buffer.byteLength(JSON.stringify(page.items))).toBeLessThanOrEqual(256 * 1024);
     expect(page.hasMore).toBe(true);
@@ -2454,5 +2477,607 @@ describeStore("shaped agent task tools", (it) => {
         (await storeFixture.store.getThreadForOwner(f.thread.id, f.userId))!.title,
       ),
     });
+  });
+
+  it("exposes cross-task Requests, non-secret person.question cards, doneBy, lastVisitedAt and task filters", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("request-visibility-caller");
+    const s = setup(storeFixture, f);
+    const other = await storeFixture.startRunFixture("request-visibility-other");
+    const secretTask = await storeFixture.startRunFixture("request-visibility-secret");
+
+    await storeFixture.store.enqueueThreadInput({
+      threadId: other.thread.id,
+      requestedBy: f.userId,
+      policy: "report",
+      content: [{ type: "text", text: "Autopay statement for card 2509 arrived" }],
+      source: { kind: "human" },
+      idempotencyKey: "other-searchable-msg",
+    });
+
+    const pendingQuestion = await storeFixture.store.requests.create({
+      callId: "q-pending",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: other.run.id,
+      originatingThreadId: other.thread.id,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Card 2509 payment",
+        detail: "Card 2509 has a statement due Monday.",
+        fields: [
+          {
+            id: "choice",
+            prompt: "Want me to check the billing portal?",
+            choices: [
+              {
+                label: "Leave it alone",
+                value: "leave",
+                description: "Assume AutoPay covers it unless an error arrives",
+              },
+              { label: "Check portal", value: "check" },
+            ],
+            custom: true,
+            multiSelect: false,
+            secret: false,
+          },
+        ],
+      },
+      requestedBy: f.userId,
+      requiredActor: "requester",
+    });
+
+    const secretQuestion = await storeFixture.store.requests.create({
+      callId: "q-secret",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: secretTask.run.id,
+      originatingThreadId: secretTask.thread.id,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Private PIN",
+        detail: "Enter your private PIN.",
+        fields: [
+          {
+            id: "pin",
+            prompt: "PIN",
+            custom: true,
+            multiSelect: false,
+            secret: true,
+          },
+        ],
+      },
+      requestedBy: f.userId,
+      requiredActor: "requester",
+    });
+
+    // Cross-task opensteer_request_list returns pending requests across the caller's tasks,
+    // exposing non-secret question wording while redacting secret-field questions.
+    const listedPending = opensteer_request_list.output.parse(
+      productToolOutput(
+        await s.product.opensteer_request_answer({
+          caller: s.caller,
+          input: {
+            ...opensteer_request_list.input.parse({ status: "pending" }),
+            action: "list",
+          },
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    const listedNonSecret = listedPending.requests.find((r) => r.id === pendingQuestion.request.id);
+    expect(listedNonSecret).toMatchObject({
+      id: pendingQuestion.request.id,
+      originatingTaskId: other.thread.id,
+      status: "pending",
+      question: {
+        outcome: "pending",
+        detail: "Card 2509 has a statement due Monday.",
+        questions: [
+          {
+            prompt: "Want me to check the billing portal?",
+            options: [
+              {
+                label: "Leave it alone",
+                description: "Assume AutoPay covers it unless an error arrives",
+              },
+              { label: "Check portal" },
+            ],
+          },
+        ],
+      },
+    });
+    const listedSecret = listedPending.requests.find((r) => r.id === secretQuestion.request.id);
+    expect(listedSecret).toBeDefined();
+    expect(listedSecret?.question).toBeUndefined();
+    expect(JSON.stringify(listedPending)).not.toContain("Enter your private PIN.");
+
+    // opensteer_request_list filters by taskId.
+    const filteredList = opensteer_request_list.output.parse(
+      productToolOutput(
+        await s.product.opensteer_request_answer({
+          caller: s.caller,
+          input: {
+            ...opensteer_request_list.input.parse({ taskId: other.thread.id, status: "pending" }),
+            action: "list",
+          },
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(filteredList.requests.map((r) => r.id)).toEqual([pendingQuestion.request.id]);
+
+    // opensteer_task_read returns pendingRequests with non-secret question wording alongside the task.
+    const readPending = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({ taskId: other.thread.id }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(readPending.pendingRequests).toMatchObject([
+      {
+        id: pendingQuestion.request.id,
+        question: {
+          outcome: "pending",
+          detail: "Card 2509 has a statement due Monday.",
+        },
+      },
+    ]);
+
+    // opensteer_request_read shows non-secret question details, omits presentation, and
+    // opensteer_request_answer still forbids answering person.question on the person's behalf.
+    const readReq = opensteer_request_read.output.parse(
+      productToolOutput(
+        await s.product.opensteer_request_answer({
+          caller: s.caller,
+          input: {
+            ...opensteer_request_read.input.parse({ requestId: pendingQuestion.request.id }),
+            action: "read",
+            limit: 50,
+          },
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(readReq.request).toMatchObject({
+      id: pendingQuestion.request.id,
+      question: { outcome: "pending" },
+    });
+    expect(readReq.request).not.toHaveProperty("presentation");
+    const requestRevision = readReq.request.revision!;
+    await expect(
+      s.product.opensteer_request_answer({
+        caller: s.caller,
+        input: {
+          ...opensteer_request_answer.input.parse({
+            requestId: pendingQuestion.request.id,
+            expectedRevision: requestRevision,
+            response: { kind: "form", answers: { choice: ["leave"] } },
+          }),
+          action: "respond",
+          limit: 50,
+        },
+        operationKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+
+    // Task list supports hasPendingRequests, message-text query, and done filters.
+    const withPending = opensteer_task_list.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_list({
+          caller: s.caller,
+          input: opensteer_task_list.input.parse({ hasPendingRequests: true }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(withPending.tasks.map((t) => t.id)).toContain(other.thread.id);
+    expect(withPending.tasks.map((t) => t.id)).not.toContain(f.thread.id);
+
+    const byMessageText = opensteer_task_list.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_list({
+          caller: s.caller,
+          input: opensteer_task_list.input.parse({ query: "2509" }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(byMessageText.tasks.map((t) => t.id)).toEqual([other.thread.id]);
+
+    // Dismiss the question, record a human visit, and mark the task Done as the person.
+    const beforeDismiss = new Date(Date.now() - 1000).toISOString();
+    await storeFixture.store.requests.answerPersonQuestion({
+      expectedRevision: requestRevision,
+      requestId: pendingQuestion.request.id,
+      resolvedBy: f.userId,
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    const visitedAt = new Date().toISOString();
+    await storeFixture.store.recordThreadVisit({
+      threadId: other.thread.id,
+      userId: f.userId,
+      visitedAt,
+    });
+    await storeFixture.store.setThreadDone({
+      done: true,
+      idempotencyKey: "person-done-other",
+      requestedBy: f.userId,
+      threadId: other.thread.id,
+    });
+
+    // opensteer_task_read now shows doneBy: "person", lastVisitedAt, no pendingRequests,
+    // and the settled dismissed question card inline in messages view!
+    const readAfter = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({ taskId: other.thread.id }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(readAfter.task).toMatchObject({
+      id: other.thread.id,
+      doneBy: "person",
+      lastVisitedAt: expect.any(String),
+    });
+    expect(readAfter.pendingRequests).toBeUndefined();
+    const questionCard = readAfter.items.find(
+      (item) => item.itemId === `request:${pendingQuestion.request.id}`,
+    );
+    expect(questionCard).toMatchObject({
+      type: "request.resolved",
+      status: "declined",
+      title: "Card 2509 payment",
+    });
+    expect(questionCard?.text).toContain("Want me to check the billing portal?");
+    expect(questionCard?.text).toContain("Dismissed by the person without answering.");
+
+    // Reading the settled question card directly by itemId works.
+    const readByItem = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({
+            taskId: other.thread.id,
+            itemId: `request:${pendingQuestion.request.id}`,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(readByItem.items).toHaveLength(1);
+    expect(readByItem.items[0]?.status).toBe("declined");
+
+    // opensteer_task_list filters by done and reports questionsDismissed in changedSince.
+    const doneTasks = opensteer_task_list.output.parse(
+      productToolOutput(
+        await s.product.opensteer_task_list({
+          caller: s.caller,
+          input: opensteer_task_list.input.parse({ done: true, changedSince: beforeDismiss }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(doneTasks.tasks).toContainEqual(
+      expect.objectContaining({
+        id: other.thread.id,
+        doneBy: "person",
+        questionsDismissed: 1,
+      }),
+    );
+
+    // Lineage-scoped agentPage strictly hides Requests from unrelated lineages, even if named.
+    const lineageAll = await storeFixture.store.requests.agentPage({
+      ownerId: f.userId,
+      scope: { kind: "lineage", threadId: f.thread.id },
+      scopeId: f.thread.id,
+      limit: 50,
+    });
+    expect(lineageAll.requests.map((r) => r.originatingThreadId)).not.toContain(other.thread.id);
+    const lineageNamed = await storeFixture.store.requests.agentPage({
+      ownerId: f.userId,
+      scope: { kind: "lineage", threadId: f.thread.id },
+      scopeId: f.thread.id,
+      originatingThreadId: other.thread.id,
+      limit: 50,
+    });
+    expect(lineageNamed.requests).toEqual([]);
+
+    // Agent Run marking another task Done records doneBy: "agent", never "person".
+    const agentDoneTarget = await storeFixture.startRunFixture("request-visibility-agent-done");
+    await s.product.opensteer_task_update({
+      caller: s.caller,
+      input: opensteer_task_update.input.parse({ taskId: agentDoneTarget.thread.id, done: true }),
+      operationKey: randomUUID(),
+    });
+    expect(
+      await storeFixture.store.getThreadForOwner(agentDoneTarget.thread.id, f.userId),
+    ).toMatchObject({
+      doneAt: expect.any(String),
+      doneBy: "agent",
+    });
+
+    // opensteer_request_list window.byteCount never leaks the serialized size of redacted answers.
+    const secretBefore = opensteer_request_list.output.parse(
+      productToolOutput(
+        await s.product.opensteer_request_answer({
+          caller: s.caller,
+          input: {
+            ...opensteer_request_list.input.parse({ taskId: secretTask.thread.id, limit: 1 }),
+            action: "list",
+          },
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    const secretRev = (await storeFixture.store.requests.revision(secretQuestion.request.id))!;
+    await storeFixture.store.requests.answerPersonQuestion({
+      expectedRevision: secretRev,
+      requestId: secretQuestion.request.id,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { pin: ["9".repeat(1_200)] } },
+    });
+    const secretAfter = opensteer_request_list.output.parse(
+      productToolOutput(
+        await s.product.opensteer_request_answer({
+          caller: s.caller,
+          input: {
+            ...opensteer_request_list.input.parse({ taskId: secretTask.thread.id, limit: 1 }),
+            action: "list",
+          },
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(secretAfter.requests[0]?.question).toBeUndefined();
+    expect(JSON.stringify(secretAfter)).not.toContain("9999");
+    expect(secretAfter.window.byteCount).toBe(
+      Buffer.byteLength(JSON.stringify(secretAfter.requests), "utf8"),
+    );
+    expect(Math.abs(secretAfter.window.byteCount - secretBefore.window.byteCount)).toBeLessThan(64);
+  });
+
+  it("supports anchored and legacy message-sequence cursors, long question offsets, and bounded pendingRequests", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("anchored-long-pending");
+    const s = setup(storeFixture, f);
+
+    // Create 4 messages so aroundMessageId has earlier messages to page into.
+    const msgIds = [f.turn.message.id];
+    for (let i = 1; i <= 3; i++) {
+      const enq = await storeFixture.store.enqueueThreadInput({
+        threadId: f.thread.id,
+        requestedBy: f.userId,
+        policy: "report",
+        content: [{ type: "text", text: `History message ${i}` }],
+        source: { kind: "human" },
+        idempotencyKey: `anchor-msg-${i}`,
+      });
+      msgIds.push(enq.message.id);
+    }
+
+    // Anchored read returns a thread-history cursor; following it without aroundMessageId works.
+    const anchored = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({
+            taskId: f.thread.id,
+            aroundMessageId: msgIds[3],
+            limit: 2,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(anchored.hasMore).toBe(true);
+    expect(anchored.nextCursor).not.toBeNull();
+    const followed = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({
+            taskId: f.thread.id,
+            cursor: anchored.nextCursor!,
+            limit: 10,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(followed.items.length).toBeGreaterThan(0);
+
+    // Pre-upgrade legacy message-sequence cursor also pages cleanly.
+    const latestRow = await storeFixture.database
+      .selectFrom("messages")
+      .select("sequence")
+      .where("id", "=", msgIds[3]!)
+      .executeTakeFirstOrThrow();
+    const legacyCursor = encodeThreadHistoryCursor(
+      f.thread.id,
+      SequenceSchema.parse(latestRow.sequence),
+    );
+    const fromLegacy = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({
+            taskId: f.thread.id,
+            cursor: legacyCursor,
+            limit: 10,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(fromLegacy.items.map((item) => item.itemId)).not.toContain(msgIds[3]);
+    expect(fromLegacy.items.length).toBeGreaterThan(0);
+
+    // A 10,000-character settled question clips with textTruncated: true and resumes seamlessly.
+    const longPrompt = "Q".repeat(10_000);
+    const longReq = await storeFixture.store.requests.create({
+      callId: "long-q",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: f.run.id,
+      originatingThreadId: f.thread.id,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Long question",
+        fields: [
+          {
+            id: "ans",
+            prompt: longPrompt,
+            choices: [{ label: "Yes", value: "yes", description: "Go ahead now" }],
+            custom: true,
+            multiSelect: false,
+            secret: false,
+          },
+        ],
+      },
+      requestedBy: f.userId,
+      requiredActor: "requester",
+    });
+    const longRev = (await storeFixture.store.requests.revision(longReq.request.id))!;
+    await storeFixture.store.requests.answerPersonQuestion({
+      expectedRevision: longRev,
+      requestId: longReq.request.id,
+      resolvedBy: f.userId,
+      response: { kind: "form", answers: { ans: ["yes"] } },
+    });
+    const listRead = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({ taskId: f.thread.id, limit: 20 }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    const card = listRead.items.find((item) => item.itemId === `request:${longReq.request.id}`)!;
+    expect(card.textTruncated).toBe(true);
+    expect(card.nextTextOffset).toBe(4_096);
+    const resumed = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({
+            taskId: f.thread.id,
+            itemId: card.itemId,
+            textOffset: card.nextTextOffset!,
+            maxCharsPerItem: 20_000,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(resumed.items[0]?.textTruncated).toBe(false);
+    expect(`${card.text}${resumed.items[0]?.text}`).toBe(
+      `Question: ${longPrompt}\nOptions: Yes — Go ahead now\nAnswer: Yes`,
+    );
+
+    // A >480 KiB valid form answer (600 KiB) stays readable rather than silently dropping.
+    const hugeReq = await storeFixture.store.requests.create({
+      callId: "huge-q",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: f.run.id,
+      originatingThreadId: f.thread.id,
+      payload: { kind: "person.question" },
+      presentation: {
+        kind: "form",
+        title: "Huge form answer",
+        fields: Array.from({ length: 6 }, (_, i) => ({
+          id: `f_${i}`,
+          prompt: `Field ${i}`,
+          custom: true,
+          multiSelect: false,
+          secret: false,
+        })),
+      },
+      requestedBy: f.userId,
+      requiredActor: "requester",
+    });
+    const hugeRev = (await storeFixture.store.requests.revision(hugeReq.request.id))!;
+    await storeFixture.store.requests.answerPersonQuestion({
+      expectedRevision: hugeRev,
+      requestId: hugeReq.request.id,
+      resolvedBy: f.userId,
+      response: {
+        kind: "form",
+        answers: Object.fromEntries(
+          Array.from({ length: 6 }, (_, i) => [`f_${i}`, ["A".repeat(95_000)]]),
+        ),
+      },
+    });
+    const hugeNamed = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({
+            taskId: f.thread.id,
+            itemId: `request:${hugeReq.request.id}`,
+            maxCharsPerItem: 50_000,
+          }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(hugeNamed.items[0]?.textTruncated).toBe(true);
+    expect(hugeNamed.items[0]?.text).toContain("Question: Field 0\nAnswer: AAAA");
+    expect(hugeNamed.items[0]?.nextTextOffset).toBe(50_000);
+
+    // 25 large pending questions still fit comfortably inside ThreadReadOutputSchema's 432 KiB limit.
+    const bulkTask = await storeFixture.startRunFixture("bulk-pending-requests");
+    for (let i = 0; i < 25; i++) {
+      await storeFixture.store.requests.create({
+        callId: `bulk-${i}`,
+        kind: "person.question",
+        mode: "durable",
+        originatingRunId: bulkTask.run.id,
+        originatingThreadId: bulkTask.thread.id,
+        payload: { kind: "person.question" },
+        presentation: {
+          kind: "form",
+          title: `Bulk question ${i}`,
+          detail: `Detail ${i} ` + "D".repeat(10_000),
+          fields: [
+            {
+              id: "choice",
+              prompt: "Choose?",
+              choices: [{ label: "Ok", value: "ok" }],
+              custom: true,
+              multiSelect: false,
+              secret: false,
+            },
+          ],
+        },
+        requestedBy: f.userId,
+        requiredActor: "requester",
+      });
+    }
+    const bulkRead = ThreadReadOutputSchema.parse(
+      productToolOutput(
+        await s.product.opensteer_task_read({
+          caller: s.caller,
+          input: opensteer_task_read.input.parse({ taskId: bulkTask.thread.id }),
+          operationKey: randomUUID(),
+        }),
+      ),
+    );
+    expect(bulkRead.pendingRequests?.length).toBeGreaterThan(0);
+    expect(Buffer.byteLength(JSON.stringify(bulkRead.pendingRequests), "utf8")).toBeLessThanOrEqual(
+      64 * 1024,
+    );
   });
 });

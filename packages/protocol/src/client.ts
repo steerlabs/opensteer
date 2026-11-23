@@ -20,6 +20,7 @@ import {
   NotificationViewSchema,
   PendingRequestViewSchema,
   readableRequestList,
+  RunRetryViewSchema,
   SequenceSchema,
   ThreadRunQueueEntryViewSchema,
   ThreadIdSchema,
@@ -195,6 +196,8 @@ export const TaskEntryViewSchema = z.object({
   thread: ThreadViewSchema,
   /** A Run waits to start and none is executing, as on the shell's task row. */
   runQueued: z.boolean().optional(),
+  /** Active provider retry on the task's executing Run, when retrying. */
+  retry: RunRetryViewSchema.nullable().optional(),
 });
 export type TaskEntryView = z.infer<typeof TaskEntryViewSchema>;
 

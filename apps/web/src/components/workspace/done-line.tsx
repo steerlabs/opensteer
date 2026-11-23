@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Ref } from "react";
-import {
-  seenThroughOf,
-  taskMark,
-  taskMarkQuiet,
-  type HostClient,
-  type TaskRow,
-} from "@opensteer/client/host";
+import { seenThroughOf, taskMark, type HostClient, type TaskRow } from "@opensteer/client/host";
 import type { QuietTaskDays } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
@@ -226,7 +220,7 @@ function QuietMovedCard({
               onClick={() => onOpenTask(row.threadId)}
               type="button"
             >
-              <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, true)} />
+              <TaskMark size={20} mark={taskMark(row)} quiet={row.quiet} />
               <span className="quiet-moved__name">{row.title}</span>
             </button>
             <button

@@ -22,6 +22,7 @@ import {
   taskExternalWorkSelection,
   taskPageThreadSelections,
   taskPageThreadsFromRows,
+  threadProviderRetry,
   threadRunQueued,
   threadRunStartHoldReason,
 } from "./personal-task-store.js";
@@ -61,6 +62,7 @@ export async function writeThreadSummary(
       .returning(threadRunQueued.as("runQueued"))
       .returning(threadRunStartHoldReason.as("runStartHoldReason"))
       .returning(taskExternalWorkSelection)
+      .returning(threadProviderRetry.as("retry"))
       .executeTakeFirstOrThrow();
     const threadScope = `thread:${threadId}` as const;
     const view = taskView(row);

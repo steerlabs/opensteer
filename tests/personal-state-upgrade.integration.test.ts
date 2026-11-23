@@ -18,7 +18,7 @@ import {
   readTranscriptPage,
 } from "../packages/database/src/personal-sync-store.js";
 import { transcriptCard } from "../packages/client/src/host/transcript-item-view.js";
-import { inlineTranscriptMessagesMigrationName } from "../packages/database/src/personal-state-schema.js";
+import { runProviderRetryMigrationName } from "../packages/database/src/personal-state-schema.js";
 import { agentGrantsMigrationName } from "../packages/database/src/agent-grants-migration.js";
 import { agentSessionsMigrationName } from "../packages/database/src/agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "../packages/database/src/agent-directory-migration.js";
@@ -246,17 +246,17 @@ test("carries a person's work from a database the released Home last migrated th
     // The released lineage ends at main's newest migration; everything after it is this one's.
     const all = await migrationProvider().getMigrations();
     const names = Object.keys(all);
-    const released = names.filter((name) => name <= inlineTranscriptMessagesMigrationName);
-    expect(names.filter((name) => name > inlineTranscriptMessagesMigrationName)).toEqual([
+    const released = names.filter((name) => name <= runProviderRetryMigrationName);
+    expect(names.filter((name) => name > runProviderRetryMigrationName)).toEqual([
       agentGrantsMigrationName,
       agentSessionsMigrationName,
-      "0046_chrome_live_tabs_source",
+      "0102_chrome_live_tabs_source",
       agentDirectoryMigrationName,
-      "0048_shared_chrome_grants",
+      "0104_shared_chrome_grants",
       workHomeMigrationName,
       browserPoolMigrationName,
-      "0051_needs_you_counts_requests",
-      "0052_stop_truth_and_recovery",
+      "0107_needs_you_counts_requests",
+      "0117_stop_truth_and_recovery",
     ]);
     await migrateToLatest(database, {
       async getMigrations() {
