@@ -9811,6 +9811,56 @@ describe("work under a connection's authority never uses the clipboard or change
     });
   });
 
+  it("refuses bindPage when the Run's mode is lowered while pageTabs.admitted awaits", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new SelectedGrantRepository(ownerId);
+    const memory = memoryTabs();
+    const kept = await repository.createBrowserProfile({ ownerId, name: "Kept" });
+    repository.granted = [kept.id];
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      tabs: memory.store,
+      tabRestoreVersion: true,
+    });
+    cleanups.push(async () => service.close());
+
+    const descriptor = await service.pageTabs.open(
+      { kind: "person", ownerId },
+      { kind: "page", profileId: kept.id, url: "https://example.com/" },
+      "mode-lower-admitted",
+    );
+    await memory.add(descriptor);
+
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const originalAdmitted = service.pageTabs.admitted!;
+    vi.spyOn(service.pageTabs, "admitted").mockImplementationOnce(async (write) => {
+      entered.resolve();
+      await release.promise;
+      return originalAdmitted(write);
+    });
+    const claims = {
+      requestedBy: ownerId,
+      runId: createId("run"),
+      threadId: createId("thread"),
+    } as unknown as import("../agents/run-tool-tokens.js").RunToolScope;
+
+    const binding = service.bindPage(claims, memory.rows.get(descriptor.id)!);
+    await entered.promise;
+    repository.mode = "approval-required";
+    release.resolve();
+    await expect(binding).rejects.toMatchObject({
+      code: "forbidden",
+      message: "This task has read-only browser access and cannot drive or change tabs.",
+    });
+    expect(recordUse.mock.calls.filter(([input]) => input.tabId !== null)).toEqual([]);
+  });
+
   it("records usage again when the same Run revisits an earlier session after holding another session", async () => {
     const ownerId = createId("user");
     const repository = new MemoryBrowserRepository(ownerId);
@@ -9832,5 +9882,83 @@ describe("work under a connection's authority never uses the clipboard or change
       second.session.id,
       first.session.id,
     ]);
+  });
+
+  it("records usage again when a Run re-holds a session after a per-command use in another session", async () => {
+    const ownerId = createId("user");
+    const runId = createId("run");
+    const threadId = createId("thread");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const backing: BrowserSessionRepository = repository;
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const service = freshService({ keys, runtime, repository });
+    cleanups.push(async () => service.close());
+    const profileOne = await repository.createBrowserProfile({ ownerId, name: "First" });
+    const profileTwo = await repository.createBrowserProfile({ ownerId, name: "Second" });
+    const runBinding = { agentBindingId: `run:${runId}`, ownerId };
+    vi.spyOn(backing, "resolvePlaceActors").mockResolvedValue([
+      {
+        agentBindingId: runBinding.agentBindingId,
+        ownerId,
+        runId,
+        threadId,
+        generation: 1,
+        lineageThreadIds: [threadId],
+      },
+    ]);
+    const recordUse = vi.spyOn(repository, "recordAgentBrowserUse");
+
+    const first = await service.openAgentSession({ ...runBinding, profileId: profileOne.id });
+    const cdpFirst = await service.attachCdpForAgent(
+      { ...runBinding, sessionId: first.session.id },
+      () => undefined,
+    );
+    const second = await service.openAgentSession({ ...runBinding, profileId: profileTwo.id });
+
+    runtime.publishTabs({
+      surfaces: [
+        {
+          id: "page-1",
+          active: true,
+          title: "First",
+          url: "https://first.example/",
+          geometryRevision: 1,
+        },
+      ],
+    });
+    const attachRequest = cdpFirst.request({
+      method: "Target.attachToTarget",
+      parameters: { targetId: "page-1", flatten: true },
+    });
+    const forwarded = await runtime.nextCommand();
+    expect(forwarded).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.attachToTarget" },
+    });
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: forwarded.requestId,
+      result: { sessionId: "cdp-page-1", surfaceId: "page-1" },
+    });
+    await attachRequest;
+    await vi.waitFor(() =>
+      expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+        first.session.id,
+        second.session.id,
+        first.session.id,
+      ]),
+    );
+
+    await service.openAgentSession({ ...runBinding, sessionId: second.session.id });
+    expect(recordUse.mock.calls.map(([input]) => input.sessionId)).toEqual([
+      first.session.id,
+      second.session.id,
+      first.session.id,
+      second.session.id,
+    ]);
+    cdpFirst.close();
   });
 });

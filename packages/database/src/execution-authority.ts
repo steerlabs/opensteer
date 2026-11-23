@@ -161,7 +161,6 @@ export async function assertActiveGrant(
       "runs.admittedAccessMode",
       "threads.originConnectionId",
       "personalSettings.agentHomeComputerId",
-      "personalSettings.singletonKey as personalSingletonKey",
       "users.disabledAt as ownerDisabledAt",
       "providerSessions.bindingGeneration",
       "providerSessions.harnessInstanceId as providerSessionHarnessInstanceId",
@@ -206,11 +205,11 @@ export async function assertActiveGrant(
       ),
     )
     .where("runs.id", "=", input.runId)
+    .where("personalSettings.singletonKey", "=", "personal")
     .where("providerSessions.active", "=", true)
     .executeTakeFirst();
   const threadAdmitted =
     row !== undefined &&
-    row.personalSingletonKey === "personal" &&
     row.ownerDisabledAt === null &&
     row.availableEnvironmentId !== null &&
     (!workHome || Boolean(row.workHomeActive));

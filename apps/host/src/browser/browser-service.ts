@@ -3524,6 +3524,7 @@ export class BrowserService {
         }),
       )
       .then(async (credits) => {
+        this.#noteLastHeldSession(actor.sessionId, actor.binding);
         this.announceUsage(credits);
         await this.#restoreHoldings(actor.sessionId);
       })
@@ -4160,8 +4161,8 @@ export class BrowserService {
         true,
       );
       const fresh = await this.#requireWorkspaceGeneration(agent.ownerId, row);
-      await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.pageTabs.admitted!(fresh);
+      await this.admitAgentBrowser(agent, "read-write", [session]);
       await this.#recordAgentTabPlace(agent, session, row.id);
       return { tabId: row.id, sessionId: session.id, backend, reloaded: !live };
     } finally {
@@ -4414,8 +4415,7 @@ export class BrowserService {
         page: data ? { title: data.title, site: data.site ?? "" } : null,
       }),
     );
-    this.#lastHeldBindingBySession.set(record.id, agent.agentBindingId);
-    this.#lastHeldSessionByBinding.set(agent.agentBindingId, record.id);
+    this.#noteLastHeldSession(record.id, agent.agentBindingId);
     await this.#restoreHoldings(record.id);
     if (key !== undefined) {
       const token = this.#actorKeys.get(actorKey);
@@ -5977,6 +5977,7 @@ export class BrowserService {
                     tabId: target.data.surfaceId,
                   })
                   .then(async (credits) => {
+                    this.#noteLastHeldSession(record.id, input.agentBindingId);
                     this.announceUsage(credits);
                     await this.#restoreHoldings(record.id);
                   })
@@ -7622,8 +7623,7 @@ export class BrowserService {
             sessionId: record.id,
             tabId: null,
           });
-          this.#lastHeldBindingBySession.set(record.id, input.agentBindingId);
-          this.#lastHeldSessionByBinding.set(input.agentBindingId, record.id);
+          this.#noteLastHeldSession(record.id, input.agentBindingId);
           this.announceUsage(credits);
         }
       } finally {
@@ -7684,6 +7684,15 @@ export class BrowserService {
       Math.max(0, delayMs),
     );
     this.#actingTimers.set(sessionId, cancel);
+  }
+
+  #noteLastHeldSession(sessionId: BrowserSessionId, agentBindingId: string): void {
+    if (!this.#endedBindings.has(agentBindingId) && this.#brokers.has(sessionId)) {
+      this.#lastHeldBindingBySession.set(sessionId, agentBindingId);
+      this.#lastHeldSessionByBinding.set(agentBindingId, sessionId);
+    } else {
+      this.#lastHeldSessionByBinding.delete(agentBindingId);
+    }
   }
 
   #forgetLastHeldSession(sessionId: BrowserSessionId): void {
