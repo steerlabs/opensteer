@@ -27,6 +27,8 @@ import {
 
 const platform = vi.hoisted(() => ({ os: "ios" as "ios" | "android" }));
 const geometry = vi.hoisted(() => ({
+  /** The frame the sheet's content is given: the sheet's own, below the status bar. */
+  frame: { height: 0, width: 0 },
   insets: { bottom: 0, left: 0, right: 0, top: 0 },
   window: { height: 0, width: 0 },
 }));
@@ -49,7 +51,7 @@ vi.mock(
   async () => (await import("../../test-support/yoga-frames.js")).layoutReanimated,
 );
 vi.mock("react-native-safe-area-context", () => ({
-  useSafeAreaFrame: () => ({ ...geometry.window, x: 0, y: 0 }),
+  useSafeAreaFrame: () => ({ ...geometry.frame, x: 0, y: 0 }),
   useSafeAreaInsets: () => geometry.insets,
 }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
@@ -106,6 +108,7 @@ async function draw(phone: LayoutPhone, fontScale: number) {
   // below the status bar and a 10 pt gap (UISheetPresentationController's large detent), so it is
   // never taller than the window less those. What it holds is clipped at its edge.
   const top = phone.insets.top + 10;
+  geometry.frame = { height: phone.window.height - top, width: phone.window.width };
   await act(async () =>
     root.render(
       <View style={phone.window}>
@@ -136,8 +139,24 @@ async function draw(phone: LayoutPhone, fontScale: number) {
   return { container, frames };
 }
 
+/** Phones on their side (F44): a short window, the system's bars at its sides or its foot. */
+const landscapePhones: LayoutPhone[] = [
+  {
+    header: 32,
+    insets: { bottom: 21, left: 59, right: 59, top: 0 },
+    name: "an iPhone on its side",
+    window: { height: 390, width: 844 },
+  },
+  {
+    header: 56,
+    insets: { bottom: 0, left: 0, right: 48, top: 24 },
+    name: "an Android phone on its side",
+    window: { height: 360, width: 800 },
+  },
+];
+
 describe("the notifications sheet", () => {
-  for (const phone of layoutPhones)
+  for (const phone of [...layoutPhones, ...landscapePhones])
     for (const fontScale of layoutTextSizes)
       for (const os of ["ios", "android"] as const)
         it(`can be answered on ${os}, on ${phone.name}, at text size ${fontScale}`, async () => {
