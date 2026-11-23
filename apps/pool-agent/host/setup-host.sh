@@ -48,27 +48,70 @@ is_block_device() {
     [[ $(stat -L -c '%F' "$target" 2>/dev/null || true) == "block special file" ]]
 }
 
+parse_seconds_to_ms() {
+    local raw=$1 fallback_ms=$2
+    if [[ $raw =~ ^([0-9]+)$ ]]; then
+        printf '%s\n' "$(( 10#${BASH_REMATCH[1]} * 1000 ))"
+    elif [[ $raw =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        local whole=${BASH_REMATCH[1]}
+        local frac="${BASH_REMATCH[2]}000"
+        printf '%s\n' "$(( 10#$whole * 1000 + 10#${frac:0:3} ))"
+    else
+        printf '%s\n' "$fallback_ms"
+    fi
+}
+
+now_ms() {
+    if [[ -n ${EPOCHREALTIME:-} ]]; then
+        local s=${EPOCHREALTIME%.*}
+        local us=${EPOCHREALTIME#*.}
+        printf '%s\n' "$(( 10#$s * 1000 + 10#${us:0:3} ))"
+    else
+        perl -MTime::HiRes=time -e 'printf "%.0f\n", time*1000' 2>/dev/null || printf '%s\n' "$(( SECONDS * 1000 ))"
+    fi
+}
+
 # Z7 + J6: Single shared bounded wait for the durable profile disk, used by both enrolment and boot.
-# Bounded by elapsed wall time (SECONDS) so udevadm settle + sleep cannot multiply the budget.
+# Bounded by elapsed wall time so udevadm settle + sleep cannot multiply the budget.
 wait_for_profile_disk() {
     local dev=$1
+    is_block_device "$dev" && return 0
     local max_wait=${OSP_PROFILE_DISK_WAIT_SECONDS:-30}
-    [[ $max_wait =~ ^[0-9]+$ ]] || max_wait=30
-    local start_s=$SECONDS
-    local deadline=$(( start_s + max_wait ))
-    while ! is_block_device "$dev"; do
-        local remaining=$(( deadline - SECONDS ))
-        (( remaining <= 0 )) && break
-        local settle_timeout=$remaining
+    [[ $max_wait =~ ^[0-9]+(\.[0-9]+)?$ ]] || max_wait=30
+    local poll_raw=${OSP_PROFILE_DISK_POLL_SECONDS:-1}
+    [[ $poll_raw =~ ^[0-9]+(\.[0-9]+)?$ ]] || poll_raw=1
+    local max_wait_ms poll_ms
+    max_wait_ms=$(parse_seconds_to_ms "$max_wait" 30000)
+    poll_ms=$(parse_seconds_to_ms "$poll_raw" 1000)
+    local start_ms
+    start_ms=$(now_ms)
+    local deadline_ms=$(( start_ms + max_wait_ms ))
+    while true; do
+        local remaining_ms=$(( deadline_ms - $(now_ms) ))
+        (( remaining_ms <= 0 )) && break
+        local settle_timeout=$(( (remaining_ms + 999) / 1000 ))
         (( settle_timeout > 2 )) && settle_timeout=2
         udevadm settle --timeout="$settle_timeout" 2>/dev/null || true
-        is_block_device "$dev" && break
-        remaining=$(( deadline - SECONDS ))
-        (( remaining <= 0 )) && break
-        sleep 1
+        is_block_device "$dev" && return 0
+        remaining_ms=$(( deadline_ms - $(now_ms) ))
+        (( remaining_ms <= 0 )) && break
+        local sleep_ms=$poll_ms
+        (( sleep_ms > remaining_ms )) && sleep_ms=$remaining_ms
+        if (( sleep_ms > 0 )); then
+            local sleep_s
+            printf -v sleep_s '%d.%03d' "$(( sleep_ms / 1000 ))" "$(( sleep_ms % 1000 ))"
+            sleep "$sleep_s"
+        fi
+        is_block_device "$dev" && return 0
     done
-    local elapsed=$(( SECONDS - start_s ))
-    is_block_device "$dev" || die "durable profile disk $dev did not appear as a block device after ${elapsed}s (limit ${max_wait}s); inspect attached disks and do NOT format"
+    local elapsed_ms=$(( $(now_ms) - start_ms ))
+    local elapsed_fmt
+    if [[ $max_wait == *.* ]]; then
+        printf -v elapsed_fmt '%d.%d' "$(( elapsed_ms / 1000 ))" "$(( (elapsed_ms % 1000) / 100 ))"
+    else
+        elapsed_fmt=$(( elapsed_ms / 1000 ))
+    fi
+    is_block_device "$dev" || die "durable profile disk $dev did not appear as a block device after ${elapsed_fmt}s (limit ${max_wait}s); inspect attached disks and do NOT format"
 }
 
 load_host_env() {
