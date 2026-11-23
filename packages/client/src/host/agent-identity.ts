@@ -10,8 +10,7 @@ import { workWords } from "./agent-work-copy.js";
  */
 export interface AgentWho {
   /**
-   * "Errand via AgentPay", a verified platform's name, or the self-given name made safe to
-   * show on one line. Beside a mark only when `verified`; otherwise only inside a claim.
+   * A verified directory entry's name, or the self-given name made safe to show on one line. Beside a mark only when `verified`; otherwise only inside a claim.
    */
   readonly heading: string;
   /** The verified origin, the redirect origin, or "an app on this computer". */
@@ -31,17 +30,17 @@ export interface AgentWho {
    * shown only as a labelled claim ("Says it is …"); null when the Home verified who it is.
    */
   readonly claim: string | null;
-  /** Each origin the Home recorded, labelled by what it is: both, for a verified pairing. */
+  /** Each origin the Home recorded, labelled by what it is. */
   readonly origins: readonly AgentWhoOrigin[];
 }
 
 /** One origin the Home recorded for this agent. */
 export interface AgentWhoOrigin {
-  readonly role: "embedder" | "platform" | "redirect";
+  readonly role: "platform" | "redirect";
   /** The Home's verified name for it; null for a redirect, whose only name is the claim. */
   readonly name: string | null;
   readonly origin: string;
-  /** What this origin is: "Asked for this", "Holds the access", "Returns to". */
+  /** What this origin is: "Holds the access", "Returns to". */
   readonly roleLabel: string;
 }
 
@@ -118,7 +117,6 @@ export function agentWho(input: {
     };
   }
   if (recorded && recorded.kind !== "unverified") {
-    const pair = recorded.kind === "platform-and-embedder";
     const origins: AgentWhoOrigin[] = [
       {
         role: "platform",
@@ -127,20 +125,8 @@ export function agentWho(input: {
         roleLabel: workWords("who.origin.platform"),
       },
     ];
-    if (pair)
-      origins.unshift({
-        role: "embedder",
-        name: recorded.embedderName,
-        origin: recorded.embedderOrigin,
-        roleLabel: workWords("who.origin.embedder"),
-      });
     return {
-      heading: pair
-        ? workWords("who.pair", {
-            embedder: recorded.embedderName,
-            platform: recorded.platformName,
-          })
-        : recorded.platformName,
+      heading: recorded.platformName,
       detail: recorded.platformOrigin,
       verified: withdrawnSince === null,
       selfAsserted: false,

@@ -109,7 +109,6 @@ export const databaseLockOrder = [
   "personal_settings",
   // Run admission and control precede Occurrences and browser execution state.
   "agent_directory_cache",
-  "agent_embedder_assertion_claims",
   "agent_connections",
   // A session and its operations are admitted under their connection, before any Run.
   "agent_sessions",

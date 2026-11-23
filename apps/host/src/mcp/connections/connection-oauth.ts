@@ -27,7 +27,7 @@ import {
   describeIdentity,
   resolveConsentIdentity,
   unverifiedConsentIdentity,
-} from "./embedder-assertion.js";
+} from "./consent-identity.js";
 
 export const mcpResourcePath = agentConnectionMcpPath;
 export const mcpIssuerPath = "/oauth/mcp";
@@ -78,8 +78,6 @@ const AuthorizationSchema = z.object({
   resource: z.unknown().optional(),
   state: z.string().max(2048).optional(),
   scope: ScopeSchema,
-  /** A per-request proof, signed by the product that embeds this platform, that it asked. */
-  opensteer_embedder_assertion: z.unknown().optional(),
 });
 const TokenSchema = z.object({
   grant_type: z.literal("authorization_code"),
@@ -266,23 +264,11 @@ export class ConnectionOAuth {
     const resource = origin + mcpResourcePath;
     if (!matchesResource(parsed.data.resource, resource)) throw refusal("invalid_target");
     const authorization = { ...parsed.data, resource };
-    const identity = await resolveConsentIdentity({
+    const identity = resolveConsentIdentity({
       directory: (await this.#options.directory?.get()) ?? null,
       clientName: client.name,
-      assertion: authorization.opensteer_embedder_assertion,
-      request: {
-        clientId: authorization.client_id,
-        issuer: origin + mcpIssuerPath,
-        redirectUri: authorization.redirect_uri,
-        codeChallenge: authorization.code_challenge,
-        state: authorization.state,
-      },
+      redirectUri: authorization.redirect_uri,
       now: () => this.#now(),
-      claim: async (issuer, id, expiresAt) => {
-        const accepted = await this.store.claimEmbedderAssertion(issuer, id, expiresAt);
-        this.#options.onMaintenanceChanged?.();
-        return accepted;
-      },
     });
     this.#sweep();
     if (this.#consents.size >= maximumPending)

@@ -35,6 +35,7 @@ import {
   agentDirectoryMigrationName,
   applyAgentDirectoryVerification,
 } from "./agent-directory-migration.js";
+import { platformVerificationRemovalMigration } from "./platform-verification-removal-migration.js";
 import {
   onePersonHomeContractMigration,
   onePersonHomeFirstMigration,
@@ -664,6 +665,8 @@ export function migrationProvider(options?: {
               [bridgeConversionMigrationName]: { up: applyBridgeConversion },
               // A Home is one person's, and a connected agent holds only what they granted.
               ...onePersonHomeContractMigration,
+              // A connected agent is verified by the origin it is reached at, and nothing else.
+              ...platformVerificationRemovalMigration,
             }
           : {}),
       };

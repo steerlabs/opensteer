@@ -41,13 +41,13 @@ const slot = (thread: keyof typeof mockAgentWorkThreads) => {
 };
 
 describe("who a connected agent is", () => {
-  it("names a verified pair and a verified platform in the Home's words, with a logo only for a verified platform", () => {
+  it("names a verified agent in the Home's words, with a logo only for a known one", () => {
     const errand = agentWho({
       ...named("Errand"),
       redirect: "https://agentpay.example/cb",
     });
     expect(errand).toMatchObject({
-      heading: "Errand via AgentPay",
+      heading: "AgentPay",
       verified: true,
       selfAsserted: false,
       providerId: null,

@@ -26,6 +26,7 @@ import {
   removeOrganizationsMigrationName,
   workHomeMigrationName,
 } from "../packages/database/src/one-person-home-migration.js";
+import { removePlatformVerificationMigrationName } from "../packages/database/src/platform-verification-removal-migration.js";
 import { browserPoolMigrationName } from "../packages/database/src/browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "../packages/database/src/bridge-connections-migration.js";
 import { bridgeConversionMigrationName } from "../packages/database/src/bridge-conversion-migration.js";
@@ -264,6 +265,7 @@ test("carries a person's work from a database the released Home last migrated th
       bridgeConnectionsMigrationName,
       bridgeConversionMigrationName,
       removeOrganizationsMigrationName,
+      removePlatformVerificationMigrationName,
     ]);
     await migrateToLatest(database, {
       async getMigrations() {

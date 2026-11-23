@@ -100,9 +100,9 @@ describe("signed-in MCP connection consent", () => {
           </MemoryRouter>,
         ),
       );
-      expect(container.querySelector("h1, h2")?.textContent).toBe("Errand via AgentPay");
+      expect(container.querySelector("h1, h2")?.textContent).toBe("AgentPay");
       expect(container.querySelector(".agent-mark")).not.toBeNull();
-      expect(container.textContent).toContain("Asked for this: Errand · https://errand.example");
+      expect(container.textContent).not.toContain("Asked for this");
       expect(container.textContent).toContain(
         "Holds the access: AgentPay · https://agentpay.example",
       );

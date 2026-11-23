@@ -1,5 +1,4 @@
 import { agentOperationCursor, listAgentOperations } from "@opensteer/database";
-import { embedderAssertionParam } from "@opensteer/control-plane-protocol";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { ConnectionCaller } from "../agent-caller.js";
 import type { UserId } from "@opensteer/core";
@@ -201,9 +200,6 @@ export function registerConnectionRoutes(
     );
     routes.get(`${mcpIssuerPath}/authorize`, async (request, reply) => {
       const parameters = new URL(request.url, options.canonicalOrigin).searchParams;
-      if (parameters.getAll(embedderAssertionParam).length > 1) {
-        parameters.set(embedderAssertionParam, "");
-      }
       const path = await oauth.authorize(await getOrigin(request), uniqueParameters(parameters));
       return reply
         .header("cache-control", "no-store")

@@ -105,27 +105,21 @@ Over OAuth 2 with PKCE (S256) and a public client (`apps/host/src/mcp/connection
 ### The signed agent directory and what "verified" means
 
 The Opensteer account service publishes one signed list of known agents (`GET
-/v1/agent-directory`, `apps/control-plane/src/agent-directory/`). Each entry has a display name,
-exact HTTPS origins, optional keys, and optionally the platforms it is embedded through. The
-Home fetches it from its configured account origin over HTTPS, checks the signature against that
-origin's published keys, and caches it (refresh every 15 minutes; a copy is usable for 24 hours).
+/v1/agent-directory`, `apps/control-plane/src/agent-directory/`). Each entry has a display name
+and the exact HTTPS origins it is verified by. The Home fetches it from its configured account
+origin over HTTPS, checks the signature against that origin's published keys, and caches it (refresh every 15 minutes; a copy is usable for 24 hours).
 A Home never fetches an address an agent supplies. See [agent-directory.md](agent-directory.md).
 
 - **Verified** means the redirect address the person consented to has exactly the origin of a
   directory entry. The consent heading then shows that entry's name with a verified mark.
-- **Verified through a platform** ("Errand via AgentPay") additionally needs a short-lived
-  assertion (at most 120 seconds, single use) signed by the embedding party's directory key and
-  bound to this request's client, Home, redirect address, PKCE challenge and state.
 - **Anything else is unverified**: heading "An agent wants to connect", with its own name shown
-  as its claim. An assertion that does not verify makes the consent unverified; it never fails
-  the sign-in.
+  as its claim.
 - Consent uses the cached copy. A Home that has never accepted a copy waits at most two seconds
   for one, then shows everything as unverified.
-- If the directory later removes an origin, a pairing or a key, the connection shows "No longer
-  verified since {date}" and offers Disconnect. The Home never disconnects on a remote list's
+- If the directory later removes the origin, the connection shows "No longer verified since
+  {date}" and offers Disconnect. The Home never disconnects on a remote list's
   say-so. If verification changes between the consent screen and the approval, the approval is
   refused with `consent-verification-changed` and the person looks again.
-- The embedding party gets nothing: no code, no token, no grant.
 
 ### What a connected agent is shown
 

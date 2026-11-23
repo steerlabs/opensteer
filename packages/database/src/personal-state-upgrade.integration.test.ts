@@ -23,6 +23,7 @@ import {
   removeOrganizationsMigrationName,
   workHomeMigrationName,
 } from "./one-person-home-migration.js";
+import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
 import { browserPoolMigrationName } from "./browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
 import { bridgeConversionMigrationName } from "./bridge-conversion-migration.js";
@@ -108,6 +109,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         bridgeConnectionsMigrationName,
         bridgeConversionMigrationName,
         removeOrganizationsMigrationName,
+        removePlatformVerificationMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });
       const indexes = await sql<{ name: string }>`

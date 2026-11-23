@@ -105,29 +105,22 @@ function selfNamed(
     },
   };
 }
-const errandViaAgentPay: MockIdentity = {
+const verifiedAgentPay: MockIdentity = {
   identityAtConsent: {
-    kind: "platform-and-embedder",
+    kind: "platform",
     platformOrigin: "https://agentpay.example",
     platformDirectoryId: "agentpay",
     platformName: "AgentPay",
-    embedderOrigin: "https://errand.example",
-    embedderDirectoryId: "errand",
-    embedderName: "Errand",
-    keyThumbprint: "a".repeat(43),
     directoryRevision: 3,
     recordedAt,
   },
   identity: {
-    evidenceKind: "platform-and-embedder",
+    evidenceKind: "platform",
     verified: true,
     selfAsserted: false,
-    heading: "Errand via AgentPay",
-    detail: "Errand asked for this. AgentPay will hold the access.",
-    origins: [
-      { role: "embedder", label: "Errand", origin: "https://errand.example" },
-      { role: "platform", label: "AgentPay", origin: "https://agentpay.example" },
-    ],
+    heading: "AgentPay",
+    detail: "https://agentpay.example",
+    origins: [{ role: "platform", label: "AgentPay", origin: "https://agentpay.example" }],
     warning,
   },
 };
@@ -465,7 +458,7 @@ export function mockConnectedAgents(
       n: 6,
       label: "Errand",
       origin: "https://agentpay.example",
-      who: errandViaAgentPay,
+      who: verifiedAgentPay,
       accessMode: "approval-required",
       grant: { scope: "selected", tasks: false, resources: [] },
       lastUsedMinutes: 90,
@@ -530,7 +523,7 @@ export function mockConnectedAgents(
         ? {
             clientName: "Errand",
             redirect: "https://agentpay.example/oauth/callback",
-            ...errandViaAgentPay,
+            ...verifiedAgentPay,
           }
         : scene === "local"
           ? {

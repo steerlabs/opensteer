@@ -1,6 +1,7 @@
 import { agentDirectoryMigration } from "../agent-directory/migration.js";
 import { cloudComputerViewMigration } from "../cloud-computers/view-migration.js";
 import { onePersonAccountMigrations } from "./one-person-account-migration.js";
+import { platformVerificationRemovalMigration } from "../agent-directory/platform-verification-removal-migration.js";
 import { cloudComputerLifecycleMigration } from "../cloud-computers/lifecycle-migration.js";
 import { personNameFromEmail } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
@@ -532,6 +533,7 @@ const migrationProvider = {
       "0036_browser_pool": browserPoolMigration,
       // A Cloud Computer is one person's, bought and paid by that person.
       ...onePersonAccountMigrations,
+      "0038_remove_platform_verification": platformVerificationRemovalMigration,
     };
   },
 };

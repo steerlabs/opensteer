@@ -177,9 +177,9 @@ describe("who the agent is, on the phone", () => {
   const who = (label: string, redirect?: string, withdrawnAt?: string) =>
     connectedAgentIdentity(named(label), redirect, withdrawnAt ?? null).who;
 
-  it("says a verified pair or platform in the Home's words, and a self-given name as such", () => {
+  it("says a verified agent in the Home's words, and a self-given name as such", () => {
     expect(whoLines(who("Errand"), { consent: true })).toMatchObject({
-      heading: "Errand via AgentPay",
+      heading: "AgentPay",
       verified: true,
       warning: "Only allow this if you started it yourself.",
     });

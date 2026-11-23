@@ -2044,12 +2044,6 @@ interface AgentDirectoryCacheTable {
   acceptedAt: Date;
 }
 
-interface AgentEmbedderAssertionClaimTable {
-  issuer: string;
-  statementId: string;
-  expiresAt: Date;
-}
-
 export interface AgentSessionTable {
   id: AgentSessionId;
   connectionId: string;
@@ -2190,7 +2184,6 @@ export interface DatabaseSchema {
 
   agentConnections: AgentConnectionTable;
   agentDirectoryCache: AgentDirectoryCacheTable;
-  agentEmbedderAssertionClaims: AgentEmbedderAssertionClaimTable;
   apps: AppTable;
   appServers: AppServerTable;
   appVersions: AppVersionTable;

@@ -8,7 +8,6 @@ import {
   agentDirectoryJwtTyp,
   agentDirectoryPath,
   agentDirectoryTokenUse,
-  embedderAssertionJwtTyp,
   type AgentDirectoryDocument,
 } from "@opensteer/control-plane-protocol";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -25,8 +24,7 @@ import { IdentityService } from "@opensteer/identity";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
 import Fastify from "fastify";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
-import { sql } from "kysely";
+import { describe, expect, it } from "vitest";
 import { HostAuthenticator } from "../../identity/auth.js";
 import { registerHostApi } from "../../server/host-api-registration.js";
 import { injectRpcRequest } from "../../server/test-host-api-request.js";
@@ -183,18 +181,12 @@ async function fixture(options: { readonly directory?: AgentDirectoryDocument | 
     expect(registration.statusCode).toBe(201);
     return registration.json().client_id as string;
   }
-  /** The authorization request as a client sends it; `assertion` signs over its fields. */
+  /** The authorization request as a client sends it. */
   async function request(
     input: {
       readonly redirect?: string;
       readonly clientId?: string;
       readonly parameters?: Readonly<Record<string, string | undefined>>;
-      readonly assertion?: (bound: {
-        clientId: string;
-        redirectUri: string;
-        codeChallenge: string;
-        state: string;
-      }) => Promise<string>;
     } = {},
   ) {
     const redirect = input.redirect ?? redirectUri;
@@ -213,16 +205,6 @@ async function fixture(options: { readonly directory?: AgentDirectoryDocument | 
       if (value === undefined) query.delete(name);
       else query.set(name, value);
     }
-    if (input.assertion)
-      query.set(
-        "opensteer_embedder_assertion",
-        await input.assertion({
-          clientId,
-          redirectUri: redirect,
-          codeChallenge,
-          state: "client-state",
-        }),
-      );
     const authorization = await app.inject({
       method: "GET",
       url: `${mcpIssuerPath}/authorize?${query}`,
@@ -772,79 +754,42 @@ integration("external MCP OAuth over HTTP", () => {
     });
   });
 
-  it("stores verified evidence and completes unverified consent for failed assertions", async () => {
-    const { publicKey, privateKey } = await generateKeyPair("EdDSA", { crv: "Ed25519" });
-    const { x } = await exportJWK(publicKey);
+  it("stores evidence verified by origin, and ignores any statement a platform would have sent", async () => {
     const directory: AgentDirectoryDocument = {
       revision: 3,
       issuedAt: new Date().toISOString(),
-      entries: [
-        { id: "agentpay", displayName: "AgentPay", origins: ["https://agentpay.example"] },
-        {
-          id: "errand",
-          displayName: "Errand",
-          origins: ["https://errand.example"],
-          keys: {
-            keys: [
-              { kty: "OKP", crv: "Ed25519", x: x!, kid: "errand-1", use: "sig", alg: "EdDSA" },
-            ],
-          },
-          embedsVia: ["agentpay"],
-        },
-      ],
+      entries: [{ id: "agentpay", displayName: "AgentPay", origins: ["https://agentpay.example"] }],
     };
     const f = await fixture({ directory });
     const platform = "https://agentpay.example/oauth/callback";
-    let jti = 0;
-    const assertion =
-      (overrides: Record<string, unknown> = {}, key = privateKey) =>
-      async (bound: {
-        clientId: string;
-        redirectUri: string;
-        codeChallenge: string;
-        state: string;
-      }) =>
-        new SignJWT({
-          iss: "https://errand.example",
-          sub: bound.clientId,
-          aud: origin + mcpIssuerPath,
-          redirect_uri: bound.redirectUri,
-          code_challenge: bound.codeChallenge,
-          state: bound.state,
-          iat: Math.floor(f.now() / 1000),
-          exp: Math.floor(f.now() / 1000) + 120,
-          jti: `jti-${++jti}`,
-          ...overrides,
-        })
-          .setProtectedHeader({ alg: "EdDSA", typ: embedderAssertionJwtTyp, kid: "errand-1" })
-          .sign(key);
     const read = async (requestId: string) =>
       (
         await injectRpcRequest(f.app, "connections.authorization.get", { requestId }, f.headers)
       ).json().data;
-    const embedded = await f.begin({ redirect: platform, assertion: assertion() });
-    expect(await read(embedded.requestId)).toMatchObject({
+    const verified = await f.begin({ redirect: platform });
+    expect(await read(verified.requestId)).toMatchObject({
       identityAtConsent: {
-        kind: "platform-and-embedder",
+        kind: "platform",
         platformDirectoryId: "agentpay",
-        embedderDirectoryId: "errand",
         directoryRevision: 3,
       },
       identity: {
-        heading: "Errand via AgentPay",
-        detail: "Errand asked for this. AgentPay will hold the access.",
+        evidenceKind: "platform",
+        heading: "AgentPay",
+        detail: "https://agentpay.example",
         verified: true,
-        origins: [
-          { role: "embedder", origin: "https://errand.example" },
-          { role: "platform", origin: "https://agentpay.example" },
-        ],
+        origins: [{ role: "platform", origin: "https://agentpay.example" }],
         warning: "Only allow this if you started it yourself.",
       },
     });
-    expect((await read((await f.begin({ redirect: platform })).requestId)).identity).toMatchObject({
+    // A statement from an embedding product means nothing: the origin alone verifies.
+    const withStatement = await f.begin({
+      redirect: platform,
+      parameters: { opensteer_embedder_assertion: "a.b.c" },
+    });
+    expect((await read(withStatement.requestId)).identity).toMatchObject({
       evidenceKind: "platform",
       heading: "AgentPay",
-      detail: "https://agentpay.example",
       verified: true,
     });
     expect(
@@ -868,9 +813,9 @@ integration("external MCP OAuth over HTTP", () => {
       "commands.dispatch",
       {
         type: "connection.authorize",
-        requestId: embedded.requestId,
-        idempotencyKey: "embedded-consent",
-        decision: { kind: "approve", label: "Errand", accessMode: "approval-required" },
+        requestId: verified.requestId,
+        idempotencyKey: "verified-consent",
+        decision: { kind: "approve", label: "AgentPay", accessMode: "approval-required" },
       },
       f.headers,
     );
@@ -879,128 +824,27 @@ integration("external MCP OAuth over HTTP", () => {
       .connections;
     expect(listed).toMatchObject([
       {
-        label: "Errand",
-        identityAtConsent: { kind: "platform-and-embedder", keyThumbprint: expect.any(String) },
-        identity: { heading: "Errand via AgentPay" },
+        label: "AgentPay",
+        identityAtConsent: { kind: "platform", platformOrigin: "https://agentpay.example" },
+        identity: { heading: "AgentPay" },
       },
     ]);
-
-    const wrongKey = await generateKeyPair("EdDSA", { crv: "Ed25519" });
-    for (const invalid of [
-      async () => "",
-      async () => "not-a-statement",
-      assertion({ iat: Math.floor(f.now() / 1000) - 120, exp: Math.floor(f.now() / 1000) - 15 }),
-      assertion({ state: "another-request" }),
-      assertion({}, wrongKey.privateKey),
-    ]) {
-      const grant = await f.authorize("approval-required", {
-        redirect: platform,
-        assertion: invalid,
-      });
-      expect(grant.consent.identity).toMatchObject({
-        evidenceKind: "unverified",
-        verified: false,
-        selfAsserted: true,
-        heading: "Test agent",
-      });
-      expect(grant.redirect.origin + grant.redirect.pathname).toBe(platform);
-      expect((await f.exchange(grant, { redirect_uri: platform })).statusCode).toBe(200);
-    }
-
-    const replayed = await f.request({
-      redirect: platform,
-      assertion: assertion({ jti: "used-once" }),
-    });
-    const firstId = new URL(replayed.authorization.headers.location!, origin).searchParams.get(
-      "request",
-    )!;
-    expect((await read(firstId)).identity.verified).toBe(true);
-    const exp = Math.floor(f.now() / 1000) + 60;
-    const boundary = await f.request({
-      redirect: platform,
-      assertion: assertion({ exp, jti: "boundary" }),
-    });
-    expect(
-      (
-        await f.database
-          .selectFrom("agentEmbedderAssertionClaims")
-          .select("expiresAt")
-          .where("statementId", "=", "boundary")
-          .executeTakeFirstOrThrow()
-      ).expiresAt.getTime(),
-    ).toBe((exp + 10) * 1000);
-    const firstBoundaryId = new URL(
-      boundary.authorization.headers.location!,
-      origin,
-    ).searchParams.get("request")!;
-    expect((await read(firstBoundaryId)).identity.verified).toBe(true);
-    f.oauth.close();
-    const restarted = f.startOAuth();
-    const replayPath = await restarted.authorize(origin, Object.fromEntries(replayed.query));
-    const replayId = new URL(replayPath, origin).searchParams.get("request")!;
-    expect((await restarted.consent(replayId, f.owner.user.id)).identity.evidenceKind).toBe(
-      "unverified",
-    );
-
-    f.setNow((exp + 10) * 1000);
-    const boundaryPath = await restarted.authorize(origin, Object.fromEntries(boundary.query));
-    const boundaryId = new URL(boundaryPath, origin).searchParams.get("request")!;
-    expect((await restarted.consent(boundaryId, f.owner.user.id)).identity.evidenceKind).toBe(
-      "unverified",
-    );
-    restarted.close();
   });
-
   async function verifiedDirectoryFixture() {
-    const { publicKey, privateKey } = await generateKeyPair("EdDSA", { crv: "Ed25519" });
-    const { x } = await exportJWK(publicKey);
     const callback = "https://platform.example/callback";
     const document: AgentDirectoryDocument = {
       revision: 1,
       issuedAt: new Date().toISOString(),
-      entries: [
-        { id: "platform", displayName: "Platform", origins: ["https://platform.example"] },
-        {
-          id: "embedder",
-          displayName: "Embedder",
-          origins: ["https://embedder.example"],
-          embedsVia: ["platform"],
-          keys: { keys: [{ kty: "OKP", crv: "Ed25519", x: x!, kid: "key-a" }] },
-        },
-      ],
+      entries: [{ id: "platform", displayName: "Platform", origins: ["https://platform.example"] }],
     };
     const f = await fixture({ directory: document });
     await f.connections.acceptDirectory(testDirectoryIssuer, document);
     const withoutPlatform = { ...document, revision: 2, entries: [] };
-    const assertion =
-      (overrides: { exp?: number } = {}) =>
-      async (bound: {
-        clientId: string;
-        redirectUri: string;
-        codeChallenge: string;
-        state: string;
-      }) => {
-        const iat = Math.floor(f.now() / 1_000);
-        return new SignJWT({
-          iss: "https://embedder.example",
-          sub: bound.clientId,
-          aud: origin + mcpIssuerPath,
-          redirect_uri: bound.redirectUri,
-          code_challenge: bound.codeChallenge,
-          state: bound.state,
-          iat,
-          exp: overrides.exp ?? iat + 120,
-          jti: "statement",
-        })
-          .setProtectedHeader({ alg: "EdDSA", typ: embedderAssertionJwtTyp, kid: "key-a" })
-          .sign(privateKey);
-      };
     return {
       ...f,
       callback,
       document,
       withoutPlatform,
-      assertion,
       accept: async (next: AgentDirectoryDocument) => {
         const accepted = await f.connections.acceptDirectory(testDirectoryIssuer, next);
         f.setDirectory(accepted);
@@ -1036,31 +880,19 @@ integration("external MCP OAuth over HTTP", () => {
     };
   }
 
-  it("withdraws a listed connection when a higher revision replaces only its signing key", async () => {
+  it("withdraws a listed connection when a higher revision no longer lists its origin", async () => {
     const f = await verifiedDirectoryFixture();
-    const approved = await f.authorize("approval-required", {
-      redirect: f.callback,
-      assertion: f.assertion(),
-    });
+    const approved = await f.authorize("approval-required", { redirect: f.callback });
     expect(approved.consent.identityAtConsent).toMatchObject({
-      kind: "platform-and-embedder",
+      kind: "platform",
       directoryRevision: 1,
     });
-    const keyB = await generateKeyPair("EdDSA", { crv: "Ed25519" });
-    const { x } = await exportJWK(keyB.publicKey);
     f.setNow(f.now() + 1_000);
     const next = {
       ...f.document,
       revision: 2,
       issuedAt: new Date(f.now()).toISOString(),
-      entries: f.document.entries.map((entry) =>
-        entry.id === "embedder"
-          ? {
-              ...entry,
-              keys: { keys: [{ kty: "OKP", crv: "Ed25519", x: x!, kid: "key-a" } as const] },
-            }
-          : entry,
-      ),
+      entries: [{ id: "platform", displayName: "Platform", origins: ["https://other.example"] }],
     };
     expect(await f.accept(next)).toEqual(next);
     const result = await injectRpcRequest(f.app, "connections.list", {}, f.headers);
@@ -1070,86 +902,6 @@ integration("external MCP OAuth over HTTP", () => {
         verificationWithdrawnAt: new Date(f.now()).toISOString(),
       },
     ]);
-  });
-
-  it("keeps a spent claim when Home advances past expiry during a delayed replay", async () => {
-    const f = await verifiedDirectoryFixture();
-    const databaseNow = (
-      await sql<{ now: Date }>`select clock_timestamp() as now`.execute(f.database)
-    ).rows[0]!.now;
-    const exp = Math.floor(databaseNow.getTime() / 1_000) + 60;
-    const deadline = (exp + 10) * 1_000;
-    const first = await f.begin({ redirect: f.callback, assertion: f.assertion({ exp }) });
-    expect((await f.read(first.requestId)).identity.verified).toBe(true);
-    f.setNow(deadline - 1);
-    const reachedClaim = Promise.withResolvers<void>();
-    const continueClaim = Promise.withResolvers<void>();
-    const claim = f.connections.claimEmbedderAssertion.bind(f.connections);
-    const barrier = vi
-      .spyOn(f.connections, "claimEmbedderAssertion")
-      .mockImplementationOnce(async (...args) => {
-        reachedClaim.resolve();
-        await continueClaim.promise;
-        return claim(...args);
-      });
-    const replay = f.oauth.authorize(origin, Object.fromEntries(first.query));
-    const reached = await Promise.race([
-      reachedClaim.promise.then(() => true),
-      replay.then(() => false),
-    ]);
-    expect(reached).toBe(true);
-    try {
-      f.setNow(deadline + 1);
-      expect(
-        (
-          await sql<{
-            before: boolean;
-          }>`select clock_timestamp() < ${new Date(deadline)}::timestamptz as before`.execute(
-            f.database,
-          )
-        ).rows[0]?.before,
-      ).toBe(true);
-      await f.connections.pruneEmbedderAssertionClaims();
-      expect(
-        await f.database
-          .selectFrom("agentEmbedderAssertionClaims")
-          .select("statementId")
-          .where("statementId", "=", "statement")
-          .executeTakeFirst(),
-      ).toEqual({ statementId: "statement" });
-    } finally {
-      continueClaim.resolve();
-      barrier.mockRestore();
-      await replay;
-    }
-    const replayId = new URL(await replay, origin).searchParams.get("request")!;
-    expect((await f.read(replayId)).identity.verified).toBe(false);
-    const expired = new Date(databaseNow.getTime() - 1_000);
-    expect(await claim("https://embedder.example", "too-late", expired)).toBe(false);
-    expect(
-      await f.database
-        .selectFrom("agentEmbedderAssertionClaims")
-        .select("statementId")
-        .where("statementId", "=", "too-late")
-        .executeTakeFirst(),
-    ).toBeUndefined();
-    await f.database
-      .insertInto("agentEmbedderAssertionClaims")
-      .values({
-        issuer: "https://embedder.example",
-        statementId: "expired",
-        expiresAt: expired,
-      })
-      .execute();
-    f.setNow(expired.getTime() - 1);
-    await f.connections.pruneEmbedderAssertionClaims();
-    expect(
-      await f.database
-        .selectFrom("agentEmbedderAssertionClaims")
-        .select("statementId")
-        .where("statementId", "=", "expired")
-        .executeTakeFirst(),
-    ).toBeUndefined();
   });
 
   it("shows pending consent as unverified when the directory changes before it is read", async () => {
@@ -1173,7 +925,7 @@ integration("external MCP OAuth over HTTP", () => {
 
   it("refuses the shown verification at approval after a withdrawal, even if another tab reads again", async () => {
     const f = await verifiedDirectoryFixture();
-    const pending = await f.begin({ redirect: f.callback, assertion: f.assertion() });
+    const pending = await f.begin({ redirect: f.callback });
     const before = await f.read(pending.requestId);
     expect(before.identity.verified).toBe(true);
     // The persisted acceptance can win while the process still holds the prior copy.

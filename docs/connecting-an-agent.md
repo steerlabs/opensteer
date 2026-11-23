@@ -44,7 +44,7 @@ Required query parameters: `response_type=code`, `client_id`, `redirect_uri` (ex
 
 The browser redirects to `/mcp-authorization`, where the person sees:
 
-1. **Who is asking.** If your `redirect_uri` origin is in Opensteer's signed agent directory (from the Opensteer account service), it shows the verified name and origin (or verified embedder via platform with a verified `opensteer_embedder_assertion` JWS). Otherwise it shows your self-claimed `client_name`, your redirect origin (or `"an app on this computer"` for loopback), and `"Only allow this if you started it yourself."`
+1. **Who is asking.** If your `redirect_uri` origin is in Opensteer's signed agent directory (from the Opensteer account service), it shows the verified name and origin. Otherwise it shows your self-claimed `client_name`, your redirect origin (or `"an app on this computer"` for loopback), and `"Only allow this if you started it yourself."`
 2. **What it can use.** **Choose what it can use** (specific browser profiles, shared Chrome tabs, apps or phone screens, plugins, and/or Tasks) or **Everything my own agents can do**.
 3. **Safety mode** and connection **Name**.
 4. **Terms.** Access lasts 30 days and can be ended any time in **Settings → Connected agents**.

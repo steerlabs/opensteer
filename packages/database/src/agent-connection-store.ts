@@ -272,31 +272,6 @@ export class AgentConnectionStore {
     });
   }
 
-  async claimEmbedderAssertion(
-    issuer: string,
-    statementId: string,
-    expiresAt: Date,
-  ): Promise<boolean> {
-    const row = await this.database
-      .insertInto("agentEmbedderAssertionClaims")
-      .columns(["issuer", "statementId", "expiresAt"])
-      .expression(
-        sql`select ${issuer}::text, ${statementId}::text, ${expiresAt}::timestamptz
-        where ${expiresAt}::timestamptz > clock_timestamp()`,
-      )
-      .onConflict((conflict) => conflict.columns(["issuer", "statementId"]).doNothing())
-      .returning(sql<boolean>`expires_at > clock_timestamp()`.as("accepted"))
-      .executeTakeFirst();
-    return row?.accepted === true;
-  }
-
-  async pruneEmbedderAssertionClaims(): Promise<void> {
-    await this.database
-      .deleteFrom("agentEmbedderAssertionClaims")
-      .where("expiresAt", "<=", sql<Date>`clock_timestamp()`)
-      .execute();
-  }
-
   async nextMaintenance(retryAt: Date): Promise<Date | null> {
     const { rows } = await sql<{ next: Date | null }>`
       select least(
@@ -307,9 +282,7 @@ export class AgentConnectionStore {
           select 1 from agent_connections
           where removed_at is null and ((cleanup_requested_at is not null
             and cleanup_completed_at is null) or ${chatEndedUnrevoked(this.now())})
-        )),
-        (select ${this.now()}::timestamptz + (min(expires_at) - clock_timestamp())
-          from agent_embedder_assertion_claims)
+        ))
       ) as next
     `.execute(this.database);
     return rows[0]?.next ?? null;

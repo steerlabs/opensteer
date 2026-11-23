@@ -256,12 +256,9 @@ describe("agent consent on the phone", () => {
         }),
       );
       expect(ready()).toMatchObject({
-        title: "Errand via AgentPay",
+        title: "AgentPay",
         who: {
-          origins: [
-            "Asked for this: Errand · https://errand.example",
-            "Holds the access: AgentPay · https://agentpay.example",
-          ],
+          origins: ["Holds the access: AgentPay · https://agentpay.example"],
         },
       });
       expect(section("chrome-pairing").footer?.text).toBe(

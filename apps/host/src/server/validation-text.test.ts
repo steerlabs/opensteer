@@ -19,7 +19,6 @@ const allowed: Readonly<Record<string, string>> = {
   "local-servers/local-mcp-secrets.ts":
     "A secret's field by its title and the schema's own sentence for it (a person's field entry).",
   "mcp/opensteer-mcp-service.ts": "Names the result fields an engine got wrong, to the engine.",
-  "mcp/connections/embedder-assertion.ts": "Reads an issue's code to decide; writes no text.",
   "plugins/engine-protocol.ts": "Reads issues to decide; writes no text.",
   "server.ts": "Logs the paths of a reply that failed its schema; nothing is sent.",
   "channels/channel-service.ts":

@@ -3564,7 +3564,6 @@ export async function createHostRuntime(
           recoveredAgentSessions = true;
         }
         await connectionEffects.driveCleanups();
-        await connectionStore.pruneEmbedderAssertionClaims();
         return connectionStore.nextMaintenance(new Date(Date.now() + 30_000));
       },
     });

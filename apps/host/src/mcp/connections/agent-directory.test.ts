@@ -9,10 +9,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
-import {
-  agentDirectoryKeyThumbprint,
-  isIdentityStillVerified,
-} from "@opensteer/database/agent-directory-verification";
+import { isIdentityStillVerified } from "@opensteer/database/agent-directory-verification";
 import { generateKeyPairSync } from "node:crypto";
 import { ConnectionOAuth } from "./connection-oauth.js";
 import { exportJWK, generateKeyPair, SignJWT, type JSONWebKeySet, type JWK } from "jose";
@@ -63,7 +60,6 @@ function sampleDocument(revision: number, nowMs = baseNow): AgentDirectoryDocume
         id: "errand",
         displayName: "Errand",
         origins: ["https://errand.example"],
-        embedsVia: ["agentpay"],
       },
     ],
   };
@@ -390,39 +386,25 @@ it.each(["https://localhost.", "https://app.localhost.", "https://[::ffff:7f00:1
 );
 
 describe("isIdentityStillVerified", () => {
-  it("detects when a platform, embedder, or pairing is withdrawn", async () => {
-    const key = { kty: "OKP", crv: "Ed25519", x: "a".repeat(43), kid: "initial" } as const;
-    const document = sampleDocument(2);
-    const baseDirectory = {
-      ...document,
-      entries: document.entries.map((entry) =>
-        entry.id === "errand" ? { ...entry, keys: { keys: [key] } } : entry,
-      ),
-    };
+  it("withdraws verification once the directory no longer lists the origin it was verified by", async () => {
+    const directory = sampleDocument(2);
     const evidence: AgentConnectionIdentityAtConsent = {
-      kind: "platform-and-embedder",
+      kind: "platform",
       platformOrigin: "https://agentpay.example",
       platformDirectoryId: "agentpay",
       platformName: "AgentPay",
-      embedderOrigin: "https://errand.example",
-      embedderDirectoryId: "errand",
-      embedderName: "Errand",
-      keyThumbprint: await agentDirectoryKeyThumbprint(key),
       directoryRevision: 2,
       recordedAt: new Date(baseNow).toISOString(),
     };
 
-    expect(await isIdentityStillVerified(evidence, baseDirectory)).toBe(true);
+    expect(await isIdentityStillVerified(evidence, directory)).toBe(true);
     expect(await isIdentityStillVerified(evidence, null)).toBeNull();
 
-    const unpaired: AgentDirectoryDocument = {
-      ...baseDirectory,
+    const withdrawn: AgentDirectoryDocument = {
+      ...directory,
       revision: 3,
-      entries: [
-        baseDirectory.entries[0]!,
-        { id: "errand", displayName: "Errand", origins: ["https://errand.example"] },
-      ],
+      entries: [{ ...directory.entries[0]!, origins: ["https://eu.agentpay.example"] }],
     };
-    expect(await isIdentityStillVerified(evidence, unpaired)).toBe(false);
+    expect(await isIdentityStillVerified(evidence, withdrawn)).toBe(false);
   });
 });
