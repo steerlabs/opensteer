@@ -80,17 +80,17 @@ export function NativeEditingProxy({
           // mirror, cleared by the native field at its configure, begins blank.
           const left = state.context.contextId;
           const own = state.composition?.contextId === left;
+          // CZ2: only a composition still open is committed by the change (CY4); one a tap, a
+          // blur or a refusal already ended keeps its end, with no commit to come.
+          const { committed: _ended, ...composition } = state.composition ?? {};
           retired.set(
             left,
             own
               ? {
                   ...state,
-                  composition: {
-                    ...state.composition!,
-                    detached: true,
-                    // The change commits its text to the page (CY4).
-                    committed: state.composition!.text,
-                  },
+                  composition: state.composition!.detached
+                    ? (composition as NonNullable<typeof state.composition>)
+                    : { ...state.composition!, detached: true, committed: state.composition!.text },
                 }
               : state.composition
                 ? {

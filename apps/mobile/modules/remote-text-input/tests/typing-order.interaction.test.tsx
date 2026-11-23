@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { act, useImperativeHandle } from "react";
+import { act, createRef, useImperativeHandle } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -181,9 +181,11 @@ async function open(abilities?: EditingTargetAbilities) {
   const pending: Packet[] = [];
   harness.remote = remote;
   let current: typeof context = context;
+  const handle = createRef<import("../src/editing-proxy.js").NativeEditingProxyHandle>();
   const render = () =>
     root.render(
       <NativeEditingProxy
+        ref={handle}
         context={current}
         sendOperation={(operation) => {
           if (process.env.OPENSTEER_TYPING_TRACE)
@@ -252,6 +254,8 @@ async function open(abilities?: EditingTargetAbilities) {
   return {
     remote,
     native: native as NativeField,
+    /** The app interrupts the field (a tap on the page, a blur), as its handle does. */
+    interrupt: (type: "pointerdown" | "blur") => act(async () => handle.current!.interrupt(type)),
     keyboard,
     answer,
     answerAll,
@@ -1997,6 +2001,61 @@ describe("a person's caret moves and selections in the native field", () => {
     expect(composed.length).toBeGreaterThan(1);
     // Refused, the first never left: the next is a fresh start, restating what it replaces.
     expect(composed[1]).toMatchObject({ kind: "compose", composition: { before: "", after: "" } });
+  });
+
+  // CZ2: a composition a tap, a blur or a refusal already ended has no commit, whatever comes
+  // after it: the input method's own commit of it that arrives under the context left inserts
+  // nothing (the person walked away from it).
+  const rotate = async (opened: Awaited<ReturnType<typeof open>>, contextId: string) => {
+    opened.remote.earlier.add(opened.remote.contextId!);
+    opened.remote.contextId = contextId;
+    await opened.publish(contextId);
+  };
+  it("commits nothing more of a composition a tap ended, after the context changes", async () => {
+    const opened = await open();
+    const { remote, keyboard, answerAll, interrupt } = opened;
+    await keyboard((field) => field.setMarkedText("に"));
+    await answerAll();
+    // The input method's commit of a candidate waits behind an update still unanswered; the
+    // tap ends the composition, then the context changes, before that commit's turn.
+    await keyboard((field) => {
+      field.setMarkedText("にほ");
+      field.insertText("日本");
+    });
+    await interrupt("pointerdown");
+    await rotate(opened, "00000000-0000-4000-8000-000000000783");
+    await answerAll();
+    // What the tap committed (the reducer had "に" then) stays; the later commit adds nothing.
+    expect(remote.value).toBe("に");
+  });
+  it("commits nothing more of a composition a blur ended on the late path", async () => {
+    const opened = await open();
+    const { remote, keyboard, answerAll } = opened;
+    await keyboard((field) => field.setMarkedText("に"));
+    await answerAll();
+    // The composition is live when the context changes; the blur comes after, on the late path.
+    await keyboard((field) => {
+      field.setMarkedText("にほ");
+      field.blur();
+      field.insertText("日本");
+    });
+    await rotate(opened, "00000000-0000-4000-8000-000000000784");
+    await answerAll();
+    // What the change of context committed stays; the commit after the blur adds nothing.
+    expect(remote.value).toBe("に");
+  });
+  it("commits nothing of a composition the target refused, after the context changes", async () => {
+    const opened = await open();
+    const { remote, keyboard, answerAll } = opened;
+    await keyboard((field) => field.insertText("a"));
+    await answerAll();
+    // Larger than one operation may carry: refused, and the composition ends there.
+    await keyboard((field) => field.setMarkedText("x".repeat(editingTextMaxLength + 1)));
+    await answerAll();
+    await keyboard((field) => field.insertText("日本"));
+    await rotate(opened, "00000000-0000-4000-8000-000000000785");
+    await answerAll();
+    expect(remote.value).toBe("a");
   });
 
   // CY4: what a person commits is never dropped. The page rotates while "に" is marked and the

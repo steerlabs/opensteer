@@ -400,6 +400,11 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     if (transaction && !transaction.detached) {
       commit(transaction, transaction.text);
       state.composition = { ...transaction, detached: true };
+    } else if (transaction?.committed !== undefined) {
+      // CZ2: a tap or a blur after a change of context ends what that change committed: the
+      // input method's commit after it adds nothing.
+      const { committed: _committed, ...ended } = transaction;
+      state.composition = ended;
     }
     reset();
   };
