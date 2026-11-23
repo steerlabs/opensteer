@@ -3122,6 +3122,160 @@ describe("Electron debugger teardown", () => {
     expect(orders).toHaveLength(48);
   });
 
+  // F32 (b), from the walker's run on fb245664c: after a dialog on the shown tab is answered,
+  // its cast runs again at once: a start is sent and a frame handed to the follow view. Every
+  // order of what happens around the answer, on the hub with the real follow view: the dialog's
+  // close, the frame Chromium sends after it, a second channel asking for the same picture, and
+  // the follow view's start being answered.
+  it("pictures a tab again once its dialog is answered, in every order of what happens around it", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const shown = { height: 900, width: 1_400 };
+    const settings = {
+      everyNthFrame: 1,
+      format: "jpeg",
+      maxHeight: shown.height,
+      maxWidth: shown.width,
+      quality: 72,
+    };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    const events = ["closed", "frame", "second channel", "answer"] as const;
+    type Event = (typeof events)[number];
+    const orders: Event[][] = [];
+    const permute = (rest: readonly Event[], made: Event[]) => {
+      if (rest.length === 0) orders.push(made);
+      for (const [index, event] of rest.entries())
+        permute([...rest.slice(0, index), ...rest.slice(index + 1)], [...made, event]);
+    };
+    permute(events, []);
+    const failures: string[] = [];
+    for (const [index, order] of orders.entries()) {
+      const hub = await hubPage(String(800 + index));
+      const channel = await hub.page.cdp();
+      let dialogOpen = false;
+      const surface = {
+        active: true,
+        documentId: "b",
+        geometryRevision: 1,
+        id: "tab-b",
+        loading: false,
+      };
+      const capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+      const binding = {
+        cdp: channel,
+        page: {
+          applyGeometry: async () => undefined,
+          capture: { read: () => capture, subscribe: () => () => undefined },
+          invalidateSurface: async () => undefined,
+          settleRendering: async () => undefined,
+        },
+        surface,
+      };
+      const ledgerListeners = new Set<(event: unknown) => void>();
+      const ledger = {
+        active: () => binding,
+        binding: () => binding,
+        dialogOf: () => (dialogOpen ? { id: "dialog-b", surfaceId: "tab-b" } : null),
+        dialogOpen: () => dialogOpen,
+        recordPageScale: () => undefined,
+        subscribe: (listener: (event: unknown) => void) => {
+          ledgerListeners.add(listener);
+          return () => ledgerListeners.delete(listener);
+        },
+        use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+        viewportOf: () => shown,
+        withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      };
+      const delivered: unknown[] = [];
+      const follow = new ScreencastController({
+        frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+        ledger: ledger as never,
+        onDialogChanged: () => undefined,
+      });
+      // The tab was pictured, then the person turned away, seconds before its dialog opened.
+      await follow.start();
+      await follow.setStreaming(true);
+      await vi.waitFor(() => expect(hub.sent("Page.startScreencast")).toHaveLength(1));
+      hub.deliver("Page.screencastFrame", frameOf(1));
+      await vi.waitFor(() => expect(delivered).toHaveLength(1));
+      await follow.setStreaming(false);
+      await pastParking();
+      dialogOpen = true;
+      hub.deliver("Page.javascriptDialogOpening", {
+        defaultPrompt: "",
+        frameId: "target-1",
+        hasBrowserHandler: false,
+        message: "Allow destructive action B?",
+        type: "confirm",
+        url: "https://example.test/follow?dialog-b",
+      });
+      for (const listener of ledgerListeners)
+        listener({ dialog: { id: "dialog-b" }, surfaceId: "tab-b", type: "dialog" });
+      // The person turns back while it is open: the last picture, and no cast until the answer.
+      delivered.length = 0;
+      const start = hub.hold("Page.startScreencast");
+      await follow.setStreaming(true);
+      const other = await hub.page.agentCdp();
+      let otherAsked: Promise<unknown> = Promise.resolve();
+      let answered = false;
+      for (const event of order) {
+        if (event === "closed") {
+          dialogOpen = false;
+          hub.deliver("Page.javascriptDialogClosed", {
+            frameId: "target-1",
+            result: false,
+            userInput: "",
+          });
+          for (const listener of ledgerListeners)
+            listener({ dialog: null, surfaceId: "tab-b", type: "dialog" });
+        } else if (event === "frame")
+          // A late frame of the cast before the dialog: Chromium's id for that cast.
+          hub.deliver("Page.screencastFrame", frameOf(1));
+        else if (event === "second channel")
+          otherAsked = other.send("Page.startScreencast", settings).catch(() => undefined);
+        else {
+          answered = true;
+          start.release();
+          for (const reply of start.replies) reply.resolve({});
+        }
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      if (!answered) start.release();
+      start.release();
+      for (const reply of start.replies) reply.resolve({});
+      await otherAsked;
+      try {
+        await vi.waitFor(() => {
+          hub.deliver("Page.screencastFrame", frameOf(hub.sent("Page.startScreencast").length));
+          expect(delivered.length).toBeGreaterThan(0);
+        });
+      } catch {
+        failures.push(
+          `${order.join(" → ")}: no picture, ${hub.sent("Page.startScreencast").length} starts`,
+        );
+      }
+      await follow.close();
+      await hub.browser.close();
+    }
+    expect(failures).toEqual([]);
+    expect(orders).toHaveLength(24);
+  });
+
   // F30, the first half of the hypothesis for follow-never-shown-tab's four starts: a tab never
   // shown sends, before its start's answer is handled, a first frame at the size it last drew,
   // which 6a0311f0b made the hub hand on; the real follow view, sized as the Electron page sizes
