@@ -12,6 +12,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useLayoutEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -182,7 +183,9 @@ export function NativeEditingProxy({
     }),
     [step],
   );
-  useEffect(() => {
+  // CZ9: in the commit itself, so the context left is retired before any packet of it can reach
+  // the view under the new one (a passive effect left a window after the commit).
+  useLayoutEffect(() => {
     const result = step({ type: "context", context });
     // Native configure owns the old composition ending and the new context's reset.
     setInstruction({});

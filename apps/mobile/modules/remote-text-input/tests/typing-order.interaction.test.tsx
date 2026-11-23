@@ -72,6 +72,8 @@ const harness = vi.hoisted(() => ({
   take: null as null | ((operation: unknown) => boolean),
   /** Told of every context the page publishes, as it publishes it (regime B's segments). */
   renewed: null as null | ((contextId: string) => void),
+  /** CZ9: told, in the view's commit, of the context React has just given it. */
+  committed: null as null | ((contextId: string | null) => void),
   /**
    * For the regimes' own tests: an operation that never reaches the page ("lose"), a far side that
    * loses one without a word ("drop": as if taken, never applied), refuses it ("refuse"), applies it twice ("double"), applies it a
@@ -111,6 +113,7 @@ vi.mock("expo", async () => {
           onProxyEvent.current = props.onProxyEvent;
           // The context prop reaches the view's configure, as RemoteTextInputModule's Prop does.
           const contextId = props.context?.contextId ?? null;
+          React.useLayoutEffect(() => harness.committed?.(contextId), [contextId]);
           React.useEffect(() => harness.field?.configure?.(contextId), [contextId]);
           React.useEffect(() => {
             harness.field!.deliver = (packet) => onProxyEvent.current({ nativeEvent: packet });
@@ -2001,6 +2004,51 @@ describe("a person's caret moves and selections in the native field", () => {
     expect(composed.length).toBeGreaterThan(1);
     // Refused, the first never left: the next is a fresh start, restating what it replaces.
     expect(composed[1]).toMatchObject({ kind: "compose", composition: { before: "", after: "" } });
+  });
+
+  // CZ9: a keystroke of the context just left that reaches the view right after React commits
+  // the new context, before its passive effects, is reduced there: the context left is retired
+  // in the same step the new one is taken, with no window between.
+  it("keeps a keystroke of the context left that arrives between the commit and its effects", async () => {
+    const { remote, keyboard, answerAll } = await open();
+    await keyboard((field) => field.insertText("a"));
+    await answerAll();
+    // The page's new context for the same field; React commits it with no act around it.
+    const next = "00000000-0000-4000-8000-000000000786";
+    remote.earlier.add(remote.contextId!);
+    remote.contextId = next;
+    let delivered = false;
+    harness.committed = (contextId) => {
+      if (contextId !== next || delivered) return;
+      delivered = true;
+      // After the commit's layout phase, before the passive effects: what the bridge would do.
+      queueMicrotask(() =>
+        harness.field!.deliver({
+          id: 3,
+          contextId: "00000000-0000-4000-8000-000000000001",
+          event: { type: "beforeinput", inputType: "insertText", data: "b" },
+        }),
+      );
+    };
+    const seen: { id: number; preventDefault?: boolean }[] = [];
+    const respond = harness.field!.respond;
+    harness.field!.respond = (instruction) => {
+      seen.push(instruction as { id: number; preventDefault?: boolean });
+      return respond(instruction);
+    };
+    root.render(
+      <NativeEditingProxy
+        context={{ ...context, contextId: next }}
+        sendOperation={(operation) => remote.take(operation)}
+        onDone={() => undefined}
+      />,
+    );
+    await vi.waitFor(() => expect(seen.some((answer) => answer.id === 3)).toBe(true));
+    await act(async () => undefined);
+    // Its answer came from the context left's reducer, which lets the keystroke go: not
+    // prevented for want of one.
+    expect(seen.find((answer) => answer.id === 3)?.preventDefault).not.toBe(true);
+    harness.committed = null;
   });
 
   // CZ2: a composition a tap, a blur or a refusal already ended has no commit, whatever comes
