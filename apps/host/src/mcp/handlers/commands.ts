@@ -82,18 +82,12 @@ export class CommandTools {
     // The live grant, as the door reads it, and the one function the door asks (AD1).
     const holder = await agentCommandScope(this.#database)(caller);
     if (holder === "gone") return [];
-    const scope = holder?.scope ?? null;
+    // The live mode, as admission reads it, never the one cached at sign-in.
+    const { scope, mode } = holder;
     return (Object.keys(commandTable) as CommandType[]).flatMap((type) => {
       const row = commandRow(type) as CommandRow;
-      if (
-        !commandHolds(type, {
-          scope,
-          grant: holder?.grant ?? null,
-          mode: caller.accessMode,
-        })
-      )
-        return [];
-      const { answer } = commandMark(type, { scope, mode: caller.accessMode }, this.#registry);
+      if (!commandHolds(type, holder)) return [];
+      const { answer } = commandMark(type, { scope, mode }, this.#registry);
       return [{ type, family: row.family, title: commandTitles[type], answer }];
     });
   }
@@ -216,8 +210,7 @@ export class CommandTools {
     // connection reads nothing; a chat anyone may speak in counts as selected.
     const holder = await agentCommandScope(this.#database)(caller);
     if (holder === "gone") throw notFound();
-    const scope = holder?.scope ?? null;
-    const grant = holder?.grant ?? null;
+    const { scope, grant, mode } = holder;
     const connectionId =
       caller.kind === "connection"
         ? caller.connectionId
@@ -297,7 +290,7 @@ export class CommandTools {
         }[];
         // Your own agents at Full access see what the person sees; anyone else, its lineage's:
         // a connected agent's, the task tree it works in, or the automation's own task.
-        if (!connectionId && caller.accessMode === "full-access")
+        if (!connectionId && mode === "full-access")
           return { area: input.area, view: { requests } };
         const mine = new Set(
           connectionId

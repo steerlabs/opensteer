@@ -9,6 +9,7 @@ import {
   commandSubject,
   type CommandAdmission,
   type CommandAskReason,
+  type CommandHolder,
   type CommandIdentity,
   type DatabaseSchema,
 } from "@opensteer/database";
@@ -72,17 +73,10 @@ export interface CommandDoor {
 export interface AgentCommandDoor extends CommandDoor {
   readonly admit: (caller: AgentCaller, command: HostApiCommand) => Promise<CommandAdmission>;
   /**
-   * The grant the caller's lineage holds as the Home has it now, never as it was at sign-in:
-   * `gone` once its connection works for no one. Null for your own agents.
+   * What the caller holds as the Home has it now, never as it was at sign-in: its scope and
+   * effective grant (null for your own agents) and its live mode; `gone` once it may not act.
    */
-  readonly scope: (caller: AgentCaller) => Promise<
-    | {
-        readonly scope: "everything" | "selected";
-        readonly grant: import("@opensteer/core").AgentGrant;
-      }
-    | "gone"
-    | null
-  >;
+  readonly scope: (caller: AgentCaller) => Promise<CommandHolder | "gone">;
   /** Opens the person's Request for a command that waits for them; without it, `ask` is returned. */
   readonly propose?: (
     caller: AgentCaller,
@@ -92,16 +86,9 @@ export interface AgentCommandDoor extends CommandDoor {
   ) => Promise<CommandProposed>;
 }
 
-/** The scope of the caller's connection from its own row; your own agents read nothing. */
+/** What the caller holds, from the one admission's own read of it. */
 export function agentCommandScope(database: Kysely<DatabaseSchema>): AgentCommandDoor["scope"] {
-  return (caller) =>
-    commandCallerHolder(
-      database,
-      caller.userId,
-      caller.kind === "connection"
-        ? caller.connectionId
-        : (caller.agentConnection?.agentConnectionId ?? null),
-    );
+  return (caller) => commandCallerHolder(database, caller.userId, commandSubject(caller.key));
 }
 
 /** `admitCommand` for an agent the Home authenticated, from its live execution. */
@@ -157,19 +144,11 @@ export async function dispatchCommand(
   const row = commandRow(command.type) as CommandRow;
   // A type this caller does not hold reads as nothing at all, before its input is looked at.
   const holder = await door.scope(actor);
-  if (
-    holder === "gone" ||
-    !commandHolds(command.type as CommandType, {
-      scope: holder?.scope ?? null,
-      grant: holder?.grant ?? null,
-      mode: actor.accessMode,
-    })
-  )
-    throw notFound();
+  if (holder === "gone" || !commandHolds(command.type as CommandType, holder)) throw notFound();
   // A type it holds is read with its schema; what is wrong with it may be said. A value only the
   // person types is left out by the agent, so a schema that requires it reads the rest without it.
   // Under a connection's grant (the scope just read says so) the own-agents-only kinds are absent.
-  const parsed = parseHeld(row, command, (holder?.scope ?? null) !== null);
+  const parsed = parseHeld(row, command, holder.scope !== null);
   if (!parsed.success)
     throw new OpensteerError({
       code: "bad_request",

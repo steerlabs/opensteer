@@ -71,12 +71,14 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
       );
       return client;
     };
+    const runIds: Record<string, string> = {};
     const runFor = async (mode: ThreadAccessMode, key: string) => {
       const run = await dispatchCallerRun(host, machine, {
         key,
         title: key,
         threadId: await task(key, mode),
       });
+      runIds[key] = run.runId;
       return mcp(new URL(hostInternalRoutePaths.mcp, host.origin), run.toolsToken);
     };
     const connections = new AgentConnectionStore(host.store.database);
@@ -115,6 +117,25 @@ it("lists, runs and puts to the person a Home command, for each kind of agent", 
     expect(families.structuredContent?.families).toEqual(
       expect.arrayContaining([expect.objectContaining({ family: "engines" })]),
     );
+    // Its mode as the Home has it now marks its list, never the one its token was minted with
+    // (G1): the person lowers this Run's mode, and the same command now asks.
+    const marked = async () =>
+      (
+        ((await call(full, "opensteer_commands", { family: "engines" })).structuredContent
+          ?.commands ?? []) as { type: string; answer: string }[]
+      ).find(({ type }) => type === "harness.rename")?.answer;
+    expect(await marked()).toBe("now");
+    await host.store.database
+      .updateTable("runs")
+      .set({ accessMode: "approval-required" })
+      .where("id", "=", runIds["commands-full"] as never)
+      .execute();
+    expect(await marked()).toBe("ask");
+    await host.store.database
+      .updateTable("runs")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", runIds["commands-full"] as never)
+      .execute();
     const page = await call(full, "opensteer_commands", { family: "engines" });
     expect(page.structuredContent?.commands).toEqual(
       expect.arrayContaining([

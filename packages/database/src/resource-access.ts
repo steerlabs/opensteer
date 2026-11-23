@@ -69,6 +69,17 @@ export interface AgentConnectionAuthority {
   readonly bridgeSenders?: BridgeSenders | null;
 }
 
+/**
+ * The grant a connection's lineage holds, the only one admission, its reach and the listing
+ * read: a chat anyone may speak in holds what a selected grant with nothing in it holds (X15).
+ */
+export function effectiveConnectionGrant(
+  grant: AgentGrant,
+  bridgeSenders: BridgeSenders | null | undefined,
+): AgentGrant {
+  return bridgeSenders === "anyone" ? { scope: "selected", tasks: false, resources: [] } : grant;
+}
+
 /** Whether work in this lineage may use the person's personal context (memory, tabs, apps). */
 export function lineageAllowsPersonalContext(
   connection: Pick<AgentConnectionAuthority, "bridgeSenders"> | null,
@@ -293,7 +304,8 @@ export async function liveAgentConnection(
     throw waiting
       ? new ConnectionWaiting()
       : forbidden(chat ? chatEndedMessage : lineageEndedMessage);
-  const grant = AgentGrantSchema.parse(row.grant);
+  // The raw grant is not read past this point: a chat anyone may speak in is narrowed here.
+  const grant = effectiveConnectionGrant(AgentGrantSchema.parse(row.grant), row.bridgeSenders);
   return {
     agentConnectionId: row.id,
     grant,
@@ -1080,22 +1092,11 @@ export async function admitCommand(
   return { ...best, face: undefined };
 }
 
-/** The grant scope the rule reads: a chat anyone may speak in reaches no more than a selected grant. */
+/** The grant scope the rule reads, from the effective grant admission holds; null for your own agents. */
 function effectiveGrantScope(
   execution: Pick<ExecutionAuthority, "agentConnection">,
 ): "everything" | "selected" | null {
-  return commandGrantScope(execution.agentConnection ?? null);
-}
-
-/**
- * The grant a lineage's connection holds as the command rule reads it; null for your own agents.
- * The one place it is decided: a chat anyone may speak in reaches no more than a selected grant.
- */
-export function commandGrantScope(
-  connection: Pick<AgentConnectionAuthority, "grant" | "bridgeSenders"> | null,
-): "everything" | "selected" | null {
-  if (!connection) return null;
-  return lineageAllowsPersonalContext(connection) ? connection.grant.scope : "selected";
+  return execution.agentConnection?.grant.scope ?? null;
 }
 
 /** A caller as whether it holds a command reads it: its live scope and grant, and its mode. */
@@ -1161,33 +1162,28 @@ function selectedHoldsKind(
 }
 
 /**
- * The live grant of a lineage's connection, for `commandHolds`, read by the one standing
- * statement; `gone` once it is not live.
+ * What a caller holds, from the one admission's own read (`admitExecution`): its scope and
+ * effective grant (null for your own agents) and its live mode; `gone` once it may not act.
+ * The listing, the parse gate and the door's admission all start from this.
  */
 export async function commandCallerHolder(
   database: Kysely<DatabaseSchema>,
   ownerUserId: UserId,
-  connectionId: string | null,
-): Promise<
-  { readonly scope: "everything" | "selected"; readonly grant: AgentGrant } | "gone" | null
-> {
-  if (connectionId === null) return null;
-  const read = await readConnectionStanding(database, ownerUserId, connectionId, false);
-  if (!read || standingOf(read) !== "live") return "gone";
-  const grant = AgentGrantSchema.safeParse(read.connection.grant);
-  if (!grant.success) return "gone";
-  const scope = commandGrantScope({
-    grant: grant.data,
-    bridgeSenders: read.connection.bridgeSenders,
-  })!;
-  // A chat anyone may speak in holds what a selected grant with nothing in it holds (X15).
-  return {
-    scope,
-    grant:
-      scope === "selected" && grant.data.scope === "everything"
-        ? { scope: "selected", tasks: false, resources: [] }
-        : grant.data,
-  };
+  subject: AuthoritySubject,
+): Promise<CommandHolder | "gone"> {
+  try {
+    const execution = await admitExecution(database, { ownerUserId, subject });
+    const connection = execution.agentConnection;
+    return {
+      scope: connection?.grant.scope ?? null,
+      grant: connection?.grant ?? null,
+      mode: execution.mode,
+    };
+  } catch (error) {
+    if (error instanceof ConnectionWaiting) return "gone";
+    if (error instanceof OpensteerError && error.code === "forbidden") return "gone";
+    throw error;
+  }
 }
 
 export const commandNotFoundMessage = "That item is unavailable.";
@@ -1272,8 +1268,7 @@ async function commandReach(
     // A connection's own task (its direct session's) is its own, with or without Tasks.
     if (connection && threadId !== ownTask) {
       if (!agentGrantAllowsTasks(connection.grant)) return outOfReach;
-      if (!sendEligible({ ...connection, grant: scopedGrant(connection.grant, scope) }, lineage))
-        return outOfReach;
+      if (!sendEligible(connection, lineage)) return outOfReach;
     }
     return {
       reach: true,
@@ -1498,12 +1493,6 @@ export function commandHeld(
     (_, face) =>
       commandRule(row, face, { ...caller, reach: true, ownWork: true }).answer !== "not_found",
   );
-}
-
-function scopedGrant(grant: AgentGrant, scope: "everything" | "selected" | null): AgentGrant {
-  return scope === "selected" && grant.scope === "everything"
-    ? { scope: "selected", tasks: true, resources: [] }
-    : grant;
 }
 
 function grantTargetOf(resource: CommandResource): AgentGrantTarget | null {

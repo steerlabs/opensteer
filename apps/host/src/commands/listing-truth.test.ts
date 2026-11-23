@@ -86,7 +86,11 @@ function door(agent: AgentCaller, own: boolean): AgentCommandDoor {
   const grant = grantOf(agent);
   return {
     registry,
-    scope: async () => (grant ? { scope: grant.scope, grant } : null),
+    scope: async () => ({
+      scope: grant?.scope ?? null,
+      grant: grant ?? null,
+      mode: agent.accessMode,
+    }),
     admit: async (_actor, command) => {
       const row = commandTable[command.type as CommandType] as CommandRow;
       const face = commandFace(command as never);

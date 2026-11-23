@@ -49,7 +49,7 @@ const holds = (agent: AgentCaller, type: CommandType) => {
 /** The grant as the Home has it now: in these doors, the one the caller signed in with. */
 const signedIn = async (agent: AgentCaller) => {
   const grant = agent.kind === "connection" ? agent.grant : agent.agentConnection?.grant;
-  return grant ? { scope: grant.scope, grant } : null;
+  return { scope: grant?.scope ?? null, grant: grant ?? null, mode: agent.accessMode };
 };
 
 function spyRegistry() {
@@ -435,7 +435,7 @@ describe("dispatchCommand", () => {
     const agent = connection("full-access", everything);
     // Not even valid: a type it no longer holds must not say what is wrong with its input.
     const bad = { type: "harness.rename", idempotencyKey: "k" } as unknown as HostApiCommand;
-    const narrowed = { scope: "selected" as const, grant: selected };
+    const narrowed = { scope: "selected" as const, grant: selected, mode: "full-access" as const };
     for (const now of [narrowed, "gone" as const])
       await expect(
         dispatchCommand(agent, bad, { registry, admit: admitNothing, scope: async () => now }),
@@ -478,7 +478,7 @@ describe("dispatchCommand", () => {
       const door = {
         registry: spyRegistry().registry,
         admit: async () => ({ answer: "now" as const, face: 0, execution: null }),
-        scope: async () => ({ scope: grant.scope, grant }),
+        scope: async () => ({ scope: grant.scope, grant, mode: "full-access" as const }),
       };
       for (const type of types) {
         const listed = commandHolds(type, { scope: grant.scope, grant, mode: "full-access" });
