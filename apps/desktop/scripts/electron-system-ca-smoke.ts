@@ -16,7 +16,7 @@
 import { app, utilityProcess } from "electron";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -27,6 +27,7 @@ import {
   nodeTrustSetting,
 } from "../../../deploy/container/opensteer-node-trust.mjs";
 import { readPersonalRuntimeRelease } from "../src/releases/personal-runtime-release.js";
+import { runSystemCaSmokeLifecycle } from "./system-ca-smoke-support.js";
 
 const home = process.env.HOME ?? "";
 if (!(home === "/Users/admin" && process.env.OPENSTEER_SYSTEM_CA_E2E_ARTIFACT_DIR)) {
@@ -38,6 +39,8 @@ const resources = path.resolve(z.string().parse(process.env.OPENSTEER_PERSONAL_E
 const work = mkdtempSync(path.join(tmpdir(), "opensteer-system-ca-"));
 const commonName = `Opensteer system CA fixture ${process.pid}`;
 const rootPem = path.join(work, "root.pem");
+const rootDer = path.join(work, "root.der");
+const priorTrustPlist = path.join(work, "prior-trust.plist");
 
 /** Probes a URL from inside whichever process runs it, and prints one JSON line. */
 const probe = `
@@ -91,6 +94,7 @@ function fixtureCertificates(): {
     "-extensions",
     "root",
   ]);
+  run("/usr/bin/openssl", ["x509", "-in", rootPem, "-outform", "DER", "-out", rootDer]);
   run("/usr/bin/openssl", [
     "req",
     "-newkey",
@@ -142,7 +146,7 @@ async function homeNode(
   environment: Record<string, string>,
   url: string,
   fingerprint: string,
-) {
+): Promise<Record<string, unknown>> {
   const script = path.join(work, "probe.cjs");
   writeFileSync(script, probe);
   const child = spawn(node, ["--disable-sigusr1", script, url, fingerprint], {
@@ -150,25 +154,61 @@ async function homeNode(
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
+  let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
-  await new Promise<void>((resolve) => child.once("exit", () => resolve()));
-  return JSON.parse(output.trim().split("\n").at(-1)!) as Record<string, unknown>;
+  child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
+  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    },
+  );
+  const line = output.trim().split("\n").at(-1) ?? "";
+  if (exit.code !== 0 || !line) {
+    throw new Error(
+      `home-node probe failed (code=${String(exit.code)}, signal=${String(exit.signal)}): ${stderr.trim() || output.trim() || "no output"}`,
+    );
+  }
+  return JSON.parse(line) as Record<string, unknown>;
 }
 
 async function utilityRunner(
   environment: Record<string, string>,
   url: string,
   fingerprint: string,
-) {
+): Promise<Record<string, unknown>> {
   const script = path.join(work, "probe-utility.cjs");
   writeFileSync(script, probe);
   const child = utilityProcess.fork(script, [url, fingerprint], {
     env: environment,
-    stdio: "ignore",
+    stdio: "pipe",
   });
-  const line = await new Promise<string>((resolve) =>
-    child.once("message", (value) => resolve(String(value))),
-  );
+  let stderr = "";
+  let stdout = "";
+  child.stdout?.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf8")));
+  child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
+  const line = await new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(
+        new Error(
+          `utility-runner probe timed out after 30s${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
+        ),
+      );
+    }, 30_000);
+    child.once("message", (value) => {
+      clearTimeout(timer);
+      resolve(String(value));
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(
+        new Error(
+          `utility-runner exited before posting (code=${String(code)}): ${stderr.trim() || stdout.trim() || "no output"}`,
+        ),
+      );
+    });
+  });
   return JSON.parse(line) as Record<string, unknown>;
 }
 
@@ -176,66 +216,46 @@ async function main(): Promise<void> {
   await app.whenReady();
   const release = await readPersonalRuntimeRelease(path.join(resources, "personal-runtime"));
   const fixture = fixtureCertificates();
-  run("/usr/bin/sudo", [
-    "/usr/bin/security",
-    "add-trusted-cert",
-    "-d",
-    "-r",
-    "trustRoot",
-    "-k",
-    "/Library/Keychains/System.keychain",
-    rootPem,
-  ]);
   const server = createServer({ cert: fixture.cert, key: fixture.key }, (_request, response) =>
     response.end("ok"),
   );
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `https://127.0.0.1:${(server.address() as AddressInfo).port}/`;
-  const rows: Record<string, unknown>[] = [];
-  try {
-    for (const setting of ["on", "off"] as const) {
-      const environment = nodeTrustEnvironment(
-        { HOME: home, PATH: "/usr/bin:/bin" },
-        {
-          environmentInputs: "drop",
-          settings: setting === "off" ? { [nodeTrustSetting]: "off" } : {},
-        },
-      );
-      rows.push({
-        process: "home-node",
-        setting,
-        ...(await homeNode(release.entrypoints.node, environment, url, fixture.fingerprint)),
-      });
-      rows.push({
-        process: "utility-runner",
-        setting,
-        ...(await utilityRunner(environment, url, fixture.fingerprint)),
-      });
-    }
-  } finally {
-    server.close();
-    // Both the trust setting and the certificate go.
-    execFileSync("/usr/bin/sudo", ["/usr/bin/security", "remove-trusted-cert", "-d", rootPem], {
-      stdio: "ignore",
-    });
-    execFileSync(
-      "/usr/bin/sudo",
-      [
-        "/usr/bin/security",
-        "delete-certificate",
-        "-c",
-        commonName,
-        "/Library/Keychains/System.keychain",
-      ],
-      { stdio: "ignore" },
-    );
-    rmSync(work, { force: true, recursive: true });
-  }
-  writeFileSync(
-    path.join(artifacts, "system-ca.json"),
-    `${JSON.stringify({ node: release.identity, rows }, null, 2)}\n`,
-  );
-  for (const row of rows) {
+
+  const report = await runSystemCaSmokeLifecycle({
+    artifactsDir: artifacts,
+    closeServer: () => server.close(),
+    commonName,
+    fingerprint: fixture.fingerprint,
+    nodeIdentity: release.identity,
+    priorTrustPlist,
+    rootDer,
+    rootPem,
+    workDir: work,
+    runProbes: async (rows) => {
+      for (const setting of ["on", "off"] as const) {
+        const environment = nodeTrustEnvironment(
+          { HOME: home, PATH: "/usr/bin:/bin" },
+          {
+            environmentInputs: "drop",
+            settings: setting === "off" ? { [nodeTrustSetting]: "off" } : {},
+          },
+        );
+        rows.push({
+          process: "home-node",
+          setting,
+          ...(await homeNode(release.entrypoints.node, environment, url, fixture.fingerprint)),
+        });
+        rows.push({
+          process: "utility-runner",
+          setting,
+          ...(await utilityRunner(environment, url, fixture.fingerprint)),
+        });
+      }
+    },
+  });
+
+  for (const row of report.rows) {
     if (row.setting === "on") {
       assert.equal(
         row.reached,

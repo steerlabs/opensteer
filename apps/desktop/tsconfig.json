@@ -29,6 +29,8 @@
     "scripts/fixtures/profile-restore-tls.ts",
     "scripts/electron-usb-smoke.ts",
     "scripts/electron-system-ca-smoke.ts",
+    "scripts/system-ca-smoke-support.ts",
+    "scripts/system-ca-smoke-support.test.ts",
     "scripts/electron-usb-renderer-smoke.ts",
     "tsup.config.ts",
     "vitest.config.ts",
