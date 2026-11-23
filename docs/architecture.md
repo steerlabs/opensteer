@@ -279,13 +279,14 @@ started, as the person's shell profile already is. Opensteer removes a URL's use
 only from its own records: every engine error, Run failure and Runner log line
 (`redactUrlCredentials`, `packages/shared/src/safeMessage.ts`).
 
-The task's mode wins over the person's settings. Claude Code receives the permission mode on the
-command line, and in Supervised and Auto-accept edits an Opensteer PreToolUse hook asks before
-every call the mode would ask for (`claudeModeGuard`): Claude Code asks whenever any hook asks,
-whatever a settings rule, another hook, a skill or an agent file allows. Codex receives the
-approval policy and sandbox on every turn. What the person's own Codex configuration approves in
-advance (a command rule, an MCP tool's approval) applies in their own task, as it would in their
-terminal.
+In the person's own task the mode is the task's and the rules are the person's. The engine is
+started in the task's mode (Claude Code's permission mode on its command line, Codex's approval
+policy and sandbox on every turn), and a default mode in the person's settings does not replace it.
+What the person allowed in their engine is allowed, as in their terminal started in that mode: an
+allow rule, a hook, a command rule or an MCP tool's approval of theirs applies, and so do a
+project folder's own engine settings, as they would in a terminal opened there. Opensteer adds no
+prompt of its own on top. Opensteer's own tools are decided by the Home from the task's mode, not
+by the engine.
 
 ## Stop and Disconnect
 

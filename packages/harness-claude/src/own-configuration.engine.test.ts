@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -37,6 +37,11 @@ async function bundledClaudeExecutable(): Promise<string> {
   return executable;
 }
 
+interface ToolCall {
+  readonly name: string;
+  readonly input: Readonly<Record<string, unknown>>;
+}
+
 interface StubApi {
   readonly url: string;
   /** Every main-model request body, as sent. */
@@ -44,11 +49,11 @@ interface StubApi {
 }
 
 /**
- * Answers the main model's first request with one Bash call, and everything
- * after with "done". Requests without the Bash tool (background helpers) get
- * "done" too.
+ * Answers the main model with the script's tool calls, one per turn (the
+ * number of tool results already in the conversation picks the next), then
+ * "done". Background helper requests, which carry no Bash tool, get "done".
  */
-async function startStubApi(command: string): Promise<StubApi> {
+async function startStubApi(script: readonly ToolCall[]): Promise<StubApi> {
   const requests: string[] = [];
   let calls = 0;
   const server: Server = createServer((request, response) => {
@@ -72,7 +77,8 @@ async function startStubApi(command: string): Promise<StubApi> {
       };
       const main = (parsed.tools ?? []).some((tool) => tool.name === "Bash");
       if (main) requests.push(body);
-      const answered = JSON.stringify(parsed.messages).includes("tool_result");
+      const step = JSON.stringify(parsed.messages).split('"tool_result"').length - 1;
+      const next = main ? script[step] : undefined;
       calls += 1;
       response.writeHead(200, { "content-type": "text/event-stream" });
       const send = (event: string, data: unknown) =>
@@ -89,17 +95,14 @@ async function startStubApi(command: string): Promise<StubApi> {
         },
         type: "message_start",
       });
-      if (main && !answered) {
+      if (next) {
         send("content_block_start", {
-          content_block: { id: `toolu_${calls}`, input: {}, name: "Bash", type: "tool_use" },
+          content_block: { id: `toolu_${calls}`, input: {}, name: next.name, type: "tool_use" },
           index: 0,
           type: "content_block_start",
         });
         send("content_block_delta", {
-          delta: {
-            partial_json: JSON.stringify({ command, description: "Write the marker" }),
-            type: "input_json_delta",
-          },
+          delta: { partial_json: JSON.stringify(next.input), type: "input_json_delta" },
           index: 0,
           type: "content_block_delta",
         });
@@ -139,33 +142,59 @@ async function startStubApi(command: string): Promise<StubApi> {
 }
 
 /**
- * A person's own Claude Code setup: user settings that would loosen any mode
- * (every command allowed, permission prompts skipped), a user-level setting
- * the commands can see, a user skill, and an MCP server of their own beside
- * one named like Opensteer's; and a project with its own CLAUDE.md.
+ * A person's own Claude Code setup, one of each kind of thing Claude Code
+ * loads: user settings with allow rules, a default mode and an environment
+ * setting; a user hook; user memory (`~/.claude/CLAUDE.md`); a user agent,
+ * command, output style and skill; user MCP servers beside one named like
+ * Opensteer's; and a project with its own CLAUDE.md and `.mcp.json`.
  */
-async function personalSetup() {
+async function personalSetup(allow: readonly string[]) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-claude-own-")));
   // Claude Code may still be writing its session files as its process exits.
   cleanups.push(() => rm(root, { force: true, maxRetries: 20, recursive: true, retryDelay: 100 }));
   const home = join(root, "home");
   const config = join(home, ".claude");
   const project = join(root, "agent-home");
-  await mkdir(join(config, "skills", "person-skill"), { recursive: true });
-  await mkdir(project, { recursive: true });
+  const hookMarker = join(root, "person-hook-ran");
+  for (const directory of [
+    join(config, "skills", "person-skill"),
+    join(config, "agents"),
+    join(config, "commands"),
+    join(config, "output-styles"),
+    project,
+  ])
+    await mkdir(directory, { recursive: true });
   await writeFile(
     join(config, "settings.json"),
     JSON.stringify({
       env: { OPENSTEER_PERSON_SETTING: "person-setting-applied" },
-      permissions: {
-        allow: ["Bash(*)", "Bash", "Edit", "Write"],
-        defaultMode: "bypassPermissions",
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [{ command: `touch "${hookMarker}"`, type: "command" }],
+            matcher: ".*",
+          },
+        ],
       },
+      permissions: { allow, defaultMode: "bypassPermissions" },
     }),
   );
+  await writeFile(join(config, "CLAUDE.md"), "Person user CLAUDE.md marker 41c8.");
   await writeFile(
     join(config, "skills", "person-skill", "SKILL.md"),
     "---\nname: person-skill\ndescription: A skill of the person's own.\n---\nBody.\n",
+  );
+  await writeFile(
+    join(config, "agents", "person-agent.md"),
+    "---\nname: person-agent\ndescription: An agent of the person's own.\n---\nAgent body marker 9d02.\n",
+  );
+  await writeFile(
+    join(config, "commands", "person-command.md"),
+    "A command of the person's own.\n",
+  );
+  await writeFile(
+    join(config, "output-styles", "person-style.md"),
+    "---\nname: person-style\ndescription: The person's own style.\n---\nStyle marker 5b7e.\n",
   );
   const servers = {
     mcpServers: {
@@ -177,15 +206,23 @@ async function personalSetup() {
   await writeFile(join(config, ".claude.json"), JSON.stringify(servers));
   await writeFile(join(home, ".claude.json"), JSON.stringify(servers));
   await writeFile(join(project, "CLAUDE.md"), "Project CLAUDE.md marker 7f3a.");
-  return { config, home, marker: join(project, "marker.txt"), project, root };
+  await writeFile(
+    join(project, ".mcp.json"),
+    JSON.stringify({
+      mcpServers: { "project-server": { args: ["-e", ""], command: process.execPath } },
+    }),
+  );
+  return { config, home, hookMarker, project, root };
 }
 
 async function runOnce(input: {
   readonly accessMode: ThreadAccessMode;
+  readonly allow: readonly string[];
   readonly personalContext: boolean;
+  readonly script: (setup: Awaited<ReturnType<typeof personalSetup>>) => readonly ToolCall[];
 }) {
-  const setup = await personalSetup();
-  const api = await startStubApi(`printf "%s" "$OPENSTEER_PERSON_SETTING" > marker.txt`);
+  const setup = await personalSetup(input.allow);
+  const api = await startStubApi(input.script(setup));
   const executable = await bundledClaudeExecutable();
   let init: Extract<SDKMessage, { type: "system"; subtype: "init" }> | undefined;
   let servers: McpServerStatus[] | undefined;
@@ -213,7 +250,7 @@ async function runOnce(input: {
   });
   const instanceId = createId("harnessInstance");
   const adapter = await driver.create({
-    config: { maxTurns: 4 },
+    config: { maxTurns: 6 },
     instanceId,
     sourceId: "anthropic",
   });
@@ -298,7 +335,7 @@ async function runOnce(input: {
       inputs: [
         {
           author: { displayName: "Person", kind: "human", principalId: "person" },
-          content: [{ text: "Write the marker.", type: "text" }],
+          content: [{ text: "Do the work.", type: "text" }],
           createdAt: new Date().toISOString(),
           kind: "input",
           messageId: createId("message"),
@@ -313,29 +350,56 @@ async function runOnce(input: {
     await session.stop();
     await observing;
   }
-  const marker = await readFile(setup.marker, "utf8").catch(() => undefined);
-  return { api, events, init, marker, servers, setup };
+  const requests = events.flatMap((event) =>
+    event.type === "request.opened" ? [JSON.stringify(event.data.request)] : [],
+  );
+  return { api, events, init, requests, servers, setup };
 }
 
-it("runs a personal task with Claude Code's own configuration and the task's mode", async () => {
-  const { api, events, init, marker, servers } = await runOnce({
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
+const read = (path: string) => readFile(path, "utf8").catch(() => undefined);
+
+it("runs a person's own Supervised task with their engine's own rules, adding no guard", async () => {
+  const { api, events, init, requests, servers, setup } = await runOnce({
     accessMode: "approval-required",
+    allow: ["Bash(git status)"],
     personalContext: true,
+    script: (s) => [
+      { input: { command: "git status", description: "First, by a rule" }, name: "Bash" },
+      {
+        input: {
+          command: `printf "%s" "$OPENSTEER_PERSON_SETTING" > "${join(s.project, "marker.txt")}"`,
+          description: "Second, with no rule",
+        },
+        name: "Bash",
+      },
+    ],
   });
   expect(events.find((event) => event.type === "run.failed")).toBeUndefined();
-  // The person's every-command allow rule and bypass default did not decide:
-  // Supervised asked before the command, and the person allowed it once.
+  // The task's mode, not the person's default mode.
   expect(init?.permissionMode).toBe("default");
-  expect(events.filter((event) => event.type === "request.opened")).toHaveLength(1);
-  // The command ran with the user-level setting in its environment.
-  expect(marker).toBe("person-setting-applied");
-  // The project's own CLAUDE.md reached the model, and Agent home's AGENTS.md beside it.
-  expect(api.requests.join("\n")).toContain("Project CLAUDE.md marker 7f3a.");
-  expect(api.requests.join("\n")).toContain("Agent home AGENTS.md marker 2c9d.");
-  // Claude Code's own web tools, the person's skill and MCP server, and Opensteer's
-  // server replacing the one of theirs that bears its name.
+  // `git status` ran without asking, by the person's own rule; the other
+  // command asked, as Supervised does in their terminal.
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toContain("Second, with no rule");
+  expect(requests[0]).not.toContain("First, by a rule");
+  // Their user setting reached the command; their hook ran.
+  expect(await read(join(setup.project, "marker.txt"))).toBe("person-setting-applied");
+  expect(await exists(setup.hookMarker)).toBe(true);
+  // Their memory, the project's CLAUDE.md and Agent home's AGENTS.md reached the model.
+  const sent = api.requests.join("\n");
+  expect(sent).toContain("Person user CLAUDE.md marker 41c8.");
+  expect(sent).toContain("Project CLAUDE.md marker 7f3a.");
+  expect(sent).toContain("Agent home AGENTS.md marker 2c9d.");
+  // Claude Code's own web tools, the person's skill, agent, command and MCP
+  // servers, and Opensteer's server replacing the one of theirs bearing its name.
   expect(init?.tools).toEqual(expect.arrayContaining(["WebSearch", "WebFetch", "Bash"]));
-  expect(init?.slash_commands).toContain("person-skill");
+  expect(init?.slash_commands).toEqual(expect.arrayContaining(["person-skill", "person-command"]));
+  expect(init?.agents).toContain("person-agent");
   expect(servers?.map(({ name, source }) => ({ name, source }))).toEqual(
     expect.arrayContaining([
       { name: "opensteer", source: "dynamic" },
@@ -347,19 +411,56 @@ it("runs a personal task with Claude Code's own configuration and the task's mod
   });
 }, 240_000);
 
-it("runs a task without personal context with none of the person's configuration", async () => {
-  const { api, events, init, marker, servers } = await runOnce({
-    accessMode: "approval-required",
-    personalContext: false,
+it("edits in the task's folder without asking in Auto-accept edits and asks outside it", async () => {
+  const { events, init, requests, setup } = await runOnce({
+    accessMode: "auto-accept-edits",
+    allow: [],
+    personalContext: true,
+    script: (s) => [
+      { input: { content: "in", file_path: join(s.project, "inside.txt") }, name: "Write" },
+      { input: { content: "out", file_path: join(s.root, "outside.txt") }, name: "Write" },
+    ],
   });
   expect(events.find((event) => event.type === "run.failed")).toBeUndefined();
+  expect(init?.permissionMode).toBe("acceptEdits");
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toContain("outside.txt");
+  expect(await read(join(setup.project, "inside.txt"))).toBe("in");
+  // The person allowed it once.
+  expect(await read(join(setup.root, "outside.txt"))).toBe("out");
+}, 240_000);
+
+it("runs a task a connected agent or a chat started with none of the person's configuration", async () => {
+  const { api, events, init, requests, servers, setup } = await runOnce({
+    accessMode: "approval-required",
+    // Every change allowed in the person's settings, and a bypass default.
+    allow: ["Bash(*)", "Bash", "Edit", "Write"],
+    personalContext: false,
+    script: (s) => [
+      { input: { content: "x", file_path: join(s.project, "written.txt") }, name: "Write" },
+    ],
+  });
+  expect(events.find((event) => event.type === "run.failed")).toBeUndefined();
+  // (A) The mode holds: the person's allow rules and default mode do not apply.
   expect(init?.permissionMode).toBe("default");
-  expect(events.filter((event) => event.type === "request.opened")).toHaveLength(1);
-  // No user settings: the command ran, but without the person's setting.
-  expect(marker).toBe("");
-  expect(api.requests.join("\n")).not.toContain("Project CLAUDE.md marker 7f3a.");
-  expect(init?.tools).not.toContain("WebSearch");
-  expect(init?.tools).not.toContain("WebFetch");
-  expect(init?.slash_commands).not.toContain("person-skill");
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toContain("written.txt");
+  // (B) Nothing of the person's runs: no hook, no MCP server of theirs or the project's.
+  expect(await exists(setup.hookMarker)).toBe(false);
   expect(servers?.map(({ name }) => name)).toEqual(["opensteer"]);
+  // (C) None of their instructions or memory, no agent, command, skill or style of theirs.
+  const sent = api.requests.join("\n");
+  expect(sent).not.toContain("Person user CLAUDE.md marker 41c8.");
+  expect(sent).not.toContain("Project CLAUDE.md marker 7f3a.");
+  expect(sent).not.toContain("Agent body marker 9d02.");
+  expect(sent).not.toContain("Style marker 5b7e.");
+  expect(init?.agents ?? []).not.toContain("person-agent");
+  expect(init?.slash_commands).not.toContain("person-command");
+  expect(init?.slash_commands).not.toContain("person-skill");
+  expect(init?.output_style).not.toBe("person-style");
+  // Only Claude Code's own built-in plugins, none of the person's.
+  expect(init?.plugins.filter(({ path }) => path !== "builtin")).toEqual([]);
+  expect(init?.tools).not.toContain("WebSearch");
+  // No environment setting of theirs.
+  expect(await read(join(setup.project, "marker.txt"))).toBeUndefined();
 }, 240_000);

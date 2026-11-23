@@ -54,7 +54,6 @@ import {
   type ClaudeAuthenticationProcessOptions,
   claudeAccessModeConfiguration,
   claudeShellApprovalHook,
-  claudeModeGuard,
   managedClaudeSettings,
   type ClaudeAgentSdk,
   type ClaudeQueryHandle,
@@ -5181,23 +5180,8 @@ describe("whose configuration Claude Code starts with", () => {
     expect(options.systemPrompt).toMatchObject({
       append: "Opensteer platform guide.\n\nFollow workspace policy.",
     });
-    const guard = options.hooks?.PreToolUse?.[0]?.hooks[0];
-    expect(
-      await guard?.(
-        {
-          cwd: fixture.context.workspacePath,
-          hook_event_name: "PreToolUse",
-          permission_mode: "default",
-          session_id: "test",
-          tool_input: { command: "true" },
-          tool_name: "Bash",
-          tool_use_id: "tool-1",
-          transcript_path: "/transcript.jsonl",
-        },
-        "tool-1",
-        { signal: new AbortController().signal },
-      ),
-    ).toMatchObject({ hookSpecificOutput: { permissionDecision: "ask" } });
+    // The person's own rules decide; Opensteer adds no hook of its own.
+    expect(options.hooks).toBeUndefined();
     await fixture.adapter.close();
   });
 
@@ -5219,7 +5203,7 @@ describe("whose configuration Claude Code starts with", () => {
     await fixture.adapter.close();
   });
 
-  it("adds no mode guard in Full access, where nothing is asked", async () => {
+  it("adds no hook of Opensteer's in Full access either", async () => {
     const sdk = doneSdk();
     const fixture = await openSession(sdk, { accessMode: "full-access", personalContext: true });
     await send(fixture.session, "Hello");
@@ -5292,85 +5276,5 @@ describe("how Claude Code reaches the network", () => {
     expect(failure).toBeDefined();
     expect(JSON.stringify(observer.events)).not.toContain("fake-proxy-password");
     await fixture.adapter.close();
-  });
-});
-
-describe("the mode guard for Claude Code's own configuration", () => {
-  const workspace = "/agent-home";
-  const decide = async (
-    accessMode: HarnessSessionContext["accessMode"],
-    tool: string,
-    input: Readonly<Record<string, unknown>> = {},
-    extra: Readonly<Record<string, unknown>> = {},
-  ) => {
-    const result = await claudeModeGuard({
-      accessMode,
-      workspacePath: workspace,
-      writableRoots: [workspace, "/attached"],
-    }).hooks[0]?.(
-      {
-        cwd: workspace,
-        hook_event_name: "PreToolUse",
-        session_id: "test",
-        tool_input: input,
-        tool_name: tool,
-        tool_use_id: "tool-1",
-        transcript_path: "/transcript.jsonl",
-        ...extra,
-      } as Parameters<NonNullable<ReturnType<typeof claudeModeGuard>["hooks"][0]>>[0],
-      "tool-1",
-      { signal: new AbortController().signal },
-    );
-    return (result as { hookSpecificOutput?: { permissionDecision?: string } })?.hookSpecificOutput
-      ?.permissionDecision;
-  };
-
-  it("asks in Supervised before anything that acts, whatever the person's settings allow", async () => {
-    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "Monitor"]) {
-      expect(await decide("approval-required", tool, { file_path: "/agent-home/a" })).toBe("ask");
-    }
-    for (const tool of ["Read", "Grep", "WebSearch", "TodoWrite", "Agent", "Skill"]) {
-      expect(await decide("approval-required", tool)).toBeUndefined();
-    }
-  });
-
-  it("leaves MCP tools to Claude Code's own mode and the person's settings", async () => {
-    const own = { mcp_server: { name: "opensteer", source: "dynamic" } };
-    const person = { mcp_server: { name: "calendar", source: "user" } };
-    expect(await decide("approval-required", "mcp__opensteer__task_read", {}, own)).toBeUndefined();
-    expect(await decide("approval-required", "mcp__calendar__create", {}, person)).toBeUndefined();
-  });
-
-  it("accepts edits inside the task's folders in Auto-accept edits and asks for the rest", async () => {
-    expect(
-      await decide("auto-accept-edits", "Edit", { file_path: "/agent-home/notes.md" }),
-    ).toBeUndefined();
-    expect(await decide("auto-accept-edits", "Write", { file_path: "notes.md" })).toBeUndefined();
-    expect(
-      await decide("auto-accept-edits", "NotebookEdit", { notebook_path: "/attached/a.ipynb" }),
-    ).toBeUndefined();
-    expect(await decide("auto-accept-edits", "Edit", { file_path: "/etc/hosts" })).toBe("ask");
-    expect(await decide("auto-accept-edits", "Edit", { file_path: "../outside.md" })).toBe("ask");
-    expect(await decide("auto-accept-edits", "Bash", { command: "true" })).toBe("ask");
-  });
-
-  it("holds a call to the stricter of the task's mode and the one Claude Code reports", async () => {
-    // A subagent file declaring a wider mode does not widen Supervised.
-    expect(
-      await decide(
-        "approval-required",
-        "Edit",
-        { file_path: "/agent-home/a" },
-        {
-          permission_mode: "acceptEdits",
-        },
-      ),
-    ).toBe("ask");
-    // An Auto that Claude Code could not start runs as default, and asks as Supervised.
-    expect(await decide("auto", "Bash", {}, { permission_mode: "default" })).toBe("ask");
-    expect(await decide("auto", "Bash", {}, { permission_mode: "auto" })).toBeUndefined();
-    expect(await decide("full-access", "Bash", {}, { permission_mode: "bypassPermissions" })).toBe(
-      undefined,
-    );
   });
 });

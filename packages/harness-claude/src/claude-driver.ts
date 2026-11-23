@@ -17,7 +17,7 @@ import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import {
   query as anthropicQuery,
   startup as anthropicStartup,
@@ -162,136 +162,6 @@ export function claudeShellApprovalHook(
           permissionDecisionReason: "Opensteer requires approval for shell commands",
         },
       }),
-    ],
-  };
-}
-/**
- * Claude Code tools that read, plan or talk and change nothing themselves.
- * Starting a subagent or a workflow is here too: each tool call it makes passes
- * this guard on its own.
- */
-const claudeToolsWithoutEffect = new Set([
-  "Agent",
-  "AskUserQuestion",
-  "EnterPlanMode",
-  "ExitPlanMode",
-  "Glob",
-  "Grep",
-  "LS",
-  "ListMcpResourcesTool",
-  "NotebookRead",
-  "Read",
-  "ReadMcpResourceTool",
-  "Skill",
-  "Task",
-  "TaskCreate",
-  "TaskGet",
-  "TaskList",
-  "TaskOutput",
-  "TaskStop",
-  "TaskUpdate",
-  "TodoWrite",
-  "ToolSearch",
-  "WebSearch",
-  "Workflow",
-]);
-/** Claude Code's file-changing tools and the input field naming the file each changes. */
-const claudeEditTools: ReadonlyMap<string, string> = new Map([
-  ["Edit", "file_path"],
-  ["MultiEdit", "file_path"],
-  ["NotebookEdit", "notebook_path"],
-  ["Write", "file_path"],
-]);
-const claudeModeGuardReason = "Opensteer asks before this in the task's mode";
-const accessModeStrictness: Readonly<Record<ThreadAccessMode, number>> = {
-  "approval-required": 0,
-  "auto-accept-edits": 1,
-  auto: 2,
-  "full-access": 3,
-};
-
-/** The Opensteer mode a Claude Code permission mode is at least as strict as. */
-function claudeReportedAccessMode(mode: string | undefined): ThreadAccessMode | undefined {
-  switch (mode) {
-    case undefined:
-      return undefined;
-    case "acceptEdits":
-      return "auto-accept-edits";
-    case "auto":
-      return "auto";
-    case "bypassPermissions":
-      return "full-access";
-    // default, manual, dontAsk, plan and any mode added later ask the most.
-    default:
-      return "approval-required";
-  }
-}
-
-/**
- * Keeps a task's mode from being loosened by the person's own Claude Code
- * configuration. A Run with the engine's own configuration loads the person's
- * settings, hooks, skills and agents, and each of those can approve a tool call
- * on its own: a `permissions.allow` rule, a hook answering "allow", a skill's
- * `allowed-tools`, an agent file's `permissionMode`. Claude Code combines
- * PreToolUse decisions as deny over ask over allow and asks whenever any hook
- * asks, whatever a rule allows, so this hook asking is what makes Supervised
- * and Auto-accept edits mean what they say. The mode it applies is the stricter
- * of the task's and the one Claude Code reports for the call, so a subagent
- * declaring a wider mode, or an Auto that Claude Code could not start and ran as
- * `default`, is held to the stricter one. Auto and Full access add nothing:
- * there Claude Code's own classifier, or no check, is the mode.
- */
-export function claudeModeGuard(input: {
-  readonly accessMode: ThreadAccessMode;
-  readonly workspacePath: string;
-  readonly writableRoots: readonly string[];
-}): HookCallbackMatcher {
-  const roots = [...new Set([input.workspacePath, ...input.writableRoots])].map((root) =>
-    resolve(root),
-  );
-  const inside = (path: unknown) => {
-    if (typeof path !== "string" || path.length === 0) return false;
-    const target = resolve(input.workspacePath, path);
-    return roots.some((root) => {
-      const rest = relative(root, target);
-      return rest === "" || (!rest.startsWith("..") && !isAbsolute(rest));
-    });
-  };
-  return {
-    hooks: [
-      async (hookInput) => {
-        if (hookInput.hook_event_name !== "PreToolUse") return {};
-        const reported = claudeReportedAccessMode(hookInput.permission_mode);
-        const mode =
-          reported && accessModeStrictness[reported] < accessModeStrictness[input.accessMode]
-            ? reported
-            : input.accessMode;
-        if (mode === "auto" || mode === "full-access") return {};
-        const tool = hookInput.tool_name;
-        if (claudeToolsWithoutEffect.has(tool)) return {};
-        // MCP tools are left to Claude Code's own mode and the person's
-        // settings: the Host authorizes every call of Opensteer's server
-        // against the Run, and what the person's settings approve of their own
-        // servers is their answer, given in advance.
-        if (tool.startsWith("mcp__")) return {};
-        const pathField = claudeEditTools.get(tool);
-        if (
-          mode === "auto-accept-edits" &&
-          pathField !== undefined &&
-          typeof hookInput.tool_input === "object" &&
-          hookInput.tool_input !== null &&
-          inside((hookInput.tool_input as Record<string, unknown>)[pathField])
-        ) {
-          return {};
-        }
-        return {
-          hookSpecificOutput: {
-            hookEventName: "PreToolUse" as const,
-            permissionDecision: "ask" as const,
-            permissionDecisionReason: claudeModeGuardReason,
-          },
-        };
-      },
     ],
   };
 }
@@ -2387,26 +2257,14 @@ class ClaudeHarnessSession implements HarnessSession {
       // Native safe-command rules can allow Bash before canUseTool is consulted.
       // SDK hooks remain active while our settings suppress ordinary ambient hooks.
       // Organization-managed policy and hooks can override these settings.
-      // With the engine's own configuration the person's rules, hooks, skills
-      // and agents can approve calls too, so the mode guard covers every tool.
-      ...(own
-        ? this.#context.accessMode === "full-access"
-          ? {}
-          : {
-              hooks: {
-                PreToolUse: [
-                  claudeModeGuard({
-                    accessMode: this.#context.accessMode,
-                    workspacePath: this.#context.workspacePath,
-                    writableRoots: this.#context.writableRoots,
-                  }),
-                ],
-              },
-            }
-        : this.#context.accessMode === "approval-required" ||
-            this.#context.accessMode === "auto-accept-edits"
-          ? { hooks: { PreToolUse: [claudeShellApprovalHook()] } }
-          : {}),
+      // In the person's own task the mode is the task's and the rules are the
+      // person's: what they allowed in their engine is allowed, as in their
+      // terminal started in that mode, and Opensteer adds no hook of its own.
+      ...(!own &&
+      (this.#context.accessMode === "approval-required" ||
+        this.#context.accessMode === "auto-accept-edits")
+        ? { hooks: { PreToolUse: [claudeShellApprovalHook()] } }
+        : {}),
       cwd: this.#context.workspacePath,
       additionalDirectories: [
         ...this.#context.writableRoots.filter((root) => root !== this.#context.workspacePath),
@@ -2630,13 +2488,7 @@ class ClaudeHarnessSession implements HarnessSession {
     const requestOptions: Extract<PendingRequest["presentation"], { kind: "choice" }>["options"] = [
       { hint: "allow-once", id: "allow-once", label: "Allow once" },
     ];
-    // The mode guard asks again on every such call, so a rule kept for the Run
-    // would never be consulted; only Claude Code's own asks offer one.
-    if (
-      options.suggestions &&
-      options.suggestions.length > 0 &&
-      options.decisionReason !== claudeModeGuardReason
-    ) {
+    if (options.suggestions && options.suggestions.length > 0) {
       responses.set("allow-run", {
         behavior: "allow",
         decisionClassification: "user_permanent",
