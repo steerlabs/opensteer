@@ -1,6 +1,6 @@
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { ModelSelectionSchema, OpensteerError, createId, type Message } from "@opensteer/core";
-import type { CommandRow, OpensteerStore } from "@opensteer/database";
+import { chatEndedWithTheUpdate, type CommandRow, type OpensteerStore } from "@opensteer/database";
 import { CommandDispatchError } from "@opensteer/orchestration";
 import {
   HarnessModelDescriptorSchema,
@@ -174,11 +174,7 @@ describe("HostCommandDispatcher steering", () => {
     };
     await dispatcher.dispatch(command, new AbortController().signal);
     // Refused through the inbox, which cancels the message; it never reaches the Runner.
-    expect(refuseSteer).toHaveBeenCalledWith(
-      command.id,
-      "Messages from before the update are not run.",
-      undefined,
-    );
+    expect(refuseSteer).toHaveBeenCalledWith(command.id, chatEndedWithTheUpdate, undefined);
     expect(succeedCommand).not.toHaveBeenCalled();
     expect(runnersDispatch).not.toHaveBeenCalled();
   });

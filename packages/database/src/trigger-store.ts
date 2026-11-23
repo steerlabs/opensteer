@@ -574,9 +574,9 @@ export class TriggerStore {
           message:
             "A connected agent cannot replace the program of an automation it did not create.",
         });
-      // Its program would run in the person's Agent home: never set from such a lineage.
+      // Its program would run in the person's Agent home: nothing of it is set, or made to run
+      // again, from such a lineage.
       if (
-        input.program !== undefined &&
         trigger.originConnectionId !== null &&
         !(await lineagePersonalContext(transaction, trigger.originConnectionId))
       )
@@ -714,6 +714,13 @@ export class TriggerStore {
         input.status === "archived" ? "define" : "control",
       );
       await requireTriggerExecutionAuthority(transaction, trigger);
+      // Resumed, it would launch in the person's Agent home: refused now, in the launch's words.
+      if (
+        input.status === "active" &&
+        trigger.originConnectionId !== null &&
+        !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+      )
+        throw noProgramWithoutPersonalContext();
       if (trigger.systemRole && input.status === "archived") throw conflict(MANAGED_MEMORY_REFUSAL);
       if (trigger.status === "archived") {
         if (input.status === "archived") return triggerFromRow(trigger);
@@ -803,6 +810,11 @@ export class TriggerStore {
       input = (await admitTriggerActor(transaction, input.ownerId, input)).input;
       const trigger = await lockTriggerForMutation(transaction, input, "control");
       await requireTriggerExecutionAuthority(transaction, trigger);
+      if (
+        trigger.originConnectionId !== null &&
+        !(await lineagePersonalContext(transaction, trigger.originConnectionId))
+      )
+        throw noProgramWithoutPersonalContext();
       if (nextFireAt.getTime() <= Date.now()) {
         throw new OpensteerError({
           code: "bad_request",
@@ -834,16 +846,6 @@ export class TriggerStore {
       await wakeTriggerSchedules(transaction);
       return triggerFromRow(updated);
     });
-  }
-  /** The command runs an automation whose chat is paused: its work is held until it is back. */
-  async commandChatWaiting(commandId: CommandId): Promise<boolean> {
-    const trigger = await this.#database
-      .selectFrom("triggerOccurrences")
-      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-      .select(["triggers.originConnectionId"])
-      .where("triggerOccurrences.commandId", "=", commandId)
-      .executeTakeFirst();
-    return trigger ? triggerChatWaiting(this.#database, trigger) : false;
   }
   async listForOwner(input: {
     readonly anchorThreadId?: ThreadId;
@@ -2706,23 +2708,9 @@ async function automationHandoffWitness(
  */
 /**
  * The automation belongs to a chat (by its own lineage, `triggers.origin_connection_id`, as
- * authority and Disconnect read it) that is paused, asked of the one state function. Its schedule
- * does not fire and its work is held until the chat is back.
+ * authority and Disconnect read it) that is paused, as SQL over the unaliased `triggers` row, for
+ * the schedule's claim and deadline. Its schedule does not fire until the chat is back.
  */
-export async function triggerChatWaiting(
-  database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "originConnectionId">,
-): Promise<boolean> {
-  if (trigger.originConnectionId === null) return false;
-  const { rows } = await sql<{ waiting: boolean }>`
-    select ${connectionState(database)} = 'waiting' as waiting
-    from agent_connections
-    where agent_connections.bridge_account_id is not null
-      and agent_connections.id = ${trigger.originConnectionId}`.execute(database);
-  return rows[0]?.waiting === true;
-}
-
-/** The same, as SQL over the unaliased `triggers` row, for the schedule's claim and deadline. */
 function triggerChatHeld(database: object) {
   return sql<boolean>`exists (
     select 1 from agent_connections
@@ -2762,7 +2750,15 @@ class TriggerChatWaiting extends OpensteerError {
   }
 }
 
-/** Admitted, held (its chat is waiting) or lost, as one fact (`lineageExecutionStanding`). */
+/**
+ * Whether a launch refusal is the one a waiting chat causes, from the same read that refused it:
+ * its work is held, never failed. A lineage without personal context is refused as itself, paused
+ * or not.
+ */
+export function triggerChatIsWaiting(error: unknown): boolean {
+  return error instanceof TriggerChatWaiting;
+}
+
 /**
  * Whether an automation may launch now: the one check every firing passes (a schedule's claim,
  * run now, a webhook, a resume or a change that queues an occurrence, its dispatch to a Runner,

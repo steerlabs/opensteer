@@ -273,7 +273,7 @@ export async function failRunForRefusedRunnerEvent(
   });
 }
 export async function recoverThreadWorkQueues(database: Kysely<DatabaseSchema>): Promise<void> {
-  await cancelLegacyChatInputs(database);
+  await cancelChatMessagesFromBeforeTheUpdate(database);
   const obsolete = await database
     .selectFrom("runs")
     .innerJoin("threadInputs", "threadInputs.messageId", "runs.seedInputId")
@@ -1302,12 +1302,15 @@ function lostExecutionRecovery(facts: {
 }
 
 /**
- * Messages a chat queued before the update were admitted by routes that no longer exist; they
- * never run. Each start cancels any still waiting (`pending` only: one whose outcome is unknown
- * may already have been acted on, and stays unknown), a batch per transaction, refreshing their
- * task's queue like any other cancellation. Nothing writes such an input any more.
+ * Messages a route queued before the update (the routes ended with it, 0053) never run. Each
+ * start cancels any still waiting (`pending` only: one whose outcome is unknown may already have
+ * been acted on, and stays unknown), a batch per transaction, refreshing their task's queue like
+ * any other cancellation, so the person's screens show them cancelled. Nothing writes such an
+ * input any more; a Run one already seeded is refused by the dispatcher.
  */
-export async function cancelLegacyChatInputs(database: Kysely<DatabaseSchema>): Promise<void> {
+export async function cancelChatMessagesFromBeforeTheUpdate(
+  database: Kysely<DatabaseSchema>,
+): Promise<void> {
   for (;;) {
     const retired = await commitPersonalMutation(database, async (tx) => {
       const rows = await tx

@@ -41,10 +41,7 @@ import {
   applyBridgeConnections,
   bridgeConnectionsMigrationName,
 } from "./bridge-connections-migration.js";
-import {
-  applyBridgeConversion,
-  bridgeConversionMigrationName,
-} from "./bridge-conversion-migration.js";
+import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -658,7 +655,7 @@ export function migrationProvider(options?: {
                 },
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
-              [bridgeConversionMigrationName]: { up: applyBridgeConversion },
+              [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
             }
           : {}),
       };

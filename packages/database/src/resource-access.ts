@@ -113,6 +113,12 @@ function forbidden(message: string): OpensteerError {
 }
 export const lineageEndedMessage =
   "This connected agent's access ended. The person can reconnect it from Connected agents.";
+/**
+ * What a person reads in a task a chat ran before the update without their personal context
+ * (0053 ties it to an ended row): it takes no new work, and the sentence says why.
+ */
+export const chatEndedWithTheUpdate =
+  "This chat ended with the update, so this task takes no new messages. Start a new task, or add the chat again on Messaging.";
 export const tasksWithdrawnMessage =
   "This connected agent may no longer ask your own agents to work.";
 /** The same refusal for a chat; it is recorded with the message the chat sent. */
@@ -216,7 +222,15 @@ export async function readConnectionRowStanding(
 ) {
   const read = await readConnectionStanding(database, ownerUserId, agentConnectionId, lock);
   if (!read || read.state !== "live")
-    return { row: undefined, waiting: read !== undefined && standingOf(read) === "waiting" };
+    return {
+      row: undefined,
+      waiting: read !== undefined && standingOf(read) === "waiting",
+      // The one row with a sender rule and no account: chats from before the update (0053).
+      endedWithTheUpdate:
+        read !== undefined &&
+        read.connection.bridgeAccountId === null &&
+        read.connection.bridgeSenders !== null,
+    };
   const row = read.connection;
   const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
   if (access === null)
@@ -224,7 +238,11 @@ export async function readConnectionRowStanding(
   const accessMode = applyConnectionPolicy(read.work, row.grant, row.accessMode);
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
-  return { row: read.work ? { ...row, accessMode } : row, waiting: false };
+  return {
+    row: read.work ? { ...row, accessMode } : row,
+    waiting: false,
+    endedWithTheUpdate: false,
+  };
 }
 
 export async function readLiveAgentConnectionRow(
@@ -250,14 +268,17 @@ export async function liveAgentConnection(
     readonly cleanupMaximumMode: ThreadAccessMode | null;
   }
 > {
-  const { row, waiting } = await readConnectionRowStanding(
+  const { row, waiting, endedWithTheUpdate } = await readConnectionRowStanding(
     database,
     ownerUserId,
     agentConnectionId,
     false,
     target,
   );
-  if (!row) throw waiting ? new ConnectionWaiting() : forbidden(lineageEndedMessage);
+  if (!row)
+    throw waiting
+      ? new ConnectionWaiting()
+      : forbidden(endedWithTheUpdate ? chatEndedWithTheUpdate : lineageEndedMessage);
   const grant = AgentGrantSchema.parse(row.grant);
   return {
     agentConnectionId: row.id,

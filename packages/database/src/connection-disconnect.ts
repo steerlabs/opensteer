@@ -22,9 +22,8 @@ import {
   type TriggerWatchActivationId,
   type UserId,
 } from "@opensteer/core";
-import type { ChannelBindingId } from "@opensteer/channel-core";
 import type { StandardCdpAttemptReconciliation } from "@opensteer/protocol/standard-cdp";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { cancelPending } from "./request-cancellation.js";
 import { senderUnlinkedFailure } from "./bridge-admission.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
@@ -372,7 +371,6 @@ export async function requestExpiredCleanups(
           })
           .where("id", "=", row.id)
           .execute();
-        await endConvertedRoutes(tx, [row.id], now);
         return;
       }
       if (connectionActive(row, now)) return;
@@ -386,45 +384,6 @@ export async function requestExpiredCleanups(
         .where("id", "=", row.id)
         .execute();
     });
-}
-
-/**
- * A bridge made from a Messaging route ends that route with it, in the same transaction: the
- * image before this one, which still answers through routes, never answers through it again.
- */
-export async function endConvertedRoutes(
-  tx: Transaction<DatabaseSchema>,
-  bridgeIds: readonly string[],
-  now: Date,
-): Promise<void> {
-  if (bridgeIds.length === 0) return;
-  const routes = [
-    ...new Set(
-      (
-        await tx
-          .selectFrom("agentConnections")
-          .select("bridgeFromBindingId")
-          .where("id", "in", bridgeIds)
-          .where("bridgeFromBindingId", "is not", null)
-          .execute()
-      ).map(({ bridgeFromBindingId }) => bridgeFromBindingId as ChannelBindingId),
-    ),
-  ];
-  if (routes.length === 0) return;
-  // The routes in id order, then the change: never one route while holding a later one.
-  await tx
-    .selectFrom("channelBindings")
-    .select("id")
-    .where("id", "in", routes)
-    .orderBy("id")
-    .forNoKeyUpdate()
-    .execute();
-  await tx
-    .updateTable("channelBindings")
-    .set({ status: "revoked", updatedAt: now })
-    .where("id", "in", routes)
-    .where("status", "<>", "revoked")
-    .execute();
 }
 
 export async function openCleanups(database: Kysely<DatabaseSchema>): Promise<string[]> {

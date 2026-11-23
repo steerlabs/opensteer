@@ -1,7 +1,9 @@
 import { runHasBrowserPages } from "./browser-capability.js";
 import { promptCacheExpiresAt } from "@opensteer/core";
 import {
+  chatEndedWithTheUpdate,
   connectionIsWaiting,
+  triggerChatIsWaiting,
   dispatchNodeStop,
   grantedContent,
   NodeStopAuthoritySchema,
@@ -811,8 +813,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       connectionGeneration: identity.connectionGeneration,
     };
     if (command.authoritySource.kind === "channel-ingress") {
-      // Decided by routes that no longer exist: a message from before the update never runs.
-      throw new CommandDispatchError("Messages from before the update are not run.", "failed");
+      // Queued by a route, which ended with the update (0053): it never runs.
+      throw new CommandDispatchError(chatEndedWithTheUpdate, "failed");
     } else {
       await this.#runners.dispatch(runnerCommand, signal, dispatch);
     }
@@ -840,21 +842,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
-    // An automation of a paused chat is held, never failed: but only from an explicit look at the
-    // chat's state where an authority check refused it, before anything is handed to the Runner.
-    // Once the send has passed, what happens is the Runner's, and an unknown end stays unknown.
+    // An automation of a paused chat is held, never failed: only when the one read of its standing
+    // refused it for that, before anything is handed to the Runner. A conflict, a missing row or a
+    // lineage without personal context fails as itself, paused or not. Once the send has passed,
+    // what happens is the Runner's, and an unknown end stays unknown.
     const heldIfChatWaits = async <T>(step: () => Promise<T>): Promise<T> => {
       try {
         return await step();
       } catch (error) {
-        // Only the authority refusal a paused chat causes: a conflict or a missing row fails as
-        // itself, paused or not.
-        if (
-          error instanceof OpensteerError &&
-          error.code === "forbidden" &&
-          (await this.#triggers.commandChatWaiting(command.id))
-        )
-          throw chatRunHeld();
+        if (triggerChatIsWaiting(error)) throw chatRunHeld();
         throw error;
       }
     };
@@ -1168,7 +1164,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           }
         });
       if (command.authoritySource.kind === "channel-ingress")
-        throw new CommandDispatchError("Messages from before the update are not run.", "failed");
+        throw new CommandDispatchError(chatEndedWithTheUpdate, "failed");
       await this.#runners.dispatch(runnerCommand, signal, beforeSend ? { beforeSend } : undefined);
     } catch (error) {
       if (!(error instanceof CommandDispatchError) || error.disposition !== "failed") throw error;
