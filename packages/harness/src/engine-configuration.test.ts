@@ -330,4 +330,32 @@ it("refuses Pi on others' tasks when models.json or auth.json contains a ! shell
       }),
     /models\.json/u,
   );
+
+  // Leading UTF-8 BOM matches Pi's auth-storage.js: clean BOM files pass, BOM files with ! refuse as shell command.
+  const withBomClean = await makePiHome({
+    auth: `\uFEFF${JSON.stringify({ openai: { key: "sk-clean", type: "api_key" } })}`,
+    models: `\uFEFF${JSON.stringify({ providers: { corp: { apiKey: "CORP_KEY" } } })}`,
+  });
+  expect(() =>
+    assertEngineMayRun("pi", {
+      environment: { HOME: withBomClean.root },
+      personalContext: true,
+      personLineage: false,
+      providerState: { kind: "ambient" },
+    }),
+  ).not.toThrow();
+
+  const withBomCommand = await makePiHome({
+    auth: `\uFEFF${JSON.stringify({ openai: { key: "!op read op://vault/key", type: "api_key" } })}`,
+  });
+  expectRefusal(
+    () =>
+      assertEngineMayRun("pi", {
+        environment: { HOME: withBomCommand.root },
+        personalContext: true,
+        personLineage: false,
+        providerState: { kind: "ambient" },
+      }),
+    expectedSentence,
+  );
 });

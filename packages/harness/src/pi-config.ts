@@ -66,7 +66,8 @@ function checkPiConfigFile(
   let text: string;
   let parsed: unknown;
   try {
-    text = readFileSync(filePath, "utf8");
+    // Match Pi's auth-storage.js, which strips a leading UTF-8 BOM before JSON.parse.
+    text = readFileSync(filePath, "utf8").replace(/^\uFEFF/u, "");
     parsed = JSON.parse(text);
   } catch {
     return {
