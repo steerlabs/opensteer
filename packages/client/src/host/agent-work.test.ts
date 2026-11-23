@@ -2,7 +2,7 @@ import type { AgentOperationView } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { mockAgentWork, mockAgentWorkThreads } from "../mock/mock-agent-work.js";
-import { agentWho, agentWithdrawnLine } from "./agent-identity.js";
+import { agentWho, agentWhoOriginParts, agentWithdrawnLine } from "./agent-identity.js";
 import {
   operationDecisionField,
   sessionQuestions,
@@ -39,6 +39,40 @@ const slot = (thread: keyof typeof mockAgentWorkThreads) => {
       .reverse(),
   )!;
 };
+
+describe("an origin that does not parse", () => {
+  const addresses = (parts: readonly unknown[]) =>
+    parts.filter((part) => typeof part === "object" && part !== null && "address" in part);
+
+  it("is never drawn as an address, on an origin's line or under the heading", () => {
+    const origin = "evil.example\u202E/moc.elgoog";
+    expect(
+      addresses(
+        agentWhoOriginParts({
+          role: "platform",
+          name: "Claude",
+          origin,
+          roleLabel: "Holds the access",
+        }),
+      ),
+    ).toEqual([]);
+    const unparsed = agentWho({
+      clientName: "Grok",
+      redirect: origin,
+      identityAtConsent: {
+        kind: "platform",
+        platformDirectoryId: "claude",
+        platformName: "Claude",
+        platformOrigin: origin,
+      } as never,
+    });
+    expect(addresses(unparsed.detailParts)).toEqual([]);
+    expect(unparsed.detail).not.toContain("evil");
+    // One that parses is its origin, an address.
+    const parsed = agentWho({ clientName: "Grok", redirect: "https://grok.com/cb?x=1" });
+    expect(parsed.detailParts).toEqual([{ address: "https://grok.com" }]);
+  });
+});
 
 describe("who a connected agent is", () => {
   it("names a verified agent in the Home's words, with a logo only for a known one", () => {

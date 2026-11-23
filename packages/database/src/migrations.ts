@@ -45,10 +45,7 @@ import {
   applyBridgeConnections,
   bridgeConnectionsMigrationName,
 } from "./bridge-connections-migration.js";
-import {
-  applyBridgeConversion,
-  bridgeConversionMigrationName,
-} from "./bridge-conversion-migration.js";
+import { applyChatRoutesEnd, chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
@@ -662,7 +659,7 @@ export function migrationProvider(options?: {
                 },
               },
               [bridgeConnectionsMigrationName]: { up: applyBridgeConnections },
-              [bridgeConversionMigrationName]: { up: applyBridgeConversion },
+              [chatRoutesEndMigrationName]: { up: applyChatRoutesEnd },
               // A Home is one person's, and a connected agent holds only what they granted.
               ...onePersonHomeContractMigration,
               // A connected agent is verified by the origin it is reached at, and nothing else.

@@ -26,7 +26,7 @@ import {
 import { removePlatformVerificationMigrationName } from "./platform-verification-removal-migration.js";
 import { browserPoolMigrationName } from "./browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "./bridge-connections-migration.js";
-import { bridgeConversionMigrationName } from "./bridge-conversion-migration.js";
+import { chatRoutesEndMigrationName } from "./chat-routes-end-migration.js";
 import { preparePersonalConversion } from "./personal-state.test-support.js";
 import { finishPersonalStateUpgrade } from "./personal-state-upgrade.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -107,7 +107,7 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         browserPoolMigrationName,
         "0051_needs_you_counts_requests",
         bridgeConnectionsMigrationName,
-        bridgeConversionMigrationName,
+        chatRoutesEndMigrationName,
         removeOrganizationsMigrationName,
         removePlatformVerificationMigrationName,
       ]);

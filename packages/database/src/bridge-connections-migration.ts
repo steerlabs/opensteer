@@ -4,9 +4,8 @@ export const bridgeConnectionsMigrationName = "0052_bridge_connections";
 
 /**
  * A messaging bridge is a connection: one `agent_connections` row reached through a chat instead
- * of over MCP. It never holds a token, so the previous image (which requires one) reads it as a
- * connection with no authority. Everything a bridge needs beyond the row lives in new tables,
- * which the previous image never reads; the channel tables it does read are left as they are.
+ * of over MCP. It never holds a token. Everything a bridge needs beyond the row lives in tables
+ * of its own.
  */
 export async function applyBridgeConnections(database: Kysely<unknown>): Promise<void> {
   await sql`
@@ -14,17 +13,14 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
       add column bridge_account_id text references channel_accounts(id),
       add column bridge_conversation_id text,
       add column bridge_senders text check (bridge_senders in ('owner', 'anyone')),
-      add column bridge_from_binding_id text,
-      add column bridge_notice text check (bridge_notice in ('converted', 'converted-without-channels')),
       add column bridge_conversation_name text,
       add column bridge_ended_by text check (bridge_ended_by in ('you', 'account', 'computer')),
       add constraint agent_connections_bridge check (
         -- A bridge says who may speak. A sender rule without an account is only the ended row
-        -- that ties the messages from before the update to "anyone".
+        -- that ties the tasks chats ran before the update to "anyone" (0053).
         (bridge_account_id is null or bridge_senders is not null)
         and (bridge_senders is null or bridge_account_id is not null or revoked_at is not null)
-        and (bridge_account_id is not null or (bridge_conversation_id is null
-          and bridge_from_binding_id is null and bridge_notice is null))
+        and (bridge_account_id is not null or bridge_conversation_id is null)
         and (bridge_account_id is null or token_hash is null)
         -- Anyone in one named conversation, never in direct messages, and only tasks and
         -- plugins. A grant without tasks is not refused here; such a bridge is simply not live.
@@ -51,9 +47,6 @@ export async function applyBridgeConnections(database: Kysely<unknown>): Promise
     create unique index agent_connections_bridge_cover
       on agent_connections(bridge_account_id, coalesce(bridge_conversation_id, ''))
       where bridge_account_id is not null and revoked_at is null;
-    create unique index agent_connections_bridge_conversion
-      on agent_connections(bridge_from_binding_id, coalesce(bridge_conversation_id, ''))
-      where bridge_from_binding_id is not null;
 
     create table bridge_conversations (
       id text primary key,

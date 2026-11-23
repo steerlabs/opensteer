@@ -15,12 +15,12 @@ const MODES = [
   [
     "auto-accept-edits",
     "Auto-accept edits",
-    "Edits files in its tasks without asking. Asks before anything else.",
+    "Its tasks edit files in their own folder without asking, and the engine asks before what it counts as riskier. Its own direct actions ask you before anything that changes something.",
   ],
   [
     "auto",
     "Auto",
-    "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+    "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
   ],
   [
     "full-access",

@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import {
   agentBrowserOptions,
   agentHomeName,
   agentWords,
+  agentSentence,
   chatFacts,
+  chatTasksNow,
   connectedAgentConnected,
   connectionsRead,
   connectedAgentDetail,
@@ -23,6 +25,7 @@ import {
   useChromeTabGrantCatalog,
   useConnectedAgentLive,
   useConnectedAgents,
+  useLiveTasks,
 } from "@opensteer/client/react";
 import { type ChatGrantShape, type ThreadAccessMode } from "@opensteer/core";
 import { useShell } from "../../app-shell.js";
@@ -59,9 +62,17 @@ export function ConnectedAgentPage({
   // What this page sends is what the chat parity script covers.
   const chatHost = chatScreenHost(client);
   const live = useConnectedAgentLive(client, connectionId);
+  const liveTasks = useLiveTasks(client);
   const chromeTabs = useChromeTabGrantCatalog(client, true);
   const { snapshot } = shell;
   const connection = agents.connections?.find((row) => row.id === connectionId) ?? null;
+  // A chat's tasks as the Home's live task updates say they are now; its list is read again
+  // when one of them moved past it, so a Stop names the Run that is at work.
+  const chatTasks = chatTasksNow(connection?.bridge?.tasks ?? [], liveTasks);
+  const refreshAgents = agents.refresh;
+  useEffect(() => {
+    if (chatTasks.behind !== null) void refreshAgents?.();
+  }, [chatTasks.behind, refreshAgents]);
   const [edit, setEdit] = useState<Edit | null>(null);
   const [confirming, setConfirming] = useState<"disconnect" | "narrow" | null>(null);
   const [saved, setSaved] = useState(false);
@@ -189,7 +200,9 @@ export function ConnectedAgentPage({
       >
         <div className="connected-agent__header">
           <AgentMark identity={detail.row.identity} large />
-          <h1 className="settings-section__title">{agent}</h1>
+          <h1 className="settings-section__title">
+            <SentenceText parts={[{ name: agent }]} />
+          </h1>
           {detail.live?.threadId ? (
             <Link className="btn" to={`/tasks/${detail.live.threadId}`}>
               <Icon name="eye" />
@@ -223,12 +236,19 @@ export function ConnectedAgentPage({
             {agentWords("agent.legacy")}
           </p>
         ) : null}
-        {chat ? <ChatFactsSection client={client} facts={chat} live={connected} /> : null}
+        {chat ? (
+          <ChatFactsSection
+            client={chatHost}
+            facts={chat}
+            live={connected}
+            tasks={chatTasks.tasks}
+          />
+        ) : null}
         {detail.editable ? (
           <>
             <AgentGrantEditor
               chat={chatShape}
-              agent={agent}
+              agent={{ name: agent }}
               browser={browser}
               chromeTabs={chromeTabs}
               client={client}
@@ -262,7 +282,7 @@ export function ConnectedAgentPage({
               </div>
             ) : saved ? (
               <p className="settings-footnote" role="status">
-                {agentWords("agent.saved", { agent })}
+                <SentenceText parts={agentSentence("agent.saved", { agent: { name: agent } })} />
               </p>
             ) : null}
             <SettingsError message={profileError} />
@@ -296,9 +316,13 @@ export function ConnectedAgentPage({
               onClick={() => setConfirming("disconnect")}
               type="button"
             >
-              {pending === "revoke"
-                ? agentWords("agent.disconnecting")
-                : agentWords("agent.disconnect", { agent })}
+              {pending === "revoke" ? (
+                agentWords("agent.disconnecting")
+              ) : (
+                <SentenceText
+                  parts={agentSentence("agent.disconnect", { agent: { name: agent } })}
+                />
+              )}
             </button>
           ) : detail.row.removable ? (
             <button
@@ -320,7 +344,11 @@ export function ConnectedAgentPage({
         </div>
         {confirming === "disconnect" ? (
           <Dialog
-            title={agentWords("agent.disconnect.title", { agent })}
+            title={
+              <SentenceText
+                parts={agentSentence("agent.disconnect.title", { agent: { name: agent } })}
+              />
+            }
             onClose={() => setConfirming(null)}
             footer={
               <>
@@ -350,7 +378,11 @@ export function ConnectedAgentPage({
         ) : null}
         {confirming === "narrow" ? (
           <Dialog
-            title={agentWords("agent.narrow.title", { agent })}
+            title={
+              <SentenceText
+                parts={agentSentence("agent.narrow.title", { agent: { name: agent } })}
+              />
+            }
             onClose={() => setConfirming(null)}
             footer={
               <>

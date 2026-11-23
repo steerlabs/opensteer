@@ -808,6 +808,67 @@ describeStore("a connected agent's authority at the send", (it) => {
     ).rejects.toMatchObject(refusal);
   });
 
+  it("refuses at once to resume, reschedule or edit an automation in a chat anyone can message", async ({
+    storeFixture,
+  }) => {
+    const anyone = await chatWithTask(storeFixture, "change-anyone", "anyone");
+    const owner = await chatWithTask(storeFixture, "change-owner");
+    const triggers = new TriggerStore(storeFixture.database);
+    // Made before such a chat could not have one, and paused: an owner chat's, moved over.
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      actorConnectionId: owner.chat.id,
+      actorAccessMode: "full-access",
+      anchorThreadId: owner.thread.id,
+      createdBy: owner.fixture.userId,
+      idempotencyKey: "change-anyone",
+      name: "Every minute",
+      ...everyMinute,
+    });
+    await triggers.setStatus({
+      actorThreadId: null,
+      ownerId: owner.fixture.userId,
+      status: "paused",
+      triggerId: trigger.id,
+    });
+    await storeFixture.database
+      .updateTable("triggers")
+      .set({ originConnectionId: anyone.chat.id })
+      .where("id", "=", trigger.id)
+      .execute();
+    const before = await storeFixture.database
+      .selectFrom("triggers")
+      .select(["status", "nextFireAt", "name", "currentRevisionId"])
+      .where("id", "=", trigger.id)
+      .executeTakeFirstOrThrow();
+    const refusal = {
+      code: "forbidden",
+      message: "A chat that anyone in the conversation can message can't have an automation.",
+    };
+    const base = { actorThreadId: null, ownerId: owner.fixture.userId, triggerId: trigger.id };
+    await expect(triggers.setStatus({ ...base, status: "active" })).rejects.toMatchObject(refusal);
+    await expect(
+      triggers.setNextFire({
+        ...base,
+        nextFireAt: new Date(Date.now() + 3_600_000).toISOString(),
+      }),
+    ).rejects.toMatchObject(refusal);
+    await expect(
+      triggers.update({ ...base, expectedRevisionId: before.currentRevisionId!, name: "Renamed" }),
+    ).rejects.toMatchObject(refusal);
+    // Nothing of it moved; it can still be stopped for good.
+    expect(
+      await storeFixture.database
+        .selectFrom("triggers")
+        .select(["status", "nextFireAt", "name", "currentRevisionId"])
+        .where("id", "=", trigger.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(before);
+    await expect(triggers.setStatus({ ...base, status: "archived" })).resolves.toMatchObject({
+      status: "archived",
+    });
+  });
+
   it("launches no automation that already exists in a chat anyone can message, however it fires", async ({
     storeFixture,
   }) => {
@@ -1213,6 +1274,88 @@ describeStore("a connected agent's authority at the send", (it) => {
     } finally {
       load.mockRestore();
     }
+  });
+
+  it("holds a tick its one read found paused, even if the chat is back before anything else is read", async ({
+    storeFixture,
+  }) => {
+    const { store } = storeFixture;
+    const { fixture, occurrence, pause, resume } = await liveTick(storeFixture, "tick-race");
+    const claimed = await store.claimCommand(occurrence.commandId, "tick-race");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    await pause();
+    // The chat is back the moment its standing has been read once.
+    const original = TriggerStore.prototype.loadDispatchContext;
+    const load = vi
+      .spyOn(TriggerStore.prototype, "loadDispatchContext")
+      .mockImplementation(async function (this: TriggerStore, ...input) {
+        try {
+          return await original.apply(this, input);
+        } finally {
+          await resume();
+        }
+      });
+    try {
+      const failure = await dispatcher(
+        storeFixture,
+        fixture.runnerId,
+        { planning: async () => {} },
+        [],
+        [],
+      )
+        .dispatch(claimed.command, new AbortController().signal)
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect((failure as { disposition?: string }).disposition).toBe("held");
+    } finally {
+      load.mockRestore();
+    }
+  });
+
+  it("fails, never holds, an automation of a paused chat anyone in the conversation can message", async ({
+    storeFixture,
+  }) => {
+    const { database, store } = storeFixture;
+    const { fixture, occurrence } = await liveTick(storeFixture, "tick-anyone");
+    const claimed = await store.claimCommand(occurrence.commandId, "tick-anyone");
+    if (!claimed || claimed.terminalFailure) throw new Error("Expected the automation's command");
+    // Made before such a chat could not have one: moved to a chat anyone can message, then paused.
+    const anyone = await chatWithTask(storeFixture, "tick-anyone-chat", "anyone");
+    await database
+      .updateTable("triggers")
+      .set({ originConnectionId: anyone.chat.id })
+      .where(
+        "id",
+        "=",
+        database
+          .selectFrom("triggerOccurrences")
+          .select("triggerId")
+          .where("id", "=", occurrence.id),
+      )
+      .execute();
+    await anyone.channels.setConnectionStatus(
+      anyone.configured.connection.id,
+      anyone.fixture.userId,
+      "paused",
+    );
+    const failure = await dispatcher(
+      storeFixture,
+      fixture.runnerId,
+      { planning: async () => {} },
+      [],
+      [],
+    )
+      .dispatch(claimed.command, new AbortController().signal)
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(failure).toMatchObject({
+      message: "A chat that anyone in the conversation can message can't have an automation.",
+    });
+    expect((failure as { disposition?: string }).disposition).not.toBe("held");
   });
 
   it("never turns a dispatch that may have reached the Runner into held, even if the chat is paused meanwhile", async ({

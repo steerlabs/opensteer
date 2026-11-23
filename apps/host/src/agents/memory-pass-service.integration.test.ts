@@ -1353,7 +1353,7 @@ describeStore("managed memory passes", (it) => {
     await sql`insert into agent_connections (id, user_id, label, client_name, access_mode,
         resource, token_hash, created_at, expires_at, revoked_at, "grant", grant_revision,
         consent_version, cleanup_reason, cleanup_requested_at, bridge_senders)
-      values (${legacyId}, ${base.userId}, 'Messages before the update', 'Messaging',
+      values (${legacyId}, ${base.userId}, 'Chats from before the update', 'Messaging',
         'approval-required', 'opensteer:bridge', null, now(), now(), now(),
         '{"scope":"selected","tasks":true,"resources":[]}'::jsonb, 2, 2, 'revoked', now(),
         'anyone')`.execute(f.database);

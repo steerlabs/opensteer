@@ -38,6 +38,7 @@ describe("the preview Home answers as the Home does", () => {
         if (!channels.ok || !connections.ok) throw new Error("The preview could not be read");
         return { channels: channels.data, connections: connections.data.connections };
       };
+      const stopRuns = new Map<string, string>();
       let current = await read();
       expect(chatParityViews(current.channels, current.connections)).toEqual(record.start);
       const accountIds = new Map(current.channels.accounts.map((row) => [row.displayName, row.id]));
@@ -81,10 +82,18 @@ describe("the preview Home answers as the Home does", () => {
             });
             answer = { ok: true };
           } else if (command.kind === "task.stop") {
-            const task = chatOf(command.account, command.chat)?.bridge?.tasks?.find(
+            const task = chatOf(command.account, command.chat)!.bridge!.tasks!.find(
               ({ title }) => title === command.task,
-            );
-            await client.stopRun(task!.id);
+            )!;
+            // What a chat's page sends: Stop of the Run its list names, or of one it named before.
+            if (task.runId) stopRuns.set(command.task, task.runId);
+            const runId = command.run === "listed" ? task.runId : stopRuns.get(command.task);
+            await client.dispatch({
+              type: "run.interrupt",
+              threadId: task.id,
+              runId: runId!,
+              idempotencyKey: key(),
+            } as never);
             answer = { ok: true };
           } else if (command.kind === "connection.update") {
             const chat = chatOf(command.account, command.chat)!;

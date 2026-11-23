@@ -15,6 +15,7 @@ import {
   type RequestView,
   type SessionAgent,
   type SessionTaskView,
+  phoneSentence,
 } from "@opensteer/client/host";
 import type { AgentOperationView } from "@opensteer/core";
 
@@ -151,7 +152,7 @@ export function whoLines(
   const line = agentWithdrawnLine(who);
   return {
     heading: whoHeading(who),
-    detail: who.detail,
+    detail: phoneSentence(who.detailParts),
     verified: who.verified,
     withdrawn: line === null ? null : { line, detail: workWords("who.withdrawnDetail") },
     warning: options.consent ? who.warning : null,

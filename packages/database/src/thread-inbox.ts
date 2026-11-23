@@ -41,6 +41,7 @@ import {
 import {
   assertLineageCompatibleReuse,
   bindingAgentConnectionId,
+  assertPersonMayContinue,
   assertSendEligible,
   connectionTaskReadScope,
   liveDelegatingConnection,
@@ -3175,7 +3176,9 @@ async function assertInputLineage(
   thread: { readonly originConnectionId: string | null },
   inputConnectionId: string | null,
 ): Promise<void> {
-  await assertSendEligible(transaction, owner, thread.originConnectionId, inputConnectionId);
+  if (inputConnectionId === null)
+    await assertPersonMayContinue(transaction, owner, thread.originConnectionId);
+  else await assertSendEligible(transaction, owner, thread.originConnectionId, inputConnectionId);
 }
 async function resolveThreadInputFacts(
   transaction: Transaction<DatabaseSchema>,

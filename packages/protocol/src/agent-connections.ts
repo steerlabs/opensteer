@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentConnectionIdentityAtConsentViewSchema } from "@opensteer/control-plane-protocol";
 import {
   AgentGrantViewSchema,
+  RunIdSchema,
   ThreadAccessModeSchema,
   UserIdSchema,
   DeploymentIdSchema,
@@ -77,9 +78,6 @@ export const AgentConnectionBridgeSchema = z.object({
       tasks: z.literal("required"),
     })
     .optional(),
-  /** A one-time notice about how the update changed this bridge, until the person dismisses it. */
-  // A notice from a newer Home reads as none: there is nothing this app could show for it.
-  notice: z.enum(["converted", "converted-without-channels"]).optional().catch(undefined),
   /** The chat account it speaks through, by its display name: the Slack workspace's name. */
   accountName: z.string().min(1).max(160).optional(),
   /** The account's handle, where it has one (the Mac's iMessage address): an address, not a name. */
@@ -117,6 +115,8 @@ export const AgentConnectionBridgeSchema = z.object({
         id: z.string().min(1).max(255),
         title: z.string().max(500),
         running: z.boolean(),
+        /** The Run it is doing, which Stop interrupts; null when it runs none. */
+        runId: RunIdSchema.nullable(),
       }),
     )
     .max(5)

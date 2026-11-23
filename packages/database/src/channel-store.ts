@@ -443,15 +443,6 @@ export class ChannelStore {
       .deleteFrom("channelIngressEvents")
       .where("status", "in", ["adopted", "ignored", "dead"])
       .where("processedAt", "<", horizon)
-      .where(({ not, exists, selectFrom }) =>
-        not(
-          exists(
-            selectFrom("channelDeliveries")
-              .select("channelDeliveries.id")
-              .whereRef("channelDeliveries.ingressId", "=", "channelIngressEvents.id"),
-          ),
-        ),
-      )
       .executeTakeFirst();
     return {
       deliveries: Number(deliveries.numDeletedRows),
@@ -739,7 +730,6 @@ export class ChannelStore {
           claimExpiresAt: null,
           claimOwner: null,
           claimTokenHash: null,
-          conversationId: null,
           event: jsonValue(event),
           id,
           laneKey,

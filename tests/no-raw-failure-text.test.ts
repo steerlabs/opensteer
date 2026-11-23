@@ -13,11 +13,14 @@ import { expect, it } from "vitest";
  * It also sees a caught failure drawn whole: a `message` destructured from it, `String(error)`,
  * `${error}` and `error.toString()`.
  *
+ * It knows a failure by the names these sources give one (`error`, `failure`, `result`,
+ * `outcome` and the like) and a helper that returns its text (`safeMessage(error, ...)`).
+ *
  * What it still cannot see:
- * - a failure held under any other name (`failure.message`, `problem.message`, `thrown`), and
- *   `reason`, which here names a sentence as often as a failure, in the whole-failure forms;
+ * - a failure held under any other name (`problem.message`, `thrown`), and `reason`, which here
+ *   names a sentence as often as a failure, in the whole-failure forms;
  * - a member access split over lines (`error\n  .message`), or a line that also logs or throws;
- * - a helper outside the four roots that returns a failure's text (`safeMessage(error)`);
+ * - a helper under another name, or outside the four roots, that returns a failure's text;
  * - whether an allowed file's reason is still true: each entry is read by a person.
  */
 /** Why a file may still use a failure's own text, by kind. */
@@ -38,21 +41,25 @@ const reasons = {
   inspection:
     "The Home's channel inspection issue, written as a sentence for the person (the same text the account shows as its status detail).",
   words: "Builds a refusal for failureWords, which decides the words.",
+  oneFunction:
+    "Already the one function's words: the store it comes from wrote it with homeFailureText (`packages/client/src/host/apps.ts`).",
+  pending:
+    "Not read yet: found when this scan learned the names `failure`, `result` and `outcome` (P6 of the messaging round). Each is to be routed through the one function or given its own reason; until then it is listed, not cleared.",
 } as const;
 
 const allowed: Readonly<Record<string, { readonly count: number; readonly reason: string }>> = {
   "apps/desktop/src/app/background-mode.ts": { count: 1, reason: reasons.desktop },
+  "apps/desktop/src/app/local-stop.ts": { count: 1, reason: reasons.desktop },
+  "apps/desktop/src/app/menu-bar.ts": { count: 2, reason: reasons.desktop },
+  "apps/desktop/src/app/quit-routing.ts": { count: 1, reason: reasons.desktop },
+  "apps/desktop/src/bridge/methods/passwords.ts": { count: 1, reason: reasons.desktop },
   "apps/desktop/src/browser/editing-engine-journey.ts": {
     count: 1,
     reason: "A journey's evidence file, written for whoever reads the run, never drawn.",
   },
-  "apps/desktop/src/app/local-stop.ts": { count: 1, reason: reasons.desktop },
-  "apps/desktop/src/app/menu-bar.ts": { count: 2, reason: reasons.desktop },
-  "apps/desktop/src/app/quit-routing.ts": { count: 1, reason: reasons.desktop },
-  "apps/desktop/src/bridge/methods/passwords.ts": { count: 2, reason: reasons.desktop },
   "apps/desktop/src/computer-app-setup-guide.ts": { count: 1, reason: reasons.desktop },
   "apps/desktop/src/computer-use/computer-use-bridge-server.ts": {
-    count: 1,
+    count: 5,
     reason: reasons.desktop,
   },
   "apps/desktop/src/computer-use/helper-client.ts": { count: 2, reason: reasons.desktop },
@@ -65,8 +72,9 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
   },
   "apps/desktop/src/main.ts": { count: 1, reason: reasons.desktop },
   "apps/desktop/src/passwords/broker-client.ts": { count: 1, reason: reasons.desktop },
-  "apps/desktop/src/passwords/login-authority.ts": { count: 1, reason: reasons.desktop },
-  "apps/desktop/src/passwords/passwords-service.ts": { count: 3, reason: reasons.desktop },
+  "apps/desktop/src/passwords/login-authority.ts": { count: 2, reason: reasons.desktop },
+  "apps/desktop/src/passwords/passwords-service.ts": { count: 1, reason: reasons.desktop },
+  "apps/desktop/src/runner-worker.ts": { count: 1, reason: reasons.desktop },
   "apps/desktop/src/signed-helpers/signed-helper.ts": { count: 2, reason: reasons.desktop },
   "apps/desktop/src/supervisor/browser-extension-directory.ts": {
     count: 1,
@@ -87,21 +95,42 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
   },
   "apps/desktop/src/supervisor/personal-user-environment.ts": { count: 1, reason: reasons.desktop },
   "apps/mobile/src/browser/browser-page.tsx": { count: 1, reason: reasons.words },
+  "apps/mobile/src/browser/chrome-sign-in-action.tsx": { count: 1, reason: reasons.pending },
+  "apps/mobile/src/computers/block-actions.tsx": { count: 1, reason: reasons.pending },
   "apps/mobile/src/images/image-actions.tsx": { count: 1, reason: reasons.local },
-  "apps/mobile/src/phone-browser/agent-helper/entry.ts": { count: 1, reason: reasons.helper },
+  "apps/mobile/src/iphone-apps/controller.ts": { count: 1, reason: reasons.pending },
+  "apps/mobile/src/iphone-apps/model.ts": { count: 2, reason: reasons.pending },
   "apps/mobile/src/phone-browser/agent-helper/helper.ts": { count: 1, reason: reasons.helper },
+  "apps/mobile/src/phone-browser/manager.ts": { count: 1, reason: reasons.local },
+  "apps/mobile/src/screens/plugins.tsx": { count: 2, reason: reasons.pending },
+  "apps/mobile/src/screens/settings-ai-accounts.tsx": { count: 2, reason: reasons.pending },
+  "apps/mobile/src/screens/thread-settings.tsx": { count: 2, reason: reasons.pending },
+  "apps/mobile/src/thread/computer-use-line.tsx": { count: 1, reason: reasons.pending },
   "apps/mobile/src/thread/transcript.tsx": { count: 1, reason: reasons.run },
+  "apps/mobile/src/thread/use-request-response.ts": { count: 1, reason: reasons.pending },
   "apps/web/src/attachments-visual.tsx": { count: 1, reason: reasons.dev },
-  "apps/web/src/components/agent-activity.tsx": { count: 1, reason: reasons.run },
+  "apps/web/src/components/agent-activity.tsx": { count: 2, reason: reasons.run },
+  "apps/web/src/components/apps/apps-page.tsx": { count: 1, reason: reasons.oneFunction },
+  "apps/web/src/components/computer-apps/computer-use-section.tsx": {
+    count: 2,
+    reason: reasons.pending,
+  },
   "apps/web/src/components/devices/add-iphone-dialog.tsx": { count: 1, reason: reasons.desktop },
+  "apps/web/src/components/first-run/private-phone-setup.ts": { count: 1, reason: reasons.pending },
   "apps/web/src/components/image-actions.tsx": { count: 1, reason: reasons.local },
-  "apps/web/src/components/messaging-page.tsx": { count: 1, reason: reasons.inspection },
+  "apps/web/src/components/plugins/plugins-area.tsx": { count: 2, reason: reasons.pending },
+  "apps/web/src/components/thread-card-use-action.tsx": { count: 1, reason: reasons.pending },
+  "apps/web/src/components/thread-password-sign-in-action.tsx": {
+    count: 1,
+    reason: reasons.pending,
+  },
+  "apps/web/src/desktop/computer-use-permissions-panel.tsx": { count: 1, reason: reasons.pending },
   "apps/web/src/desktop/desktop-connect-failure.ts": { count: 1, reason: reasons.desktop },
   "apps/web/src/desktop/desktop-preview-bridge.ts": { count: 1, reason: reasons.desktop },
   "apps/web/src/desktop/menu-bar-popover.tsx": { count: 1, reason: reasons.desktop },
   "apps/web/src/main.tsx": { count: 2, reason: reasons.dev },
   "packages/client/src/auth/host-session-exchange.ts": { count: 1, reason: reasons.signin },
-  "packages/client/src/auth/host-session.ts": { count: 2, reason: reasons.signin },
+  "packages/client/src/auth/host-session.ts": { count: 3, reason: reasons.signin },
   "packages/client/src/auth/host-sign-in-outcome.ts": { count: 1, reason: reasons.signin },
   "packages/client/src/auth/native-oauth.ts": { count: 1, reason: reasons.signin },
   "packages/client/src/connections/account-cloud-computers.ts": {
@@ -116,12 +145,14 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
     count: 1,
     reason: reasons.account,
   },
+  "packages/client/src/connections/host-transport.ts": { count: 1, reason: reasons.pending },
   "packages/client/src/host/agent-activity-model.ts": { count: 1, reason: reasons.run },
+  "packages/client/src/host/apps.ts": { count: 1, reason: reasons.oneFunction },
   "packages/client/src/host/browser-editing.ts": { count: 1, reason: reasons.local },
-  "packages/client/src/host/host-api-client.ts": { count: 2, reason: reasons.wire },
+  "packages/client/src/host/host-api-client.ts": { count: 4, reason: reasons.wire },
   "packages/client/src/host/host-session-client.ts": { count: 1, reason: reasons.wire },
   "packages/client/src/host/remote-access.ts": { count: 1, reason: reasons.local },
-  "packages/client/src/mock/chat-parity.ts": { count: 1, reason: reasons.mock },
+  "packages/client/src/mock/chat-parity.ts": { count: 2, reason: reasons.mock },
   "packages/client/src/mock/mock-host-client.ts": { count: 3, reason: reasons.mock },
 };
 
@@ -131,7 +162,7 @@ const roots = ["packages/client/src", "apps/web/src", "apps/mobile/src", "apps/d
  * validator's issue (`parsed.error.issues[0]?.message`).
  */
 const caughtMessage =
-  /(^|[^.\w])(error|err|e|reason|cause|caught|exception|ex)\.message\b|\.error\??\.message\b|\.issues\b.*\.message\b/u;
+  /(^|[^.\w])(error|err|e|reason|cause|caught|exception|ex|failure|result|outcome)\??\.message\b(?!\??\.\w)|\.error\??\.message\b|\.issues\b.*\.message\b|\bsafeMessage\(/u;
 /** A caught failure drawn whole: destructured, stringified or interpolated. */
 const caughtWhole =
   /catch \(\{ *message|const \{ *message *\} *= *(error|err|e|cause|caught|exception|ex)\b|String\((error|err|e|cause|caught|exception|ex)\)|\$\{(error|err|e|cause|caught|exception|ex)\}|\b(error|err|e|cause|caught|exception|ex)\.toString\(\)/u;

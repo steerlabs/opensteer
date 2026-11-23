@@ -46,7 +46,9 @@ export function AgentWhoLine({
             </span>
           ))
         ) : (
-          <span className="agent-who__detail">{who.detail}</span>
+          <span className="agent-who__detail">
+            <SentenceText parts={who.detailParts} />
+          </span>
         )}
       </span>
     </p>

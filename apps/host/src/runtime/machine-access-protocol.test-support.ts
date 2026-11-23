@@ -1,4 +1,6 @@
-import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
 import {
   createId,
@@ -60,7 +62,6 @@ import { execFile, spawn } from "node:child_process";
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
 import { vi } from "vitest";
@@ -93,6 +94,36 @@ export const builtPluginEngine = {
   processEntry: new URL("../../dist/plugin-engine.js", import.meta.url),
   bridge: fileURLToPath(new URL("../../dist/plugin-engine-bridge.json", import.meta.url)),
 };
+/** Prebuilt REPL worker emitted by the integration launcher, avoiding cold tsx startup per Host. */
+const builtReplWorkerPath = fileURLToPath(
+  new URL("../../dist/computer-repl-worker.js", import.meta.url),
+);
+export function builtReplWorkerEntry(builtPath = builtReplWorkerPath): URL | undefined {
+  const manifestPath = `${builtPath}.inputs.json`;
+  if (!existsSync(builtPath) || !existsSync(manifestPath)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    return undefined;
+  }
+  const inputs =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "inputs" in parsed &&
+    Array.isArray(parsed.inputs)
+      ? parsed.inputs
+      : null;
+  if (!inputs || inputs.length === 0) return undefined;
+  const builtMtimeMs = statSync(builtPath).mtimeMs;
+  const baseDir = dirname(builtPath);
+  for (const input of inputs) {
+    if (typeof input !== "string") return undefined;
+    const inputPath = resolve(baseDir, input);
+    if (!existsSync(inputPath) || statSync(inputPath).mtimeMs > builtMtimeMs) return undefined;
+  }
+  return pathToFileURL(builtPath);
+}
 export async function startMachineAccessWireHost(
   databaseUrl: string,
   options: {
@@ -145,6 +176,7 @@ export async function startMachineAccessWireHost(
       }
     };
     try {
+      const replWorkerEntry = builtReplWorkerEntry();
       const created = await createHostRuntime(config, {
         ...(options.logger ? { logger: options.logger } : {}),
         ...(options.phoneUpdateRelease ? { phoneUpdateRelease: options.phoneUpdateRelease } : {}),
@@ -152,6 +184,7 @@ export async function startMachineAccessWireHost(
           ? { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }
           : {}),
         ...(options.executionClock ? { executionClock: options.executionClock } : {}),
+        ...(replWorkerEntry ? { replWorkerEntry } : {}),
         pluginEngine: { ...builtPluginEngine, ...options.pluginEngine },
       });
       if (created.kind !== "personal")

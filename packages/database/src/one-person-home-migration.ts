@@ -43,20 +43,15 @@ export async function applyRemoveOrganizations(database: Kysely<unknown>): Promi
       if not found then return; end if;
       -- What the policy refused could do nothing: it ends, as Disconnect ends it. So does every
       -- connection of a Home its organization was closing.
-      with ended as (
-        update agent_connections set revoked_at = now(), token_hash = null,
-          grant_revision = grant_revision + 1, cleanup_reason = 'revoked',
-          cleanup_requested_at = now(), cleanup_completed_at = null
-        where revoked_at is null and (work.state <> 'active' or case
-          when "grant"->>'scope' = 'everything' then not (
-            coalesce((work.policy->>'allowEverything')::boolean, false)
-            and coalesce((work.policy->>'allowTasks')::boolean, false))
-          else coalesce(("grant"->>'tasks')::boolean, false)
-            and not coalesce((work.policy->>'allowTasks')::boolean, false) end)
-        returning bridge_from_binding_id
-      )
-      update channel_bindings set status = 'revoked', updated_at = now()
-      where id in (select bridge_from_binding_id from ended) and status <> 'revoked';
+      update agent_connections set revoked_at = now(), token_hash = null,
+        grant_revision = grant_revision + 1, cleanup_reason = 'revoked',
+        cleanup_requested_at = now(), cleanup_completed_at = null
+      where revoked_at is null and (work.state <> 'active' or case
+        when "grant"->>'scope' = 'everything' then not (
+          coalesce((work.policy->>'allowEverything')::boolean, false)
+          and coalesce((work.policy->>'allowTasks')::boolean, false))
+        else coalesce(("grant"->>'tasks')::boolean, false)
+          and not coalesce((work.policy->>'allowTasks')::boolean, false) end);
       -- A mode above the cap becomes the cap, narrowed as the person's own edit narrows it.
       update agent_connections set access_mode = work.policy->>'externalMaxMode',
         grant_revision = grant_revision + 1, cleanup_reason = 'narrowed',

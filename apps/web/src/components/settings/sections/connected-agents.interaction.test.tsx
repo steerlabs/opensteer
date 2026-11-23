@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { createId } from "@opensteer/core";
+import { createId, ThreadIdSchema } from "@opensteer/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -111,6 +111,49 @@ describe("Connected agents list", () => {
     expect(page.querySelector(`a[href="${base}/${grok}"]`)).not.toBeNull();
     // A logo only for a platform the Home verified: Claude and ChatGPT, never Grok's domain.
     expect(page.querySelectorAll(".agent-mark .provider-logo")).toHaveLength(2);
+  });
+
+  it("after a refresh of the list fails, says so and starts no setup until it is read again", async () => {
+    const client = seeded();
+    host = client;
+    const changed: (() => void)[] = [];
+    const subscribe = client.subscribeConnectionsChanged.bind(client);
+    vi.spyOn(client, "subscribeConnectionsChanged").mockImplementation((listener) => {
+      changed.push(listener);
+      return subscribe(listener);
+    });
+    const real = client.rpc["connections.list"];
+    let failing = false;
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: async (input: Parameters<typeof real>[0]) => {
+        if (failing)
+          throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+        return real(input);
+      },
+      configurable: true,
+    });
+    const page = await mount(client);
+    await vi.waitFor(() => expect(page.textContent).toContain("Grok"));
+    const adds = () =>
+      [...page.querySelectorAll<HTMLButtonElement>('button[aria-label^="Add "]')].map(
+        (button) => button.disabled || button.closest("fieldset")?.disabled === true,
+      );
+    await vi.waitFor(() => expect(adds().some((disabled) => !disabled)).toBe(true));
+    const offered = adds();
+    failing = true;
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() =>
+      expect(page.querySelector('[role="alert"]')?.textContent).toContain(
+        "Couldn’t read your connected agents.",
+      ),
+    );
+    expect(adds().every((disabled) => disabled)).toBe(true);
+    failing = false;
+    await act(async () => buttonNamed(page, "Try again").click());
+    await vi.waitFor(() => expect(adds()).toEqual(offered));
+    expect(page.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("asks for nothing more than the list on open", async () => {
@@ -448,15 +491,80 @@ describe("a chat, as a connected agent", () => {
       ),
     ).toBeNull();
     expect(text).toContain("Summarize my week");
-    const stopRun = vi.spyOn(host, "stopRun").mockResolvedValue(undefined);
+    // The Home takes the Stop of the Run at work; that Run ends when its device answers, later.
+    const real = host.dispatch.bind(host);
+    const dispatch = vi
+      .spyOn(host, "dispatch")
+      .mockImplementation(async (command) =>
+        command.type === "run.interrupt"
+          ? { type: "run.interrupt", wasDuplicate: false }
+          : real(command),
+      );
     await act(async () => buttonNamed(page, "Stop").click());
-    expect(stopRun).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "run.interrupt",
+        threadId: "thr_00000000-0000-4000-8000-0000000000c1",
+        runId: "run_00000000-0000-4000-8000-0000000000c1",
+      }),
+    );
     // Taken, and the task still runs until its device answers: it says so, and asks no second time.
     expect(buttonNamed(page, "Stopping…")).toMatchObject({ disabled: true });
     expect(buttonNamed(page, "Disconnect Slack")).toBeTruthy();
     // What it can use is edited with the same grant editor as any connected agent.
     expect(page.querySelector('[aria-labelledby="agent-grant-tasks"]')).not.toBeNull();
     expect(text).not.toMatch(/bridge|lineage|ingress|route|binding|waiting/iu);
+  });
+
+  it("ends Stopping… when the Run ends, as the task's own updates say, and gives its next Run a Stop of its own", async () => {
+    const client = chats();
+    host = client;
+    const task = "thr_00000000-0000-4000-8000-0000000000c1";
+    const page = await mount(client, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(buttonNamed(page, "Stop")).toMatchObject({ disabled: false }));
+    // The Home takes the Stop; the Run ends when its device answers, later.
+    const real = client.dispatch.bind(client);
+    const interrupts: Extract<
+      Parameters<MockHostClient["dispatch"]>[0],
+      { type: "run.interrupt" }
+    >[] = [];
+    vi.spyOn(client, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      interrupts.push(command);
+      return { type: "run.interrupt", wasDuplicate: false };
+    });
+    await act(async () => buttonNamed(page, "Stop").click());
+    expect(buttonNamed(page, "Stopping…")).toMatchObject({ disabled: true });
+    // It answers: the Run ends, and nothing about the connection changes.
+    const changed = vi.fn();
+    const unsubscribe = client.subscribeConnectionsChanged(changed);
+    await act(async () => void (await real(interrupts[0]!)));
+    await vi.waitFor(() => expect(page.textContent).not.toContain("Stopping…"));
+    expect(
+      [...page.querySelectorAll("button")].map(({ textContent }) => textContent),
+    ).not.toContain("Stop");
+    expect(changed).not.toHaveBeenCalled();
+    unsubscribe();
+    // The task is given more work: a new Run, which has a Stop of its own. The preview's reply
+    // waits on a timer that is held here, so the Run is still at work when it is stopped.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    await act(async () => client.resumeThreadInputQueue(task));
+    void real({
+      type: "thread.sendMessage",
+      threadId: ThreadIdSchema.parse(task),
+      content: [{ type: "text", text: "One more thing" }],
+      delivery: "queue",
+      idempotencyKey: "chat-next-run",
+    });
+    const running = () =>
+      client.getSnapshot().threads.find(({ id }) => id === task)?.status === "running";
+    for (let step = 0; step < 50 && !(running() && page.textContent?.includes("Running")); step++)
+      await act(async () => void (await vi.advanceTimersToNextTimerAsync()));
+    expect(buttonNamed(page, "Stop")).toMatchObject({ disabled: false });
+    await act(async () => buttonNamed(page, "Stop").click());
+    vi.useRealTimers();
+    expect(interrupts.map(({ runId }) => runId)).toHaveLength(2);
+    expect(new Set(interrupts.map(({ runId }) => runId)).size).toBe(2);
   });
 
   it.each([
@@ -683,9 +791,11 @@ describe("a chat, as a connected agent", () => {
     host = chats();
     const page = await mount(host, `${base}/${chat(1)}`);
     await vi.waitFor(() => expect(page.textContent).toContain("Summarize my week"));
-    vi.spyOn(host, "stopRun").mockRejectedValue(
-      new HostClientRequestError({ code: "unavailable", message: "down", status: 503 }),
-    );
+    const real = host.dispatch.bind(host);
+    vi.spyOn(host, "dispatch").mockImplementation(async (command) => {
+      if (command.type !== "run.interrupt") return real(command);
+      throw new HostClientRequestError({ code: "unavailable", message: "down", status: 503 });
+    });
     await act(async () => buttonNamed(page, "Stop").click());
     await vi.waitFor(() => expect(page.querySelector('[role="alert"]')?.textContent).toBeTruthy());
     expect(page.querySelector('[role="alert"]')?.textContent).not.toContain("down");

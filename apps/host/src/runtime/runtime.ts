@@ -72,7 +72,7 @@ import { AuthSessionIdSchema } from "@opensteer/core";
 import { IdleCompactionService } from "../agents/idle-compaction-service.js";
 import { admitIdleCompaction, idleCompactionCandidates } from "@opensteer/database/idle-compaction";
 import { DeviceAccessService } from "../administration/device-access-service.js";
-import { requireDeviceAccess } from "../administration/device-access.js";
+import { requireDeviceAccess, requireRunnerDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { DeadlineDrain } from "./deadline-drain.js";
 import { assignmentReturnPass } from "./assignment-return-pass.js";
@@ -442,6 +442,8 @@ export interface HostRuntimeOptions {
     import("../plugins/plugin-service.js").PluginServiceOptions,
     "npmRegistry" | "catalogUrl" | "selfOrigin" | "limits" | "processEntry" | "bridge"
   >;
+  /** Override the REPL worker entry; test Hosts run the built JS worker instead of source under tsx. */
+  readonly replWorkerEntry?: URL;
   readonly onPersonalScopeCut?: (
     scope: import("@opensteer/protocol/personal-sync").PersonalScope,
   ) => Promise<void>;
@@ -954,16 +956,10 @@ export async function createHostRuntime(
         tabs?.changed();
       },
       requireAgentAccess: async (runnerId) =>
-        requireDeviceAccess(
-          database,
-          await store.requireSelfDeviceId(runnerId),
-          "apps",
-          runners.isRunnerConnected(runnerId),
-          {
-            asleep: runners.isRunnerAsleep(runnerId),
-            stopped: runners.agentsStoppedSince(runnerId) !== null,
-          },
-        ),
+        requireRunnerDeviceAccess(database, runnerId, "apps", runners.isRunnerConnected(runnerId), {
+          asleep: runners.isRunnerAsleep(runnerId),
+          stopped: runners.agentsStoppedSince(runnerId) !== null,
+        }),
       packageSource: (serverId, runnerId, launch) =>
         pluginPackages?.computerSource(serverId, runnerId, launch),
       knownDefinitionIds: () => computerAppDefinitionIds,
@@ -1198,9 +1194,9 @@ export async function createHostRuntime(
     await store.recoverConnectionCdpAttempts();
     const browser = new BrowserService({
       requireAgentAccess: async (runnerId) =>
-        requireDeviceAccess(
+        requireRunnerDeviceAccess(
           database,
-          await store.requireSelfDeviceId(runnerId),
+          runnerId,
           "browser",
           runners.isRunnerConnected(runnerId),
           {
@@ -1209,7 +1205,7 @@ export async function createHostRuntime(
           },
         ),
       requireAgentVisibility: async (runnerId) =>
-        requireDeviceAccess(database, await store.requireSelfDeviceId(runnerId), "browser", true),
+        requireRunnerDeviceAccess(database, runnerId, "browser", true),
       detachRunnerAgents: (runnerId) =>
         commitPersonalMutation(database, async (tx, mutation) => {
           const sessions = await tx
@@ -2000,6 +1996,9 @@ export async function createHostRuntime(
       store: integrationPlatformStore,
     });
     const devices = new DeviceService({
+      ...(options.replWorkerEntry
+        ? { computerReplTime: { workerEntry: options.replWorkerEntry } }
+        : {}),
       listConnections,
       computerDriver: (id, definitionId) => deviceDrivers.resolve(id, definitionId),
       runnerSleeping: (id) => runnerRegistry?.isRunnerSleeping(id) ?? false,
@@ -3200,6 +3199,7 @@ export async function createHostRuntime(
       store,
       tabs: browserScriptConfinement.tabs(tabs),
       sharedChromeTabs: chromeTabs,
+      ...(options.replWorkerEntry ? { workerEntry: options.replWorkerEntry } : {}),
     });
     const agentSessions = new AgentSessionService({
       store,

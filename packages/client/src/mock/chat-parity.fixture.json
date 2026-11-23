@@ -223,12 +223,14 @@
             {
               "id": "thr_00000000-0000-4000-8000-000000000011",
               "title": "Book the dentist",
-              "running": false
+              "running": false,
+              "runId": null
             },
             {
               "id": "thr_00000000-0000-4000-8000-000000000012",
               "title": "Summarize my week",
-              "running": true
+              "running": true,
+              "runId": "run_00000000-0000-4000-8000-000000000013"
             }
           ]
         },
@@ -2233,191 +2235,13 @@
       }
     },
     {
-      "name": "stop a task with nothing running",
+      "name": "stop the running task, and its device answers",
       "command": {
         "kind": "task.stop",
         "account": "Workshop",
         "chat": "Slack",
-        "task": "Book the dentist"
-      },
-      "answer": {
-        "ok": false,
-        "code": null,
-        "reason": null,
-        "message": "This Thread has nothing to stop."
-      },
-      "views": {
-        "accounts": [
-          {
-            "name": "Lab",
-            "provider": "slack",
-            "status": "connected",
-            "connection": "pending",
-            "detail": "Checking messaging provider setup",
-            "me": null
-          },
-          {
-            "name": "Studio",
-            "provider": "slack",
-            "status": "paused",
-            "connection": "paused",
-            "detail": null,
-            "me": null
-          },
-          {
-            "name": "Workshop",
-            "provider": "slack",
-            "status": "connected",
-            "connection": "pending",
-            "detail": "Reconnecting to messaging provider",
-            "me": null
-          }
-        ],
-        "chats": [
-          {
-            "label": "Slack",
-            "state": "active",
-            "accessMode": "approval-required",
-            "grant": {
-              "scope": "selected",
-              "tasks": true,
-              "resources": []
-            },
-            "grantRevision": 1,
-            "account": "Lab",
-            "conversation": null,
-            "senders": "owner",
-            "me": null,
-            "pausedBy": null,
-            "pauseDetail": null,
-            "pausedMessages": null,
-            "endedBy": null,
-            "grantShape": {
-              "everything": true,
-              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
-              "tasks": "required"
-            },
-            "tasks": []
-          },
-          {
-            "label": "Slack",
-            "state": "stopped",
-            "accessMode": "approval-required",
-            "grant": {
-              "scope": "selected",
-              "tasks": true,
-              "resources": []
-            },
-            "grantRevision": 2,
-            "account": "On-call",
-            "conversation": null,
-            "senders": "owner",
-            "me": null,
-            "pausedBy": null,
-            "pauseDetail": null,
-            "pausedMessages": null,
-            "endedBy": "account",
-            "grantShape": {
-              "everything": true,
-              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
-              "tasks": "required"
-            },
-            "tasks": []
-          },
-          {
-            "label": "Slack",
-            "state": "paused",
-            "accessMode": "auto",
-            "grant": {
-              "scope": "selected",
-              "tasks": true,
-              "resources": []
-            },
-            "grantRevision": 1,
-            "account": "Studio",
-            "conversation": null,
-            "senders": "owner",
-            "me": null,
-            "pausedBy": "you",
-            "pauseDetail": null,
-            "pausedMessages": "lost",
-            "endedBy": null,
-            "grantShape": {
-              "everything": true,
-              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
-              "tasks": "required"
-            },
-            "tasks": []
-          },
-          {
-            "label": "Slack",
-            "state": "active",
-            "accessMode": "approval-required",
-            "grant": {
-              "scope": "selected",
-              "tasks": true,
-              "resources": []
-            },
-            "grantRevision": 1,
-            "account": "Workshop",
-            "conversation": null,
-            "senders": "owner",
-            "me": null,
-            "pausedBy": null,
-            "pauseDetail": null,
-            "pausedMessages": null,
-            "endedBy": null,
-            "grantShape": {
-              "everything": true,
-              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
-              "tasks": "required"
-            },
-            "tasks": [
-              {
-                "title": "Book the dentist",
-                "running": false
-              },
-              {
-                "title": "Summarize my week",
-                "running": true
-              }
-            ]
-          },
-          {
-            "label": "Slack · #team",
-            "state": "active",
-            "accessMode": "approval-required",
-            "grant": {
-              "scope": "selected",
-              "tasks": true,
-              "resources": []
-            },
-            "grantRevision": 1,
-            "account": "Workshop",
-            "conversation": "#team",
-            "senders": "anyone",
-            "me": null,
-            "pausedBy": null,
-            "pauseDetail": null,
-            "pausedMessages": null,
-            "endedBy": null,
-            "grantShape": {
-              "everything": false,
-              "resources": ["plugin"],
-              "tasks": "required"
-            },
-            "tasks": []
-          }
-        ]
-      }
-    },
-    {
-      "name": "stop the running task",
-      "command": {
-        "kind": "task.stop",
-        "account": "Workshop",
-        "chat": "Slack",
-        "task": "Summarize my week"
+        "task": "Summarize my week",
+        "run": "listed"
       },
       "answer": {
         "ok": true
@@ -2551,7 +2375,187 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
+              },
+              {
+                "title": "Book the dentist",
+                "running": false
+              }
+            ]
+          },
+          {
+            "label": "Slack · #team",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": "#team",
+            "senders": "anyone",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": false,
+              "resources": ["plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop it again from a page read before its Run ended",
+      "command": {
+        "kind": "task.stop",
+        "account": "Workshop",
+        "chat": "Slack",
+        "task": "Summarize my week",
+        "run": "ended"
+      },
+      "answer": {
+        "ok": false,
+        "code": "conflict",
+        "reason": null,
+        "message": "Run is already terminal"
+      },
+      "views": {
+        "accounts": [
+          {
+            "name": "Lab",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Checking messaging provider setup",
+            "me": null
+          },
+          {
+            "name": "Studio",
+            "provider": "slack",
+            "status": "paused",
+            "connection": "paused",
+            "detail": null,
+            "me": null
+          },
+          {
+            "name": "Workshop",
+            "provider": "slack",
+            "status": "connected",
+            "connection": "pending",
+            "detail": "Reconnecting to messaging provider",
+            "me": null
+          }
+        ],
+        "chats": [
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Lab",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "stopped",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 2,
+            "account": "On-call",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": "account",
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "paused",
+            "accessMode": "auto",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Studio",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": "you",
+            "pauseDetail": null,
+            "pausedMessages": "lost",
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": []
+          },
+          {
+            "label": "Slack",
+            "state": "active",
+            "accessMode": "approval-required",
+            "grant": {
+              "scope": "selected",
+              "tasks": true,
+              "resources": []
+            },
+            "grantRevision": 1,
+            "account": "Workshop",
+            "conversation": null,
+            "senders": "owner",
+            "me": null,
+            "pausedBy": null,
+            "pauseDetail": null,
+            "pausedMessages": null,
+            "endedBy": null,
+            "grantShape": {
+              "everything": true,
+              "resources": ["browser-profile", "chrome-tabs", "computer-app", "plugin"],
+              "tasks": "required"
+            },
+            "tasks": [
+              {
+                "title": "Summarize my week",
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -2776,7 +2780,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -2967,7 +2971,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -3156,7 +3160,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -3376,7 +3380,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -3565,7 +3569,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -3752,7 +3756,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -3936,7 +3940,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -4120,7 +4124,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -4279,7 +4283,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -4440,7 +4444,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -4601,7 +4605,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -4762,7 +4766,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -4920,7 +4924,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -5078,7 +5082,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -5240,7 +5244,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -5402,7 +5406,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -5569,7 +5573,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -5739,7 +5743,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -5908,7 +5912,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -6077,7 +6081,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -6247,7 +6251,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -6414,7 +6418,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",
@@ -6584,7 +6588,7 @@
             "tasks": [
               {
                 "title": "Summarize my week",
-                "running": true
+                "running": false
               },
               {
                 "title": "Book the dentist",

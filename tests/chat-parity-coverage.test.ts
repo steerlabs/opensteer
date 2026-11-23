@@ -5,7 +5,6 @@ import recorded from "../packages/client/src/mock/chat-parity.fixture.json" with
 import {
   chatScreenCommands,
   chatScreenHooks,
-  chatScreenMethods,
   chatScreenReads,
 } from "../packages/client/src/host/chat-screen-host.js";
 import {
@@ -43,7 +42,6 @@ describe("the chat parity script covers what the chat screens can send", () => {
   const sent = [
     ...chatScreenCommands,
     ...chatScreenReads.filter((read) => !(chatParityViewReads as readonly string[]).includes(read)),
-    ...Object.values(chatScreenMethods),
   ];
 
   it("lists each thing they send once, as a step kind or as outside the script with why", () => {
@@ -77,7 +75,7 @@ describe("the chat parity script covers what the chat screens can send", () => {
     const source = readFileSync(`${root}${path}`, "utf8");
     const receivers = new Set<string>();
     for (const match of source.matchAll(
-      /([A-Za-z_$][\w$]*)\s*\??\.\s*(?:dispatch|stopRun)\s*\(|([A-Za-z_$][\w$]*)\s*\.\s*rpc\b/gu,
+      /([A-Za-z_$][\w$]*)\s*\??\.\s*(?:dispatch|stopRun|interrupt\w*)\s*\(|([A-Za-z_$][\w$]*)\s*\.\s*rpc\b/gu,
     ))
       receivers.add(match[1] ?? match[2]!);
     // A hook handed a whole client is one listed with why it may be (`chatScreenHooks`).

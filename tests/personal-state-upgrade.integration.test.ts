@@ -29,7 +29,7 @@ import {
 import { removePlatformVerificationMigrationName } from "../packages/database/src/platform-verification-removal-migration.js";
 import { browserPoolMigrationName } from "../packages/database/src/browser-pool-migration.js";
 import { bridgeConnectionsMigrationName } from "../packages/database/src/bridge-connections-migration.js";
-import { bridgeConversionMigrationName } from "../packages/database/src/bridge-conversion-migration.js";
+import { chatRoutesEndMigrationName } from "../packages/database/src/chat-routes-end-migration.js";
 import { OpensteerStore } from "../packages/database/src/store.js";
 import { AgentConnectionStore } from "../packages/database/src/agent-connection-store.js";
 import { TabStore } from "../packages/database/src/tab-store.js";
@@ -263,7 +263,7 @@ test("carries a person's work from a database the released Home last migrated th
       browserPoolMigrationName,
       "0051_needs_you_counts_requests",
       bridgeConnectionsMigrationName,
-      bridgeConversionMigrationName,
+      chatRoutesEndMigrationName,
       removeOrganizationsMigrationName,
       removePlatformVerificationMigrationName,
     ]);

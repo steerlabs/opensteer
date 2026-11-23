@@ -345,24 +345,7 @@ export async function createStoreFixture() {
           provider: "channel:slack",
         },
       });
-      // What the previous image left on a Home it routed messages for: a route, and a
-      // conversation pinned to it. The new code never reads the route.
-      const binding = { id: createChannelId("binding"), revision: 1 };
-      await database
-        .insertInto("channelBindings")
-        .values({
-          accessPolicy: sql`${JSON.stringify(testChannelAccessPolicy("anyone"))}::jsonb`,
-          accountId: created.account.id,
-          createdBy: fixture.userId,
-          executionPolicy: sql`${JSON.stringify({ harness: "default", harnessInstanceId: null })}::jsonb`,
-          id: binding.id,
-          revision: binding.revision,
-          selector: sql`${JSON.stringify({ conversationId: null, conversationType: null, scopeId: null, threadId: null })}::jsonb`,
-          status: "active",
-          updatedAt: new Date(),
-        })
-        .execute();
-      const configured = { ...created, binding };
+      const configured = created;
       await channels.setRuntimeConnectionHealth({
         connectionId: configured.connection.id,
         detail: null,
@@ -370,27 +353,7 @@ export async function createStoreFixture() {
         runnerId: testMessagingRunnerId,
         status: "connected",
       });
-      const legacyConversationId = createChannelId("conversation");
-      await database
-        .insertInto("channelConversations")
-        .values({
-          accountId: configured.account.id,
-          activeThreadId: fixture.thread.id,
-          bindingId: configured.binding.id as never,
-          bindingRevision: configured.binding.revision,
-          conversationType: "dm",
-          displayName: `Delivery ${suffix}`,
-          externalAccountId: `T-${suffix}`,
-          externalConversationId: `D-${suffix}`,
-          externalScopeId: null,
-          externalThreadId: null,
-          id: legacyConversationId,
-          provider: "slack",
-          providerState: sql`${JSON.stringify({})}::jsonb`,
-          updatedAt: new Date(),
-        })
-        .executeTakeFirstOrThrow();
-      let conversationId = legacyConversationId;
+      let conversationId = createChannelId("conversation");
       let bridgeId: string | null = null;
       if (options.bridge !== false) {
         const { AgentConnectionStore } = await import("./agent-connection-store.js");
@@ -419,7 +382,7 @@ export async function createStoreFixture() {
           })
           .execute();
       }
-      return { bridgeId, channels, configured, conversationId, legacyConversationId, fixture };
+      return { bridgeId, channels, configured, conversationId, fixture };
     }
     async function insertChannelDelivery(input: {
       readonly accountId: ChannelAccountId;

@@ -33,16 +33,19 @@ import {
   type AgentGrantDraft,
   type HostClient,
   type HostSnapshot,
+  type SentencePart,
+  agentSentence,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { AgentGrantEditor, ConnectionModeChoices } from "./settings/agent-grant-editor.js";
+import { SentenceText } from "../ui/address-text.js";
 import { AgentMark } from "./settings/agent-mark.js";
 import { QrCode } from "./first-run/qr-code.js";
 
 type Load =
   | { readonly kind: "loading" }
   | { readonly kind: "ready"; readonly consent: AgentConnectionConsent }
-  | { readonly kind: "expired"; readonly agent: string | null }
+  | { readonly kind: "expired" }
   | { readonly kind: "answered" }
   | { readonly kind: "failed" }
   | { readonly kind: "missing" };
@@ -123,11 +126,7 @@ export function McpAuthorization({
       })
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
-        setLoad(
-          failureCode(reason) === "not_found"
-            ? { kind: "expired", agent: null }
-            : { kind: "failed" },
-        );
+        setLoad(failureCode(reason) === "not_found" ? { kind: "expired" } : { kind: "failed" });
       });
     return () => {
       controller.abort();
@@ -195,7 +194,7 @@ export function McpAuthorization({
       }
       const code = failureCode(reason);
       if (code === "conflict") setLoad({ kind: "answered" });
-      else if (code === "not_found") setLoad({ kind: "expired", agent: null });
+      else if (code === "not_found") setLoad({ kind: "expired" });
       else
         setError(
           agentWords(
@@ -224,9 +223,7 @@ export function McpAuthorization({
       setChanged(true);
     } catch (reason) {
       if (stale()) return;
-      setLoad(
-        failureCode(reason) === "not_found" ? { kind: "expired", agent: null } : { kind: "failed" },
-      );
+      setLoad(failureCode(reason) === "not_found" ? { kind: "expired" } : { kind: "failed" });
     }
     setBusy(null);
   }
@@ -243,11 +240,7 @@ export function McpAuthorization({
           ) : null}
           {load.kind === "expired" ? (
             <ConsentEnded
-              detail={
-                load.agent
-                  ? agentWords("consent.edge.expired.detail", { agent: load.agent })
-                  : agentWords("consent.edge.expired.detailUnnamed")
-              }
+              detail={agentWords("consent.edge.expired.detailUnnamed")}
               title={agentWords("consent.edge.expired.title")}
             />
           ) : null}
@@ -376,7 +369,8 @@ function ConsentForm({
     consent.redirectUri,
   );
   const heading = agentConsentHeading(identity.who);
-  const agent = heading.mark ? heading.title : workWords("who.thisAgent");
+  // The Home's verified name is a name; with none, Opensteer's own words for it.
+  const agent: SentencePart = heading.mark ? { name: heading.title } : workWords("who.thisAgent");
   const disabled = busy !== null;
   return (
     <>
@@ -459,9 +453,11 @@ function ConsentForm({
         />
       </label>
       <p className="settings-footnote">
-        {grants
-          ? agentWords("consent.finePrint", { agent })
-          : agentWords("consent.legacyFinePrint")}
+        {grants ? (
+          <SentenceText parts={agentSentence("consent.finePrint", { agent })} />
+        ) : (
+          agentWords("consent.legacyFinePrint")
+        )}
       </p>
       {changed ? (
         <p className="notice notice--warn" role="alert">

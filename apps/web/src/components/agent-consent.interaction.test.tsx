@@ -227,7 +227,7 @@ describe("agent consent with grants", () => {
     )!;
     // Its safety modes say what its tasks can touch, and the safety check is the engine's own.
     expect(container.textContent).toContain(
-      "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+      "Its tasks run under the engine’s own safety check. Its own direct actions ask you before anything that changes something.",
     );
     expect(container.textContent).toContain(
       "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",

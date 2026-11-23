@@ -4,8 +4,12 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { once } from "node:events";
 import { createServer, request, Agent, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
-import { closeWebSocketsWithin, drainConnectionsWithin } from "./connection-drain.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  closeWebSocketsWithin,
+  drainConnectionsWithin,
+  trackIdleConnections,
+} from "./connection-drain.js";
 
 /*
  * Ways a closing server can hold its process open:
@@ -26,6 +30,7 @@ describe("closing a server with connections in use", () => {
   async function listen(handler: Parameters<typeof createServer>[1]): Promise<number> {
     const server = createServer(handler);
     server.keepAliveTimeout = 72_000;
+    trackIdleConnections(server);
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
@@ -81,6 +86,80 @@ describe("closing a server with connections in use", () => {
     expect(elapsed).toBeLessThan(2_000);
     await expect(unanswered).resolves.toBe("cut off");
   });
+
+  it("closes a connected socket that never sent a request instead of waiting out the grace", async () => {
+    const port = await listen((_request, response) => response.end("done"));
+    const server = servers[0]!;
+    const accepted = once(server, "connection");
+    const idle = connect(port, "127.0.0.1");
+    await Promise.all([once(idle, "connect"), accepted]);
+    try {
+      drainConnectionsWithin(server, 3_000);
+      const elapsed = await closed(server);
+      expect(elapsed).toBeLessThan(1_000);
+    } finally {
+      idle.resetAndDestroy();
+    }
+  });
+
+  it("keeps a connection that already started sending a request open until it completes", async () => {
+    const port = await listen((_request, response) => response.end("ok"));
+    const server = servers[0]!;
+    const accepted = once(server, "connection") as Promise<[Socket]>;
+    const partial = connect(port, "127.0.0.1");
+    await once(partial, "connect");
+    const [serverSocket] = await accepted;
+    try {
+      partial.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+      await vi.waitFor(() => expect(serverSocket.bytesRead).toBeGreaterThan(0));
+      drainConnectionsWithin(server, 3_000);
+      const closing = closed(server);
+      await vi.waitFor(() => expect(server.listening).toBe(false));
+      server.closeIdleConnections();
+      expect(serverSocket.destroyed).toBe(false);
+      const answered = once(partial, "data") as Promise<[Buffer]>;
+      partial.write("\r\n");
+      const [chunk] = await answered;
+      expect(chunk.toString("latin1")).toMatch(/^HTTP\/1\.1 200 /);
+      expect(await closing).toBeLessThan(1_000);
+    } finally {
+      partial.resetAndDestroy();
+    }
+  });
+
+  it("handles a pre-connected socket whose first request is written right as listening stops without hanging shutdown", async () => {
+    const port = await listen((_request, response) => response.end("ok"));
+    const server = servers[0]!;
+    const accepted = once(server, "connection");
+    const preconnected = connect(port, "127.0.0.1");
+    await Promise.all([once(preconnected, "connect"), accepted]);
+    const outcome = new Promise<string>((resolve) => {
+      preconnected.once("data", (chunk) =>
+        resolve(`response:${chunk.toString("latin1").split("\r\n")[0]}`),
+      );
+      preconnected.once("error", (error: NodeJS.ErrnoException) =>
+        resolve(`error:${error.code ?? error.message}`),
+      );
+      preconnected.once("close", () => resolve("close"));
+    });
+    try {
+      drainConnectionsWithin(server, 3_000);
+      const closing = closed(server);
+      // Right after server.close() sets listening=false, the peer writes its first request on the
+      // pre-connected socket. Depending on whether poll reads the bytes before the sweep fires,
+      // the socket either gets its 200 response, a clean close, or ECONNRESET (same race as
+      // Node's closeIdleConnections on keep-alive sockets); in every case shutdown finishes fast.
+      expect(server.listening).toBe(false);
+      preconnected.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+      const result = await withTimeout(outcome, 2_000, {
+        timeoutError: () => new Error("Pre-connected socket never settled during shutdown"),
+      });
+      expect(result).toMatch(/^(response:HTTP\/1\.1 200 |close|error:ECONNRESET)/);
+      expect(await closing).toBeLessThan(1_000);
+    } finally {
+      preconnected.resetAndDestroy();
+    }
+  });
 });
 
 describe("closing the Host's WebSockets", () => {
@@ -131,5 +210,26 @@ describe("closing the Host's WebSockets", () => {
     await withTimeout(closing, 2_000, {
       timeoutError: () => new Error("The Host's HTTP server never closed"),
     });
+  });
+
+  it("closes idle pre-connected sockets promptly when Fastify closes without waiting out HTTP grace", async () => {
+    const app = Fastify();
+    apps.push(app);
+    await app.register(websocket, {
+      preClose: closeWebSocketsWithin(60_000, 3_000, app.server),
+    });
+    app.get("/health", async () => ({ ok: true }));
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("The Host did not bind");
+
+    const accepted = once(app.server, "connection");
+    const preconnected = connect(address.port, "127.0.0.1");
+    sockets.push(preconnected);
+    await Promise.all([once(preconnected, "connect"), accepted]);
+
+    const started = Date.now();
+    await app.close();
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

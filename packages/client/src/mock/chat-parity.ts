@@ -28,6 +28,12 @@ export type ChatParityCommand =
       readonly account: string;
       readonly chat: string;
       readonly task: string;
+      /**
+       * Which Run the page asks to stop: the one the chat's list names now ("listed"), or the one
+       * it named the last time it named one, from a page read before that Run ended ("ended").
+       * After an accepted Stop of a listed Run, its device answers: the Run ends, interrupted.
+       */
+      readonly run: "listed" | "ended";
     }
   | {
       readonly kind: "connection.update";
@@ -278,7 +284,13 @@ export function chatParityRefusal(error: unknown): ChatParityAnswer {
     ok: false,
     code,
     reason,
-    message: error instanceof Error ? error.message : String(error),
+    message:
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string"
+        ? error.message
+        : String(error),
   };
 }
 

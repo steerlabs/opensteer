@@ -29,13 +29,13 @@ import {
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
+import type { RunId } from "@opensteer/core";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
 import { isIdentityStillVerified } from "./agent-directory-verification.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperation } from "./operation-budget.js";
 import {
   connectionAttempts,
-  endConvertedRoutes,
   latestConnectionUncertainty,
   outstandingAttempts,
 } from "./connection-disconnect.js";
@@ -512,7 +512,7 @@ export class AgentConnectionStore {
   async revoke(
     userId: UserId,
     id: string,
-    options: { readonly routes?: "now" | "later"; readonly endedBy?: BridgeEndedBy } = {},
+    options: { readonly endedBy?: BridgeEndedBy } = {},
   ): Promise<boolean> {
     return commitPersonalMutation(this.database, async (tx) => {
       await requirePersonalOwner(tx, userId);
@@ -541,7 +541,6 @@ export class AgentConnectionStore {
         })
         .where("id", "=", row.id)
         .execute();
-      if (options.routes !== "later") await endConvertedRoutes(tx, [row.id], this.now());
       return true;
     });
   }
@@ -616,6 +615,7 @@ interface ChatFacts {
     readonly id: string;
     readonly title: string;
     readonly running: boolean;
+    readonly runId: RunId | null;
   }[];
 }
 
@@ -660,6 +660,12 @@ async function chatFacts(
   const tasks = await database
     .selectFrom("threads")
     .select(["id", "title", "status", "originConnectionId"])
+    // The Run it is doing, which Stop interrupts: its newest one not ended.
+    .select(
+      sql<RunId | null>`(select runs.id from runs where runs.thread_id = threads.id
+        and runs.maintenance is null and runs.status in ('starting', 'running', 'waiting')
+        order by runs.run_ordinal desc limit 1)`.as("runId"),
+    )
     .where("originConnectionId", "in", chatIds)
     .where("removedAt", "is", null)
     .where("parentThreadId", "is", null)
@@ -670,7 +676,10 @@ async function chatFacts(
     tasks
       .filter((task) => task.originConnectionId === id)
       .slice(0, 5)
-      .map((task) => ({ id: task.id, title: task.title, running: task.status === "running" }));
+      .map((task) => {
+        const running = task.status === "running";
+        return { id: task.id, title: task.title, running, runId: running ? task.runId : null };
+      });
   return new Map(
     rows.map((row) => [
       row.id,
@@ -751,7 +760,6 @@ function connectionView(
             grantShape: (({ resources, ...shape }) => ({ ...shape, resources: [...resources] }))(
               chatGrantShape(row.bridgeSenders),
             ),
-            ...(row.bridgeNotice ? { notice: row.bridgeNotice } : {}),
             conversationName: row.bridgeConversationName,
             ...(chat
               ? {
