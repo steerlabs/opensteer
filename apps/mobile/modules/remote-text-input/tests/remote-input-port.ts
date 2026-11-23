@@ -2,6 +2,7 @@ import type { EditingOperation, EditingProxyInstruction } from "@opensteer/clien
 import {
   caretMoveEditingCommands,
   caretRelativeEditingCommands,
+  committedRemainder,
 } from "@opensteer/protocol/editing";
 import { splitGraphemes } from "unicode-segmenter/grapheme";
 
@@ -881,9 +882,17 @@ export class FarField {
    * "ends the composition when the page rewrites its value under it").
    */
   endComposition() {
+    if (this.composition && this.composer)
+      this.ended = {
+        ...this.composer,
+        text: this.value.slice(this.composition.start, this.composition.end),
+      };
     this.composition = null;
     this.composer = null;
   }
+  /** CY4: a composition the page ended itself, its text kept: its composer's commit adds the rest. */
+  private ended: { contextId: string | null; producer: string | undefined; text: string } | null =
+    null;
   /** A new context for this same field: the page rewrote it, or refused an edit. */
   rotate() {
     if (this.contextId !== null) this.earlier.add(this.contextId);
@@ -909,6 +918,9 @@ export class FarField {
   }
   take = (operation: EditingOperation, producer?: string): boolean => {
     this.sent.push(operation);
+    // Only the next operation can be that composer's commit.
+    const ended = this.ended;
+    this.ended = null;
     const context =
       operation.kind === "edit"
         ? operation.edit.contextId
@@ -984,6 +996,19 @@ export class FarField {
         }
         if (this.refusedFrom?.contextId === context && this.refusedFrom.producer === producer)
           this.refusedFrom = null;
+        // CY4: what the field holds from a composition the page ended is applied; its composer's
+        // commit adds only the rest (committedRemainder, the phone's rule for a change of context).
+        if (
+          operation.kind === "edit" &&
+          insertion &&
+          ended &&
+          ended.contextId === (context ?? this.contextId) &&
+          ended.producer === producer
+        ) {
+          const rest = committedRemainder(ended.text, text);
+          this.replace(this.caret, this.caret, rest);
+          return true;
+        }
         if (operation.kind === "compose") {
           this.replace(range.start, range.end, text);
           this.composition = text ? { start: range.start, end: range.start + text.length } : null;

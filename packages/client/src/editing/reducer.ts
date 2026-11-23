@@ -1,5 +1,6 @@
 import { countGraphemes } from "unicode-segmenter/grapheme";
 import {
+  committedRemainder,
   editingTextMaxLength,
   type EditingContext,
   type EditingTextEdit,
@@ -598,13 +599,7 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         transaction.contextId &&
         transaction.contextId === state.context?.contextId
       ) {
-        const committed = transaction.committed;
-        const text =
-          event.data === committed
-            ? ""
-            : event.data.startsWith(committed)
-              ? event.data.slice(committed.length)
-              : event.data;
+        const text = committedRemainder(transaction.committed, event.data);
         if (text)
           emit({
             kind: "edit",

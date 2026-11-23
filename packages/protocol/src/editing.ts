@@ -62,6 +62,19 @@ export const EditingCommandSchema = z.enum([
 export type EditingCommand = z.infer<typeof EditingCommandSchema>;
 
 /**
+ * CY4: what a composition's commit adds to a field that already holds `held` from that same
+ * composition (the change of its context committed it, or the page ended it keeping its text):
+ * nothing when it is that text, the rest when it extends it, all of it when it differs, an
+ * insertion that deletes nothing. Each committed text is applied exactly once. The one rule for
+ * both cases, wherever a side knows what the field already holds: the phone's reducer (the
+ * change of context) and the page's applier (a composition the page ended).
+ */
+export function committedRemainder(held: string, commit: string): string {
+  if (commit === held) return "";
+  return commit.startsWith(held) ? commit.slice(held.length) : commit;
+}
+
+/**
  * The plain caret moves the phone sends. They are also what a client computes from an edit
  * (moving the caret back where the person had it): after the far side refuses an edit, the moves
  * of that producer under that context go with it until its next edit applies (CY5).

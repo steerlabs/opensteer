@@ -12,7 +12,11 @@ import {
   type Proxy,
 } from "./remote-input-port.js";
 import { splitGraphemes } from "unicode-segmenter/grapheme";
-import { caretRelativeEditingCommands, editingTextMaxLength } from "@opensteer/protocol/editing";
+import {
+  caretRelativeEditingCommands,
+  committedRemainder,
+  editingTextMaxLength,
+} from "@opensteer/protocol/editing";
 import { Oracle, Person, type Action } from "./typing-oracle.js";
 import { browserEditingAbilities } from "../../../../../packages/client/src/host/browser-editing.js";
 import { displayEditingAbilities } from "../../../../../packages/client/src/integrations/display-editing.js";
@@ -37,7 +41,7 @@ import {
 /** The remote field: the page's own applier, as the port models it. */
 class RemoteField extends FarField {}
 
-type Sabotage = "lose" | "drop" | "refuse" | "double" | "misplace" | "shift" | null;
+type Sabotage = "lose" | "drop" | "refuse" | "double" | "misplace" | "shift" | "recommit" | null;
 const harness = vi.hoisted(() => ({
   field: null as null | {
     deliver(packet: unknown): void;
@@ -71,8 +75,8 @@ const harness = vi.hoisted(() => ({
   /**
    * For the regimes' own tests: an operation that never reaches the page ("lose"), a far side that
    * loses one without a word ("drop": as if taken, never applied), refuses it ("refuse"), applies it twice ("double"), applies it a
-   * character before the caret ("misplace") or shifts the caret a character off after it
-   * ("shift"), to show each check catches it. `arrived`: made in a field the person arrived in,
+   * character before the caret ("misplace"), shifts the caret a character off after it
+   * ("shift") or is sent a composition's commit twice by the phone ("recommit"), to show each check catches it. `arrived`: made in a field the person arrived in,
    * with no composition open there. `field`: the far field it reaches.
    */
   sabotage: null as null | ((operation: unknown, arrived: boolean, field: unknown) => Sabotage),
@@ -1103,6 +1107,8 @@ describe("a person's caret moves and selections in the native field", () => {
     caret: number;
     private composition: { start: number; end: number } | null = null;
     private composer: string | null = null;
+    /** A composition the page's rewrite ended, its text kept, until its composer's next operation. */
+    private ended: { composer: string | null; text: string } | null = null;
     constructor(
       start: { text: string; caret: number },
       private context: string | null,
@@ -1123,12 +1129,22 @@ describe("a person's caret moves and selections in the native field", () => {
       if (act.kind === "context") this.context = act.contextId;
       else if (act.kind === "caret") this.caret = act.at;
       else if (act.kind === "insert") {
+        if (this.composition)
+          this.ended = {
+            composer: this.composer,
+            text: this.value.slice(this.composition.start, this.composition.end),
+          };
         this.value = this.value.slice(0, act.at) + act.text + this.value.slice(act.at);
         if (this.caret >= act.at) this.caret += act.text.length;
         // A rewrite of the value ends an open composition, its text kept (Blink's, CY4).
         this.composition = null;
         this.composer = null;
       } else {
+        if (this.composition)
+          this.ended = {
+            composer: this.composer,
+            text: this.value.slice(this.composition.start, this.composition.end),
+          };
         this.value = this.value.slice(0, act.from) + this.value.slice(act.to);
         const map = (offset: number) =>
           offset >= act.to ? offset - (act.to - act.from) : offset > act.from ? act.from : offset;
@@ -1148,7 +1164,10 @@ describe("a person's caret moves and selections in the native field", () => {
         "",
       );
     }
-    apply(operation: EditingOperation) {
+    /** Applies an operation the far field took; returns the text it put in the field for good. */
+    apply(operation: EditingOperation): string {
+      const ended = this.ended;
+      this.ended = null;
       const own =
         operation.kind === "edit"
           ? operation.edit.contextId
@@ -1175,11 +1194,22 @@ describe("a person's caret moves and selections in the native field", () => {
           this.composer = text ? this.context : null;
           this.caret =
             range.start + Math.min(Math.max(0, operation.composition.selectionEnd), text.length);
-        } else if (text || range.end > range.start) {
+          return "";
+        }
+        // What the page kept of a composition it ended is applied: its composer's commit adds
+        // only the rest.
+        if (ended && text && !before && !after && ended.composer === (own ?? this.context)) {
+          const rest = committedRemainder(ended.text, text);
+          this.splice(this.caret, this.caret, rest);
+          return rest;
+        }
+        if (text || range.end > range.start) {
           this.splice(range.start, range.end, text);
           this.composition = null;
           this.composer = null;
-        } else this.backspace();
+          return text;
+        }
+        this.backspace();
       } else if (operation.kind === "command") {
         const ends = this.ends();
         if (operation.command === "moveBackward")
@@ -1198,7 +1228,9 @@ describe("a person's caret moves and selections in the native field", () => {
         const item = operation.items.find((candidate) => candidate.type === "text/plain");
         const text = item ? new TextDecoder().decode(item.bytes) : "";
         this.splice(this.caret, this.caret, text);
+        return text;
       }
+      return "";
     }
   }
   /** The page's own rewrite of its far field, as regime C draws it (the far field has no code for it). */
@@ -1264,8 +1296,29 @@ describe("a person's caret moves and selections in the native field", () => {
     const acts: number[] = [];
     /** Which action each moveSelection call of the native field was. */
     const moves = new Map<number, number>();
-    /** Compositions the person committed, in order: a target that cannot show one inserts it. */
-    const commits: string[] = [];
+    /**
+     * Compositions the person committed, in order (CY4, ruling 2): the action that committed it,
+     * its text, and what the field already held from it (the change of context committed it, or
+     * the page ended it keeping its text). A target that cannot show a composition inserts it.
+     */
+    interface Lineage {
+      /** The texts it has had, in order: what a change of context could commit. */
+      marked: string[];
+      /** The page's acts before it began, and the action that ended it (committed or cancelled). */
+      start: number;
+      end?: number;
+      /** What the person committed of it, and the action that did; none if cancelled or open. */
+      committed?: { index: number; text: string };
+    }
+    /** The page's acts so far, and how many there had been at each action's turn. */
+    let clock = 0;
+    const turnClock = new Map<number, number>();
+    const lineages: Lineage[] = [];
+    let open: Lineage | null = null;
+    /** The actions that composed or committed: what they insert is a composition's. */
+    const composing = new Set<number>();
+    /** The texts of far compositions a rewrite of the page ended, keeping them. */
+    const ended: string[] = [];
     /** The distance of each swipe, by action. */
     const distances = new Map<number, number>();
     let swiped = 0;
@@ -1279,9 +1332,30 @@ describe("a person's caret moves and selections in the native field", () => {
       const current = segments.at(-1)!;
       current.actions.push(action);
       const p = current.person;
-      const marked = p.marked ? p.text.slice(p.marked.start, p.marked.end) : null;
+      const before = { text: p.text, marked: p.marked };
       action(p);
-      if (marked && p.marked === null && p.text.includes(marked)) commits.push(marked);
+      if (before.marked || p.marked) composing.add(index);
+      if (!before.marked && p.marked) {
+        open = { marked: [], start: clock };
+        lineages.push(open);
+      }
+      if (p.marked && open) open.marked.push(p.text.slice(p.marked.start, p.marked.end));
+      if (before.marked && !p.marked) {
+        // What now stands where the composition was: its text kept, or what replaced it.
+        const prefix = before.text.slice(0, before.marked.start);
+        const suffix = before.text.slice(before.marked.end);
+        const committed =
+          p.text.startsWith(prefix) &&
+          p.text.endsWith(suffix) &&
+          p.text.length >= prefix.length + suffix.length
+            ? p.text.slice(prefix.length, p.text.length - suffix.length)
+            : before.text.slice(before.marked.start, before.marked.end);
+        if (open) {
+          if (committed) open.committed = { index, text: committed };
+          open.end = index;
+        }
+        open = null;
+      }
       return index;
     };
     const act0 = oracle.act.bind(oracle);
@@ -1312,6 +1386,8 @@ describe("a person's caret moves and selections in the native field", () => {
         for (const index of owners) reported.set(index, owners);
       }
       owner = owners.at(-1) ?? owner;
+      // The latest turn of each action: when the native field applied it.
+      for (const index of owners) turnClock.set(index, clock);
       turned?.(turn);
     };
     const sent: {
@@ -1320,11 +1396,14 @@ describe("a person's caret moves and selections in the native field", () => {
       field: FarField;
       /** Whether it was made in the field it reached (its context that field's, now or earlier). */
       own: boolean;
-      /** Regime C: where in the log the far field applied it. */
+      /** Regime C: where in the log the far field applied it, and what PageModel says it inserted. */
       at?: number;
+      put?: string;
     }[] = [];
     /** Regime C (CY2): what the page did and what its field applied, in the order it happened. */
-    const log: ({ act: PageAct } | { operation: EditingOperation })[] = [];
+    const log: (
+      { act: PageAct } | { operation: EditingOperation; entry: (typeof sent)[number] }
+    )[] = [];
     const startContext = focused.contextId;
     let logged = focused.contextId;
     /** A context the far field rotated to by itself (a refusal), in its place in the log. */
@@ -1333,6 +1412,18 @@ describe("a person's caret moves and selections in the native field", () => {
         log.push({ act: { kind: "context", contextId: focused.contextId } });
       logged = focused.contextId;
     };
+    /** What an insertion or a plain paste puts in: the text a typed action promises. */
+    const inserted = (operation: EditingOperation) =>
+      operation.kind === "edit" &&
+      operation.edit.text !== "" &&
+      !operation.edit.before &&
+      !operation.edit.after
+        ? operation.edit.text
+        : operation.kind === "paste"
+          ? new TextDecoder().decode(
+              operation.items.find((item) => item.type === "text/plain")?.bytes,
+            )
+          : null;
     const graphemeEnds = (text: string) => {
       const ends = [0];
       for (const grapheme of splitGraphemes(text)) ends.push(ends.at(-1)! + grapheme.length);
@@ -1387,9 +1478,17 @@ describe("a person's caret moves and selections in the native field", () => {
       const result = focused.take(made);
       if (sabotage === "double") focused.take(made);
       if (sabotage === "shift") focused.caret = off(focused);
-      if (which === "C" && applied(entry)) {
-        entry.at = log.length;
-        log.push({ operation: made });
+      const took = (taken: typeof entry) => {
+        if (which !== "C" || !applied(taken)) return;
+        taken.at = log.length;
+        log.push({ operation: made, entry: taken });
+      };
+      took(entry);
+      if (sabotage === "recommit") {
+        const again = { ...entry };
+        sent.push(again);
+        focused.take(made);
+        took(again);
       }
       rotated();
       return result;
@@ -1451,9 +1550,14 @@ describe("a person's caret moves and selections in the native field", () => {
             rewrite = { kind: "caret", at };
           } else steps.push("the page rotates its context");
           if (rewrite) {
+            // The page's rewrite ends an open composition, its text kept.
+            const composition = focused.composition;
+            if (composition && rewrite.kind !== "caret")
+              ended.push(focused.value.slice(composition.start, composition.end));
             pageAct(focused, rewrite);
             log.push({ act: rewrite });
           }
+          clock += 1;
           // The page rewrote the field: a new context for it, the old one an earlier one.
           const id = fresh();
           if (focused.contextId !== null) focused.earlier.add(focused.contextId);
@@ -1626,24 +1730,19 @@ describe("a person's caret moves and selections in the native field", () => {
         if (failure) break;
       }
     } else {
-      /** What an insertion or a plain paste puts in: the text a typed action promises. */
-      const inserted = (operation: EditingOperation) =>
-        operation.kind === "edit" &&
-        operation.edit.text !== "" &&
-        !operation.edit.before &&
-        !operation.edit.after
-          ? operation.edit.text
-          : operation.kind === "paste"
-            ? new TextDecoder().decode(
-                operation.items.find((item) => item.type === "text/plain")?.bytes,
-              )
-            : null;
+      // CY2: the page's acts and what its field applied, in order, give its text and caret.
+      const model = new PageModel(segments[0]!.start, startContext);
+      for (const item of log) {
+        if ("act" in item) model.page(item.act);
+        else item.entry.put = model.apply(item.operation);
+      }
       // CY2: each typed action's text applied exactly once, in the order typed. Its turn may also
       // carry compositions committed before it, which a target that cannot show a composition
-      // inserts with the next text: the earliest of those not yet seen, whole, before it.
+      // inserts with the next text: what goes ahead of it is a composition's, checked below.
       let promise: string | null = null;
       let previous = -1;
-      let pending = 0;
+      /** What went ahead of each typed text in its own turn, where it went. */
+      const ahead = new Map<number, string>();
       for (const [index, each] of kinds.entries()) {
         if (each !== "typed" || texts[index] === "") continue;
         const landed = sent.filter(
@@ -1652,10 +1751,8 @@ describe("a person's caret moves and selections in the native field", () => {
         );
         let got = landed.map((entry) => inserted(entry.operation)).join("");
         if (got.endsWith(texts[index]!)) {
-          let ahead = got.slice(0, got.length - texts[index]!.length);
-          while (ahead !== "" && pending < commits.length && ahead.startsWith(commits[pending]!))
-            ahead = ahead.slice(commits[pending++]!.length);
-          if (ahead === "") got = texts[index]!;
+          ahead.set(landed[0]!.at!, got.slice(0, got.length - texts[index]!.length));
+          got = texts[index]!;
         }
         if (got !== texts[index]) {
           promise = `action ${index + 1} typed ${said(texts[index]!)}, the page applied ${landed.length === 0 ? "nothing of it" : said(got)}`;
@@ -1667,11 +1764,82 @@ describe("a person's caret moves and selections in the native field", () => {
         }
         previous = landed.at(-1)!.at!;
       }
-      // CY2: the page's acts and what its field applied, in order, give its text and caret.
-      const model = new PageModel(segments[0]!.start, startContext);
-      for (const item of log) {
-        if ("act" in item) model.page(item.act);
-        else model.apply(item.operation);
+      // Ruling 2: each composition the person committed is applied exactly once, in order. In the
+      // order the far field applied them, what composing turns (and a change of context, no one's
+      // turn) put in, with what went ahead of typed text, reads as each committed text in turn:
+      // the commit itself; what was marked when the context changed and then the commit, where
+      // the person chose another candidate (CY4); or only the rest, where a rewrite of the page
+      // ended the composition keeping its text (committedRemainder). Nothing else is left.
+      if (!promise) {
+        let put = "";
+        for (const item of log) {
+          if ("act" in item) continue;
+          const { entry } = item;
+          if (ahead.has(entry.at!)) put += ahead.get(entry.at!)!;
+          if (inserted(entry.operation) === null || !entry.put) continue;
+          if (entry.owners.length === 0 || entry.owners.some((owner) => composing.has(owner)))
+            if (!entry.owners.some((owner) => kinds[owner] === "typed")) put += entry.put;
+        }
+        let rest = put;
+        for (const lineage of lineages) {
+          // What its changes of context committed: up to one marked text each, in order.
+          let last: string | null = null;
+          // The changes of context between its start and the turn of the action that ended it,
+          // when the phone ended it (to the end of the sequence for one left open). Each may
+          // commit two of its marked texts: what the phone's reducer had marked then, and what
+          // the native field had marked when its configure ended the composition (one mark
+          // further on, CY4's insertion of a commit that differs).
+          const ending = lineage.end === undefined ? undefined : turnClock.get(lineage.end);
+          let changes = 2 * ((ending ?? clock) - lineage.start);
+          let at = 0;
+          const commit = lineage.committed;
+          while (changes > 0 && rest !== "") {
+            const marked = lineage.marked.slice(at);
+            // The longest marked text the field took next, leaving room for the commit's form.
+            const next = marked
+              .map((text, offset) => ({ text, offset }))
+              .filter(({ text }) => rest.startsWith(text))
+              .sort((a, b) => b.text.length - a.text.length)[0];
+            if (!next) break;
+            const after = rest.slice(next.text.length);
+            // A change's text equal to the commit, with the commit adding nothing, ends here.
+            if (commit && commit.text === next.text && !after.startsWith(commit.text)) {
+              last = next.text;
+              rest = after;
+              break;
+            }
+            if (
+              commit &&
+              after.startsWith(committedRemainder(next.text, commit.text)) === false &&
+              rest.startsWith(commit.text)
+            )
+              break;
+            last = next.text;
+            rest = after;
+            at += next.offset + 1;
+            changes -= 1;
+          }
+          if (!commit) continue;
+          const forms =
+            last !== null
+              ? [committedRemainder(last, commit.text)]
+              : [
+                  commit.text,
+                  ...lineage.marked
+                    .filter((text) => ended.includes(text))
+                    .map((text) => committedRemainder(text, commit.text)),
+                ];
+          const form = forms
+            .sort((a, b) => b.length - a.length)
+            .find((candidate) => rest.startsWith(candidate));
+          if (form === undefined) {
+            promise = `action ${commit.index + 1} committed ${said(commit.text)}${last !== null ? ` after a change committed ${said(last)}` : ""}, and what the page took of compositions from there is ${said(rest)}`;
+            break;
+          }
+          rest = rest.slice(form.length);
+        }
+        if (!promise && rest !== "")
+          promise = `the page took ${said(rest)} of compositions beyond what the person committed (${lineages.flatMap((lineage) => (lineage.committed ? [said(lineage.committed.text)] : [])).join(", ")})`;
       }
       // Relative to the caret: an insertion, a paste, a move or deletion command. A refused
       // replacement (a selection's deletion, a composition's update) is allowed.
@@ -1722,6 +1890,52 @@ describe("a person's caret moves and selections in the native field", () => {
     expect(native.text === "" || native.text === "a").toBe(true);
     expect(remote.value).toBe("a");
     expect(remote.refused).toEqual([]);
+  });
+
+  // Ruling 2's promise found it (regime C, seed 170): the page's new context arrives while a
+  // commit and the letters after it still wait under the context left. The commit ends the
+  // composition in both reducers, but the native field holds the context left's mirror: that
+  // reducer's answer is the one it takes, or its mirror is never cleared and the next letter
+  // carries what was committed again.
+  it.each(["full", "basic", "baseline", "display"] as const)(
+    "on %s, applies a commit once and the next letter alone across a change of context",
+    async (name) => {
+      const { remote, keyboard, answerAll, publish } = await open(targets[name]);
+      await keyboard((field) => field.setMarkedText("に"));
+      await keyboard((field) => field.unmarkText());
+      await keyboard((field) => field.insertText("a"));
+      await keyboard((field) => field.insertText("a"));
+      const next = "00000000-0000-4000-8000-000000000782";
+      remote.earlier.add(remote.contextId!);
+      remote.contextId = next;
+      await publish(next);
+      await answerAll();
+      expect(remote.value).toBe("にaa");
+    },
+  );
+
+  // CY4, the lead's ruling 2: the page rewrites its field under "に", ending the composition and
+  // keeping its text; the phone commits "に" at the change of context. Applied once: "Zにx".
+  it("applies once a composition the page ended itself, then types after it", async () => {
+    const { remote, keyboard, answerAll, publish } = await open();
+    await keyboard((field) => field.setMarkedText("に"));
+    await answerAll();
+    expect(remote.composition).not.toBeNull();
+    // The page's rewrite ends the composition, its text kept, as Blink does.
+    remote.endComposition();
+    remote.value = `Z${remote.value}`;
+    remote.caret += 1;
+    const next = "00000000-0000-4000-8000-000000000779";
+    remote.earlier.add(remote.contextId!);
+    remote.contextId = next;
+    await publish(next);
+    await answerAll();
+    await keyboard((field) => field.unmarkText());
+    await answerAll();
+    await keyboard((field) => field.insertText("x"));
+    await answerAll();
+    expect(remote.value).toBe("Zにx");
+    expect(remote.caret).toBe(3);
   });
 
   // CY8: a paste that comes late (named under the context just left) arrives whole whatever its
@@ -1916,6 +2130,14 @@ describe("a person's caret moves and selections in the native field", () => {
       "an insertion",
       (operation: unknown, _arrived: boolean, field: unknown) =>
         insertion(operation) && (field as FarField).value !== "",
+    ],
+    // Ruling 2: what only the commit promise catches (the far field and the model agree on it).
+    [
+      "C",
+      "recommit",
+      "a composition's commit, sent twice",
+      (operation: unknown, _arrived: boolean, field: unknown) =>
+        insertion(operation) && (field as FarField).composition !== null,
     ],
     [
       "C",

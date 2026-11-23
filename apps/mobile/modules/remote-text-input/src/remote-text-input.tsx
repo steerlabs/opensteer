@@ -114,12 +114,18 @@ export function RemoteTextInput(
           // that context is taken; here, where the change left it ended. A key's release and a
           // blur are the field's whatever its context; a blur also clears the mirror the native
           // field still holds for the context left, which that context must know (CY9).
-          if (old && (packet.event.type === "compositionend" || packet.event.type === "blur"))
-            onLateEvent?.(packet.contextId!, packet.event);
-          const instruction =
+          const ended =
+            old && (packet.event.type === "compositionend" || packet.event.type === "blur")
+              ? onLateEvent?.(packet.contextId!, packet.event)
+              : null;
+          const current =
             old && !["compositionend", "keyup", "blur"].includes(packet.event.type)
               ? (onLateEvent?.(packet.contextId!, packet.event) ?? { preventDefault: true })
               : onEvent(packet.event);
+          // The native field still holds the mirror of the context left: what that context's
+          // reducer answers is what it applies (a commit there clears it), or the next letter
+          // there carries what was committed again (found by regime C's commit promise).
+          const instruction = ended ?? current;
           void proxyFunctions(view)
             ?.respond(nativeInstruction(packet.id, instruction))
             .catch(() => failed(view));

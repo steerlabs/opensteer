@@ -442,6 +442,61 @@ describe.each(kinds)("the far-field model against the real page applier, in a %s
     expect(await read(page, kind)).toEqual({ value: "Zabにx日", caret: 6, collapsed: true });
   });
 
+  // CY4, the lead's ruling 2: what the page holds from a composition it ended itself is applied.
+  // The composer's commit of it then (the phone commits at the change of context) adds nothing
+  // when it is that text, the rest when it extends it, all of it when it differs: each committed
+  // text applied exactly once.
+  it.each([
+    ["に", "Zabに"],
+    ["にほん", "Zabにほん"],
+    ["日本", "Zabに日本"],
+  ] as const)(
+    "applies the commit %s of a composition the page ended once, as %s",
+    async (commit, expected) => {
+      await seed(page, kind, "ab", 2);
+      await settle();
+      const earlier = observer.context.contextId!;
+      expect(await composeA("に")).toBe(true);
+      await page.evaluate((kind) => {
+        const element = document.getElementById("f")!;
+        if (kind === "textarea") {
+          const area = element as HTMLTextAreaElement;
+          const caret = area.selectionEnd;
+          area.value = `Z${area.value}`;
+          area.setSelectionRange(caret + 1, caret + 1);
+          return;
+        }
+        const caret = getSelection()!.focusOffset;
+        element.textContent = `Z${element.textContent ?? ""}`;
+        const range = document.createRange();
+        range.setStart(element.firstChild!, caret + 1);
+        range.collapse(true);
+        getSelection()!.removeAllRanges();
+        getSelection()!.addRange(range);
+      }, kind);
+      await settle();
+      expect(observer.context.contextId).not.toBe(earlier);
+      expect(
+        await send({
+          kind: "edit",
+          edit: { contextId: earlier, text: commit, before: "", after: "" },
+        }),
+      ).toBe(true);
+      expect(await read(page, kind)).toEqual({
+        value: expected,
+        caret: expected.length,
+        collapsed: true,
+      });
+      expect(
+        await send({
+          kind: "edit",
+          edit: { contextId: earlier, text: "x", before: "", after: "" },
+        }),
+      ).toBe(true);
+      expect((await read(page, kind)).value).toBe(`${expected}x`);
+    },
+  );
+
   it("types nothing into a field that took focus between the close's read and its send", async () => {
     await seed(page, kind, "", 0);
     await settle();

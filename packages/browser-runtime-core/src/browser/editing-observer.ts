@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   caretMoveEditingCommands,
+  committedRemainder,
   caretRelativeEditingCommands,
   EditingContextSchema,
   type EditingCommand,
@@ -216,6 +217,8 @@ export class PageEditingObserver {
     contextId: string;
     producer: string | undefined;
     admitted?: (() => void) | undefined;
+    /** The composition's text as last sent: what the page keeps if it ends it itself. */
+    text: string;
   } | null = null;
   #script: string | null = null;
   #closed = false;
@@ -432,6 +435,19 @@ export class PageEditingObserver {
       this.#refusedFrom = { contextId: edit.contextId, producer };
       return this.#stale();
     }
+    // CY4: the composer's commit of a composition the page ended itself (it rewrote the field and
+    // kept the text, sending no compositionend): what the page holds from it is applied, and only
+    // what the commit adds goes (committedRemainder, the rule the phone applies to a change of
+    // context).
+    const ended =
+      insertion &&
+      !parsed.data.composing &&
+      composer !== null &&
+      this.#composer === composer &&
+      composer.contextId === edit.contextId &&
+      composer.producer === producer;
+    const text = ended ? committedRemainder(composer.text, edit.text) : edit.text;
+    if (ended) this.#composer = null;
     try {
       if (this.#composer) {
         await this.#close(focus, edit.contextId, producer);
@@ -459,7 +475,9 @@ export class PageEditingObserver {
               }),
         });
         this.#composer =
-          edit.text.length > 0 ? { contextId: edit.contextId, producer, admitted } : null;
+          edit.text.length > 0
+            ? { contextId: edit.contextId, producer, admitted, text: edit.text }
+            : null;
       } else {
         if (
           parsed.data.replacementStart !== undefined &&
@@ -472,7 +490,9 @@ export class PageEditingObserver {
             replacementStart: parsed.data.replacementStart,
             replacementEnd: parsed.data.replacementEnd,
           });
-        if (edit.text.length) await this.#cdp.send("Input.insertText", { text: edit.text });
+        if (ended) {
+          if (text) await this.#cdp.send("Input.insertText", { text });
+        } else if (edit.text.length) await this.#cdp.send("Input.insertText", { text: edit.text });
         // An edit replaces an open composition: an empty one removes it, as the empty
         // composition of a cancel does. A Backspace would delete one of its characters and
         // commit the rest.
