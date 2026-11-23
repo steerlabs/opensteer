@@ -476,6 +476,54 @@ import UIKit
     let menu = try XCTUnwrap((view as UITextInput).editMenu?(for: range, suggestedActions: cutCopy), "the system's menu")
     XCTAssertEqual(leaves(menu.children).count, 0)
   }
+  // CW7: nothing of the system's acts on the hidden text. The field answers yes for its own
+  // Paste (with something to paste) and the page's undo and redo, no for every other standard
+  // action; Writing Tools are off for it and the assistant bar holds nothing.
+  func testNothingOfTheSystemsActsOnTheHiddenText() {
+    let view = RemoteInputTextView()
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: false)
+    view.pasteboardHasContent = { true }
+    view.insertText("hello")
+    view.respond(["id": 1])
+    view.selectedRange = NSRange(location: 0, length: 5)
+    var refused: [Selector] = [
+      #selector(UIResponderStandardEditActions.cut(_:)),
+      #selector(UIResponderStandardEditActions.copy(_:)),
+      #selector(UIResponderStandardEditActions.select(_:)),
+      #selector(UIResponderStandardEditActions.selectAll(_:)),
+      #selector(UIResponderStandardEditActions.delete(_:)),
+      #selector(UIResponderStandardEditActions.makeTextWritingDirectionLeftToRight(_:)),
+      #selector(UIResponderStandardEditActions.makeTextWritingDirectionRightToLeft(_:)),
+      #selector(UIResponderStandardEditActions.toggleBoldface(_:)),
+      #selector(UIResponderStandardEditActions.toggleItalics(_:)),
+      #selector(UIResponderStandardEditActions.toggleUnderline(_:)),
+      #selector(UIResponderStandardEditActions.increaseSize(_:)),
+      #selector(UIResponderStandardEditActions.decreaseSize(_:)),
+      #selector(UIResponderStandardEditActions.pasteAndMatchStyle(_:)),
+      #selector(UIResponder.captureTextFromCamera(_:)),
+      NSSelectorFromString("_lookup:"),
+      NSSelectorFromString("_translate:"),
+      NSSelectorFromString("_share:"),
+      NSSelectorFromString("_define:"),
+      NSSelectorFromString("showWritingTools:"),
+      NSSelectorFromString("replace:"),
+    ]
+    if #available(iOS 16.0, *) {
+      refused += [
+        #selector(UIResponderStandardEditActions.find(_:)),
+        #selector(UIResponderStandardEditActions.findAndReplace(_:)),
+        #selector(UIResponderStandardEditActions.useSelectionForFind(_:)),
+        #selector(UIResponderStandardEditActions.rename(_:)),
+        #selector(UIResponderStandardEditActions.duplicate(_:)),
+      ]
+    }
+    let answered = refused.filter { view.canPerformAction($0, withSender: nil) }
+    XCTAssertEqual(answered.map { NSStringFromSelector($0) }, [])
+    XCTAssertTrue(view.canPerformAction(#selector(UIResponderStandardEditActions.paste(_:)), withSender: nil))
+    if #available(iOS 18.0, *) { XCTAssertEqual(view.writingToolsBehavior, .none) }
+    XCTAssertEqual(view.inputAssistantItem.leadingBarButtonGroups.count, 0)
+    XCTAssertEqual(view.inputAssistantItem.trailingBarButtonGroups.count, 0)
+  }
   // CR7: the system's own Paste command is kept whenever UIKit suggests one: it pastes without the
   // prompt a programmatic read of the pasteboard brings up.
   func testTheSystemsOwnPasteCommandIsKept() {
@@ -535,6 +583,8 @@ import UIKit
     #if targetEnvironment(macCatalyst)
     throw XCTSkip("Needs a window: run on the iOS Simulator")
     #else
+    // The package supports iOS 16; trait overrides came in iOS 17.
+    guard #available(iOS 17.0, *) else { throw XCTSkip("Needs iOS 17's trait overrides") }
     let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 466, height: 678))
     window.traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
     let view = RemoteInputTextView(frame: CGRect(x: 46, y: 262, width: 356, height: 44), textContainer: nil)

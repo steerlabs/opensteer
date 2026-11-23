@@ -59,6 +59,10 @@ import UniformTypeIdentifiers
     accessibilityLabel = "Type into the remote field"
     smartQuotesType = .no
     smartDashesType = .no
+    // CW7: no Writing Tools for text nobody sees, and nothing in the keyboard's assistant bar.
+    if #available(iOS 18.0, *) { writingToolsBehavior = .none }
+    inputAssistantItem.leadingBarButtonGroups = []
+    inputAssistantItem.trailingBarButtonGroups = []
     gate.apply = { [weak self] in self?.apply($0) }
     gate.idle = { [weak self] in
       self?.edits.settle()
@@ -518,13 +522,13 @@ import UniformTypeIdentifiers
     let pasted = bytes > 16 * 1024 * 1024 ? [] : items
     gate.notify(["type": "paste", "items": pasted])
   }
+  /// CW7: nothing of the system's acts on the hidden text, which nobody sees: the view's own Paste
+  /// alone, and the page's undo and redo (RemoteInputUndo). Copy, Cut and Select All reach the
+  /// page from their keys as its own (the reducer's bindings), never as UIKit's actions.
   public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-    if action == #selector(copy(_:)) || action == #selector(cut(_:)) { return isEditable && !isSecureTextEntry }
     if action == #selector(paste(_:)) { return isEditable && pasteboardHasContent() }
-    // Nothing in the menu selects in the hidden field: what it selected nobody would see. Cmd+A
-    // reaches the page as its own selectAll instead.
-    if action == #selector(UIResponderStandardEditActions.select(_:)) || action == #selector(UIResponderStandardEditActions.selectAll(_:)) { return false }
-    return super.canPerformAction(action, withSender: sender)
+    if action == NSSelectorFromString("undo:") || action == NSSelectorFromString("redo:") { return isEditable }
+    return false
   }
   private func hardware(_ press: UIPress, down: Bool, action: @escaping () -> Void) {
     guard let key = press.key else { action(); return }
