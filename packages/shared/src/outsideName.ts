@@ -3,8 +3,8 @@ const invisible = /^[\p{Cc}\p{Cf}\p{Cs}\p{Default_Ignorable_Code_Point}]$/u;
 const extendedPictographic = /^\p{Extended_Pictographic}$/u;
 const letterOrMark = /^[\p{L}\p{M}]$/u;
 const latinOrShared = /^[\p{scx=Latin}\p{scx=Common}\p{scx=Inherited}]$/u;
-/** What the cut never separates from the character before it. */
-const continuation = /^[\p{M}\u200D\u{1F3FB}-\u{1F3FF}\u{E0020}-\u{E007F}]$/u;
+/** What the cut never separates from the character before it (and a skin tone). */
+const continuation = /^[\p{M}\u200D\u{E0020}-\u{E007F}]$/u;
 const regionalIndicator = /^[\u{1F1E6}-\u{1F1FF}]$/u;
 const keycapBase = /^[#*0-9]$/u;
 
@@ -99,6 +99,7 @@ export function outsideName(value: string, maximum: number): string {
     const continues =
       i > 0 &&
       (continuation.test(ch) ||
+        isEmojiJoinerModifier(ch) ||
         flatChars[i - 1] === "\u200D" ||
         (regional && regionalRun % 2 === 1));
     regionalRun = regional ? regionalRun + 1 : 0;
