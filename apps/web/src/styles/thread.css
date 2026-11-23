@@ -49,9 +49,13 @@
   min-height: 0;
   container: transcript / inline-size;
   overflow-y: auto;
-  overflow-anchor: none;
   overscroll-behavior: contain;
   scroll-padding-bottom: var(--space-56);
+}
+
+/* Disable browser heuristic scroll anchoring only while useVirtualTranscript owns anchoring. */
+.transcript-scroll[data-virtualized="true"] {
+  overflow-anchor: none;
 }
 
 .transcript {

@@ -177,6 +177,8 @@ const LazyMarkdown = lazy(() => markdownChunk);
  */
 const DeferredBodies = createContext<(() => HTMLElement | null) | null>(null);
 const undeferredRows = 40;
+/** Tail rows pinned mounted in virtualized transcripts so streaming stays smooth. */
+const virtualTailPinRows = 8;
 
 function Markdown(props: ComponentProps<typeof LazyMarkdown>) {
   const scroller = useContext(DeferredBodies);
@@ -352,6 +354,25 @@ function useAgentSource(
   const [store] = useState(() => new AgentSourceStore(value));
   useLayoutEffect(() => store.set(value), [store, value]);
   return store;
+}
+
+/** Persists disclosure open/closed state across virtualized row unmounts, keyed by stable id. */
+const TranscriptDisclosures = createContext<Map<string, boolean> | null>(null);
+
+function usePersistentDisclosure(
+  key: string,
+  defaultOpen = false,
+): [boolean, (next: boolean) => void] {
+  const store = useContext(TranscriptDisclosures);
+  const [open, setOpenState] = useState<boolean>(() => store?.get(key) ?? defaultOpen);
+  const setOpen = useCallback(
+    (next: boolean) => {
+      store?.set(key, next);
+      setOpenState(next);
+    },
+    [key, store],
+  );
+  return [open, setOpen];
 }
 
 const noWaitingRequests: readonly WaitingRequest[] = [];
@@ -650,10 +671,11 @@ export function AgentTranscript({
       node.removeEventListener("focusout", onFocusOut);
     };
   }, [scroller]);
+  const disclosures = useMemo(() => new Map<string, boolean>(), [threadId]);
   const allPinnedKeys = useMemo(() => {
     const pinned = new Set<string>(pinnedRowKeys);
     // Keep the tail rows mounted so streaming and tail-follow never flicker.
-    for (let index = Math.max(0, rows.length - undeferredRows); index < rows.length; index++) {
+    for (let index = Math.max(0, rows.length - virtualTailPinRows); index < rows.length; index++) {
       pinned.add(rows[index]!.key);
     }
     if (ownerTurn !== undefined) pinned.add(ownerTurn);
@@ -729,58 +751,60 @@ export function AgentTranscript({
     : rows.map((_, index) => renderRowAt(index));
 
   return (
-    <DeliveryFeedback value={deliveryFeedback}>
-      <TranscriptLive value={live}>
-        <AgentsLive value={live}>
-          <AgentReader value={agents}>
-            <AgentFolds>
-              <RequestShown value={requestShown}>
-                <ConversationMode value={conversation}>
-                  <ReplyWith value={replyWith}>
-                    <OpenActivity value={openWith}>
-                      <ActivityOfTurn value={activities}>
-                        <ActivityOpenedFrom value={owner}>
-                          <ActivityAnchor value={onActivityAnchor}>
-                            <TaskViews value={taskView}>
-                              <TranscriptHostClientContext value={attachmentReader}>
-                                <ReaderComputers value={computers}>
-                                  <TranscriptBrowserUses value={browserUses}>
-                                    <TranscriptBrowsers value={browserSessions}>
-                                      <Speakers value={speakers}>
-                                        <TranscriptImageContext value={imageScope}>
-                                          {drawnRows}
-                                          {indicator === null ? null : indicator.kind ===
-                                            "typing" ? (
-                                            // No turn has begun, so there is no Activity to open yet.
-                                            <div className="turn turn--conversation">
-                                              <Typing />
-                                            </div>
-                                          ) : (
-                                            <WorkingIndicator label={indicator.label} />
-                                          )}
-                                          {passwordsOffer === null
-                                            ? null
-                                            : renderPasswordsSuggestion?.(passwordsOffer)}
-                                          {queued}
-                                        </TranscriptImageContext>
-                                      </Speakers>
-                                    </TranscriptBrowsers>
-                                  </TranscriptBrowserUses>
-                                </ReaderComputers>
-                              </TranscriptHostClientContext>
-                            </TaskViews>
-                          </ActivityAnchor>
-                        </ActivityOpenedFrom>
-                      </ActivityOfTurn>
-                    </OpenActivity>
-                  </ReplyWith>
-                </ConversationMode>
-              </RequestShown>
-            </AgentFolds>
-          </AgentReader>
-        </AgentsLive>
-      </TranscriptLive>
-    </DeliveryFeedback>
+    <TranscriptDisclosures value={disclosures}>
+      <DeliveryFeedback value={deliveryFeedback}>
+        <TranscriptLive value={live}>
+          <AgentsLive value={live}>
+            <AgentReader value={agents}>
+              <AgentFolds>
+                <RequestShown value={requestShown}>
+                  <ConversationMode value={conversation}>
+                    <ReplyWith value={replyWith}>
+                      <OpenActivity value={openWith}>
+                        <ActivityOfTurn value={activities}>
+                          <ActivityOpenedFrom value={owner}>
+                            <ActivityAnchor value={onActivityAnchor}>
+                              <TaskViews value={taskView}>
+                                <TranscriptHostClientContext value={attachmentReader}>
+                                  <ReaderComputers value={computers}>
+                                    <TranscriptBrowserUses value={browserUses}>
+                                      <TranscriptBrowsers value={browserSessions}>
+                                        <Speakers value={speakers}>
+                                          <TranscriptImageContext value={imageScope}>
+                                            {drawnRows}
+                                            {indicator === null ? null : indicator.kind ===
+                                              "typing" ? (
+                                              // No turn has begun, so there is no Activity to open yet.
+                                              <div className="turn turn--conversation">
+                                                <Typing />
+                                              </div>
+                                            ) : (
+                                              <WorkingIndicator label={indicator.label} />
+                                            )}
+                                            {passwordsOffer === null
+                                              ? null
+                                              : renderPasswordsSuggestion?.(passwordsOffer)}
+                                            {queued}
+                                          </TranscriptImageContext>
+                                        </Speakers>
+                                      </TranscriptBrowsers>
+                                    </TranscriptBrowserUses>
+                                  </ReaderComputers>
+                                </TranscriptHostClientContext>
+                              </TaskViews>
+                            </ActivityAnchor>
+                          </ActivityOpenedFrom>
+                        </ActivityOfTurn>
+                      </OpenActivity>
+                    </ReplyWith>
+                  </ConversationMode>
+                </RequestShown>
+              </AgentFolds>
+            </AgentReader>
+          </AgentsLive>
+        </TranscriptLive>
+      </DeliveryFeedback>
+    </TranscriptDisclosures>
   );
 }
 
@@ -2131,7 +2155,7 @@ export function SubagentSteps({
 }
 
 function StepsRow({ row, turn }: { row: Extract<WorkRow, { kind: "steps" }>; turn: Turn }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = usePersistentDisclosure(`steps:${row.key}`, false);
   const [only] = row.entries;
   const single = row.entries.length === 1 ? only : undefined;
   const computer =
@@ -2319,7 +2343,10 @@ function Reasoning({
   active: boolean;
   scope?: TranscriptTextScope | undefined;
 }) {
-  const [open, setOpen] = useState(active || entry.state === "streaming");
+  const [open, setOpen] = usePersistentDisclosure(
+    `reasoning:${entry.id}`,
+    active || entry.state === "streaming",
+  );
   const client = useContext(TranscriptHostClientContext);
   const { threadId } = useContext(Speakers);
   const content = useTranscriptText({

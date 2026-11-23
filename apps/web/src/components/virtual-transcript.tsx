@@ -317,11 +317,13 @@ export function useVirtualTranscript({
       anchorRef.current = captureAnchor.current(node);
       if (frame === 0) frame = requestAnimationFrame(read);
     };
+    node.dataset.virtualized = "true";
     read();
     node.addEventListener("scroll", schedule, { passive: true });
     const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
     resize?.observe(node);
     return () => {
+      delete node.dataset.virtualized;
       if (frame !== 0) cancelAnimationFrame(frame);
       node.removeEventListener("scroll", schedule);
       resize?.disconnect();

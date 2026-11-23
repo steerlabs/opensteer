@@ -354,13 +354,12 @@ export class TabSleeper {
             : null,
         );
         if (reason && reason !== "quiet") continue;
+        const due = budget
+          ? Math.max(now, this.pressureBackoffUntil)
+          : this.deadline(session, record, cutoff);
         earliest = Math.min(
           earliest,
-          Math.max(
-            budget ? now : this.deadline(session, record, cutoff),
-            record.usedAt + quietMs,
-            this.nextProbe.get(record) ?? 0,
-          ),
+          Math.max(due, record.usedAt + quietMs, this.nextProbe.get(record) ?? 0),
         );
       }
     }
@@ -493,15 +492,15 @@ export class TabSleeper {
         if (pending.size >= concurrentSleeps) await Promise.race(pending);
         if (attempted >= sleepsPerPass || this.closed) break;
         const deadline = this.deadline(session, record);
-        if (this.rendererUsage && deadline > Date.now()) {
-          if (
-            !this.releasing ||
-            Date.now() < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0)
-          )
+        if (deadline > Date.now()) {
+          if (Date.now() < Math.max(this.pressureBackoffUntil, this.reclaimFrom?.settledAt ?? 0))
             continue;
-          // Only a successful sleep can change the measured pressure.
-          if (pending.size) await Promise.all(pending);
-          if (this.closed) break;
+          if (this.rendererUsage) {
+            if (!this.releasing) continue;
+            // Only a successful sleep can change the measured pressure.
+            if (pending.size) await Promise.all(pending);
+            if (this.closed) break;
+          }
         }
         if (
           this.sessions.get(id) !== session ||

@@ -191,10 +191,12 @@ describe("TabSleeper", () => {
       // Wait past the initial 30s renderer sample + 2 passes for 10 pages at 8/pass.
       await vi.advanceTimersByTimeAsync(35_000);
       const afterFirstRotation = sleepSpy.mock.calls.length;
+      const passesAfterFirstRotation = onPass.mock.calls.length;
       expect(afterFirstRotation).toBe(10);
-      // During the 30s zero-progress backoff window (before leftoverMs=60s), no 1s spin retries occur.
+      // During the 30s zero-progress backoff window (before leftoverMs=60s), no 1s spin retries or extra passes occur.
       await vi.advanceTimersByTimeAsync(20_000);
       expect(sleepSpy.mock.calls.length).toBe(afterFirstRotation);
+      expect(onPass.mock.calls.length).toBe(passesAfterFirstRotation);
       // Even over 10 minutes past leftoverMs, per-page exponential backoff prevents 1Hz spinning.
       await vi.advanceTimersByTimeAsync(600_000);
       expect(sleepSpy.mock.calls.length).toBeLessThan(150);
