@@ -1,12 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import {
-  ControlPlaneAccountIdSchema,
-  OrganizationIdSchema,
-} from "@opensteer/control-plane-protocol";
+import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import type {
   ControlPlaneAccountId,
   CloudComputerPlanSchema,
-  OrganizationId,
 } from "@opensteer/control-plane-protocol";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { z } from "zod";
@@ -22,7 +18,6 @@ const sessionId = stripeToken("cs");
 const metadata = z.object({
   account_id: ControlPlaneAccountIdSchema,
   request_id: z.uuid(),
-  organization_id: OrganizationIdSchema.optional(),
 });
 const objectId = z.object({ id: subscriptionId });
 const invoiceSubscription = z.object({
@@ -266,7 +261,6 @@ export interface CheckoutInput {
   readonly accountId: ControlPlaneAccountId;
   readonly requestId: string;
   readonly priceId: string;
-  readonly organization?: { id: OrganizationId; quantity: number };
   /** Where Stripe sends the person back; the client's return address when absent. */
   readonly returnUrl?: URL;
   readonly expiresAt?: Date;
@@ -300,13 +294,7 @@ export class CloudComputerStripe {
           ? { expires_at: String(Math.floor(input.expiresAt.getTime() / 1000)) }
           : {}),
         "line_items[0][price]": input.priceId,
-        "line_items[0][quantity]": String(input.organization?.quantity ?? 1),
-        ...(input.organization
-          ? {
-              "metadata[organization_id]": input.organization.id,
-              "subscription_data[metadata][organization_id]": input.organization.id,
-            }
-          : {}),
+        "line_items[0][quantity]": "1",
         client_reference_id: input.accountId,
         "metadata[account_id]": input.accountId,
         "metadata[request_id]": input.requestId,
@@ -315,9 +303,7 @@ export class CloudComputerStripe {
         success_url: success.toString(),
         cancel_url: returnUrl.toString(),
       },
-      input.organization
-        ? `organization:${input.organization.id}:${input.requestId}`
-        : `cloud-computer:${input.accountId}:${input.requestId}`,
+      `cloud-computer:${input.accountId}:${input.requestId}`,
     );
   }
 
@@ -357,19 +343,15 @@ export class CloudComputerStripe {
   }
 
   async findCheckout(input: {
-    accountId: ControlPlaneAccountId | null;
+    accountId: ControlPlaneAccountId;
     requestId: string;
-    organizationId?: OrganizationId;
     sessionId: string | null;
     createdAt: Date;
     expiresAt?: Date;
   }) {
     const matches = (record: z.infer<typeof checkoutRecord>) =>
       record.metadata?.request_id === input.requestId &&
-      record.metadata.organization_id === input.organizationId &&
-      (input.accountId
-        ? record.metadata.account_id === input.accountId
-        : input.organizationId !== undefined);
+      record.metadata.account_id === input.accountId;
     let record: z.infer<typeof checkoutRecord> | undefined;
     if (input.sessionId) {
       record = await this.#request(
@@ -420,11 +402,7 @@ export class CloudComputerStripe {
     }
   }
 
-  async validatePortal(id: string, kind: "personal" | "organization" = "personal"): Promise<void> {
-    const expected = {
-      personal: { canCancel: true, invoiceHistory: false },
-      organization: { canCancel: false, invoiceHistory: true },
-    }[kind];
+  async validatePortal(id: string): Promise<void> {
     const enabled = z.object({ enabled: z.boolean() });
     const config = await this.#request(
       `billing_portal/configurations/${stripeToken("bpc").parse(id)}`,
@@ -446,16 +424,14 @@ export class CloudComputerStripe {
       !config.active ||
       config.is_default ||
       !config.features.payment_method_update.enabled ||
-      config.features.subscription_cancel.enabled !== expected.canCancel ||
+      !config.features.subscription_cancel.enabled ||
       config.features.customer_update.enabled ||
-      config.features.invoice_history.enabled !== expected.invoiceHistory ||
+      config.features.invoice_history.enabled ||
       config.features.subscription_update.enabled
     ) {
       throw new ControlPlaneError(
         "unavailable",
-        kind === "organization"
-          ? "Organization billing portal allows unsupported changes"
-          : "Cloud Computer billing portal allows unsupported changes",
+        "Cloud Computer billing portal allows unsupported changes",
         {
           reason: "cloud-computer-billing-problem",
         },
@@ -560,51 +536,6 @@ export class CloudComputerStripe {
     );
     if (deleted.id !== customer || deleted.deleted !== true)
       throw new ControlPlaneError("unavailable", "Stripe did not delete the customer");
-  }
-
-  async updateSeatQuantity(input: {
-    item: string;
-    subscription: string;
-    organization: OrganizationId;
-    requestId: string;
-    quantity: number;
-    increase: boolean;
-  }): Promise<StripeSubscription> {
-    const subscription = subscriptionId.parse(input.subscription);
-    const result = await this.#request(
-      `subscriptions/${subscription}`,
-      stripeSubscription,
-      {
-        "items[0][id]": stripeToken("si").parse(input.item),
-        "items[0][quantity]": String(input.quantity),
-        "expand[0]": "latest_invoice",
-        ...(input.increase
-          ? { proration_behavior: "always_invoice", payment_behavior: "pending_if_incomplete" }
-          : { proration_behavior: "none" }),
-      },
-      `organization-seats:${input.organization}:${input.requestId}`,
-    );
-    if (result.id !== subscription)
-      throw new ControlPlaneError("unavailable", "Stripe returned another subscription");
-    return result;
-  }
-
-  async invoice(id: string) {
-    const result = await this.#request(`invoices/${stripeToken("in").parse(id)}`, billingInvoice);
-    if (result.id !== id)
-      throw new ControlPlaneError("unavailable", "Stripe returned another invoice");
-    return result;
-  }
-
-  async voidInvoice(id: string) {
-    await this.#request(
-      `invoices/${stripeToken("in").parse(id)}/void`,
-      z.object({
-        id: z.literal(id),
-        status: z.literal("void"),
-      }),
-      {},
-    );
   }
 
   async cancel(id: string): Promise<void> {

@@ -1,6 +1,6 @@
 import { agentDirectoryMigration } from "../agent-directory/migration.js";
 import { cloudComputerViewMigration } from "../cloud-computers/view-migration.js";
-import { organizationsMigration } from "../organizations/migration.js";
+import { onePersonAccountMigrations } from "./one-person-account-migration.js";
 import { cloudComputerLifecycleMigration } from "../cloud-computers/lifecycle-migration.js";
 import { personNameFromEmail } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
@@ -524,13 +524,14 @@ const migrationProvider = {
       "0027_personal_home_account_link": personalHomeAccountLinkMigration,
       "0028_cloud_computer_claim": cloudComputerClaimMigration,
       "0029_cloud_computer_lifecycle": cloudComputerLifecycleMigration,
-      "0030_organizations": organizationsMigration,
       "0031_cloud_computer_view": cloudComputerViewMigration,
       "0032_agent_directory": agentDirectoryMigration,
       "0033_cloud_computer_backup_report": cloudComputerBackupReportMigration,
       "0034_cloud_computer_google_server_ref": cloudComputerGoogleServerRefMigration,
       "0035_cloud_computer_billing_settled": cloudComputerBillingSettledMigration,
       "0036_browser_pool": browserPoolMigration,
+      // A Cloud Computer is one person's, bought and paid by that person.
+      ...onePersonAccountMigrations,
     };
   },
 };

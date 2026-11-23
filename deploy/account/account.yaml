@@ -149,7 +149,7 @@ spec:
               }
               // The managed Home offers are optional. Mount only keys configured in the secret.
               for (const [key, value] of Object.entries(document)) {
-                if (!/^OPENSTEER_(?:CLOUD_COMPUTER|ORGANIZATION)_[A-Z0-9_]+$/.test(key) || key.endsWith("_FILE")) continue;
+                if (!/^OPENSTEER_CLOUD_COMPUTER_[A-Z0-9_]+$/.test(key) || key.endsWith("_FILE")) continue;
                 if (typeof value !== "string" || value.length === 0) throw new Error(`Invalid ${key}`);
                 writeFileSync(`/var/run/opensteer-runtime/secrets/${key}`, value, { mode: 0o600 });
               }
