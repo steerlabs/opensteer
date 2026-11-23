@@ -5,7 +5,7 @@ import { LocalProfileBindingSchema, createBrowserSessionId } from "@opensteer/pr
 import { app } from "electron";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { configureDesktopApplicationPaths } from "../src/app/application-paths.js";
@@ -183,6 +183,15 @@ async function main() {
         nativeRoot: importRoot,
       });
       process.stdout.write(JSON.stringify(report) + "\n");
+      // The evidence the journey reads.
+      const artifactDirectory =
+        process.env.OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR ??
+        path.join(tmpdir(), "opensteer-state-import-e2e");
+      await mkdir(artifactDirectory, { recursive: true });
+      await writeFile(
+        path.join(artifactDirectory, "electron.json"),
+        `${JSON.stringify(report, null, 2)}\n`,
+      );
     } finally {
       importer.close();
     }

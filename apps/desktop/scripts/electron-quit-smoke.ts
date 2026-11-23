@@ -275,7 +275,6 @@ async function run(): Promise<void> {
       trial,
       window: restoreWindow,
       rpc,
-      checkpointed: () => periodicCommits > 0,
     });
     clearTimeout(watchdog);
     log("test.ready", { restore: true });

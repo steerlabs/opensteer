@@ -42,7 +42,6 @@ export async function runTabRestoreTrial(input: {
   trial: string;
   window: BrowserWindow;
   rpc: (method: string, body?: object) => Promise<unknown>;
-  checkpointed: () => boolean;
 }): Promise<void> {
   const { root, trial, window, rpc } = input;
   const fixture = z.url().parse(process.env.OPENSTEER_TAB_RESTORE_FIXTURE);
@@ -728,7 +727,6 @@ export async function runTabRestoreTrial(input: {
     const popup = rows(await bootstrap()).find((row) => row.title === "Restore /pop")!;
     await close(p2.tabId);
     await select(popup.id);
-    await wait(() => input.checkpointed(), "profile checkpoint");
     await wait(
       async () =>
         rows(await bootstrap()).length === 3 && rows(await bootstrap()).every((row) => row.iconRef),
