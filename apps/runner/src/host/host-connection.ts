@@ -535,7 +535,11 @@ export class ReconnectingHostConnection {
     try {
       await waitForOpen(socket, signal);
       const iterator = inbox[Symbol.asyncIterator]();
-      const welcome = await this.#authenticate(socket, iterator, signal);
+      const { supportsUsageWindowProviderIds, welcome } = await this.#authenticate(
+        socket,
+        iterator,
+        signal,
+      );
       sink = new CausallyOrderedRunnerSink(new WebSocketMessageSink(socket, this.#fence), (runId) =>
         this.#refreshRunCredentials(socket, runId),
       );
@@ -560,6 +564,7 @@ export class ReconnectingHostConnection {
         sink,
         iterator,
         welcome,
+        supportsUsageWindowProviderIds,
         handlers,
         AbortSignal.any([signal, connectionLifetime.signal]),
       );
@@ -608,7 +613,10 @@ export class ReconnectingHostConnection {
     socket: WebSocket,
     iterator: AsyncIterator<InboundFrame>,
     signal: AbortSignal,
-  ): Promise<Extract<HostToRunnerMessage, { readonly type: "host.welcome" }>> {
+  ): Promise<{
+    readonly supportsUsageWindowProviderIds: boolean;
+    readonly welcome: Extract<HostToRunnerMessage, { readonly type: "host.welcome" }>;
+  }> {
     const first = await nextHostMessage(iterator, signal, "Host did not issue a Runner challenge");
     if (first.type !== "host.challenge") {
       throw new Error("Host did not start the Runner authentication handshake");
@@ -618,6 +626,7 @@ export class ReconnectingHostConnection {
     }
     if (this.#agents && first.runEventsVersion !== runEventsVersion)
       throw new Error(runEventsUpdateReason);
+    const supportsUsageWindowProviderIds = first.usageWindowProviderIds === true;
     const descriptor = await this.#descriptor();
     const proof = this.#proof(first, descriptor);
     await sendWireMessage(socket, proof);
@@ -703,7 +712,7 @@ export class ReconnectingHostConnection {
         type: "runner.modules.report",
       });
     }
-    return response;
+    return { supportsUsageWindowProviderIds, welcome: response };
   }
 
   /** Exactly the modules this process runs, and nothing it merely could run. */
@@ -1105,6 +1114,7 @@ export class ReconnectingHostConnection {
     sink: CausallyOrderedRunnerSink,
     iterator: AsyncIterator<InboundFrame>,
     welcome: Extract<HostToRunnerMessage, { readonly type: "host.welcome" }>,
+    supportsUsageWindowProviderIds: boolean,
     handlers: readonly {
       readonly handler: RunnerModuleHandler;
       readonly module: RunnerAuxiliaryModule;
@@ -1123,6 +1133,7 @@ export class ReconnectingHostConnection {
           heartbeatNow: () => sendHeartbeat(),
           signal,
           sink,
+          supportsUsageWindowProviderIds,
         })
       : reachOnlyWorkSession(sink);
     this.#work = { socket, work };
@@ -1281,6 +1292,8 @@ interface AgentsWorkSessionOptions {
   readonly heartbeatNow: () => void;
   readonly signal: AbortSignal;
   readonly sink: CausallyOrderedRunnerSink;
+  /** False when connected to an older Host whose strict window schema predates `providerIds`. */
+  readonly supportsUsageWindowProviderIds?: boolean;
 }
 
 /** One connection's worth of agent work: harness catalogs, commands, storage. */
@@ -1542,8 +1555,12 @@ export class AgentsWorkSession implements RunnerWorkSession {
     const response = attempt
       .then(async (catalogs) => {
         if (this.#signal.aborted) return;
+        const wireCatalogs =
+          this.#options.supportsUsageWindowProviderIds === false
+            ? catalogs.map(stripUsageWindowProviderIds)
+            : [...catalogs];
         await this.#options.sink.send({
-          catalogs: [...catalogs],
+          catalogs: wireCatalogs,
           requestId: message.requestId,
           type: "runner.harness-catalog",
         });
@@ -2498,6 +2515,42 @@ function engineSignature(drivers: readonly HarnessDriverAvailability[]): string 
       (sources ?? []).map(({ sourceId, stateKinds }) => [sourceId, [...stateKinds]]),
     ]),
   );
+}
+
+/**
+ * Drops provider-pool windows when talking to an older Host whose strict
+ * catalog schema predates `providerIds`. Stripping only the `providerIds`
+ * property would turn a scoped or informational pool into an account-wide limit.
+ */
+function stripUsageWindowProviderIds(catalog: HarnessInstanceCatalog): HarnessInstanceCatalog {
+  if (
+    !catalog.connections.some((connection) =>
+      connection.usage?.windows.some((window) => window.providerIds !== undefined),
+    )
+  ) {
+    return catalog;
+  }
+  return {
+    ...catalog,
+    connections: catalog.connections.map((connection) => {
+      const usage = connection.usage;
+      if (!usage?.windows.some((window) => window.providerIds !== undefined)) {
+        return connection;
+      }
+      const compatibleWindows = usage.windows.filter((window) => window.providerIds === undefined);
+      if (compatibleWindows.length === 0 && !usage.limitReached) {
+        const { usage: _, ...rest } = connection;
+        return rest;
+      }
+      return {
+        ...connection,
+        usage: {
+          ...usage,
+          windows: compatibleWindows,
+        },
+      };
+    }),
+  };
 }
 
 function safeErrorMessage(error: unknown): string {

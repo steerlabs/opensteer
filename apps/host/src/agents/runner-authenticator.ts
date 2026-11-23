@@ -360,6 +360,7 @@ export class RunnerAuthenticator {
       type: "host.challenge",
       runEventsVersion,
       proofFormatVersion: runnerProofFormatVersion,
+      usageWindowProviderIds: true,
     });
   }
 

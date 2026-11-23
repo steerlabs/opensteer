@@ -2271,6 +2271,104 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     },
   );
 
+  it.each([false, true])(
+    "gates usage window providerIds on Host challenge advertisement (%s)",
+    async (usageWindowProviderIds) => {
+      const host = await fakeAgentsHost(
+        usageWindowProviderIds ? { usageWindowProviderIds: true } : {},
+      );
+      const runner = engineRecheckRunner(host.url, () => true);
+      const driverKind = HarnessIdSchema.parse("antigravity");
+      const harness = {
+        config: {},
+        driverKind,
+        id: createId("harnessInstance"),
+        name: "Antigravity",
+        runtimeRevision: 1,
+        sourceId: "oauth-personal",
+        stateKind: "isolated" as const,
+      };
+      vi.spyOn(runner.runtime, "inspectHarnesses").mockResolvedValue([
+        HarnessInstanceCatalogSchema.parse({
+          connections: [
+            {
+              authKind: "subscription",
+              connectionSlot: "primary",
+              label: "Antigravity",
+              status: "connected",
+              usage: {
+                limitReached: false,
+                observedAt: "2026-11-01T00:00:00.000Z",
+                windows: [
+                  {
+                    label: "Claude & GPT 5h",
+                    providerIds: ["anthropic", "openai"],
+                    resetsAt: "2026-11-01T05:00:00.000Z",
+                    usedPercent: 100,
+                  },
+                ],
+              },
+            },
+          ],
+          continuationIdentity: {
+            continuationKey: `runner:v1:${"a".repeat(43)}`,
+            driverKind,
+          },
+          driverKind,
+          harnessInstanceId: harness.id,
+          models: [
+            {
+              acceptsImages: true,
+              displayName: "Gemini 4 Neon",
+              isDefault: true,
+              modelId: "gemini-4-neon",
+              options: [],
+              providerId: "google",
+            },
+          ],
+          setupMethods: [],
+          status: "ready",
+        }),
+      ]);
+      const abort = new AbortController();
+      const running = runner.connection.run(abort.signal);
+      try {
+        await host.until(() => host.attaches.length === 1, "the Runner attachment");
+        host.send(1, {
+          harnesses: [harness],
+          requestId: "usage-compat",
+          type: "host.inspect-harnesses",
+        });
+        await host.until(
+          () => host.catalogs.some((response) => response.requestId === "usage-compat"),
+          "the catalog response",
+        );
+        const reply = host.catalogs.find((response) => response.requestId === "usage-compat")!;
+        const connection = reply.catalogs[0]?.connections[0];
+        if (usageWindowProviderIds) {
+          expect(connection?.usage?.windows).toEqual([
+            {
+              label: "Claude & GPT 5h",
+              providerIds: ["anthropic", "openai"],
+              resetsAt: "2026-11-01T05:00:00.000Z",
+              usedPercent: 100,
+            },
+          ]);
+        } else {
+          // Older Hosts cannot represent provider-pool scopes; drop pool windows
+          // instead of turning a 3P pool into an account-wide limit.
+          expect(connection?.usage).toBeUndefined();
+        }
+        expect(runner.errors).toEqual([]);
+      } finally {
+        abort.abort(new Error("test complete"));
+        await running;
+        await runner.runtime.close();
+        await host.close();
+      }
+    },
+  );
+
   it("never reconnects while its engines are unchanged, and re-advertises one installed since its hello with its Runs held", async () => {
     // Only the heartbeat's interval is faked, so each heartbeat is one the test sends.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -2518,7 +2616,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
  * A Host that welcomes every hello and records, per connection, the engines it
  * advertised, the Runs it attached and how many heartbeats it sent.
  */
-async function fakeAgentsHost() {
+async function fakeAgentsHost(options: { readonly usageWindowProviderIds?: true } = {}) {
   const server = createServer();
   const webSockets = new WebSocketServer({
     path: "/internal/v1/runners",
@@ -2554,6 +2652,7 @@ async function fakeAgentsHost() {
         nonce: randomUUID(),
         proofFormatVersion: 2,
         runEventsVersion: 2,
+        ...(options.usageWindowProviderIds ? { usageWindowProviderIds: true } : {}),
         type: "host.challenge",
       }),
     );
