@@ -1054,6 +1054,107 @@ integration.sequential("automation failure notices", () => {
     await assertRefusedEverywhere(doneRun, "boot-z6-5");
   });
 
+  it("locks mixed personal and connection firings in one ascending-id pass on attach (Z7)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createCronTrigger, database, start, triggers } = storeFixture;
+    const fixture = await createFixture("z7-lock-order");
+    const connId = `mcn_${randomUUID()}`;
+    await database
+      .insertInto("agentConnections")
+      .values({
+        accessMode: "full-access",
+        clientFingerprint: null,
+        clientName: "z7-agent",
+        consentVersion: 2,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + 86_400_000),
+        grant: jsonValue({ scope: "everything" }),
+        id: connId,
+        label: "Z7 Agent",
+        lastUsedAt: null,
+        resource: "https://example.test/mcp",
+        revokedAt: null,
+        tokenHash: `hash_${randomUUID()}`,
+        userId: fixture.userId,
+      })
+      .execute();
+    const personalTrigger = await createCronTrigger(fixture, "z7-personal");
+    const connTrigger = await triggers.create({
+      actorConnectionId: connId,
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "z7-conn",
+      name: "Z7 Connection",
+      program: {
+        language: "javascript",
+        source: "export default async () => null",
+        toolContractVersion: 5,
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const first = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: personalTrigger.trigger.id,
+      }),
+      "boot-z7",
+    );
+    const second = await start(
+      fixture,
+      await triggers.enqueueManual({
+        actorConnectionId: connId,
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: connTrigger.trigger.id,
+      }),
+      "boot-z7",
+    );
+    // Announce ONLY the higher-id occurrence so the unannounced occurrence has a strictly lower id.
+    const [lower, higher] = [first, second].toSorted((a, b) => a.id.localeCompare(b.id)) as [
+      typeof first,
+      typeof second,
+    ];
+    expect(lower.id < higher.id).toBe(true);
+
+    const attached = await triggers.attachRunnerFirings({
+      dispatchingOccurrenceIds: [],
+      firings: [
+        {
+          environmentId: fixture.environmentId,
+          executionGeneration: higher.executionGeneration,
+          occurrenceId: higher.id,
+          terminal: false,
+        },
+      ],
+      runnerBootId: "boot-z7",
+      runnerId: fixture.runnerId,
+    });
+    expect(attached.results).toEqual([{ occurrenceId: higher.id, status: "attached" }]);
+    expect(attached.settledUnknownCount).toBe(1);
+    const rows = await database
+      .selectFrom("triggerOccurrences")
+      .select(["id", "outcome", "status"])
+      .where("id", "in", [lower.id, higher.id])
+      .execute();
+    expect(rows.find((row) => row.id === lower.id)).toEqual({
+      id: lower.id,
+      outcome: "unknown",
+      status: "failed",
+    });
+    expect(rows.find((row) => row.id === higher.id)).toEqual({
+      id: higher.id,
+      outcome: "running",
+      status: "running",
+    });
+  });
+
   it("handles dispatch racing attach in both orders and isolates a week-gone computer's firing to its own automation", async ({
     storeFixture,
   }) => {

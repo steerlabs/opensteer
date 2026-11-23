@@ -2313,40 +2313,58 @@ export class TriggerStore {
       const restoredCommandIds: CommandId[] = [];
       const dispatchingIds = new Set<TriggerOccurrenceId>(input.dispatchingOccurrenceIds);
 
+      const announcedIds = [...new Set(input.firings.map((firing) => firing.occurrenceId))];
+      // Single-pass ascending-id lock across both announced firings and every running firing
+      // bound to this Runner so mixed personal/connection attaches never lock out of key order (Z7).
+      const candidateRows = await transaction
+        .selectFrom("triggerOccurrences")
+        .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+        .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
+        .select([
+          "triggerOccurrences.admittedAccessMode",
+          "triggerOccurrences.admittedGrantRevision",
+          "triggerOccurrences.commandId",
+          "triggerOccurrences.connectionId",
+          "triggerOccurrences.contactLostAt",
+          "triggerOccurrences.environmentId",
+          "triggerOccurrences.event",
+          "triggerOccurrences.executionGeneration",
+          "triggerOccurrences.id",
+          "triggerOccurrences.outcome",
+          "triggerOccurrences.revisionId",
+          "triggerOccurrences.runnerBootId",
+          "triggerOccurrences.runnerId",
+          "triggerOccurrences.status",
+          "triggerOccurrences.terminalEvidenceAt",
+          "triggerOccurrences.triggerId",
+          "triggers.anchorThreadId",
+          "triggers.createdBy",
+          "triggers.originConnectionId",
+          "triggers.status as triggerStatus",
+          "threads.doneAt as threadDoneAt",
+          "threads.removedAt as threadRemovedAt",
+          "threads.status as threadStatus",
+        ])
+        .where((eb) => {
+          const runningOnRunner = eb.and([
+            eb("triggerOccurrences.status", "=", "running"),
+            eb("triggerOccurrences.runnerId", "=", input.runnerId),
+          ]);
+          return announcedIds.length > 0
+            ? eb.or([eb("triggerOccurrences.id", "in", announcedIds), runningOnRunner])
+            : runningOnRunner;
+        })
+        .orderBy("triggerOccurrences.id", "asc")
+        .forNoKeyUpdate("triggerOccurrences")
+        .execute();
+      const rowsById = new Map(candidateRows.map((row) => [row.id, row]));
+
       const sortedFirings = [...input.firings].toSorted((a, b) =>
         a.occurrenceId.localeCompare(b.occurrenceId),
       );
       for (const firing of sortedFirings) {
         heldIds.add(firing.occurrenceId);
-        const row = await transaction
-          .selectFrom("triggerOccurrences")
-          .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-          .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
-          .select([
-            "triggerOccurrences.admittedAccessMode",
-            "triggerOccurrences.admittedGrantRevision",
-            "triggerOccurrences.commandId",
-            "triggerOccurrences.connectionId",
-            "triggerOccurrences.contactLostAt",
-            "triggerOccurrences.environmentId",
-            "triggerOccurrences.executionGeneration",
-            "triggerOccurrences.id",
-            "triggerOccurrences.outcome",
-            "triggerOccurrences.runnerBootId",
-            "triggerOccurrences.runnerId",
-            "triggerOccurrences.status",
-            "triggerOccurrences.terminalEvidenceAt",
-            "triggers.anchorThreadId",
-            "triggers.createdBy",
-            "triggers.originConnectionId",
-            "triggers.status as triggerStatus",
-            "threads.doneAt as threadDoneAt",
-            "threads.removedAt as threadRemovedAt",
-            "threads.status as threadStatus",
-          ])
-          .where("triggerOccurrences.id", "=", firing.occurrenceId)
-          .forNoKeyUpdate("triggerOccurrences")
-          .executeTakeFirst();
+        const row = rowsById.get(firing.occurrenceId);
         if (
           !row ||
           row.environmentId !== firing.environmentId ||
@@ -2403,7 +2421,36 @@ export class TriggerStore {
         results.push({ occurrenceId: firing.occurrenceId, status: "attached" });
       }
 
+      const unannouncedRows = candidateRows.filter(
+        (row) =>
+          row.status === "running" &&
+          row.runnerId === input.runnerId &&
+          !heldIds.has(row.id) &&
+          !(dispatchingIds.has(row.id) && row.runnerBootId === input.runnerBootId),
+      );
+
       const now = new Date();
+      const allCommandIds = [
+        ...new Set([...restoredCommandIds, ...unannouncedRows.map((row) => row.commandId)]),
+      ];
+      const commandRows =
+        allCommandIds.length > 0
+          ? await transaction
+              .selectFrom("commands")
+              .select(["frameSentAt", "id"])
+              .where("id", "in", allCommandIds)
+              .orderBy("id", "asc")
+              .forNoKeyUpdate()
+              .execute()
+          : [];
+      const frameSentByCommandId = new Map(commandRows.map((row) => [row.id, row.frameSentAt]));
+      const unsentRows = unannouncedRows.filter(
+        (row) => frameSentByCommandId.get(row.commandId) === null,
+      );
+      const unknownRows = unannouncedRows.filter(
+        (row) => frameSentByCommandId.get(row.commandId) !== null,
+      );
+
       if (attachedRunningIds.length > 0) {
         await transaction
           .updateTable("triggerOccurrences")
@@ -2428,37 +2475,97 @@ export class TriggerStore {
           .where("outcome", "=", "unknown")
           .execute();
       }
-
-      const settledUnknownCount = await this.#markActiveUnknownInTransaction(transaction, {
-        excludeOccurrenceIds: [...heldIds],
-        ...(dispatchingIds.size > 0
-          ? {
-              excludeSameBootOccurrenceIds: [...dispatchingIds],
-              sameBootId: input.runnerBootId,
-            }
-          : {}),
-        message: "Outcome unknown: the computer reconnected without this firing.",
-        resetUnsentToPending: true,
-        runnerId: input.runnerId,
+      if (unsentRows.length > 0) {
+        await transaction
+          .updateTable("triggerOccurrences")
+          .set({
+            admittedAccessMode: null,
+            admittedGrantRevision: null,
+            contactLostAt: null,
+            runnerBootId: null,
+            runnerId: null,
+            startedAt: null,
+            terminalEvidenceAt: null,
+            ...triggerOccurrenceStateColumns("pending"),
+            updatedAt: now,
+          })
+          .where(
+            "id",
+            "in",
+            unsentRows.map((row) => row.id),
+          )
+          .where("status", "=", "running")
+          .execute();
+      }
+      const unknownMessage = "Outcome unknown: the computer reconnected without this firing.";
+      const unknownErrorPayload = jsonValue({
+        code: "outcome_unknown",
+        message: unknownMessage,
       });
+      if (unknownRows.length > 0) {
+        await transaction
+          .updateTable("triggerOccurrences")
+          .set({
+            completedAt: now,
+            contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
+            error: unknownErrorPayload,
+            ...triggerOccurrenceStateColumns("unknown"),
+            terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
+            updatedAt: now,
+          })
+          .where(
+            "id",
+            "in",
+            unknownRows.map((row) => row.id),
+          )
+          .where("status", "=", "running")
+          .execute();
+      }
 
       if (restoredCommandIds.length > 0) {
-        const sortedRestoredCommands = [...restoredCommandIds].toSorted((a, b) =>
-          a.localeCompare(b),
-        );
-        await transaction
-          .selectFrom("commands")
-          .select("id")
-          .where("id", "in", sortedRestoredCommands)
-          .orderBy("id", "asc")
-          .forNoKeyUpdate()
-          .execute();
         await transaction
           .updateTable("commands")
           .set({ lastError: null, status: "succeeded", updatedAt: now })
-          .where("id", "in", sortedRestoredCommands)
+          .where("id", "in", restoredCommandIds)
           .where("status", "=", "unknown")
           .execute();
+      }
+      if (unsentRows.length > 0) {
+        await transaction
+          .updateTable("commands")
+          .set({
+            dispatcherId: null,
+            frameSentAt: null,
+            lastError: null,
+            status: "pending",
+            updatedAt: now,
+          })
+          .where(
+            "id",
+            "in",
+            unsentRows.map((row) => row.commandId),
+          )
+          .where("status", "=", "dispatched")
+          .execute();
+      }
+      if (unknownRows.length > 0) {
+        await transaction
+          .updateTable("commands")
+          .set({
+            lastError: unknownErrorPayload,
+            status: "unknown",
+            updatedAt: now,
+          })
+          .where(
+            "id",
+            "in",
+            unknownRows.map((row) => row.commandId),
+          )
+          .where("status", "=", "dispatched")
+          .execute();
+      }
+
+      if (restoredUnknownIds.length > 0) {
         await transaction
           .updateTable("automationFailureNotices")
           .set({ lastError: null, settledAt: now })
@@ -2467,8 +2574,17 @@ export class TriggerStore {
           .where("settledAt", "is", null)
           .execute();
       }
+      for (const row of unknownRows) {
+        if (!(await isFinalOccurrence(transaction, row))) continue;
+        await recordAutomationFailure(transaction, {
+          detail: unknownMessage,
+          occurrenceId: row.id,
+          reason: "outcome-unknown",
+          triggerId: row.triggerId,
+        });
+      }
 
-      return { results, settledUnknownCount };
+      return { results, settledUnknownCount: unknownRows.length };
     });
   }
 
