@@ -8,19 +8,24 @@ mkdir -p "$out"
 exec > "$out/runner.log" 2>&1
 if [[ -n "${OPENSTEER_JOURNEY_APPS:-}" ]]; then
   work="$OPENSTEER_JOURNEY_APPS"
+  apps="$work"
 else
   mkdir -p "$HOME/Applications"
   work=$(mktemp -d "${OPENSTEER_LEGACY_TEMP_ROOT:-$HOME/Applications}/opensteer-window-groups.XXXXXX")
+  # The helper finds an app only where a person's apps live, so the fixture
+  # apps go in this guest's ~/Applications even when the build stays in the
+  # journey's own temporary root.
+  apps=$(mktemp -d "$HOME/Applications/opensteer-window-groups-apps.XXXXXX")
 fi
 journey_pid=''
 cleanup() {
   status=$?
   if [[ -n "$journey_pid" ]]; then kill "$journey_pid" 2>/dev/null || true; wait "$journey_pid" 2>/dev/null || true; fi
-  if [[ -z "${OPENSTEER_JOURNEY_APPS:-}" ]]; then rm -rf "$work"; fi
+  if [[ -z "${OPENSTEER_JOURNEY_APPS:-}" ]]; then rm -rf "$work" "$apps"; fi
   exit "$status"
 }
 trap cleanup EXIT INT TERM
-fixture="$work/WindowGroupFixture.app"
+fixture="$apps/WindowGroupFixture.app"
 if [[ ! -x "$work/Journey" ]]; then
 mkdir -p "$fixture/Contents/MacOS"
 xcrun swiftc native/computer-use/Tests/Fixtures/WindowGroupJourney/Receiver.swift -o "$fixture/Contents/MacOS/Receiver"
@@ -31,12 +36,12 @@ PLIST
 codesign --force --sign - "$fixture"
 other_fixture=''
 if [[ "${OPENSTEER_MAC_OWNER_INPUT_JOURNEY:-}" == 1 ]]; then
-  other_fixture="$work/OtherOwnerFixture.app"
+  other_fixture="$apps/OtherOwnerFixture.app"
   ditto --norsrc --noextattr --noqtn "$fixture" "$other_fixture"
   /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.opensteer.owner-other-fixture' "$other_fixture/Contents/Info.plist"
   export OPENSTEER_MAC_OWNER_OTHER_APP="$other_fixture"
 fi
-peer_fixture="$work/PeerFixture.app"
+peer_fixture="$apps/PeerFixture.app"
 ditto --norsrc --noextattr --noqtn "$fixture" "$peer_fixture"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.opensteer.window-group-peer-fixture' "$peer_fixture/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleName Window Group Peer Fixture' "$peer_fixture/Contents/Info.plist"
@@ -50,10 +55,10 @@ xcrun swiftc -whole-module-optimization -parse-as-library -module-name ComputerU
 fi
 other_fixture=''
 if [[ "${OPENSTEER_MAC_OWNER_INPUT_JOURNEY:-}" == 1 ]]; then
-  other_fixture="$work/OtherOwnerFixture.app"
+  other_fixture="$apps/OtherOwnerFixture.app"
   export OPENSTEER_MAC_OWNER_OTHER_APP="$other_fixture"
 fi
-peer_fixture="$work/PeerFixture.app"
+peer_fixture="$apps/PeerFixture.app"
 export OPENSTEER_WINDOW_GROUP_PEER_APP="$peer_fixture"
 suite_result=0
 base_out="$out"

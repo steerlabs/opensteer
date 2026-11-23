@@ -7,12 +7,15 @@ export OPENSTEER_WINDOW_GROUP_CASES=members
 base_out="$HOME/opensteer-job/artifacts/mac-owner"
 mkdir -p "$base_out" "$HOME/Applications"
 work=$(mktemp -d "${OPENSTEER_LEGACY_TEMP_ROOT:-$HOME/Applications}/opensteer-owner-input.XXXXXX")
+# The helper finds an app only where a person's apps live: the Electron fixture
+# goes in this guest's ~/Applications, removed with the rest.
+apps=$(mktemp -d "$HOME/Applications/opensteer-owner-input-apps.XXXXXX")
 # The journey stops the apps it launched by their own handles and records
 # them in owned-apps.json; anything a crashed journey leaves dies with the
 # disposable VM.
 cleanup() {
   status=$?
-  rm -rf "$work"
+  rm -rf "$work" "$apps"
   exit "$status"
 }
 trap cleanup EXIT INT TERM
@@ -24,7 +27,7 @@ for engine in "${engines[@]}"; do
     appkit) ;;
     electron)
       electron_seed=$(node -e 'process.stdout.write(require("node:path").resolve(require("electron"), "../../.."))')
-      electron_app="$work/OwnerElectron.app"
+      electron_app="$apps/OwnerElectron.app"
       ditto --norsrc --noextattr --noqtn "$electron_seed" "$electron_app"
       /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.opensteer.owner-electron-fixture' "$electron_app/Contents/Info.plist"
       app_source="$electron_app/Contents/Resources/app"
