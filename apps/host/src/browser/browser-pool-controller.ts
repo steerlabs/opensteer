@@ -124,6 +124,7 @@ export class BrowserPoolControllerJournal {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #controller: BrowserPoolPhysicalController;
   readonly #runnerId: RunnerId;
+  readonly #target: { readonly slotId: string; readonly term: number } | undefined;
 
   readonly #timeoutMs: number;
 
@@ -133,11 +134,13 @@ export class BrowserPoolControllerJournal {
     runnerId: RunnerId,
     timeoutMs = 10_000,
     settle?: (id: string, result: Readonly<Record<string, unknown>>) => Promise<void>,
+    target?: { readonly slotId: string; readonly term: number },
   ) {
     this.#database = database;
     this.#controller = controller;
     this.#runnerId = runnerId;
     this.#timeoutMs = timeoutMs;
+    this.#target = target;
     this.#settle =
       settle ?? ((id, result) => settleBrowserPoolControllerCall(database, id, result));
   }
@@ -198,7 +201,11 @@ export class BrowserPoolControllerJournal {
   async settleStarts(signal?: AbortSignal): Promise<readonly BrowserPoolControllerResult[]> {
     const settled: BrowserPoolControllerResult[] = [];
     // A stop too: one id per intent within a restart or a removal, never closed as superseded.
-    for (const row of await listOpenBrowserPoolControllerCalls(this.#database, this.#runnerId))
+    for (const row of await listOpenBrowserPoolControllerCalls(
+      this.#database,
+      this.#runnerId,
+      this.#target,
+    ))
       if (row.kind === "start" || row.kind === "stop")
         settled.push(
           await this.#deliver(row.request as unknown as BrowserPoolControllerCall, signal),
@@ -209,7 +216,11 @@ export class BrowserPoolControllerJournal {
   /** Delivers every call the journal still has open, oldest first. */
   async settleOpen(signal?: AbortSignal): Promise<readonly BrowserPoolControllerResult[]> {
     const settled: BrowserPoolControllerResult[] = [];
-    for (const row of await listOpenBrowserPoolControllerCalls(this.#database, this.#runnerId))
+    for (const row of await listOpenBrowserPoolControllerCalls(
+      this.#database,
+      this.#runnerId,
+      this.#target,
+    ))
       settled.push(
         await this.#deliver(row.request as unknown as BrowserPoolControllerCall, signal),
       );

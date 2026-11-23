@@ -802,6 +802,8 @@ export async function recordBrowserPoolControllerCall(
         .selectFrom("browserPoolControllerCalls")
         .select("id")
         .where("runnerId", "=", call.runnerId)
+        .where("slotId", "=", call.slotId)
+        .where("term", "=", call.term)
         .where("settledAt", "is", null)
         .orderBy("id")
         .forNoKeyUpdate()
@@ -840,15 +842,15 @@ export async function settleBrowserPoolControllerCall(
 export function listOpenBrowserPoolControllerCalls(
   database: Kysely<DatabaseSchema>,
   runnerId: RunnerId,
+  target?: { readonly slotId: string; readonly term: number },
 ) {
-  return database
+  let query = database
     .selectFrom("browserPoolControllerCalls")
     .selectAll()
     .where("runnerId", "=", runnerId)
-    .where("settledAt", "is", null)
-    .orderBy("createdAt")
-    .orderBy("id")
-    .execute(databaseOperationOptions());
+    .where("settledAt", "is", null);
+  if (target) query = query.where("slotId", "=", target.slotId).where("term", "=", target.term);
+  return query.orderBy("createdAt").orderBy("id").execute(databaseOperationOptions());
 }
 
 /**
@@ -1489,6 +1491,8 @@ export async function retireBrowserPoolTarget(
         .selectFrom("browserPoolControllerCalls")
         .select("id")
         .where("runnerId", "=", runnerId)
+        .where("slotId", "=", slot.slotId)
+        .where("term", "=", slot.term)
         .where("settledAt", "is", null)
         .orderBy("id")
         .forNoKeyUpdate()

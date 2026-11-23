@@ -315,6 +315,7 @@ export class BrowserPoolCoordinator {
       options.runnerId,
       options.callTimeoutMs,
       options.testHooks?.settleCall,
+      { slotId: options.slotId, term: options.term },
     );
     // An idle browser's finished bookkeeping ages out too, not only on the paths that write.
     this.#pruning = setInterval(() => {
@@ -387,6 +388,29 @@ export class BrowserPoolCoordinator {
     const end = async (evidence: BrowserPoolCloseEvidence) => {
       for (const sessionId of closing) await this.#adopter?.ended?.(sessionId, target, evidence);
     };
+    const evidenceFromResult = (
+      result: BrowserPoolControllerResult,
+    ): BrowserPoolCloseEvidence | null => {
+      if (result.status.phase === "stopped") return { kind: "guest-gone", by: "stopped" };
+      if (result.status.instance !== instance) return { kind: "guest-gone", by: "replaced" };
+      if (result.status.phase === "paused") return { kind: "guest-paused" };
+      if (!result.applied && result.reason === "fenced")
+        return { kind: "guest-gone", by: "fenced" };
+      return null;
+    };
+    // Settle any open stop of this draining target by its own id first (Rule 4; PH3).
+    try {
+      const settled = await this.#journal.settleStarts(signal);
+      for (const result of settled) {
+        const evidence = evidenceFromResult(result);
+        if (evidence) return end(evidence);
+      }
+    } catch (error) {
+      const over = targetOver(error);
+      if (over === "slot-deleted" || over === "fenced")
+        return end({ kind: "guest-gone", by: over });
+      throw error;
+    }
     let status: BrowserPoolPhysicalStatus;
     try {
       status = await this.#status();
@@ -411,20 +435,16 @@ export class BrowserPoolCoordinator {
       signal.throwIfAborted();
       let stopped: BrowserPoolControllerResult;
       try {
-        stopped = await withTimeout(
-          this.#options.controller.apply({
-            id: randomUUID(),
+        stopped = await this.#journal.call(
+          {
             slotId: this.#options.slotId,
             term: this.#options.term,
             kind: "stop",
             expect: expectationOf(status),
-          }),
-          this.#options.callTimeoutMs ?? defaultCallTimeoutMs,
-          {
-            signal,
-            timeoutError: () =>
-              new BrowserPoolUnanswered("The pool controller did not answer in time."),
           },
+          null,
+          undefined,
+          signal,
         );
       } catch (error) {
         const over = targetOver(error);
@@ -432,11 +452,8 @@ export class BrowserPoolCoordinator {
           return end({ kind: "guest-gone", by: over });
         throw error;
       }
-      if (stopped.status.phase === "stopped") return end({ kind: "guest-gone", by: "stopped" });
-      if (stopped.status.instance !== instance) return end({ kind: "guest-gone", by: "replaced" });
-      if (stopped.status.phase === "paused") return end({ kind: "guest-paused" });
-      if (!stopped.applied && stopped.reason === "fenced")
-        return end({ kind: "guest-gone", by: "fenced" });
+      const evidence = evidenceFromResult(stopped);
+      if (evidence) return end(evidence);
       throw new BrowserPoolPending("A replaced target's guest is being stopped.");
     }
     // Under this fence: its own runtime is asked, as the end step asks a target's own.

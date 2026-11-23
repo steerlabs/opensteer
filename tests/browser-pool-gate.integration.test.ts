@@ -14,7 +14,9 @@ import {
   listBrowserPoolDocumentLosses,
   listBrowserPoolRetiredTargets,
   listBrowserPoolUnconfirmedClosings,
+  listOpenBrowserPoolControllerCalls,
   readBrowserPoolSlot,
+  recordBrowserPoolControllerCall,
   retireBrowserPoolTarget,
   settleBrowserPoolRelay,
   TabStore,
@@ -4295,6 +4297,162 @@ it("refuses to write a hold and still parks when device access is turned off dur
       sendSpy.mockRestore();
       home.coordinator.close();
       await home.service.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("journals the drain coordinator's stop call, settles it by the same id across retries, and scopes open rows to the draining target (PH3)", async () => {
+  const j = await journey("ph3-drain-stop-journal", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(
+      j.task.userId,
+      j.command("ph3-drain-stop-journal"),
+    );
+    const slot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    await home.service.close();
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: slot.slotId, term: slot.term },
+    });
+
+    // Seed an unrelated open Start row for a newer live target on the same runner so we prove
+    // the drain coordinator's scoped journal never delivers or settles the live target's rows.
+    const liveCallId = randomUUID();
+    await recordBrowserPoolControllerCall(j.database, {
+      id: liveCallId,
+      runnerId: j.task.runnerId,
+      slotId: "live-slot-other",
+      term: slot.term + 1,
+      intentId: null,
+      kind: "start",
+      request: {
+        id: liveCallId,
+        slotId: "live-slot-other",
+        term: slot.term + 1,
+        kind: "start",
+        expect: { instance: null, epoch: 0, phase: "stopped", savedStateId: null },
+      },
+    });
+
+    const drainService = new BrowserService({
+      deploymentId: j.task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      onSessionsChanged: () => {},
+      personal: true,
+      pooledRunner: j.task.runnerId,
+      repository: personalBrowserRepository(j.store),
+      signer: new BrowserAttachTicketSigner({
+        keyId: "test-drain-ph3",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      }),
+    });
+
+    const appliedCalls: { id: string; slotId: string; term: number; kind: string }[] = [];
+    const firstStopCalled = Promise.withResolvers<void>();
+    const releaseHanging = Promise.withResolvers<void>();
+    let allowAnswer = false;
+    const errors: unknown[] = [];
+
+    const drain = new BrowserPoolCoordinator({
+      database: j.database,
+      runnerId: j.task.runnerId,
+      runtimeId: slot.runtimeId,
+      slotId: slot.slotId,
+      term: slot.term,
+      callTimeoutMs: 150,
+      retryMs: 50,
+      drain: { instanceId: slot.instanceId, epoch: slot.epoch },
+      onError: (error) => errors.push(error),
+      runtime: {
+        poolState: async () => null,
+        controlPool: async () => {
+          throw new Error("drain must not send controlPool");
+        },
+        endSession: async () => {
+          throw new Error("drain must not call endSession when poolState is null");
+        },
+      },
+      controller: {
+        status: async () => ({
+          slotId: slot.slotId,
+          term: slot.term,
+          instance: slot.instanceId,
+          epoch: slot.epoch,
+          phase: "running",
+          savedState: null,
+        }),
+        result: async () => {
+          if (!allowAnswer) {
+            await releaseHanging.promise;
+            return null;
+          }
+          return null;
+        },
+        apply: async (call) => {
+          appliedCalls.push({
+            id: call.id,
+            slotId: call.slotId,
+            term: call.term,
+            kind: call.kind,
+          });
+          firstStopCalled.resolve();
+          if (!allowAnswer) {
+            await releaseHanging.promise;
+          }
+          return {
+            id: call.id,
+            applied: true,
+            status: {
+              slotId: slot.slotId,
+              term: slot.term,
+              instance: slot.instanceId,
+              epoch: slot.epoch,
+              phase: "stopped",
+              savedState: null,
+            },
+          };
+        },
+      },
+    });
+    try {
+      const drained = drainService.drainPool(j.task.runnerId, drain);
+      await firstStopCalled.promise;
+      // Wait for the first stop call to hit callTimeoutMs and fail as unanswered.
+      await vi.waitFor(
+        () => expect(errors.some((error) => error instanceof BrowserPoolUnanswered)).toBe(true),
+        { timeout: 2_000, interval: 25 },
+      );
+
+      // Rule 4: an open stop row must exist in the journal with the exact id that timed out.
+      const openRows = await listOpenBrowserPoolControllerCalls(j.database, j.task.runnerId);
+      const openDrainStops = openRows.filter(
+        (row) => row.slotId === slot.slotId && row.term === slot.term && row.kind === "stop",
+      );
+      expect(openDrainStops).toHaveLength(1);
+      const firstId = appliedCalls[0]!.id;
+      expect(openDrainStops[0]!.id).toBe(firstId);
+
+      // Now let the controller answer on the next turn: the drain coordinator must re-deliver the
+      // SAME stop id, settle that single row, never touch the live target's row, and finish drain.
+      allowAnswer = true;
+      await drained;
+
+      expect(appliedCalls.length).toBeGreaterThanOrEqual(2);
+      expect(appliedCalls.every((call) => call.id === firstId)).toBe(true);
+      expect(appliedCalls.some((call) => call.slotId === "live-slot-other")).toBe(false);
+
+      const remainingOpen = await listOpenBrowserPoolControllerCalls(j.database, j.task.runnerId);
+      expect(remainingOpen.map((row) => row.id)).toEqual([liveCallId]);
+      expect((await j.row(sessionId))?.state).toBe("closed");
+    } finally {
+      allowAnswer = true;
+      releaseHanging.resolve();
+      drain.close();
+      await drainService.close();
     }
   } finally {
     await j.close();
