@@ -67,7 +67,13 @@ export async function threadContextLineage(
         select source_run.thread_id as id
         from thread_inputs input
         join runs source_run on source_run.id = input.authority_source->>'runId'
-        where input.thread_id = current.id and input.state <> 'cancelled'
+        where input.thread_id = current.id
+          and (
+            input.state <> 'cancelled'
+            or input.run_id is not null
+            or input.steer_command_id is not null
+            or input.delivered_at is not null
+          )
           and input.authority_source->>'kind' = 'thread-agent'
         union
         select trigger.anchor_thread_id as id
@@ -75,13 +81,25 @@ export async function threadContextLineage(
         join trigger_occurrences occurrence
           on occurrence.id = input.authority_source->>'occurrenceId'
         join triggers trigger on trigger.id = occurrence.trigger_id
-        where input.thread_id = current.id and input.state <> 'cancelled'
+        where input.thread_id = current.id
+          and (
+            input.state <> 'cancelled'
+            or input.run_id is not null
+            or input.steer_command_id is not null
+            or input.delivered_at is not null
+          )
           and input.authority_source->>'kind' = 'trigger-occurrence'
         union
         select trigger.anchor_thread_id as id
         from thread_inputs input
         join triggers trigger on trigger.id = input.authority_source->>'triggerId'
-        where input.thread_id = current.id and input.state <> 'cancelled'
+        where input.thread_id = current.id
+          and (
+            input.state <> 'cancelled'
+            or input.run_id is not null
+            or input.steer_command_id is not null
+            or input.delivered_at is not null
+          )
           and input.authority_source->>'kind' = 'watch-observation'
         union
         select parent_thread_id as id from delegations where child_thread_id = current.id
@@ -91,12 +109,18 @@ export async function threadContextLineage(
       ) parent
     )
     -- A thread is not the person's when a connected agent started it or wrote
-    -- into it.
+    -- into it, including a cancelled input whose delivery could have started.
     select context_threads.id as thread_id,
       (thread.origin_connection_id is not null
         or exists (
           select 1 from thread_inputs written
-          where written.thread_id = context_threads.id and written.state <> 'cancelled'
+          where written.thread_id = context_threads.id
+            and (
+              written.state <> 'cancelled'
+              or written.run_id is not null
+              or written.steer_command_id is not null
+              or written.delivered_at is not null
+            )
             and written.connection_id is not null
         )) as not_persons
     from context_threads
@@ -119,7 +143,14 @@ export async function threadContextLineage(
       "channelIdentities.status",
     ])
     .where("threadInputs.threadId", "in", threadIds)
-    .where("threadInputs.state", "<>", "cancelled")
+    .where((eb) =>
+      eb.or([
+        eb("threadInputs.state", "<>", "cancelled"),
+        eb("threadInputs.runId", "is not", null),
+        eb("threadInputs.steerCommandId", "is not", null),
+        eb("threadInputs.deliveredAt", "is not", null),
+      ]),
+    )
     .where(sql<string>`thread_inputs.authority_source->>'kind'`, "=", "channel-ingress")
     .execute();
   const represented = new Set(sources.map((source) => source.threadId));

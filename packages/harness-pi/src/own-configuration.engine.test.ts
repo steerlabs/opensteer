@@ -301,8 +301,10 @@ it("still reads the person's own configuration in their own task, as Pi did befo
   expect(run.events.find((event) => event.type === "run.failed")).toBeUndefined();
   expect(run.requests).toHaveLength(1);
   expect(run.commandRan).toBe(true);
-  // Non-vacuous control: the person's shellCommandPrefix and SYSTEM.md are loaded
-  // in their own task; the project's .pi/settings.json stays off under --no-approve.
+  // Non-vacuous control: Pi's driver always passes --no-context-files,
+  // --no-prompt-templates, --no-approve, and --append-system-prompt, so
+  // shellCommandPrefix and ~/.pi/agent/SYSTEM.md are the exact two person
+  // settings Pi loads in their own task (both stay off in stripped mode above).
   expect(run.userPrefixRan).toBe(true);
   expect(run.projectPrefixRan).toBe(false);
   expect(run.body).toContain("PERSON-SYSTEM-MD-MARKER");

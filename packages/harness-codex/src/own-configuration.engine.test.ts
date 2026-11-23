@@ -138,6 +138,7 @@ async function codexRun(input: {
   readonly authFile?: false;
   readonly credentialStore?: "auto" | "file" | "keyring";
   readonly extraLaunchArgs?: readonly string[];
+  readonly isolated?: true;
   readonly own: boolean;
   readonly rules?: false;
 }) {
@@ -224,8 +225,19 @@ async function codexRun(input: {
     },
   });
   const instanceId = createId("harnessInstance");
-  const adapter = await driver.create({ config: {}, instanceId, sourceId: "openai" });
+  const adapter = await driver.create(
+    input.isolated
+      ? { config: { baseUrl: api.url }, instanceId, sourceId: "openai-compatible" }
+      : { config: {}, instanceId, sourceId: "openai" },
+  );
   cleanups.push(() => adapter.close());
+  const isolatedHome = join(state, "isolated-codex");
+  if (input.isolated) {
+    await mkdir(isolatedHome, { recursive: true });
+    await writeFile(join(isolatedHome, ".opensteer-source-api-key"), "local-stub", {
+      mode: 0o600,
+    });
+  }
   const context: HarnessSessionContext = {
     accessMode: input.accessMode,
     agentTools: {
@@ -254,13 +266,21 @@ async function codexRun(input: {
     personalContext: true,
     personLineage: input.own,
     platformGuide: "",
-    providerState: {
-      continuationKey: root,
-      kind: "ambient",
-      privateStateRoot: state,
-      providerHomeDirectory: undefined,
-      store: { directory: codexHome, id: "own-configuration" },
-    },
+    providerState: input.isolated
+      ? {
+          continuationKey: join(root, "isolated"),
+          kind: "isolated",
+          privateStateRoot: state,
+          providerHomeDirectory: isolatedHome,
+          store: { directory: isolatedHome, id: "own-configuration-isolated" },
+        }
+      : {
+          continuationKey: root,
+          kind: "ambient",
+          privateStateRoot: state,
+          providerHomeDirectory: undefined,
+          store: { directory: codexHome, id: "own-configuration" },
+        },
     runtimeBoundary: nativeUserHarnessRuntimeBoundary,
     signal: AbortSignal.timeout(180_000),
     skills: { skills: [] },
@@ -358,6 +378,7 @@ it("runs the person's own Supervised task with their own Codex configuration", a
   expect(run.events.filter((event) => event.type === "request.opened")).toHaveLength(0);
   expect(run.commandRan).toBe(true);
   // Their notify command ran; their instructions, agent and the project's reached the model.
+  // (Codex 0.162.0 requires per-hook trust hashes in hooks.state before executing hooks.json.)
   expect(run.notifyRan).toBe(true);
   const sent = run.requests.join("\n");
   for (const marker of [
@@ -601,4 +622,23 @@ it("refuses system or managed notify, provider auth, provider aws, and Bedrock s
     expect(run.requests, testCase.name).toHaveLength(0);
     expect(run.notifyRan, testCase.name).toBe(false);
   }
+}, 180_000);
+
+it("keeps an isolated Codex profile isolated from the person's configuration on others' tasks", async () => {
+  const run = await codexRun({ accessMode: "approval-required", isolated: true, own: false });
+  expect(run.startFailure).toBeUndefined();
+  expect(run.events.find((event) => event.type === "run.failed")).toBeUndefined();
+  expect(run.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+  expect(run.commandRan).toBe(false);
+  expect(run.notifyRan).toBe(false);
+  expect(run.hookRan).toBe(false);
+  const sent = run.requests.join("\n");
+  for (const marker of [
+    "PERSON-DEVELOPER-MARKER",
+    "PERSON-AGENT-MARKER",
+    "PERSON-GLOBAL-AGENTS-MARKER",
+    "PROJECT-AGENTS-MARKER",
+    "PROJECT-DEVELOPER-MARKER",
+  ])
+    expect(sent).not.toContain(marker);
 }, 180_000);
