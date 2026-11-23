@@ -17,8 +17,16 @@ const MODES = [
     "Auto-accept edits",
     "Edits files in its tasks without asking. Asks before anything else.",
   ],
-  ["auto", "Auto", "Opensteer checks each action and asks you when it isn’t sure."],
-  ["full-access", "Full access", "Never asks. Only for an agent you trust completely."],
+  [
+    "auto",
+    "Auto",
+    "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+  ],
+  [
+    "full-access",
+    "Full access",
+    "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+  ],
 ] as const;
 
 const choice = (name: string, value: string, label: string, line: string, on = false): string =>

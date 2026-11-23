@@ -178,7 +178,7 @@ describe("Messaging", () => {
         label.textContent?.startsWith("Anyone in the channel"),
       );
       expect(anyone?.textContent).toContain(
-        "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+        "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
       );
       await act(async () => anyone!.querySelector("input")!.click());
       const dispatch = vi.spyOn(client, "dispatch");
@@ -393,6 +393,93 @@ describe("Messaging", () => {
       );
     } finally {
       client.dispose();
+    }
+  });
+
+  it("says the Home's own sentence when it refuses a chat: another chat already answers there", async () => {
+    const client = chats();
+    try {
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      // Workshop's direct messages already have a chat.
+      await act(async () =>
+        [...page.querySelectorAll("button")].find((b) => b.textContent === "Add a chat")!.click(),
+      );
+      await act(async () => button(page, "Add chat").click());
+      await vi.waitFor(() =>
+        expect(page.textContent).toContain("Another chat already answers in this conversation."),
+      );
+      expect(page.textContent).not.toContain("Couldn't change messaging settings.");
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("after a read that failed, offers nothing that changes anything: only Try again and moving around", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const client = chats();
+    try {
+      await withDashboard(client, (dashboard) => dashboard, 1);
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await vi.waitFor(() => expect(page.textContent).toContain("Not read just now"));
+      // Every control that sends a command, found by enumeration, not by name.
+      const live = [
+        ...document.querySelectorAll<HTMLButtonElement | HTMLInputElement>(
+          "button, input, [role=switch], [role=menuitem]",
+        ),
+      ].filter(
+        (control) =>
+          !(control as HTMLButtonElement).disabled &&
+          !control.closest("fieldset[disabled]") &&
+          control.textContent !== "Try again",
+      );
+      expect(
+        live.map((control) => control.textContent || control.getAttribute("aria-label")),
+      ).toEqual([]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes an open Remove when a refresh fails, so Remove does nothing until the page is read", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const client = chats();
+    try {
+      await withDashboard(client, (dashboard) => dashboard, 1);
+      const page = await mount(client);
+      await vi.waitFor(() => expect(page.textContent).toContain("Workshop"));
+      await act(async () =>
+        page.querySelector<HTMLButtonElement>('button[aria-label="Actions for Workshop"]')!.click(),
+      );
+      await act(async () =>
+        [...document.querySelectorAll<HTMLElement>("[role=menuitem], button")]
+          .find((item) => item.textContent?.includes("Remove account"))!
+          .click(),
+      );
+      const remove = document.querySelector<HTMLButtonElement>("[role=dialog] .btn--danger");
+      expect(remove).toBeTruthy();
+      const dispatch = vi.spyOn(client, "dispatch");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await vi.waitFor(() => expect(page.textContent).toContain("Not read just now"));
+      // The dialog is gone; its Remove, if still held, acts no more.
+      expect(document.querySelector("[role=dialog]")).toBeNull();
+      await act(async () => remove!.click());
+      expect(dispatch).not.toHaveBeenCalled();
+      // One enabled control: the page's Try again.
+      const enabled = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
+        (button) => !button.disabled && !button.closest("fieldset[disabled]"),
+      );
+      expect(enabled.map((button) => button.textContent)).toEqual(["Try again"]);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
     }
   });
 

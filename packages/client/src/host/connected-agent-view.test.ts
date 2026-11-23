@@ -3,6 +3,7 @@ import { hostApi, type AgentConnection, type PluginsInstalledView } from "@opens
 import { mockConnectedAgents } from "../mock/mock-connected-agents.js";
 import { describe, expect, it } from "vitest";
 import { chatFacts, messagingAccountView } from "./chat-view.js";
+import { plainSentence } from "./sentence-parts.js";
 import {
   agentAppOptions,
   agentBrowserOptions,
@@ -11,6 +12,7 @@ import {
 import {
   connectedAgentDetail,
   connectedAgentPhase,
+  connectedAgentRow,
   connectedAgentIdentity,
   connectedAgentLive,
   connectedAgentWorkingTasks,
@@ -94,6 +96,7 @@ describe("connected agents list", () => {
       chat({
         provider: "iMessage",
         accountName: "tim@example.com",
+        accountHandle: "tim@example.com",
         pausedBy: "needs-attention",
         pauseDetail: "Messages isn’t signed in.",
         pausedMessages: "kept",
@@ -390,12 +393,10 @@ describe("connected agent detail", () => {
     });
     expect(detail).toMatchObject({ editable: true, revision: 3, uncertain: null, live: null });
     expect(detail.activity).toEqual({ kind: "unavailable" });
-    expect(detail.about.map((row) => row.label)).toEqual([
-      "Address it uses",
-      "Connected",
-      "Expires",
-    ]);
-    expect(detail.about[0]!.value).toBe("grok.com");
+    expect(detail.about.map((row) => row.label)).toEqual(["Address it uses", "Added", "Expires"]);
+    // Where it signed in from, as the origin a person decides about.
+    expect(detail.about[0]!.value).toBe("https://grok.com");
+    expect(detail.about[0]!.valueParts).toEqual([{ address: "https://grok.com" }]);
   });
 
   it("names the self-asserted name apart from the label the person chose", () => {
@@ -404,7 +405,12 @@ describe("connected agent detail", () => {
       names,
       { grantsAvailable: true, now },
     );
-    expect(detail.about[0]).toEqual({ label: "Calls itself", value: "TravelBot Agent" });
+    // A name it chose: drawn as a name, and in quotation marks where it is plain text.
+    expect(detail.about[0]).toMatchObject({
+      label: "Calls itself",
+      value: "“TravelBot Agent”",
+      valueParts: [{ name: "TravelBot Agent" }],
+    });
   });
 
   it("walks Revoked, Stopping and Stopped, and keeps last action uncertain a separate fact", () => {
@@ -691,5 +697,22 @@ describe("a list from a newer Home", () => {
     expect(connectedAgentPhase(resting!)).toBe("unknown");
     expect(connectedAgentPhase(chat!)).toBe("active");
     expect(chat!.bridge?.notice).toBeUndefined();
+  });
+});
+
+describe("a chat's address, as parts", () => {
+  it("holds the account's address as a part of its own in where it listens and its row, and its name as a name", () => {
+    const chats = mockConnectedAgents("chats").connections;
+    const imessage = chats.find(({ label }) => label === "iMessage")!;
+    const slack = chats.find(({ label }) => label === "Slack")!;
+    expect(chatFacts(imessage, "paused")!.whereParts).toContainEqual({
+      address: "tim@example.com",
+    });
+    const where = chatFacts(slack, "active")!;
+    // The account's display name comes from Slack: a name part, never words to search.
+    expect(where.whereParts).toContainEqual({ name: "Workshop" });
+    expect(plainSentence(where.whereParts)).toBe(where.where);
+    const row = connectedAgentRow(slack, { profiles: [] });
+    expect(plainSentence(row.lineParts)).toBe(row.line);
   });
 });

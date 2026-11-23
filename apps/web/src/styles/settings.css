@@ -1028,15 +1028,16 @@ button.card__row > .card__row-body {
 .settings-messaging-row .card__row-title {
   flex-wrap: wrap;
 }
+/* An account's name is drawn whole, never cut: an address name wraps at its joints. */
 .settings-messaging-row .card__row-title > a {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 /* Its sentences are read whole: a paused note or what the account reports is never cut. */
 .settings-messaging-row .card__row-detail {
   overflow: visible;
-  overflow-wrap: anywhere;
+  /* break-word, not anywhere: a row never shrinks to its narrowest part and splits an address. */
+  overflow-wrap: break-word;
   text-overflow: clip;
   white-space: normal;
 }
@@ -1501,7 +1502,8 @@ a.connected-agents__row:focus-visible {
 }
 
 .agent-who__detail {
-  overflow-wrap: anywhere;
+  /* Its origin wraps at its own joints (`Address`), never anywhere inside a host. */
+  overflow-wrap: break-word;
   color: var(--muted);
   font-size: var(--text-sm);
 }
@@ -1569,4 +1571,29 @@ a.connected-agents__row:focus-visible {
 .agent-consent__mode[aria-disabled="true"] .card__row-title,
 .card__row.is-unavailable .card__row-title {
   color: var(--muted);
+}
+/* The Messaging overview's one switch for its controls: no frame of its own. */
+.messaging-overview {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+/*
+ * Who "me" is and the code that links it: the sentence keeps a readable measure, and on a narrow
+ * screen Copy and Link go under it instead of squeezing it to a few words a line.
+ */
+.card__row.messaging-me {
+  flex-wrap: wrap;
+}
+.messaging-me > .card__row-body {
+  flex: 1 1 18rem;
+}
+
+/* A page's body while its last read failed (`ReadGate`): a plain group, disabled. */
+.read-gate {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
 }

@@ -1,4 +1,5 @@
 import { scopedPersonalApiVersion } from "@opensteer/protocol/personal-sync";
+import { homeRefusalText } from "@opensteer/client/failure-text";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { delay } from "@opensteer/shared/delay";
@@ -777,17 +778,23 @@ export class PersonalHostRefusalError extends Error {
 }
 
 const HostErrorBodySchema = z.object({
-  error: z.object({ code: z.string(), message: z.string().trim().min(1) }),
+  error: z.object({
+    code: z.string(),
+    message: z.string().trim().min(1),
+    reason: z.string().optional(),
+  }),
 });
 
+/**
+ * What a person reads for the Home's refusal: the Home's own sentence only where the one rule
+ * says it is one (`homeRefusalText`), never a validator's report or an internal fault's text.
+ */
 function hostRefusal(body: unknown, status: number): PersonalHostRefusalError | null {
   const parsed = HostErrorBodySchema.safeParse(body);
-  // An internal fault's message is not a contract the Host stands behind.
-  if (!parsed.success || parsed.data.error.code === "internal") return null;
-  return new PersonalHostRefusalError(
-    parsed.data.error.message.replace(/\s+/gu, " ").slice(0, 300),
-    status,
-  );
+  if (!parsed.success) return null;
+  const words = homeRefusalText({ ...parsed.data.error, status }, "");
+  if (words === "") return null;
+  return new PersonalHostRefusalError(words.replace(/\s+/gu, " ").slice(0, 300), status);
 }
 
 async function personalHostRefusal(response: Response): Promise<Error> {
@@ -814,7 +821,10 @@ function bootstrapRefusal(error: {
   readonly reason?: string | undefined;
   readonly retryable: boolean;
 }): Error {
-  const message = `Personal Host refused the setup read (${error.code}): ${error.message}`;
+  const words = homeRefusalText(error, "");
+  const message = words
+    ? `Personal Host refused the setup read: ${words}`
+    : `Personal Host refused the setup read (${error.code}).`;
   // A bare server fault carries no reason; every named, non-retryable failure is final.
   if (error.retryable || (error.code === "internal" && error.reason === undefined))
     return new Error(message);

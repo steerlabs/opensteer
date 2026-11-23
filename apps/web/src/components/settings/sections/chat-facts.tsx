@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { agentWords, type ChatFacts, type HostClient } from "@opensteer/client/host";
+import { agentWords, type ChatFacts, type ChatScreenHost } from "@opensteer/client/host";
+import { SentenceText } from "../../../ui/address-text.js";
 import { presentFailure } from "../../use-action.js";
 import { SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 
@@ -14,22 +15,23 @@ export function ChatFactsSection({
   facts,
   live,
 }: {
-  readonly client: HostClient;
+  readonly client: Pick<ChatScreenHost, "stopRun">;
   readonly facts: ChatFacts;
   /** Still connected: its running tasks can be stopped from here. */
   readonly live: boolean;
 }) {
-  const [stopping, setStopping] = useState<string | null>(null);
+  // A task whose Stop was asked reads Stopping… until the Home says it no longer runs (its
+  // device answers), never Stop again beside Running; a Stop the Home refused says why.
+  const [asked, setAsked] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const stop = async (threadId: string) => {
-    setStopping(threadId);
+    setAsked((current) => new Set([...current, threadId]));
     setError(null);
     try {
       await client.stopRun(threadId);
     } catch (reason) {
       setError(presentFailure(reason, "stop this task", "stopped"));
-    } finally {
-      setStopping(null);
+      setAsked((current) => new Set([...current].filter((id) => id !== threadId)));
     }
   };
   return (
@@ -45,10 +47,13 @@ export function ChatFactsSection({
         </p>
       ) : null}
       <SettingsGroup heading={agentWords("chat.where.title")} headingId="chat-where">
-        <SettingsRow title={facts.where} />
+        <SettingsRow title={<SentenceText parts={facts.whereParts} />} />
       </SettingsGroup>
       <SettingsGroup heading={agentWords("chat.speakers.title")} headingId="chat-speakers">
-        <SettingsRow title={facts.speakers.title} detail={facts.speakers.detail} />
+        <SettingsRow
+          title={<SentenceText parts={facts.speakers.titleParts} />}
+          detail={<SentenceText parts={facts.speakers.detailParts} />}
+        />
         <SettingsRow title={facts.fixed} />
       </SettingsGroup>
       <SettingsGroup heading={agentWords("chat.tasks.title")} headingId="chat-tasks">
@@ -66,11 +71,11 @@ export function ChatFactsSection({
                 {live && task.running ? (
                   <button
                     className="btn btn--small btn--danger"
-                    disabled={stopping !== null}
+                    disabled={asked.has(task.id)}
                     onClick={() => void stop(task.id)}
                     type="button"
                   >
-                    {stopping === task.id
+                    {asked.has(task.id)
                       ? agentWords("chat.tasks.stopping")
                       : agentWords("chat.tasks.stop")}
                   </button>

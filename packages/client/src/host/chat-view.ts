@@ -2,6 +2,7 @@ import type { ChannelProviderManifest } from "@opensteer/channel-core";
 import type { AgentConnection, MachineSummary } from "@opensteer/protocol";
 import type { ConnectedAgentPhase } from "./connected-agent-view.js";
 import { agentWords } from "./connected-agents-copy.js";
+import { plainSentence as plain, sentenceWith, type SentencePart } from "./sentence-parts.js";
 
 /**
  * What only a chat has beside any connected agent's page, in the person's words: where it
@@ -10,7 +11,14 @@ import { agentWords } from "./connected-agents-copy.js";
  */
 export interface ChatFacts {
   readonly where: string;
-  readonly speakers: { readonly title: string; readonly detail: string };
+  /** `where` as parts: the account's address a part of its own when it is one. */
+  readonly whereParts: readonly SentencePart[];
+  readonly speakers: {
+    readonly title: string;
+    readonly detail: string;
+    readonly titleParts: readonly SentencePart[];
+    readonly detailParts: readonly SentencePart[];
+  };
   /** Who can give it work is chosen when it is added; this says how to change it. */
   readonly fixed: string;
   /** Why it ended, once the Home lists it as ending or stopped. */
@@ -29,31 +37,56 @@ export function chatFacts(
 ): ChatFacts | null {
   const bridge = connection.bridge;
   if (!bridge) return null;
-  const account = bridge.accountName ?? bridge.provider;
-  const conversation = bridge.conversationName ?? bridge.conversationId ?? "";
-  const where =
-    bridge.conversationId === null
-      ? agentWords("chat.where.dm", { account, provider: bridge.provider })
-      : agentWords("chat.where.channel", { conversation, account, provider: bridge.provider });
+  // The account by what its field is: its handle an address, its display name a name.
+  const account = chatAccountPart(bridge);
+  const conversation = { name: bridge.conversationName ?? bridge.conversationId ?? "" };
+  const whereParts = sentenceWith(
+    (slot) =>
+      bridge.conversationId === null
+        ? agentWords("chat.where.dm", { account: slot("account"), provider: bridge.provider })
+        : agentWords("chat.where.channel", {
+            conversation: slot("conversation"),
+            account: slot("account"),
+            provider: bridge.provider,
+          }),
+    { account, conversation },
+  );
+  const where = plain(whereParts);
+  const words = (title: readonly SentencePart[], detail: readonly SentencePart[]) => ({
+    title: plain(title),
+    detail: plain(detail),
+    titleParts: title,
+    detailParts: detail,
+  });
+  const identity = bridge.me?.displayName;
   const speakers =
     bridge.senders === "anyone"
-      ? {
-          title: agentWords("chat.speakers.anyone", { conversation }),
-          detail: agentWords("chat.speakers.anyoneDetail"),
-        }
-      : bridge.me
-        ? {
-            title: agentWords("chat.speakers.me", { identity: bridge.me.displayName }),
-            detail: agentWords("chat.speakers.meDetail", { identity: bridge.me.displayName }),
-          }
-        : {
-            title: agentWords("chat.speakers.meNone"),
-            detail: agentWords("chat.speakers.meNoneDetail", { provider: bridge.provider }),
-          };
+      ? words(
+          sentenceWith(
+            (slot) => agentWords("chat.speakers.anyone", { conversation: slot("conversation") }),
+            { conversation },
+          ),
+          [agentWords("chat.speakers.anyoneDetail")],
+        )
+      : identity !== undefined
+        ? words(
+            sentenceWith((slot) => agentWords("chat.speakers.me", { identity: slot("identity") }), {
+              identity: { name: identity },
+            }),
+            sentenceWith(
+              (slot) => agentWords("chat.speakers.meDetail", { identity: slot("identity") }),
+              { identity: { name: identity } },
+            ),
+          )
+        : words(
+            [agentWords("chat.speakers.meNone")],
+            [agentWords("chat.speakers.meNoneDetail", { provider: bridge.provider })],
+          );
   const ending = phase === "stopping" || phase === "stopped" || phase === "revoked";
   const unknown = bridge.unknownReplies ?? 0;
   return {
     where,
+    whereParts,
     speakers,
     fixed: agentWords("chat.speakers.fixed"),
     // Why it ended only from a reason the Home sent and this app knows; otherwise only that it did.
@@ -165,4 +198,38 @@ export function messagingComputers<M extends MachineSummary>(
       machine.modules.messaging !== undefined &&
       (machine.apps ?? []).some(({ definitionId }) => definitionId === provider.computerApp),
   );
+}
+
+/** A chat's account as a part, by what its field is: its handle an address, its name a name. */
+export function chatAccountPart(
+  bridge: Pick<
+    NonNullable<AgentConnection["bridge"]>,
+    "accountHandle" | "accountName" | "provider"
+  >,
+): { readonly address: string } | { readonly name: string } {
+  return bridge.accountHandle
+    ? { address: bridge.accountHandle }
+    : { name: bridge.accountName ?? bridge.provider };
+}
+
+/** A Messaging account as a part: its handle, where it has one, an address; else its name. */
+export function messagingAccountPart(account: {
+  readonly handle: string | null;
+  readonly displayName: string;
+}): { readonly address: string } | { readonly name: string } {
+  return account.handle ? { address: account.handle } : { name: account.displayName };
+}
+
+/**
+ * A Messaging account's title: the handle of its one account (an iMessage address), or the
+ * connection's own name (a Slack workspace's). The same on the web and the phone.
+ */
+export function messagingAccountTitle(
+  connection: { readonly displayName: string },
+  accounts: readonly { readonly handle: string | null; readonly displayName: string }[],
+): { readonly address: string } | { readonly name: string } {
+  const [only, ...more] = accounts;
+  return only?.handle && more.length === 0
+    ? { address: only.handle }
+    : { name: connection.displayName };
 }

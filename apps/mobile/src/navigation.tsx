@@ -1,4 +1,4 @@
-import { pushedInPresentation, screenPresentations } from "./navigation-presentations.js";
+import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
 import { PersonalReferenceProvider } from "./markdown/reference-navigation.js";
@@ -18,8 +18,7 @@ import { Platform } from "react-native";
 import type { TabRoute } from "./browser/surface-route.js";
 import type { TabId } from "@opensteer/core";
 import { SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
-import { headerActions, stackScreenOptions, TopLevelMenu } from "./navigation-header.js";
-import { isTopLevel, topLevelScreenOptions } from "./top-level.js";
+import { headerActions, rootScreenOptions, TopLevelMenu } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
 import { AddServerScreen } from "./screens/add-server.js";
@@ -164,22 +163,7 @@ const RootStack = createNativeStackNavigator({
       {children}
     </ScreenLayout>
   ),
-  // Recomputed as the stack changes, so a top-level screen's transition is in
-  // force as it is pushed, and its pop fades the same way back to Home. A page
-  // pushed inside a sheet, as every Settings page is, carries its own Back: iOS
-  // shows it as another sheet with no chevron. A screen's own left action wins.
-  screenOptions: ({ navigation, route }) => {
-    const state = navigation.getState();
-    const options = isTopLevel(state, route.key)
-      ? { ...stackScreenOptions, ...topLevelScreenOptions }
-      : stackScreenOptions;
-    return Platform.OS === "ios" && pushedInPresentation(state, route.key)
-      ? {
-          ...options,
-          ...headerActions({ left: { label: "Back", onPress: () => navigation.goBack() } }),
-        }
-      : options;
-  },
+  screenOptions: rootScreenOptions,
   screens: {
     Deployments: {
       screen: DeploymentsScreen,
@@ -647,7 +631,8 @@ type OpensteerRootParamList = {
   };
   readonly FileViewer: FileViewerParams;
   readonly Deployments: undefined;
-  readonly DeploymentSwitcher: undefined;
+  /** `opening`: the Settings page a person was choosing a Home for, said on the picker. */
+  readonly DeploymentSwitcher: { readonly opening?: string } | undefined;
   readonly Home: { readonly deploymentId: string };
   readonly NotificationsIntro: undefined;
   readonly NewThread: {

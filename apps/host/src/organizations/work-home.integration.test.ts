@@ -20,8 +20,10 @@ import {
   commandAdmission,
   commandSubject,
   createDatabase,
+  delegatingConnectionStanding,
   liveAgentConnection,
   OpensteerStore,
+  TriggerStore,
   WorkHomeStore,
 } from "@opensteer/database";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
@@ -33,6 +35,7 @@ import Fastify from "fastify";
 import { registerWorkHomeRoutes, WorkHomeService } from "./work-home.js";
 import { AgentSessionService } from "../agent-sessions/agent-session-service.js";
 import { agentToolFailure } from "../mcp/agent-tool-failure.js";
+import { readableTabTasks } from "../tabs/tab-authority.js";
 import { ConnectionOAuth } from "../mcp/connections/connection-oauth.js";
 
 const marker = {
@@ -319,6 +322,133 @@ describeStore("work Home", (it) => {
     expectOneStatement();
     await expect(read(held)).rejects.toMatchObject({ code: "forbidden", reason: "work-policy" });
     expectOneStatement();
+  });
+
+  /** Observes every statement a reader runs, by the tables it names. */
+  function observe(database: Parameters<typeof delegatingConnectionStanding>[0]) {
+    const statements: string[] = [];
+    const observed = database.withPlugin({
+      transformQuery({ node }) {
+        statements.push(JSON.stringify(node));
+        return node;
+      },
+      async transformResult({ result }) {
+        return result;
+      },
+    });
+    return { observed, statements };
+  }
+  /** The state the policy writer never leaves: a grant the Work policy no longer allows. */
+  async function forbidTasks(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.database
+      .updateTable("workHomePolicy")
+      .set({ policy: JSON.stringify({ ...permissive, allowTasks: false }) as never })
+      .execute();
+  }
+  const everyMinute = {
+    program: { toolContractVersion: 5, language: "javascript", source: "export default () => {}" },
+    source: {
+      kind: "schedule",
+      schedule: { expression: "* * * * *", kind: "cron", timezone: "UTC" },
+    },
+  } as const;
+
+  it("reads a connection's grant with the Work policy in one statement: a grant it no longer allows is ended, and its automation pauses", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const connection = await f.connect({ ...selected, tasks: true });
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id })
+      .where("id", "=", f.task.threadId)
+      .execute();
+    const triggers = new TriggerStore(f.database);
+    const { trigger } = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.task.threadId,
+      createdBy: f.task.userId,
+      idempotencyKey: "work-policy-standing",
+      // Defined by the connection: it works for that connection.
+      actorConnectionId: connection.id,
+      name: "Every minute",
+      ...everyMinute,
+    });
+    await forbidTasks(f);
+    const { observed, statements } = observe(f.database);
+    await new WorkHomeStore(observed).initialize(marker, f.task.deploymentId);
+    statements.length = 0;
+    expect(await delegatingConnectionStanding(observed, f.task.userId, connection.id)).toBe(
+      "ended",
+    );
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain('"name":"agent_connections"');
+    expect(statements[0]).toContain('"name":"work_home_policy"');
+    await f.database
+      .updateTable("triggers")
+      .set({ nextFireAt: new Date(Date.now() - 60_000) })
+      .where("id", "=", trigger.id)
+      .execute();
+    const claimed = await triggers.claimDueSchedules(new Date());
+    expect(claimed.occurrences).toEqual([]);
+    expect(
+      await f.database
+        .selectFrom("triggers")
+        .select(["status", "nextFireAt"])
+        .where("id", "=", trigger.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "paused", nextFireAt: null });
+  });
+
+  it("reads a paused chat whose grant the Work policy no longer allows as ended, not held", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const bridge = await f.createBridgeFixture("work-paused");
+    await bridge.channels.setConnectionStatus(
+      bridge.configured.connection.id,
+      bridge.fixture.userId,
+      "paused",
+    );
+    expect(
+      await delegatingConnectionStanding(f.database, bridge.fixture.userId, bridge.bridge.id),
+    ).toBe("waiting");
+    await forbidTasks(f);
+    expect(
+      await delegatingConnectionStanding(f.database, bridge.fixture.userId, bridge.bridge.id),
+    ).toBe("ended");
+  });
+
+  it("on a personal Home reads a connection's standing without naming the Work policy", async () => {
+    const f = await fixture(false);
+    const connection = await f.connect({ ...selected, tasks: true });
+    const { observed, statements } = observe(f.database);
+    expect(await delegatingConnectionStanding(observed, f.task.userId, connection.id)).toBe("live");
+    expect(statements.length).toBeGreaterThan(0);
+    expect(statements.some((statement) => statement.includes("work_home_policy"))).toBe(false);
+  });
+
+  it("lists for a connection no task once the Work policy no longer allows its grant", async () => {
+    const f = await fixture();
+    await f.home.apply(f.document(1, permissive));
+    const connection = await f.connect({ scope: "everything" });
+    const theirs = await f.createRunFixture("work-tabs-lineage");
+    await f.database
+      .updateTable("threads")
+      .set({ originConnectionId: connection.id })
+      .where("id", "=", theirs.threadId)
+      .execute();
+    const actor = {
+      kind: "connection",
+      caller: { connectionId: connection.id, userId: f.task.userId },
+    } as never;
+    const ids = [f.task.threadId, theirs.threadId];
+    // Everything, allowed: the person's own task too.
+    expect(await readableTabTasks(actor, ids, f.database)).toEqual(new Set(ids));
+    // The policy no longer allows Everything, while the grant row still says it: no standing.
+    await f.database
+      .updateTable("workHomePolicy")
+      .set({ policy: JSON.stringify({ ...permissive, allowEverything: false }) as never })
+      .execute();
+    expect(await readableTabTasks(actor, ids, f.database)).toEqual(new Set());
   });
 
   it("hides a target removed after resolution even when Work policy refuses admission", async () => {

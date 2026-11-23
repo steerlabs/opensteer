@@ -1,6 +1,7 @@
+import { homeFailureText } from "./failure-text.js";
 import { clientIssue, presentClientIssue } from "../feedback/client-issue.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
-import { HostClientRequestError, type HostClient } from "./client.js";
+import type { HostClient } from "./client.js";
 import type {
   PersonalRemoteAdministrationIntent,
   PersonalRemoteAdministrationStatus,
@@ -198,9 +199,7 @@ export class PersonalRemoteAccessClient {
       this.#set({
         actionError:
           // The Home's refusal in its words; never a report of input this app sent wrong.
-          error instanceof HostClientRequestError && error.reason !== "invalid-request"
-            ? error.message
-            : "Something went wrong. Try again.",
+          homeFailureText(error, "Something went wrong. Try again."),
       });
     } finally {
       this.#set({ working: false });

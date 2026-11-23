@@ -1,0 +1,134 @@
+/**
+ * Sentences with values from outside Opensteer in them, as parts. The code that knows what a
+ * field is says so by the part it puts it in; nothing guesses from what a string looks like:
+ *
+ * - plain words (`string`): Opensteer's own;
+ * - `{ address }`: an address (an origin, a provider's handle), drawn by the address rule;
+ * - `{ name }`: a name someone else chose (an account's or a person's display name, a channel's
+ *   name), drawn as a name and never as an address, whatever it looks like.
+ *
+ * Before anything is drawn, every name and address goes through `outsideText`: direction
+ * controls, zero-width characters and soft hyphens are removed. Screens isolate each from the
+ * direction of the text around it and draw a name in its own weight (the web's `SentenceText`);
+ * in plain text (`plainSentence`: a label read aloud, an alert, a copy, the phone) a name stands
+ * in quotation marks, so a person can tell where a name ends and Opensteer's words begin.
+ */
+export type SentencePart = string | { readonly address: string } | { readonly name: string };
+
+/** A value from outside: removed are direction controls, zero-width characters, soft hyphens. */
+export function outsideText(value: string): string {
+  return value
+    .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "")
+    .replace(/[\u00AD\u180E\u200B-\u200D\u2060\uFEFF]/gu, "");
+}
+
+/**
+ * The origin a person decides about, from URL parsing: scheme, host and port, the host in its
+ * ASCII form. Userinfo and path are no part of it (`https://google.com@evil.example/` is
+ * `https://evil.example`). Null for anything that is not a URL with an origin.
+ */
+export function siteOrigin(value: string): string | null {
+  try {
+    const origin = new URL(outsideText(value).trim()).origin;
+    return origin === "null" ? null : origin;
+  } catch {
+    return null;
+  }
+}
+
+/** `Send ${code} to ${address}.`, as parts: each interpolated value is an address. */
+export function sentence(
+  strings: TemplateStringsArray,
+  ...addresses: readonly string[]
+): readonly SentencePart[] {
+  return strings.flatMap((words, index) => {
+    const address = addresses[index];
+    const parts: SentencePart[] = words === "" ? [] : [words];
+    if (address !== undefined) parts.push({ address });
+    return parts;
+  });
+}
+
+/**
+ * A sentence from words with slots for values whose kind the caller knows, such as a copy table's
+ * template: `sentenceWith((slot) => agentWords("chat.where.dm", { account: slot("account") }),
+ * { account: { name: bridge.accountName } })`.
+ */
+export function sentenceWith(
+  words: (slot: (key: string) => string) => string,
+  values: Readonly<Record<string, { readonly address: string } | { readonly name: string }>>,
+): readonly SentencePart[] {
+  const mark = String.fromCharCode(0);
+  const text = words((key) => `${mark}${key}${mark}`);
+  return text.split(mark).flatMap((piece, index): SentencePart[] => {
+    if (index % 2 === 0) return piece === "" ? [] : [piece];
+    const value = values[piece];
+    return value ? [value] : [];
+  });
+}
+
+/** A name part's or an address part's text, cleaned. */
+export function partText(part: { readonly address: string } | { readonly name: string }): string {
+  return outsideText("address" in part ? part.address : part.name);
+}
+
+/**
+ * The sentence as plain text: Opensteer's words as written, each address cleaned, each name
+ * cleaned and in quotation marks.
+ */
+export function plainSentence(parts: readonly SentencePart[]): string {
+  return parts
+    .map((part) =>
+      typeof part === "string" ? part : "address" in part ? partText(part) : `“${partText(part)}”`,
+    )
+    .join("");
+}
+
+/**
+ * The sentence as the phone draws it, where text has no boxes: the one place every phone sentence
+ * with a name or an address goes through. An address breaks only at its joints and is never
+ * hyphenated (a word joiner between each two of a part's characters, a zero-width space at each
+ * joint); each name and address is isolated from the direction of the text around it; a name
+ * stands in quotation marks. Its words are the same as `plainSentence`'s; what it adds is
+ * invisible, so it is for drawing, never for a copy.
+ */
+export function phoneSentence(parts: readonly SentencePart[]): string {
+  const isolate = (text: string) => `\u2068${text}\u2069`;
+  return parts
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if ("name" in part) return `“${isolate(partText(part))}”`;
+      return isolate(
+        addressParts(partText(part))
+          .map((piece) => Array.from(piece).join("\u2060"))
+          .join("\u200B"),
+      );
+    })
+    .join("");
+}
+
+/**
+ * The parts an address wraps at; joined, they are the address. A line may break after "@",
+ * before a dot, before a single "/", "?" or "#", and after "&", "=" or a scheme's "//". Never
+ * after a hyphen the address has, and never inside a part.
+ */
+export function addressParts(value: string): readonly string[] {
+  const characters = Array.from(value);
+  const parts: string[] = [];
+  let part = "";
+  const end = () => {
+    if (part !== "") parts.push(part);
+    part = "";
+  };
+  characters.forEach((character, index) => {
+    const before = characters[index - 1];
+    const after = characters[index + 1];
+    const singleSlash = character === "/" && before !== "/" && after !== "/";
+    if (character === "." || character === "?" || character === "#" || singleSlash) end();
+    part += character;
+    const schemeSlashes = character === "/" && before === "/" && after !== "/";
+    if (character === "@" || character === "&" || character === "=" || schemeSlashes) end();
+  });
+  end();
+  return parts;
+}

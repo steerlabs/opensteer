@@ -7,6 +7,7 @@
  * here; a mock that differs fails there. To record a change on purpose:
  * `OPENSTEER_UPDATE_CHAT_PARITY=1 pnpm test:integration apps/host/src/channels/chat-parity.integration.test.ts`.
  */
+import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createId, type AgentGrant } from "@opensteer/core";
@@ -15,6 +16,7 @@ import { createStoreFixture, testMessagingRunnerId } from "@opensteer/database/t
 import {
   chatParityChat,
   chatParityNormalized,
+  chatParityProvider,
   chatParityRefusal,
   chatParityViews,
   type ChatParityAnswer,
@@ -24,7 +26,9 @@ import {
 import { hostApi, type HostApiServerContext } from "@opensteer/protocol";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChannelService } from "./channel-service.js";
+import { CredentialService } from "../identity/credential-service.js";
 import { createChannelRpcHandlers, handleChannelCommand } from "./channel-handlers.js";
+import { handleConnectionCommand } from "../mcp/connections/connection-routes.js";
 
 const fixturePath = fileURLToPath(
   new URL("../../../../packages/client/src/mock/chat-parity.fixture.json", import.meta.url),
@@ -152,6 +156,141 @@ const script: readonly ChatParityStep[] = [
     name: "stop the running task",
     command: { kind: "task.stop", account: "Workshop", chat: "Slack", task: "Summarize my week" },
   },
+  {
+    name: "change #team's safety mode and give it a plugin",
+    command: {
+      kind: "connection.update",
+      account: "Workshop",
+      chat: "Slack · #team",
+      revision: "current",
+      accessMode: "auto",
+      grant: {
+        scope: "selected",
+        tasks: true,
+        resources: [
+          {
+            kind: "plugin",
+            target: { kind: "installed", pluginId: "plugin_team_notes" },
+            access: "read",
+          },
+        ],
+      },
+    },
+  },
+  {
+    name: "give #team a grant a chat for anyone may not hold",
+    command: {
+      kind: "connection.update",
+      account: "Workshop",
+      chat: "Slack · #team",
+      revision: "current",
+      grant: { scope: "everything" },
+    },
+  },
+  {
+    name: "save #team from a page read before the last save (two devices)",
+    command: {
+      kind: "connection.update",
+      account: "Workshop",
+      chat: "Slack · #team",
+      revision: "stale",
+      accessMode: "full-access",
+    },
+  },
+  {
+    name: "rename #team",
+    command: {
+      kind: "connection.update",
+      account: "Workshop",
+      chat: "Slack · #team",
+      revision: "current",
+      label: "Team room",
+    },
+  },
+  {
+    name: "edit the chat whose account was removed",
+    command: {
+      kind: "connection.update",
+      account: "On-call",
+      chat: "Slack",
+      revision: "current",
+      accessMode: "auto",
+    },
+  },
+  {
+    name: "remove Studio's chat before disconnecting it",
+    command: { kind: "connection.remove", account: "Studio", chat: "Slack" },
+  },
+  {
+    name: "disconnect Studio's paused chat",
+    command: { kind: "connection.revoke", account: "Studio", chat: "Slack" },
+  },
+  {
+    // Disconnect is never refused: a second one (another device, a retry) is answered done and
+    // finishes stopping what the first began.
+    name: "disconnect Studio's chat again, from another device",
+    command: { kind: "connection.revoke", account: "Studio", chat: "Slack" },
+  },
+  {
+    name: "remove Studio's chat after disconnecting it",
+    command: { kind: "connection.remove", account: "Studio", chat: "Slack" },
+  },
+  {
+    name: "link me on the removed account",
+    command: { kind: "me.link", account: "On-call" },
+  },
+  {
+    name: "check the removed account",
+    command: { kind: "account.check", account: "On-call" },
+  },
+  {
+    name: "check an account that does not exist",
+    command: { kind: "account.check", account: "Nowhere" },
+  },
+  {
+    name: "check Workshop",
+    command: { kind: "account.check", account: "Workshop" },
+  },
+  {
+    name: "link me on Workshop",
+    command: { kind: "me.link", account: "Workshop" },
+  },
+  {
+    name: "pause the removed account",
+    command: { kind: "account.status", account: "On-call", status: "paused" },
+  },
+  {
+    name: "add iMessage with tokens",
+    command: { kind: "account.create", provider: "imessage", token: "Parity" },
+  },
+  {
+    name: "add a Slack account with its tokens",
+    command: { kind: "account.create", provider: "slack", token: "Parity" },
+  },
+  {
+    name: "add a Slack account with tokens its provider refuses",
+    command: { kind: "account.create", provider: "slack", token: "" },
+  },
+  {
+    name: "add Slack through a computer",
+    command: { kind: "account.computer.create", provider: "slack" },
+  },
+  {
+    name: "add iMessage through this Mac",
+    command: { kind: "account.computer.create", provider: "imessage" },
+  },
+  {
+    name: "replace the removed account's tokens",
+    command: { kind: "credentials.replace", account: "On-call", token: "On-call" },
+  },
+  {
+    name: "replace Workshop's tokens",
+    command: { kind: "credentials.replace", account: "Workshop", token: "Workshop" },
+  },
+  {
+    name: "replace Workshop's tokens with another workspace's",
+    command: { kind: "credentials.replace", account: "Workshop", token: "Elsewhere" },
+  },
 ];
 
 type Store = Awaited<ReturnType<typeof createStoreFixture>>;
@@ -173,16 +312,26 @@ describe("the preview Home answers as the Home does", () => {
     const delivery = await storeFixture.createChannelDeliveryFixture("parity", { bridge: false });
     const userId = delivery.fixture.userId;
     const channels = new ChannelStore(database);
+    // The Home's own credential service: what it refuses before asking a provider is compared.
+    const credentials = new CredentialService({ key: randomBytes(32), store });
+    await credentials.initialize();
     service = new ChannelService({
       channels,
-      credentials: {} as never,
+      credentials,
       // The messaging runtime is attached, as on a Home a person uses, and carries every
       // provider; what it is told to hold is taken and nothing more is asked of it.
       relay: {
         connectedRunnerIds: () => [testMessagingRunnerId],
+        selectRunner: () => testMessagingRunnerId,
+        // It carries no computer app: this test has no Mac.
+        capabilities: () => [],
         isConnected: () => true,
         supports: () => true,
-        request: async () => ({}),
+        // The provider it reaches is the script's own (`chatParityProvider`), as the preview's is.
+        request: async (_runnerId: string, method: string, params: unknown) =>
+          method === "connection.inspect"
+            ? chatParityProvider.inspect(params as Parameters<typeof chatParityProvider.inspect>[0])
+            : {},
       } as never,
       store,
       bridgeTools: () => ({ callTool: async () => ({}) }) as never,
@@ -204,14 +353,13 @@ describe("the preview Home answers as the Home does", () => {
           transportKind: "socket",
         },
         createdBy: userId,
-        credential: {
-          encryptedPayload: Buffer.from(name),
-          encryptionKeyVersion: 1,
-          id: createId("credential"),
+        // Sealed as the Home seals them: its tokens name its workspace to the provider.
+        credential: await credentials.prepare({
           name,
           ownerId: userId,
           provider: "channel:slack",
-        },
+          secrets: { botToken: `xoxb-${name}`, appToken: `xapp-${name}` },
+        }),
       });
       return created;
     };
@@ -268,12 +416,30 @@ describe("the preview Home answers as the Home does", () => {
     // Names as the person sees them, kept once known: a removed account is still named.
     const accountIds = new Map<string, string>();
     const remember = (dashboard: Awaited<ReturnType<typeof read>>["channels"]) => {
-      for (const row of dashboard.accounts) accountIds.set(row.displayName, row.id);
+      for (const row of dashboard.accounts) {
+        accountIds.set(row.displayName, row.id);
+        connectionIds.set(row.displayName, row.connectionId);
+      }
     };
+    const connectionIds = new Map<string, string>();
+    // An account never seen is one that does not exist: a well-formed id the Home never made.
     const accountOf = (name: string) => accountIds.get(name) ?? `cha_${crypto.randomUUID()}`;
-    const connectionOf = (dashboard: Awaited<ReturnType<typeof read>>["channels"], name: string) =>
-      dashboard.accounts.find(({ displayName }) => displayName === name)?.connectionId ??
-      `icn_${crypto.randomUUID()}`;
+    const connectionOf = (_dashboard: unknown, name: string) =>
+      connectionIds.get(name) ?? `con_${crypto.randomUUID()}`;
+    // A chat by the name the person sees it under, on its account, in the views just read.
+    const chatOf = (command: { readonly chat: string; readonly account: string }) =>
+      current.connections.find(
+        ({ label, bridge }) => label === command.chat && bridge?.accountName === command.account,
+      );
+    const owner = {
+      session: { id: "parity-session", user: { id: userId, disabledAt: null } },
+    } as unknown as HostApiServerContext;
+    // What the Home does after a Disconnect: its cleanup worker takes the chat at once.
+    const cleanups = {
+      stopLineage: async () => {
+        await store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });
+      },
+    };
     let current = await read();
     remember(current.channels);
     const seed = chatParityNormalized(current);
@@ -318,11 +484,8 @@ describe("the preview Home answers as the Home does", () => {
           if (command.status === "revoked")
             await store.driveConnectionCleanups({ stopper: { stop: async () => undefined } });
           answer = { ok: true };
-        } else {
-          const chat = current.connections.find(
-            ({ label, bridge }) =>
-              label === command.chat && bridge?.accountName === command.account,
-          )!;
+        } else if (command.kind === "task.stop") {
+          const chat = chatOf(command)!;
           const task = chat.bridge?.tasks?.find(({ title }) => title === command.task);
           // A task with nothing running has nothing to stop: both clients say so before asking
           // the Home (`threadStopTarget`). A running one is stopped the way the Home stops it.
@@ -341,6 +504,98 @@ describe("the preview Home answers as the Home does", () => {
             auditOwnerStop: true,
             idempotencyKey: createId("command"),
           });
+          answer = { ok: true };
+        } else if (command.kind === "connection.update") {
+          const chat = chatOf(command)!;
+          const revision = chat.grantRevision ?? 1;
+          const { connection } = (await handleConnectionCommand(
+            { store: connections } as never,
+            {
+              type: "connection.update",
+              connectionId: chat.id,
+              expectedRevision: command.revision === "current" ? revision : revision - 1,
+              ...(command.accessMode !== undefined ? { accessMode: command.accessMode } : {}),
+              ...(command.grant !== undefined ? { grant: command.grant } : {}),
+              ...(command.label !== undefined ? { label: command.label } : {}),
+              idempotencyKey: createId("command"),
+            } as never,
+            owner,
+            cleanups,
+          )) as { connection: Parameters<typeof chatParityChat>[0] };
+          answer = { ok: true, chat: chatParityChat(connection) };
+        } else if (command.kind === "connection.revoke" || command.kind === "connection.remove") {
+          await handleConnectionCommand(
+            { store: connections } as never,
+            {
+              type: command.kind,
+              connectionId: chatOf(command)!.id,
+              idempotencyKey: createId("command"),
+            } as never,
+            owner,
+            cleanups,
+          );
+          answer = { ok: true };
+        } else if (command.kind === "me.link") {
+          // The code is new each time: only that one was made is compared.
+          await handleChannelCommand(
+            service,
+            {
+              type: "channel.me.link",
+              accountId: accountOf(command.account) as never,
+              idempotencyKey: createId("command"),
+            } as never,
+            context,
+          );
+          answer = { ok: true };
+        } else if (command.kind === "account.check") {
+          const checked = await rpc["channel.connection.check"](
+            { connectionId: connectionOf(current.channels, command.account) as never },
+            context,
+          );
+          answer = checked.ok
+            ? { ok: true }
+            : {
+                ok: false,
+                code: checked.error.code,
+                reason: checked.error.reason ?? null,
+                message: checked.error.message,
+              };
+        } else if (command.kind === "account.create") {
+          await handleChannelCommand(
+            service,
+            {
+              type: "channel.connection.create",
+              provider: command.provider,
+              routingMode: "dedicated",
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
+              idempotencyKey: createId("command"),
+            } as never,
+            context,
+          );
+          answer = { ok: true };
+        } else if (command.kind === "account.computer.create") {
+          await handleChannelCommand(
+            service,
+            {
+              type: "channel.connection.computer.create",
+              provider: command.provider,
+              runnerId: testMessagingRunnerId,
+              idempotencyKey: createId("command"),
+            } as never,
+            context,
+          );
+          answer = { ok: true };
+        } else {
+          await handleChannelCommand(
+            service,
+            {
+              type: "channel.connection.credentials.replace",
+              connectionId: connectionOf(current.channels, command.account) as never,
+              credentials: { botToken: `xoxb-${command.token}`, appToken: "xapp-parity" },
+              idempotencyKey: createId("command"),
+            } as never,
+            context,
+          );
           answer = { ok: true };
         }
       } catch (error) {

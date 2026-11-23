@@ -65,6 +65,19 @@ export function isTopLevel(state: StackView, key: string): boolean {
   return topLevelRoute(state)?.key === key;
 }
 
+/**
+ * Whether this screen sits inside a Home's stack (not on the list of Homes,
+ * and not inside a presented modal/sheet flow) and therefore carries the
+ * sidebar Menu in its bar.
+ */
+export function showsSidebarMenu(state: StackView, key: string): boolean {
+  if (state.routes[0]?.name !== "Home") return false;
+  const index = state.routes.findIndex((route) => route.key === key);
+  if (index < 0) return false;
+  const from = presentedFrom(state);
+  return from < 0 || index < from;
+}
+
 /** Whether the screen in front, sheets aside, is top-level and its edge swipe may open the sidebar. */
 export function sidebarSwipes(focused: StackRoute | undefined, state: StackView): boolean {
   return focused !== undefined && isTopLevel(state, focused.key) && !edgeOwners.has(focused.name);

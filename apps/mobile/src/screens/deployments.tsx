@@ -1,3 +1,4 @@
+import { homePickerReason } from "./settings-home-model.js";
 import { cloudComputerWebsite } from "@opensteer/client/computers";
 import { useCloudComputer } from "@opensteer/client/react";
 import { useCopy } from "../ui/copy-mark.js";
@@ -381,6 +382,8 @@ export function DeploymentsScreen(): ReactNode {
   const workBadges = useWorkBadges();
   const cloudIds = useCloudComputerIds();
   const switching = route.name === "DeploymentSwitcher";
+  // The Settings page that sent a person here, said in one sentence above the list.
+  const opening = (route.params as { readonly opening?: string } | undefined)?.opening;
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
   const [refreshing, setRefreshing] = useState(false);
@@ -688,6 +691,11 @@ export function DeploymentsScreen(): ReactNode {
           ) : undefined
         }
       >
+        {switching && opening ? (
+          <AppText role="secondary" tone="muted">
+            {homePickerReason(opening)}
+          </AppText>
+        ) : null}
         {failure === null ? null : (
           <ActionLine line={failure} numberOfLines={2} onDismiss={() => setFailure(null)} />
         )}

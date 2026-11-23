@@ -217,6 +217,8 @@ export function agentGrantSections(
 /** The four safety modes, in the words a connection's mode is chosen by. */
 export function agentModeSection(props: {
   readonly mode: ThreadAccessMode;
+  /** What each mode means for this connection (a chat for anyone has its own). */
+  readonly descriptions?: Readonly<Record<ThreadAccessMode, string>>;
   readonly disabled: boolean;
   readonly onMode: (mode: ThreadAccessMode) => void;
   /** A work Home's effective policy, once the Home reports it; it caps the mode. */
@@ -230,7 +232,8 @@ export function agentModeSection(props: {
       key: option.mode,
       kind: "choice",
       label: option.label,
-      detail: limits.mode(option.mode) ?? connectionModeDescriptions[option.mode],
+      detail:
+        limits.mode(option.mode) ?? (props.descriptions ?? connectionModeDescriptions)[option.mode],
       selected: props.mode === option.mode,
       disabled: props.disabled || (limits.mode(option.mode) !== null && props.mode !== option.mode),
       onPress: () => props.onMode(option.mode),

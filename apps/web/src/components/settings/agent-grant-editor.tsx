@@ -321,12 +321,15 @@ export function AgentGrantEditor({
 
 /** The four safety modes, in the words a connection's mode is chosen by. */
 export function ConnectionModeChoices({
+  descriptions = connectionModeDescriptions,
   disabled,
   mode,
   onChange,
   showSettingsNote,
   workPolicy,
 }: {
+  /** What each mode means for this connection (a chat for anyone has its own). */
+  readonly descriptions?: Readonly<Record<ThreadAccessMode, string>>;
   readonly disabled: boolean;
   readonly mode: ThreadAccessMode;
   readonly onChange: (mode: ThreadAccessMode) => void;
@@ -342,7 +345,7 @@ export function ConnectionModeChoices({
         {accessModeOptions.map((option) => (
           <Choice
             checked={mode === option.mode}
-            detail={connectionModeDescriptions[option.mode]}
+            detail={descriptions[option.mode]}
             key={option.mode}
             label={option.label}
             name="agent-consent-mode"

@@ -1357,7 +1357,7 @@ export async function recordIncludedBrowserPages(
   const pages = input.content.flatMap((part) => (part.type === "browser-page" ? [part] : []));
   if (pages.length === 0) return [];
   const threadId = await personBrowserThread(transaction, input);
-  if (!threadId) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+  if (!threadId) throw new OpensteerError({ code: "not_found", message: "Task not found" });
   for (const page of pages) {
     if (await getBrowserSessionForOwner(transaction, page.sessionId, input.ownerId)) continue;
     throw new OpensteerError({

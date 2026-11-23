@@ -19,6 +19,7 @@ import {
 import { accessModeOptions } from "./access-modes.js";
 import { connectionStateEnded } from "./connected-agent-view.js";
 import type { HostClient } from "./client.js";
+import type { ChatScreenHost } from "./chat-screen-host.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 
@@ -26,6 +27,11 @@ export interface ConnectedAgentsSnapshot {
   readonly connections: readonly AgentConnection[] | null;
   readonly error: string | null;
   readonly issue: ClientIssue | null;
+  /**
+   * The last read of the list failed, whether or not an earlier one gave the list shown: a page
+   * drawn from it then changes nothing until it is read again (`ReadGate`, `readGateSections`).
+   */
+  readonly readFailed: boolean;
   /** The connection an action is running for. */
   readonly pending: string | null;
   readonly pendingAction: ConnectedAgentAction | null;
@@ -60,10 +66,12 @@ export function connectedAgentsClient(client: HostClient): ConnectedAgentsClient
   }
   return resource;
 }
+// What it sends and reads is what the chat and connected-agent screens may (`ChatScreenHost`).
 type ConnectedAgentsHost = Pick<
   HostClient,
-  "connection" | "rpc" | "dispatch" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
->;
+  "connection" | "subscribe" | "getSnapshot" | "subscribeConnectionsChanged"
+> &
+  Pick<ChatScreenHost, "dispatch" | "rpc">;
 
 async function readConnectedAgents(client: Pick<ConnectedAgentsHost, "rpc">, signal?: AbortSignal) {
   const { connections, endedConnections } = unwrapRpcResult(
@@ -99,6 +107,7 @@ export class ConnectedAgentsClient {
     this.#state = {
       connections: null,
       error: null,
+      readFailed: false,
       issue: null,
       pending: null,
       pendingAction: null,
@@ -196,6 +205,7 @@ export class ConnectedAgentsClient {
       connections,
       issue,
       error: issue ? presentClientIssue(issue).title : null,
+      readFailed: read.issue !== null,
       pending: action?.running ? this.#state.pending : null,
       pendingAction: action?.running ? this.#state.pendingAction : null,
       revoked: this.#revoked.size ? new Set(this.#revoked) : noRevokes,
@@ -603,7 +613,7 @@ export function connectionAccessLabel(mode: AgentConnection["accessMode"]): stri
  * reuses it rather than creating a second profile.
  */
 export async function createDedicatedProfile(
-  client: Pick<HostClient, "dispatch">,
+  client: Pick<ChatScreenHost, "dispatch">,
   input: { readonly name: string; readonly homeRunnerId: string | null },
 ): Promise<string> {
   const result = await client.dispatch({

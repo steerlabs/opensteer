@@ -272,6 +272,7 @@ function mockChats(now: Date): readonly AgentConnection[] {
     readonly provider: string;
     readonly accountId: string;
     readonly accountName: string;
+    readonly accountHandle?: string;
     readonly channelConnectionId: string;
     readonly conversation?: { readonly id: string; readonly name: string };
     readonly senders: "owner" | "anyone";
@@ -300,6 +301,7 @@ function mockChats(now: Date): readonly AgentConnection[] {
       senders: input.senders,
       grantShape: wireGrantShape(input.senders),
       accountName: input.accountName,
+      ...(input.accountHandle ? { accountHandle: input.accountHandle } : {}),
       conversationName: input.conversation?.name ?? null,
       channelConnectionId: input.channelConnectionId,
       me: input.me ?? null,
@@ -355,6 +357,7 @@ function mockChats(now: Date): readonly AgentConnection[] {
       provider: "iMessage",
       accountId: messagesAccount,
       accountName: "tim@example.com",
+      accountHandle: "tim@example.com",
       channelConnectionId: messagesChannel,
       senders: "owner",
       me: { displayName: "+1 415 555 0100", externalUserId: "+14155550100" },

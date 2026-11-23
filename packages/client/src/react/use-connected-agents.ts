@@ -22,6 +22,7 @@ import { agentWords } from "../host/connected-agents-copy.js";
 const empty: ConnectedAgentsSnapshot = {
   connections: null,
   error: null,
+  readFailed: false,
   issue: null,
   pending: null,
   pendingAction: null,

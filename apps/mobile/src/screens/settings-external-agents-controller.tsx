@@ -6,6 +6,7 @@ import {
   externalAgentGuides,
   externalAgentsReach,
   guideAddress,
+  phoneSentence,
   type ConnectedAgentRow,
   type ExternalAgentGuide,
 } from "@opensteer/client/host";
@@ -53,7 +54,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
       key: row.id,
       kind: "button",
       label: row.identity.label,
-      detail: row.line,
+      detail: phoneSentence(row.lineParts),
       opens: true,
       lead: (
         <ExternalAgentMark initial={row.identity.initial} providerId={row.identity.providerId} />

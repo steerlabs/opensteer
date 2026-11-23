@@ -1,3 +1,4 @@
+import { homeFailureText } from "./failure-text.js";
 import { unsupportedVersionCloseCode } from "@opensteer/protocol";
 import type { PluginChange, PluginResourceCategory } from "@opensteer/protocol";
 import {
@@ -2736,8 +2737,7 @@ export class HttpHostClient {
       }
     } catch (error) {
       if (!current()) return false;
-      const message =
-        error instanceof Error ? error.message : "Could not load this conversation’s browsers.";
+      const message = homeFailureText(error, "Could not load this conversation’s browsers.");
       if (error instanceof HostClientRequestError && [403, 404].includes(error.status)) {
         this.#replaceBrowserUsage(threadId, [], { runIds: null }, message);
       } else {

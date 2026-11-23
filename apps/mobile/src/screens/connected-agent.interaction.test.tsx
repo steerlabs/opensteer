@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { createId } from "@opensteer/core";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
@@ -48,7 +49,7 @@ vi.mock("./native-settings-page.js", async () => {
     NativeSettingsPage: (props: NativeSettingsPageProps) => {
       const sheet = props.sheet !== undefined;
       if (sheet) state.sheet = props;
-      else state.page = props;
+      else state.page = readAsDrawn(props);
       useEffect(
         () => () => {
           if (sheet) state.sheet = null;
@@ -174,7 +175,7 @@ describe("one connected agent on the phone", () => {
       expect(row("withdrawn", "withdrawn").label).toMatch(/^No longer verified since /u);
       // Its name is the title; the who rows add only where its access goes.
       expect(section("who")?.rows.map(({ label }) => label)).toEqual([
-        "Holds the access: ChatGPT · https://chatgpt.com",
+        "Holds the access: “ChatGPT” · https://chatgpt.com",
       ]);
       expect(section("withdrawn")?.footer?.text).toBe("Check its last action or disconnect it.");
       expect(row("withdrawn", "disconnect").label).toBe("Disconnect ChatGPT");
@@ -225,9 +226,10 @@ describe("one connected agent on the phone", () => {
         "detail" in candidate ? candidate.detail : null,
       ]),
     ).toEqual([
-      ["Calls itself", "TravelBot Agent"],
-      ["Address it uses", "trips.example"],
-      ["Connected", expect.any(String)],
+      ["Calls itself", "“TravelBot Agent”"],
+      ["Address it uses", "https://trips.example"],
+      // The day it was added, never read as where it stands now.
+      ["Added", expect.any(String)],
       ["Expires", expect.any(String)],
     ]);
     expect(row("end", "disconnect")).toMatchObject({
@@ -454,11 +456,11 @@ describe("a chat on the phone", () => {
 
   it("shows where a live chat listens, who can give it work, its work with Stop, and Disconnect", async () => {
     const client = await open(chat(1), chats());
-    expect(row("chat-where", "where").label).toBe("Direct messages to Workshop on Slack");
+    expect(row("chat-where", "where").label).toBe("Direct messages to “Workshop” on Slack");
     expect(row("chat-speakers", "speakers")).toMatchObject({
-      label: "You, as Tim",
+      label: "You, as “Tim”",
       detail:
-        "Only messages you send as Tim give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
+        "Only messages you send as “Tim” give this agent work. To use another account, link it on Messaging: the new one replaces this one.",
     });
     expect(section("chat-speakers")?.footer?.text).toBe(
       "This is chosen when the chat is added and can’t be changed. To change it, disconnect this chat and add it again.",
@@ -466,6 +468,11 @@ describe("a chat on the phone", () => {
     const stop = vi.spyOn(client, "stopRun").mockResolvedValue(undefined);
     await press(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop"));
     expect(stop).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
+    // Taken, and the task still runs until its device answers: it says so, and asks no second time.
+    expect(row("chat-tasks", "thr_00000000-0000-4000-8000-0000000000c1-stop")).toMatchObject({
+      label: "Stopping…",
+      disabled: true,
+    });
     expect(row("end", "disconnect").label).toBe("Disconnect Slack");
   });
 
@@ -481,7 +488,8 @@ describe("a chat on the phone", () => {
     await press(row("chat-tasks", key));
     expect(stop).toHaveBeenCalledOnce();
     await act(async () => finish());
-    expect(row("chat-tasks", key)).toMatchObject({ label: "Stop", disabled: false });
+    // Taken: it reads Stopping… until the Home says the task no longer runs.
+    expect(row("chat-tasks", key)).toMatchObject({ label: "Stopping…", disabled: true });
   });
 
   it("keeps what a paused chat holds on screen when an edit met a newer one", async () => {
@@ -554,6 +562,29 @@ describe("a chat on the phone", () => {
     );
   });
 
+  it("says, where an anyone chat's mode is chosen, what the people there can have it do", async () => {
+    await open(chat(2), chats());
+    expect(row("mode", "auto")).toMatchObject({
+      detail:
+        "People in #team can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+    });
+    expect(row("mode", "full-access")).toMatchObject({
+      detail:
+        "Never asks. People in #team can have it do anything on its computer that your user account can.",
+    });
+    expect(row("mode", "approval-required")).toMatchObject({
+      detail: "Asks you before anything that changes something.",
+    });
+    // A chat that answers only you reads as a connected agent does: its tasks work in Agent home.
+    host?.dispose();
+    act(() => root?.unmount());
+    await open(chat(1), chats());
+    expect(row("mode", "full-access")).toMatchObject({
+      detail:
+        "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+    });
+  });
+
   it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
     const client = chats();
     Object.defineProperty(client.rpc, "connections.list", {
@@ -576,6 +607,42 @@ describe("a chat on the phone", () => {
     await vi.waitFor(() => expect(section("unreadable")).toBeDefined());
     expect(row("unreadable", "unreadable").label).toBe("Couldn’t read your connected agents.");
     expect(section("gone")).toBeUndefined();
+  });
+
+  it("after a refresh fails on a page read before, offers only Try again", async () => {
+    const client = chats();
+    const changed: (() => void)[] = [];
+    const subscribe = client.subscribeConnectionsChanged.bind(client);
+    vi.spyOn(client, "subscribeConnectionsChanged").mockImplementation((listener) => {
+      changed.push(listener);
+      return subscribe(listener);
+    });
+    await open(chat(1), client);
+    expect(section("chat-where")).toBeDefined();
+    Object.defineProperty(client.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() => expect(section("read-failed")).toBeDefined());
+    // Every row that acts, found by enumeration: only Try again.
+    const acting = (state.page?.sections ?? []).flatMap((candidate) =>
+      candidate.rows
+        .filter(
+          (candidateRow) =>
+            (candidateRow.kind === "button" && !candidateRow.opens) ||
+            candidateRow.kind === "toggle" ||
+            candidateRow.kind === "input" ||
+            candidateRow.kind === "choice" ||
+            candidateRow.kind === "chips",
+        )
+        .map((candidateRow) => candidateRow.label),
+    );
+    expect(acting).toEqual(["Try again"]);
   });
 
   it("shows a chat none of a signed-in agent's identity lines", async () => {
@@ -719,5 +786,26 @@ describe("a chat on the phone", () => {
     act(() => root?.unmount());
     await open("mcn_00000000-0000-4000-8000-000000000003");
     expect(footers().some((text) => text.startsWith(warning))).toBe(true);
+  });
+
+  it("offers Remove from list on an ended chat only, never on a live or paused one", async () => {
+    for (const [n, removable] of [
+      [1, false],
+      [2, false],
+      [3, false],
+      [4, false],
+      [5, true],
+    ] as const) {
+      await open(chat(n), chats());
+      const labels = (state.page?.sections ?? []).flatMap((s) => s.rows.map((r) => r.label));
+      expect(labels.includes("Remove from list"), `chat ${n}`).toBe(removable);
+      act(() => root?.unmount());
+    }
+  });
+
+  it("says a chat is at work when its page lists a task running, from that one list", async () => {
+    await open(chat(1), chats());
+    expect(status().label).not.toBe("Not doing anything");
+    expect(section("status")?.footer?.text).toContain("Summarize my week");
   });
 });

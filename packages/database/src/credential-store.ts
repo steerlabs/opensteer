@@ -3,6 +3,7 @@ import {
   type CredentialId,
   type UserId,
   type RunnerId,
+  chatAddRefusals,
   OpensteerError,
   createId,
 } from "@opensteer/core";
@@ -131,7 +132,7 @@ export async function replaceChannelCredential(
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (!connection?.runnerId || connection.credentialId !== input.credentialId) {
-      throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
+      throw new OpensteerError({ code: "not_found", message: chatAddRefusals.accountGone });
     }
     const updated = await transaction
       .updateTable("credentials")

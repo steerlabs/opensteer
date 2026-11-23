@@ -451,6 +451,8 @@ describe("a chat, as a connected agent", () => {
     const stopRun = vi.spyOn(host, "stopRun").mockResolvedValue(undefined);
     await act(async () => buttonNamed(page, "Stop").click());
     expect(stopRun).toHaveBeenCalledWith("thr_00000000-0000-4000-8000-0000000000c1");
+    // Taken, and the task still runs until its device answers: it says so, and asks no second time.
+    expect(buttonNamed(page, "Stopping…")).toMatchObject({ disabled: true });
     expect(buttonNamed(page, "Disconnect Slack")).toBeTruthy();
     // What it can use is edited with the same grant editor as any connected agent.
     expect(page.querySelector('[aria-labelledby="agent-grant-tasks"]')).not.toBeNull();
@@ -468,7 +470,7 @@ describe("a chat, as a connected agent", () => {
     ],
     [
       4,
-      "Paused because On-call needs attention. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
+      "Paused because “On-call” needs attention. Its replies are held to be sent in order when it’s back. Messages sent while this is paused are not delivered. It says: Slack says the token was revoked. Fix that on its messaging account, then check it again.",
     ],
   ])(
     "says what a paused chat holds and what becomes of what is sent to it (chat %i)",
@@ -511,8 +513,16 @@ describe("a chat, as a connected agent", () => {
     const page = await mount(host, `${base}/${chat(2)}`);
     await vi.waitFor(() => expect(page.textContent).toContain("Anyone who can write in #team"));
     expect(page.textContent).toContain(
-      "Anyone who can write there can give this agent work. Tasks they start run without your personal context.",
+      "Anyone who can write there can give this agent work. Their tasks run without your personal context, in a folder of their own instead of your Agent home. That folder is not a wall: a task can still reach other files on that computer, as far as its safety mode allows.",
     );
+    // Where its mode is chosen, each mode says what the people in #team can have it do.
+    expect(page.textContent).toContain(
+      "People in #team can have it act without asking you whenever the engine’s own safety check allows it. That can reach files outside its folder.",
+    );
+    expect(page.textContent).toContain(
+      "Never asks. People in #team can have it do anything on its computer that your user account can.",
+    );
+    expect(page.textContent).not.toContain("Opensteer checks each action");
   });
 
   it("says a chat's page could not be read when the read failed, never that it is gone", async () => {
@@ -529,6 +539,37 @@ describe("a chat, as a connected agent", () => {
     );
     expect(page.textContent).not.toContain(agentWords("agent.notFound"));
     expect(buttonNamed(page, "Try again")).toBeTruthy();
+  });
+
+  it("after a refresh fails on a chat's page read before, offers only Try again", async () => {
+    host = chats();
+    const changed: (() => void)[] = [];
+    const subscribe = host.subscribeConnectionsChanged.bind(host);
+    vi.spyOn(host, "subscribeConnectionsChanged").mockImplementation((listener) => {
+      changed.push(listener);
+      return subscribe(listener);
+    });
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Direct messages to"));
+    Object.defineProperty(host.rpc, "connections.list", {
+      value: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "internal", message: "down", status: 503 });
+      }),
+      configurable: true,
+    });
+    // Something changed on the Home: the page reads its list again, and that read fails.
+    await act(async () => {
+      for (const listener of changed) listener();
+    });
+    await vi.waitFor(() =>
+      expect(page.textContent).toContain("Couldn’t read your connected agents."),
+    );
+    const enabled = [
+      ...page.querySelectorAll<HTMLButtonElement | HTMLInputElement>("button, input"),
+    ]
+      .filter((control) => !control.disabled && !control.closest("fieldset[disabled]"))
+      .map((control) => control.textContent || control.getAttribute("aria-label"));
+    expect(enabled).toEqual(["Try again"]);
   });
 
   it("shows a chat none of a signed-in agent's identity lines", async () => {
@@ -767,5 +808,32 @@ describe("a chat, as a connected agent", () => {
     const trips = await mount(host, `${base}/mcn_00000000-0000-4000-8000-000000000003`);
     await vi.waitFor(() => expect(trips.textContent).toContain("Disconnect Trip planner"));
     expect(trips.textContent).toContain(warning);
+  });
+
+  it("offers Remove from list on an ended chat only, never on a live or paused one", async () => {
+    host = chats();
+    for (const [n, removable] of [
+      [1, false],
+      [2, false],
+      [3, false],
+      [4, false],
+      [5, true],
+    ] as const) {
+      const page = await mount(host, `${base}/${chat(n)}`);
+      await vi.waitFor(() => expect(page.textContent).toContain("Where"));
+      expect(
+        [...page.querySelectorAll("button")].some((b) => b.textContent === "Remove from list"),
+        `chat ${n}`,
+      ).toBe(removable);
+      act(() => root?.unmount());
+    }
+  });
+
+  it("says a chat is at work when its page lists a task running, from that one list", async () => {
+    host = chats();
+    const page = await mount(host, `${base}/${chat(1)}`);
+    await vi.waitFor(() => expect(page.textContent).toContain("Summarize my week"));
+    expect(status(page)).not.toContain("Not doing anything");
+    expect(status(page)).toContain("Summarize my week");
   });
 });

@@ -232,8 +232,16 @@ describe("agent consent with grants", () => {
     const tasks = container.querySelector<HTMLInputElement>(
       '[aria-labelledby="agent-grant-tasks"]',
     )!;
+    // Its safety modes say what its tasks can touch, and the safety check is the engine's own.
+    expect(container.textContent).toContain(
+      "Acts without asking whenever the engine’s own safety check allows it, and can change files in your Agent home.",
+    );
+    expect(container.textContent).toContain(
+      "Never asks. It can change anything in your Agent home, and anything else on that computer that your user account can.",
+    );
+    expect(container.textContent).not.toContain("Opensteer checks each action");
     expect(detail(container, "Tasks")).toBe(
-      "Lets it ask your own agents to work on Cloud Computer: read and change files and run commands there.",
+      "Lets it ask your own agents to work on Cloud Computer: read and change files and run commands there. The tasks it starts work in your Agent home. From Auto-accept edits up, they can change files there without asking you, your own agents’ instructions and skills among them.",
     );
     await act(async () => tasks.click());
     expect(container.textContent).toContain(

@@ -33,7 +33,13 @@ import {
   type NormalizedChannelEvent,
 } from "@opensteer/channel-core";
 import type { IntegrationConnectionMethod } from "@opensteer/integration-core/models";
-import { OpensteerError, type CredentialId, type RunnerId, type UserId } from "@opensteer/core";
+import {
+  chatAddRefusals,
+  OpensteerError,
+  type CredentialId,
+  type RunnerId,
+  type UserId,
+} from "@opensteer/core";
 import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
 import type { ChannelAccountTable, DatabaseSchema, IntegrationConnectionTable } from "./schema.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
@@ -381,7 +387,7 @@ export class ChannelStore {
           .forNoKeyUpdate()
           .executeTakeFirst();
         if (!connection) {
-          throw new OpensteerError({ code: "not_found", message: "Channel connection not found" });
+          throw new OpensteerError({ code: "not_found", message: chatAddRefusals.accountGone });
         }
         if (status === "revoked") {
           await revokeChannelConnectionsInTransaction(transaction, [connectionId]);
@@ -453,18 +459,25 @@ export class ChannelStore {
     };
   }
 
-  /** One of the owner's channel connections as a check of it needs it. */
+  /**
+   * One of the owner's channel connections as a check of it needs it: null when the owner has no
+   * such account (removed, revoked or never theirs), "unplaced" while it has no computer yet.
+   */
   async connectionForCheck(
     connectionId: IntegrationConnectionId,
     ownerUserId: UserId,
-  ): Promise<{
-    /** Null for a computer transport, which holds no secret. */
-    readonly credentialId: CredentialId | null;
-    readonly externalTenantId: string | null;
-    readonly provider: ChannelProvider;
-    readonly runnerId: RunnerId;
-    readonly transportKind: ChannelTransportKind;
-  } | null> {
+  ): Promise<
+    | {
+        /** Null for a computer transport, which holds no secret. */
+        readonly credentialId: CredentialId | null;
+        readonly externalTenantId: string | null;
+        readonly provider: ChannelProvider;
+        readonly runnerId: RunnerId;
+        readonly transportKind: ChannelTransportKind;
+      }
+    | "unplaced"
+    | null
+  > {
     const row = await this.#database
       .selectFrom("integrationConnections")
       .select(["credentialId", "externalTenantId", "provider", "runnerId", "transportKind"])
@@ -473,7 +486,8 @@ export class ChannelStore {
       .where("connectionKind", "=", "channel")
       .where("status", "!=", "revoked")
       .executeTakeFirst();
-    if (!row?.runnerId || !row.transportKind) return null;
+    if (!row) return null;
+    if (!row.runnerId || !row.transportKind) return "unplaced";
     return {
       credentialId: row.credentialId,
       externalTenantId: row.externalTenantId,

@@ -2,8 +2,11 @@ import { expect } from "vitest";
 import type { AgentGrant, ThreadId } from "@opensteer/core";
 import { AgentConnectionStore } from "./agent-connection-store.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
-import { bindingAgentConnectionId, lineagePersonalContext } from "./resource-access.js";
-import { describeStore, testModelSelection } from "./store.integration.test-support.js";
+import {
+  describeStore,
+  testContinuationIdentity,
+  testModelSelection,
+} from "./store.integration.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
 
 const tasksOnly: AgentGrant = { scope: "selected", tasks: true, resources: [] };
@@ -70,6 +73,27 @@ describeStore(
       expect(await lineageOf(root.id)).toBe(anyone.id);
       expect(await sessions(root.id)).toEqual([{ personalContext: false }]);
 
+      // A change of engine mid-task makes a new session: without personal context from its first
+      // row, read before any Run binds it.
+      const [previous] = await f.database
+        .selectFrom("providerSessions")
+        .select("id")
+        .where("threadId", "=", root.id)
+        .execute();
+      await f.store.updateThreadExecutionSelection({
+        continuation: { expectedProviderSessionId: previous!.id },
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: fixture.harnessInstance.id,
+        idempotencyKey: "team-engine-change",
+        modelSelection: testModelSelection,
+        requestedBy: fixture.userId,
+        threadId: root.id,
+      });
+      expect(await sessions(root.id)).toEqual([
+        { personalContext: false },
+        { personalContext: false },
+      ]);
+
       // A task made under it inherits its lineage, and so its restriction.
       const { thread: sub } = await create("under-team", { parentThreadId: root.id });
       expect(await lineageOf(sub.id)).toBe(anyone.id);
@@ -103,8 +127,8 @@ describeStore(
       // Its worker never held a personal session, not even its first.
       expect(await sessions(worker.thread.id)).toEqual([{ personalContext: false }]);
 
-      // An automation on the task, whether its agent or the person made it: what its program
-      // starts runs in the task's lineage.
+      // No automation on the task, whether its agent or the person makes it: its program would
+      // run as the person, in their Agent home.
       const triggers = new TriggerStore(f.database);
       const automation = (key: string, actorConnectionId?: string) =>
         triggers.create({
@@ -129,17 +153,11 @@ describeStore(
       for (const [key, actor] of [
         ["agent-briefing", anyone.id],
         ["person-briefing", undefined],
-      ] as const) {
-        const { trigger } = await automation(key, actor);
-        const occurrence = await triggers.enqueueManual({
-          actorThreadId: null,
-          ownerId: fixture.userId,
-          triggerId: trigger.id,
+      ] as const)
+        await expect(automation(key, actor), key).rejects.toMatchObject({
+          code: "forbidden",
+          message: "A chat that anyone in the conversation can message can't have an automation.",
         });
-        const lineage = await bindingAgentConnectionId(f.database, `trigger:${occurrence.id}`);
-        expect(lineage, key).toBe(anyone.id);
-        expect(await lineagePersonalContext(f.database, lineage), key).toBe(false);
-      }
 
       // That none of it is read into the person's memory is tested through the memory pass's
       // own tools (memory-pass-service.integration.test.ts).

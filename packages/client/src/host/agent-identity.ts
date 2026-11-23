@@ -1,6 +1,7 @@
 import type { AgentConnectionIdentityAtConsent } from "@opensteer/control-plane-protocol";
 import type { AgentConnectionIdentityPresentation } from "@opensteer/protocol";
 import { workWords } from "./agent-work-copy.js";
+import { plainSentence, sentenceWith, siteOrigin, type SentencePart } from "./sentence-parts.js";
 
 /**
  * Who a connected agent is, as far as the Home could prove at consent. The Home's own
@@ -198,13 +199,27 @@ export function agentConsentHeading(who: AgentWho): {
 }
 
 export function agentWhoOriginLine(origin: AgentWhoOrigin): string {
+  return plainSentence(agentWhoOriginParts(origin));
+}
+
+/** The same line as parts: the Home's verified name a name, the origin an address. */
+export function agentWhoOriginParts(origin: AgentWhoOrigin): readonly SentencePart[] {
+  const address = { address: siteOrigin(origin.origin) ?? origin.origin };
   return origin.name
-    ? workWords("who.namedOrigin", {
-        role: origin.roleLabel,
-        name: origin.name,
-        origin: origin.origin,
-      })
-    : workWords("who.redirectOrigin", { role: origin.roleLabel, origin: origin.origin });
+    ? sentenceWith(
+        (slot) =>
+          workWords("who.namedOrigin", {
+            role: origin.roleLabel,
+            name: slot("name"),
+            origin: slot("origin"),
+          }),
+        { name: { name: origin.name }, origin: address },
+      )
+    : sentenceWith(
+        (slot) =>
+          workWords("who.redirectOrigin", { role: origin.roleLabel, origin: slot("origin") }),
+        { origin: address },
+      );
 }
 
 /**

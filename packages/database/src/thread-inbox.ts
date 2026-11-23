@@ -27,7 +27,7 @@ import {
 import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import {
-  connectionWaiting,
+  connectionIsWaiting,
   lineagePersonalContext,
   readLiveAgentConnectionRow,
 } from "./resource-access.js";
@@ -626,21 +626,20 @@ async function claimFollowUps(
     .limit(input.limit)
     .execute();
   if (waiting.length === 0) return { claimed: 0 };
+  let chatWaits = false;
   const connection = run.connectionId
     ? await liveDelegatingConnection(transaction, run.requestedBy, run.connectionId).catch(
         (error: unknown) => {
-          if (error instanceof OpensteerError && error.code === "forbidden") return null;
+          if (error instanceof OpensteerError && error.code === "forbidden") {
+            chatWaits = connectionIsWaiting(error);
+            return null;
+          }
           throw error;
         },
       )
     : null;
   // A paused chat's follow-ups wait for it, queued; they are not taken, and not cancelled.
-  if (
-    run.connectionId !== null &&
-    connection === null &&
-    (await connectionWaiting(transaction, run.requestedBy, run.connectionId))
-  )
-    return { claimed: 0 };
+  if (run.connectionId !== null && connection === null && chatWaits) return { claimed: 0 };
   const eligible =
     run.connectionId === null ||
     (connection !== null && sendEligible(connection, thread.originConnectionId));
@@ -3849,6 +3848,7 @@ export async function ensureQueuedRun(
     // one that connection may send here (a narrowing can take that away), and the connection it
     // works for must still delegate. Work that no longer qualifies is cancelled, never run.
     const candidateConnectionId = thread.originConnectionId ?? candidate.connectionId;
+    let waiting = false;
     if (
       !(await assertSendEligible(
         transaction,
@@ -3863,15 +3863,14 @@ export async function ensureQueuedRun(
         )
         .then(
           () => chatSenderMaySpeak(transaction, candidate),
-          () => false,
+          (error: unknown) => {
+            waiting = connectionIsWaiting(error);
+            return false;
+          },
         ))
     ) {
       // A paused chat's work waits: it stays queued, and so does everything behind it.
-      if (
-        candidateConnectionId &&
-        (await connectionWaiting(transaction, candidate.requestedBy, candidateConnectionId))
-      )
-        break;
+      if (candidateConnectionId && waiting) break;
       const cancelled = await transaction
         .updateTable("threadInputs")
         .set({ cancelReason: "authority-revoked", state: "cancelled", updatedAt: new Date() })
