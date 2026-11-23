@@ -102,6 +102,11 @@ export function createTabsClient(port: TabsClientPort): TabsClient {
       const result = await send({ type: "tab.group.delete", groupId });
       port.store.applyCommand({ layout: result.layout });
     },
+    async closeTabGroup(groupId) {
+      const { type: _type, layout, ...result } = await send({ type: "tab.group.close", groupId });
+      port.store.applyCommand({ layout });
+      return result;
+    },
     listApps: (query?: string) => port.listApps(query),
     getApp: (appId: AppId) => port.getApp(appId),
     async renameApp(appId: AppId, name: string) {
