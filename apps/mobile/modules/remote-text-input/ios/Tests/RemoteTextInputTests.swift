@@ -524,6 +524,56 @@ import UIKit
     XCTAssertEqual(field.packets.count, before)
   }
 
+  // DW1: at the largest text size a tap on "helloab" selected the word on build 9 (8f34d1ce5), and
+  // "!" replaced it: a touch reached UIKit's own views inside the field (its selection range
+  // adjustment container, the size of the whole field, and its grabbers), whose recognizers the
+  // view is never asked about. Here at that size, with the walk's frame, the word selected so
+  // UIKit lays those views out, and the walk's touch points: every one reaches the view, and the
+  // view's own tap leaves the selection where it was. Runs on the iOS Simulator only (it needs a
+  // window); on 8f34d1ce5, with no hitTest of the view's, the subviews took these touches.
+  func testAtTheLargestTextSizeNoTouchReachesUIKitsSelectionViews() throws {
+    #if targetEnvironment(macCatalyst)
+    throw XCTSkip("Needs a window: run on the iOS Simulator")
+    #else
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 466, height: 678))
+    window.traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
+    let view = RemoteInputTextView(frame: CGRect(x: 46, y: 262, width: 356, height: 44), textContainer: nil)
+    view.adjustsFontForContentSizeCategory = true
+    view.font = UIFont.preferredFont(forTextStyle: .body)
+    window.addSubview(view)
+    window.makeKeyAndVisible()
+    var packets: [[String: Any]] = []
+    view.deliver = { packets.append($0) }
+    view.configure(["contextId": "page", "field": ["kind": "text", "sensitive": false]], focused: true)
+    XCTAssertTrue(view.isFirstResponder)
+    view.insertText("helloab")
+    view.respond(["id": packets.last!["id"]!])
+    view.selectedRange = NSRange(location: 0, length: 7)
+    view.layoutIfNeeded()
+    view.selectedRange = NSRange(location: 7, length: 0)
+    view.layoutIfNeeded()
+    func walk(_ parent: UIView) -> [UIView] { parent.subviews + parent.subviews.flatMap(walk) }
+    for subview in walk(view) {
+      let frame = subview.convert(subview.bounds, to: view).intersection(view.bounds)
+      if frame.isNull || frame.isEmpty { continue }
+      for point in [CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.minX + 1, y: frame.minY + 1), CGPoint(x: frame.maxX - 1, y: frame.maxY - 1)] {
+        XCTAssertTrue(view.hitTest(point, with: nil) === view, "a touch reached \(type(of: subview))")
+      }
+    }
+    // The walk tapped the field's centre and along the word.
+    for x in stride(from: 4, through: 352, by: 16) {
+      let point = window.convert(CGPoint(x: 46 + CGFloat(x), y: 284), to: view)
+      XCTAssertTrue(view.hitTest(point, with: nil) === view, "a touch at \(x) reached UIKit")
+    }
+    let before = packets.count
+    view.focusTapped()
+    view.focusTapped()
+    XCTAssertEqual(view.selectedRange, NSRange(location: 7, length: 0))
+    XCTAssertEqual(packets.count, before, "a tap sent something")
+    window.isHidden = true
+    #endif
+  }
+
   // C1 in a window, editing, as on a phone: the recognizers UIKit adds once the field is first
   // responder are refused too. Runs on the iOS Simulator; on Mac Catalyst it would put a window
   // on the Mac's screen, so it is skipped there.
