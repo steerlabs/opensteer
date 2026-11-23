@@ -6,6 +6,7 @@ import { createServer, request, type Server } from "node:http";
 import { Readable } from "node:stream";
 import { IdentityService } from "@opensteer/identity";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { appOriginKey } from "@opensteer/shared/appFrame";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
 import { AppGateway } from "./app-gateway.js";
@@ -682,8 +683,23 @@ describeStore("published app HTML", (it) => {
     await writeFile(join(folder, "README.md"), "GET / returns the app ID");
     let service!: AppService;
     const runner = fakeRunner(f.runnerId, () => service);
-    const build = () =>
-      serviceFor(database, f.agentHome, { tunnels: new AppTunnelHub(runner.runners) });
+    const build = () => {
+      const apps = new AppStore(appDatabase(database));
+      const reserve = apps.reserve.bind(apps);
+      apps.reserve = async (...args) => {
+        const reserved = await reserve(...args);
+        if (reserved.published) return reserved;
+        // Stay inside app_servers' [49152, 65535] check and outside Linux's ephemeral range.
+        const port = await freePort([61_000, 65_535]);
+        await database
+          .updateTable("appServers")
+          .set({ port })
+          .where("appId", "=", reserved.appId)
+          .execute();
+        return { ...reserved, port };
+      };
+      return serviceFor(database, f.agentHome, { apps, tunnels: new AppTunnelHub(runner.runners) });
+    };
     let built = build();
     service = built.service;
     const person = { kind: "person", ownerId: f.userId } as const;

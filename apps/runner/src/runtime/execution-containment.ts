@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdirSync, readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { runningSupervisedProcesses, type HarnessProcessLaunchWrapper } from "@opensteer/harness";
@@ -367,13 +367,15 @@ async function listSupervisedProcesses(variable: string): Promise<readonly Liste
 async function listLinuxProcesses(variable: string): Promise<readonly ListedProcess[]> {
   const prefix = `${variable}=`;
   const found: ListedProcess[] = [];
-  for (const entry of await readdir("/proc")) {
+  // /proc entries are kernel-backed memory; reading them synchronously avoids thousands of
+  // sequential libuv threadpool round-trips per scan under CPU load.
+  for (const entry of readdirSync("/proc")) {
     if (!/^[1-9][0-9]*$/u.test(entry)) continue;
     const pid = Number(entry);
     if (pid === process.pid) continue;
     let environ = "";
     try {
-      environ = await readFile(`/proc/${entry}/environ`, "latin1");
+      environ = readFileSync(`/proc/${entry}/environ`, "latin1");
     } catch {
       // Linux removes a zombie's address space before its PID is reaped.
       // Its start identity must remain listed even when environ returns ESRCH.
@@ -381,7 +383,7 @@ async function listLinuxProcesses(variable: string): Promise<readonly ListedProc
     const scope = environ.split("\0").find((value) => value.startsWith(prefix));
     let stat: string;
     try {
-      stat = await readFile(`/proc/${entry}/stat`, "latin1");
+      stat = readFileSync(`/proc/${entry}/stat`, "latin1");
     } catch {
       continue;
     }
