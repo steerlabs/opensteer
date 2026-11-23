@@ -1375,6 +1375,11 @@ describe("a person's caret moves and selections in the native field", () => {
         p.selection.end === before.selection.end
       )
         kinds[index] = "other";
+      // A text typed over a selection of the same text leaves the person's text as it was: it
+      // changed nothing of theirs, and nothing need reach the page; sending it would put the text
+      // in twice where the page's caret holds no selection (regime B, seed 4076).
+      if (kinds[index] === "typed" && !before.marked && !p.marked && p.text === before.text)
+        kinds[index] = "other";
       if (before.marked || p.marked) composing.add(index);
       if (!before.marked && p.marked) {
         open = { marked: [], start: clock };
@@ -2090,14 +2095,16 @@ describe("a person's caret moves and selections in the native field", () => {
   });
 
   // The counter-examples the larger runs found, kept as named cases: regime B 1327, 1333, 1563,
-  // 2582, 2680 (a swipe that moved nothing of the person's, the generator's) and regime C 1402,
-  // 1605, 2225 (a composition's cancelled input sending the field again, the product's).
+  // 2582, 2680 (a swipe that moved nothing of the person's, the generator's), 4076 (a space typed
+  // over a selected space, the generator's) and regime C 1402, 1605, 2225 (a composition's
+  // cancelled input sending the field again, the product's).
   it.each([
     ["B", 1327],
     ["B", 1333],
     ["B", 1563],
     ["B", 2582],
     ["B", 2680],
+    ["B", 4076],
     ["C", 1402],
     ["C", 1605],
     ["C", 2225],
