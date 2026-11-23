@@ -205,6 +205,8 @@ async function journey(id: string, title: string, run: () => Promise<void>): Pro
   if (active.status === "failed" && !setupHealthy)
     throw new Error("Shared Electron/broker setup failed; remaining journeys were not run.");
 }
+/** How long one poll of a waitFor predicate may take before the next poll replaces it. */
+const predicateCallLimitMs = 2_000;
 async function waitFor(
   label: string,
   predicate: () => boolean | Promise<boolean>,
@@ -212,10 +214,27 @@ async function waitFor(
 ): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
+    // A frame's executeJavaScript issued as its document is replaced can stay
+    // pending forever. Such a call is abandoned and the next poll asks the frame
+    // now in place, so the deadline above still holds.
+    const abandoned = Symbol("abandoned");
+    let timer: NodeJS.Timeout | undefined;
     try {
-      if (await predicate()) return;
+      const answer = await Promise.race([
+        Promise.resolve().then(predicate),
+        new Promise<typeof abandoned>((resolve) => {
+          timer = setTimeout(
+            () => resolve(abandoned),
+            Math.max(0, Math.min(predicateCallLimitMs, deadline - Date.now())),
+          );
+        }),
+      ]);
+      if (answer === abandoned) record("predicate-abandoned", { label });
+      else if (answer) return;
     } catch {
       /* A navigation can destroy the observed context. */
+    } finally {
+      clearTimeout(timer);
     }
     await delay(30);
   }
