@@ -7992,7 +7992,11 @@ it("admits paged listing and exact resume only inside an agent's own session", a
       .receivedCommands()
       .slice(before)
       .find((m) => m.type === "cdp.command")!;
-    expect(sent.command).toMatchObject({ method, parameters });
+    expect(sent.command).toEqual({
+      method,
+      // TS11: an agent's wake is answered once the page it woke has loaded.
+      parameters: method === "Opensteer.resumeTab" ? { ...parameters, loaded: true } : parameters,
+    });
     runtime.sendServer({ type: "cdp.result", requestId: sent.requestId, result: { ok: true } });
     expect(await result).toEqual({ ok: true });
   };

@@ -4138,6 +4138,21 @@ export class BrowserService {
         this.#brokers.get(old.sessionId)?.live &&
         this.#brokers.get(old.sessionId)?.pageOf(row.id);
       const session = await this.#restoreWorkspacePage(agent.ownerId, current, agent, signal);
+      // TS11: a sleeping tab is woken before the agent is given it, and handed over once its page
+      // has loaded; a wake that cannot finish is refused in its own sentence.
+      const broker = this.#brokers.get(session.id);
+      if (broker?.surfaceState === 1)
+        await broker.requestCdp(
+          {
+            type: "cdp.command",
+            requestId: randomUUID(),
+            command: {
+              method: browserHostMethods.resumeTab,
+              parameters: { surfaceId: row.id, loaded: true },
+            },
+          },
+          signal,
+        );
       const { backend } = await this.#admitAgentBackend(
         { ...agent, sessionId: session.id },
         undefined,
@@ -5817,7 +5832,11 @@ export class BrowserService {
             ...(replyBudget ? { replyBudget } : {}),
             ...(scriptAttachmentId ? { scriptAttachmentId } : {}),
             ...(confirmed?.eventBudget ? { scriptEventBudget: confirmed.eventBudget } : {}),
-            command,
+            // TS11: an agent's wake is answered once the page it woke has loaded.
+            command:
+              command.method === browserHostMethods.resumeTab
+                ? { ...command, parameters: { ...command.parameters, loaded: true } }
+                : command,
             ...(actorToken ? { actorToken } : {}),
             ...(nativeAttachment ? { attachmentId: nativeAttachment.attachmentId } : {}),
             ...(runtimeHoldsConnection ? { connection: true as const } : {}),

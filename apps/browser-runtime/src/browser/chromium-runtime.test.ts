@@ -2973,3 +2973,111 @@ it("never puts a tab to sleep under an agent's command on either path: a long ev
   // The pressure was real: once the commands have ended, the sleeper takes the tabs.
   await waitFor(() => suspendedTabs() >= 2, 20_000);
 }, 90_000);
+
+it("wakes a sleeping tab for an agent and answers once its page has loaded, so the agent never acts on a half-loaded page (TS11)", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/hold") {
+      // The page's load waits on this image.
+      setTimeout(() => {
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("content-type", "image/gif");
+        response.end(Buffer.from("R0lGODlhAQABAAAAACw=", "base64"));
+      }, 3_000);
+      return;
+    }
+    // Nothing is kept, so the wake's reload waits on the image again.
+    response.setHeader("cache-control", "no-store");
+    response.setHeader("content-type", "text/html");
+    response.end('<!doctype html><title>slow</title><p id="text">slow</p><img src="/hold">');
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const profile = await nativeRuntimeProfile();
+  cleanup.push(profile.close);
+  const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000911");
+  const claims = validClaims({
+    identity: profile.identity,
+    sessionId,
+    tabRestoreVersion: 1,
+    surfaceState: 1,
+  });
+  const launcher = new PlaywrightChromiumLauncher({
+    chromiumSandbox: false,
+    executablePath,
+    headless: true,
+  });
+  // Memory over the start threshold, so the sleeper takes the tab once it has loaded.
+  const limitBytes = 2 * 1024 ** 3;
+  Object.defineProperty(launcher, "memoryPressure", {
+    value: async () => ({ usedBytes: Math.round(limitBytes * 0.8), limitBytes }),
+  });
+  const runtime = new BrowserRuntime({
+    localProfiles: profile.localProfiles,
+    launcher,
+    runtimeId: claims.runtimeId,
+    sessionFilesRoot: testSessionFilesRoot(),
+    ticketVerifier: new FakeTicketVerifier(claims),
+  });
+  cleanup.push(() => runtime.shutdown());
+  const sink = new FakeSink();
+  const attachment = await runtime.attach("ticket", sink);
+  const deliver = (message: BrowserClientMessage) => attachment.handle(JSON.stringify(message));
+  const agent = (method: string, parameters?: CdpParameters, cdpSessionId?: string) =>
+    sendAsAgent(deliver, sink.messages, method, parameters, cdpSessionId);
+  const targetId = String(
+    asRecord(await agent("Target.createTarget", { url: `${origin}/slow` })).targetId,
+  );
+  const tabs = async () =>
+    z
+      .object({
+        tabs: z.array(
+          z.object({ surfaceId: z.string(), targetId: z.string().nullable(), state: z.string() }),
+        ),
+      })
+      .parse(await agent("Opensteer.listTabs", {})).tabs;
+  const surfaceId = (await tabs()).find((tab) => tab.targetId === targetId)!.surfaceId;
+  await attachment.handle(
+    JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
+  await waitForAsync(
+    async () => (await tabs()).find((tab) => tab.surfaceId === surfaceId)?.state === "suspended",
+    30_000,
+  );
+  // Nothing more sleeps it while the agent works in it.
+  await attachment.handle(
+    JSON.stringify({
+      type: "session.state",
+      runs: 0,
+      personUsed: [],
+      viewed: [],
+      pinned: [surfaceId],
+    }),
+  );
+  const asked = performance.now();
+  const woken = asRecord(await agent("Opensteer.resumeTab", { surfaceId, loaded: true }));
+  const answeredMs = performance.now() - asked;
+  expect(woken.reloaded).toBe(true);
+  const page = String(
+    asRecord(
+      await agent("Target.attachToTarget", { flatten: true, targetId: String(woken.targetId) }),
+    ).sessionId,
+  );
+  // Its first command finds the whole page, the image the load waited on included.
+  expect(
+    evaluationValue(
+      await agent(
+        "Runtime.evaluate",
+        {
+          expression: "[document.readyState, location.pathname, document.images[0].complete]",
+          returnByValue: true,
+        },
+        page,
+      ),
+    ),
+  ).toEqual(["complete", "/slow", true]);
+  expect(answeredMs).toBeGreaterThanOrEqual(2_500);
+}, 90_000);

@@ -704,6 +704,36 @@ export class SurfaceLedger {
   }
 
   /**
+   * TS11: true once the tab's own document has loaded (its main frame is not loading, no
+   * navigation is pending, and the document is complete at an address other than the blank one a
+   * new page starts at); false past `boundMs`. A tab that closes meanwhile throws.
+   */
+  async documentLoaded(id: BrowserSurfaceId, boundMs: number): Promise<boolean> {
+    const deadline = Date.now() + boundMs;
+    while (Date.now() < deadline) {
+      const record = this.records.get(id);
+      if (!record || record.lease.state === "closing")
+        throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+      const live = record.live;
+      if (live && !live.loading && live.pendingNavigations.size === 0) {
+        const read = (await withTimeout(
+          live.cdp.send("Runtime.evaluate", {
+            expression: "[document.readyState, location.href]",
+            returnByValue: true,
+          }),
+          1_000,
+          { timeoutError: () => new Error("The page did not answer in time.") },
+        ).catch(() => null)) as { result?: { value?: unknown } } | null;
+        const [readyState, href] = Array.isArray(read?.result?.value) ? read.result.value : [];
+        if (readyState === "complete" && (href !== "about:blank" || record.url === "about:blank"))
+          return true;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return false;
+  }
+
+  /**
    * The tab lets go of its live page now: no lookup, operation or event
    * reaches it again. Native cleanup of the page is its owner's.
    */

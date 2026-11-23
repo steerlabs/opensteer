@@ -179,6 +179,8 @@ interface ScriptRun {
 }
 
 /** Agent commands whose point is where a person's pointer would be. */
+/** TS11: how long an agent's wake waits for the woken page to load. */
+const resumeLoadedMs = 15_000;
 const pointerInputMethods = new Set([
   "Input.dispatchMouseEvent",
   "Input.dispatchTouchEvent",
@@ -3838,8 +3840,18 @@ export class BrowserController {
       if (!parsed.success)
         throw new BrowserRuntimeError("bad_message", "Invalid tab-resume parameters.");
       const reloaded = this.ledger.stateOf(parsed.data.surfaceId) === "suspended";
-      const binding = await this.ledger.wake(parsed.data.surfaceId);
+      let binding = await this.ledger.wake(parsed.data.surfaceId);
       if (reloaded) await this.drainTabs();
+      // TS11: an agent acts on the page it woke only once that page has loaded.
+      if (reloaded && parsed.data.loaded) {
+        if (!(await this.ledger.documentLoaded(parsed.data.surfaceId, resumeLoadedMs)))
+          throw new BrowserRuntimeError(
+            "conflict",
+            "This tab woke, but its page is still loading. Try again shortly.",
+            { retryable: true },
+          );
+        binding = this.ledger.binding(parsed.data.surfaceId) ?? binding;
+      }
       const dialog = this.ledger.dialogOf(parsed.data.surfaceId);
       const result = {
         surfaceId: parsed.data.surfaceId,
