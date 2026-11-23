@@ -415,3 +415,134 @@ describe("the follow view, when a tab it is shown is not attached to a page yet"
     await tab.follow.close();
   });
 });
+
+/*
+ * The walker's run 3 on 4ecf539ae, stale-dialog-answers: tab B, a still page, was never pictured
+ * after the person answered its dialog. Two faults, each reproduced here with a page whose only
+ * frame comes with its start:
+ * - A start answered while the page's capture moved left the follow view "not casting" while
+ *   Chromium cast: leaving the tab sent no stop, and the next start was a join it did not know of.
+ * - A frame that came with a start, before its answer was handled (Chromium's first frame, or the
+ *   one frame the hub holds when it joins a running cast), was dropped: on a still page there is
+ *   no other.
+ */
+describe("the follow view, for a still page whose one frame comes with its start", async () => {
+  const { ScreencastController } = await import("./screencast-controller.js");
+  const { LatestFrameStream } = await import("../stream/latest-frame-stream.js");
+  const { FakeCdpSession, jpeg } = await import("../test-support/fakes.js");
+  const shown = { height: 600, width: 800 };
+  const frame = (id: number) => ({
+    data: jpeg(shown.width, shown.height).toString("base64"),
+    metadata: {
+      deviceHeight: shown.height,
+      deviceWidth: shown.width,
+      offsetTop: 0,
+      pageScaleFactor: 1,
+      scrollOffsetX: 0,
+      scrollOffsetY: 0,
+    },
+    sessionId: id,
+  });
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  /**
+   * `withStart` runs as Chromium takes each start, before its answer: it may send the start's frame
+   * there, move the page's capture, or refuse it.
+   */
+  async function still(
+    withStart: (start: number, tab: { moveCapture(): void; sendFrame(): void }) => void,
+  ) {
+    const cdp = new FakeCdpSession();
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab",
+      loading: false,
+    };
+    let capture = { ...shown, rasterScale: 1, revision: 1 };
+    const captureListeners = new Set<() => void>();
+    const moveCapture = () => {
+      capture = { ...capture, revision: capture.revision + 1 };
+      for (const listener of captureListeners) listener();
+    };
+    let starts = 0;
+    cdp.responses.set("Page.startScreencast", () => {
+      starts += 1;
+      const id = starts;
+      withStart(id, { moveCapture, sendFrame: () => cdp.emit("Page.screencastFrame", frame(id)) });
+      return {};
+    });
+    const page = {
+      applyGeometry: async () => undefined,
+      capture: {
+        read: () => capture,
+        subscribe: (listener: () => void) => {
+          captureListeners.add(listener);
+          return () => captureListeners.delete(listener);
+        },
+      },
+      settleRendering: async () => undefined,
+    };
+    const binding = { cdp, page, surface };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: () => () => undefined,
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    const count = (method: string) => cdp.sent.filter((sent) => sent.method === method).length;
+    await follow.start();
+    // A refused start is the caller's to hear of; the test reads what reached the page.
+    await follow.setStreaming(true).catch(() => undefined);
+    await settle();
+    await settle();
+    return { cdp, count, delivered, follow };
+  }
+
+  it("is casting after a start answered while its capture moved, and stops what it started when the person leaves", async () => {
+    const tab = await still((start, page) => {
+      if (start === 1) page.moveCapture();
+    });
+    // Each start Chromium answered is either running and counted so, or stopped.
+    expect(tab.count("Page.startScreencast")).toBe(tab.count("Page.stopScreencast") + 1);
+    await tab.follow.setStreaming(false);
+    await settle();
+    expect(tab.count("Page.startScreencast")).toBe(tab.count("Page.stopScreencast"));
+    await tab.follow.close();
+  });
+
+  const acks = (tab: { cdp: InstanceType<typeof FakeCdpSession> }) =>
+    tab.cdp.sent
+      .filter((sent) => sent.method === "Page.screencastFrameAck")
+      .map((sent) => sent.parameters?.sessionId);
+
+  it("shows the frame that came with its start, before the answer, and acks it once", async () => {
+    const tab = await still((_start, page) => page.sendFrame());
+    await vi.waitFor(() => expect(tab.delivered).toHaveLength(1));
+    expect(acks(tab)).toEqual([1]);
+    await tab.follow.close();
+  });
+
+  it("drops the frame that came with a start Chromium refused, and acks it", async () => {
+    const tab = await still((_start, page) => {
+      page.sendFrame();
+      throw new Error("Not attached to an active page");
+    });
+    await settle();
+    expect(tab.delivered).toEqual([]);
+    expect(acks(tab)).toEqual([1]);
+    await tab.follow.close();
+  });
+});

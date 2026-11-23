@@ -3355,6 +3355,103 @@ describe("Electron debugger teardown", () => {
     await hub.browser.close();
   });
 
+  // The walker's run 3 on 4ecf539ae, stale-dialog-answers: tab B, a still page, was never pictured
+  // again. Its start was answered while its capture moved, which left the follow view counting no
+  // cast while Chromium cast; its next start joined that cast at the hub, which hands the one frame
+  // it holds before it answers, and the follow view dropped every frame that came while its start
+  // was in flight. The real hub and the real follow view; Chromium is a still page.
+  it("pictures a still tab whose capture moved while its start was answered", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("85");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    const frameOf = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    let capture = { ...shown, rasterScale: 1, revision: 1 };
+    const captureListeners = new Set<() => void>();
+    const answer = hub.contents.debugger.sendCommand.getMockImplementation()!;
+    let starts = 0;
+    hub.contents.debugger.sendCommand.mockImplementation(
+      (method: string, parameters?: Record<string, unknown>, session?: string) => {
+        const answered = answer(method, parameters, session);
+        if (method !== "Page.startScreencast") return answered;
+        const id = (starts += 1);
+        // A still page: its one frame comes before the answer is handled, and the page's capture
+        // is admitted anew meanwhile.
+        hub.deliver("Page.screencastFrame", frameOf(id));
+        if (id === 1) {
+          capture = { ...capture, revision: 2 };
+          for (const listener of captureListeners) listener();
+        }
+        return answered;
+      },
+    );
+    const surface = {
+      active: true,
+      documentId: "a",
+      geometryRevision: 1,
+      id: "tab-a",
+      loading: false,
+    };
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => capture,
+          subscribe: (listener: () => void) => {
+            captureListeners.add(listener);
+            return () => captureListeners.delete(listener);
+          },
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: () => () => undefined,
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    await follow.start();
+    await follow.setStreaming(true);
+    await vi.waitFor(() => expect(delivered.length).toBeGreaterThan(0), { timeout: 1_000 });
+    // Each start Chromium answered is running, or was stopped.
+    expect(hub.sent("Page.startScreencast").length).toBeLessThanOrEqual(
+      hub.sent("Page.stopScreencast").length + 1,
+    );
+    await follow.close();
+    await hub.browser.close();
+  });
+
   // F30, the first half of the hypothesis for follow-never-shown-tab's four starts: a tab never
   // shown sends, before its start's answer is handled, a first frame at the size it last drew,
   // which 6a0311f0b made the hub hand on; the real follow view, sized as the Electron page sizes

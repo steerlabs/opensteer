@@ -57,6 +57,12 @@ interface ActiveCast {
    * document commits, or its loading stops. Every start asked for before then joins that one.
    */
   deferredFor: string | null;
+  /**
+   * While a start is with Chromium: the latest frame that came with it (Chromium's first, or the
+   * one a hub holds for a cast it joins), kept unacknowledged. It is that start's picture, shown
+   * when the start is answered, and dropped when it fails or the person left meanwhile.
+   */
+  starting: { frame: unknown } | null;
   cdp: CdpSession;
   /** The page zoom of the latest picture shown, which input on it undoes. */
   pageScale: number;
@@ -324,6 +330,17 @@ export class ScreencastController {
     });
   }
 
+  /** Whether a frame of `geometry` pictures what the start in flight asked for. */
+  private picturesStart(active: ActiveCast, geometry: PageSize | null): boolean {
+    const region = active.capture ?? active.castSize;
+    return (
+      !!geometry &&
+      !!region &&
+      Math.abs(geometry.width - region.width) <= 1 &&
+      Math.abs(geometry.height - region.height) <= 1
+    );
+  }
+
   /**
    * Whether the running cast still pictures the page as it is, the revision bumped only because
    * another document committed: the same size, and the same capture revision where the page has
@@ -478,6 +495,7 @@ export class ScreencastController {
       casting: false,
       awaitingNavigation: false,
       deferredFor: null,
+      starting: null,
       cdp: binding.cdp,
       pageScale: 1,
       onFrame: (parameters) => {
@@ -563,6 +581,7 @@ export class ScreencastController {
   ): Promise<void> {
     const session = screencastSessionSchema.safeParse(parameters);
     if (!session.success) return;
+    let held = false;
     try {
       const event = parseScreencastFrame(parameters);
       if (!event) {
@@ -570,6 +589,23 @@ export class ScreencastController {
         return;
       }
       const active = this.active;
+      if (
+        this.streaming &&
+        active?.starting &&
+        !active.casting &&
+        active.surfaceId === surfaceId &&
+        active.cdp === source &&
+        this.picturesStart(active, event.geometry)
+      ) {
+        // A frame that comes with a start, of what that start asked for, is its picture: it waits
+        // for the answer. One of another size (what the page last drew before it was shown) is set
+        // aside below, as any frame before the cast runs: the start's own frames follow it.
+        const replaced = active.starting.frame;
+        active.starting.frame = parameters;
+        held = true;
+        if (replaced !== null) acknowledgeFrame(source, replaced);
+        return;
+      }
       if (
         !this.streaming ||
         !active?.casting ||
@@ -653,9 +689,10 @@ export class ScreencastController {
         geometryRevision: active.geometryRevision,
       });
     } finally {
-      await source
-        .send("Page.screencastFrameAck", { sessionId: session.data.sessionId })
-        .catch(() => undefined);
+      if (!held)
+        await source
+          .send("Page.screencastFrameAck", { sessionId: session.data.sessionId })
+          .catch(() => undefined);
     }
   }
 
@@ -867,16 +904,39 @@ export class ScreencastController {
               width: size.width,
             });
           }
-          await active.cdp.send("Page.startScreencast", {
-            everyNthFrame: 1,
-            format: "jpeg",
-            maxHeight: raster.height,
-            maxWidth: raster.width,
-            quality: this.frameQuality,
-          });
-          active.casting = !page?.capture || page.capture.read()?.revision === capture?.revision;
+          const starting: { frame: unknown } = { frame: null };
+          active.starting = starting;
+          let answered = false;
+          try {
+            await active.cdp.send("Page.startScreencast", {
+              everyNthFrame: 1,
+              format: "jpeg",
+              maxHeight: raster.height,
+              maxWidth: raster.width,
+              quality: this.frameQuality,
+            });
+            answered = true;
+          } finally {
+            if (active.starting === starting) active.starting = null;
+            if (!answered && starting.frame !== null) acknowledgeFrame(active.cdp, starting.frame);
+          }
+          // Chromium casts now: the follow view says so, whatever moved meanwhile, so that leaving
+          // stops it and the next start is one of its own.
+          active.casting = true;
           active.awaitingNavigation = false;
-          if (active.casting) active.paintRetryDelay = paintRetryInitialMs;
+          active.paintRetryDelay = paintRetryInitialMs;
+          if (page?.capture && page.capture.read()?.revision !== capture?.revision)
+            // The capture moved while the start was with Chromium: its frames are set aside (they
+            // are the old capture's), and the cast starts again for the capture as it is now.
+            void this.viewportChanged(active.surfaceId).catch(() => undefined);
+          if (starting.frame !== null) {
+            if (canceled.aborted || !this.inView(active))
+              acknowledgeFrame(active.cdp, starting.frame);
+            else
+              void this.handleFrame(active.surfaceId, active.cdp, starting.frame).catch(
+                () => undefined,
+              );
+          }
         } catch (error) {
           active.casting = false;
           const surface = this.ledger.binding(active.surfaceId)?.surface;
@@ -1001,6 +1061,15 @@ export class ScreencastController {
       })
       .catch(() => undefined);
   }
+}
+
+/** Lets Chromium send the next frame of a cast whose frame is not shown. */
+function acknowledgeFrame(source: CdpSession, parameters: unknown): void {
+  const session = screencastSessionSchema.safeParse(parameters);
+  if (session.success)
+    void source
+      .send("Page.screencastFrameAck", { sessionId: session.data.sessionId })
+      .catch(() => undefined);
 }
 
 /** `work`, or nothing once `signal` aborts: no one waits on work for a tab the person left. */
