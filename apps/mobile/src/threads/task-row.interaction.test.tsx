@@ -237,10 +237,22 @@ it("keeps subject, state, unread, time, quiet styling and long-press actions ind
   const original = row();
   const open = vi.fn();
   const move = vi.fn();
-  const draw = (tone: TaskRow["tone"], unread: boolean, shelf: "open" | "done" = "open") =>
+  const draw = (
+    tone: TaskRow["tone"],
+    unread: boolean,
+    shelf: "open" | "done" = "open",
+    quiet = false,
+  ) =>
     render(
       <TaskRowView
-        row={{ ...original, tone, unread, done: shelf === "done", stopped: tone !== "working" }}
+        row={{
+          ...original,
+          tone,
+          unread,
+          done: shelf === "done",
+          stopped: tone !== "working",
+          quiet,
+        }}
         shelf={shelf}
         time="2:14 PM"
         selected={false}
@@ -280,21 +292,17 @@ it("keeps subject, state, unread, time, quiet styling and long-press actions ind
   );
   expect(penned.textContent).toContain("Needs you");
   expect(penned.querySelector('[data-symbol="pencil"]')).not.toBeNull();
-  // The mark reads quietly once settled and seen or put in Done, as on the
-  // web; needing someone or having failed stays loud even in Done.
+  // The mark and title step back exactly when the task list calls the row quiet.
   const markQuiet = () =>
     container.querySelector("svg")!.parentElement!.dataset.style!.includes('"opacity":0.6');
-  for (const [tone, unread, shelf, quiet] of [
-    ["finished", false, "open", true],
-    ["finished", true, "open", false],
-    ["working", false, "open", false],
-    ["waiting", false, "done", true],
-    ["needs-you", false, "done", false],
-    ["failed", false, "done", false],
-  ] as const) {
-    draw(tone, unread, shelf);
-    expect(markQuiet(), `${tone} ${unread ? "unread" : "read"} in ${shelf}`).toBe(quiet);
-  }
+  const titleColor = () =>
+    container.querySelector('[data-style*="color"]')!.getAttribute("data-style");
+  draw("finished", false, "open", false);
+  const brightTitle = titleColor();
+  expect(markQuiet()).toBe(false);
+  draw("finished", false, "open", true);
+  expect(markQuiet()).toBe(true);
+  expect(titleColor()).not.toBe(brightTitle);
   draw("failed", true, "done");
   expect(container.textContent).toContain("Couldn't finish");
   expect(

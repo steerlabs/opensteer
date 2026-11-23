@@ -74,7 +74,8 @@
             "text": "unsupported-text",
             "clear": "unsupported-clear",
             "indexedTargets": "geometry-unavailable",
-            "liveVideo": "unsupported"
+            "liveVideo": "unsupported",
+            "wake": "not-initialized"
           }
         }
       ]

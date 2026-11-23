@@ -5,7 +5,7 @@ import { NeedsYouList } from "./needs-you-list.js";
 import { placeByKey } from "@opensteer/client/host";
 import type { TabGroupColor, TabId } from "@opensteer/core";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
-import { sameTaskRow, taskMark, taskMarkQuiet } from "@opensteer/client/host";
+import { sameTaskRow, taskMark } from "@opensteer/client/host";
 import { TaskIconEditor } from "./task-icon-editor.js";
 import { ThreadTitleEditor } from "./thread-title-editor.js";
 import { useNativeBrowserLayer, useNativeBrowserOverlay } from "./native-browser-overlays.js";
@@ -1145,10 +1145,12 @@ const TaskRowItem = memo(function TaskRowItem({
   const matches = useCallback((value: Highlight) => value.threadIds.includes(threadId), [threadId]);
   const lit = useHighlightMatch(highlight, matches);
   const needsYou = row.tone === "needs-you" && ask !== null;
+  // Open, a task reads like the conversation beside it.
+  const quiet = row.quiet && !open;
   const classes = [
     "side-task",
     `side-task--${row.tone}`,
-    open ? (work ? "is-open" : "is-filled") : "",
+    open ? (work ? "is-open" : "is-filled") : quiet ? "is-quiet" : "",
     lit ? "is-match" : "",
     needsYou ? "has-ask" : "",
   ];
@@ -1220,7 +1222,7 @@ const TaskRowItem = memo(function TaskRowItem({
           {session ? (
             <AgentMark identity={session.agent} />
           ) : (
-            <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, row.done)} />
+            <TaskMark size={20} mark={taskMark(row)} quiet={quiet} />
           )}
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>

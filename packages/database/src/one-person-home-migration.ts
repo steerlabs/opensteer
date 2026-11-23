@@ -7,8 +7,8 @@ import type { Migration } from "kysely/migration";
  */
 
 /** Once created a work Home's policy, audit outbox and gates; it creates nothing any more. */
-export const workHomeMigrationName = "0049_work_home";
-export const removeOrganizationsMigrationName = "0054_remove_organizations_contract";
+export const workHomeMigrationName = "0105_work_home";
+export const removeOrganizationsMigrationName = "0110_remove_organizations_contract";
 
 /**
  * Drops what a work Home had: its policy, its audit outbox and its gates. A Home that was a work

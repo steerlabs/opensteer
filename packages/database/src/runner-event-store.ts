@@ -13,6 +13,7 @@ import { beginPersonalRunFinish, readFinishChildren } from "./personal-run-state
 import { completePersonalToolCall, startPersonalToolCall } from "./personal-tool-calls.js";
 import {
   publishExecutionInput,
+  publishTranscriptRun,
   recordExecutionRunChange,
   writeExecutionItem,
 } from "./execution-changes.js";
@@ -809,6 +810,18 @@ async function applyEventProjection(
       }
       break;
     }
+    case "run.retry": {
+      if (event.runId) {
+        const activeRetry = event.data.status === "retrying" ? jsonValue(event.data) : null;
+        await transaction
+          .updateTable("runs")
+          .set({ providerRetry: activeRetry })
+          .where("id", "=", event.runId)
+          .execute();
+        await publishTranscriptRun(transaction, mutation, event.runId);
+      }
+      break;
+    }
     case "run.usage":
       if (event.runId) {
         // The Run row is already held FOR NO KEY UPDATE by the caller, so the
@@ -1119,7 +1132,11 @@ export async function commitRunnerEvent(
             });
             if (event.type !== "run.phase") await assignmentActivityEventsForRun(tx, run.id);
           }
-          if (event.type === "run.context-measured" || event.type === "run.compaction")
+          if (
+            event.type === "run.context-measured" ||
+            event.type === "run.compaction" ||
+            event.type === "run.retry"
+          )
             await publishThreadSummary(tx, run.threadId);
           return "applied";
         },

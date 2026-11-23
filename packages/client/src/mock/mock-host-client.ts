@@ -6877,6 +6877,8 @@ class MockHostState {
   >();
 
   private readonly activeRuns = new Map<string, ActiveMockRun>();
+  /** Runs a person stopped: as on the Host, their end is never news. */
+  private readonly stoppedRuns = new Set<string>();
   private readonly integrations = createInitialIntegrationState(mockUserId);
   readonly chrome: MockChromeSignIns;
   private readonly nextRunOrdinals = new Map<string, number>();
@@ -12825,6 +12827,7 @@ class MockHostState {
     if (runId === undefined) throw new Error("This Thread has nothing to stop.");
     if (active) active.cancelled = true;
     this.activeRuns.delete(threadId);
+    this.stoppedRuns.add(runId);
 
     const timestamp = this.now().toISOString();
     const runQueue = this.snapshot.runQueue.filter((entry) => entry.id !== runId);
@@ -13487,7 +13490,9 @@ class MockHostState {
   private replaceTranscript(threadId: string, entries: TranscriptEntry[]): void {
     const run = entries.findLast((entry) => entry.kind === "run");
     const completedAt =
-      run?.kind === "run" && ["completed", "failed", "interrupted"].includes(run.status)
+      run?.kind === "run" &&
+      (["completed", "failed"].includes(run.status) ||
+        (run.status === "interrupted" && (run.runId === null || !this.stoppedRuns.has(run.runId))))
         ? (run.endedAt ?? run.createdAt)
         : null;
     this.update({

@@ -2,12 +2,15 @@ package phone
 
 import (
 	"context"
-	"github.com/danielpaulus/go-ios/ios"
-	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 	"io"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/danielpaulus/go-ios/ios"
+	dtx "github.com/danielpaulus/go-ios/ios/dtx_codec"
+	"github.com/danielpaulus/go-ios/ios/nskeyedarchiver"
+	"github.com/steerlabs/opensteer/iphone-bridge/internal/wire"
 )
 
 func TestDirectWifiInventoryAndLaunchValidationUseSessionServices(t *testing.T) {
@@ -178,5 +181,74 @@ func TestInventoryFilteringPaginationAndMinimalMetadata(t *testing.T) {
 	page := pageApps(apps, &wire.AppsParams{Limit: 1, Offset: 1})
 	if page.Total != 2 || len(page.Apps) != 1 || page.Apps[0].AppID != "z.app" {
 		t.Fatal("bad page")
+	}
+}
+
+func TestTerminateResolvesOnlyTheInstalledExecutable(t *testing.T) {
+	const fixtureExecutable = "/var/containers/Fixture.app/Fixture"
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	client, server := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	done := make(chan error, 1)
+	go func() {
+		dtxConn := dtx.NewRawConnection(server)
+		for stage := 0; stage < 3; stage++ {
+			m, err := dtxConn.Read()
+			if err != nil {
+				done <- err
+				return
+			}
+			if stage == 0 {
+				continue
+			}
+			if stage == 1 {
+				if err := dtxConn.Send(dtx.BuildAckMessage(m)); err != nil {
+					done <- err
+					return
+				}
+				continue
+			}
+			data, err := nskeyedarchiver.ArchiveBin([]interface{}{
+				map[string]interface{}{"realAppName": "/var/containers/Other.app/Fixture", "pid": uint64(100)},
+				map[string]interface{}{"realAppName": "file:///private" + fixtureExecutable, "pid": uint64(201)},
+			})
+			if err != nil {
+				done <- err
+				return
+			}
+			reply, err := dtx.Encode(m.Identifier, 1, m.ChannelCode, false, dtx.ResponseWithReturnValueInPayload, data, dtx.NewPrimitiveDictionary())
+			if err != nil {
+				done <- err
+				return
+			}
+			done <- dtxConn.Send(reply)
+		}
+	}()
+	c := &fixtureChannel{reply: map[string]interface{}{"CoreDevice.output": map[string]interface{}{}}}
+	dial := &fixtureDialer{conn: client}
+	called := 0
+	open := func(_ context.Context, service string) (xpcChannel, error) {
+		if service != appService {
+			t.Fatal("wrong app service")
+		}
+		return c, nil
+	}
+	err := terminateApp(ctx, open, dial, []InstalledApp{{AppID: "fixture.app", executable: fixtureExecutable}}, "fixture.app", func() error { called++; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if called != 1 || len(c.sent) != 1 {
+		t.Fatal("terminate replayed or skipped guard")
+	}
+	message := c.sent[0]
+	input := message["CoreDevice.input"].(map[string]interface{})
+	if message["CoreDevice.featureIdentifier"] != "com.apple.coredevice.feature.sendsignaltoprocess" ||
+		input["process"].(map[string]interface{})["processIdentifier"] != int64(201) || input["signal"] != int64(15) {
+		t.Fatal("wrong CoreDevice terminate request")
 	}
 }

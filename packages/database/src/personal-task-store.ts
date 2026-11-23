@@ -80,12 +80,18 @@ export const taskExternalWorkSelection = sql<TaskExternalWork | null>`(
   where agent_sessions.thread_id = threads.id
 )`.as("externalWork");
 
+/** Active provider retry on the earliest executing Run, or null (short-circuited for settled tasks). */
+export const threadProviderRetry = sql<
+  import("@opensteer/core").RunRetry | null
+>`(case when threads.status in ('running','waiting') then (select runs.provider_retry from runs where runs.thread_id = threads.id and runs.maintenance is null and runs.finish_intent is null and runs.status in ('starting','running','waiting') and runs.provider_retry is not null order by runs.run_ordinal asc limit 1) else null end)`;
+
 export function currentTasks(tx: PersonalMutationTransaction, viewerId: UserId) {
   return tx
     .selectFrom("threads")
     .select(taskFields)
     .select(threadRunQueued.as("runQueued"))
     .select(taskExternalWorkSelection)
+    .select(threadProviderRetry.as("retry"))
     .where("createdBy", "=", viewerId)
     .where("removedAt", "is", null);
 }

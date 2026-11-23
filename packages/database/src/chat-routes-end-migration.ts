@@ -1,7 +1,7 @@
 import { sql, type Kysely } from "kysely";
 
 /** A contract migration: it drops what a running previous Home still uses (`migrations.test.ts`). */
-export const chatRoutesEndMigrationName = "0053_chat_routes_end_contract";
+export const chatRoutesEndMigrationName = "0109_chat_routes_end_contract";
 
 /**
  * The Messaging routes of the release before chats end with this update: nothing of them is

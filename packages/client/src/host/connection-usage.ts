@@ -1,4 +1,11 @@
-import type { HarnessObservedConnection, HarnessObservedUsageWindow } from "@opensteer/protocol";
+import {
+  accountWideLimitActive,
+  usageWindowAppliesToModel,
+  usageWindowHasReset,
+  usageWindowIsAccountWide,
+  type HarnessObservedConnection,
+  type HarnessObservedUsageWindow,
+} from "@opensteer/protocol";
 
 /**
  * The model a reader is planning around. A reader that has one only counts
@@ -51,12 +58,21 @@ export function currentConnectionUsage(
   const usage = connection.usage;
   if (!usage) return null;
   const scoped = usage.windows.filter((window) => windowAppliesTo(window, model));
-  const windows = scoped.filter((window) => !hasReset(window.resetsAt, now));
+  const windows = scoped.filter((window) => !usageWindowHasReset(window.resetsAt, now));
   const constrainingWindow = mostConstrainingWindow(windows);
-  // A limit reported with no window at all has nothing to expire it, so it
-  // stands as the provider's word until the next inspection replaces it.
-  if (!constrainingWindow && (scoped.length > 0 || !usage.limitReached)) return null;
-  return { constrainingWindow, limitReached: usage.limitReached, windows };
+  const accountLimitActive = accountWideLimitActive(usage, now);
+  // A limit reported with no account-wide window to expire it stands as the
+  // provider's word until the next inspection replaces it.
+  if (!constrainingWindow && !accountLimitActive) return null;
+  const windowExhausted =
+    constrainingWindow !== null &&
+    constrainingWindow.usedPercent >= 100 &&
+    (model !== undefined || usageWindowIsAccountWide(constrainingWindow));
+  return {
+    constrainingWindow,
+    limitReached: accountLimitActive || windowExhausted,
+    windows,
+  };
 }
 
 /**
@@ -135,19 +151,7 @@ function windowAppliesTo(
   window: HarnessObservedUsageWindow,
   model: UsageModelScope | undefined,
 ): boolean {
-  const scope = window.scope;
-  if (scope === undefined || scope.kind === "account" || model === undefined) return true;
-  return scope.providerId === model.providerId && scope.modelId === model.modelId;
-}
-
-/**
- * A reset the clock has already passed. An unknown or unparseable reset cannot
- * be shown to have elapsed, so the reading it belongs to is kept.
- */
-function hasReset(resetsAt: string | null, now: number): boolean {
-  if (resetsAt === null) return false;
-  const reset = new Date(resetsAt).getTime();
-  return !Number.isNaN(reset) && reset <= now;
+  return model === undefined ? true : usageWindowAppliesToModel(window, model);
 }
 
 /** The window closest to running out is the one a reader has to plan around. */

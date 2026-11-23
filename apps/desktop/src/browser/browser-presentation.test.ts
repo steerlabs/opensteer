@@ -89,7 +89,6 @@ function fixture(
         return () => {};
       },
       closeSocketsForOwner: vi.fn(),
-      openBrowserSurface: vi.fn(),
     },
     autofillPreload: "unused",
     glassPreload: "unused",
@@ -123,6 +122,7 @@ function fixture(
   manager.attachWindow(window as unknown as ElectronAppWindow);
   const pageContents = Object.assign(new EventEmitter(), {
     isCrashed: () => false,
+    getURL: () => "https://origin.test/page",
     getZoomFactor: () => 1,
     setIgnoreMenuShortcuts: vi.fn(),
     stopFindInPage: vi.fn(),
@@ -145,6 +145,7 @@ function fixture(
     isFullscreen: () => false,
     inputOutstanding: vi.fn(() => false),
     takeContextMenuTrigger: vi.fn<() => "person" | "agent" | null>(() => null),
+    openInNewTab: vi.fn(),
     waitForPaint: () => new Promise<void>(() => {}),
   };
   const surface = {
@@ -354,6 +355,29 @@ describe("native presentation authority (retired A01–A07)", () => {
     f.native.inputOutstanding.mockReturnValue(false);
     show();
     expect(menus).toHaveBeenCalledOnce();
+    const template = menus.mock.calls[0]![0];
+    const openLink = template.find((item) => item.label === "Open Link in New Tab");
+    expect(openLink).toBeDefined();
+    openLink!.click!(undefined as never, undefined as never, undefined as never);
+    expect(f.native.openInNewTab).toHaveBeenCalledExactlyOnceWith("https://example.test", {
+      background: true,
+    });
+
+    // Disallowed link schemes keep Copy Link Address without offering Open Link in New Tab.
+    menus.mockClear();
+    f.native.takeContextMenuTrigger.mockReturnValue("person");
+    const frame = { routingId: 42 };
+    f.native.view.webContents.emit(
+      "context-menu",
+      {},
+      { linkURL: "javascript:void(0)", mediaType: "none", selectionText: "", frame },
+    );
+    expect(menus).toHaveBeenCalledOnce();
+    expect(menus.mock.calls[0]![0].map((item) => item.label)).toEqual(["Copy Link Address"]);
+    const popupCall = vi.mocked(Menu.buildFromTemplate).mock.results.at(-1)?.value as {
+      popup: ReturnType<typeof vi.fn>;
+    };
+    expect(popupCall.popup).toHaveBeenCalledWith({ window: f.window, frame });
   });
 });
 
@@ -576,6 +600,57 @@ it("keeps the previous native view when first paint is late and retries on updat
   await lateFrame.promise;
   expect(f.native.unmount).toHaveBeenCalledOnce();
   expect(next.unmount).not.toHaveBeenCalled();
+});
+
+it("promotes a placed pending page on paint timeout when no incumbent page is on screen", async () => {
+  const onError = vi.fn();
+  const f = fixture(onError);
+  const paint = Promise.withResolvers<void>();
+  f.native.waitForPaint = vi.fn(() => paint.promise);
+  const invalidate = vi.fn();
+  (f.native.view.webContents as unknown as { invalidate: ReturnType<typeof vi.fn> }).invalidate =
+    invalidate;
+  f.socket("admitted");
+  await f.manager.present(f.sender, f.request);
+
+  const timeout = new BrowserPaintTimeoutError();
+  const settled = expect(paint.promise).rejects.toBe(timeout);
+  paint.reject(timeout);
+  await settled;
+  await Promise.resolve();
+
+  expect(onError).not.toHaveBeenCalled();
+  expect(invalidate).toHaveBeenCalledOnce();
+  expect(f.window.contentView.children.at(-1)).toBe(f.native.view);
+  expect(f.native.unmount).not.toHaveBeenCalled();
+});
+
+it("promotes a pending page when placement arrives after a paint timeout with no incumbent page", async () => {
+  const onError = vi.fn();
+  const f = fixture(onError);
+  const paint = Promise.withResolvers<void>();
+  f.native.waitForPaint = vi.fn(() => paint.promise);
+  let deliverPlacement!: (placement: NativePlacement) => void;
+  f.native.mount = vi.fn((_window, _stage, placed) => {
+    deliverPlacement = (placement) => {
+      // As the launcher does: the view joins the window at placement, then it reports.
+      f.window.contentView.addChildView(f.native.view);
+      placed(placement);
+    };
+  });
+  f.socket("admitted");
+  await f.manager.present(f.sender, f.request);
+
+  const timeout = new BrowserPaintTimeoutError();
+  const settled = expect(paint.promise).rejects.toBe(timeout);
+  paint.reject(timeout);
+  await settled;
+  await Promise.resolve();
+  expect(f.window.contentView.children).not.toContain(f.native.view);
+
+  deliverPlacement({ bounds: rect, crop: { right: false, bottom: false }, emulation: null });
+  expect(onError).not.toHaveBeenCalled();
+  expect(f.window.contentView.children.at(-1)).toBe(f.native.view);
 });
 
 it("attributes native page input only to the window's admitted presentation consumer", async () => {

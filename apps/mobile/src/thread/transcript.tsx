@@ -4,7 +4,13 @@ import {
   useTranscriptMessage,
   useTranscriptText,
 } from "@opensteer/client/react";
-import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
+import {
+  compactionDisclosure,
+  compactionLabel,
+  isTerminalRunEntryStatus,
+  providerRetryDetail,
+  providerRetryLabel,
+} from "@opensteer/client/host";
 import { presentMessageDelivery } from "@opensteer/client/feedback";
 import { useClientConnectionName } from "@opensteer/client/react";
 import {
@@ -245,6 +251,7 @@ function TurnView(props: {
   return (
     <View style={styles.turn}>
       {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
+      {turn.run?.retry?.status === "retrying" ? <ProviderRetryNotice run={turn.run} /> : null}
       <TurnContent
         {...(folds ? { fold: { onToggle: () => onToggle(turnKey, open), open } } : {})}
         reveal={props.reveal ?? null}
@@ -406,6 +413,7 @@ function ConversationTurn(props: {
   return (
     <View style={styles.turn}>
       {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
+      {turn.run?.retry?.status === "retrying" ? <ProviderRetryNotice run={turn.run} /> : null}
       {line?.kind === "now" ? (
         <ComputerUseLine key={line.now.session.sessionId} now={line.now} />
       ) : line?.kind === "kept" ? (
@@ -2140,6 +2148,49 @@ function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
         </Pressable>
       ) : null}
       {stop.line === null || run.compaction.status !== "running" ? null : (
+        <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
+      )}
+    </View>
+  );
+}
+
+function ProviderRetryNotice({ run }: { readonly run: RunEntry }): ReactNode {
+  const scope = useContext(TaskScopeContext);
+  const stop = useScreenAction(scope?.hostClient ?? null, `stop-retry:${run.id}`, {
+    label: "stop this run",
+    done: "stopped",
+    happened: "this run stopped",
+    execute: () =>
+      scope ? scope.hostClient.stopRun(scope.threadId, run.runId ?? undefined) : Promise.resolve(),
+  });
+  const retry = run.retry;
+  if (!retry || retry.status !== "retrying") return null;
+  const active = !isTerminalRunEntryStatus(run.status);
+  return (
+    <View
+      accessibilityLiveRegion="polite"
+      style={{
+        paddingVertical: space[10],
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderColor: color.lineStrong,
+        gap: space[4],
+      }}
+    >
+      <AppText role="caption" tone="muted">
+        {providerRetryLabel(retry)} — {providerRetryDetail(retry)}
+      </AppText>
+      {active && scope ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Stop retrying run"
+          disabled={stop.running}
+          onPress={() => void stop.run(undefined)}
+          style={{ minHeight: touchTarget, justifyContent: "center" }}
+        >
+          <AppText role="caption">Stop</AppText>
+        </Pressable>
+      ) : null}
+      {stop.line === null || !active ? null : (
         <ActionLine line={stop.line} numberOfLines={2} onDismiss={stop.dismiss} />
       )}
     </View>

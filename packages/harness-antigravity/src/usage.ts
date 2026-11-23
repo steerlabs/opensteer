@@ -1,5 +1,19 @@
 import { readFile } from "node:fs/promises";
-import type { HarnessObservedUsage, HarnessObservedUsageWindow } from "@opensteer/harness";
+import {
+  canonicalModelReference,
+  ModelIdSchema,
+  ModelProviderIdSchema,
+  surrogateSafeCut,
+  type ModelSelection,
+} from "@opensteer/core";
+import {
+  harnessObservedUsageLabelMaxLength,
+  harnessObservedUsageMaxWindows,
+  usageWindowHasReset,
+  usageWindowIsAccountWide,
+  type HarnessObservedUsage,
+  type HarnessObservedUsageWindow,
+} from "@opensteer/harness";
 import { z } from "zod";
 import type { AntigravityAuthMethod } from "./config.js";
 
@@ -27,96 +41,379 @@ const BucketSchema = QuotaSchema.extend({
   displayName: z.string().optional(),
   window: z.string().optional(),
 });
+const SummaryGroupSchema = z.object({
+  buckets: z.array(z.unknown()).optional(),
+  displayName: z.string().optional(),
+});
 const SummarySchema = z.object({
-  buckets: z.array(BucketSchema).optional(),
-  groups: z
-    .array(
-      z.object({
-        buckets: z.array(BucketSchema).optional(),
-        displayName: z.string().optional(),
-      }),
-    )
-    .optional(),
+  buckets: z.array(z.unknown()).optional(),
+  groups: z.array(z.unknown()).optional(),
+});
+const ModelEntrySchema = z.object({
+  modelProvider: z.string().optional(),
+  quotaInfo: z.unknown().optional(),
+  weeklyQuotaInfo: z.unknown().optional(),
 });
 const ModelsSchema = z.object({
-  models: z.record(
-    z.string(),
-    z.object({
-      modelProvider: z.string().optional(),
-      quotaInfo: QuotaSchema.optional(),
-      weeklyQuotaInfo: QuotaSchema.optional(),
-    }),
-  ),
+  models: z.record(z.string(), z.unknown()),
 });
+
+type ProviderId = ModelSelection["providerId"];
+type ModelId = ModelSelection["modelId"];
+
+const googleProvider = ModelProviderIdSchema.parse("google");
+const anthropicProvider = ModelProviderIdSchema.parse("anthropic");
+const openaiProvider = ModelProviderIdSchema.parse("openai");
+
+interface KeyedWindow {
+  /** Stable provider identity used to merge duplicate readings across endpoints. */
+  readonly key: string;
+  readonly window: HarnessObservedUsageWindow;
+}
+
+interface ParsedModelQuota {
+  readonly cadence: "quota" | "weekly";
+  readonly modelId: ModelId;
+  readonly providerId: ProviderId;
+  readonly resetsAt: string | null;
+  readonly usedPercent: number;
+}
+
+interface ParsedModelsResponse {
+  readonly hasUnattributedEntry: boolean;
+  readonly modelsByProvider: ReadonlyMap<ProviderId, ReadonlySet<ModelId>>;
+  readonly quotas: readonly ParsedModelQuota[];
+}
 
 function resetTime(value: string | undefined): string | null {
   if (!value || !Number.isFinite(Date.parse(value))) return null;
   return new Date(value).toISOString();
 }
 
-function quotaWindow(
-  label: string,
-  quota: z.infer<typeof QuotaSchema>,
-): HarnessObservedUsageWindow | undefined {
-  if (quota.remainingFraction === undefined || !Number.isFinite(quota.remainingFraction)) {
+/**
+ * Converts Google's `[0, 1]` remaining fraction into a `[0, 100]` used
+ * percentage without IEEE-754 drift and without rounding a tiny positive
+ * remainder into false 100% exhaustion.
+ */
+function usedPercent(quota: z.infer<typeof QuotaSchema>): number | undefined {
+  const remaining = quota.remainingFraction;
+  if (remaining === undefined || !Number.isFinite(remaining) || remaining < 0 || remaining > 1) {
     return undefined;
   }
+  if (remaining === 0) return 100;
+  const rounded = Math.round((1 - remaining) * 10_000) / 100;
+  return Math.min(99.99, Math.max(0, rounded));
+}
+
+function cleanText(value: string): string {
+  return value
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/**
+ * Formats a concise window label guaranteed to satisfy the wire contract and
+ * stay valid UTF-16 (no split surrogate pairs) while preserving the cadence
+ * suffix when an unrecognized provider bucket has a long display name.
+ */
+function formatWindowLabel(subject: string, cadence: string): string {
+  const cleanSubject = cleanText(subject);
+  const cleanCadence = cleanText(cadence) || "quota";
+  if (!cleanSubject) {
+    return cleanCadence.slice(
+      0,
+      surrogateSafeCut(cleanCadence, harnessObservedUsageLabelMaxLength),
+    );
+  }
+  const full = `${cleanSubject} ${cleanCadence}`;
+  if (full.length <= harnessObservedUsageLabelMaxLength) return full;
+  const maxSubject = harnessObservedUsageLabelMaxLength - cleanCadence.length - 1;
+  if (maxSubject <= 1) {
+    return cleanCadence.slice(
+      0,
+      surrogateSafeCut(cleanCadence, harnessObservedUsageLabelMaxLength),
+    );
+  }
+  const cut = surrogateSafeCut(cleanSubject, maxSubject - 1);
+  const trimmed = cleanSubject.slice(0, cut).trimEnd();
+  return trimmed ? `${trimmed}… ${cleanCadence}` : cleanCadence;
+}
+
+function isActionableWindow(window: HarnessObservedUsageWindow): boolean {
+  return window.providerIds === undefined || window.providerIds.length > 0;
+}
+
+function moreConstrained(
+  candidate: { readonly resetsAt: string | null; readonly usedPercent: number },
+  existing: { readonly resetsAt: string | null; readonly usedPercent: number },
+  now: number,
+): boolean {
+  const candidateActive = !usageWindowHasReset(candidate.resetsAt, now);
+  const existingActive = !usageWindowHasReset(existing.resetsAt, now);
+  if (candidateActive !== existingActive) return candidateActive;
+  if (candidate.usedPercent !== existing.usedPercent) {
+    return candidate.usedPercent > existing.usedPercent;
+  }
+  if (candidate.resetsAt === null) return false;
+  if (existing.resetsAt === null) return true;
+  return Date.parse(candidate.resetsAt) < Date.parse(existing.resetsAt);
+}
+
+function providerFamilyName(providerId: ProviderId): string {
+  if (providerId === googleProvider) return "Gemini";
+  if (providerId === anthropicProvider) return "Claude";
+  if (providerId === openaiProvider) return "GPT";
+  return providerId;
+}
+
+function classifySummaryBucket(
+  bucket: z.infer<typeof BucketSchema>,
+  groupDisplayName: string | undefined,
+): {
+  readonly family: string;
+  readonly poolKey: string;
+  readonly providerIds: readonly ProviderId[];
+} {
+  if (bucket.bucketId.startsWith("gemini-")) {
+    return { family: "Gemini", poolKey: "provider:google", providerIds: [googleProvider] };
+  }
+  if (bucket.bucketId.startsWith("3p-")) {
+    return {
+      family: "Claude & GPT",
+      poolKey: "provider:anthropic+openai",
+      providerIds: [anthropicProvider, openaiProvider],
+    };
+  }
+  if (bucket.bucketId.startsWith("claude-")) {
+    return { family: "Claude", poolKey: "provider:anthropic", providerIds: [anthropicProvider] };
+  }
+  if (bucket.bucketId.startsWith("gpt-")) {
+    return { family: "GPT", poolKey: "provider:openai", providerIds: [openaiProvider] };
+  }
+  // Unrecognized buckets remain visible at the account level but must not
+  // constrain known models whose membership in the bucket is unverified.
   return {
-    label,
-    resetsAt: resetTime(quota.resetTime),
-    usedPercent: (1 - Math.max(0, Math.min(1, quota.remainingFraction))) * 100,
+    family: groupDisplayName?.trim() || bucket.displayName?.trim() || bucket.bucketId,
+    poolKey: `bucket:${bucket.bucketId}`,
+    providerIds: [],
   };
 }
 
-function summaryWindows(value: unknown): readonly HarnessObservedUsageWindow[] {
-  const summary = SummarySchema.parse(value);
-  const groups = summary.groups?.some((group) => group.buckets?.length)
-    ? summary.groups
-    : [{ buckets: summary.buckets }];
-  const windows = new Map<string, HarnessObservedUsageWindow>();
-  for (const group of groups ?? []) {
-    for (const bucket of group.buckets ?? []) {
+function summaryWindows(value: unknown, now: number): readonly KeyedWindow[] {
+  const parsedSummary = SummarySchema.safeParse(value);
+  if (!parsedSummary.success) return [];
+  const summary = parsedSummary.data;
+  const parsedGroups = (summary.groups ?? []).flatMap((rawGroup) => {
+    const group = SummaryGroupSchema.safeParse(rawGroup);
+    return group.success ? [group.data] : [];
+  });
+  const groups = parsedGroups.some((group) => group.buckets?.length)
+    ? parsedGroups
+    : [{ buckets: summary.buckets, displayName: undefined }];
+  const windows = new Map<string, KeyedWindow>();
+  for (const group of groups) {
+    for (const rawBucket of group.buckets ?? []) {
+      const parsedBucket = BucketSchema.safeParse(rawBucket);
+      if (!parsedBucket.success) continue;
+      const bucket = parsedBucket.data;
       if (bucket.disabled) continue;
-      const family = bucket.bucketId.startsWith("gemini-")
-        ? "Gemini"
-        : bucket.bucketId.startsWith("3p-")
-          ? "Claude & GPT (shared)"
-          : group.displayName?.trim() || bucket.displayName?.trim() || bucket.bucketId;
+      const used = usedPercent(bucket);
+      if (used === undefined) continue;
+      const { family, poolKey, providerIds } = classifySummaryBucket(bucket, group.displayName);
       const cadence =
-        bucket.window === "weekly" ? "Weekly" : bucket.window === "5h" ? "5-hour" : "Quota";
-      const window = quotaWindow(`${family} · ${cadence}`, bucket);
-      if (window) windows.set(`${family}:${cadence}`, window);
-    }
-  }
-  return [...windows.values()];
-}
-
-function modelWindows(value: unknown): readonly HarnessObservedUsageWindow[] {
-  const models = ModelsSchema.parse(value);
-  const windows = new Map<string, HarnessObservedUsageWindow>();
-  for (const [modelId, model] of Object.entries(models.models)) {
-    const family =
-      model.modelProvider === "MODEL_PROVIDER_GOOGLE" || modelId.startsWith("gemini-")
-        ? "Gemini"
-        : model.modelProvider === "MODEL_PROVIDER_ANTHROPIC" || modelId.startsWith("claude-")
-          ? "Claude"
-          : model.modelProvider === "MODEL_PROVIDER_OPENAI" || modelId.startsWith("gpt-")
-            ? "GPT"
-            : undefined;
-    if (!family) continue;
-    for (const [cadence, quota] of [
-      ["Reported quota", model.quotaInfo],
-      ["Weekly", model.weeklyQuotaInfo],
-    ] as const) {
-      if (!quota) continue;
-      const window = quotaWindow(`${family} · ${cadence}`, quota);
-      const previous = windows.get(`${family}:${cadence}`);
-      if (window && (!previous || previous.usedPercent < window.usedPercent)) {
-        windows.set(`${family}:${cadence}`, window);
+        bucket.window === "weekly" ? "weekly" : bucket.window === "5h" ? "5h" : "quota";
+      const key = `${poolKey}:${cadence}`;
+      const window: HarnessObservedUsageWindow = {
+        label: formatWindowLabel(family, cadence),
+        providerIds,
+        resetsAt: resetTime(bucket.resetTime),
+        usedPercent: used,
+      };
+      const previous = windows.get(key);
+      if (!previous || moreConstrained(window, previous.window, now)) {
+        windows.set(key, { key, window });
       }
     }
   }
   return [...windows.values()];
+}
+
+function modelProviderHint(
+  modelId: string,
+  modelProvider: string | undefined,
+): ProviderId | undefined {
+  if (modelProvider === "MODEL_PROVIDER_GOOGLE" || modelId.startsWith("gemini-")) {
+    return googleProvider;
+  }
+  if (modelProvider === "MODEL_PROVIDER_ANTHROPIC" || modelId.startsWith("claude-")) {
+    return anthropicProvider;
+  }
+  if (modelProvider === "MODEL_PROVIDER_OPENAI" || modelId.startsWith("gpt-")) {
+    return openaiProvider;
+  }
+  return undefined;
+}
+
+function isJsonbSafeIdentifier(value: string): boolean {
+  return value.length > 0 && !/[\p{Cc}\p{Cs}]/u.test(value) && value === value.toWellFormed();
+}
+
+function parseModelsResponse(value: unknown): ParsedModelsResponse {
+  const parsedModels = ModelsSchema.safeParse(value);
+  if (!parsedModels.success) {
+    return { hasUnattributedEntry: false, modelsByProvider: new Map(), quotas: [] };
+  }
+  const modelsByProvider = new Map<ProviderId, Set<ModelId>>();
+  const quotas: ParsedModelQuota[] = [];
+  let hasUnattributedEntry = false;
+  for (const [nativeModelId, rawModel] of Object.entries(parsedModels.data.models)) {
+    const parsedModel = ModelEntrySchema.safeParse(rawModel);
+    const hinted = modelProviderHint(
+      nativeModelId,
+      parsedModel.success ? parsedModel.data.modelProvider : undefined,
+    );
+    if (!isJsonbSafeIdentifier(nativeModelId)) {
+      if (hinted) hasUnattributedEntry = true;
+      continue;
+    }
+    if (!hinted) {
+      if (!parsedModel.success) hasUnattributedEntry = true;
+      continue;
+    }
+    const canonical = canonicalModelReference(nativeModelId, hinted);
+    if (!isJsonbSafeIdentifier(canonical.modelId)) {
+      hasUnattributedEntry = true;
+      continue;
+    }
+    const providerId = ModelProviderIdSchema.safeParse(canonical.providerId);
+    const modelId = ModelIdSchema.safeParse(canonical.modelId);
+    if (!providerId.success || !modelId.success) {
+      hasUnattributedEntry = true;
+      continue;
+    }
+    // Count every recognized model toward provider coverage even if its entry
+    // or quota is missing/malformed, so partial data never widens to a provider block.
+    const knownModels = modelsByProvider.get(providerId.data) ?? new Set<ModelId>();
+    knownModels.add(modelId.data);
+    modelsByProvider.set(providerId.data, knownModels);
+    if (!parsedModel.success) continue;
+    const model = parsedModel.data;
+    for (const [cadence, rawQuota] of [
+      ["quota", model.quotaInfo],
+      ["weekly", model.weeklyQuotaInfo],
+    ] as const) {
+      if (rawQuota === undefined) continue;
+      const parsedQuota = QuotaSchema.safeParse(rawQuota);
+      if (!parsedQuota.success) continue;
+      const used = usedPercent(parsedQuota.data);
+      if (used === undefined) continue;
+      quotas.push({
+        cadence,
+        modelId: modelId.data,
+        providerId: providerId.data,
+        resetsAt: resetTime(parsedQuota.data.resetTime),
+        usedPercent: used,
+      });
+    }
+  }
+  return { hasUnattributedEntry, modelsByProvider, quotas };
+}
+
+function projectModelQuotas(
+  responses: readonly ParsedModelsResponse[],
+  now: number,
+): readonly HarnessObservedUsageWindow[] {
+  const modelsByProvider = new Map<ProviderId, Set<ModelId>>();
+  const byModel = new Map<string, ParsedModelQuota>();
+  let hasUnattributedEntry = false;
+  for (const response of responses) {
+    if (response.hasUnattributedEntry) hasUnattributedEntry = true;
+    for (const [providerId, modelIds] of response.modelsByProvider) {
+      const target = modelsByProvider.get(providerId) ?? new Set<ModelId>();
+      for (const modelId of modelIds) target.add(modelId);
+      modelsByProvider.set(providerId, target);
+    }
+    for (const entry of response.quotas) {
+      const key = `${entry.providerId}/${entry.modelId}:${entry.cadence}`;
+      const previous = byModel.get(key);
+      if (!previous || moreConstrained(entry, previous, now)) {
+        byModel.set(key, entry);
+      }
+    }
+  }
+
+  // Group by (providerId, cadence). Collapse to one provider-scoped window only
+  // when multiple models of that provider exist, every one of them reported a
+  // reading for this cadence, and every reading is identical; otherwise keep
+  // exact per-model scopes so a sibling model with capacity is never poisoned.
+  const groups = new Map<string, ParsedModelQuota[]>();
+  for (const entry of byModel.values()) {
+    const key = `${entry.providerId}:${entry.cadence}`;
+    const list = groups.get(key) ?? [];
+    list.push(entry);
+    groups.set(key, list);
+  }
+
+  const windows: HarnessObservedUsageWindow[] = [];
+  for (const group of groups.values()) {
+    const first = group[0]!;
+    const providerModels = modelsByProvider.get(first.providerId);
+    const coversWholeProvider =
+      !hasUnattributedEntry &&
+      providerModels !== undefined &&
+      providerModels.size >= 2 &&
+      group.length === providerModels.size;
+    const uniform =
+      coversWholeProvider &&
+      group.every(
+        (entry) => entry.usedPercent === first.usedPercent && entry.resetsAt === first.resetsAt,
+      );
+    if (uniform) {
+      windows.push({
+        label: formatWindowLabel(providerFamilyName(first.providerId), first.cadence),
+        providerIds: [first.providerId],
+        resetsAt: first.resetsAt,
+        usedPercent: first.usedPercent,
+      });
+    } else {
+      for (const entry of group) {
+        windows.push({
+          label: formatWindowLabel(entry.modelId, entry.cadence),
+          resetsAt: entry.resetsAt,
+          scope: { kind: "model", modelId: entry.modelId, providerId: entry.providerId },
+          usedPercent: entry.usedPercent,
+        });
+      }
+    }
+  }
+  return capWindows(windows, now);
+}
+
+function capWindows(
+  windows: readonly HarnessObservedUsageWindow[],
+  now: number,
+): readonly HarnessObservedUsageWindow[] {
+  if (windows.length <= harnessObservedUsageMaxWindows) return windows;
+  const keepIndices = new Set(
+    windows
+      .map((window, index) => ({
+        actionable: isActionableWindow(window) ? 1 : 0,
+        active: usageWindowHasReset(window.resetsAt, now) ? 0 : 1,
+        index,
+        usedPercent: window.usedPercent,
+      }))
+      .sort(
+        (left, right) =>
+          right.active - left.active ||
+          right.actionable - left.actionable ||
+          right.usedPercent - left.usedPercent ||
+          left.index - right.index,
+      )
+      .slice(0, harnessObservedUsageMaxWindows)
+      .map(({ index }) => index),
+  );
+  return windows.filter((_, index) => keepIndices.has(index));
 }
 
 async function jsonResponse(response: Response): Promise<unknown> {
@@ -141,6 +438,7 @@ async function requestJson(
 export async function readAntigravityUsage(input: {
   readonly authMethod: AntigravityAuthMethod;
   readonly fetch?: typeof fetch;
+  readonly now?: number;
   readonly signal: AbortSignal;
   readonly tokenPath: string;
 }): Promise<HarnessObservedUsage | undefined> {
@@ -153,6 +451,7 @@ export async function readAntigravityUsage(input: {
   } catch {
     return undefined;
   }
+  const now = input.now ?? Date.now();
   const request = input.fetch ?? fetch;
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(30_000)]);
   const refreshed = TokenResponseSchema.parse(
@@ -178,11 +477,12 @@ export async function readAntigravityUsage(input: {
     "user-agent": `antigravity/hub/2.24.0 (aidev_client; os_type=${process.platform}; arch=${process.arch})`,
   };
   const body = JSON.stringify(token.project_id ? { project: token.project_id } : {});
-  const read = async (
+  const fetchOperation = async <T>(
     operation: string,
-    parse: (value: unknown) => readonly HarnessObservedUsageWindow[],
-  ) => {
-    const answers = await Promise.all(
+    parse: (value: unknown) => T,
+    fallback: T,
+  ): Promise<readonly T[]> =>
+    Promise.all(
       quotaEndpoints.map(async (endpoint) => {
         try {
           return parse(
@@ -194,23 +494,44 @@ export async function readAntigravityUsage(input: {
             ),
           );
         } catch {
-          return [];
+          return fallback;
         }
       }),
     );
-    const windows = new Map<string, HarnessObservedUsageWindow>();
-    for (const window of answers.flat()) {
-      const previous = windows.get(window.label);
-      if (!previous || previous.usedPercent < window.usedPercent) windows.set(window.label, window);
+
+  const summaryAnswers = (
+    await fetchOperation("retrieveUserQuotaSummary", (value) => summaryWindows(value, now), [])
+  ).flat();
+  const mergedSummary = new Map<string, HarnessObservedUsageWindow>();
+  for (const { key, window } of summaryAnswers) {
+    const previous = mergedSummary.get(key);
+    if (!previous || moreConstrained(window, previous, now)) {
+      mergedSummary.set(key, window);
     }
-    return [...windows.values()];
-  };
-  let windows = await read("retrieveUserQuotaSummary", summaryWindows);
-  if (windows.length === 0) windows = await read("fetchAvailableModels", modelWindows);
+  }
+  const summaryResult = [...mergedSummary.values()];
+  let windows: readonly HarnessObservedUsageWindow[] = capWindows(summaryResult, now);
+  if (
+    !summaryResult.some(
+      (window) => isActionableWindow(window) && !usageWindowHasReset(window.resetsAt, now),
+    )
+  ) {
+    const modelAnswers = await fetchOperation("fetchAvailableModels", parseModelsResponse, {
+      hasUnattributedEntry: false,
+      modelsByProvider: new Map(),
+      quotas: [],
+    });
+    const modelResult = projectModelQuotas(modelAnswers, now);
+    if (modelResult.length > 0) {
+      windows = capWindows([...modelResult, ...summaryResult], now);
+    }
+  }
   if (windows.length === 0) return undefined;
   return {
-    limitReached: windows.some((window) => window.usedPercent >= 100),
-    observedAt: new Date().toISOString(),
+    limitReached: windows.some(
+      (window) => usageWindowIsAccountWide(window) && window.usedPercent >= 100,
+    ),
+    observedAt: new Date(now).toISOString(),
     windows,
   };
 }

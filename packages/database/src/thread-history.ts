@@ -20,6 +20,15 @@ const historyCursorSchema = z.strictObject({
   sequence: SequenceSchema,
   query: z.string().nullable(),
 });
+export function isThreadHistoryCursor(cursor: string): boolean {
+  try {
+    return historyCursorSchema.safeParse(
+      JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")),
+    ).success;
+  } catch {
+    return false;
+  }
+}
 export function encodeThreadHistoryCursor(
   threadId: ThreadId,
   sequence: import("@opensteer/core").Sequence,
