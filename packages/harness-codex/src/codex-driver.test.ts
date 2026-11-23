@@ -3276,6 +3276,54 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it.each([
+    ["is rejected", "--reject-interrupt", 500, 50],
+    ["never answers", "--hang-interrupt", 200, 350],
+  ] as const)(
+    "keeps the shared app-server and another task's turn alive when turn/interrupt %s while unsubscribe closes the conversation",
+    async (_label, flag, requestTimeoutMs, waitAfterStopMs) => {
+      const neverReleased = join(
+        await mkdtemp(join(tmpdir(), "opensteer-codex-interrupt-fail-")),
+        "release",
+      );
+      const fixture = await setup("long-stream-held", {
+        requestTimeoutMs,
+        serverArguments: ["--unique-threads", flag, `--release-file=${neverReleased}`],
+      });
+      try {
+        const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+        const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+        const stoppingObserver = observe(stopping.events);
+        const otherObserver = observe(other.events);
+        void stopping.execute(fixture.turn("Write at length"));
+        await stoppingObserver.waitFor("assistant.delta");
+        const otherRun = other.execute(fixture.turn("Keep running alongside"));
+        await otherObserver.waitFor("assistant.delta");
+        const interrupting = stopping.interrupt();
+        await stopping.stop();
+        await stoppingObserver.done;
+        await interrupting.catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, waitAfterStopMs));
+        expect(normalizedTypes(stoppingObserver.events)).toContain("run.interrupted");
+        expect(normalizedTypes(stoppingObserver.events)).not.toContain("run.failed");
+        const pids = await runServerPids(fixture);
+        expect(pids).toHaveLength(1);
+        expect(processAlive(pids[0]!)).toBe(true);
+        expect(other.usable).toBe(true);
+        await writeFile(neverReleased, "");
+        await otherRun;
+        await otherObserver.waitFor("run.completed");
+        expect(normalizedTypes(otherObserver.events)).not.toContain("run.interrupted");
+        expect(normalizedTypes(otherObserver.events)).not.toContain("run.failed");
+        const next = await fixture.adapter.startSession(taskContext(fixture, "next"));
+        expect(await runServerPids(fixture)).toEqual(pids);
+        await Promise.all([other.stop(), next.stop()]);
+      } finally {
+        await fixture.adapter.close();
+      }
+    },
+  );
+
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
     const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {

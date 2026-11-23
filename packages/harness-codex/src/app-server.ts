@@ -53,6 +53,8 @@ export interface CodexThreadOwner {
    * time. Whether it acted on it is unknown, so the owner cannot go on.
    */
   requestTimedOut(error: OpensteerError): void;
+  /** True once a stop is under way for this owner. */
+  readonly stopping?: boolean;
 }
 
 export interface CodexAppServerOptions {
@@ -152,12 +154,15 @@ export class CodexAppServer {
       onMethodMessage: (message, bytes) => {
         if (server) server.#route(message, bytes);
       },
-      onRequestTimeout: (_method, params, error) => {
+      onRequestTimeout: (method, params, error) => {
         if (!server) return;
-        // A process that keeps no time takes no new session; the one waiting ends.
-        server.recycle();
         const threadId = isRecord(params) ? optionalString(params.threadId) : undefined;
         const owner = threadId ? server.#owners.get(threadId) : undefined;
+        // Once a stop is under way or the conversation already closed, an
+        // unanswered turn/interrupt decides nothing: the unload's own evidence decides.
+        if (method === "turn/interrupt" && (!owner || owner.stopping)) return;
+        // A process that keeps no time takes no new session; the one waiting ends.
+        server.recycle();
         owner?.requestTimedOut(error);
       },
       redactions: () => (server ? [...server.#redactions] : []),

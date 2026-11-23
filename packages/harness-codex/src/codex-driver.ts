@@ -1283,6 +1283,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     return !this.#closed && !this.#publisher.unusable && this.#server?.usable === true;
   }
 
+  get stopping(): boolean {
+    return this.#closed;
+  }
+
   get engineProcess(): "own" | "shared" {
     return this.#server?.dedicated === false ? "shared" : "own";
   }
@@ -1890,6 +1894,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         threadId: this.#requireCodexThreadId(),
         turnId: active.providerTurnId,
       });
+      if (this.#closed || active.terminal) return;
       await withTimeout(active.completion.promise, this.#config.requestTimeoutMs, {
         timeoutError: () =>
           new OpensteerError({
@@ -1899,13 +1904,15 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
           }),
       });
     } catch (error) {
+      // Once a stop is under way, an interrupt's failure or timeout decides
+      // nothing: the unload's own evidence decides whether to retire the server.
+      if (this.#closed || active.terminal) return;
       const failure = toHarnessError(error, "Failed to interrupt Codex turn");
       this.#publishFailure(active, failure);
       this.#publisher.latchUnusable(failure);
       this.#closeEventStream(failure);
-      // A turn that would not stop is stopped with the process it runs in;
-      // the account's other turns on it are cut short with it, not failed.
-      await this.#server?.retire(failure, { othersInterrupted: true });
+      // Only the stop path may retire the shared server (when unload cannot close).
+      await this.stop();
     }
   }
 
@@ -2070,6 +2077,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   }
 
   requestTimedOut(error: OpensteerError): void {
+    if (this.#closed) return;
     this.#handleConnectionFailure(error);
   }
 

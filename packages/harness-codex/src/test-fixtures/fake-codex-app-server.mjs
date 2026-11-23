@@ -989,6 +989,16 @@ function handleClientMethod(message) {
       break;
     }
     case "turn/interrupt":
+      if (process.argv.includes("--reject-interrupt")) {
+        send({
+          id: message.id,
+          error: { code: -32600, message: "Fake turn/interrupt rejected" },
+        });
+        break;
+      }
+      if (process.argv.includes("--hang-interrupt")) {
+        break;
+      }
       send({ id: message.id, result: {} });
       // A child agent's thread is interrupted on its own, as Codex requires.
       if (message.params.threadId !== threadId) {
