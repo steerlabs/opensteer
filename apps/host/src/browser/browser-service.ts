@@ -3451,6 +3451,7 @@ export class BrowserService {
     this.#tabDescriptorTimers.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
       if (broker && this.#workspaceTabs) {
+        if (!broker.hasTabChanges) return;
         const changes = broker.tabChanges();
         let ownerId: UserId | undefined;
         let record: BrowserSessionRecord | null = null;
