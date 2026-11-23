@@ -41,6 +41,41 @@
     "selected-covering": "refused:not_offered",
     "selected-not": "not_found"
   },
+  "thread.input.cancel": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "thread.input.move": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "thread.input.steer": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "thread.inputQueue.resume": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "refused:not_offered",
+    "selected-covering": "refused:not_offered",
+    "selected-not": "not_found"
+  },
+  "run.interrupt": {
+    "own-full": "allowed",
+    "own-supervised": "allowed",
+    "everything": "allowed",
+    "selected-covering": "allowed",
+    "selected-not": "not_found"
+  },
   "thread.rename": {
     "own-full": "allowed",
     "own-supervised": "allowed",

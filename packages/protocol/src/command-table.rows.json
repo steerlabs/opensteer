@@ -122,7 +122,7 @@
         }
       ],
       "step": "A",
-      "note": "step C splits by who paused (brief C7); X11: the inputs it releases run in the task's lineage, so a connection asks unless that lineage is its own",
+      "note": "step C splits by who paused (brief C7); X11: the inputs it releases run in the task's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:412 → command-service.ts:229: one store write; what follows from it leaves after the commit, from the committed rows; the wake is in memory",
@@ -146,7 +146,7 @@
         }
       ],
       "step": "A",
-      "note": "; X11: the input steers the running Run, in that Run's lineage, so a connection asks unless that lineage is its own",
+      "note": "; X11: the input steers the running Run, in that Run's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:432 → command-service.ts:178: one store write; what follows from it leaves after the commit, from the committed rows",
@@ -170,7 +170,7 @@
         }
       ],
       "step": "A",
-      "note": "",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:452 → command-service.ts:187: one store write",
@@ -194,7 +194,7 @@
         }
       ],
       "step": "A",
-      "note": "",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "database",
         "why": "thread-service.ts:468 → command-service.ts:194: one store write",
@@ -3299,7 +3299,7 @@
         }
       ],
       "step": "A",
-      "note": "",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
         "why": "server.ts:2597: the browser runtime",
@@ -3323,7 +3323,7 @@
         }
       ],
       "step": "A",
-      "note": "",
+      "note": "; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
       "effect": {
         "where": "outside",
         "why": "server.ts:2609: the browser runtime",

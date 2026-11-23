@@ -13,10 +13,10 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `thread.rename` | task ← `threadId` | preference | now | now | now | now | A | agent path `tsvc:470` (`write`); D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `thread.icon.set` | task ← `threadId` | preference | now | now | now | now | B | `commands.setThreadIcon` takes no authority (`server.ts:1893`) |
 | `thread.sendMessage` | task ← `threadId` | widen-self | now | now | now | now | A | `connection` with selected grant: own lineage only |
-| `thread.inputQueue.resume` | task queue ← `threadId` (+ who paused it, stored) | widen-self | now | now | now | now | A | step C splits by who paused (brief C7); X11: the inputs it releases run in the task's lineage, so a connection asks unless that lineage is its own |
-| `thread.input.steer` | waiting input ← `threadId`,`messageId` | widen-self | now | now | now | now | A | ; X11: the input steers the running Run, in that Run's lineage, so a connection asks unless that lineage is its own |
-| `thread.input.cancel` | waiting input ← `messageId` | narrow | now | now | now | now | A |  |
-| `thread.input.move` | waiting input ← `messageId` | preference | now | now | now | now | A |  |
+| `thread.inputQueue.resume` | task queue ← `threadId` (+ who paused it, stored) | widen-self | now | now | now | now | A | step C splits by who paused (brief C7); X11: the inputs it releases run in the task's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
+| `thread.input.steer` | waiting input ← `threadId`,`messageId` | widen-self | now | now | now | now | A | ; X11: the input steers the running Run, in that Run's lineage, so a connection asks unless that lineage is its own; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
+| `thread.input.cancel` | waiting input ← `messageId` | narrow | now | now | now | now | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
+| `thread.input.move` | waiting input ← `messageId` | preference | now | now | now | now | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `thread.input.lease.take` | the person's editor lease ← `messageId` + session | person-view | nf | nf | nf | nf | — | a lease belongs to one signed-in editor (`server.ts:1836-1846`) |
 | `thread.input.lease.renew` | same | person-view | nf | nf | nf | nf | — |  |
 | `thread.input.lease.release` | same | person-view | nf | nf | nf | nf | — |  |
@@ -185,8 +185,8 @@ edit. Callers: (a) your own agent at Full access, (b) your own agent below Full 
 | `tab.close` | tabs ← `tabIds` | narrow | now | now | now | now | A | ; approved C2 line: a connection closes tabs from Auto up and asks below it; your own agents as today's tab_close (D0a) |
 | `tab.reopen` | a closed tab ← `tabId` | widen-self | now | now | now | now | B | takes `TabActor` but its agent admission is unverified (`tab-service.ts:792-800`) |
 | `tab.activate` | the person's selection | person-view | nf | nf | nf | nf | — | the agent equivalent is `show_to_person` |
-| `tab.organize` | tab order and groups | preference | now | now | now | now | A |  |
-| `tab.group.update` | a tab group ← `groupId` | preference | now | now | now | now | A |  |
+| `tab.organize` | tab order and groups | preference | now | now | now | now | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
+| `tab.group.update` | a tab group ← `groupId` | preference | now | now | now | now | A | ; D0a: differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2) |
 | `tab.group.delete` | a tab group ← `groupId` | preference | now | now | now | now | B | `deleteGroup(ownerId, …)` (`tab-service.ts:913`) |
 | `app.rename` | a published app ← `appId` | preference | now | ask | now | nf | B | `rename(ownerId, …)` (`app-service.ts:401`) |
 | `app.start` | an app server ← `appId` | widen-self | now | ask | now | nf | A | `AppActor` (`app-service.ts:51-53`); X11: an app server runs on, in no connection's Disconnect set, so a connection asks unless that lineage is its own |

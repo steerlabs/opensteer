@@ -42,6 +42,7 @@ import {
   connectCallerMachine,
   dispatchCallerRun,
   enrollmentToken,
+  rejectRunsExcept,
   startPrivateMachineHost,
   type CallerRun,
 } from "../runtime/private-machine-host.test-support.js";
@@ -96,6 +97,18 @@ const decided: Readonly<Record<string, string>> = {
   "tab.open (profile) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.close (the person's tab) / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "thread.input.cancel / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "thread.input.cancel / selected-covering":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "thread.input.move / everything":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "thread.input.move / selected-covering":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "thread.input.steer / selected-covering":
+    "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
+  "thread.inputQueue.resume / selected-covering":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.organize (into a new group) / everything":
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
@@ -187,6 +200,8 @@ it("records what today's tools let each caller do, and the door answers the same
       modelSettings: true,
       // Two callers' own Runs, three busy tasks' and the Runs callers may not stop run at once.
       maxConcurrentRuns: 16,
+      // Its engine steers a running turn, so a waiting message can be steered into one.
+      steers: true,
       browser: {
         runtimeId: "browser-runtime-integration",
         wireVersion: 2,
@@ -204,6 +219,19 @@ it("records what today's tools let each caller do, and the door answers the same
     machine.primary.socket.on("close", (code: number, reason: Buffer) =>
       machineClosed.push(`${code} ${reason.toString()} during ${current}`),
     );
+    // The Runs the test starts are accepted as it starts them; every other Run the Home sends this
+    // computer (a reminder that fired, a message's) is refused before admission, so none is left
+    // unanswered to end the connection.
+    const starting = new Set<string>();
+    rejectRunsExcept(machine.primary, (threadId) => starting.has(threadId));
+    const accepted = async (threadId: ThreadId, key: string) => {
+      starting.add(threadId);
+      try {
+        return await dispatchCallerRun(host, machine, { key, title: key, threadId });
+      } finally {
+        starting.delete(threadId);
+      }
+    };
     // Its browser, as the hot-path test runs one: tabs open for real.
     const browserRuntime = await startBrowserRuntime(host.hostPort, "unused-existing-main", {
       primary: machine.primary,
@@ -252,11 +280,7 @@ it("records what today's tools let each caller do, and the door answers the same
       return (created as { thread: { id: ThreadId } }).thread.id;
     };
     const runIn = async (accessMode: ThreadAccessMode, key: string): Promise<CallerRun> =>
-      dispatchCallerRun(host, machine, {
-        key,
-        title: key,
-        threadId: await task(key, accessMode),
-      });
+      accepted(await task(key, accessMode), key);
     const mcp = async (url: URL, bearer: string) => {
       const client = new Client({ name: "tool-parity", version: "1" });
       close.unshift(() => client.close());
@@ -342,7 +366,7 @@ it("records what today's tools let each caller do, and the door answers the same
           .set({ originConnectionId: origin })
           .where("id", "=", threadId)
           .execute();
-      const run = await dispatchCallerRun(host, machine, { key, title: key, threadId });
+      const run = await accepted(threadId, key);
       return { threadId, runId: run.runId };
     };
     const busyFull = await busyTask("parity-busy", "full-access");
@@ -532,7 +556,7 @@ it("records what today's tools let each caller do, and the door answers the same
         command: (c) => ({
           type: "thread.input.cancel",
           threadId: busy[c].threadId,
-          messageId: queued[c].first,
+          messageId: queued[c]?.first,
         }),
       },
       {
@@ -553,8 +577,8 @@ it("records what today's tools let each caller do, and the door answers the same
         command: (c) => ({
           type: "thread.input.move",
           threadId: busy[c].threadId,
-          messageId: queued[c].second,
-          beforeMessageId: queued[c].first,
+          messageId: queued[c]?.second,
+          beforeMessageId: queued[c]?.first,
         }),
       },
       {
@@ -572,13 +596,13 @@ it("records what today's tools let each caller do, and the door answers the same
         command: (c) => ({
           type: "thread.input.steer",
           threadId: busy[c].threadId,
-          messageId: queued[c].first,
+          messageId: queued[c]?.first,
           expectedRunId: busy[c].runId,
         }),
       },
       {
         name: "thread.inputQueue.resume",
-        tool: "opensteer_task_queue",
+        tool: "opensteer_task_resume",
         // The person paused the other task's queue (as stopping its Run does); nothing waits in
         // it, so resuming releases nothing.
         before: async () => {
@@ -596,7 +620,7 @@ it("records what today's tools let each caller do, and the door answers the same
             .where("id", "in", [...new Set(Object.values(others))])
             .execute();
         },
-        args: (c) => ({ taskId: others[c], action: "resume" }),
+        args: (c) => ({ taskId: others[c] }),
         command: (c) => ({ type: "thread.inputQueue.resume", threadId: others[c] }),
       },
       {
@@ -605,8 +629,8 @@ it("records what today's tools let each caller do, and the door answers the same
         args: async (c) => ({ taskId: (await stoppableRun(c)).threadId }),
         command: (c) => ({
           type: "run.interrupt",
-          threadId: stoppable[c].threadId,
-          runId: stoppable[c].runId,
+          threadId: stoppable[c]?.threadId,
+          runId: stoppable[c]?.runId,
         }),
       },
       {
