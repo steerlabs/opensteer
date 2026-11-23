@@ -47,7 +47,12 @@ export function displayRolesIn(file: string, source: string): string[] {
     if (displayRole.test(line) && !inTitle) return [where];
     const size = inlineSize.exec(line);
     if (size && Number(size[1]) >= displaySize) return [where];
-    if (swiftTitle.test(line)) {
+    // A `font({` left open on its line is read with the lines up to where it closes.
+    const close = /font\(\{(?![^}]*\})/u.test(line)
+      ? lines.findIndex((next, at) => at > index && next.includes("}"))
+      : -1;
+    const statement = close > index ? lines.slice(index, close + 1).join(" ") : line;
+    if (swiftTitle.test(statement)) {
       // Its modifiers, on the lines around it.
       const near = lines.slice(Math.max(0, index - 4), index + 5).join("\n");
       if (!/dynamicTypeSize\(\{\s*max:\s*displayDynamicTypeLimit/u.test(near)) return [where];
@@ -102,6 +107,24 @@ describe("display titles on the phone", () => {
         'export function DisplayTitle() {\n  role="displayLarge"\n}\nexport function Big() {\n  role="displaySmall"\n}',
       ),
     ).toEqual(['apps/mobile/src/ui/primitives.tsx:5: role="displaySmall"']);
+  });
+
+  // The reader's re-check of 5ebc2cbbd: Prettier wraps a long `font({ … })` over lines, and the
+  // scanner read one line at a time.
+  it("sees a SwiftUI title whose font is written over several lines", () => {
+    expect(
+      displayRolesIn(
+        "apps/mobile/src/x.ios.tsx",
+        "modifiers={[\n  font({\n    size: 28,\n  }),\n]}",
+      ),
+    ).toHaveLength(1);
+    expect(
+      displayRolesIn(
+        "apps/mobile/src/x.ios.tsx",
+        "modifiers={[\n  font({\n    size: 28,\n  }),\n  dynamicTypeSize({ max: displayDynamicTypeLimit }),\n]}",
+      ),
+    ).toEqual([]);
+    expect(displayRolesIn("apps/mobile/src/x.ios.tsx", "font({\n  size: 17,\n})")).toEqual([]);
   });
 
   it("sees a screen that names a display role itself", () => {
