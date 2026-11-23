@@ -269,14 +269,15 @@ describe("SurfaceLedger", () => {
             event.surface.id === before.id &&
             event.surface.state === "live",
         );
-      const [first, second] = await Promise.all(
-        [ledger.wake(before.id), ledger.wake(before.id)].map((wake) =>
-          wake.then((binding) => {
-            expect(announced()).toBe(true);
-            return binding;
-          }),
-        ),
-      );
+      const seen = (wake: ReturnType<typeof ledger.wake>) =>
+        wake.then((binding) => {
+          expect(announced()).toBe(true);
+          return binding;
+        });
+      const [first, second] = await Promise.all([
+        seen(ledger.wake(before.id)),
+        seen(ledger.wake(before.id)),
+      ]);
       expect(first).toEqual(second);
       expect(ledger.surfaceIdForTarget(oldTargetId)).toBeUndefined();
       expect(ledger.surfaceIdForTarget(first.targetId)).toBe(before.id);

@@ -504,7 +504,7 @@ export class TabSleeper {
       return nothing;
     // TS13: over the threshold, opens go one at a time: each waits, within its own bound, for the
     // open before it to have made its page, then reads memory afresh.
-    let done = nothing;
+    let done: () => void = nothing;
     if (this.releasing) {
       const previous = this.openTurn;
       const turn = Promise.withResolvers<void>();
