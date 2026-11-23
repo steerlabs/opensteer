@@ -9,6 +9,16 @@ import { expect, it } from "vitest";
  * phone and desktop sources for a caught failure's `.message` used as a value (drawn, stored for
  * drawing, or returned as words), leaving out what only inspects it, wraps it in another error,
  * or logs it. Each file still allowed one says why, and how many it holds.
+ *
+ * It also sees a caught failure drawn whole: a `message` destructured from it, `String(error)`,
+ * `${error}` and `error.toString()`.
+ *
+ * What it still cannot see:
+ * - a failure held under any other name (`failure.message`, `problem.message`, `thrown`), and
+ *   `reason`, which here names a sentence as often as a failure, in the whole-failure forms;
+ * - a member access split over lines (`error\n  .message`), or a line that also logs or throws;
+ * - a helper outside the four roots that returns a failure's text (`safeMessage(error)`);
+ * - whether an allowed file's reason is still true: each entry is read by a person.
  */
 /** Why a file may still use a failure's own text, by kind. */
 const reasons = {
@@ -32,6 +42,10 @@ const reasons = {
 
 const allowed: Readonly<Record<string, { readonly count: number; readonly reason: string }>> = {
   "apps/desktop/src/app/background-mode.ts": { count: 1, reason: reasons.desktop },
+  "apps/desktop/src/browser/editing-engine-journey.ts": {
+    count: 1,
+    reason: "A journey's evidence file, written for whoever reads the run, never drawn.",
+  },
   "apps/desktop/src/app/local-stop.ts": { count: 1, reason: reasons.desktop },
   "apps/desktop/src/app/menu-bar.ts": { count: 2, reason: reasons.desktop },
   "apps/desktop/src/app/quit-routing.ts": { count: 1, reason: reasons.desktop },
@@ -71,7 +85,6 @@ const allowed: Readonly<Record<string, { readonly count: number; readonly reason
     count: 1,
     reason: reasons.desktop,
   },
-  "apps/desktop/src/supervisor/personal-host-control.ts": { count: 2, reason: reasons.desktop },
   "apps/desktop/src/supervisor/personal-user-environment.ts": { count: 1, reason: reasons.desktop },
   "apps/mobile/src/browser/browser-page.tsx": { count: 1, reason: reasons.words },
   "apps/mobile/src/images/image-actions.tsx": { count: 1, reason: reasons.local },
@@ -119,6 +132,9 @@ const roots = ["packages/client/src", "apps/web/src", "apps/mobile/src", "apps/d
  */
 const caughtMessage =
   /(^|[^.\w])(error|err|e|reason|cause|caught|exception|ex)\.message\b|\.error\??\.message\b|\.issues\b.*\.message\b/u;
+/** A caught failure drawn whole: destructured, stringified or interpolated. */
+const caughtWhole =
+  /catch \(\{ *message|const \{ *message *\} *= *(error|err|e|cause|caught|exception|ex)\b|String\((error|err|e|cause|caught|exception|ex)\)|\$\{(error|err|e|cause|caught|exception|ex)\}|\b(error|err|e|cause|caught|exception|ex)\.toString\(\)/u;
 const notAValue =
   /console\.|log\.(warn|error|info|debug)|logger\.|\.log\(|#log\(|reportError|captureException|\.message\.(includes|startsWith|endsWith|match|test|toLowerCase|length)|\.message [!=]==|new [A-Za-z]*Error\(|throw |cause:/u;
 
@@ -132,7 +148,7 @@ it("puts no caught failure's own text where a person reads it, outside the one f
       readFileSync(file, "utf8")
         .split("\n")
         .forEach((line, index) => {
-          if (caughtMessage.test(line) && !notAValue.test(line))
+          if ((caughtMessage.test(line) || caughtWhole.test(line)) && !notAValue.test(line))
             found.set(relative, [...(found.get(relative) ?? []), `${index + 1}: ${line.trim()}`]);
         });
     }
