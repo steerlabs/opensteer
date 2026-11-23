@@ -153,4 +153,47 @@ describe("Trigger HTTP routes (T7 / Y3 / Y11)", () => {
       },
     });
   });
+
+  it("accepts OPTIONS webhooks and never logs the webhook route key on unexpected errors (AA14.4 / AA14.5)", async () => {
+    const occurrenceId = createId("triggerOccurrence");
+    const routeKey = "whk_secret_route_key_99999999999999999999999";
+    const logged: string[] = [];
+    const acceptWebhook = vi
+      .fn<TriggerService["acceptWebhook"]>()
+      .mockResolvedValueOnce({
+        occurrence: { id: occurrenceId } as never,
+        wasDuplicate: false,
+      })
+      .mockRejectedValueOnce(new Error("unexpected database outage"));
+    const app = Fastify({
+      logger: {
+        level: "info",
+        stream: {
+          write(chunk: string) {
+            logged.push(chunk);
+          },
+        },
+      },
+    });
+    applications.push(app);
+    registerTriggerRoutes(
+      app,
+      {} as HostAuthenticator,
+      { acceptWebhook } as unknown as TriggerService,
+    );
+
+    const optionsResponse = await app.inject({
+      method: "OPTIONS",
+      url: `/hooks/v1/${routeKey}`,
+    });
+    expect(optionsResponse.statusCode).toBe(202);
+    expect(acceptWebhook.mock.calls[0]?.[0]?.method).toBe("OPTIONS");
+
+    const errorResponse = await app.inject({
+      method: "POST",
+      url: `/hooks/v1/${routeKey}`,
+    });
+    expect(errorResponse.statusCode).toBe(500);
+    expect(logged.join("\n")).not.toContain(routeKey);
+  });
 });

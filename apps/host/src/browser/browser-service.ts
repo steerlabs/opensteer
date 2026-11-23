@@ -4532,7 +4532,8 @@ export class BrowserService {
   async hasBrowserProfiles(ownerId: UserId, agentBindingId?: string): Promise<boolean> {
     const profiles = await this.#repository.listBrowserProfiles(ownerId);
     if (profiles.length === 0) return false;
-    if (!agentBindingId || !this.#repository.resolveResourceAccess) return true;
+    if (!agentBindingId) return true;
+    if (!this.#repository.resolveResourceAccess) return false;
     // Decide each profile through the single authority function (`resolveResourceAccess` /
     // `authorizeTarget`, Rule 1) with Run parity (`explicitAccess: "read"` so lower task modes
     // receive the browser address just like a Run of the same task, while per-action checks

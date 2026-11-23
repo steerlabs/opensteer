@@ -174,9 +174,34 @@ export function registerTriggerRoutes(
     webhooks.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) =>
       done(null, body),
     );
+    webhooks.setErrorHandler((error, request, reply) => {
+      const statusCode =
+        typeof (error as { statusCode?: unknown }).statusCode === "number"
+          ? (error as { statusCode: number }).statusCode
+          : 500;
+      if (statusCode === 413) {
+        return reply.status(413).send({
+          error: {
+            code: "payload_too_large",
+            message: "Webhook body exceeds 256 KiB",
+          },
+        });
+      }
+      app.log.error(
+        { err: error, method: request.method, path: "/hooks/v1/[redacted]" },
+        "Webhook ingress failed",
+      );
+      return reply.status(500).send({
+        error: {
+          code: "internal",
+          message: "Internal server error",
+        },
+      });
+    });
     webhooks.route<{ Params: { readonly routeKey: string } }>({
       bodyLimit: MAX_WEBHOOK_BODY_BYTES,
-      method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+      logLevel: "silent",
+      method: ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"],
       url: "/hooks/v1/:routeKey",
       handler: async (request, reply) => {
         const routeKey = request.params.routeKey;
@@ -227,19 +252,28 @@ export function registerTriggerRoutes(
             });
           }
           // A full pending queue (100 waiting, Y11) is backpressure, not a delivery failure.
-          if (!(error instanceof OpensteerError) || error.code !== "resource_exhausted") {
-            throw error;
+          if (error instanceof OpensteerError && error.code === "resource_exhausted") {
+            return reply
+              .header("retry-after", String(webhookRetryAfterSeconds))
+              .status(429)
+              .send({
+                error: {
+                  code: error.code,
+                  message: error.message,
+                  retryable: true,
+                },
+              });
           }
-          return reply
-            .header("retry-after", String(webhookRetryAfterSeconds))
-            .status(429)
-            .send({
-              error: {
-                code: error.code,
-                message: error.message,
-                retryable: true,
-              },
-            });
+          app.log.error(
+            { err: error, method: request.method, path: "/hooks/v1/[redacted]" },
+            "Webhook ingress failed",
+          );
+          return reply.status(500).send({
+            error: {
+              code: "internal",
+              message: "Internal server error",
+            },
+          });
         }
         return reply.status(202).send({
           occurrenceId: TriggerOccurrenceIdSchema.parse(result.occurrence.id),

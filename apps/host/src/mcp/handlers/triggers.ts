@@ -27,6 +27,12 @@ export interface AgentTriggerManager {
 }
 
 export interface TriggerLineage {
+  admitExecution?: (input: {
+    readonly ownerUserId: UserId;
+    readonly subject:
+      | { readonly kind: "binding"; readonly bindingId: string }
+      | { readonly kind: "connection"; readonly agentConnectionId: string };
+  }) => Promise<{ readonly mode: import("@opensteer/core").ThreadAccessMode }>;
   triggerOrigins(
     ownerId: UserId,
     ids: readonly TriggerId[],
@@ -98,8 +104,20 @@ export class TriggerToolHandlers {
         : lineage && output.trigger
           ? await this.lineage.triggerOrigins(caller.userId, [output.trigger.id])
           : undefined;
+    const liveAccessMode = this.lineage.admitExecution
+      ? await this.lineage
+          .admitExecution({
+            ownerUserId: caller.userId,
+            subject:
+              caller.kind === "connection"
+                ? { kind: "connection", agentConnectionId: caller.connectionId }
+                : { kind: "binding", bindingId: caller.key },
+          })
+          .then((result) => result.mode)
+          .catch(() => null)
+      : null;
     const canSeeWebhook = (id: TriggerId): boolean => {
-      if (caller.accessMode !== "full-access") return false;
+      if (liveAccessMode !== "full-access") return false;
       if (!lineage) return true;
       return origins?.get(id) === lineage.agentConnectionId;
     };

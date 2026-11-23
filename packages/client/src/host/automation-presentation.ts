@@ -84,7 +84,12 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
     case "failed":
       return attention("It failed when it ran.");
     case "unknown":
-      return attention("Opensteer lost contact while it was running.");
+      return attention(
+        summary.latestOccurrence.error &&
+          /computer was removed/iu.test(summary.latestOccurrence.error)
+          ? "Its computer was removed while it was running."
+          : "Opensteer lost contact while it was running.",
+      );
     case "canceled":
       return attention(
         summary.latestOccurrence.sent

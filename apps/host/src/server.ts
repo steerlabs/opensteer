@@ -333,6 +333,7 @@ import type { WatchScriptService } from "./triggers/watch-script-service.js";
 export { hostInternalRoutePatterns } from "./server/internal-routes.js";
 
 const maxWebSocketFrameBytes = 1 * 1_024 * 1_024;
+const runnerControlMaxFrameBytes = 4 * 1_024 * 1_024;
 const maxChallengedRunnerConnections = 8;
 const maxChallengedChannelRuntimeConnections = 8;
 const maxWebSocketBufferedBytes = 8 * 1_024 * 1_024;
@@ -3302,12 +3303,12 @@ function attachRunnerSocket(
   // slows it at the source; the ceiling leaves room for the rest of one read.
   const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({
     flow: {
-      highWaterBytes: maxWebSocketFrameBytes,
+      highWaterBytes: runnerControlMaxFrameBytes,
       highWaterItems: 256,
       pause: () => socket.pause(),
       resume: () => socket.resume(),
     },
-    maxBytes: 4 * maxWebSocketFrameBytes,
+    maxBytes: 4 * runnerControlMaxFrameBytes,
     maxItems: 4_096,
   });
   /** The proven identity behind this socket, once it has proven one. */
@@ -3325,7 +3326,7 @@ function attachRunnerSocket(
   socket.on("message", (frame, isBinary) => {
     try {
       const buffer = rawDataBuffer(frame);
-      if (buffer.byteLength > maxWebSocketFrameBytes) {
+      if (buffer.byteLength > runnerControlMaxFrameBytes) {
         throw badMessage("Runner message is too large");
       }
       inbox.push({ bytes: buffer.byteLength, value: { frame: buffer, isBinary } });

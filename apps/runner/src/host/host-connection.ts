@@ -110,10 +110,12 @@ import { probeFullDiskAccess, type FullDiskAccessProbeOptions } from "../shell/f
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
 
-const maximumFrameBytes = 1024 * 1024;
+/** Maximum Runner control WebSocket frame size; accommodates worst-case JSON-escaped trigger.execute (AA14.6). */
+export const runnerControlMaxFrameBytes = 4 * 1024 * 1024;
+const maximumFrameBytes = runnerControlMaxFrameBytes;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
 const maximumQueuedInboundItems = 64;
-const maximumBufferedOutboundBytes = 8 * 1024 * 1024;
+const maximumBufferedOutboundBytes = Math.max(8 * 1024 * 1024, 2 * maximumFrameBytes);
 const handshakeTimeoutMs = 15_000;
 const connectionOperationStopWaitMs = 15_000;
 const maximumReconnectDelayMs = 30_000;

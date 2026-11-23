@@ -346,7 +346,11 @@ describe("TriggerService", () => {
       url: `https://home.opensteer.example/hooks/v1/${routeKey}`,
     });
 
-    const handlers = new TriggerToolHandlers(service, { triggerOrigins: async () => new Map() });
+    let liveMode: "ask" | "full-access" = "ask";
+    const handlers = new TriggerToolHandlers(service, {
+      admitExecution: async () => ({ mode: liveMode as never }),
+      triggerOrigins: async () => new Map(),
+    });
     const askCaller = {
       accessMode: "ask",
       kind: "run",
@@ -378,6 +382,7 @@ describe("TriggerService", () => {
     expect(askListResult.triggers?.[0]?.webhookRouteKey).toBeNull();
     expect(askListResult.triggers?.[0]?.webhook).toEqual({ scope: "public", url: null });
 
+    liveMode = "full-access";
     const fullCaller = { ...askCaller, accessMode: "full-access" } as RunCaller;
     const fullResult = (await handlers.read({
       caller: fullCaller,
@@ -392,6 +397,80 @@ describe("TriggerService", () => {
       scope: "public",
       url: `https://home.opensteer.example/hooks/v1/${routeKey}`,
     });
+  });
+
+  it("redacts webhook url when live admitExecution mode is lowered after sign-in (AA14.2)", async () => {
+    const ownerId = createId("user");
+    const triggerId = createId("trigger");
+    const revisionId = createId("triggerRevision");
+    const routeKey = "whk_live_mode_check_123456789012345678901234";
+    const now = new Date().toISOString();
+    const triggerRow = TriggerSchema.parse({
+      anchorThreadId: createId("thread"),
+      createdAt: now,
+      createdBy: ownerId,
+      currentRevisionId: revisionId,
+      id: triggerId,
+      kind: "webhook",
+      name: "Live mode webhook",
+      nextFireAt: null,
+      pauseReason: null,
+      status: "active",
+      updatedAt: now,
+      webhookRouteKey: routeKey,
+    });
+    const service = new TriggerService({
+      onOccurrenceQueued: vi.fn(),
+      publicUrl: new URL("https://home.opensteer.example"),
+      runnerStore: {} as never,
+      store: {
+        getForOwner: async () => ({
+          activation: null,
+          anchorThreadTitle: "Task",
+          createdByThreadTitle: null,
+          downstreamRuns: [],
+          downstreamRunsTruncated: false,
+          occurrences: [],
+          revision: TriggerRevisionSchema.parse({
+            createdAt: now,
+            createdBy: ownerId,
+            id: revisionId,
+            ordinal: 1,
+            script: { interpreter: null, text: "console.log('ok')" },
+            source: { kind: "webhook" },
+            triggerId,
+          }),
+          trigger: triggerRow,
+        }),
+      } as unknown as TriggerStore,
+      threads: {} as never,
+    });
+    const admitExecution = vi.fn(async () => ({ mode: "auto" as const }));
+    const handlers = new TriggerToolHandlers(service, {
+      admitExecution,
+      triggerOrigins: async () => new Map(),
+    });
+    const staleFullCaller = {
+      accessMode: "full-access",
+      kind: "run",
+      key: "run:stale-full",
+      userId: ownerId,
+      thread: { id: triggerRow.anchorThreadId },
+    } as unknown as RunCaller;
+    const result = (await handlers.read({
+      caller: staleFullCaller,
+      input: { automationId: triggerId, occurrenceLimit: 10 },
+      operationKey: "read-stale-full",
+    })) as {
+      readonly trigger?: { readonly webhookRouteKey?: string | null };
+      readonly webhook?: { readonly scope: string; readonly url: string | null } | null;
+    };
+    expect(admitExecution).toHaveBeenCalledWith({
+      ownerUserId: ownerId,
+      subject: { kind: "binding", bindingId: "run:stale-full" },
+    });
+    expect(result.trigger?.webhookRouteKey).toBeNull();
+    expect(result.webhook).toEqual({ scope: "public", url: null });
   });
   it("applies patchSecrets through one locked store read-modify-write transaction (AA9)", async () => {
     const ownerId = createId("user");

@@ -140,4 +140,18 @@ describe("BrowserService.hasBrowserProfiles lineage admission (Y5 / Z9)", () => 
       everythingLowerMode.service.hasBrowserProfiles(ownerId, "trigger:toc_everything_approval"),
     ).resolves.toBe(true);
   });
+
+  it("fails closed when agentBindingId is given without a resolveResourceAccess authority check (AA14.1)", async () => {
+    const ownerId = createId("user");
+    const service = new BrowserService({
+      repository: {
+        listBrowserProfiles: vi.fn(async () => [
+          { archivedAt: null, id: createId("browserProfile") },
+        ]),
+      },
+    } as never);
+    await expect(service.hasBrowserProfiles(ownerId, "trigger:toc_no_resolver")).resolves.toBe(
+      false,
+    );
+  });
 });

@@ -2961,6 +2961,41 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(await store.claimCommand(second.commandId, "lost-dispatcher")).not.toBeNull();
   });
 
+  it("returns identical 404 from enqueueWebhook when the anchor task loses authority (AA14.3)", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, database, triggers } = storeFixture;
+    const fixture = await createFixture("webhook-lost-authority");
+    const routeKey = "whk_lost_authority_123456789012345678901234";
+    await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: fixture.threadId,
+      createdBy: fixture.userId,
+      idempotencyKey: "webhook-lost-authority",
+      name: "Lost authority webhook",
+      script: { interpreter: null, text: "console.log('ok')" },
+      source: { kind: "webhook" },
+      webhookRouteKey: routeKey,
+    });
+    // Lower the anchor task's access mode so execution authority no longer holds.
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "auto" })
+      .where("id", "=", fixture.threadId)
+      .execute();
+
+    await expect(
+      triggers.enqueueWebhook({
+        headers: {},
+        method: "POST",
+        routeKey,
+      }),
+    ).rejects.toMatchObject({
+      code: "not_found",
+      message: "Webhook not found",
+    });
+  });
+
   /**
    * Marks a Run running without dispatching it, with the grant a dispatched
    * Run holds: only a Run whose authority stands takes a steer.

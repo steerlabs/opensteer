@@ -117,7 +117,7 @@ function noticeText(notice: PendingAutomationFailure): string {
     ].join("\n");
   }
   if (notice.reason === "started-failing") {
-    return `${automation} started failing. It is still active and will keep trying on its schedule.\n\nIts latest error, as reported: ${JSON.stringify(notice.detail)}`;
+    return `${automation} started failing. It is still active.\n\nIts latest error, as reported: ${JSON.stringify(notice.detail)}`;
   }
   if (notice.reason === "overran-schedule") {
     return `${automation} was still running when its next scheduled run came due, so one waiting run was queued and further overlapping ticks collapse into it. It is still active.\n\nDetail: ${JSON.stringify(notice.detail)}`;

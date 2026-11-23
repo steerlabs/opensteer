@@ -128,6 +128,24 @@ describe("placing automations", () => {
     expect(placeAutomation(onceUnsent, now).problem).toBe("It was canceled before it ran.");
     expect(placeAutomation(onceSent, now).problem).toBe("It was stopped while running.");
   });
+
+  it("reports a removed computer distinctly from lost contact when an occurrence is unknown (AA14.8)", () => {
+    const removedUnknown = {
+      completedAt: at(0, 16, 20),
+      createdAt: at(0, 16, 15),
+      error: "Outcome unknown: the computer was removed while this firing was running.",
+      status: "unknown",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+    const onceRemoved = automation({
+      latestOccurrence: removedUnknown,
+      nextFireAt: null,
+      source: { kind: "schedule", schedule: { at: at(0, 16, 15), kind: "at" } },
+    });
+    expect(placeAutomation(onceRemoved, now)).toEqual({
+      group: "attention",
+      problem: "Its computer was removed while it was running.",
+    });
+  });
 });
 
 describe("the next run", () => {

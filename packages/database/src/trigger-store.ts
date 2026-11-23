@@ -1808,9 +1808,20 @@ export class TriggerStore {
         .where("kind", "=", "webhook")
         .forNoKeyUpdate()
         .executeTakeFirst();
-      // Unknown, paused, archived, or rotated keys return identical 404 (T7).
+      // Unknown, paused, archived, rotated, waiting-chat, or lost-authority keys return identical 404 (T7 / AA14.3).
       if (!trigger || trigger.status !== "active") throw notFound("Webhook not found");
-      await requireTriggerExecutionAuthority(transaction, trigger);
+      try {
+        await requireTriggerExecutionAuthority(transaction, trigger);
+      } catch (error) {
+        if (
+          error instanceof TriggerChatWaiting ||
+          (error instanceof OpensteerError &&
+            (error.code === "forbidden" || error.code === "conflict" || error.code === "not_found"))
+        ) {
+          throw notFound("Webhook not found");
+        }
+        throw error;
+      }
       // Y11: Every webhook request queues in FIFO order (up to 100 pending, then 429).
       const sourceKey = `webhook:${globalThis.crypto.randomUUID()}`;
       const rawBody = input.rawBody && input.rawBody.byteLength > 0 ? input.rawBody : null;

@@ -119,6 +119,56 @@ it("describes outcome-unknown notices as lost contact rather than interrupted (Z
   }
 });
 
+it("does not promise schedule retries in started-failing notices (AA14.8)", async () => {
+  vi.useFakeTimers();
+  const threadId = createId("thread");
+  const notice: PendingAutomationFailure = {
+    anchorThreadId: threadId,
+    anchorThreadTitle: "Task",
+    attempts: 0,
+    createdBy: createId("user"),
+    detail: "exit 1",
+    destinationThreadId: threadId,
+    id: crypto.randomUUID(),
+    reason: "started-failing",
+    triggerId: createId("trigger"),
+    triggerName: "Deploy webhook",
+  };
+  let delivered = false;
+  const enqueueThreadInput = vi.fn<CommandService["enqueueThreadInput"]>(
+    async () =>
+      ({
+        disposition: "queued",
+        inputId: createId("message"),
+        runId: null,
+      }) as never,
+  );
+  const service = new AutomationFailureService({
+    commands: { enqueueThreadInput },
+    onError: () => undefined,
+    store: {
+      listDue: vi.fn(async () => (delivered ? [] : [notice])),
+      nextDeadline: async () => null,
+      retryLater: vi.fn(async () => undefined),
+      settle: vi.fn(async () => {
+        delivered = true;
+      }),
+    },
+  });
+  try {
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const text = enqueueThreadInput.mock.calls[0]?.[0]?.content
+      .map((part) => ("text" in part ? part.text : ""))
+      .join("");
+    expect(text).toContain("It is still active.");
+    expect(text).not.toContain("will keep trying on its schedule");
+  } finally {
+    await service.close();
+    vi.useRealTimers();
+  }
+});
+
 it("describes started-failing, overran-schedule, and watch-crash-loop without claiming the automation was paused (T8/T9/Y10)", async () => {
   vi.useFakeTimers();
   const threadId = createId("thread");

@@ -40,6 +40,11 @@ export type ProgramLaunchPlanner = (input: {
 
 const truncationMarker = "\n[Opensteer truncated earlier process output]\n";
 
+/** Removes leftover per-firing script and webhook-body files left by an earlier crashed Runner boot (AA14.7). */
+export async function cleanupPriorAutomationScripts(privateStateDirectory: string): Promise<void> {
+  await rm(resolve(privateStateDirectory, "automation-scripts"), { force: true, recursive: true });
+}
+
 /**
  * Resolves the shipped `opensteer` CLI script and launcher bin directory from
  * either the bundled `dist/main.js` layout (`../cli`, `../bin`) or the source

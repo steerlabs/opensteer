@@ -34,6 +34,7 @@ import {
   type RunnerIdentity,
 } from "@opensteer/runner-client";
 import { cacheRunPlugins, prunePluginCache } from "./skills/plugin-cache.js";
+import { cleanupPriorAutomationScripts } from "./agent/script-executor.js";
 import { JsonRunnerLogger } from "./runtime/logger.js";
 import { AgentHomeManager } from "./folders/agent-home.js";
 import { verifyNodeExecutable } from "./runtime/node-executable.js";
@@ -376,7 +377,11 @@ async function startAgentsRunner(input: {
     });
   // The data directory is this process's now, so a Run another boot of it
   // left running is a dead Runner's: it ends before this one takes work.
-  await prunePluginCache(resolve(config.dataDirectory, "private", "harness-state"));
+  const privateStateDirectory = resolve(config.dataDirectory, "private", "harness-state");
+  await prunePluginCache(privateStateDirectory);
+  if (input.earlierBootsContained) {
+    await cleanupPriorAutomationScripts(privateStateDirectory);
+  }
   const pluginPruner = setInterval(
     () => {
       void prunePluginCache(resolve(config.dataDirectory, "private", "harness-state")).catch(
