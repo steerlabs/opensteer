@@ -1,18 +1,21 @@
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ModelSelectionSchema } from "@opensteer/core";
+import { createId, ModelSelectionSchema, type ThreadAccessMode } from "@opensteer/core";
+import {
+  nativeUserHarnessRuntimeBoundary,
+  type HarnessEvent,
+  type HarnessSessionContext,
+} from "@opensteer/harness";
 import { afterEach, expect, it } from "vitest";
 import { packagedPiExecutable } from "./executable.js";
-import { piAgentDirectoryForOthersTasks, piProcessArguments } from "./pi-driver.js";
+import { PiHarnessDriver } from "./pi-driver.js";
 
 /**
- * The shipped Pi, launched with the driver's own arguments and agent folder in
- * a temporary home and project against a local stand-in for an
- * OpenAI-compatible endpoint: nothing reads or writes the computer's own Pi
- * configuration.
+ * The shipped Pi, started by the driver in a temporary home and project against
+ * a local stand-in for an OpenAI-compatible endpoint: nothing reads or writes
+ * the computer's own Pi configuration, and nothing leaves it.
  */
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -31,16 +34,23 @@ const exists = (path: string) =>
  * `APPEND_SYSTEM.md` and `AGENTS.md` of theirs and the project's, a prompt
  * template; and their sign-in (`models.json`, `auth.json`), which stays.
  */
-async function piRun(own: boolean) {
+async function piRun(input: {
+  readonly accessMode: ThreadAccessMode;
+  readonly commands: readonly string[];
+  readonly decisions: readonly ("allow-once" | "reject")[];
+  readonly own: boolean;
+}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-pi-own-")));
-  cleanups.push(() => rm(root, { force: true, recursive: true }));
+  cleanups.push(() => rm(root, { force: true, maxRetries: 20, recursive: true, retryDelay: 100 }));
   const home = join(root, "home");
   const agentDirectory = join(home, ".pi", "agent");
   const project = join(root, "agent-home");
+  const state = join(root, "state");
   const userPrefixRan = join(root, "user-prefix-ran");
   const projectPrefixRan = join(root, "project-prefix-ran");
   await mkdir(join(agentDirectory, "prompts"), { recursive: true });
   await mkdir(join(project, ".pi"), { recursive: true });
+  await mkdir(state, { recursive: true });
   let body = "";
   const server = createServer((request, response) => {
     let text = "";
@@ -52,28 +62,26 @@ async function piRun(own: boolean) {
         return;
       }
       body += text;
-      const answered = text.includes('"role":"tool"');
+      const step = text.split('"role":"tool"').length - 1;
+      const nextCommand = input.commands[step];
       response.writeHead(200, { "content-type": "text/event-stream" });
       const chunk = (delta: unknown, finish: string | null) =>
         response.write(
           `data: ${JSON.stringify({
             choices: [{ delta, finish_reason: finish, index: 0 }],
-            id: "stub",
+            id: `stub_${step}`,
             object: "chat.completion.chunk",
             usage: { completion_tokens: 1, prompt_tokens: 1, total_tokens: 2 },
           })}\n\n`,
         );
-      if (answered) {
-        chunk({ content: "done", role: "assistant" }, null);
-        chunk({}, "stop");
-      } else {
+      if (nextCommand) {
         chunk(
           {
             role: "assistant",
             tool_calls: [
               {
-                function: { arguments: JSON.stringify({ command: "touch ran.txt" }), name: "bash" },
-                id: "call_1",
+                function: { arguments: JSON.stringify({ command: nextCommand }), name: "bash" },
+                id: `call_${step + 1}`,
                 index: 0,
                 type: "function",
               },
@@ -82,23 +90,32 @@ async function piRun(own: boolean) {
           null,
         );
         chunk({}, "tool_calls");
+      } else {
+        chunk({ content: "done", role: "assistant" }, null);
+        chunk({}, "stop");
       }
       response.end("data: [DONE]\n\n");
     });
   });
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
-  cleanups.push(() => new Promise((resolveClose) => server.close(() => resolveClose())));
+  cleanups.push(
+    () =>
+      new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+        server.closeAllConnections();
+      }),
+  );
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("No stub address");
   await writeFile(
     join(agentDirectory, "models.json"),
     JSON.stringify({
       providers: {
-        stub: {
+        openai: {
           api: "openai-completions",
           apiKey: "local-stub",
           baseUrl: `http://127.0.0.1:${address.port}/v1`,
-          models: [{ id: "model", name: "model" }],
+          models: [{ id: "stub-model", name: "stub-model" }],
         },
       },
     }),
@@ -118,59 +135,144 @@ async function piRun(own: boolean) {
   );
   await writeFile(join(project, ".pi", "SYSTEM.md"), "PROJECT-SYSTEM-MD-MARKER");
   await writeFile(join(project, "AGENTS.md"), "PROJECT-AGENTS-MARKER");
-  const instructions = join(root, "opensteer-instructions.md");
-  await writeFile(instructions, "OPENSTEER-INSTRUCTIONS-MARKER");
+
+  const driver = new PiHarnessDriver({
+    connectMcpServer: async () => ({
+      callTool: async () => ({ content: [], isError: false }),
+      close: async () => undefined,
+      listTools: async () => [],
+    }),
+    executable: packagedPiExecutable(),
+    nodeExecutable: process.execPath,
+  });
+  const instanceId = createId("harnessInstance");
+  const adapter = await driver.create({ config: {}, instanceId, sourceId: "openai" });
+  cleanups.push(() => adapter.close());
+  const threadId = createId("thread");
+  const threadStateDirectory = join(state, "threads", threadId);
+  await mkdir(threadStateDirectory, { recursive: true });
   const environment = {
     HOME: home,
-    PATH: process.env.PATH ?? "",
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
     PI_OFFLINE: "1",
     PI_TELEMETRY: "0",
+    TMPDIR: state,
   };
-  const args = piProcessArguments({
-    context: {
-      modelSelection: ModelSelectionSchema.parse({
-        modelId: "stub/model",
-        options: {},
-        providerId: "stub",
-      }),
-      personalContext: true,
-      personLineage: own,
+  const context: HarnessSessionContext = {
+    accessMode: input.accessMode,
+    agentTools: {
+      instructions: "",
+      skills: [],
+      token: "local-stub",
+      tools: [],
+      toolsRevision: "own-configuration",
+      url: "http://127.0.0.1:9/internal/v1/mcp",
     },
-    extensionPath: join(root, "unused-extension.js"),
-    instructionsPath: instructions,
-  });
-  // The extension serves the Run's tools over RPC; a print-mode probe has none.
-  const at = args.indexOf("--extension");
-  const launch = [...args.slice(0, at), ...args.slice(at + 2), "--print", "Do it."];
-  const child = spawn(process.execPath, [packagedPiExecutable(), ...launch], {
-    cwd: project,
-    env: own
-      ? environment
-      : {
-          ...environment,
-          PI_CODING_AGENT_DIR: await piAgentDirectoryForOthersTasks(
-            environment,
-            join(root, "state", "pi-agent"),
-          ),
+    commandEnvironment: {},
+    environment,
+    environmentId: createId("environment"),
+    harnessInstanceId: instanceId,
+    history: [],
+    historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
+    instructions: "OPENSTEER-INSTRUCTIONS-MARKER",
+    machineAccessNotice: "No other computers are reachable.",
+    machineAccessPlatform: undefined,
+    machineAccessRelaySocket: undefined,
+    modelSelection: ModelSelectionSchema.parse({
+      modelId: "stub-model",
+      options: {},
+      providerId: "openai",
+    }),
+    personalContext: true,
+    personLineage: input.own,
+    platformGuide: "",
+    providerState: {
+      continuationKey: root,
+      kind: "ambient",
+      privateStateRoot: state,
+      providerHomeDirectory: undefined,
+      store: { directory: agentDirectory, id: "own-configuration" },
+    },
+    runtimeBoundary: nativeUserHarnessRuntimeBoundary,
+    signal: AbortSignal.timeout(120_000),
+    skills: { skills: [] },
+    threadId,
+    threadStateDirectory,
+    workspacePath: project,
+    wrapProcessLaunch: (launch) => launch,
+    writableRoots: [project],
+  };
+
+  const session = await adapter.startSession(context);
+  const events: HarnessEvent[] = [];
+  let requestIndex = 0;
+  const observing = (async () => {
+    for await (const event of session.events) {
+      events.push(event);
+      if (event.type === "request.opened") {
+        const decision = input.decisions[requestIndex] ?? "allow-once";
+        requestIndex += 1;
+        await session.resolveRequest(event.data.request.id, {
+          kind: "choice",
+          optionId: decision,
+        });
+      }
+    }
+  })();
+  try {
+    await session.execute({
+      context: {
+        assignment: null,
+        startedAt: "2026-11-23T00:00:00.000Z",
+        threadState: { previousAssignment: null, previousRun: null },
+      },
+      environment: {},
+      inputs: [
+        {
+          author: { displayName: "Person", kind: "human", principalId: "person" },
+          content: [{ text: "Do it.", type: "text" }],
+          createdAt: new Date().toISOString(),
+          kind: "input",
+          messageId: createId("message"),
         },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let output = "";
-  child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
-  child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
-  const code = await new Promise<number | null>((resolveExit) => child.on("close", resolveExit));
-  expect(code, output).toBe(0);
+      ],
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } finally {
+    await session.stop();
+    await observing;
+  }
+  const requests = events.flatMap((event) =>
+    event.type === "request.opened" ? [JSON.stringify(event.data.request)] : [],
+  );
   return {
+    blockedRan: await exists(join(project, "blocked.txt")),
     body,
     commandRan: await exists(join(project, "ran.txt")),
+    events,
     projectPrefixRan: await exists(projectPrefixRan),
+    requests,
     userPrefixRan: await exists(userPrefixRan),
   };
 }
 
-it("starts a task a connected agent or a chat started with none of the person's Pi configuration", async () => {
-  const run = await piRun(false);
-  // It signed in through the person's own models.json, and the command ran.
+it("starts a task a connected agent or a chat started with none of the person's Pi configuration and enforces Supervised", async () => {
+  const run = await piRun({
+    accessMode: "approval-required",
+    commands: ["touch blocked.txt", "touch ran.txt"],
+    decisions: ["reject", "allow-once"],
+    own: false,
+  });
+  expect(run.events.find((event) => event.type === "run.failed")).toBeUndefined();
+  // (A) Supervised holds through the driver's extension: both bash commands ask;
+  // rejecting the first stops it and allowing the second lets it run.
+  expect(run.requests).toHaveLength(2);
+  expect(run.requests[0]).toContain("blocked.txt");
+  expect(run.requests[1]).toContain("ran.txt");
+  expect(run.blockedRan).toBe(false);
   expect(run.commandRan).toBe(true);
   // (B) No shell prefix of theirs or the project's wrapped it.
   expect(run.userPrefixRan).toBe(false);
@@ -190,8 +292,18 @@ it("starts a task a connected agent or a chat started with none of the person's 
 }, 120_000);
 
 it("still reads the person's own configuration in their own task, as Pi did before", async () => {
-  const run = await piRun(true);
+  const run = await piRun({
+    accessMode: "approval-required",
+    commands: ["touch ran.txt"],
+    decisions: ["allow-once"],
+    own: true,
+  });
+  expect(run.events.find((event) => event.type === "run.failed")).toBeUndefined();
+  expect(run.requests).toHaveLength(1);
   expect(run.commandRan).toBe(true);
+  // Non-vacuous control: the person's shellCommandPrefix and SYSTEM.md are loaded
+  // in their own task; the project's .pi/settings.json stays off under --no-approve.
   expect(run.userPrefixRan).toBe(true);
+  expect(run.projectPrefixRan).toBe(false);
   expect(run.body).toContain("PERSON-SYSTEM-MD-MARKER");
 }, 120_000);
