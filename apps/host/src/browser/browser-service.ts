@@ -1551,7 +1551,11 @@ export class BrowserService {
               // attempt, and its window's end records the loss with its note.
               state === "failed"
               ? Promise.resolve(record)
-              : this.#transitionBrowserSession({ sessionId, state }),
+              : this.#transitionBrowserSession({
+                  ...(state === "ready" ? { from: ["starting", "ready"] as const } : {}),
+                  sessionId,
+                  state,
+                }),
         onTerminal: () => {
           if (this.#brokers.get(sessionId) === broker) {
             this.#brokers.delete(sessionId);

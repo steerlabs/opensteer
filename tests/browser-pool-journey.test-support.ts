@@ -77,7 +77,10 @@ export class TestRuntimeConnection extends EventEmitter implements BrowserRuntim
         onClosed: (_channel, code, reason) => this.end(code, reason),
       })
       .then((attached) => {
-        if (this.readyState === 3) return;
+        if (this.readyState === 3) {
+          this.bridge.close(this.channel, 1006, "terminated");
+          return;
+        }
         this.initialPage = attached.initialPage;
         this.readyState = 1;
         for (const [data, binary] of pending) frame(data, binary);
