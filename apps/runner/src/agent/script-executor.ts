@@ -29,12 +29,10 @@ export interface ProgramEndpoints {
   readonly mcp: { readonly token: string; readonly url: string };
 }
 
-/** Confines one automation launch, given its private directory and environment. */
+/** Plans one automation launch, given its private directory and environment. */
 export type ProgramLaunchPlanner = (input: {
   readonly environment: Readonly<Record<string, string>>;
   readonly privateDirectory: string;
-  /** Read-only directories outside the Runner data directory (e.g. shipped CLI bin). */
-  readonly readOnlyDirectories?: readonly string[];
   /** Optional result file path in `privateDirectory`. */
   readonly resultFile?: string;
   readonly workspacePath: string;
@@ -221,11 +219,9 @@ export class AutomationScriptExecutor {
         ? [...input.script.interpreter.slice(1), scriptFile]
         : [scriptFile];
 
-      const readOnlyDirectories = [this.#cliBinDirectory, dirname(this.#cliScriptPath)];
       const wrap = await input.planLaunch({
         environment,
         privateDirectory: privateExecutionRoot,
-        readOnlyDirectories,
         workspacePath: input.workspace.path,
       });
       const launch = wrap({

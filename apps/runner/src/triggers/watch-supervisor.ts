@@ -78,7 +78,7 @@ export interface WatchSupervisorOptions {
   readonly cliScriptPath?: string;
   readonly environmentId: EnvironmentId;
   readonly nodeExecutable: string;
-  /** Confines one script launch; see the Runner's own automation script launches. */
+  /** Plans one script launch; see the Runner's own automation script launches. */
   readonly planLaunch: (
     executionId: string,
     launch: Parameters<ProgramLaunchPlanner>[0],
@@ -329,12 +329,10 @@ export class WatchSupervisor {
         const args = loaded.script.interpreter
           ? [...loaded.script.interpreter.slice(1), materialized.scriptFile]
           : [materialized.scriptFile];
-        const readOnlyDirectories = [this.#cliBinDirectory, dirname(this.#cliScriptPath)];
         const launch = (
           await this.#planLaunch(active.desired.activationId, {
             environment,
             privateDirectory: dirname(active.capabilitiesPath),
-            readOnlyDirectories,
             workspacePath: workspace.path,
           })
         )({ args, cwd: workspace.path, environment, executable });

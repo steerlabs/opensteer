@@ -89,8 +89,6 @@ export interface HarnessSandboxRunPlan {
 export interface ProgramSandboxPlan {
   readonly environment: Readonly<Record<string, string>>;
   readonly privateDirectory: string;
-  /** Read-only directories outside the Runner data directory (e.g. shipped CLI bin). */
-  readonly readOnlyDirectories?: readonly string[];
   /** The one existing file in `privateDirectory` the program may write: its result. */
   readonly resultFile?: string;
   readonly workspacePath: string;
@@ -174,7 +172,6 @@ export async function programSandboxMounts(
       { mode: "--ro-bind", path: program.privateDirectory },
       ...(program.resultFile ? [{ mode: "--bind" as const, path: program.resultFile }] : []),
     ],
-    ...(program.readOnlyDirectories ? { readOnlyDirectories: program.readOnlyDirectories } : {}),
     workspaceRoots: [program.workspacePath],
   });
 }
@@ -190,8 +187,6 @@ async function sandboxMounts(
       readonly mode: "--bind" | "--ro-bind";
       readonly path: string;
     }[];
-    /** Non-private read-only directories re-exposed when under a masked root (e.g. CLI bin). */
-    readonly readOnlyDirectories?: readonly string[];
     readonly workspaceRoots: readonly string[];
   },
 ): Promise<readonly string[]> {
@@ -265,18 +260,6 @@ async function sandboxMounts(
       if (named !== canonical && maskedRoots.some((root) => pathContains(root, named))) {
         args.push("--ro-bind", canonical, named);
       }
-    }
-  }
-
-  for (const directory of run.readOnlyDirectories ?? []) {
-    const canonical = await canonicalPath(directory);
-    if (pathContains(layout.dataDirectory, canonical)) {
-      throw new Error(
-        `Read-only directory ${directory} overlaps the Runner data directory ${layout.dataDirectory}`,
-      );
-    }
-    if (maskedRoots.some((root) => pathContains(root, canonical))) {
-      expose("--ro-bind", canonical);
     }
   }
 
