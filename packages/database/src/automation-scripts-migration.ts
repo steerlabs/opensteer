@@ -84,6 +84,35 @@ export async function applyAutomationsContract(database: Kysely<DatabaseSchema>)
           and trigger_revisions.script is null
       );
 
+    update commands
+    set
+      status = 'failed',
+      last_error = '{"code":"canceled_legacy_upgrade","message":"Automation occurrence was canceled because this automation needs an update."}'::jsonb,
+      updated_at = now()
+    where status = 'pending'
+      and id in (
+        select trigger_occurrences.command_id from trigger_occurrences
+        join triggers on triggers.id = trigger_occurrences.trigger_id
+        join trigger_revisions on trigger_revisions.id = triggers.current_revision_id
+        where trigger_occurrences.status = 'pending'
+          and triggers.system_role is null
+          and trigger_revisions.script is null
+      );
+
+    update trigger_occurrences
+    set
+      status = 'canceled',
+      completed_at = now(),
+      error = '{"code":"canceled_legacy_upgrade","message":"Automation occurrence was canceled because this automation needs an update."}'::jsonb,
+      updated_at = now()
+    where status = 'pending'
+      and trigger_id in (
+        select triggers.id from triggers
+        join trigger_revisions on trigger_revisions.id = triggers.current_revision_id
+        where triggers.system_role is null
+          and trigger_revisions.script is null
+      );
+
     do $$
     declare
       constraint_row record;

@@ -1555,6 +1555,8 @@ it("applies 0055_automations_contract in one migration from pre-script state and
   const archivedLegacyRevId = `trv_${crypto.randomUUID()}`;
   const inFlightCmdId = `cmd_${crypto.randomUUID()}`;
   const inFlightOccId = `toc_${crypto.randomUUID()}`;
+  const pendingLegacyCmdId = `cmd_${crypto.randomUUID()}`;
+  const pendingLegacyOccId = `toc_${crypto.randomUUID()}`;
   const futureFireAt = new Date(Date.now() + 3_600_000);
   const legacyProgram = {
     language: "javascript",
@@ -1612,6 +1614,20 @@ it("applies 0055_automations_contract in one migration from pre-script state and
       ${inFlightOccId}, ${legacyScheduleId}, ${legacyScheduleRevId}, ${inFlightCmdId}, ${fixture.environmentId},
       'schedule:in-flight', '{}'::jsonb, 'running', '', ''
     )`.execute(tx);
+    // AB7: a pending firing queued for a legacy automation paused by 0055 must be canceled in place.
+    await sql`insert into commands(
+      id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
+      idempotency_key, type, payload, status
+    ) values (
+      ${pendingLegacyCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
+      '{"kind":"person"}'::jsonb, 'pending-legacy-pre-0055', 'trigger.execute', '{}'::jsonb, 'pending'
+    )`.execute(tx);
+    await sql`insert into trigger_occurrences(
+      id, trigger_id, revision_id, command_id, environment_id, source_key, event, status, stdout, stderr
+    ) values (
+      ${pendingLegacyOccId}, ${legacyScheduleId}, ${legacyScheduleRevId}, ${pendingLegacyCmdId}, ${fixture.environmentId},
+      'schedule:pending-legacy', '{}'::jsonb, 'pending', '', ''
+    )`.execute(tx);
   });
 
   await migrateToLatest(database);
@@ -1622,6 +1638,20 @@ it("applies 0055_automations_contract in one migration from pre-script state and
     `.execute(database)
   ).rows[0];
   expect(backfilled?.frameSentAt).not.toBeNull();
+
+  const canceledLegacyOcc = (
+    await sql<{ status: string; completedAt: Date | null }>`
+      select status, completed_at as "completedAt" from trigger_occurrences where id = ${pendingLegacyOccId}
+    `.execute(database)
+  ).rows[0];
+  expect(canceledLegacyOcc?.status).toBe("canceled");
+  expect(canceledLegacyOcc?.completedAt).not.toBeNull();
+  const canceledLegacyCmd = (
+    await sql<{ status: string }>`
+      select status from commands where id = ${pendingLegacyCmdId}
+    `.execute(database)
+  ).rows[0];
+  expect(canceledLegacyCmd?.status).toBe("failed");
 
   const triggers = new Map(
     (

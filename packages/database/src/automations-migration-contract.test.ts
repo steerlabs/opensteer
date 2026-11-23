@@ -27,4 +27,13 @@ describe("Automations migration contract (AA13 / AB5)", () => {
       ),
     ).toBe(false);
   });
+
+  it("cancels pending firings of legacy automations paused by 0055 (AB7)", () => {
+    const migrationSource = readFileSync(
+      fileURLToPath(new URL("./automation-scripts-migration.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(migrationSource).toContain("canceled_legacy_upgrade");
+    expect(migrationSource).toMatch(/update trigger_occurrences[\s\S]*status = 'canceled'/u);
+  });
 });
