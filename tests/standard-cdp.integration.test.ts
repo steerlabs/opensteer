@@ -508,7 +508,9 @@ it.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
     const surfaceId = row.id as unknown as Parameters<SurfaceLedger["stateOf"]>[0];
     const ledger = [...ledgers].find((candidate) => candidate.stateOf(surfaceId) === "live");
     if (!ledger) throw new Error("The tab's ledger was not found.");
-    await vi.waitFor(async () => expect(await ledger.documentLoaded(surfaceId, 1_000)).toBe("loaded"));
+    await vi.waitFor(async () =>
+      expect(await ledger.documentLoaded(surfaceId, 1_000)).toBe("loaded"),
+    );
     // Accepted once the browser's look for the tab helper has ended.
     await vi.waitFor(async () => expect(await ledger.sleep(surfaceId, () => null)).toBe(true), {
       timeout: 15_000,
