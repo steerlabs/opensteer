@@ -3308,7 +3308,8 @@ export class RunnerRuntime {
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
           : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
     } finally {
-      if (workspace && this.#skillObserver) {
+      // A Run without personal context had no Agent home: nothing of it is scanned after.
+      if (workspace && this.#skillObserver && active.folders?.agentHome) {
         await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration).catch(
           () => undefined,
         );
