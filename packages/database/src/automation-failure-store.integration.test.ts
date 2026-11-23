@@ -384,7 +384,7 @@ integration.sequential("automation failure notices", () => {
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "Program failed\nfailure",
+        detail: "Exit code 1: Program failed\nfailure",
         occurrenceId: occurrence.id,
         reason: "final-occurrence-failed",
         settledAt: null,
@@ -594,7 +594,7 @@ integration.sequential("automation failure notices", () => {
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
-        detail: "Program failed\nfailure",
+        detail: "Exit code 1: Program failed\nfailure",
         occurrenceId: first.id,
         reason: "started-failing",
         settledAt: null,
@@ -1292,7 +1292,13 @@ integration.sequential("automation failure notices", () => {
       triggerId: created.trigger.id,
     });
     const startedFirst = await start(fixture, first, "boot-z3");
-    await store.failCommand(startedFirst.commandId, "program refused before send");
+    await store.failCommand(
+      startedFirst.commandId,
+      "program refused before send",
+      undefined,
+      undefined,
+      { provenNotStarted: true },
+    );
     const afterFail = await detail(created.trigger.id, fixture.userId);
     expect(afterFail.occurrences[0]?.status).toBe("failed");
     const listAfterFail = await triggers.listForOwner({

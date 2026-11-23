@@ -1133,8 +1133,25 @@ export async function revokeRunner(
 
         await clearRemovedDeviceStopsInTransaction(transaction, deviceEffects.removedDeviceIds);
         await recheck(transaction);
-        await failRunsForRevokedRunner(transaction, runnerId, links);
-        // Y6: Removing a computer pauses its active automations and settles running firings to unknown.
+        // Lock threads of affected runs (188) before triggers (189) and trigger_watch_activations (190),
+        // which precede failRunsForRevokedRunner's provider_sessions (192) and commands (218).
+        const affectedRunThreadIds = [
+          ...new Set(
+            (
+              await runs(transaction).select("runs.threadId").execute(databaseOperationOptions())
+            ).map(({ threadId }) => threadId),
+          ),
+        ];
+        if (affectedRunThreadIds.length > 0) {
+          await transaction
+            .selectFrom("threads")
+            .select("id")
+            .where("id", "in", affectedRunThreadIds)
+            .orderBy("id", "asc")
+            .forNoKeyUpdate()
+            .execute(databaseOperationOptions());
+        }
+        // Y6: Removing a computer pauses its active automations and stops active watches.
         const runnerTriggers = await transaction
           .selectFrom("triggers")
           .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
@@ -1165,9 +1182,6 @@ export async function revokeRunner(
             )
             .execute(databaseOperationOptions());
         }
-        const lockedOccurrences = await activeTriggerOccurrences(transaction)
-          .orderBy("id", "asc")
-          .execute(databaseOperationOptions());
         const activeWatches = await transaction
           .selectFrom("triggerWatchActivations")
           .select("id")
@@ -1204,6 +1218,10 @@ export async function revokeRunner(
             )
             .execute(databaseOperationOptions());
         }
+        await failRunsForRevokedRunner(transaction, runnerId, links);
+        const lockedOccurrences = await activeTriggerOccurrences(transaction)
+          .orderBy("id", "asc")
+          .execute(databaseOperationOptions());
         const closed = await transaction
           .updateTable("browserSessions")
           .set({
