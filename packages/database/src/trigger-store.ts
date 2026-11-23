@@ -6,7 +6,6 @@ import {
 } from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
-import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   minThreadAccessMode,
@@ -36,7 +35,6 @@ import {
   type TriggerSystemRole,
   MAX_PENDING_TRIGGER_OCCURRENCES,
   RETAINED_OUTPUT_OCCURRENCES,
-  StoredTriggerProgramSchema,
   TRIGGER_PROGRAM_UPDATE_REASON,
   WATCH_AUTO_PAUSE_FAILURE_THRESHOLD,
   WATCH_HEALTHY_WINDOW_MS,
@@ -49,7 +47,6 @@ import {
   TriggerWatchActivationSchema,
   firstTriggerFireAt,
   nextTriggerFireAfter,
-  scriptProgramStub,
   triggerOccurrenceErrorMessage,
   triggerAccess,
   validateTriggerSchedule,
@@ -95,7 +92,7 @@ type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
 type TriggerWatchActivationRow = Selectable<TriggerWatchActivationTable>;
 const maxPostgresInteger = 2_147_483_647;
 const currentProgramVersion = 5 as const;
-const executableProgram = sql<boolean>`exists (select 1 from trigger_revision_scripts where trigger_revision_scripts.revision_id = trigger_revisions.id)`;
+const executableProgram = sql<boolean>`trigger_revisions.script is not null`;
 const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
 interface CreateTriggerInput {
@@ -388,19 +385,12 @@ export async function createTriggerInTransaction(
     await assertAnchorScope(trigger.anchorThreadId);
     if (trigger.requestFingerprint !== requestFingerprint) throw idempotencyConflict();
     await requireTriggerExecutionAuthority(transaction, trigger);
-    const [revision, scriptRow] = await Promise.all([
-      transaction
-        .selectFrom("triggerRevisions")
-        .selectAll()
-        .where("id", "=", trigger.currentRevisionId)
-        .executeTakeFirstOrThrow(),
-      transaction
-        .selectFrom("triggerRevisionScripts")
-        .select("script")
-        .where("revisionId", "=", trigger.currentRevisionId)
-        .executeTakeFirst(),
-    ]);
-    const parsed = revisionFromRow(revision, scriptRow);
+    const revision = await transaction
+      .selectFrom("triggerRevisions")
+      .selectAll()
+      .where("id", "=", trigger.currentRevisionId)
+      .executeTakeFirstOrThrow();
+    const parsed = revisionFromRow(revision);
     return {
       revision: parsed,
       trigger: triggerFromRow(trigger, parsed.script === null),
@@ -478,16 +468,9 @@ export async function createTriggerInTransaction(
       createdByThreadId: input.actorThreadId,
       id: revisionId,
       ordinal: 1,
-      program: jsonValue(scriptProgramStub(script)),
+      script: jsonValue(script),
       source: jsonValue(source),
       triggerId,
-    })
-    .execute();
-  await transaction
-    .insertInto("triggerRevisionScripts")
-    .values({
-      revisionId,
-      script: jsonValue(script),
     })
     .execute();
   if (source.kind === "watch") {
@@ -512,7 +495,7 @@ export async function createTriggerInTransaction(
       .executeTakeFirstOrThrow(),
   ]);
   return {
-    revision: revisionFromRow(revision, { script }),
+    revision: revisionFromRow(revision),
     trigger: triggerFromRow(trigger),
     wasDuplicate: false,
   };
@@ -666,19 +649,12 @@ export class TriggerStore {
       if (trigger.currentRevisionId !== input.expectedRevisionId) {
         throw conflict("Automation revision changed; read it again before updating");
       }
-      const [current, currentScriptRow] = await Promise.all([
-        transaction
-          .selectFrom("triggerRevisions")
-          .selectAll()
-          .select(executableProgram.as("executable"))
-          .where("id", "=", trigger.currentRevisionId)
-          .executeTakeFirstOrThrow(),
-        transaction
-          .selectFrom("triggerRevisionScripts")
-          .select("script")
-          .where("revisionId", "=", trigger.currentRevisionId)
-          .executeTakeFirst(),
-      ]);
+      const current = await transaction
+        .selectFrom("triggerRevisions")
+        .selectAll()
+        .select(executableProgram.as("executable"))
+        .where("id", "=", trigger.currentRevisionId)
+        .executeTakeFirstOrThrow();
       const source = TriggerSourceSchema.parse(input.source ?? current.source);
       if (source.kind !== trigger.kind) {
         throw new OpensteerError({
@@ -690,8 +666,8 @@ export class TriggerStore {
       const nextScript =
         input.script !== undefined
           ? AutomationScriptSchema.parse(input.script)
-          : currentScriptRow
-            ? AutomationScriptSchema.parse(currentScriptRow.script)
+          : current.script !== null
+            ? AutomationScriptSchema.parse(current.script)
             : null;
       if (!nextScript) {
         throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
@@ -706,16 +682,9 @@ export class TriggerStore {
           createdByThreadId: input.actorThreadId,
           id: revisionId,
           ordinal: current.ordinal + 1,
-          program: jsonValue(scriptProgramStub(nextScript)),
+          script: jsonValue(nextScript),
           source: jsonValue(source),
           triggerId: trigger.id,
-        })
-        .execute();
-      await transaction
-        .insertInto("triggerRevisionScripts")
-        .values({
-          revisionId,
-          script: jsonValue(nextScript),
         })
         .execute();
       // A new source re-arms the clock the way a resume does: an elapsed
@@ -781,7 +750,7 @@ export class TriggerStore {
         .where("id", "=", revisionId)
         .executeTakeFirstOrThrow();
       return {
-        revision: revisionFromRow(revision, { script: nextScript }),
+        revision: revisionFromRow(revision),
         trigger: triggerFromRow(updated),
       };
     });
@@ -872,7 +841,7 @@ export class TriggerStore {
           readonly id: TriggerOccurrenceId;
           readonly runnerBootId: string | null;
           readonly runnerId: RunnerId | null;
-          readonly status: "pending" | "running" | "succeeded" | "failed" | "canceled";
+          readonly status: TriggerOccurrenceRow["status"];
         }[] = [];
         if (ending) {
           activeOccurrences = await transaction
@@ -996,7 +965,7 @@ export class TriggerStore {
                 .set({
                   completedAt: now,
                   error: jsonValue(cancellation),
-                  ...triggerOccurrenceStateColumns("canceled"),
+                  status: "canceled",
                   updatedAt: now,
                 })
                 .where("id", "=", row.id)
@@ -1165,7 +1134,6 @@ export class TriggerStore {
           "error",
           "event",
           "id",
-          "outcome",
           "status",
           "triggerId",
         ])
@@ -1204,7 +1172,7 @@ export class TriggerStore {
               error: triggerOccurrenceErrorMessage(occurrence.error),
               id: occurrence.id,
               source: TriggerProgramEventSchema.parse(occurrence.event).source.kind,
-              status: occurrence.outcome ?? occurrence.status,
+              status: occurrence.status,
             }
           : null,
         source: withoutSchedulePayload(TriggerSourceSchema.parse(revision?.source)),
@@ -1426,13 +1394,12 @@ export class TriggerStore {
     readonly triggerId: TriggerId;
   }> {
     await this.assertActiveWatchBinding(input);
-    const [scriptRow, triggerRow] = await Promise.all([
+    const [revisionRow, triggerRow] = await Promise.all([
       this.#database
-        .selectFrom("triggerRevisionScripts")
-        .innerJoin("triggerRevisions", "triggerRevisions.id", "triggerRevisionScripts.revisionId")
-        .select("triggerRevisionScripts.script")
-        .where("triggerRevisions.id", "=", input.revisionId)
-        .where("triggerRevisions.triggerId", "=", input.triggerId)
+        .selectFrom("triggerRevisions")
+        .select("script")
+        .where("id", "=", input.revisionId)
+        .where("triggerId", "=", input.triggerId)
         .executeTakeFirst(),
       this.#database
         .selectFrom("triggers")
@@ -1440,10 +1407,10 @@ export class TriggerStore {
         .where("id", "=", input.triggerId)
         .executeTakeFirstOrThrow(),
     ]);
-    if (!scriptRow) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
+    if (!revisionRow?.script) throw conflict(TRIGGER_PROGRAM_UPDATE_REASON);
     return {
       encryptedSecrets: triggerRow.encryptedSecrets ?? null,
-      script: AutomationScriptSchema.parse(scriptRow.script),
+      script: AutomationScriptSchema.parse(revisionRow.script),
       triggerId: input.triggerId,
     };
   }
@@ -1662,17 +1629,12 @@ export class TriggerStore {
     const row = await query.executeTakeFirst();
     if (!row) return null;
     const { anchorThreadTitle, createdByThreadTitle, ...trigger } = row;
-    const [revision, scriptRow, occurrences, activation] = await Promise.all([
+    const [revision, occurrences, activation] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
         .selectAll()
         .where("id", "=", trigger.currentRevisionId)
         .executeTakeFirstOrThrow(),
-      this.#database
-        .selectFrom("triggerRevisionScripts")
-        .select("script")
-        .where("revisionId", "=", trigger.currentRevisionId)
-        .executeTakeFirst(),
       this.#database
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -1757,7 +1719,7 @@ export class TriggerStore {
           .map((row) => [`${row.occurrenceId}:${row.id}`, row] as const),
       ).values(),
     ];
-    const parsed = revisionFromRow(revision, scriptRow);
+    const parsed = revisionFromRow(revision);
     return {
       activation: activation ? watchActivationFromRow(activation) : null,
       anchorThread: await readTask(this.#database, reader, trigger.anchorThreadId, ownerId),
@@ -2027,7 +1989,7 @@ export class TriggerStore {
             .set({
               completedAt: now,
               error: jsonValue(cancellation),
-              ...triggerOccurrenceStateColumns("canceled"),
+              status: "canceled",
               updatedAt: now,
             })
             .where("id", "=", row.id)
@@ -2241,17 +2203,12 @@ export class TriggerStore {
       .where("id", "=", occurrence.triggerId)
       .executeTakeFirstOrThrow();
     await requireTriggerLaunchAuthority(this.#database, trigger);
-    const [revision, scriptRow, anchorThread] = await Promise.all([
+    const [revision, anchorThread] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
         .selectAll()
         .where("id", "=", occurrence.revisionId)
         .executeTakeFirstOrThrow(),
-      this.#database
-        .selectFrom("triggerRevisionScripts")
-        .select("script")
-        .where("revisionId", "=", occurrence.revisionId)
-        .executeTakeFirst(),
       this.#database
         .selectFrom("threads")
         .select(["environmentId", "id"])
@@ -2262,8 +2219,8 @@ export class TriggerStore {
       anchorThread,
       encryptedSecrets: trigger.encryptedSecrets ?? null,
       occurrence: occurrenceFromRow(occurrence),
-      revision: revisionFromRow(revision, scriptRow),
-      script: scriptRow ? AutomationScriptSchema.parse(scriptRow.script) : null,
+      revision: revisionFromRow(revision),
+      script: revision.script ? AutomationScriptSchema.parse(revision.script) : null,
       trigger: triggerFromRow(trigger),
       webhookBody: occurrence.webhookBody ?? null,
       agentHome: (await personalSettings(this.#database)).agentHome,
@@ -2307,7 +2264,7 @@ export class TriggerStore {
             terminalEvidenceAt: null,
             contactLostAt: null,
             executionGeneration,
-            ...triggerOccurrenceStateColumns("running"),
+            status: "running",
             runnerBootId: input.runnerBootId,
             runnerId: input.runnerId,
             startedAt: new Date(),
@@ -2505,7 +2462,7 @@ export class TriggerStore {
           message: "Trigger result binding is stale",
         });
       }
-      const settledAsUnknown = occurrence.outcome === "unknown";
+      const settledAsUnknown = occurrence.status === "unknown";
       if (occurrence.status !== "running" && !settledAsUnknown && !occurrence.connectionId)
         return occurrenceFromRow(occurrence);
       if (occurrence.terminalEvidenceAt && occurrence.status !== "running" && !settledAsUnknown)
@@ -2532,7 +2489,7 @@ export class TriggerStore {
               })
             : null,
           exitCode: input.output.exitCode,
-          ...triggerOccurrenceStateColumns(input.output.status),
+          status: input.output.status,
           result: input.output.result === null ? null : jsonValue(input.output.result),
           stderr: input.output.stderr,
           stdout: input.output.stdout,
@@ -2725,7 +2682,6 @@ export class TriggerStore {
           "triggerOccurrences.event",
           "triggerOccurrences.executionGeneration",
           "triggerOccurrences.id",
-          "triggerOccurrences.outcome",
           "triggerOccurrences.revisionId",
           "triggerOccurrences.runnerBootId",
           "triggerOccurrences.runnerId",
@@ -2774,7 +2730,7 @@ export class TriggerStore {
           });
           continue;
         }
-        if (row.status !== "running" && row.outcome !== "unknown") {
+        if (row.status !== "running" && row.status !== "unknown") {
           results.push({
             occurrenceId: firing.occurrenceId,
             reason: "This firing has already ended",
@@ -2803,7 +2759,7 @@ export class TriggerStore {
             continue;
           }
         }
-        if (!firing.terminal && row.outcome === "unknown") {
+        if (!firing.terminal && row.status === "unknown") {
           restoredUnknownIds.push(row.id);
           restoredCommandIds.push(row.commandId);
         } else if (
@@ -2863,11 +2819,11 @@ export class TriggerStore {
             contactLostAt: null,
             error: null,
             terminalEvidenceAt: null,
-            ...triggerOccurrenceStateColumns("running"),
+            status: "running",
             updatedAt: now,
           })
           .where("id", "in", restoredUnknownIds)
-          .where("outcome", "=", "unknown")
+          .where("status", "=", "unknown")
           .execute();
       }
       if (unsentRows.length > 0) {
@@ -2881,7 +2837,7 @@ export class TriggerStore {
             runnerId: null,
             startedAt: null,
             terminalEvidenceAt: null,
-            ...triggerOccurrenceStateColumns("pending"),
+            status: "pending",
             updatedAt: now,
           })
           .where(
@@ -2904,7 +2860,7 @@ export class TriggerStore {
             completedAt: now,
             contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
             error: unknownErrorPayload,
-            ...triggerOccurrenceStateColumns("unknown"),
+            status: "unknown",
             terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
             updatedAt: now,
           })
@@ -3062,7 +3018,7 @@ export class TriggerStore {
           runnerId: null,
           startedAt: null,
           terminalEvidenceAt: null,
-          ...triggerOccurrenceStateColumns("pending"),
+          status: "pending",
           updatedAt: now,
         })
         .where("id", "in", unsentIds)
@@ -3097,7 +3053,7 @@ export class TriggerStore {
         completedAt: now,
         contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
         error: errorPayload,
-        ...triggerOccurrenceStateColumns("unknown"),
+        status: "unknown",
         terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
         updatedAt: now,
       })
@@ -3402,7 +3358,7 @@ async function enqueueOccurrence(
       runnerId: null,
       sourceKey,
       startedAt: null,
-      ...triggerOccurrenceStateColumns("pending"),
+      status: "pending",
       stderr: "",
       stdout: "",
       triggerId: trigger.id,
@@ -3463,17 +3419,12 @@ async function loadDispatchContext(
     .where("id", "=", occurrence.triggerId)
     .executeTakeFirstOrThrow();
   await requireTriggerLaunchAuthority(transaction, trigger);
-  const [revision, scriptRow, anchorThread] = await Promise.all([
+  const [revision, anchorThread] = await Promise.all([
     transaction
       .selectFrom("triggerRevisions")
       .selectAll()
       .where("id", "=", occurrence.revisionId)
       .executeTakeFirstOrThrow(),
-    transaction
-      .selectFrom("triggerRevisionScripts")
-      .select("script")
-      .where("revisionId", "=", occurrence.revisionId)
-      .executeTakeFirst(),
     transaction
       .selectFrom("threads")
       .select(["environmentId", "id"])
@@ -3484,8 +3435,8 @@ async function loadDispatchContext(
     anchorThread,
     encryptedSecrets: trigger.encryptedSecrets ?? null,
     occurrence: occurrenceFromRow(occurrence),
-    revision: revisionFromRow(revision, scriptRow),
-    script: scriptRow ? AutomationScriptSchema.parse(scriptRow.script) : null,
+    revision: revisionFromRow(revision),
+    script: revision.script ? AutomationScriptSchema.parse(revision.script) : null,
     trigger: triggerFromRow(trigger),
     webhookBody: occurrence.webhookBody ?? null,
     agentHome: (await personalSettings(transaction)).agentHome,
@@ -3908,13 +3859,9 @@ function triggerFromRow(row: TriggerRow, needsProgramUpdate = false): Trigger {
     webhookRouteKey: row.webhookRouteKey,
   });
 }
-function revisionFromRow(
-  row: TriggerRevisionRow,
-  scriptRow: { readonly script: unknown } | null | undefined,
-): TriggerRevision {
-  const script = scriptRow ? AutomationScriptSchema.parse(scriptRow.script) : null;
-  const legacySource =
-    script === null ? StoredTriggerProgramSchema.safeParse(row.program).data?.source : undefined;
+function revisionFromRow(row: TriggerRevisionRow): TriggerRevision {
+  const script = row.script !== null ? AutomationScriptSchema.parse(row.script) : null;
+  const legacySource = script === null ? (row.legacySource ?? undefined) : undefined;
   return TriggerRevisionSchema.parse({
     createdAt: row.createdAt.toISOString(),
     createdBy: row.createdBy,
@@ -3941,7 +3888,7 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
     result: row.result,
     revisionId: row.revisionId,
     startedAt: row.startedAt?.toISOString() ?? null,
-    status: row.outcome ?? row.status,
+    status: row.status,
     stderr: row.stderr,
     stdout: row.stdout,
     triggerId: row.triggerId,

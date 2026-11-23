@@ -462,26 +462,26 @@ describeStore("managed memory passes", (it) => {
     await instance.ensureForPersonal();
     const prior = await role(f, base.userId);
     await f.database
-      .updateTable("triggerRevisionScripts")
+      .updateTable("triggerRevisions")
       .set({
         script: {
           interpreter: null,
           text: "console.log('outdated')",
         },
       })
-      .where("revisionId", "=", prior.revision.id)
+      .where("id", "=", prior.revision.id)
       .execute();
     await instance.reconcileMissing();
     const current = await role(f, base.userId);
     expect(current.revision.id).not.toBe(prior.revision.id);
     expect(current.revision.ordinal).toBe(prior.revision.ordinal + 1);
     expect(current.revision.script).toEqual(memoryPassScript("memory-light"));
-    const scriptRow = await f.database
-      .selectFrom("triggerRevisionScripts")
+    const revisionRow = await f.database
+      .selectFrom("triggerRevisions")
       .select("script")
-      .where("revisionId", "=", current.revision.id)
+      .where("id", "=", current.revision.id)
       .executeTakeFirstOrThrow();
-    expect(scriptRow.script).toEqual(memoryPassScript("memory-light"));
+    expect(revisionRow.script).toEqual(memoryPassScript("memory-light"));
     await instance.reconcileMissing();
     expect((await role(f, base.userId)).revision.id).toBe(current.revision.id);
   });

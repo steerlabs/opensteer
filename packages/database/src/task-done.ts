@@ -29,7 +29,6 @@ import { revokeRunGrants } from "./run-grants.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { cancelPending } from "./request-cancellation.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
-import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import {
   idempotencyConflict,
   jsonValue,
@@ -467,7 +466,7 @@ export async function setThreadDone(
                   .set({
                     completedAt: now,
                     error: jsonValue(cancellation),
-                    ...triggerOccurrenceStateColumns("canceled"),
+                    status: "canceled",
                     updatedAt: now,
                   })
                   .where("id", "=", row.id)

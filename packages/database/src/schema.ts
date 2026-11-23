@@ -118,10 +118,8 @@ import type {
   ShellSessionId,
 } from "@opensteer/protocol";
 import type {
-  AutomationOutcome,
   AutomationPausedBy,
   AutomationScript,
-  StoredTriggerProgram,
   TriggerProgramEvent,
   TriggerSource,
 } from "@opensteer/triggers";
@@ -1178,15 +1176,11 @@ interface TriggerRevisionTable {
   triggerId: TriggerId;
   ordinal: number;
   source: JsonColumn<TriggerSource>;
-  program: JsonColumn<StoredTriggerProgram>;
+  script: JsonColumn<AutomationScript> | null;
+  legacySource: Generated<string | null>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
-}
-
-export interface TriggerRevisionScriptTable {
-  revisionId: TriggerRevisionId;
-  script: JsonColumn<AutomationScript>;
 }
 
 export interface TriggerWatchActivationTable {
@@ -1248,8 +1242,7 @@ export interface TriggerOccurrenceTable {
   environmentId: EnvironmentId;
   sourceKey: string;
   event: JsonColumn<TriggerProgramEvent>;
-  status: "pending" | "running" | "succeeded" | "failed" | "canceled";
-  outcome: Generated<AutomationOutcome | null>;
+  status: "pending" | "running" | "succeeded" | "failed" | "canceled" | "unknown";
   outputPrunedAt: Generated<Date | null>;
   webhookBody: Generated<Buffer | null>;
   executionGeneration: Generated<number>;
@@ -2359,7 +2352,6 @@ export interface DatabaseSchema {
   requestContinuations: RequestContinuationTable;
   triggers: TriggerTable;
   triggerRevisions: TriggerRevisionTable;
-  triggerRevisionScripts: TriggerRevisionScriptTable;
   triggerWatchActivations: TriggerWatchActivationTable;
   watchControlRequests: WatchControlRequestTable;
   automationWakes: AutomationWakeTable;

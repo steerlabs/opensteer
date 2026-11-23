@@ -2495,7 +2495,6 @@ integration.sequential("Trigger failure auto-pause", () => {
           executionGeneration: 1,
           exitCode: 0,
           id: occId,
-          outcome: "succeeded",
           result: { i },
           revisionId: hook.revision.id,
           runnerBootId: "boot-prune",
@@ -2582,10 +2581,10 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     const settledRunning = await database
       .selectFrom("triggerOccurrences")
-      .select(["status", "outcome", "contactLostAt"])
+      .select(["status", "contactLostAt"])
       .where("id", "=", runningBeforeRemove.id)
       .executeTakeFirstOrThrow();
-    expect(settledRunning.outcome).toBe("unknown");
+    expect(settledRunning.status).toBe("unknown");
     expect(settledRunning.contactLostAt).not.toBeNull();
   });
   it("deduplicates observations and enforces an activation-local rolling limit", async ({

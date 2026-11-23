@@ -664,13 +664,11 @@ integration.sequential("automation failure notices", () => {
 
     const rows = await database
       .selectFrom("triggerOccurrences")
-      .select(["id", "status", "outcome", "terminalEvidenceAt", "contactLostAt"])
+      .select(["id", "status", "terminalEvidenceAt", "contactLostAt"])
       .where("id", "in", [lostOneShot.id, lostRecurring.id])
       .execute();
     for (const row of rows) {
-      expect(row.outcome).toBe("unknown");
-      // Legacy status column stays within its 5-value enum (Y8).
-      expect(row.status).toBe("failed");
+      expect(row.status).toBe("unknown");
     }
     const connRow = rows.find((r) => r.id === lostRecurring.id)!;
     expect(connRow.terminalEvidenceAt).not.toBeNull();
@@ -749,11 +747,10 @@ integration.sequential("automation failure notices", () => {
     expect(await storedNotices()).toEqual([]);
     const unsentRow = await database
       .selectFrom("triggerOccurrences")
-      .select(["outcome", "runnerBootId", "runnerId", "startedAt", "status"])
+      .select(["runnerBootId", "runnerId", "startedAt", "status"])
       .where("id", "=", unsent.id)
       .executeTakeFirstOrThrow();
     expect(unsentRow).toEqual({
-      outcome: "pending",
       runnerBootId: null,
       runnerId: null,
       startedAt: null,
@@ -1153,17 +1150,15 @@ integration.sequential("automation failure notices", () => {
     expect(attached.settledUnknownCount).toBe(1);
     const rows = await database
       .selectFrom("triggerOccurrences")
-      .select(["id", "outcome", "status"])
+      .select(["id", "status"])
       .where("id", "in", [lower.id, higher.id])
       .execute();
     expect(rows.find((row) => row.id === lower.id)).toEqual({
       id: lower.id,
-      outcome: "unknown",
-      status: "failed",
+      status: "unknown",
     });
     expect(rows.find((row) => row.id === higher.id)).toEqual({
       id: higher.id,
-      outcome: "running",
       status: "running",
     });
   });
@@ -1274,14 +1269,13 @@ integration.sequential("automation failure notices", () => {
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
 
-    // Confirm raw row outcome in DB matches unknown.
+    // Confirm raw row status in DB is unknown.
     const raw = await database
       .selectFrom("triggerOccurrences")
-      .select(["outcome", "status"])
+      .select(["status"])
       .where("id", "=", started.id)
       .executeTakeFirstOrThrow();
-    expect(raw.outcome).toBe("unknown");
-    expect(raw.status).toBe("failed");
+    expect(raw.status).toBe("unknown");
   });
 
   it("keeps status and outcome in lockstep across failCommand and cancelPendingOccurrences (Z3)", async ({

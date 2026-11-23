@@ -2,7 +2,6 @@ import { PersonalRevisionSchema } from "@opensteer/protocol/resources";
 import { assignmentWasCancelled } from "./execution-authority.js";
 import { assertRequestRevision, refreshRequestState } from "./request-persistence.js";
 import { commitPersonalMutation, wakeExecutionCommands } from "./personal-mutation.js";
-import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { failNodeStop } from "./node-control.js";
 import {
@@ -1795,7 +1794,7 @@ export async function retryCommand(
           runnerBootId: null,
           runnerId: null,
           startedAt: null,
-          ...triggerOccurrenceStateColumns("pending"),
+          status: "pending",
           updatedAt: new Date(),
         })
         .where("commandId", "=", commandId)
@@ -1868,7 +1867,7 @@ export async function failCommand(
           .set({
             completedAt: now,
             error: jsonValue(failure),
-            ...triggerOccurrenceStateColumns("failed"),
+            status: "failed",
             updatedAt: now,
           })
           .where("commandId", "=", commandId)

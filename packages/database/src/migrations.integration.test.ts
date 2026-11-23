@@ -809,6 +809,27 @@ describe("fresh personal/team lineage", () => {
       { pluginId: "app_device_computer-connection", access: "off" },
       { pluginId: "app_server_local-server", access: "off" },
     ]);
+    // Before 0057 drops the legacy program column, verify 0034 upgraded v4 -> v5 on clean rows only.
+    for (const saved of [savedSchedule, savedWatch]) {
+      expect(
+        (
+          await sql<{
+            program: unknown;
+          }>`select program from trigger_revisions where id = ${saved.revision.id}`.execute(
+            database,
+          )
+        ).rows[0],
+      ).toMatchObject({ program: saved.revision.program });
+    }
+    expect(
+      (
+        await sql<{
+          program: unknown;
+        }>`select program from trigger_revisions where id = ${retiredSchedule.revision.id}`.execute(
+          database,
+        )
+      ).rows[0],
+    ).toMatchObject({ program: { toolContractVersion: 4 } });
     await migrateToLatest(database);
     const triggers = new TriggerStore(database);
     for (const saved of [savedSchedule, savedWatch]) {
@@ -816,21 +837,15 @@ describe("fresh personal/team lineage", () => {
       expect(detail?.revision.script).toBeNull();
       expect(detail?.revision.legacySource).toBe(saved.revision.program.source);
       expect(detail?.trigger.status).toBe("paused");
-      expect(
-        await database
-          .selectFrom("triggerRevisions")
-          .select("program")
-          .where("id", "=", saved.revision.id)
-          .executeTakeFirstOrThrow(),
-      ).toMatchObject({ program: saved.revision.program });
     }
-    expect(
-      await database
-        .selectFrom("triggerRevisions")
-        .select("program")
-        .where("id", "=", retiredSchedule.revision.id)
-        .executeTakeFirstOrThrow(),
-    ).toMatchObject({ program: { toolContractVersion: 4 } });
+    const retiredDetail = await triggers.getForOwner(
+      retiredSchedule.trigger.id,
+      userId,
+      1,
+      personTaskReader,
+    );
+    expect(retiredDetail?.revision.script).toBeNull();
+    expect(retiredDetail?.revision.legacySource).toBe(retiredSchedule.revision.program.source);
     expect(
       (await triggers.getForOwner(savedWatch.trigger.id, userId, 1, personTaskReader))?.activation,
     ).toMatchObject({
@@ -1745,13 +1760,51 @@ it("applies 0056_pause_legacy_v5_automations to pause legacy v5 rows while prese
   ).rows[0];
   expect(watchAct?.desired).toBe("stopped");
 
-  // Legacy source stays readable in trigger_revisions.program for agent rewrite (T14).
+  // Legacy source moves into trigger_revisions.legacy_source and script moves onto trigger_revisions.script
+  // while trigger_revision_scripts, trigger_revisions.program, and trigger_occurrences.outcome are dropped
+  // by 0057_automations_schema_contract (AGENTS.md rule 6; Y8 withdrawn).
   const legacyRev = (
     await sql<{
-      program: unknown;
-    }>`select program from trigger_revisions where id = ${legacyScheduleRevId}`.execute(database)
+      script: unknown;
+      legacySource: string | null;
+    }>`select script, legacy_source from trigger_revisions where id = ${legacyScheduleRevId}`.execute(
+      database,
+    )
   ).rows[0];
-  expect(legacyRev?.program).toEqual(legacyProgram);
+  expect(legacyRev).toEqual({
+    legacySource: legacyProgram.source,
+    script: null,
+  });
+
+  const scriptRev = (
+    await sql<{
+      script: unknown;
+      legacySource: string | null;
+    }>`select script, legacy_source from trigger_revisions where id = ${scriptScheduleRevId}`.execute(
+      database,
+    )
+  ).rows[0];
+  expect(scriptRev).toEqual({
+    legacySource: null,
+    script: { interpreter: null, text: "console.log('ok')" },
+  });
+
+  // 0057 dropped trigger_revision_scripts, trigger_revisions.program, and trigger_occurrences.outcome.
+  const droppedTable = (
+    await sql<{ exists: boolean }>`
+      select to_regclass('public.trigger_revision_scripts') is not null as exists
+    `.execute(database)
+  ).rows[0];
+  expect(droppedTable?.exists).toBe(false);
+  const removedColumns = (
+    await sql<{ tableName: string; columnName: string }>`
+      select table_name, column_name from information_schema.columns
+      where table_schema = 'public'
+        and ((table_name = 'trigger_revisions' and column_name = 'program')
+          or (table_name = 'trigger_occurrences' and column_name = 'outcome'))
+    `.execute(database)
+  ).rows;
+  expect(removedColumns).toEqual([]);
 
   // Script-based automation, memory pass, and archived legacy automation stay untouched.
   expect(triggers.get(scriptScheduleId)?.status).toBe("active");

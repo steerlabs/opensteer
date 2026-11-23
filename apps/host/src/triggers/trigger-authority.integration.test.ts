@@ -1899,8 +1899,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const saved = await personCreate(f, f.root);
     const occurrence = await triggers.run(f.ownerId, saved.trigger.id, {}, null);
     await database
-      .deleteFrom("triggerRevisionScripts")
-      .where("revisionId", "=", saved.revision.id)
+      .updateTable("triggerRevisions")
+      .set({ script: null, legacySource: "export default () => null;" })
+      .where("id", "=", saved.revision.id)
       .execute();
     const dispatcher = new HostCommandDispatcher({
       store,
@@ -1944,12 +1945,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
       'export default ({ opensteer }) => opensteer.callTool("integration_list", {})';
     await database
       .updateTable("triggerRevisions")
-      .set({ program: { language: "javascript", source: legacySource, toolContractVersion: 4 } })
+      .set({ script: null, legacySource })
       .where("id", "=", saved.revision.id)
-      .execute();
-    await database
-      .deleteFrom("triggerRevisionScripts")
-      .where("revisionId", "=", saved.revision.id)
       .execute();
     const pending = await store.listPendingCommands();
     vi.setSystemTime(new Date(nextHour));
@@ -2037,8 +2034,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
       });
     const { activation } = (await reconcile()).activations[0]!;
     await database
-      .deleteFrom("triggerRevisionScripts")
-      .where("revisionId", "=", saved.revision.id)
+      .updateTable("triggerRevisions")
+      .set({ script: null, legacySource: "export default () => null;" })
+      .where("id", "=", saved.revision.id)
       .execute();
     await expect(
       triggerStore.assertActiveWatchBinding({
@@ -2103,8 +2101,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
       throw new Error("Expected the webhook route and credentials");
     }
     await database
-      .deleteFrom("triggerRevisionScripts")
-      .where("revisionId", "=", saved.revision.id)
+      .updateTable("triggerRevisions")
+      .set({ script: null, legacySource: "export default () => null;" })
+      .where("id", "=", saved.revision.id)
       .execute();
     const delivery = {
       routeKey: saved.trigger.webhookRouteKey,

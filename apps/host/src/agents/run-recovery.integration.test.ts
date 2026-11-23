@@ -1122,10 +1122,10 @@ integration.sequential("Run recovery acceptance", () => {
         (
           await current.active.host.store.database
             .selectFrom("triggerOccurrences")
-            .select("outcome")
+            .select("status")
             .where("id", "=", before.id)
             .executeTakeFirstOrThrow()
-        ).outcome === "unknown",
+        ).status === "unknown",
       "occurrence settled unknown after runner restart",
     );
     const lost = await current.active.host.store.database
@@ -1133,7 +1133,7 @@ integration.sequential("Run recovery acceptance", () => {
       .selectAll()
       .where("id", "=", before.id)
       .executeTakeFirstOrThrow();
-    expect(lost.outcome).toBe("unknown");
+    expect(lost.status).toBe("unknown");
     expect(JSON.stringify(lost.error)).toMatch(/outcome_unknown|reconnected without/iu);
     expect(lost.executionGeneration).toBe(before.executionGeneration);
     expect(
@@ -1297,10 +1297,10 @@ integration.sequential("Run recovery acceptance", () => {
         (
           await current.active.host.store.database
             .selectFrom("triggerOccurrences")
-            .select("outcome")
+            .select("status")
             .where("id", "=", occurrenceId)
             .executeTakeFirstOrThrow()
-        ).outcome === "succeeded",
+        ).status === "succeeded",
       "firing reattaches and commits succeeded after Host restart",
     );
     const settled = await current.active.host.store.database
@@ -1309,7 +1309,6 @@ integration.sequential("Run recovery acceptance", () => {
       .where("id", "=", occurrenceId)
       .executeTakeFirstOrThrow();
     expect(settled.status).toBe("succeeded");
-    expect(settled.outcome).toBe("succeeded");
     expect(JSON.parse(settled.stdout.trim())).toEqual({ survivedHostRestart: true });
   }, 180_000);
   it("12. relaunches a watch on the next boot with generation +1 and restartCount zero", async () => {

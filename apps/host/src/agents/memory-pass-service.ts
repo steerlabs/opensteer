@@ -106,17 +106,11 @@ export class MemoryPassService {
     const systemPrograms = await store.database
       .selectFrom("triggers")
       .innerJoin("triggerRevisions", "triggerRevisions.id", "triggers.currentRevisionId")
-      .leftJoin(
-        "triggerRevisionScripts",
-        "triggerRevisionScripts.revisionId",
-        "triggers.currentRevisionId",
-      )
       .select([
         "triggers.id",
         "triggers.currentRevisionId",
         "triggers.systemRole",
-        "triggerRevisions.program",
-        "triggerRevisionScripts.script as currentScript",
+        "triggerRevisions.script as currentScript",
       ])
       .where("triggers.systemRole", "is not", null)
       .execute();

@@ -382,10 +382,10 @@ describeStore("a connected agent's authority at the send", (it) => {
     ).resolves.toBeUndefined();
     const afterRetry = await database
       .selectFrom("triggerOccurrences")
-      .select(["outcome", "status"])
+      .select(["status"])
       .where("id", "=", occurrence.id)
       .executeTakeFirstOrThrow();
-    expect(afterRetry).toEqual({ outcome: "pending", status: "pending" });
+    expect(afterRetry).toEqual({ status: "pending" });
   });
 
   it("holds a chat's queued Run while the chat is paused, and never fails it for that", async ({

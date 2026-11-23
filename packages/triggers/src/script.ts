@@ -5,14 +5,6 @@ import {
   MAX_AUTOMATION_SECRETS_TOTAL_BYTES,
   MAX_SCRIPT_BYTES,
 } from "./fuses.js";
-import type { StoredTriggerProgram } from "./models.js";
-
-/**
- * Positive toolContractVersion written into the legacy `program` column for script
- * revisions so the previous release's Host can still read the row, display its source,
- * and treat it as "needs an update" without executing it (Y8).
- */
-export const AUTOMATION_SCRIPT_STUB_CONTRACT_VERSION = 6;
 
 const InterpreterArgSchema = z
   .string()
@@ -91,15 +83,6 @@ export type AutomationOutcome = z.infer<typeof AutomationOutcomeSchema>;
 
 export const AutomationPausedBySchema = z.enum(["person", "agent", "system"]);
 export type AutomationPausedBy = z.infer<typeof AutomationPausedBySchema>;
-
-/** Legacy `trigger_revisions.program` stub for script revisions (Y8). */
-export function scriptProgramStub(script: Pick<AutomationScript, "text">): StoredTriggerProgram {
-  return {
-    language: "javascript",
-    source: script.text,
-    toolContractVersion: AUTOMATION_SCRIPT_STUB_CONTRACT_VERSION,
-  };
-}
 
 /** Normalizes phone/web CRLF/CR line endings on POSIX so shell/script interpreters never choke on `\r`. */
 export function normalizeScriptText(text: string, platform: string): string {

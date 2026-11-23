@@ -16,7 +16,6 @@ import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
-import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
@@ -1359,7 +1358,7 @@ export async function revokeRunner(
                 .set({
                   completedAt: revokedAt,
                   error: jsonValue(cancelError),
-                  ...triggerOccurrenceStateColumns("canceled"),
+                  status: "canceled",
                   updatedAt: revokedAt,
                 })
                 .where("id", "=", row.id)
@@ -1385,7 +1384,7 @@ export async function revokeRunner(
                   ...(row.connectionId && !row.terminalEvidenceAt
                     ? { terminalEvidenceAt: revokedAt }
                     : {}),
-                  ...triggerOccurrenceStateColumns("unknown"),
+                  status: "unknown",
                   updatedAt: revokedAt,
                 })
                 .where("id", "=", row.id)

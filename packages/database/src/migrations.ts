@@ -56,6 +56,11 @@ import {
 } from "./pause-legacy-v5-automations-migration.js";
 export { pauseLegacyV5AutomationsMigrationName } from "./pause-legacy-v5-automations-migration.js";
 import {
+  applySimplifyAutomationsSchema,
+  simplifyAutomationsSchemaMigrationName,
+} from "./simplify-automations-schema-migration.js";
+export { simplifyAutomationsSchemaMigrationName } from "./simplify-automations-schema-migration.js";
+import {
   completePersonalStateConversion,
   personalCurrentStateMigrationName,
   withPersonalStateStartupLock,
@@ -693,6 +698,7 @@ export function migrationProvider(options?: {
               },
               [automationScriptsMigrationName]: { up: applyAutomationScripts },
               [pauseLegacyV5AutomationsMigrationName]: { up: applyPauseLegacyV5Automations },
+              [simplifyAutomationsSchemaMigrationName]: { up: applySimplifyAutomationsSchema },
             }
           : {}),
       };

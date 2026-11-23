@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_SCRIPT_BYTES } from "./fuses.js";
-import { StoredTriggerProgramSchema, isExecutableTriggerProgram } from "./models.js";
 import {
-  AUTOMATION_SCRIPT_STUB_CONTRACT_VERSION,
   AutomationOutcomeSchema,
   AutomationPausedBySchema,
   AutomationScriptSchema,
@@ -10,19 +8,12 @@ import {
   AutomationSecretValueSchema,
   normalizeScriptText,
   scriptFileExtension,
-  scriptProgramStub,
 } from "./script.js";
 
 describe("AutomationScriptSchema", () => {
-  it("accepts a default-interpreter script and produces a non-v5 compatibility stub", () => {
+  it("accepts a default-interpreter script", () => {
     const parsed = AutomationScriptSchema.parse({ text: "console.log('hi');\n" });
     expect(parsed).toEqual({ interpreter: null, text: "console.log('hi');\n" });
-
-    const stub = scriptProgramStub(parsed);
-    expect(stub.toolContractVersion).toBe(AUTOMATION_SCRIPT_STUB_CONTRACT_VERSION);
-    expect(stub.toolContractVersion).not.toBe(5);
-    expect(StoredTriggerProgramSchema.parse(stub)).toEqual(stub);
-    expect(isExecutableTriggerProgram(stub)).toBe(false);
   });
 
   it("accepts custom interpreter argv and rejects empty, overlong, or NUL-bearing values", () => {
