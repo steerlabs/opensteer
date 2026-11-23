@@ -2001,7 +2001,11 @@ integration.sequential("Trigger authority through real Host services and Postgre
     });
     const changed = await client.callTool({
       name: "opensteer_automation_update",
-      arguments: { automationId: triggerId, expectedRevisionId: saved.revision.id, script },
+      arguments: {
+        automationId: triggerId,
+        expectedRevisionId: saved.revision.id,
+        script: { text: script.text },
+      },
     });
     const repaired = opensteer_automation_update.output.parse(changed.structuredContent);
     const next = "2040-01-02T10:00:00.000Z";
@@ -2261,7 +2265,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           arguments: {
             taskId: f.root.id,
             name: "Current agent",
-            script: code,
+            script: { text: code.text },
             source: {
               kind: "schedule",
               cron: "0 * * * *",
@@ -2277,7 +2281,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
             automationId: saved.automation!.id,
             expectedRevisionId: saved.revision!.id,
             script: {
-              ...code,
               text: "console.log('MCP current')",
             },
           },
@@ -2347,7 +2350,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           arguments: {
             taskId: f.root.id,
             name: "Unsupported MCP script",
-            script: code,
+            script: { text: code.text },
             source: {
               kind: "schedule",
               cron: "0 * * * *",
@@ -2399,7 +2402,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
           arguments: {
             automationId: saved.trigger.id,
             expectedRevisionId: saved.revision!.id,
-            script: code,
+            script: { text: code.text },
           },
         });
         expect(refusedUpdate.isError).toBe(true);
@@ -2732,6 +2735,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
     if (operation === "set_next_fire") args.action = "reschedule";
     if (operation === "run") args.action = "run_now";
     if (operation === "cancel") args.action = "cancel_pending";
+    if ("script" in parsed && parsed.script) {
+      args.script =
+        parsed.script.interpreter === null
+          ? { text: parsed.script.text }
+          : { interpreter: parsed.script.interpreter, text: parsed.script.text };
+    }
     if ("source" in parsed && parsed.source?.kind === "schedule") {
       const schedule = parsed.source.schedule;
       args.source = {

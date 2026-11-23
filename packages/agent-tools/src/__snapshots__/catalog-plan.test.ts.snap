@@ -4117,22 +4117,14 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
           "additionalProperties": false,
           "properties": {
             "interpreter": {
-              "anyOf": [
-                {
-                  "items": {
-                    "maxLength": 1024,
-                    "minLength": 1,
-                    "type": "string",
-                  },
-                  "maxItems": 16,
-                  "minItems": 1,
-                  "type": "array",
-                },
-                {
-                  "type": "null",
-                },
-              ],
-              "default": null,
+              "items": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array",
             },
             "text": {
               "maxLength": 262144,
@@ -4295,22 +4287,14 @@ exports[`snapshots the personal guide and model-facing inventory 2`] = `
           "additionalProperties": false,
           "properties": {
             "interpreter": {
-              "anyOf": [
-                {
-                  "items": {
-                    "maxLength": 1024,
-                    "minLength": 1,
-                    "type": "string",
-                  },
-                  "maxItems": 16,
-                  "minItems": 1,
-                  "type": "array",
-                },
-                {
-                  "type": "null",
-                },
-              ],
-              "default": null,
+              "items": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 16,
+              "minItems": 1,
+              "type": "array",
             },
             "text": {
               "maxLength": 262144,

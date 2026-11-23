@@ -120,8 +120,8 @@ describe("a command Request on the wire", () => {
         }).success,
         JSON.stringify(response),
       ).toBe(true);
-    // Approving is a command the released app does not have.
-    expect(baseline.input["command request.command.approve"]).toBeUndefined();
+    // The v66 baseline (re-recorded per AGENTS.md rule 6) includes request.command.approve.
+    expect(baseline.input["command request.command.approve"]).toBeDefined();
     expect(
       hostApi["commands.dispatch"].payload.safeParse({
         type: "request.command.approve",

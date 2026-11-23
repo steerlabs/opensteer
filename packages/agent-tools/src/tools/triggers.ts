@@ -1,6 +1,6 @@
 import { defineAgentTool } from "../registry.js";
 import {
-  AutomationScriptSchema,
+  AutomationScriptInputSchema,
   TriggerSourceInputSchema,
   TriggerSystemRoleSchema,
 } from "@opensteer/triggers";
@@ -49,7 +49,7 @@ export const opensteer_automation_create = defineAgentTool({
   input: z.strictObject({
     taskId: ThreadIdSchema.optional(),
     name: z.string().trim().min(1).max(160),
-    script: AutomationScriptSchema,
+    script: AutomationScriptInputSchema,
     source: TriggerSourceInputSchema,
     ownTask: z.literal(true).optional(),
     operationKey: OperationKeySchema.optional(),
@@ -68,7 +68,7 @@ export const opensteer_automation_update = defineAgentTool({
       automationId: TriggerIdSchema,
       expectedRevisionId: TriggerRevisionIdSchema,
       name: z.string().trim().min(1).max(160).optional(),
-      script: AutomationScriptSchema.optional(),
+      script: AutomationScriptInputSchema.optional(),
       source: TriggerSourceInputSchema.optional(),
     })
     .refine(

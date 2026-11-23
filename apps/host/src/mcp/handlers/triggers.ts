@@ -164,7 +164,7 @@ export class TriggerToolHandlers {
         operation: "create",
         anchorThreadId: anchor,
         name: input.name,
-        script: input.script,
+        script: { interpreter: input.script.interpreter ?? null, text: input.script.text },
         source: triggerSourceFromInput(input.source),
         ...(input.ownTask ? { ownTask: true } : {}),
         idempotencyKey: idempotencyKey(caller, requestId, "trigger.create"),
@@ -175,7 +175,14 @@ export class TriggerToolHandlers {
         triggerId: input.automationId,
         expectedRevisionId: input.expectedRevisionId,
         ...(input.name === undefined ? {} : { name: input.name }),
-        ...(input.script === undefined ? {} : { script: input.script }),
+        ...(input.script === undefined
+          ? {}
+          : {
+              script: {
+                interpreter: input.script.interpreter ?? null,
+                text: input.script.text,
+              },
+            }),
         ...(input.source === undefined ? {} : { source: triggerSourceFromInput(input.source) }),
       };
     } else {

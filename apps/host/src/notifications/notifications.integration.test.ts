@@ -371,7 +371,6 @@ integration("Notifications", () => {
           taskId: rootTask,
           name: "Reminder: buy groceries",
           script: {
-            interpreter: null,
             text: scriptSending(
               "queue",
               rootTask,

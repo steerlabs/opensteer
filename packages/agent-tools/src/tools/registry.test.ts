@@ -49,7 +49,7 @@ describe("Opensteer tool registry", () => {
       .map((t) => t.name);
     expect(programs).toContain("opensteer_task_delegate");
     expect(programs).not.toContain("show_to_person");
-    expect(programs).not.toContain("computer_use");
+    expect(programs).toContain("computer_use");
   });
   it("exposes bounded waiting and connection work without human-only controls", () => {
     const connections = agentTools.filter((t) => t.callers.some((c) => c === "connection"));

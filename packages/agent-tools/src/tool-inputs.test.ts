@@ -90,7 +90,6 @@ describe("Opensteer tool inputs", () => {
       input.safeParse({
         name: "test",
         script: {
-          interpreter: null,
           text: "console.log('hi')",
         },
         source: { kind: "webhook" },

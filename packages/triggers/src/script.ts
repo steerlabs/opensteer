@@ -47,25 +47,34 @@ export function assertValidInterpreterExecutable(value: string): void {
   }
 }
 
+const AutomationScriptInterpreterSchema = z
+  .array(InterpreterArgSchema)
+  .min(1)
+  .max(16)
+  .refine(
+    (argv) => argv.length > 0 && isValidInterpreterExecutable(argv[0]!),
+    "Interpreter executable must be a bare command name on PATH or an absolute path, never a relative path.",
+  );
+
+const AutomationScriptTextSchema = z
+  .string()
+  .min(1)
+  .max(MAX_SCRIPT_BYTES)
+  .refine(
+    (value) => utf8ByteLength(value) <= MAX_SCRIPT_BYTES,
+    `Script text exceeds ${MAX_SCRIPT_BYTES} bytes`,
+  );
+
+/** Union-free input schema for MCP tool definitions: omit `interpreter` for default Node. */
+export const AutomationScriptInputSchema = z.strictObject({
+  interpreter: AutomationScriptInterpreterSchema.optional(),
+  text: AutomationScriptTextSchema,
+});
+export type AutomationScriptInput = z.infer<typeof AutomationScriptInputSchema>;
+
 export const AutomationScriptSchema = z.strictObject({
-  interpreter: z
-    .array(InterpreterArgSchema)
-    .min(1)
-    .max(16)
-    .refine(
-      (argv) => argv.length > 0 && isValidInterpreterExecutable(argv[0]!),
-      "Interpreter executable must be a bare command name on PATH or an absolute path, never a relative path.",
-    )
-    .nullable()
-    .default(null),
-  text: z
-    .string()
-    .min(1)
-    .max(MAX_SCRIPT_BYTES)
-    .refine(
-      (value) => utf8ByteLength(value) <= MAX_SCRIPT_BYTES,
-      `Script text exceeds ${MAX_SCRIPT_BYTES} bytes`,
-    ),
+  interpreter: AutomationScriptInterpreterSchema.nullable().default(null),
+  text: AutomationScriptTextSchema,
 });
 export type AutomationScript = z.infer<typeof AutomationScriptSchema>;
 export const AutomationScriptViewSchema = z.object(AutomationScriptSchema.shape);

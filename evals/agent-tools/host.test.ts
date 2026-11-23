@@ -350,10 +350,8 @@ it("preserves production action validation before consuming mocks", async () => 
         taskId: "thr_00000000-0000-4000-8000-000000000011",
         name: "Light memory pass",
         source: { kind: "schedule", cron: "*/30 8-22 * * *", timezone: "America/New_York" },
-        program: {
-          language: "javascript",
-          toolContractVersion: 5,
-          source: "export default async function () {}",
+        script: {
+          text: "console.log('ok');",
         },
       },
     });
@@ -440,10 +438,8 @@ it("reads back successful automation changes and the requested one-shot time", a
       arguments: {
         name: "Reminder: finish deleting memory",
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
-        program: {
-          language: "typescript",
-          toolContractVersion: 5,
-          source: "export default async function () {}",
+        script: {
+          text: "console.log('ok');",
         },
       },
     });

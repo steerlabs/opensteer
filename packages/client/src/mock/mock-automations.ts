@@ -73,28 +73,15 @@ function withoutPayload(
 export const mockNightlyTriggerId = "trg_00000000-0000-4000-8000-000000000001";
 
 const reminderScript: AutomationScript = {
-  interpreter: null,
-  text: `import { execFileSync } from "node:child_process";
-execFileSync("opensteer", ["call", "opensteer_task_send", JSON.stringify({
-  delivery: "queue",
-  message: "Reminder: it's time.",
-  taskId: "TASK_ID",
-})], { stdio: "inherit" });`,
+  interpreter: ["bash"],
+  text: `opensteer tool opensteer_task_send '{"delivery":"queue","message":"Reminder: it is time.","taskId":"TASK_ID"}'`,
 };
 
 const watchScript: AutomationScript = {
-  interpreter: null,
-  text: `import { watch } from "node:fs";
-import { execFile } from "node:child_process";
-watch(process.env.HOME + "/Downloads", (_event, name) => {
-  execFile("opensteer", ["call", "opensteer_task_send", JSON.stringify({
-    delivery: "queue",
-    message: \`New download: \${name}\`,
-    observationId: name,
-    taskId: "TASK_ID",
-  })]);
-});
-await new Promise(() => {});`,
+  interpreter: ["bash"],
+  text: `while read -r name; do
+  opensteer tool opensteer_task_send "{\\"delivery\\":\\"queue\\",\\"message\\":\\"New download: \${name}\\",\\"observationId\\":\\"\${name}\\",\\"taskId\\":\\"TASK_ID\\"}"
+done`,
 };
 
 /**
