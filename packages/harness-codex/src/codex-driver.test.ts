@@ -24,6 +24,7 @@ import {
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
+  requestOptionDeclines,
   toolOutputTextMaxBytes,
   utf8ByteLength,
   voiceCallSeed,
@@ -1851,6 +1852,42 @@ describe("Codex app-server harness", () => {
     expect(completed.data.output.text).not.toContain('"stdout"');
     expect(observer.error).toBeUndefined();
     expect(observer.events.at(-1)?.type).toBe("run.completed");
+    await fixture.adapter.close();
+  });
+
+  it("declines a Codex 0.162.0 cancel-only command approval through requestOptionDeclines", async () => {
+    const fixture = await setup("cancel-only-approval");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    const execution = session.execute(fixture.turn("Run a command"));
+    const opened = await observer.waitFor("request.opened");
+    if (opened.data.request.presentation.kind !== "choice") {
+      throw new Error("Expected choice approval request");
+    }
+    expect(opened.data.request.presentation.options.map((option) => option.id)).toEqual([
+      "allow-once",
+      "cancel",
+    ]);
+    await expect(
+      session.resolveRequest(opened.data.request.id, { kind: "choice", optionId: "reject" }),
+    ).rejects.toThrow("Response does not match the pending Codex Request");
+
+    const decline = opened.data.request.presentation.options.find(requestOptionDeclines);
+    expect(decline?.id).toBe("cancel");
+    await session.resolveRequest(opened.data.request.id, {
+      kind: "choice",
+      optionId: decline!.id,
+    });
+    await execution;
+    await session.stop();
+    await observer.done;
+
+    const captured = await fixture.capture();
+    expect(captured.find((message) => message.id === "cancel-only-approval-rpc")).toEqual({
+      id: "cancel-only-approval-rpc",
+      result: { decision: "cancel" },
+    });
+    expect(observer.events.at(-1)?.type).toBe("run.interrupted");
     await fixture.adapter.close();
   });
 
