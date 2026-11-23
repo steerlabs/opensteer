@@ -130,6 +130,8 @@ export class TabSleeper {
   private openAsked = false;
   /** TS13: the turn of the last open admitted over the threshold; it ends once its page exists. */
   private openTurn: Promise<void> = Promise.resolve();
+  /** V6: every open's turn, so the sleeper's close releases them all. */
+  private readonly turnWaiters = new Set<() => void>();
   /**
    * TS8: sessions whose look for the tab helper ended over the threshold. The next pass sleeps
    * their tabs through any backoff, once; only a reclaim still settling holds it.
@@ -505,18 +507,25 @@ export class TabSleeper {
       return nothing;
     // TS13: over the threshold, opens go one at a time: each waits, within its own bound, for the
     // open before it to have made its page, then reads memory afresh.
+    // V6 (rule B): an open waits for the open before it to have made its page, however long
+    // that takes (it has its own bound), and never runs beside it; the sleeper's close ends every
+    // wait. An open that finds the threshold crossed without a turn takes one before it goes on.
     let done: () => void = nothing;
-    if (this.releasing) {
+    const takeTurn = async () => {
       const previous = this.openTurn;
       const turn = Promise.withResolvers<void>();
       this.openTurn = turn.promise;
-      done = () => turn.resolve();
-      await withTimeout(previous, openPressureWaitMs, {
-        timeoutError: () => new Error("The open before this one did not finish."),
-      }).catch(() => undefined);
-    }
+      this.turnWaiters.add(turn.resolve);
+      done = () => {
+        this.turnWaiters.delete(turn.resolve);
+        turn.resolve();
+      };
+      await previous;
+    };
+    if (this.releasing) await takeTurn();
     try {
       await this.admitOpen(this.options.memoryPressure);
+      if (done === nothing && this.releasing && !this.closed) await takeTurn();
     } catch (error) {
       done();
       throw error;
@@ -674,11 +683,18 @@ export class TabSleeper {
   /** Whether some page may sleep right now, whatever a backoff or a settle holds back. */
   private canShedNow(now: number): boolean {
     if (this.options.scheduling === false) return false;
+    // V6: exactly what a pass may take now, so an open never waits on a pass that sleeps nothing:
+    // while a look runs, a ready context spares all but its leftovers (TS13), and a last-resort
+    // tab counts only on a reading taken after the last sleep settled.
+    const looking = this.pendingLook(now) !== null;
+    const fresh = this.memorySampledAt > this.lastSleptAt + linuxPressureSettleMs;
     for (const [id, session] of this.sessions) {
       const links = this.openerLinks(session);
       for (const record of session.ledger.policyRecords()) {
         if (!record.live || (this.nextProbe.get(record) ?? 0) > now) continue;
-        if (this.blocked(id, record, now, links, true, true) === null) return true;
+        if (looking && this.category(session, record) > 0) continue;
+        if (this.blocked(id, record, now, links, true, false) === null) return true;
+        if (fresh && this.blocked(id, record, now, links, true, true) === null) return true;
       }
     }
     return false;
@@ -885,6 +901,9 @@ export class TabSleeper {
     // TS8: the sessions that became ready under pressure, let through any backoff by this pass.
     const ready = new Set(this.readyUnderPressure);
     this.readyUnderPressure.clear();
+    // V6: a pass that runs while a reclaim still settles holds every context; the mark of one that
+    // became ready under pressure waits for the pass after the settle.
+    const settlingAtStart = Date.now() < (this.reclaimFrom?.settledAt ?? 0);
     const holdUntil = (session: SleepSession) =>
       this.pressureHoldUntil(ready.has(session) ? ready : undefined);
     try {
@@ -1053,6 +1072,7 @@ export class TabSleeper {
         }
       }
     } finally {
+      if (settlingAtStart) for (const session of ready) this.readyUnderPressure.add(session);
       this.running = false;
       this.openAsked = false;
       if (attempted < sleepsPerPass) this.declined = new WeakSet();
@@ -1100,6 +1120,8 @@ export class TabSleeper {
   close(): void {
     this.closed = true;
     this.releasePassWaiters();
+    for (const release of this.turnWaiters) release();
+    this.turnWaiters.clear();
     clearTimeout(this.flushTimer);
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;

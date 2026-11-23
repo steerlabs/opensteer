@@ -2256,8 +2256,12 @@ it("sleeps a tab under memory pressure through the sleeper as soon as the helper
   // Passes run (they sample the memory) and sleep nothing; opens over the threshold wait.
   await vi.waitFor(() => expect(samples).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
   let opened = 0;
-  void sleeper.beforePageOpen().then(() => opened++);
-  void sleeper.beforePageOpen().then(() => opened++);
+  // Each open's turn ends once its page exists, as the launcher's createPage ends it (V6).
+  for (let open = 0; open < 2; open++)
+    void sleeper.beforePageOpen().then((done) => {
+      opened++;
+      done();
+    });
   const sampled = samples;
   await vi.waitFor(() => expect(samples).toBeGreaterThan(sampled), { timeout: 10_000 });
   expect(opened).toBe(0);

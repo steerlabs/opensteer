@@ -570,7 +570,10 @@ describe("TabSleeper", () => {
       // Below the start threshold: one reading, and the open is not held.
       const before = readings;
       let opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(0);
       expect(opened).toBe(true);
       expect(readings).toBe(before + 1);
@@ -583,7 +586,10 @@ describe("TabSleeper", () => {
       await vi.advanceTimersByTimeAsync(10);
       expect(suspended()).toBe(0);
       opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(10);
       expect(suspended()).toBeGreaterThan(0);
       // Released by that pass, it checks again (M4): held while memory is still over the
@@ -600,7 +606,10 @@ describe("TabSleeper", () => {
       f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
       await vi.advanceTimersByTimeAsync(600);
       opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(0);
       expect(opened).toBe(true);
       expect((f.sleeper as unknown as { passWaiters: unknown[] }).passWaiters).toHaveLength(0);
@@ -683,8 +692,14 @@ describe("TabSleeper", () => {
       expect(f.ledger.stateOf(f.record.id)).not.toBe("suspended");
       // Back-to-back opens over the threshold wait while the look is pending.
       let opened = 0;
-      void f.sleeper.beforePageOpen().then(() => opened++);
-      void f.sleeper.beforePageOpen().then(() => opened++);
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened++;
+        done();
+      });
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened++;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(100);
       expect(opened).toBe(0);
       look.resolve();
@@ -694,6 +709,91 @@ describe("TabSleeper", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       expect(opened).toBe(2);
     } finally {
+      await f.close();
+    }
+  });
+
+  it("keeps the mark of a context that became ready under pressure through a pass that ran while a reclaim settled (V6)", async () => {
+    const f = await fixture();
+    try {
+      const sleeper = f.sleeper as unknown as {
+        readyUnderPressure: Set<unknown>;
+        sessions: Map<string, unknown>;
+        reclaimFrom: {
+          settledAt: number;
+          waiting: boolean;
+          pressureUsedBytes: number | null;
+          startedAt: number;
+        } | null;
+        pass(): Promise<void>;
+      };
+      const session = sleeper.sessions.get("session");
+      sleeper.readyUnderPressure.add(session);
+      sleeper.reclaimFrom = {
+        settledAt: Date.now() + 5_000,
+        waiting: false,
+        pressureUsedBytes: null,
+        startedAt: Date.now(),
+      };
+      await sleeper.pass();
+      expect(sleeper.readyUnderPressure.has(session)).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("waits on the look instead of spinning when the only tabs it could take are spared, and its close releases every open (V6)", async () => {
+    const limit = 2 * 1024 ** 3;
+    let reads = 0;
+    const f = await fixture({
+      memoryPressure: () => {
+        reads++;
+        return Promise.resolve({ usedBytes: Math.round(limit * 0.8), limitBytes: limit });
+      },
+    });
+    const otherLedger = new SurfaceLedger(
+      new FakeContext([new FakePage({ url: "https://looking.test/" })]),
+    );
+    await otherLedger.start();
+    await vi.advanceTimersByTimeAsync(0);
+    try {
+      const look = Promise.withResolvers<void>();
+      let pending = true;
+      void look.promise.then(() => {
+        pending = false;
+      });
+      // A context still looking for its helper, with a tab it can spare once the look ends.
+      f.sleeper.add("other", {
+        ledger: otherLedger,
+        restoreVersion: 1,
+        blocked: () => null,
+        sleepReady: () => (pending ? look.promise : null),
+      });
+      f.sleeper.setSessionState("other", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      // The ready context holds only the person's tab: spared while the look runs.
+      f.record.personUsed = true;
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const before = reads;
+      void f.sleeper.beforePageOpen().then((done) => done());
+      await vi.advanceTimersByTimeAsync(1_900);
+      // A handful of readings, not a loop of them.
+      expect(reads - before).toBeLessThan(10);
+      await vi.advanceTimersByTimeAsync(1_000);
+      // An open still waiting for its turn is released by the sleeper's close.
+      let held: (() => void) | undefined;
+      void f.sleeper.beforePageOpen().then((done) => (held = done));
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(held).toBeDefined();
+      let released = false;
+      void f.sleeper.beforePageOpen().then(() => (released = true));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(released).toBe(false);
+      f.sleeper.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(released).toBe(true);
+    } finally {
+      await otherLedger.close();
       await f.close();
     }
   });
@@ -747,11 +847,16 @@ describe("TabSleeper", () => {
       turns[1]!();
       await vi.advanceTimersByTimeAsync(10);
       expect(admitted).toEqual([0, 1, 2]);
-      // An open whose page never comes holds the next one only within the open's own bound.
-      void f.sleeper.beforePageOpen().then(() => admitted.push(3));
-      await vi.advanceTimersByTimeAsync(1_000);
+      // V6 (rule B): the next open never runs beside the one before it, however long that one
+      // takes to make its page; it goes once that page exists.
+      void f.sleeper.beforePageOpen().then((done) => {
+        admitted.push(3);
+        done();
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
       expect(admitted).toEqual([0, 1, 2]);
-      await vi.advanceTimersByTimeAsync(1_100);
+      turns[2]!();
+      await vi.advanceTimersByTimeAsync(10);
       expect(admitted).toEqual([0, 1, 2, 3]);
     } finally {
       await f.close();
@@ -951,7 +1056,7 @@ describe("TabSleeper", () => {
       const burst = (async () => {
         for (let i = 0; i < 46; i++) {
           const started = Date.now();
-          await f.sleeper.beforePageOpen();
+          (await f.sleeper.beforePageOpen())();
           waits.push(Date.now() - started);
           ids.push((await f.ledger.openSurface()).id);
           f.sleeper.setSessionState("session", {
@@ -1029,7 +1134,7 @@ describe("TabSleeper", () => {
       let backedOff = 0;
       const burst = (async () => {
         for (let i = 0; i < 46; i++) {
-          await f.sleeper.beforePageOpen();
+          (await f.sleeper.beforePageOpen())();
           const id = (await f.ledger.openSurface()).id;
           openedAt.set(id, Date.now());
           ids.push(id);
@@ -1086,7 +1191,10 @@ describe("TabSleeper", () => {
       const opened: number[] = [];
       const started = Date.now();
       for (let i = 0; i < 3; i++)
-        void f.sleeper.beforePageOpen().then(() => opened.push(Date.now() - started));
+        void f.sleeper.beforePageOpen().then((done) => {
+          opened.push(Date.now() - started);
+          done();
+        });
       // The pass sleeps and releases them; still over the threshold while its reclaim settles,
       // none goes yet.
       await vi.advanceTimersByTimeAsync(100);
@@ -1122,7 +1230,10 @@ describe("TabSleeper", () => {
       f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: ids });
       internals.running = true;
       let opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(0);
       expect(opened).toBe(true);
       expect(internals.passWaiters).toHaveLength(0);
@@ -1156,7 +1267,10 @@ describe("TabSleeper", () => {
       // Pages that could sleep, but no pass will run to sleep them.
       f.sleeper.setSessionState("session", { runs: 0, personUsed: ids, viewed: [], pinned: [] });
       let opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(0);
       expect(opened).toBe(true);
     } finally {
@@ -1210,7 +1324,10 @@ describe("TabSleeper", () => {
       const before = suspended();
       await vi.advanceTimersByTimeAsync(600);
       opened = false;
-      void f.sleeper.beforePageOpen().then(() => (opened = true));
+      void f.sleeper.beforePageOpen().then((done) => {
+        opened = true;
+        done();
+      });
       await vi.advanceTimersByTimeAsync(0);
       expect(opened).toBe(true);
       await vi.advanceTimersByTimeAsync(3_000);
