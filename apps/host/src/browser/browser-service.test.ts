@@ -10112,4 +10112,95 @@ describe("work under a connection's authority never uses the clipboard or change
     ]);
     cdpFirst.close();
   });
+
+  it("never deadlocks when attachCdpForAgent or agent start races #holdForAgent on the same profile (PH1)", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
+    const profile = await repository.createBrowserProfile({ ownerId, name: "Shared Profile" });
+
+    let pauseNextAccess = false;
+    let enteredAccess = Promise.withResolvers<void>();
+    let releaseAccess = Promise.withResolvers<void>();
+    const service = freshService({
+      keys,
+      runtime,
+      repository,
+      requireAgentAccess: async () => {
+        if (pauseNextAccess) {
+          pauseNextAccess = false;
+          enteredAccess.resolve();
+          await releaseAccess.promise;
+        }
+      },
+    });
+    const person = await service.start({ ownerId, profileId: profile.id });
+
+    // Sequence 1: attachCdpForAgent (Call A) pauses inside admission while openAgentSession (Call B)
+    // reaches #holdForAgent on the same profile P. Both must acquire profile lane before runner lane.
+    pauseNextAccess = true;
+    const callA = service.attachCdpForAgent(
+      { ownerId, sessionId: person.session.id, agentBindingId: "ph1-binding-a" },
+      () => undefined,
+    );
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Call A never reached admission"),
+    });
+    const callB = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-b",
+    });
+    // Let Call B advance through its pre-hold checks and contend on the lanes.
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [attachmentA, sessionB] = await withTimeout(Promise.all([callA, callB]), 1500, {
+      timeoutError: () =>
+        new Error("PH1 deadlock: attachCdpForAgent and #holdForAgent inverted lanes"),
+    });
+    expect(sessionB.session.id).toBe(person.session.id);
+    attachmentA.close();
+
+    // Sequence 2: an agent browser start on profile P pauses inside admission while #holdForAgent
+    // runs for an existing session on profile P. Both must complete without deadlock.
+    enteredAccess = Promise.withResolvers<void>();
+    releaseAccess = Promise.withResolvers<void>();
+    pauseNextAccess = true;
+    const startingC = service.openAgentSession({
+      ownerId,
+      profileId: profile.id,
+      agentBindingId: "ph1-binding-c",
+    });
+    await withTimeout(enteredAccess.promise, 1000, {
+      timeoutError: () => new Error("Agent start never reached admission"),
+    });
+    const holdingD = service.openAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "ph1-binding-d",
+    });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    releaseAccess.resolve();
+    const [resC, resD] = await withTimeout(
+      Promise.all([startingC.catch((e: unknown) => e), holdingD]),
+      1500,
+      {
+        timeoutError: () => new Error("PH1 deadlock: agent start and #holdForAgent inverted lanes"),
+      },
+    );
+    expect(resD.session.id).toBe(person.session.id);
+    expect(resC).toBeDefined();
+
+    // Dynamic lock-order check: acquiring a profile lane from inside withRunnerAdmission throws immediately.
+    await expect(
+      service.withRunnerAdmission(person.session.runnerId, () =>
+        service.openAgentSession({
+          ownerId,
+          sessionId: person.session.id,
+          agentBindingId: "ph1-binding-nested",
+        }),
+      ),
+    ).rejects.toThrow("BrowserService lock-order violation");
+  });
 });

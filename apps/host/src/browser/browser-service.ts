@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { StandardCdpProfileLeases } from "./standard-cdp-profile-leases.js";
 import {
   cdpCommandRefusal,
@@ -1005,8 +1006,21 @@ export class BrowserService {
     string,
     { runnerId: RunnerId; close: () => void; binding?: string }
   >();
+  readonly #inRunnerAdmission = new AsyncLocalStorage<boolean>();
   withRunnerAdmission<T>(runnerId: RunnerId, action: () => Promise<T>): Promise<T> {
-    return this.#agentAdmissions.run(runnerId, action);
+    return this.#agentAdmissions.run(runnerId, () => this.#inRunnerAdmission.run(true, action));
+  }
+
+  #runProfileLane<T>(
+    profileId: BrowserProfileId | null,
+    operation: (waited: boolean) => Promise<T>,
+  ): Promise<T> {
+    if (profileId && this.#inRunnerAdmission.getStore()) {
+      throw new Error(
+        `BrowserService lock-order violation: profile lane (${profileId}) acquired inside runner admission lane.`,
+      );
+    }
+    return this.#standardCdpProfiles.run(profileId, operation);
   }
 
   /**
@@ -4970,7 +4984,11 @@ export class BrowserService {
     captureAuthority?: (facts: StandardCdpAuthority) => void,
     /** Hears the same facts as `captureAuthority` without changing how the admission answers. */
     noteAuthority?: (facts: StandardCdpAuthority) => void,
-    inRunnerAdmission = false,
+    lane?: {
+      readonly heldProfileId?: BrowserProfileId | null;
+      readonly profileWaited?: boolean;
+      readonly inRunnerAdmission?: boolean;
+    },
   ) {
     const sessionId = input.sessionId ?? (await this.#followedAgentSessionId(input));
     // Attaching is new access; a command on an open attachment follows its Run's end.
@@ -5010,12 +5028,7 @@ export class BrowserService {
         "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then reopen the tab.",
       );
     if (captured) (captureAuthority ?? noteAuthority)?.(captured);
-    if (hold && input.sessionId)
-      await this.#holdForAgent(
-        input,
-        record,
-        inRunnerAdmission ? { inRunnerAdmission } : undefined,
-      );
+    if (hold && input.sessionId) await this.#holdForAgent(input, record, lane);
     return { record, broker, backend };
   }
 
@@ -5345,7 +5358,7 @@ export class BrowserService {
         admission ?? AbortSignal.timeout(standardCdpAdmissionMs),
       ]);
       const expiresAt = Date.now() + standardCdpAdmissionMs;
-      const admitted = await this.#standardCdpProfiles.run(claims.facts.profileId, async () => {
+      const admitted = await this.#runProfileLane(claims.facts.profileId, async () => {
         const verified = await verify(deadline, expiresAt, true);
         if (pool && (!attempts || !verified.target.standardCdpRecovery))
           throw new BrowserCdpConnectionEnded("This pooled connection has no durable attempt.");
@@ -5850,11 +5863,15 @@ export class BrowserService {
         throw error;
       }
     }
-    if (record.profileId !== null && this.#standardCdpProfiles.busy(record.profileId)) {
-      return this.#attachCdpForAgent(input, onEvent, onClosed, undefined, false);
-    }
-    return this.withRunnerAdmission(record.runnerId, () =>
-      this.#attachCdpForAgent(input, onEvent, onClosed, undefined, true),
+    // Always acquire the profile lane before the runner admission lane (PH1).
+    return this.#runProfileLane(record.profileId, (profileWaited) =>
+      this.withRunnerAdmission(record.runnerId, () =>
+        this.#attachCdpForAgent(input, onEvent, onClosed, undefined, {
+          heldProfileId: record.profileId,
+          profileWaited,
+          inRunnerAdmission: true,
+        }),
+      ),
     );
   }
 
@@ -5872,7 +5889,11 @@ export class BrowserService {
     onEvent: (event: Extract<BrowserServerMessage, { type: "cdp.event" }>["event"]) => void,
     onClosed?: () => void,
     pooledRelay?: PooledBrowserRelay,
-    inRunnerAdmission = false,
+    lane?: {
+      readonly heldProfileId?: BrowserProfileId | null;
+      readonly profileWaited?: boolean;
+      readonly inRunnerAdmission?: boolean;
+    },
   ): Promise<{
     readonly session: HostedBrowserSession;
     readonly pooledWitness?: string;
@@ -5900,7 +5921,7 @@ export class BrowserService {
       (facts) => {
         if (facts.agentConnectionId !== null) connectionWork = true;
       },
-      inRunnerAdmission,
+      lane,
     );
     const accessGeneration = this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
     // A runtime that says it can hold the rules itself is told the work is a connection's, so a
@@ -5975,6 +5996,7 @@ export class BrowserService {
     const unsubscribe = broker.subscribeCdp((event) => {
       if (event.scriptAttachmentId === scriptAttachmentId) onEvent(event);
     }, close);
+    const inRunnerAdmission = Boolean(lane?.inRunnerAdmission);
     const admissionWaited = !inRunnerAdmission && this.#agentAdmissions.busy(record.runnerId);
     const registerAttachment = async () => {
       if (
@@ -7593,20 +7615,18 @@ export class BrowserService {
         }
       };
     };
-    const admitProfile = () =>
-      this.#standardCdpProfiles.run(profile?.id ?? null, async () => {
-        if (profile && this.#standardCdpProfiles.held(profile.id))
-          throw new BrowserCdpConnectionEnded(
-            "An attachment holds exclusive access to this browser profile.",
-          );
+    // Always acquire the profile lane before the runner admission lane (PH1).
+    return this.#runProfileLane(profile?.id ?? null, async () => {
+      if (profile && this.#standardCdpProfiles.held(profile.id))
+        throw new BrowserCdpConnectionEnded(
+          "An attachment holds exclusive access to this browser profile.",
+        );
+      if (origin === "person" && !input.agentBindingId) return admit();
+      return this.withRunnerAdmission(placement.runnerId, async () => {
+        await this.#requireAgentAccess(placement.runnerId);
         return admit();
       });
-    return origin === "person" && !input.agentBindingId
-      ? admitProfile()
-      : this.withRunnerAdmission(placement.runnerId, async () => {
-          await this.#requireAgentAccess(placement.runnerId);
-          return admitProfile();
-        });
+    });
   }
 
   #resolveTarget(placement: BrowserPlacementSelector): BrowserRuntimeTarget | undefined {
@@ -8049,12 +8069,14 @@ export class BrowserService {
       readonly recheck?: boolean;
       readonly requireAccess?: boolean;
       readonly accessGeneration?: number;
+      readonly heldProfileId?: BrowserProfileId | null;
+      readonly profileWaited?: boolean;
       readonly inRunnerAdmission?: boolean;
     },
   ): Promise<void> {
     const accessGeneration =
       options?.accessGeneration ?? this.#runnerAccessGeneration.get(record.runnerId) ?? 0;
-    return this.#standardCdpProfiles.run(record.profileId, async (profileWaited) => {
+    const runInProfile = async (profileWaited: boolean) => {
       const held = record.profileId ? this.#standardCdpProfiles.held(record.profileId) : undefined;
       if (held && held.bindingId !== input.agentBindingId)
         throw new BrowserCdpConnectionEnded(
@@ -8118,7 +8140,11 @@ export class BrowserService {
       } finally {
         reservation?.release();
       }
-    });
+    };
+    if (options?.heldProfileId !== undefined && options.heldProfileId === record.profileId) {
+      return runInProfile(Boolean(options.profileWaited));
+    }
+    return this.#runProfileLane(record.profileId, runInProfile);
   }
 
   /**
