@@ -2877,7 +2877,7 @@ class ElectronDebuggerHub {
     }
     if (method === "Page.stopScreencast") {
       return this.#serializeOwnership(async () => {
-        await this.#leaveCast(channel, this.#rendererGeneration, parameters);
+        await this.#leaveCast(channel, this.#rendererGeneration, parameters, true);
         return {};
       });
     }
@@ -3144,6 +3144,10 @@ class ElectronDebuggerHub {
     const current = () => generation === this.#rendererGeneration;
     await this.#serializeOwnership(async () => {
       await this.#leaveCast(channel, generation).catch(() => undefined);
+      // A cast it stopped and might have asked for again: it will not now.
+      for (const cast of [...this.#casts])
+        if (cast.parked?.by === channel)
+          await this.#endCast(cast, generation).catch(() => undefined);
       this.#handed.delete(channel);
       for (const domain of channel.enabledDomains) {
         const owners = this.#domainOwners.get(domain);
@@ -3356,9 +3360,19 @@ class ElectronDebuggerHub {
       }
       // It ended while the channel left its old cast: it starts afresh, below.
     }
-    const previous = this.#castOf.get(channel);
+    // A cast someone else stopped and might have asked for again ends: this start changes what
+    // the page is asked for.
+    await this.#endParkedCasts(generation, channel);
+    this.#assertCurrent(generation);
+    this.#assertOpen(channel);
+    // The cast this channel had: its own, or one it stopped and left running (parked).
+    const parked = [...this.#casts].find((cast) => cast.parked?.by === channel);
+    const previous = this.#castOf.get(channel) ?? parked;
     const same = [...this.#casts].find((cast) => cast.key === key);
-    const leavingAlone = previous !== undefined && previous !== same && previous.owners.size === 1;
+    const leavingAlone =
+      previous !== undefined &&
+      previous !== same &&
+      previous.owners.size === (previous === parked ? 0 : 1);
     // Casts that run or are starting: one whose renderer died runs nothing and holds no place.
     const live = [...this.#casts].filter((cast) => cast.run !== null);
     if (
@@ -3369,7 +3383,7 @@ class ElectronDebuggerHub {
       throw new Error(
         `This page is already pictured in ${maxCastsPerPage} formats or sizes at once, the most it gives. Ask for one of those, or ask again when one of them ends.`,
       );
-    const cast: Screencast = same ?? { key, owners: new Set(), run: null };
+    const cast: Screencast = same ?? { key, owners: new Set(), parked: null, run: null };
     const left = previous !== undefined && previous !== cast ? previous : undefined;
     const handed = leavingAlone && left?.run?.lane ? left.run : null;
     const run: CastRun = {
@@ -3380,8 +3394,12 @@ class ElectronDebuggerHub {
       lane: null,
       lastFrame: null,
       started: false,
+      unhanded: false,
     };
+    // A cast it parked, and does not take the lane of, ends below like one it leaves.
+    const parkedLeft = left !== undefined && left === parked;
     if (handed && left) {
+      this.#unpark(left);
       run.lane = handed.lane;
       handed.lane = null;
       left.run = null;
@@ -3429,7 +3447,7 @@ class ElectronDebuggerHub {
       } else {
         // The channel moves in one step, out of its old cast and into this one, so no frame of
         // this run reaches no one; the old cast, if no one is left in it, ends after.
-        if (left && !handed) ending = this.#leaveMembership(channel);
+        if (left && !handed) ending = parkedLeft ? left : this.#leaveMembership(channel);
         this.#joinCast(channel, cast);
       }
       // A frame of this run that came before its start resolved is handed now, to each owner.
@@ -3444,8 +3462,8 @@ class ElectronDebuggerHub {
         handed.lane = lane;
         left.run = handed;
         this.#casts.add(left);
-        // A released channel's cast is not restored for anyone to inherit.
-        if (this.#channels.has(channel)) this.#joinCast(channel, left);
+        // A released channel's cast is not restored for anyone to inherit, nor one it had stopped.
+        if (this.#channels.has(channel) && !parkedLeft) this.#joinCast(channel, left);
         else await this.#endCast(left, generation).catch(() => undefined);
       } else if (lane?.id !== undefined) {
         // A session attached for this start is let go, whoever else is in the cast.
@@ -3464,19 +3482,54 @@ class ElectronDebuggerHub {
   }
 
   #joinCast(channel: ElectronCdpChannel, cast: Screencast): void {
+    this.#unpark(cast);
     cast.owners.add(channel);
     this.#castOf.set(channel, cast);
     this.#updateThrottling();
   }
 
-  /** The channel leaves its cast, and a cast no one is left in ends. */
+  /**
+   * The channel leaves its cast, and a cast no one is left in ends; or, where the channel itself
+   * stopped it (`park`), it keeps running a moment for that channel to ask again (`parkedCastMs`).
+   */
   async #leaveCast(
     channel: ElectronCdpChannel,
     generation: number,
     parameters?: Record<string, unknown>,
+    park = false,
   ): Promise<void> {
     const empty = this.#leaveMembership(channel);
-    if (empty) await this.#endCast(empty, generation, parameters);
+    if (!empty) return;
+    if (park && empty.run?.started && empty.run.lane && generation === this.#rendererGeneration) {
+      this.#park(empty, channel, parameters);
+      return;
+    }
+    await this.#endCast(empty, generation, parameters);
+  }
+
+  /** `cast`, which `channel` was last to stop, runs on for it until `parkedCastMs` have passed. */
+  #park(cast: Screencast, channel: ElectronCdpChannel, parameters?: Record<string, unknown>): void {
+    this.#unpark(cast);
+    const generation = this.#rendererGeneration;
+    const timer = setTimeout(() => {
+      void this.#serializeOwnership(async () => {
+        if (cast.parked?.timer !== timer || cast.owners.size > 0 || !this.#casts.has(cast)) return;
+        await this.#endCast(cast, generation, parameters);
+      }, false).catch(() => undefined);
+    }, parkedCastMs);
+    timer.unref?.();
+    cast.parked = { by: channel, timer };
+  }
+
+  #unpark(cast: Screencast): void {
+    if (cast.parked) clearTimeout(cast.parked.timer);
+    cast.parked = null;
+  }
+
+  /** Every cast someone other than `channel` parked ends: someone's needs have changed. */
+  async #endParkedCasts(generation: number, keep?: ElectronCdpChannel): Promise<void> {
+    for (const cast of [...this.#casts])
+      if (cast.parked && cast.parked.by !== keep) await this.#endCast(cast, generation);
   }
 
   /**
@@ -3525,19 +3578,22 @@ class ElectronDebuggerHub {
       if (id <= run.floor) return;
       run.frameSession = id;
     } else if (id !== run.frameSession) return;
-    if (!run.started) {
-      // Above every earlier run's, so this run's, though its start has not resolved: it is kept,
-      // to be handed once it has, and reaches no one before. Chromium waits for an ack of each
-      // frame it sends, and stops for good at two: one this one replaces is acked here.
-      if (run.lastFrame !== null && run.lane)
+    if (!run.started || run.cast.owners.size === 0) {
+      // This run's, though its start has not resolved or no one is in its cast now (parked): it
+      // is kept, to be handed to whoever is in it next, and reaches no one before. Chromium waits
+      // for an ack of each frame it sends, and stops for good at two: one this one replaces is
+      // acked here.
+      if (run.unhanded && run.lastFrame !== null && run.lane)
         void this.#command("Page.screencastFrameAck", { sessionId: id }, run.lane.id).catch(
           () => undefined,
         );
       else run.awaitingAck += 1;
       run.lastFrame = frame;
+      run.unhanded = true;
       return;
     }
     run.lastFrame = frame;
+    run.unhanded = false;
     run.awaitingAck += 1;
     for (const owner of run.cast.owners) this.#hand(owner, run, id, frame);
   }
@@ -3557,6 +3613,7 @@ class ElectronDebuggerHub {
   }
 
   #replay(channel: ElectronCdpChannel, run: CastRun): void {
+    if (run.lastFrame !== null && run.frameSession !== null) run.unhanded = false;
     if (run.lastFrame !== null && run.frameSession !== null)
       this.#hand(channel, run, run.frameSession, run.lastFrame);
   }
@@ -3588,6 +3645,7 @@ class ElectronDebuggerHub {
     generation: number,
     parameters?: Record<string, unknown>,
   ): Promise<void> {
+    this.#unpark(cast);
     this.#casts.delete(cast);
     const run = cast.run;
     cast.run = null;
@@ -3606,6 +3664,7 @@ class ElectronDebuggerHub {
    */
   #castsEnded(how: "crashed" | "detached"): void {
     for (const cast of this.#casts) {
+      this.#unpark(cast);
       const lane = cast.run?.lane ?? null;
       if (cast.run) cast.run.lane = null;
       cast.run = null;
@@ -3647,7 +3706,7 @@ class ElectronDebuggerHub {
     for (const cast of this.#casts) {
       const run = cast.run;
       if (!run || run.lastFrame === null) continue;
-      if (!run.started && run.lane && run.frameSession !== null && run.awaitingAck > 0) {
+      if (run.unhanded && run.lane && run.frameSession !== null && run.awaitingAck > 0) {
         run.awaitingAck -= 1;
         void this.#command(
           "Page.screencastFrameAck",
@@ -3656,6 +3715,7 @@ class ElectronDebuggerHub {
         ).catch(() => undefined);
       }
       run.lastFrame = null;
+      run.unhanded = false;
     }
   }
 
@@ -4207,11 +4267,23 @@ function asRecord(value: unknown): Record<string, unknown> {
  */
 const maxCastsPerPage = 3;
 
+/**
+ * How long a cast its last owner stopped keeps running for that owner to ask again. The follow
+ * view stops and asks again for the same picture whenever a page navigates or is sized anew;
+ * Chromium's picture need not change for that, so it is neither stopped nor started.
+ */
+const parkedCastMs = 1_000;
+
 /** One of a page's screencasts: the settings it was asked for, its owners, and its current run. */
 interface Screencast {
   readonly key: string;
   readonly owners: Set<ElectronCdpChannel>;
   run: CastRun | null;
+  /**
+   * The owner that stopped it, last, while it is kept running for that owner to ask again;
+   * null while it has owners, or once it has ended.
+   */
+  parked: { readonly by: ElectronCdpChannel; readonly timer: ReturnType<typeof setTimeout> } | null;
 }
 
 /** A cast as Chromium runs it, from one start: its identity is fixed there. */
@@ -4227,6 +4299,8 @@ interface CastRun {
   floor: number;
   /** Its latest frame, for an owner that joins it: a still page sends no other. */
   lastFrame: Record<string, unknown> | null;
+  /** Whether `lastFrame` reached no one yet: kept before its start resolved, or while parked. */
+  unhanded: boolean;
   /**
    * Frames Chromium sent in it and has had no ack for. Chromium sends no more while two wait:
    * every one it sent is acked once.

@@ -11,7 +11,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 
@@ -1006,6 +1006,14 @@ function ownSessions(
   };
 }
 
+/**
+ * Past the moment a cast its last owner stopped runs on for that owner to ask again
+ * (`parkedCastMs` in the launcher): as a person who turned away seconds ago.
+ */
+async function pastParking(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(1_000);
+}
+
 function world(id: number | string) {
   return {
     context: {
@@ -1464,6 +1472,14 @@ it("keeps a profile inventory its own channel's, whatever another channel does",
 });
 
 describe("Electron debugger teardown", () => {
+  // A cast its last owner stopped runs on a moment for that owner to ask again
+  // (`parkedCastMs`): time runs as it does, and a test moves it past that moment where it says.
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it("waits for the native page to be destroyed even when no CDP input is pending", async () => {
     const hub = await hubPage("44");
     hub.contents.close.mockImplementation(() => {});
@@ -1752,8 +1768,10 @@ describe("Electron debugger teardown", () => {
     await late.send("Page.stopScreencast");
     expect(hub.sent("Page.stopScreencast")).toHaveLength(0);
     await picture.send("Page.stopScreencast");
+    await pastParking();
     expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
     await stream.send("Page.stopScreencast");
+    await pastParking();
     expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
       "Target.detachFromTarget",
       { sessionId: "agent-native-session" },
@@ -1891,6 +1909,7 @@ describe("Electron debugger teardown", () => {
     // The person turns away: their cast stops and the agent's goes on. The agent asking again
     // for its own settings joins its own cast, and is handed its latest frame.
     await person.send("Page.stopScreencast");
+    await pastParking();
     expect(hub.sent("Page.stopScreencast")).toHaveLength(1);
     png();
     await agent.send("Page.startScreencast", ask);
@@ -1905,6 +1924,7 @@ describe("Electron debugger teardown", () => {
     expect(new Set(frames.agent)).toEqual(new Set(["png 320x240"]));
     // The agent stops: its session ends with its cast, and the person's picture goes on.
     await agent.send("Page.stopScreencast");
+    await pastParking();
     expect(hub.sent("Target.detachFromTarget").at(-1)).toEqual([
       "Target.detachFromTarget",
       { sessionId: "cast-1" },
@@ -2249,7 +2269,9 @@ describe("Electron debugger teardown", () => {
       await person.send("Page.screencastFrameAck", { sessionId: 1 });
       await person.send("Page.stopScreencast");
       await person.send("Page.startScreencast", resized);
+      // The person turns to another tab, seconds before the dialog.
       await person.send("Page.stopScreencast");
+      await pastParking();
       hub.deliver("Page.javascriptDialogOpening", {
         defaultPrompt: "",
         frameId: "target-1",
@@ -2344,6 +2366,7 @@ describe("Electron debugger teardown", () => {
     it("lets go of a cast's session when it is stopped", async () => {
       const { agent, hub, own } = await casting("41");
       await agent.send("Page.stopScreencast");
+      await pastParking();
       expectOnce(hub, own);
       await hub.browser.close();
     });
@@ -2360,6 +2383,7 @@ describe("Electron debugger teardown", () => {
       fire(hub, "did-navigate");
       expect(own.detached()).toEqual([]);
       await agent.send("Page.stopScreencast");
+      await pastParking();
       expectOnce(hub, own);
       await hub.browser.close();
     });
@@ -2634,6 +2658,126 @@ describe("Electron debugger teardown", () => {
     });
   });
 
+  // F32, the re-check of 963f808d0..fb245664c: a tab the person opens with an address is
+  // announced at about:blank, so the follow view starts its cast there, and navigates at once.
+  // Its commit bumps the surface's geometry revision though its size did not change (a stop and a
+  // start), and Electron's did-navigate lets the page's capture go and restores it (another).
+  // Chromium's picture needs neither: one start reaches it, and no stop.
+  it("starts one cast for a tab opened with an address, whatever the follow view restarts", async () => {
+    const { ScreencastController } =
+      await import("../../../../packages/browser-runtime-core/src/browser/screencast-controller.js");
+    const { LatestFrameStream } =
+      await import("../../../../packages/browser-runtime-core/src/stream/latest-frame-stream.js");
+    const { jpeg } =
+      await import("../../../../packages/browser-runtime-core/src/test-support/fakes.js");
+    const hub = await hubPage("66");
+    const channel = await hub.page.cdp();
+    const shown = { height: 900, width: 1_400 };
+    const frame = (id: number) => ({
+      data: jpeg(shown.width, shown.height).toString("base64"),
+      metadata: {
+        deviceHeight: shown.height,
+        deviceWidth: shown.width,
+        offsetTop: 0,
+        pageScaleFactor: 1,
+        scrollOffsetX: 0,
+        scrollOffsetY: 0,
+      },
+      sessionId: id,
+    });
+    const surface = {
+      active: true,
+      documentId: "about-blank",
+      geometryRevision: 1,
+      id: "surface-1",
+      loading: true,
+    };
+    let capture: { height: number; rasterScale: number; revision: number; width: number } | null = {
+      height: shown.height,
+      rasterScale: 1,
+      revision: 1,
+      width: shown.width,
+    };
+    const captureListeners = new Set<() => void>();
+    const binding = {
+      cdp: channel,
+      page: {
+        applyGeometry: async () => undefined,
+        capture: {
+          read: () => capture,
+          subscribe: (listener: () => void) => {
+            captureListeners.add(listener);
+            return () => captureListeners.delete(listener);
+          },
+        },
+        invalidateSurface: async () => undefined,
+        settleRendering: async () => undefined,
+      },
+      surface,
+    };
+    const ledgerListeners = new Set<(event: unknown) => void>();
+    const ledger = {
+      active: () => binding,
+      binding: () => binding,
+      dialogOf: () => null,
+      dialogOpen: () => false,
+      recordPageScale: () => undefined,
+      subscribe: (listener: (event: unknown) => void) => {
+        ledgerListeners.add(listener);
+        return () => ledgerListeners.delete(listener);
+      },
+      use: <T>(_id: string, operation: () => Promise<T>) => operation(),
+      viewportOf: () => shown,
+      withGeometry: <T>(_id: string, operation: () => Promise<T>) => operation(),
+    };
+    const changed = () => {
+      for (const listener of ledgerListeners)
+        listener({ change: "updated", surface: { ...surface }, type: "changed" });
+    };
+    const delivered: unknown[] = [];
+    const follow = new ScreencastController({
+      frames: new LatestFrameStream({ sendFrame: async (sent) => void delivered.push(sent) }),
+      ledger: ledger as never,
+      onDialogChanged: () => undefined,
+    });
+    // The first start is unanswered while the page navigates.
+    const start = hub.hold("Page.startScreencast");
+    await follow.start();
+    const streaming = follow.setStreaming(true);
+    await vi.waitFor(() => expect(start.replies).toHaveLength(1));
+    // Page.frameNavigated: a new document, its geometry revision bumped, its size the same.
+    Object.assign(surface, { documentId: "follow", geometryRevision: 2 });
+    changed();
+    // Electron's did-navigate: the page lets its capture go, and its reconcile restores it.
+    for (const [name, listener] of hub.contents.on.mock.calls)
+      if (name === "did-navigate") (listener as (...a: unknown[]) => void)({});
+    capture = null;
+    for (const listener of captureListeners) listener();
+    capture = { height: shown.height, rasterScale: 1, revision: 1, width: shown.width };
+    for (const listener of captureListeners) listener();
+    start.release();
+    start.replies[0]!.resolve({});
+    await streaming;
+    // The page finishes loading, and draws.
+    Object.assign(surface, { loading: false });
+    changed();
+    await vi.waitFor(() =>
+      expect(
+        follow.diagnostics.filter(({ stage }) => stage === "cast-start").length,
+      ).toBeGreaterThan(1),
+    );
+    // Chromium numbers each start's frames: the latest it answered.
+    hub.deliver("Page.screencastFrame", frame(hub.sent("Page.startScreencast").length));
+    await vi.waitFor(() => expect(delivered.length).toBeGreaterThan(0));
+    await pastParking();
+    expect({
+      starts: hub.sent("Page.startScreencast").length,
+      stops: hub.sent("Page.stopScreencast").length,
+    }).toEqual({ starts: 1, stops: 0 });
+    await follow.close();
+    await hub.browser.close();
+  });
+
   // F30, the first half of the hypothesis for follow-never-shown-tab's four starts: a tab never
   // shown sends, before its start's answer is handled, a first frame at the size it last drew,
   // which 6a0311f0b made the hub hand on; the real follow view, sized as the Electron page sizes
@@ -2714,6 +2858,13 @@ describe("Electron debugger teardown", () => {
       ledger: ledger as never,
       onDialogChanged: () => undefined,
     });
+    // What the follow view asks of the hub, beside what reaches Chromium (`starts`).
+    const asked: string[] = [];
+    const ask = channel.send.bind(channel);
+    channel.send = ((method: string, parameters?: Record<string, unknown>) => {
+      if (method === "Page.startScreencast" || method === "Page.stopScreencast") asked.push(method);
+      return ask(method, parameters);
+    }) as typeof channel.send;
     const handed: number[] = [];
     channel.onEvent((method, parameters) => {
       if (method === "Page.screencastFrame")
@@ -2733,10 +2884,23 @@ describe("Electron debugger teardown", () => {
     expect(handed).toEqual([resting.width, shown.width]);
     expect({ discarded: discarded(), starts }).toEqual({ discarded: 0, starts: 1 });
     // The same frame once its cast runs is one it restarts for, once: what the test would see.
+    // The hub asks Chromium for nothing then (F32): the same picture, asked for again by the
+    // owner that stopped it, is the cast that runs.
     hub.deliver("Page.screencastFrame", frame(resting, starts));
+    await vi.waitFor(() => expect(discarded()).toBe(1));
+    await vi.waitFor(() =>
+      expect(asked).toEqual([
+        "Page.startScreencast",
+        "Page.stopScreencast",
+        "Page.startScreencast",
+      ]),
+    );
+    hub.deliver("Page.screencastFrame", frame(shown, starts));
     await vi.waitFor(() => expect(admitted()).toBe(2));
-    await new Promise((resolve) => setImmediate(resolve));
-    expect({ discarded: discarded(), starts }).toEqual({ discarded: 1, starts: 2 });
+    expect({ starts, stops: hub.sent("Page.stopScreencast").length }).toEqual({
+      starts: 1,
+      stops: 0,
+    });
     await follow.close();
     await hub.browser.close();
   });
