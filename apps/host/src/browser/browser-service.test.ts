@@ -8720,19 +8720,6 @@ it("a reopening whose last read fails for another reason keeps the open tab and 
   const started = row.pageBinding!.sessionId;
   expect(started).not.toBe(dead);
   expect(row.closedAt).toBeNull();
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  const sentFor = (method: string) =>
-    runtime.receivedCommands().some((message) => {
-      const command = message.command as
-        { method?: string; parameters?: { surfaceId?: string } } | undefined;
-      return (
-        message.type === "cdp.command" &&
-        command?.method === method &&
-        command.parameters?.surfaceId === row.id
-      );
-    });
-  expect(sentFor(browserHostMethods.fenceTab)).toBe(false);
-  expect(sentFor(browserHostMethods.closeTab)).toBe(false);
   // The page is there, and the next activation finds it in the same session.
   runtime.publishTabs({
     surfaces: [
@@ -8751,6 +8738,19 @@ it("a reopening whose last read fails for another reason keeps the open tab and 
     sessionId: started,
     surfaceId: row.id,
   });
+  // A queued close would have refused that activation as still closing; nothing was sent for it.
+  const sentFor = (method: string) =>
+    runtime.receivedCommands().some((message) => {
+      const command = message.command as
+        { method?: string; parameters?: { surfaceId?: string } } | undefined;
+      return (
+        message.type === "cdp.command" &&
+        command?.method === method &&
+        command.parameters?.surfaceId === row.id
+      );
+    });
+  expect(sentFor(browserHostMethods.fenceTab)).toBe(false);
+  expect(sentFor(browserHostMethods.closeTab)).toBe(false);
 });
 
 function memoryTabs() {
