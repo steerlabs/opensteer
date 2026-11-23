@@ -91,6 +91,55 @@ export const stateAreas = [
   "policy",
 ] as const;
 
+export type StateArea = (typeof stateAreas)[number];
+
+/**
+ * What a connection's grant lets it see of `opensteer_state`, the one function its listing, its
+ * description and the Home's answer read (rule 5): no chats for any connection (they are other
+ * connections), and for a selected grant no settings, engines or organization policy, and devices
+ * only with a computer app it was given.
+ */
+export function connectionStateAreas(
+  grant:
+    | { readonly scope: "everything" }
+    | { readonly scope: "selected"; readonly resources: readonly { readonly kind: string }[] },
+): readonly StateArea[] {
+  return stateAreas.filter((area) => {
+    if (area === "chats") return false;
+    if (grant.scope === "everything") return true;
+    if (area === "settings" || area === "engines" || area === "policy") return false;
+    if (area === "devices")
+      return grant.resources.some((resource) => resource.kind === "computer-app");
+    return true;
+  });
+}
+
+const stateAreaWords: Readonly<Record<StateArea, string>> = {
+  settings: "settings: the person's settings.",
+  connections:
+    "connections: connected agents (the other AI apps the person connected) and what each may use.",
+  devices: "devices: the person's devices and what each allows.",
+  chats: "chats: chat accounts and their chats.",
+  engines: "engines: AI engine accounts.",
+  requests: "requests: what waits for the person.",
+  activity: "activity: what agents did.",
+  policy: "policy: the organization's policy.",
+};
+const stateLead =
+  "See what is set up in Opensteer now, as the person's apps show it, cut to what you may see.";
+
+/** The state tool's description for a connection: only the areas it may read. */
+export function connectionStateDescription(areas: readonly StateArea[]): string {
+  const words = areas.map((area) =>
+    area === "connections"
+      ? "connections: this connection and what it may use."
+      : area === "devices"
+        ? "devices: the devices of the apps you were given."
+        : stateAreaWords[area],
+  );
+  return [stateLead, ...words, "An area you cannot see is unavailable."].join(" ");
+}
+
 export const opensteer_state = defineAgentTool({
   name: "opensteer_state",
   title: "See what is set up",

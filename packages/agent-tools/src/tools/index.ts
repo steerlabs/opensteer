@@ -85,6 +85,7 @@ export const requestToolNames: readonly AgentToolName[] = agentTools
   .filter((tool) => "opensRequest" in tool && tool.opensRequest === true)
   .map(({ name }) => name);
 
+export { connectionStateAreas, connectionStateDescription, type StateArea } from "./commands.js";
 export * from "./apps.js";
 export * from "./browser.js";
 export * from "./computer.js";

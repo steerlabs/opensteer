@@ -151,6 +151,32 @@ describe("the connection's actual MCP listing", () => {
     ["empty", selected(false), [], undefined],
   ];
   it.each(shapes)(
+    "names only the state areas %s may read (G5)",
+    async (_name, grant, _e, accessMode) => {
+      const { tools } = await measureMcpContext("connection", {
+        grant,
+        ...(accessMode ? { accessMode } : {}),
+      });
+      const state = tools.find((tool) => tool.name === "opensteer_state");
+      if (!state) return;
+      const areas = (state.inputSchema.properties?.area as { enum?: string[] } | undefined)?.enum;
+      const selectedGrant = (grant as { scope: string }).scope === "selected";
+      const apps = JSON.stringify(grant).includes('"computer-app"');
+      expect(areas?.sort()).toEqual(
+        [
+          "connections",
+          "requests",
+          "activity",
+          ...(selectedGrant ? [] : ["settings", "engines", "policy"]),
+          ...(!selectedGrant || apps ? ["devices"] : []),
+        ].sort(),
+      );
+      // Its words name only those, and the connections area as this connection's own.
+      expect(state.description).not.toMatch(/\bchats?\b|another agent|other AI apps/u);
+      expect(state.description).toContain("connections: this connection");
+    },
+  );
+  it.each(shapes)(
     "names only callable tools and supported shapes for %s",
     async (_name, grant, expected, accessMode) => {
       const { tools, instructions } = await measureMcpContext("connection", {

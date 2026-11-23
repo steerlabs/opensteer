@@ -1,3 +1,4 @@
+import { connectionStateAreas } from "@opensteer/agent-tools/tools";
 import {
   OpensteerError,
   type RequestId,
@@ -212,6 +213,8 @@ export class CommandTools {
     const holder = await agentCommandScope(this.#database)(caller);
     if (holder === "gone") throw notFound();
     const { scope, grant, mode } = holder;
+    // Under a connection's grant only what its listing names, by the same function (rule 5).
+    if (grant && !connectionStateAreas(grant).includes(input.area)) throw notFound();
     const connectionId =
       caller.kind === "connection"
         ? caller.connectionId
