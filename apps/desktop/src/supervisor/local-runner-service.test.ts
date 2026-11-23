@@ -2797,6 +2797,39 @@ describe("LocalRunnerService", () => {
     expect(status.runner.detail).not.toContain("abcdefghijklmnop");
   });
 
+  it("scrubs the worker's own proxy credentials from its last output", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://diagnostics.opensteer.test");
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    const running = fixture(await configuration(directory), targets, () => 10_000, undefined, {
+      userEnvironment: {
+        resolve: async () => ({
+          ...(await testUserEnvironment(directory).resolve()),
+          https_proxy: proxy,
+        }),
+      },
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+
+    await new Promise<void>((resolvePromise) => {
+      child.stderr.write(`runner: network error via ${proxy}\n`, () => resolvePromise());
+    });
+    child.emit("exit", 1);
+    await eventually(
+      async () => (await running.service.status(target.deploymentId)).runner.state === "failed",
+    );
+
+    const status = await running.service.status(target.deploymentId);
+    expect(status.runner.detail).toContain(
+      "runner: network error via http://[REDACTED]@proxy.invalid:8080",
+    );
+  });
+
   it("does not restart a crashed worker once this Mac is removed", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -3021,6 +3054,7 @@ function fixture(
     readonly stopTimeouts?: LocalRunnerServiceDependencies["stopTimeouts"];
     readonly agentsStoppedSince?: LocalRunnerServiceDependencies["agentsStoppedSince"];
     readonly onUncontainedBoot?: LocalRunnerServiceDependencies["onUncontainedBoot"];
+    readonly userEnvironment?: LocalRunnerServiceDependencies["userEnvironment"];
   } = {},
 ) {
   const children: FakeUtilityProcess[] = [];
@@ -3072,7 +3106,7 @@ function fixture(
       ...(options.agentsStoppedSince ? { agentsStoppedSince: options.agentsStoppedSince } : {}),
       ...(options.onUncontainedBoot ? { onUncontainedBoot: options.onUncontainedBoot } : {}),
       targets,
-      userEnvironment: testUserEnvironment(config.dataDirectory),
+      userEnvironment: options.userEnvironment ?? testUserEnvironment(config.dataDirectory),
     }),
   };
 }

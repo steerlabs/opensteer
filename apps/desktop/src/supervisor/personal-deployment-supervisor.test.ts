@@ -1043,6 +1043,30 @@ describe("PersonalDeploymentSupervisor", () => {
     expect(fixture.supervisor.status.issue?.detail).not.toContain("private-value");
   });
 
+  it("scrubs a configured proxy password from deployment status details", async () => {
+    vi.stubEnv("HTTPS_PROXY", "http://alice:p@ss/word@proxy.invalid:8080");
+    try {
+      const fixture = supervisorFixture(null);
+      fixture.host.waitForHost.mockImplementationOnce(() => new Promise(() => undefined));
+      const starting = fixture.supervisor.start();
+      await vi.waitFor(() => {
+        expect(
+          fixture.processes.children.find(({ component }) => component === "host"),
+        ).toBeDefined();
+      });
+      const host = fixture.processes.children.find(({ component }) => component === "host");
+      if (!host) throw new Error("Host test process was not created");
+      host.stderr.write("network authentication failed for password p@ss/word\n");
+      host.stderr.end();
+      host.emit("exit", 1, null);
+
+      await expect(starting).rejects.toThrow(/network authentication failed/u);
+      expect(fixture.supervisor.status.issue?.detail).toContain("password [REDACTED]");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps a pinned copy before converting, and refuses the update when it cannot", async () => {
     const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
     const nextRelease = verifiedRelease({ hostVersion: "1.2.4", runnerVersion: "2.3.5" });
