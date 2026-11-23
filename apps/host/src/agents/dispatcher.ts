@@ -492,6 +492,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const binding = await this.#store
       .acquireExecutionBinding({
         personalContext: context.personalContext,
+        personLineage: context.lineage.personLineage,
         bindingLeaseExpiresAt: new Date(this.#executionNow() + this.#executionLeaseMs),
         continuationIdentity: catalog.continuationIdentity,
         harnessInstanceId: context.run.harnessInstanceId,
@@ -613,6 +614,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         accessMode: runAccessMode,
         taskPurpose: context.thread.purpose,
         personalContext: context.personalContext,
+        // The person wrote their engine's settings for their own use; work a
+        // connected agent or a chat started or wrote into never runs with them.
+        // Decided where personal context is decided (`runContextLineage`).
+        personLineage: context.lineage.personLineage,
         threadState,
         assignment: assignment
           ? {

@@ -14,6 +14,7 @@ import {
 } from "@opensteer/shared/processSecrets";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
+import { networkCredentialSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import type { EnvironmentId, RunnerId } from "@opensteer/core";
 import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
@@ -560,10 +561,11 @@ const entryPath = process.argv[1];
 if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
   main().catch((error: unknown) => {
     process.exitCode = 1;
+    const secrets = networkCredentialSecrets(process.env);
     const message = error instanceof Error ? error.message : "Runner failed";
     process.stderr.write(
       `${JSON.stringify({
-        error: message
+        error: redactNetworkCredentials(message, secrets)
           .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]")
           .replace(/os_secret_[A-Za-z0-9_-]+/g, "os_secret_[redacted]")
           .slice(0, 2_000),

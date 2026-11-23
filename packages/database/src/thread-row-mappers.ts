@@ -57,9 +57,15 @@ export const threadContinuationIdentitySelection = sql<Thread["continuationIdent
   select continuation_identity from provider_sessions
   where thread_id = threads.id and active
 )`.as("continuationIdentity");
+/** A connected agent or a chat started this task, so the person's own engine rules do not apply. */
+export const threadStartedByOtherSelection = sql<boolean>`(
+  threads.origin_connection_id is not null
+)`.as("startedByOther");
 type ThreadReadRow = {
   readonly lastVisitedAt?: Date | null;
   readonly latestRunCompletedAt?: Date | null;
+  readonly originConnectionId?: string | null;
+  readonly startedByOther?: boolean;
   readonly askedAt: Date;
   readonly doneAt: Date | null;
   readonly doneReason?: Thread["doneReason"];
@@ -92,6 +98,7 @@ export function threadsFromRows(rows: readonly ThreadReadRow[]): Thread[] {
   return ThreadSchema.array().parse(rows.map(threadValueFromRow));
 }
 function threadValueFromRow(row: ThreadReadRow) {
+  const startedByOther = row.startedByOther ?? row.originConnectionId != null;
   return {
     ...row,
     lastVisitedAt: row.lastVisitedAt?.toISOString() ?? null,
@@ -102,6 +109,7 @@ function threadValueFromRow(row: ThreadReadRow) {
     doneReason: row.doneReason ?? null,
     ...(row.doneBy === undefined ? {} : { doneBy: row.doneBy }),
     pendingRequests: row.pendingRequests,
+    ...(startedByOther ? { startedByOther: true } : {}),
     updatedAt: row.updatedAt.toISOString(),
   };
 }

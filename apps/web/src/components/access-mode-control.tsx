@@ -1,6 +1,10 @@
 import { useRef, useState } from "react";
 import type { ThreadAccessMode } from "@opensteer/core";
-import { accessModeOptions, accessModeUnavailableReason } from "@opensteer/client/host";
+import {
+  accessModeOptions,
+  accessModeUnavailableReason,
+  connectionModeDescriptions,
+} from "@opensteer/client/host";
 import { composerFold } from "./fold-to-fit.js";
 import { Icon, type IconName } from "./icon.js";
 import { Popover } from "./popover.js";
@@ -17,6 +21,7 @@ interface AccessModeControlProps {
   engine: AccessModeEngine | null;
   mode: ThreadAccessMode;
   onApply: (mode: ThreadAccessMode) => Promise<void> | void;
+  startedByOther?: boolean | undefined;
 }
 
 /**
@@ -40,12 +45,18 @@ export function AccessModeControl({
   engine,
   mode,
   onApply,
+  startedByOther = false,
 }: AccessModeControlProps) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   const current = accessModeOptions.find((option) => option.mode === mode);
   const label = current?.label ?? mode;
+  const description = current
+    ? startedByOther
+      ? connectionModeDescriptions[current.mode]
+      : current.description
+    : null;
   // A mode the chosen engine cannot enforce stays named, marked, and explained:
   // the composer will not start work in it until another mode is chosen.
   const conflict = engine ? accessModeUnavailableReason(mode, engine) : null;
@@ -75,7 +86,7 @@ export function AccessModeControl({
         disabled={disabled || pending}
         onClick={() => setOpen((value) => !value)}
         ref={anchorRef}
-        title={conflict ?? (current ? `${current.label}\n${current.description}` : label)}
+        title={conflict ?? (description ? `${label}\n${description}` : label)}
         type="button"
       >
         <Icon name={accessModeGlyph[mode]} />
@@ -93,6 +104,7 @@ export function AccessModeControl({
             engine={engine}
             mode={mode}
             onSelect={(nextMode) => void apply(nextMode)}
+            startedByOther={startedByOther}
           />
         </Popover>
       ) : null}
@@ -104,10 +116,12 @@ export function AccessModePanel({
   engine,
   mode,
   onSelect,
+  startedByOther = false,
 }: {
   engine: AccessModeEngine | null;
   mode: ThreadAccessMode;
   onSelect: (mode: ThreadAccessMode) => void;
+  startedByOther?: boolean | undefined;
 }) {
   return (
     <div aria-label="Access mode" className="picker__section" role="group">
@@ -137,7 +151,10 @@ export function AccessModePanel({
             </span>
             <span className="picker__label-stack">
               <span className="picker__label">{option.label}</span>
-              <span className="picker__detail">{unavailable ?? option.description}</span>
+              <span className="picker__detail">
+                {unavailable ??
+                  (startedByOther ? connectionModeDescriptions[option.mode] : option.description)}
+              </span>
             </span>
           </button>
         );

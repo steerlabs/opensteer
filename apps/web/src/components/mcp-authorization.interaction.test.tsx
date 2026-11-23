@@ -305,6 +305,10 @@ describe("signed-in MCP connection consent", () => {
     expect(container.textContent).not.toContain("Returns to");
     expect(container.textContent).toContain("Access goes to example.agent.");
     expect(container.textContent).not.toContain("What it can use");
+    // The mode reads as it does for a connection: its work never runs with
+    // the person's own engine settings.
+    expect(container.textContent).not.toContain("a rule you set in the engine");
+    expect(container.textContent).toContain("Asks you before anything that changes something.");
     expect(container.querySelector<HTMLInputElement>('input[type="radio"]:checked')!.value).toBe(
       "approval-required",
     );

@@ -673,6 +673,33 @@ export function migrationProvider(options?: {
               ...onePersonHomeContractMigration,
               // A connected agent is verified by the origin it is reached at, and nothing else.
               ...platformVerificationRemovalMigration,
+              "0114_thread_inputs_written_by_connection": {
+                /**
+                 * Indexes connection-written inputs per task so `threadContextLineage` checks
+                 * whether any ancestor task was written into by a connected agent without
+                 * scanning `thread_inputs` per ancestor.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    create index if not exists thread_inputs_written_by_connection
+                    on thread_inputs(thread_id)
+                    where connection_id is not null and state <> 'cancelled'
+                  `.execute(database);
+                },
+              },
+              "0115_provider_session_person_lineage": {
+                /**
+                 * Tracks whether a native provider session was created under the person's own
+                 * lineage so a narrowing (`true -> false`) rotates the session instead of
+                 * resuming a conversation that already loaded the person's own configuration.
+                 */
+                async up(database: Kysely<unknown>) {
+                  await sql`
+                    alter table provider_sessions
+                    add column if not exists person_lineage boolean not null default true
+                  `.execute(database);
+                },
+              },
             }
           : {}),
       };

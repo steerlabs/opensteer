@@ -51,6 +51,7 @@ it("records a successful Codex command with large inline arguments without faili
     context: {
       accessMode: "full-access",
       personalContext: true,
+      personLineage: true,
       assignment: null,
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
