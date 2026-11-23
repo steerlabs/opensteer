@@ -39,7 +39,6 @@ export interface WarmEngine {
   };
   /** The containment scope of every process the engine started. */
   readonly scope: string;
-  readonly retireSharedEngine?: ((reason: string) => Promise<void>) | undefined;
   readonly session: HarnessSession;
   readonly threadId: ThreadId;
 }

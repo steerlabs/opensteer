@@ -284,6 +284,8 @@ export interface CodexHarnessDependencies {
   readonly fetchModels?: typeof fetch;
   readonly launch: CodexLaunch;
   readonly spawnAuthenticationProcess?: typeof spawnSupervised;
+  /** Upper bound on waiting for a conversation to close on Stop; tests may shorten it. */
+  readonly threadCloseMaxMs?: number;
 }
 
 export interface CodexLaunch {
@@ -549,6 +551,7 @@ export class CodexHarnessDriver implements HarnessDriver {
       this.#dependencies.launch,
       codexSourceSelection(config, context.sourceId),
       context.log,
+      this.#dependencies.threadCloseMaxMs,
     );
   }
 }
@@ -847,6 +850,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
   readonly #launch: CodexLaunch;
   readonly #log: HarnessLog | undefined;
   readonly #source: CodexSourceSelection;
+  readonly #threadCloseMaxMs: number;
   readonly #sessions = new HarnessSessionRegistry<CodexHarnessSession>("Codex");
   /** Every app-server this adapter started that has not ended. */
   readonly #servers = new Set<CodexAppServer>();
@@ -865,12 +869,14 @@ class CodexHarnessAdapter implements HarnessAdapter {
     launch: CodexLaunch,
     source: CodexSourceSelection,
     log: HarnessLog | undefined,
+    threadCloseMaxMs = codexThreadCloseMaxMs,
   ) {
     this.instanceId = instanceId;
     this.#config = config;
     this.#launch = launch;
     this.#log = log;
     this.#source = source;
+    this.#threadCloseMaxMs = threadCloseMaxMs;
   }
 
   recycle(): void {
@@ -878,31 +884,6 @@ class CodexHarnessAdapter implements HarnessAdapter {
     this.#shared = undefined;
     void shared?.server.then((server) => server.recycle()).catch(() => undefined);
     for (const server of this.#servers) server.recycle();
-  }
-
-  async retireSharedEngine(reason: string): Promise<void> {
-    const shared = this.#shared;
-    this.#shared = undefined;
-    const failure = new OpensteerError({
-      code: "harness_error",
-      message: reason,
-      retryable: true,
-    });
-    const pendingStarts = [...this.#sharedStarting];
-    if (shared) pendingStarts.push(shared.server);
-    const servers = new Set<CodexAppServer>(
-      [...this.#servers].filter((server) => !server.dedicated),
-    );
-    const started = await Promise.allSettled(pendingStarts);
-    for (const result of started) {
-      if (result.status === "fulfilled" && !result.value.dedicated) servers.add(result.value);
-    }
-    for (const server of this.#servers) {
-      if (!server.dedicated) servers.add(server);
-    }
-    await Promise.all(
-      [...servers].map((server) => server.retire(failure, { othersInterrupted: true })),
-    );
   }
 
   async generateText({
@@ -1104,6 +1085,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
       (lifetime) => this.#server(context, lifetime),
       this.#log,
       (closed) => this.#sessions.release(closed),
+      this.#threadCloseMaxMs,
     );
   }
 
@@ -1283,6 +1265,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   readonly #openTurns = new Map<string, string>();
   /** `${threadId}\0${turnId}` keys already sent a `turn/interrupt`, so none is sent twice. */
   readonly #interruptedTurns = new Set<string>();
+  /** Notified when a turn appears on a thread after Stop has begun. */
+  readonly #lateTurnListeners = new Set<(threadId: string) => void>();
+  readonly #threadCloseMaxMs: number;
 
   private constructor(
     config: CodexHarnessConfig,
@@ -1290,12 +1275,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     acquire: (lifetime: AbortSignal) => Promise<CodexAppServer>,
     log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
+    threadCloseMaxMs: number,
   ) {
     this.#acquire = acquire;
     this.#config = config;
     this.#log = log;
     this.#context = context;
     this.#onClose = onClose;
+    this.#threadCloseMaxMs = threadCloseMaxMs;
     this.#publisher = new TurnPublisher({
       maxBytes: config.maxEventBytes,
       maxItems: config.maxEventItems,
@@ -1312,6 +1299,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     acquire: (lifetime: AbortSignal) => Promise<CodexAppServer>,
     log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
+    threadCloseMaxMs = codexThreadCloseMaxMs,
   ): Promise<CodexHarnessSession> {
     if (context.signal.aborted) {
       throw markOpenStopProven(
@@ -1321,7 +1309,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         }),
       );
     }
-    const session = new CodexHarnessSession(config, context, acquire, log, onClose);
+    const session = new CodexHarnessSession(
+      config,
+      context,
+      acquire,
+      log,
+      onClose,
+      threadCloseMaxMs,
+    );
     try {
       await session.#initialize(mode);
       return session;
@@ -1336,9 +1331,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       try {
         await stop;
       } catch (stopError) {
+        const server = session.#server;
         throw new HarnessStopUnprovenError(
           "Codex session could not be proven stopped during startup",
-          { cause: stopError },
+          {
+            cause: stopError,
+            retireEngine:
+              server && !server.dedicated ? (reason) => session.retireEngine(reason) : undefined,
+          },
         );
       } finally {
         session.#server?.detach(session);
@@ -1357,6 +1357,20 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
 
   get engineProcess(): "own" | "shared" {
     return this.#server?.dedicated === false ? "shared" : "own";
+  }
+
+  /** Retires ONLY the shared app-server this session attached to, never another server. */
+  async retireEngine(reason: string): Promise<void> {
+    const server = this.#server;
+    if (!server || server.dedicated) return;
+    await server.retire(
+      new OpensteerError({
+        code: "harness_error",
+        message: reason,
+        retryable: true,
+      }),
+      { othersInterrupted: true, initiator: this },
+    );
   }
 
   get providerSessionReference(): string {
@@ -1677,7 +1691,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       await Promise.race([active.idReady.promise, active.completion.promise]);
     // A message arriving while the root starts a turn joins that turn once it has.
     if (active.root === "starting") await active.rootStart?.promise;
-    if (active.terminal || active.interruptRequested) throw steerConflict();
+    if (this.#closed || active.terminal || active.interruptRequested) throw steerConflict();
     if (active.root === "idle") {
       await this.#startFollowUpTurn(active, input);
       return;
@@ -1696,7 +1710,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       method: "turn/steer",
       params: turnSteer,
     });
-    if (active.terminal || active.interruptRequested) throw steerConflict();
+    if (this.#closed || active.terminal || active.interruptRequested) throw steerConflict();
     const client = this.#requireClient();
     try {
       await client.request("turn/steer", turnSteer(steered));
@@ -1724,7 +1738,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       method: "turn/start",
       params: turnStart,
     });
-    if (active.terminal || active.interruptRequested || active.root !== "idle") {
+    if (this.#closed || active.terminal || active.interruptRequested || active.root !== "idle") {
       throw steerConflict();
     }
     active.root = "starting";
@@ -1751,12 +1765,15 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
 
   /** The root's new turn started, announced or answered, whichever came first. */
   #beginFollowUpTurn(active: ActiveTurn, turnId: string): void {
+    const rootThreadId = this.#requireCodexThreadId();
+    if (this.#closed || active.interruptRequested) {
+      this.#noteOpenTurn(rootThreadId, turnId);
+    }
     if (active.root !== "starting" || active.terminal) return;
     active.root = "executing";
     active.providerTurnId = turnId;
     active.providerTurnOpen = true;
-    const rootThreadId = this.#requireCodexThreadId();
-    this.#openTurns.set(rootThreadId, turnId);
+    this.#noteOpenTurn(rootThreadId, turnId);
     this.#ownTurn(active, rootThreadId, turnId);
     active.rootStart?.resolve();
     this.#publish({ data: { phase: "turn" }, type: "run.phase" });
@@ -1935,7 +1952,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       } catch (stopError) {
         throw new HarnessStopUnprovenError(
           "Codex session could not be proven stopped during startup",
-          { cause: stopError },
+          {
+            cause: stopError,
+            retireEngine: !server.dedicated ? (reason) => this.retireEngine(reason) : undefined,
+          },
         );
       } finally {
         server.detach(this);
@@ -1970,6 +1990,21 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     return timeoutMs === undefined
       ? client.request("turn/interrupt", { threadId, turnId })
       : client.request("turn/interrupt", { threadId, turnId }, timeoutMs);
+  }
+
+  /**
+   * Level-triggered stop: records an open turn on `threadId` and, if Stop has
+   * already begun, immediately interrupts it once and alerts any unload in flight.
+   */
+  #noteOpenTurn(threadId: string, turnId: string): void {
+    this.#openTurns.set(threadId, turnId);
+    if (!this.#closed && !this.#activeTurn?.interruptRequested) return;
+    const client = this.#server?.client;
+    if (client) {
+      const timeoutMs = Math.min(this.#threadCloseMaxMs, this.#config.requestTimeoutMs);
+      void this.#interruptTurnOnce(client, threadId, turnId, timeoutMs)?.catch(() => undefined);
+    }
+    for (const listener of this.#lateTurnListeners) listener(threadId);
   }
 
   async #interruptActive(active: ActiveTurn): Promise<void> {
@@ -2071,7 +2106,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         } catch (error) {
           await server.retire(
             toHarnessError(error, "Codex session stop failed, so its app-server was ended"),
-            { othersInterrupted: true },
+            { othersInterrupted: true, initiator: this },
           );
         }
         // Its conversation closed, or its server is gone: the turn is over.
@@ -2100,7 +2135,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       await server.close();
       return;
     }
-    const closeTimeoutMs = Math.min(codexThreadCloseMaxMs, this.#config.requestTimeoutMs);
+    const closeTimeoutMs = Math.min(this.#threadCloseMaxMs, this.#config.requestTimeoutMs);
     const client = server.client;
     const root = this.#codexThreadId;
     // Codex does not close a thread with a turn in flight unless that turn was
@@ -2134,26 +2169,49 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     };
     // What the router gave this session, its subagents however they were found
     // included, and any a parent lookup still in flight gives it meanwhile.
-    const unloaded = new Set<string>();
-    let closed = true;
-    for (let round = 0; round < 4; round += 1) {
-      await server.discoveries();
-      const owned = server.threadsOf(this).filter((threadId) => !unloaded.has(threadId));
-      if (owned.length === 0) break;
-      const ordered = [
-        ...owned.filter((threadId) => threadId !== root),
-        ...owned.filter((threadId) => threadId === root),
-      ];
-      const results = await Promise.all(
-        ordered.map(async (threadId) => {
-          unloaded.add(threadId);
-          // Send turn/interrupt ahead of thread/unsubscribe on the ordered pipe,
-          // without waiting for turn/interrupt's reply.
-          interruptBeforeUnsubscribe(threadId);
-          return server.unload(threadId, this, closeTimeoutMs);
-        }),
-      );
-      closed &&= results.every(Boolean);
+    // A thread whose first unload returned false before a late turn appeared is
+    // retried once that turn is interrupted (still at most once per turn id).
+    const closedThreads = new Set<string>();
+    const unclosed = new Set<string>();
+    const retryThreads = new Set<string>();
+    const onLateTurn = (threadId: string) => {
+      if (closedThreads.has(threadId)) return;
+      retryThreads.add(threadId);
+    };
+    this.#lateTurnListeners.add(onLateTurn);
+    try {
+      for (let round = 0; round < 4; round += 1) {
+        await server.discoveries();
+        const owned = server
+          .threadsOf(this)
+          .filter(
+            (threadId) =>
+              !closedThreads.has(threadId) &&
+              (!unclosed.has(threadId) || retryThreads.has(threadId)),
+          );
+        if (owned.length === 0) break;
+        const ordered = [
+          ...owned.filter((threadId) => threadId !== root),
+          ...owned.filter((threadId) => threadId === root),
+        ];
+        await Promise.all(
+          ordered.map(async (threadId) => {
+            retryThreads.delete(threadId);
+            // Send turn/interrupt ahead of thread/unsubscribe on the ordered pipe,
+            // without waiting for turn/interrupt's reply.
+            interruptBeforeUnsubscribe(threadId);
+            const ok = await server.unload(threadId, this, closeTimeoutMs);
+            if (ok) {
+              closedThreads.add(threadId);
+              unclosed.delete(threadId);
+            } else {
+              unclosed.add(threadId);
+            }
+          }),
+        );
+      }
+    } finally {
+      this.#lateTurnListeners.delete(onLateTurn);
     }
     // A conversation reads as closed once its server ended, which proves it
     // only once the process has exited.
@@ -2161,7 +2219,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       await server.close();
       return;
     }
-    if (closed && server.threadsOf(this).length === 0) return;
+    if (unclosed.size === 0 && server.threadsOf(this).length === 0) return;
     // The account's other conversations on it end with it: their turns were
     // cut short, not failed.
     await server.retire(
@@ -2170,7 +2228,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         message: "Codex did not close a stopped conversation, so its app-server was ended",
         retryable: true,
       }),
-      { othersInterrupted: true },
+      { othersInterrupted: true, initiator: this },
     );
   }
 
@@ -2307,10 +2365,14 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
     switch (message.method) {
       case "turn/started": {
-        const active = this.#activeTurn;
-        if (!active) return;
         const turn = requireObject(params.turn, "turn/started params.turn");
         const turnId = requireString(turn.id, "turn/started params.turn.id");
+        const rootThreadId = this.#codexThreadId;
+        if (rootThreadId && (this.#closed || !this.#activeTurn || this.#activeTurn.terminal)) {
+          this.#noteOpenTurn(rootThreadId, turnId);
+        }
+        const active = this.#activeTurn;
+        if (!active) return;
         if (this.#context.voiceCall) {
           if (active.providerTurnId === turnId) return;
           delete active.providerTurnId;
@@ -2479,8 +2541,25 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const active = this.#activeTurn;
     const thread = params.thread ? requireObject(params.thread, "thread") : undefined;
     const childThreadId = optionalString(params.threadId) ?? optionalString(thread?.id);
-    if (!active || active.terminal || !childThreadId || childThreadId === this.#codexThreadId)
-      return;
+    if (!childThreadId || childThreadId === this.#codexThreadId) return;
+    const nativeTurn = params.turn
+      ? optionalString(requireObject(params.turn, "turn").id)
+      : undefined;
+    const turnId = optionalString(params.turnId) ?? nativeTurn;
+    // Track child turns even after the active turn is terminal or cleared so a
+    // late child turn/started during Stop is still interrupted once and unloaded.
+    if (method === "turn/started" && turnId) {
+      this.#childThreads.add(childThreadId);
+      try {
+        this.#server?.claim(childThreadId, this);
+      } catch {
+        // Another session's conversation is never this one's subagent.
+      }
+      this.#noteOpenTurn(childThreadId, turnId);
+    } else if (method === "turn/completed" && turnId) {
+      if (this.#openTurns.get(childThreadId) === turnId) this.#openTurns.delete(childThreadId);
+    }
+    if (!active || active.terminal) return;
     const context = this.#childContext(childThreadId);
     if (context.finishing) {
       context.pending.push({ method, params });
@@ -2501,10 +2580,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       active.nodes.update(childThreadId, context);
       return;
     }
-    const nativeTurn = params.turn
-      ? optionalString(requireObject(params.turn, "turn").id)
-      : undefined;
-    const turnId = optionalString(params.turnId) ?? nativeTurn;
     if (
       turnId &&
       context.completedTurns.has(turnId) &&
@@ -2518,15 +2593,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     )
       return;
     if (method === "turn/started" && turnId) {
-      const alreadyRegistered = active.childTurns.get(childThreadId) === turnId;
       active.childTurns.set(childThreadId, turnId);
-      this.#openTurns.set(childThreadId, turnId);
-      if (active.interruptRequested && !alreadyRegistered)
-        void this.#interruptTurnOnce(this.#requireClient(), childThreadId, turnId)?.catch(
-          () => undefined,
-        );
       active.nodes.update(childThreadId, { stopSupported: true });
-      this.#childThreads.add(childThreadId);
       this.#ownTurn(active, childThreadId, turnId);
     }
     if (context.parentKey === undefined) {
@@ -3057,7 +3125,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    */
   #isLiveRunRequest(params: JsonObject): boolean {
     const active = this.#activeTurn;
-    if (!active || active.terminal || active.interruptRequested) return false;
+    if (this.#closed || !active || active.terminal || active.interruptRequested) return false;
     const threadId = optionalString(params.threadId);
     const turnId = optionalString(params.turnId);
     if (!threadId || !turnId) return false;
@@ -3074,7 +3142,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       active.providerTurnId = turnId;
       active.providerTurnOpen = true;
       const rootThreadId = this.#requireCodexThreadId();
-      this.#openTurns.set(rootThreadId, turnId);
+      this.#noteOpenTurn(rootThreadId, turnId);
       this.#ownTurn(active, rootThreadId, turnId);
       active.idReady.resolve();
     }

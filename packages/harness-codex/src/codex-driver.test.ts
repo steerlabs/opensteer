@@ -3551,6 +3551,127 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it("H2(a): interrupts a turn whose turn/start reply arrives after closeTimeoutMs and closes cleanly without retiring neighbours", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "opensteer-codex-late-turn-start-"));
+    const turnStartRelease = join(dir, "turn-start-release");
+    const neverReleased = join(dir, "never-release");
+    const fixture = await setup("long-stream-held", {
+      requestTimeoutMs: 5_000,
+      threadCloseMaxMs: 250,
+      serverArguments: [
+        "--unique-threads",
+        "--ignore-interrupt",
+        `--hold-turn-start-file=${turnStartRelease}`,
+        `--release-file=${neverReleased}`,
+      ],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Write at length"));
+      await vi.waitFor(async () =>
+        expect(await fixture.capture()).toContainEqual({
+          fakeTurnStartHeld: stopping.providerSessionReference,
+        }),
+      );
+      // Direct stop() (no interrupt() beforehand): waits closeTimeoutMs (250ms),
+      // sends thread/unsubscribe before turn/start replies; then turn/start replies
+      // late at ~320ms while unload is still awaiting thread/closed.
+      const stopPromise = stopping.stop();
+      await vi.waitFor(async () =>
+        expect(
+          (await fixture.capture()).some(
+            (message) =>
+              message.method === "thread/unsubscribe" &&
+              (message.params as JsonRecord).threadId === stopping.providerSessionReference,
+          ),
+        ).toBe(true),
+      );
+      await writeFile(turnStartRelease, "");
+      await stopPromise;
+      await observer.done;
+      const captured = await fixture.capture();
+      const threadId = stopping.providerSessionReference;
+      const interrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).threadId === threadId,
+      );
+      expect(interrupts).toHaveLength(1);
+      expect(captured).toContainEqual({ fakeThreadClosed: threadId });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("H2(b): interrupts a late sibling child turn/started after root idle stop and closes cleanly without retiring neighbours", async () => {
+    const fixture = await setup("subagents-late-sibling", {
+      requestTimeoutMs: 1_000,
+      serverArguments: ["--unique-threads", "--ignore-interrupt"],
+    });
+    try {
+      const stopping = await fixture.adapter.startSession(taskContext(fixture, "stopping"));
+      const other = await fixture.adapter.startSession(taskContext(fixture, "other"));
+      const observer = observe(stopping.events);
+      void stopping.execute(fixture.turn("Delegate to researchers"));
+      await observer.waitFor("run.phase");
+      // Root is now idle while child 1 runs; interrupt() interrupts child 1 and
+      // publishes terminal immediately, while the server emits a late sibling child
+      // turn/started. Stop must still interrupt that sibling once and close it cleanly.
+      await stopping.interrupt();
+      await stopping.stop();
+      await observer.done;
+      const captured = await fixture.capture();
+      const siblingInterrupts = captured.filter(
+        (message) =>
+          message.method === "turn/interrupt" &&
+          (message.params as JsonRecord).turnId === "sibling-turn-1",
+      );
+      expect(siblingInterrupts).toHaveLength(1);
+      const siblingThreadId = (siblingInterrupts[0]!.params as JsonRecord).threadId as string;
+      expect(captured).toContainEqual({ fakeThreadClosed: siblingThreadId });
+      expect(captured).toContainEqual({ fakeThreadClosed: stopping.providerSessionReference });
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(1);
+      expect(processAlive(pids[0]!)).toBe(true);
+      expect(other.usable).toBe(true);
+      await other.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("H3: retireEngine retires only the shared server its session ran on and leaves another shared server alive", async () => {
+    const fixture = await setup("happy", {
+      serverArguments: ["--unique-threads"],
+    });
+    try {
+      const first = await fixture.adapter.startSession(taskContext(fixture, "first"));
+      fixture.adapter.recycle?.();
+      const second = await fixture.adapter.startSession(taskContext(fixture, "second"));
+      const pids = await runServerPids(fixture);
+      expect(pids).toHaveLength(2);
+      const [firstPid, secondPid] = pids;
+      expect(processAlive(firstPid!)).toBe(true);
+      expect(processAlive(secondPid!)).toBe(true);
+      expect(typeof first.retireEngine).toBe("function");
+      await first.retireEngine!("Retire only the failing conversation's shared server");
+      expect(processAlive(firstPid!)).toBe(false);
+      expect(processAlive(secondPid!)).toBe(true);
+      expect(second.usable).toBe(true);
+      await second.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("stops a Run's turns before the app-server it owns ends with the Run's lifetime", async () => {
     const fixture = await setup("subagents-late-start", { sharedEngine: false });
     try {
@@ -4045,6 +4166,7 @@ interface SetupOptions {
   readonly providerStateKind?: "ambient" | "isolated";
   readonly shutdownGraceMs?: number;
   readonly startupTimeoutMs?: number;
+  readonly threadCloseMaxMs?: number;
   readonly wrapProcessLaunch?: HarnessSessionContext["wrapProcessLaunch"];
 }
 
@@ -4076,6 +4198,9 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       arguments: options.executable ? [] : [fakeServer, ...(options.serverArguments ?? [])],
       executable: options.executable ?? process.execPath,
     },
+    ...(options.threadCloseMaxMs !== undefined
+      ? { threadCloseMaxMs: options.threadCloseMaxMs }
+      : {}),
   });
   const harnessInstanceId = createId("harnessInstance") as HarnessInstanceId;
   const compatible = compatibleContext(directory, "isolated");

@@ -45,9 +45,13 @@ export interface CodexThreadOwner {
   receive(message: CodexMethodMessage): void;
   /**
    * The process is gone or retired: nothing it owed will arrive. `interrupted`
-   * when another session's stop ended it, which cut this owner's turn short.
+   * when a stop ended it; `engineRetired` when another session's stop forced
+   * this shared server to retire, cutting this owner's Run short.
    */
-  serverFailed(error: OpensteerError, options?: { readonly interrupted?: boolean }): void;
+  serverFailed(
+    error: OpensteerError,
+    options?: { readonly interrupted?: boolean; readonly engineRetired?: boolean },
+  ): void;
   /**
    * Codex did not answer a request about one of this owner's conversations in
    * time. Whether it acted on it is unknown, so the owner cannot go on.
@@ -350,9 +354,12 @@ export class CodexAppServer {
    */
   async retire(
     error: OpensteerError,
-    options?: { readonly othersInterrupted?: boolean },
+    options?: {
+      readonly othersInterrupted?: boolean;
+      readonly initiator?: CodexThreadOwner;
+    },
   ): Promise<void> {
-    this.#fail(error, options?.othersInterrupted === true);
+    this.#fail(error, options);
     await this.close();
   }
 
@@ -376,7 +383,13 @@ export class CodexAppServer {
     this.#onEnded?.(this);
   }
 
-  #fail(error: OpensteerError, interrupted = false): void {
+  #fail(
+    error: OpensteerError,
+    options?: {
+      readonly othersInterrupted?: boolean;
+      readonly initiator?: CodexThreadOwner;
+    },
+  ): void {
     if (this.#failure) return;
     this.#failure = error;
     this.#log?.("warn", "codex.app-server.failed", {
@@ -385,9 +398,16 @@ export class CodexAppServer {
     });
     const owners = [...this.#attached];
     this.#end();
+    const interrupted = options?.othersInterrupted === true;
     for (const owner of owners) {
       try {
-        owner.serverFailed(error, interrupted ? { interrupted } : undefined);
+        const engineRetired = interrupted && owner !== options?.initiator;
+        owner.serverFailed(
+          error,
+          interrupted
+            ? { interrupted: true, ...(engineRetired ? { engineRetired: true } : {}) }
+            : undefined,
+        );
       } catch {
         // One session's teardown cannot keep the others from hearing.
       }

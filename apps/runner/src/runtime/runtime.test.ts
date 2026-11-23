@@ -3721,6 +3721,9 @@ describe("RunnerRuntime", () => {
       readonly openReached?: () => void;
       readonly settleMs?: number;
       readonly sharedEngineProcess?: boolean;
+      readonly listProcesses?: ConstructorParameters<
+        typeof ExecutionContainment
+      >[0]["listProcesses"];
     }) {
       const driver = new FakeHarnessDriver("test-driver", options.session);
       const create = driver.create.bind(driver);
@@ -3773,23 +3776,25 @@ describe("RunnerRuntime", () => {
         containment: new ExecutionContainment({
           bootId: "boot-test",
           dataDirectory: dirname(testPrivateStateRoot),
-          listProcesses: async () => {
-            const scope = driver.context?.commandEnvironment[executionScopeVariable];
-            return command.alive && scope
-              ? [
-                  {
-                    identity: "command-1",
-                    pid: 4_242,
-                    ppid: 1,
-                    scope,
-                    signal: (name: NodeJS.Signals) => {
-                      command.signalled.push(name);
-                      command.alive = false;
+          listProcesses:
+            options.listProcesses ??
+            (async () => {
+              const scope = driver.context?.commandEnvironment[executionScopeVariable];
+              return command.alive && scope
+                ? [
+                    {
+                      identity: "command-1",
+                      pid: 4_242,
+                      ppid: 1,
+                      scope,
+                      signal: (name: NodeJS.Signals) => {
+                        command.signalled.push(name);
+                        command.alive = false;
+                      },
                     },
-                  },
-                ]
-              : [];
-          },
+                  ]
+                : [];
+            }),
         }),
         stopTimings: { graceMs: 20, sharedEngineSettleMs: options.settleMs ?? 10_000 },
       });
@@ -4261,17 +4266,20 @@ describe("RunnerRuntime", () => {
       failed.catch(() => undefined);
       const retired = deferred<void>();
       let retireCalls = 0;
-      const driver = new FakeHarnessDriver("test-driver", () => new SharedEngineSession(failed));
+      const driver = new FakeHarnessDriver(
+        "test-driver",
+        () =>
+          new SharedEngineSession(failed, "shared", async () => {
+            retireCalls += 1;
+            await retired.promise;
+          }),
+      );
       const create = driver.create.bind(driver);
       driver.create = async (input) => {
         const adapter = await create(input);
         return {
           ...adapter,
           capabilities: { ...adapter.capabilities, sharedEngineProcess: true },
-          retireSharedEngine: async () => {
-            retireCalls += 1;
-            await retired.promise;
-          },
         };
       };
       const registry = new HarnessRegistry();
@@ -4470,19 +4478,33 @@ describe("RunnerRuntime", () => {
       }
     });
 
-    it("ends a dedicated engine stopped while opening on grace without waiting for sharedEngineSettleMs", async () => {
+    it("holds the Thread and ends unproven when a dedicated engine stopped while opening settles past the bound, and lifts only after the late open stops and containment is proven", async () => {
       const opened = deferred<void>();
       const reached = deferred<void>();
       const sessions: SharedEngineSession[] = [];
+      let lateProcessAlive = false;
+      let containmentChecks = 0;
       const f = sharedStopFixture({
         session: () => {
-          const session = new SharedEngineSession(Promise.resolve(), "own");
+          lateProcessAlive = true;
+          const session = new SharedEngineSession(
+            Promise.resolve().then(() => {
+              lateProcessAlive = false;
+            }),
+            "own",
+          );
           sessions.push(session);
           return session;
         },
+        listProcesses: async () => {
+          containmentChecks += 1;
+          return lateProcessAlive
+            ? [{ identity: "late-dedicated-1", pid: 99_101, ppid: 1, scope: null }]
+            : [];
+        },
         startGate: opened.promise,
         openReached: () => reached.resolve(),
-        settleMs: 5_000,
+        settleMs: 120,
         sharedEngineProcess: false,
       });
       const execute = executeCommand(f.environmentId);
@@ -4490,18 +4512,79 @@ describe("RunnerRuntime", () => {
       try {
         await f.runtime.handleCommand(execute, f.sink);
         await reached.promise;
-        const stoppedAt = Date.now();
         await f.runtime.handleCommand(stopOf(execute), f.sink);
         await waitUntil(() => f.ends().length === 1);
-        expect(Date.now() - stoppedAt).toBeLessThan(1_500);
+        expect(f.ends()[0]).toMatchObject({
+          type: "run.failed",
+          data: { code: runTerminationUnprovenCode },
+        });
+        await waitUntil(() => f.runtime.activeRunIds().length === 0);
+        // The open has not settled yet, so the Thread stays held.
+        expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toMatchObject({
+          status: "rejected",
+          error: { code: "conflict", retryable: true },
+        });
+        const checksBeforeOpen = containmentChecks;
+        // Once the late open resolves AFTER Stop was acknowledged, it is stopped,
+        // containment is checked again, and only then does the Thread unlock.
+        opened.resolve();
+        await waitUntil(() => sessions.length >= 1 && sessions[0]!.stops);
+        await waitUntil(async () => {
+          const decision = await f.runtime.handleCommand(nextTurn(execute), f.sink);
+          return decision.status === "accepted";
+        });
+        expect(containmentChecks).toBeGreaterThan(checksBeforeOpen);
+      } finally {
+        opened.resolve();
+        await f.runtime.close();
+      }
+    });
+
+    it("waits within the bound for a dedicated engine stopped while opening, stops its late session, re-checks containment, and proves it stopped", async () => {
+      const opened = deferred<void>();
+      const reached = deferred<void>();
+      const sessions: SharedEngineSession[] = [];
+      let lateProcessAlive = false;
+      const f = sharedStopFixture({
+        session: () => {
+          lateProcessAlive = true;
+          const session = new SharedEngineSession(
+            Promise.resolve().then(() => {
+              lateProcessAlive = false;
+            }),
+            "own",
+          );
+          sessions.push(session);
+          return session;
+        },
+        listProcesses: async () =>
+          lateProcessAlive
+            ? [{ identity: "late-dedicated-2", pid: 99_102, ppid: 1, scope: null }]
+            : [],
+        startGate: opened.promise,
+        openReached: () => reached.resolve(),
+        settleMs: 2_000,
+        sharedEngineProcess: false,
+      });
+      const execute = executeCommand(f.environmentId);
+      await reconcile(f.registry, execute);
+      try {
+        await f.runtime.handleCommand(execute, f.sink);
+        await reached.promise;
+        await f.runtime.handleCommand(stopOf(execute), f.sink);
+        // Stop must NOT report proven before the open settles.
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        expect(f.ends()).toHaveLength(0);
+        opened.resolve();
+        await waitUntil(() => f.ends().length === 1);
+        expect(sessions).toHaveLength(1);
+        expect(sessions[0]!.stops).toBe(true);
+        expect(lateProcessAlive).toBe(false);
         expect(f.ends()[0]?.type).toBe("run.interrupted");
         await waitUntil(() => f.runtime.activeRunIds().length === 0);
         expect(await f.runtime.handleCommand(nextTurn(execute), f.sink)).toEqual({
           status: "accepted",
         });
-        // If the dedicated open resolves late, it is still stopped rather than leaked.
-        opened.resolve();
-        await waitUntil(() => sessions.length >= 1 && sessions[0]!.stops);
       } finally {
         opened.resolve();
         await f.runtime.close();
@@ -6487,10 +6570,16 @@ class SharedEngineSession implements HarnessSession {
   readonly #settled: Promise<void>;
   #stopping: Promise<void> | undefined;
   stops = false;
+  readonly retireEngine?: ((reason: string) => Promise<void>) | undefined;
 
-  constructor(settled: Promise<void>, engineProcess: "own" | "shared" = "shared") {
+  constructor(
+    settled: Promise<void>,
+    engineProcess: "own" | "shared" = "shared",
+    retire?: (reason: string) => Promise<void>,
+  ) {
     this.#settled = settled;
     this.engineProcess = engineProcess;
+    if (retire) this.retireEngine = retire;
   }
 
   async execute(_turn: HarnessRunInput): Promise<void> {

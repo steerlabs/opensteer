@@ -1040,8 +1040,8 @@ function handleClientMethod(message) {
     }
     case "turn/interrupt": {
       const target = threads.get(message.params.threadId);
-      if (target) target.turnInterrupted = true;
       if (process.argv.includes("--reject-interrupt")) {
+        if (target) target.turnInterrupted = true;
         send({
           id: message.id,
           error: { code: -32600, message: "Fake turn/interrupt rejected" },
@@ -1049,12 +1049,63 @@ function handleClientMethod(message) {
         break;
       }
       if (process.argv.includes("--hang-interrupt")) {
+        if (target) target.turnInterrupted = true;
         break;
+      }
+      if (
+        target &&
+        target.inFlightTurn &&
+        target.activeTurnId &&
+        message.params.turnId &&
+        message.params.turnId !== target.activeTurnId
+      ) {
+        send({
+          id: message.id,
+          error: {
+            code: -32600,
+            message: `expected active turn id ${message.params.turnId} but found ${target.activeTurnId}`,
+          },
+        });
+        break;
+      }
+      if (target) {
+        target.turnInterrupted = true;
+        if (!target.subscribed && !neverClose && !target.closing) {
+          target.closing = setTimeout(() => closeThread(target), 0);
+        }
       }
       send({ id: message.id, result: {} });
       // A child agent's thread is interrupted on its own, as Codex requires.
       if (message.params.threadId !== threadId) {
         capture({ childInterrupted: message.params.threadId });
+        if (scenario === "subagents-late-sibling" && !current().lateSiblingSent) {
+          current().lateSiblingSent = true;
+          const siblingId = `codex-child-thread-${++childThreads}`;
+          const sibling = newThread(siblingId, current());
+          sibling.inFlightTurn = true;
+          sibling.activeTurnId = "sibling-turn-1";
+          threads.set(siblingId, sibling);
+          send({
+            method: "item/started",
+            params: {
+              item: {
+                id: "collab-late-sibling",
+                newThreadId: siblingId,
+                receiverThreadIds: [siblingId],
+                type: "collabAgentToolCall",
+              },
+              threadId,
+              turnId,
+            },
+          });
+          send({
+            method: "turn/started",
+            params: {
+              threadId: siblingId,
+              turn: childTurn("sibling-turn-1", "inProgress"),
+            },
+          });
+        }
         if (!process.argv.includes("--ignore-interrupt")) {
           sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
         }
@@ -2063,6 +2114,16 @@ function handleTurnStart(message) {
     });
     sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childRuns);
     if (scenario === "subagents") sendChildApproval();
+    if (scenario === "subagents-late-sibling") {
+      // Root finishes its turn while child 1 keeps running (root idle).
+      const child = threads.get(childThreadOf());
+      if (child) {
+        child.inFlightTurn = true;
+        child.activeTurnId = "child-turn-1";
+      }
+      sendTurnCompleted("completed");
+      return;
+    }
     // `subagents-hold` leaves the child working until it is interrupted.
     return;
   }

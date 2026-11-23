@@ -343,10 +343,20 @@ export function assertFreshProviderSessionContext(context: HarnessSessionContext
  * work on the shared process ended.
  */
 export class HarnessStopUnprovenError extends OpensteerError {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
+  /** Retires ONLY the shared engine process this open attached to, if any. */
+  readonly retireEngine?: ((reason: string) => Promise<void>) | undefined;
+
+  constructor(
+    message: string,
+    options?: {
+      readonly cause?: unknown;
+      readonly retireEngine?: ((reason: string) => Promise<void>) | undefined;
+    },
+  ) {
     super({ code: "harness_error", message, retryable: true });
     this.name = "HarnessStopUnprovenError";
     if (options?.cause !== undefined) this.cause = options.cause;
+    if (options?.retireEngine !== undefined) this.retireEngine = options.retireEngine;
   }
 }
 
@@ -481,6 +491,11 @@ export interface HarnessSession {
    * leaves none behind. Absent means the session owns its process.
    */
   readonly engineProcess?: "own" | "shared";
+  /**
+   * Ends ONLY the shared engine process this session ran on when its stop
+   * could not prove its work gone. Resolves only once that process has exited.
+   */
+  retireEngine?(reason: string): Promise<void>;
 }
 
 /**
@@ -533,12 +548,6 @@ export interface HarnessAdapter {
    * serves a new session. Each such process ends once its sessions have.
    */
   recycle?(): void;
-  /**
-   * Ends any shared engine process this adapter owns when a session's stop
-   * could not prove its work gone. Resolves only once every such process has
-   * exited, which is the evidence the Runner waits on.
-   */
-  retireSharedEngine?(reason: string): Promise<void>;
   close(): Promise<void>;
 }
 
