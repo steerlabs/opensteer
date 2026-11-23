@@ -418,8 +418,13 @@ export async function createBrowserSession(
     readonly pooled?: true;
     /** The Home is a pooled computer's (W11): an unpooled create is refused on its runner. */
     readonly onPooledComputer?: true;
+    /** The runner served by this Home's pool (W11): an unpooled create on it is refused before any SQL. */
+    readonly pooledRunner?: RunnerId;
   },
 ): Promise<BrowserSessionRecord> {
+  if (!input.pooled && input.pooledRunner !== undefined && input.pooledRunner === input.runnerId) {
+    throw new BrowserPoolAdmissionClosed("The pooled browser is between states. Try again.");
+  }
   const profileId = input.profileId;
   return commitPersonalMutation(database, async (transaction, mutation) => {
     const pool = input.pooled

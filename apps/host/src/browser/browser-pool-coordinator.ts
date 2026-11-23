@@ -1071,6 +1071,9 @@ export class BrowserPoolCoordinator {
       );
       signal.throwIfAborted();
       if (!idle) await this.gate.settleHolders();
+      // A holder that was still opening while draining may have created a broker after the first
+      // quiesce: close anything left before ending sessions or discarding.
+      await this.#adopter?.quiesce(signal);
     }
     // Replaced: while the old guest still answers, a Stop it holds is ended by its own runtime,
     // the only evidence there is about it; what it does not answer stays closing (unknown).
@@ -1275,6 +1278,7 @@ export class BrowserPoolCoordinator {
         // A holder still here (a script that ignores its abort) gets its recorded outcome first,
         // unknown when it sent something and refused when it sent nothing: never a guess.
         if (!idle) await this.gate.settleHolders();
+        await this.#adopter?.quiesce(this.#signal);
         // The live set: a restart that joins while this one runs is answered by the same start.
         await this.#discard(slot, "person", wanted.keys);
         this.#discardWanted = undefined;

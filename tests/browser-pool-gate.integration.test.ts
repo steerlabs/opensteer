@@ -4,6 +4,7 @@ import {
   beginAgentSession,
   beginBrowserPoolPark,
   bindBrowserPoolSession,
+  BrowserPoolAdmissionClosed,
   closeBrowserPoolSessions,
   decideAgentOperation,
   dismissBrowserPoolUnconfirmedSession,
@@ -3939,6 +3940,104 @@ it("enforces authority on dismissBrowserPoolUnconfirmedSession: outside grant is
         (row) => row.id === sessionId,
       ),
     ).toBe(false);
+  } finally {
+    await j.close();
+  }
+});
+
+it("aborts an in-flight pooled openTab as soon as reservation.ended fires on restart (X8)", async () => {
+  const j = await journey("x8-opentab-reservation-ended", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const enteredCreate = Promise.withResolvers<void>();
+    const releaseCreate = Promise.withResolvers<void>();
+    let observedAborted = false;
+    let tearingDown = false;
+    const storeProto = Object.getPrototypeOf(j.store) as typeof j.store;
+    const origCreate = storeProto.createBrowserSession;
+    const createSpy = vi
+      .spyOn(storeProto, "createBrowserSession")
+      .mockImplementation(async function (this: typeof j.store, input) {
+        enteredCreate.resolve();
+        await releaseCreate.promise;
+        if (tearingDown) throw new Error("test teardown");
+        return origCreate.call(this, input);
+      });
+    try {
+      const opening = home.service
+        .openTab(j.task.userId, j.command("x8-open-aborted"))
+        .then(
+          () => "opened",
+          () => {
+            observedAborted = true;
+            return "rejected";
+          },
+        );
+      await enteredCreate.promise;
+      // Start a restart while openTab holds its pool reservation BEFORE any broker exists:
+      // reservation.ended must abort openTab immediately instead of waiting for browserOpenWorkMs.
+      const restarting = home.coordinator.restart({ key: "x8-restart" }).catch(() => undefined);
+      await vi.waitFor(() => expect(observedAborted).toBe(true), { timeout: 1_500, interval: 25 });
+      tearingDown = true;
+      releaseCreate.resolve();
+      await opening;
+      await restarting;
+    } finally {
+      tearingDown = true;
+      releaseCreate.resolve();
+      createSpy.mockRestore();
+      home.coordinator.close();
+      await home.service.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("refuses an unpooled createBrowserSession on a pooled runner even before first install with 0 pool rows (X8)", async () => {
+  const j = await journey("x8-pre-install", { chromium: false });
+  try {
+    // Zero rows in browser_pool_slots and zero rows in browser_pool_sessions (before startHome).
+    expect(await readBrowserPoolSlot(j.database, j.task.runnerId)).toBeUndefined();
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await expect(
+      j.store.createBrowserSession({
+        id: sessionId,
+        ownerId: j.task.userId,
+        placementKey: `runner:${j.task.runnerId}`,
+        runnerId: j.task.runnerId,
+        runtimeId: "rt-unpooled",
+        origin: "agent",
+        profileId: null,
+        pooledRunner: j.task.runnerId,
+      }),
+    ).rejects.toBeInstanceOf(BrowserPoolAdmissionClosed);
+    expect(await j.store.getBrowserSessionForOwner(sessionId, j.task.userId)).toBeNull();
+  } finally {
+    await j.close();
+  }
+});
+
+it("returns null from closeAgentSession on a pooled closing session without re-invoking stop (X8)", async () => {
+  const j = await journey("x8-close-agent-closing", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId } = await home.service.openTab(j.task.userId, j.command("x8-agent-closing"));
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    const stopSpy = vi.spyOn(home.service, "stop");
+    try {
+      const closed = await home.service.closeAgentSession({
+        agentBindingId: `run:${j.task.runId}`,
+        ownerId: j.task.userId,
+        sessionId,
+      });
+      expect(closed).toBeNull();
+      expect(stopSpy).not.toHaveBeenCalled();
+    } finally {
+      stopSpy.mockRestore();
+      await home.service.close();
+    }
   } finally {
     await j.close();
   }

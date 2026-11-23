@@ -671,6 +671,9 @@ async function world(key: string, sequencer: Sequencer, seed: number) {
     answer: (mode: Target["answers"]) => {
       current.answers = mode;
     },
+    answerAll: (mode: Target["answers"]) => {
+      for (const target of all) target.answers = mode;
+    },
     home: () => home,
     restartHome: () =>
       change(async () => {
@@ -1085,7 +1088,7 @@ async function schedule(
 
   // At rest: faults stop, and what was asked is finished. A target that is over is replaced by
   // the account, as it would be.
-  w.answer("signed");
+  w.answerAll("signed");
   w.proxyHeals();
   w.closeFaults.next = false;
   w.closeFaults.always = false;
@@ -1136,12 +1139,9 @@ async function schedule(
     // something after the Stop (W16).
     if (entry.stopped && state === "failed" && (entry.stoppedAt ?? 0) > targetEndedAt)
       say(`stopped session ${sessionId} failed with nothing after its Stop to end its guest`);
-    if (entry.stopAsked) continue;
-    // A session the person did not stop never ends closing or closed: it ends with a note.
-    if (state === "closed" || state === "closing")
-      say(`session ${sessionId} ${state} though the person never stopped it`);
-    // A session that served a page and lost it has a note for it.
-    if (state === "failed" && entry.served) {
+    // A session that served a page and lost it has a note for it, even if a late Stop raced
+    // after it had already failed (stopAsked set, stopped false).
+    if (state === "failed" && entry.served && !entry.stopped) {
       const notes = await w.database
         .selectFrom("browserPoolDocumentLosses")
         .select("surfaceId")
@@ -1168,6 +1168,10 @@ async function schedule(
         );
       }
     }
+    if (entry.stopAsked) continue;
+    // A session the person did not stop never ends closing or closed: it ends with a note.
+    if (state === "closed" || state === "closing")
+      say(`session ${sessionId} ${state} though the person never stopped it`);
   }
   // Nothing retries without a delay (no more than 100 failures in any second).
   const errors = w.errors;
@@ -2131,6 +2135,9 @@ it.each(only ? named.filter(({ seed }) => only.split(",").includes(String(seed))
     const replay = trace ? readTrace(join(namedTraces, trace)) : undefined;
     const outcome = await schedule(seed, replay?.steps ?? steps, replay);
     for (const step of cleanup.splice(0).reverse()) await step().catch(() => undefined);
+    if (outcome.diverged) {
+      console.warn(`pool search named case seed ${seed} diverged: ${outcome.diverged}`);
+    }
     if (outcome.violations.length) console.log(`trace: ${keepTrace(outcome.trace)}`);
     expect(outcome.violations).toEqual([]);
   },

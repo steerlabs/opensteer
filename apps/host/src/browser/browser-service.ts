@@ -455,6 +455,7 @@ export interface BrowserSessionRepository {
     readonly runtimeId: string;
     readonly pooled?: true;
     readonly onPooledComputer?: true;
+    readonly pooledRunner?: RunnerId;
   }): Promise<BrowserSessionRecord>;
   countBrowserSessionAttachments(sessionId: BrowserSessionId): Promise<number>;
   /** One consistent read of a session's open tabs and Run eligibility; null if it is gone. */
@@ -2274,6 +2275,7 @@ export class BrowserService {
         ? AbortSignal.any([confirmedSignal, cancellation.signal])
         : cancellation.signal,
       expiresAt: expiresAt - 2_000,
+      abort: (reason) => cancellation.abort(reason),
       ...(confirmedSignal ? { confirmed: true } : {}),
       ...(agent?.browserSend ? { browserSend: agent.browserSend } : {}),
     };
@@ -2357,6 +2359,7 @@ export class BrowserService {
       throw error;
     } finally {
       clearTimeout(timer);
+      budget.cleanupPoolAbort?.();
     }
   }
 
@@ -2522,6 +2525,21 @@ export class BrowserService {
                 )
               : await this.#reservePool(pooled.gate, budget.signal, record?.id);
             budget.pool = { target: pooled, reservation };
+            const ended = reservation.ended;
+            if (ended) {
+              const onEnded = () =>
+                budget.abort?.(
+                  ended.reason ?? new BrowserPoolAdmissionClosed("This browser is restarting."),
+                );
+              if (ended.aborted) onEnded();
+              else {
+                ended.addEventListener("abort", onEnded, { once: true });
+                budget.cleanupPoolAbort = () => ended.removeEventListener("abort", onEnded);
+              }
+            }
+            reservation.onForcedEnd?.(async () => {
+              budget.abort?.(new BrowserPoolAdmissionClosed("This browser is restarting."));
+            });
             budget.signal.throwIfAborted();
             if (openRecheck && reservation.waited) await openRecheck();
             if (record) {
@@ -4832,7 +4850,7 @@ export class BrowserService {
     readonly sessionId: BrowserSessionId;
   }): Promise<BrowserSessionId | null> {
     const record = await this.#repository.getBrowserSessionForOwner(input.sessionId, input.ownerId);
-    if (!record || isTerminal(record.state)) return null;
+    if (!record || this.#ended(record)) return null;
     if (!(await this.agentMayAccessSession(input, record))) {
       throw new OpensteerError({
         code: "forbidden",
@@ -7198,7 +7216,9 @@ export class BrowserService {
         runtimeId: target.runtimeId,
         ownerId: input.ownerId,
         ...(pooled ? { pooled: true } : {}),
-        ...(this.#pooledRunner !== undefined ? { onPooledComputer: true as const } : {}),
+        ...(this.#pooledRunner !== undefined
+          ? { onPooledComputer: true as const, pooledRunner: this.#pooledRunner }
+          : {}),
       });
       if (input.initialSurfaceId && this.#workspaceTabs) {
         const row = await this.#workspaceTabs.get(input.ownerId, input.initialSurfaceId);
@@ -8201,7 +8221,7 @@ export class BrowserService {
       if (written) this.#onSessionsChanged([record.id]);
       // Its channel, if it has one, is closed as a Stop closes it; the runtime's own `closed`,
       // or the end step's answer, ends the row.
-      if (broker) await broker.stop();
+      if (broker) await (broker.pooled ? broker.stopWithReceipt(5_000) : broker.stop());
       if (written === "closing" || broker?.pooled) pool?.stopped();
       return;
     }
@@ -11888,9 +11908,11 @@ interface BrowserTabOpenBudget {
   readonly confirmed?: true;
   readonly signal: AbortSignal;
   readonly expiresAt: number;
+  readonly abort?: (reason?: unknown) => void;
   readonly browserSend?: PooledBrowserSend;
   admitted?: BrowserTabOpenBinding;
   pageRequested?: boolean;
+  cleanupPoolAbort?: () => void;
   pool?: {
     target: BrowserPoolCoordinator;
     reservation: BrowserPoolReservation;
