@@ -83,7 +83,7 @@ export const opensteer_automation_control = defineAgentTool({
   name: "opensteer_automation_control",
   title: "Control an automation",
   description:
-    "Pause, resume, archive, reschedule, run now or cancel pending occurrences. These timing controls need the automation's task access mode to be no higher than yours; run_now and archive also require full access. reschedule moves the next unclaimed cron run to a future nextFireAt, then the cadence resumes. run_now works on a non-archived schedule or webhook and has real effects. cancel_pending without occurrenceId cancels every pending occurrence. Started work keeps running. Opensteer's memory passes refuse archive.",
+    "Pause, resume, archive, reschedule, run now or cancel pending occurrences. These timing controls need the automation's task access mode to be no higher than yours; run_now and archive also require full access. reschedule moves the next unclaimed cron run to a future nextFireAt, then the cadence resumes. run_now works on a non-archived schedule or webhook and has real effects. cancel_pending without occurrenceId cancels every pending occurrence. pause and archive stop any running firing and cancel pending occurrences. Opensteer's memory passes refuse archive.",
   input: z
     .strictObject({
       automationId: TriggerIdSchema,

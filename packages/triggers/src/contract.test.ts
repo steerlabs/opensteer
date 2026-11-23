@@ -50,5 +50,19 @@ describe("Automation skill and script guide", () => {
       "utf8",
     );
     expect(verification).toContain("An occurrence-based automation works only after");
+    expect(content).not.toContain("observationId");
+  });
+
+  it("keeps tool descriptions and mock automations free of pre-overhaul contract claims (AA5)", () => {
+    const tools = readFileSync(
+      resolve(repositoryRoot, "packages/agent-tools/src/tools/triggers.ts"),
+      "utf8",
+    );
+    expect(tools).not.toContain("Started work keeps running.");
+    const mockAutomations = readFileSync(
+      resolve(repositoryRoot, "packages/client/src/mock/mock-automations.ts"),
+      "utf8",
+    );
+    expect(mockAutomations).not.toContain("observationId");
   });
 });

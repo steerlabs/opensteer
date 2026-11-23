@@ -8,7 +8,11 @@ import {
   type ThreadSummary,
   type TriggerDetail,
 } from "@opensteer/client/host";
-import { type AutomationScript, type TriggerSource } from "@opensteer/triggers";
+import {
+  TRIGGER_PROGRAM_UPDATE_REASON,
+  type AutomationScript,
+  type TriggerSource,
+} from "@opensteer/triggers";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -21,7 +25,7 @@ interface Draft {
   anchorThreadId: string;
   at: string;
   expression: string;
-  interpreter: string;
+  interpreterArgs: readonly string[];
   kind: "schedule" | "webhook" | "watch";
   name: string;
   scheduleKind: "at" | "cron";
@@ -105,9 +109,9 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
     setPending(true);
     setError(null);
     try {
-      const trimmedInterpreter = draft.interpreter.trim();
+      const interpreterArgs = draft.interpreterArgs.filter((arg) => arg.trim().length > 0);
       const script: AutomationScript = {
-        interpreter: trimmedInterpreter ? trimmedInterpreter.split(/\s+/u) : null,
+        interpreter: interpreterArgs.length > 0 ? interpreterArgs : null,
         text: draft.source,
       };
       await act(
@@ -177,18 +181,63 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
             <ScheduleFields draft={draft} set={set} />
           ) : draft.kind === "webhook" ? null : (
             <p className="field__hint">
-              The program keeps running on the conversation’s computer and must not return.
+              The script keeps running on the conversation’s computer until paused or stopped.
             </p>
           )}
-          <label className="field">
-            <span className="field__label">Interpreter (optional, defaults to Node.js)</span>
-            <input
-              className="text-input"
-              onChange={(event) => set("interpreter", event.target.value)}
-              placeholder="python3 or /bin/bash"
-              value={draft.interpreter}
-            />
-          </label>
+          <fieldset className="field">
+            <legend className="field__label">Interpreter (optional, defaults to Node.js)</legend>
+            {draft.interpreterArgs.map((arg, index) => (
+              <div key={index} style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  aria-label={
+                    index === 0 ? "Interpreter executable" : `Interpreter argument ${index}`
+                  }
+                  className="text-input"
+                  onChange={(event) => {
+                    const next = [...draft.interpreterArgs];
+                    next[index] = event.target.value;
+                    set("interpreterArgs", next);
+                  }}
+                  placeholder={index === 0 ? "python3 or /Applications/My App/python3" : "e.g. -u"}
+                  value={arg}
+                />
+                {index > 0 ? (
+                  <button
+                    className="btn btn--small"
+                    onClick={() =>
+                      set(
+                        "interpreterArgs",
+                        draft.interpreterArgs.filter((_, i) => i !== index),
+                      )
+                    }
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </div>
+            ))}
+            <div>
+              <button
+                className="btn btn--small"
+                onClick={() => set("interpreterArgs", [...draft.interpreterArgs, ""])}
+                type="button"
+              >
+                Add argument
+              </button>
+            </div>
+          </fieldset>
+          {editing.revision.script === null ? (
+            <div className="field">
+              <p className="notice">{TRIGGER_PROGRAM_UPDATE_REASON}</p>
+              {editing.revision.legacySource ? (
+                <>
+                  <span className="field__label">Previous code (read-only)</span>
+                  <pre className="automation-advanced__code">{editing.revision.legacySource}</pre>
+                </>
+              ) : null}
+            </div>
+          ) : null}
           <label className="field">
             <span className="field__label">Script</span>
             <textarea
@@ -323,11 +372,13 @@ function draftFrom(detail: TriggerDetail): Draft {
     anchorThreadId: detail.trigger.anchorThreadId,
     at: schedule?.kind === "at" ? toLocalDateTime(schedule.at) : defaultAt(),
     expression: schedule?.kind === "cron" ? schedule.expression : "0 9 * * *",
-    interpreter: detail.revision.script?.interpreter?.join(" ") ?? "",
+    interpreterArgs: detail.revision.script?.interpreter?.length
+      ? [...detail.revision.script.interpreter]
+      : [""],
     kind: detail.trigger.kind,
     name: detail.trigger.name,
     scheduleKind: schedule?.kind ?? "cron",
-    source: detail.revision.script?.text ?? detail.revision.legacySource ?? "",
+    source: detail.revision.script?.text ?? "",
     timezone: schedule?.kind === "cron" ? schedule.timezone : browserTimeZone(),
   };
 }

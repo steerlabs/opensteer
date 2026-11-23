@@ -17,6 +17,7 @@ import {
   type TriggerDetail,
 } from "@opensteer/client/host";
 import {
+  TRIGGER_PROGRAM_UPDATE_REASON,
   triggerOccurrenceErrorMessage,
   type TriggerOccurrence,
   type TriggerSummary,
@@ -866,7 +867,7 @@ function Advanced({
     <details className="automation-advanced">
       <summary>
         Advanced
-        <span className="automation-advanced__hint">Its program, logs and code</span>
+        <span className="automation-advanced__hint">Its script, logs and code</span>
       </summary>
       <div className="automation-advanced__body">
         <div className="automation-advanced__head">
@@ -875,7 +876,7 @@ function Advanced({
               ? revision.script.interpreter
                 ? `${revision.script.interpreter.join(" ")} script`
                 : "Node.js script"
-              : "Legacy program"}
+              : TRIGGER_PROGRAM_UPDATE_REASON}
             , version {revision.ordinal}
           </span>
           {archived || detail.trigger.systemRole != null ? null : (
@@ -910,9 +911,16 @@ function Advanced({
           </>
         ) : null}
         {shape === "webhook" ? (
-          <p className="automation-advanced__label">
-            Its webhook address and secret were shown once, when it was created.
-          </p>
+          detail.webhook?.url ? (
+            <>
+              <p className="automation-advanced__label">
+                Webhook address ({detail.webhook.scope === "public" ? "public" : "local only"})
+              </p>
+              <pre className="automation-advanced__code">{detail.webhook.url}</pre>
+            </>
+          ) : (
+            <p className="automation-advanced__label">Webhook address is unavailable.</p>
+          )
         ) : null}
       </div>
     </details>

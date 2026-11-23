@@ -80,7 +80,7 @@ const reminderScript: AutomationScript = {
 const watchScript: AutomationScript = {
   interpreter: ["bash"],
   text: `while read -r name; do
-  opensteer tool opensteer_task_send "{\\"delivery\\":\\"queue\\",\\"message\\":\\"New download: \${name}\\",\\"observationId\\":\\"\${name}\\",\\"taskId\\":\\"TASK_ID\\"}"
+  opensteer tool opensteer_task_send "{\\"delivery\\":\\"queue\\",\\"message\\":\\"New download: \${name}\\",\\"taskId\\":\\"TASK_ID\\"}"
 done`,
 };
 
