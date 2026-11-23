@@ -1535,13 +1535,9 @@ export const commandTable: CommandTable = {
     family: "automations",
     scope: "task",
     step: "A",
-    // Pausing narrows; archiving narrows but needs Full access today; resuming widens.
-    // Resuming starts the automation again, in its own lineage (X11).
-    faces: [
-      { class: "narrow" },
-      { class: "narrow", fullAccess: true },
-      { class: "widen-self", lineage: true },
-    ],
+    // Pausing and archiving (remove) narrow: now below Full access for anyone with authority over
+    // the task (T2); resuming widens, starting the automation again in its own lineage (X11).
+    faces: [{ class: "narrow" }, { class: "narrow" }, { class: "widen-self", lineage: true }],
     face: (c) => (c.status === "paused" ? 0 : c.status === "archived" ? 1 : 2),
     governsKinds: ["automation"],
     governs: (c) => resource("automation", c.triggerId),

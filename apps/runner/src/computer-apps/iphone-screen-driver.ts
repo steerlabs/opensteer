@@ -90,7 +90,9 @@ type DisplayEntry = {
   media?: WebSocket;
   starting?: Promise<IphoneRunnerResult<"iphone.display.start">>;
   state?: Extract<IphoneRunnerEvent, { event: "iphone.displayState" }>["params"];
-  timeout?: ReturnType<typeof setTimeout>;
+  lastLiveGeometry?: { width: number; height: number; rotation: number } | undefined;
+  demandActive: boolean;
+  timeout?: ReturnType<typeof setTimeout> | undefined;
   tail: Promise<void>;
   revision: number;
   inputEpoch: number;
@@ -969,15 +971,12 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         inputEpoch: 0,
         sources: frame.sources,
         inputSources: frame.inputSources,
+        demandActive: false,
         terminal: false,
       };
       this.#displays.set(ref.streamId, entry);
       const active = entry;
-      active.timeout = setTimeout(
-        () => this.#failDisplay(active, "capture-timeout"),
-        displayFirstFrameTimeoutMs,
-      );
-      active.timeout.unref();
+      this.#armFirstFrameTimeout(active);
       active.tail = this.#startDisplay(phone, active, frame).catch(() =>
         this.#failDisplay(active, "capture-failed"),
       );
@@ -1016,6 +1015,9 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       entry.revision = frame.revision;
       entry.sources = frame.sources;
       entry.inputSources = frame.inputSources;
+      if (frame.sources.length === 0) this.#clearFirstFrameTimeout(entry);
+      else if (entry.state?.state === "protected" && entry.state.reason === "paused")
+        this.#armFirstFrameTimeout(entry);
     }
     const active = entry;
     const inputEpoch = active.inputEpoch;
@@ -1024,16 +1026,20 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
         if (active.abort.signal.aborted || active.terminal) return;
         const options = { deadline: this.#now() + 5000, signal: active.abort.signal };
         switch (frame.type) {
-          case "host.integrations.display.demand":
+          case "host.integrations.display.demand": {
+            const includeActive = active.demandActive;
+            if (!includeActive && frame.maxLongSide === undefined) break;
             await this.#bridge.iphoneRequest(
               "iphone.display.demand",
               {
                 ...ref,
+                ...(includeActive ? { active: frame.sources.length > 0 } : {}),
                 ...(frame.maxLongSide === undefined ? {} : { maxLongSide: frame.maxLongSide }),
               },
               options,
             );
             break;
+          }
           case "host.integrations.display.refresh":
             await this.#bridge.iphoneRequest("iphone.display.refresh", ref, options);
             break;
@@ -1174,6 +1180,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     );
     const started = await entry.starting;
     if (signal.aborted || entry.terminal) return;
+    entry.demandActive = started.demandActive === true;
     const transport = await runnerWebSocketTransport(
       this.#options.transport,
       "/internal/v1/computer-use/display",
@@ -1228,7 +1235,7 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
           data.bufferedAmount + bytes.byteLength > displayMaxEnvelopeBytes
         )
           throw new Error();
-        clearTimeout(entry.timeout);
+        this.#clearFirstFrameTimeout(entry);
         data.send(bytes, { binary: true }, (error) => {
           if (error) dataEnded();
         });
@@ -1280,6 +1287,23 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
     // Host handles the terminal state before the data socket closes.
     const sent = this.#emit(event);
     void sent?.then(() => this.#stopDisplay(entry));
+  }
+
+  #armFirstFrameTimeout(entry: DisplayEntry) {
+    this.#clearFirstFrameTimeout(entry);
+    if (entry.terminal || entry.abort.signal.aborted) return;
+    entry.timeout = setTimeout(
+      () => this.#failDisplay(entry, "capture-timeout"),
+      displayFirstFrameTimeoutMs,
+    );
+    entry.timeout.unref();
+  }
+
+  #clearFirstFrameTimeout(entry: DisplayEntry) {
+    if (entry.timeout !== undefined) {
+      clearTimeout(entry.timeout);
+      entry.timeout = undefined;
+    }
   }
 
   #stopDisplay(entry: DisplayEntry, stopNative = true) {
@@ -1408,16 +1432,43 @@ class IphoneScreenConnection implements PhoneScreenDriverConnection {
       )
         return;
       const phone = this.#phones.get(params.deviceId);
+      const demandPause = params.state === "protected" && reason === "paused";
+      const realShield =
+        (params.state === "protected" && !demandPause) || params.state === "screen-off";
+      const resumingDemandPause =
+        entry.state?.state === "protected" &&
+        entry.state.reason === "paused" &&
+        (params.state === "starting" || params.state === "live") &&
+        entry.lastLiveGeometry !== undefined &&
+        entry.lastLiveGeometry.rotation === params.rotation;
+      const liveGeometryChanged =
+        params.state === "live" &&
+        entry.lastLiveGeometry !== undefined &&
+        (entry.lastLiveGeometry.width !== params.width ||
+          entry.lastLiveGeometry.height !== params.height ||
+          entry.lastLiveGeometry.rotation !== params.rotation);
       if (
         phone &&
-        (params.state === "protected" ||
-          params.state === "screen-off" ||
-          (entry.state && entry.state.generation !== params.generation))
+        (realShield ||
+          liveGeometryChanged ||
+          (!demandPause &&
+            !resumingDemandPause &&
+            entry.state !== undefined &&
+            entry.state.generation !== params.generation))
       )
         phone.latest = undefined;
+      if (realShield) entry.lastLiveGeometry = undefined;
+      else if (params.state === "live")
+        entry.lastLiveGeometry = {
+          width: params.width,
+          height: params.height,
+          rotation: params.rotation,
+        };
       entry.state = event.params;
-      if (params.state === "protected" || params.state === "screen-off")
-        clearTimeout(entry.timeout);
+      if (params.state === "protected" || params.state === "screen-off" || params.state === "live")
+        this.#clearFirstFrameTimeout(entry);
+      else if (params.state === "starting" && entry.sources.length > 0)
+        this.#armFirstFrameTimeout(entry);
       const parsed = DisplayStreamReasonSchema.safeParse(reason);
       const forwarded = {
         ...params,

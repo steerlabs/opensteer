@@ -3547,11 +3547,11 @@
           }
         },
         {
-          "when": "status: archived (full access today)",
+          "when": "status: archived",
           "class": "narrow",
           "answers": {
             "a": "now",
-            "b": "ask",
+            "b": "now",
             "c": "now",
             "d": "now"
           }
@@ -3568,7 +3568,7 @@
         }
       ],
       "step": "A",
-      "note": "(b): archive needs full access today (`t/triggers.ts:86`); X11: resuming starts the automation again in its own lineage, so a connection asks unless that lineage is its own",
+      "note": "T2: pause, stopping a running firing and remove (archive) narrow: now below Full access for anyone with authority over the task; X11: resuming starts the automation again in its own lineage, so a connection asks unless that lineage is its own",
       "effect": {
         "where": "database",
         "why": "trigger-service.ts:183: one store write; the notices after it are in memory",

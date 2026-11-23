@@ -157,6 +157,8 @@ const decided: Readonly<Record<string, string>> = {
     "differs from the tool at f4d789f84: the tool is not on a connection's surface today; the design gives a connection the same table cut to its grant (brief C2)",
   "tab.open (profile) / own-full":
     "the test's browser runtime opens guest pages but not a profile's: the open was admitted and failed in the browser (\"The browser could not open this page\")",
+  "trigger.status.set (archive) / own-supervised":
+    "T2, accepted: removing an automation narrows, as pausing it does: now below Full access for anyone with authority over the task; today's tool asked for Full access",
   "tab.close (the person's tab) / own-supervised":
     "D3, accepted: a Supervised agent is asked about tabs it did not open; today's tab_close lets it close the person's tab",
   // Recorded before A5 removes the administration tools (lead, item 1).

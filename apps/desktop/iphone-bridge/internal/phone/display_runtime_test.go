@@ -251,14 +251,15 @@ func TestWakeDoubleTapRotatedEdgesAndPinch(t *testing.T) {
 }
 
 type fixtureMedia struct {
-	cfg       MediaPipelineConfig
-	socket    *net.UnixListener
-	frame     *MediaFrame
-	profile   [2]int
-	hidden    []string
-	resumes   int
-	refreshes int
-	stopped   bool
+	cfg          MediaPipelineConfig
+	socket       *net.UnixListener
+	frame        *MediaFrame
+	profile      [2]int
+	demandActive []bool
+	hidden       []string
+	resumes      int
+	refreshes    int
+	stopped      bool
 }
 
 func (f *fixtureMedia) Start(context.Context) (string, error) {
@@ -273,7 +274,21 @@ func (f *fixtureMedia) Start(context.Context) (string, error) {
 	f.cfg.OnState(DisplayStateEvent{StreamID: f.cfg.StreamID, State: "starting", Generation: 1})
 	return f.cfg.SocketPath, nil
 }
-func (f *fixtureMedia) UpdateDemand(w, h int)                         { f.profile = [2]int{w, h} }
+func (f *fixtureMedia) ApplyDemand(maxLongSide, maxFPS *int, active *bool) {
+	if maxLongSide != nil {
+		f.profile[0] = *maxLongSide
+	} else if f.profile[0] == 0 {
+		f.profile[0] = f.cfg.MaxLongSide
+	}
+	if maxFPS != nil {
+		f.profile[1] = *maxFPS
+	} else if f.profile[1] == 0 {
+		f.profile[1] = f.cfg.MaxFPS
+	}
+	if active != nil {
+		f.demandActive = append(f.demandActive, *active)
+	}
+}
 func (f *fixtureMedia) RequestKeyframe()                              { f.refreshes++ }
 func (f *fixtureMedia) LatestFrame(time.Duration) (*MediaFrame, bool) { return f.frame, f.frame != nil }
 func (f *fixtureMedia) SetPrivacyHidden(_ string, reason string)      { f.hidden = append(f.hidden, reason) }
@@ -349,8 +364,8 @@ func TestDisplayLifecycleAndOwnerInput(t *testing.T) {
 	}
 	backend.state.Lock = "unknown"
 	result, _ = m.displayOperation(ctx, "display.input", &wire.DisplayInputParams{DisplayRef: ref, Events: events})
-	if result.(wire.DisplayInputResult).Outcome != "refused" || len(pipeline.hidden) == 0 {
-		t.Fatal("unknown lock state did not flush the display")
+	if result.(wire.DisplayInputResult).Outcome != "refused" || len(pipeline.hidden) == 0 || pipeline.hidden[len(pipeline.hidden)-1] != "target-unavailable" {
+		t.Fatalf("unknown lock state did not flush the display with target-unavailable: %v", pipeline.hidden)
 	}
 	backend.state.Lock = "unlocked"
 	result, err = m.displayOperation(ctx, "display.power", &wire.DisplayPowerParams{DisplayRef: ref, Action: "lock"})
@@ -442,6 +457,14 @@ func TestDisplayStartsProtectedWithScreenOff(t *testing.T) {
 	screen.applyPrivacy(backend.state, &Foreground{AppID: "com.apple.Preferences"}, true)
 	if screen.display.hidden != "" || media.resumes != resumesBefore+1 {
 		t.Fatal("verified non-Opensteer foreground app did not resume display")
+	}
+	// A stale visible sample captured before a newer shield must never lift that shield.
+	staleSample := screen.privacySample()
+	screen.hideDisplay("protected", "locked-screen")
+	resumesAfterHide := media.resumes
+	screen.applyPrivacySample(backend.state, &Foreground{AppID: "com.apple.Preferences"}, true, &staleSample)
+	if screen.display.hidden != "protected" || media.resumes != resumesAfterHide {
+		t.Fatal("stale visible sample lifted a newer privacy shield")
 	}
 }
 
@@ -545,11 +568,43 @@ func TestDisplayRefreshAndDemandDoNotBlockBehindPhoneLane(t *testing.T) {
 		t.Fatalf("display.refresh blocked or failed while lane was held: %v", err)
 	}
 	fps := 60
-	if _, err := m.displayOperation(fastCtx, "display.demand", &wire.DisplayDemandParams{DisplayRef: ref, MaxFPS: &fps}); err != nil {
+	activeFalse := false
+	activeTrue := true
+	if _, err := m.displayOperation(fastCtx, "display.demand", &wire.DisplayDemandParams{DisplayRef: ref, Active: &activeFalse}); err != nil {
+		t.Fatalf("display.demand(active=false) blocked or failed while lane was held: %v", err)
+	}
+	if _, err := m.displayOperation(fastCtx, "display.demand", &wire.DisplayDemandParams{DisplayRef: ref, MaxFPS: &fps, Active: &activeTrue}); err != nil {
 		t.Fatalf("display.demand blocked or failed while lane was held: %v", err)
 	}
-	if pipeline.refreshes != 1 || pipeline.profile[1] != 60 {
-		t.Fatalf("expected refresh=1 and fps=60, got refreshes=%d profile=%v", pipeline.refreshes, pipeline.profile)
+	if pipeline.refreshes != 1 || pipeline.profile[1] != 60 || !reflect.DeepEqual(pipeline.demandActive, []bool{false, true}) {
+		t.Fatalf("expected refresh=1, fps=60, demandActive=[false true], got refreshes=%d profile=%v demandActive=%v", pipeline.refreshes, pipeline.profile, pipeline.demandActive)
+	}
+}
+
+func TestDisplayPrivacyDistinguishesLockedFromUnknown(t *testing.T) {
+	rot := 0
+	for _, tc := range []struct {
+		name      string
+		state     DeviceState
+		fg        *Foreground
+		fgKnown   bool
+		wantState string
+		wantWhy   string
+	}{
+		{"screen-off", DeviceState{Display: "off", Lock: "unlocked", Rotation: &rot}, nil, true, "screen-off", "locked-screen"},
+		{"locked", DeviceState{Display: "on", Lock: "locked", Rotation: &rot}, nil, true, "protected", "locked-screen"},
+		{"lock-unknown", DeviceState{Display: "on", Lock: "unknown", Rotation: &rot}, nil, true, "protected", "target-unavailable"},
+		{"display-unknown", DeviceState{Display: "unknown", Lock: "unlocked", Rotation: &rot}, nil, true, "protected", "target-unavailable"},
+		{"fg-unknown", DeviceState{Display: "on", Lock: "unlocked", Rotation: &rot}, nil, false, "protected", "target-unavailable"},
+		{"opensteer", DeviceState{Display: "on", Lock: "unlocked", Rotation: &rot}, &Foreground{AppID: opensteerAppID}, true, "protected", "opensteer-app"},
+		{"visible", DeviceState{Display: "on", Lock: "unlocked", Rotation: &rot}, &Foreground{AppID: "com.apple.Preferences"}, true, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotState, gotWhy := displayPrivacy(tc.state, tc.fg, tc.fgKnown)
+			if gotState != tc.wantState || gotWhy != tc.wantWhy {
+				t.Fatalf("got (%q, %q), want (%q, %q)", gotState, gotWhy, tc.wantState, tc.wantWhy)
+			}
+		})
 	}
 }
 
