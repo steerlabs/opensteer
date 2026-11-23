@@ -109,6 +109,8 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         workHomeMigrationName,
         browserPoolMigrationName,
         "0107_needs_you_counts_requests",
+        "0114_thread_inputs_written_by_connection",
+        "0115_provider_session_person_lineage",
         browserPoolSessionsMigrationName,
       ]);
       expect(await legacyState(database)).toEqual({ legacy: false, cursor: false });

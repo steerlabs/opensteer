@@ -28,6 +28,7 @@ import {
   answerAgentConnection,
   connectedAgentIdentity,
   connectionDestination,
+  connectionModeDescriptions,
   consentVerificationChanged,
   draftForCatalog,
   createDedicatedProfile,
@@ -464,7 +465,11 @@ function ConsentForm({
                 />
                 <span className="card__row-body">
                   <span className="card__row-title">{option.label}</span>
-                  <span className="card__row-detail">{option.description}</span>
+                  {/* A connected agent's work never runs with the person's engine
+                      settings, so the own-task sentence would not be true here. */}
+                  <span className="card__row-detail">
+                    {connectionModeDescriptions[option.mode]}
+                  </span>
                 </span>
               </label>
             ))}

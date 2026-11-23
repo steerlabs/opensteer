@@ -259,6 +259,8 @@ test("carries a person's work from a database the released Home last migrated th
       workHomeMigrationName,
       browserPoolMigrationName,
       "0107_needs_you_counts_requests",
+      "0114_thread_inputs_written_by_connection",
+      "0115_provider_session_person_lineage",
       browserPoolSessionsMigrationName,
     ]);
     await migrateToLatest(database, {

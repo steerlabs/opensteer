@@ -1,5 +1,10 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import {
+  engineDiagnosticSecrets,
+  networkCredentialSecrets,
+  redactNetworkCredentials,
+} from "@opensteer/shared/safeMessage";
+import {
   OpensteerError,
   createId,
   type HarnessInstanceId,
@@ -160,6 +165,7 @@ class AcpHarnessSession implements HarnessSession {
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, PendingInteraction>();
   readonly #stderrSecrets: readonly string[];
+  readonly #networkSecrets: readonly string[];
   #stderr = "";
   #stderrDropped = 0;
   readonly #lifetime = new AbortController();
@@ -182,22 +188,22 @@ class AcpHarnessSession implements HarnessSession {
     dependencies: Required<AcpHarnessDependencies>,
     context: HarnessSessionContext,
     process: SupervisedProcess,
+    networkSecrets: readonly string[],
     onClose: (session: AcpHarnessSession) => void,
   ) {
     this.#options = options;
     this.#context = context;
     this.#process = process;
+    this.#networkSecrets = networkSecrets;
     this.#onClose = onClose;
     this.#publisher = new TurnPublisher({
       maxBytes: options.maxEventBytes,
       maxItems: options.maxEventItems,
     });
     this.#stderrSecrets = [
-      context.agentTools.token,
-      ...Object.entries(context.environment)
-        .filter(([name]) => credentialNamePattern.test(name))
-        .map(([, value]) => value),
-    ].filter((value) => value.length >= 4);
+      ...(context.agentTools.token.length >= 4 ? [context.agentTools.token] : []),
+      ...engineDiagnosticSecrets(context.environment, 4),
+    ];
     this.events = this.#publisher.events;
     this.#client = dependencies.createClient({
       handlers: {
@@ -241,7 +247,14 @@ class AcpHarnessSession implements HarnessSession {
       maxOutputBytes: acpProtocolOutputBytes,
       signal: context.signal,
     });
-    const session = new AcpHarnessSession(options, dependencies, context, process, onClose);
+    const session = new AcpHarnessSession(
+      options,
+      dependencies,
+      context,
+      process,
+      networkCredentialSecrets(launch.environment),
+      onClose,
+    );
     try {
       await session.#initialize(mode);
       session.#opening = false;
@@ -987,7 +1000,13 @@ class AcpHarnessSession implements HarnessSession {
     active.nodes.endAll("failed");
     this.#cancelPending("run-ended");
     this.#publishUsage(active);
-    this.#publish(runFailedEvent(acpFailure(error)));
+    const failure = acpFailure(error);
+    this.#publish(
+      runFailedEvent({
+        ...failure,
+        message: redactNetworkCredentials(failure.message, this.#networkSecrets),
+      }),
+    );
     active.completion.resolve();
   }
 
@@ -1060,7 +1079,7 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #sanitizeStderr(value: string): string {
-    let sanitized = value;
+    let sanitized = redactNetworkCredentials(value, this.#networkSecrets);
     for (const secret of this.#stderrSecrets)
       sanitized = sanitized.replaceAll(secret, "[REDACTED]");
     return sanitized
@@ -1073,7 +1092,18 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   #classifyError(error: unknown, context: AcpErrorContext): OpensteerError {
-    return this.#options.hooks.classifyError(error, context);
+    const classified = this.#options.hooks.classifyError(error, context);
+    const message = redactNetworkCredentials(classified.message, this.#networkSecrets);
+    if (message === classified.message) return classified;
+    return new OpensteerError({
+      cause: classified.cause,
+      code: classified.code,
+      ...(classified.details === undefined ? {} : { details: classified.details }),
+      message,
+      ...(classified.next === undefined ? {} : { next: classified.next }),
+      ...(classified.reason === undefined ? {} : { reason: classified.reason }),
+      retryable: classified.retryable,
+    });
   }
 
   #publish(event: HarnessEvent): void {
@@ -1144,9 +1174,6 @@ function acpFailure(error: OpensteerError): {
     retryable: error.retryable,
   };
 }
-
-const credentialNamePattern =
-  /(?:API_KEY|ACCESS_KEY|AUTHORIZATION|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/iu;
 
 export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdate[] {
   if (!isRecord(update) || typeof update.sessionUpdate !== "string") return [];

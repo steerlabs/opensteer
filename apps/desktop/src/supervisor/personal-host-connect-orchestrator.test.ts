@@ -46,6 +46,25 @@ afterEach(async () => {
 });
 
 describe("PersonalHostConnectOrchestrator", () => {
+  it("scrubs a configured proxy password from Connect status", async () => {
+    const proxy = "http://alice:p@ss/word@proxy.invalid:8080";
+    vi.stubEnv("HTTPS_PROXY", proxy);
+    try {
+      const fixture = await orchestratorFixture();
+      fixture.controlPlane.afterProvision = () => {
+        throw new Error(`Provision failed via ${proxy}`);
+      };
+
+      await expect(fixture.orchestrator.enable()).rejects.toThrow("Provision failed");
+      expect(fixture.orchestrator.status).toMatchObject({
+        detail: "Provision failed via http://[REDACTED]@proxy.invalid:8080",
+        state: "error",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("makes no control-plane call without an explicit Desktop-owned Host runtime", async () => {
     const fixture = await orchestratorFixture();
     fixture.runtime.current = null;
