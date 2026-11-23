@@ -1,6 +1,10 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import { type ModelSelection, backgroundLightModels } from "@opensteer/core";
-import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
+import {
+  type HarnessLog,
+  type HarnessModelDescriptor,
+  resolveLightModel,
+} from "@opensteer/harness";
 import { ClaudeWorkflowNodes } from "./workflow-nodes.js";
 import {
   CLAUDE_WORKFLOW_TASK_TYPE,
@@ -85,6 +89,8 @@ import {
   resolvedInputParts,
   resolvedInputSequence,
   opensteerToolIdentity,
+  ProviderRetryTracker,
+  formatRetryBudgetMessage,
   providerSecretFile,
   reasoningEffortLabel,
   runHarnessCliLogout,
@@ -389,6 +395,7 @@ interface ActiveTurn {
   /** Live background tasks, by task id: the roster Claude replaces on every change. */
   readonly background: Set<string>;
   readonly backgroundSeen: Set<string>;
+  readonly retry: ProviderRetryTracker;
   /** Ends the Run once a woken turn did not come. */
   endTimer?: NodeJS.Timeout;
   /** Between turns: the engine answered and only background work may still run. */
@@ -1229,7 +1236,7 @@ export class ClaudeHarnessDriver implements HarnessDriver {
 
   async create(context: HarnessDriverCreateContext): Promise<HarnessAdapter> {
     const config = claudeConfigForSource(context.config, context.sourceId);
-    return new ClaudeHarnessAdapter(context.instanceId, config, this.#dependencies);
+    return new ClaudeHarnessAdapter(context.instanceId, config, this.#dependencies, context.log);
   }
 }
 
@@ -1347,21 +1354,48 @@ function isClaudeAccountAuthenticated(account: AccountInfo | undefined): boolean
   );
 }
 
+/** True when a Claude `stream_event` carries substantive model output or a new content block. */
+function isSubstantiveClaudeStreamEvent(event: unknown): boolean {
+  if (!isRecord(event) || typeof event.type !== "string") return false;
+  if (event.type === "content_block_delta") {
+    const delta = isRecord(event.delta) ? event.delta : undefined;
+    if (!delta || typeof delta.type !== "string") return false;
+    switch (delta.type) {
+      case "text_delta":
+        return typeof delta.text === "string" && delta.text.length > 0;
+      case "thinking_delta":
+        return typeof delta.thinking === "string" && delta.thinking.length > 0;
+      case "input_json_delta":
+        return typeof delta.partial_json === "string" && delta.partial_json.length > 0;
+      default:
+        return false;
+    }
+  }
+  if (event.type === "content_block_start") {
+    const block = isRecord(event.content_block) ? event.content_block : undefined;
+    return block?.type === "text" || block?.type === "thinking" || block?.type === "tool_use";
+  }
+  return false;
+}
+
 class ClaudeHarnessAdapter implements HarnessAdapter {
   readonly capabilities = claudeHarnessCapabilities;
   readonly instanceId: HarnessInstanceId;
   readonly #config: ClaudeHarnessConfig;
   readonly #dependencies: ClaudeHarnessDependencies;
+  readonly #log: HarnessLog | undefined;
   readonly #sessions = new HarnessSessionRegistry<ClaudeHarnessSession>("Claude");
 
   constructor(
     instanceId: HarnessInstanceId,
     config: ClaudeHarnessConfig,
     dependencies: ClaudeHarnessDependencies,
+    log?: HarnessLog,
   ) {
     this.instanceId = instanceId;
     this.#config = config;
     this.#dependencies = dependencies;
+    this.#log = log;
   }
 
   async generateText({
@@ -1511,6 +1545,7 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
       this.#config,
       dependencies,
       (session) => this.#sessions.release(session),
+      this.#log,
     );
   }
 }
@@ -1519,6 +1554,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly providerSessionReference: string;
   readonly events: AsyncIterable<HarnessEvent>;
   readonly #config: ClaudeHarnessConfig;
+  readonly #log: HarnessLog | undefined;
   #context: HarnessSessionContext;
   readonly #dependencies: ClaudeHarnessDependencies;
   readonly #publisher: TurnPublisher;
@@ -1572,11 +1608,13 @@ class ClaudeHarnessSession implements HarnessSession {
     dependencies: ClaudeHarnessDependencies,
     onClose: (session: ClaudeHarnessSession) => void,
     skillPlugin: ClaudeSkillPlugin | undefined,
+    log?: HarnessLog,
   ) {
     this.providerSessionReference = providerSessionReference;
     this.#context = context;
     this.#config = config;
     this.#dependencies = dependencies;
+    this.#log = log;
     this.#onClose = onClose;
     this.#skillPlugin = skillPlugin;
     this.#hasProviderTranscript = mode.type === "resume";
@@ -1596,6 +1634,7 @@ class ClaudeHarnessSession implements HarnessSession {
     config: ClaudeHarnessConfig,
     dependencies: ClaudeHarnessDependencies,
     onClose: (session: ClaudeHarnessSession) => void,
+    log?: HarnessLog,
   ): Promise<ClaudeHarnessSession> {
     if (context.signal.aborted) {
       throw new OpensteerError({
@@ -1617,6 +1656,7 @@ class ClaudeHarnessSession implements HarnessSession {
       dependencies,
       onClose,
       await synthesizeSkillPlugin(context),
+      log,
     );
   }
 
@@ -1689,6 +1729,25 @@ class ClaudeHarnessSession implements HarnessSession {
       workflows,
       background: new Set(),
       backgroundSeen: new Set(),
+      retry: new ProviderRetryTracker({
+        publish: (event) => this.#publish(event),
+        onBudgetExceeded: (record) => {
+          if (active.terminal || active.interrupted) return;
+          active.interrupted = true;
+          this.#reusable = false;
+          const failure = new OpensteerError({
+            code: "harness_error",
+            message: formatRetryBudgetMessage(record, active.retry.budgetMs),
+            retryable: false,
+          });
+          // Always abort the underlying query before terminal publication so
+          // cleanup runs even if the event buffer rejects the terminal event.
+          this.#abortActive(active, failure);
+          this.#publishFailure(active, failure);
+        },
+        log: this.#log,
+        logContext: { harness: "claude", runId: run.runId },
+      }),
       idle: false,
       wakePending: false,
       unanswered: new Set(),
@@ -1733,6 +1792,7 @@ class ClaudeHarnessSession implements HarnessSession {
       }
       await this.#runTurn(run, active);
     } finally {
+      active.retry.dispose();
       run.signal.removeEventListener("abort", abort);
       this.#lastTurn = active;
       if (this.#activeTurn === active) this.#activeTurn = undefined;
@@ -2803,6 +2863,27 @@ class ClaudeHarnessSession implements HarnessSession {
 
     active.contextMeasurement.accept(message, Date.now());
     if (message.type === "system") {
+      if (subtype === "api_retry") {
+        this.#ensureRunStarted(active);
+        const attempt = Reflect.get(message, "attempt");
+        const maxRetries = Reflect.get(message, "max_retries");
+        const retryDelayMs = Reflect.get(message, "retry_delay_ms");
+        const errorStatus = Reflect.get(message, "error_status");
+        const errorText = Reflect.get(message, "error");
+        const errorMessage =
+          typeof errorText === "string" && errorText.trim()
+            ? errorText.trim()
+            : typeof errorStatus === "number"
+              ? `Claude API error (${errorStatus})`
+              : "Claude is retrying the request";
+        active.retry.noteRetry({
+          attempt: typeof attempt === "number" ? attempt : null,
+          maxAttempts: typeof maxRetries === "number" ? maxRetries : null,
+          retryDelayMs: typeof retryDelayMs === "number" ? retryDelayMs : null,
+          code: typeof errorStatus === "number" ? `http_${errorStatus}` : null,
+          message: errorMessage,
+        });
+      }
       const result: unknown = Reflect.get(message, "compact_result");
       const status =
         subtype === "compact_boundary" || result === "success"
@@ -2831,12 +2912,14 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     if (message.type === "stream_event") {
       this.#ensureRunStarted(active);
+      if (isSubstantiveClaudeStreamEvent(message.event)) active.retry.recover();
       this.#handleStreamEvent(message.event);
       return;
     }
     if (message.type === "assistant") {
       this.#ensureRunStarted(active);
       if (message.error) this.#lastAssistantError = message.error;
+      else if (message.message.content.length > 0) active.retry.recover();
       this.#handleAssistantContent(message.message.content);
       await this.#openSubagents(message.message.content, null, active);
       return;
@@ -2953,6 +3036,7 @@ class ClaudeHarnessSession implements HarnessSession {
 
   /** The Run is done: its last turn answered and nothing it started still runs. */
   #completeRun(active: ActiveTurn): void {
+    active.retry.dispose();
     if (active.endTimer) clearTimeout(active.endTimer);
     if (!this.#publisher.claimTerminal(active)) return;
     if (
@@ -3472,6 +3556,7 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
+    active.retry.dispose();
     if (!this.#publisher.claimTerminal(active)) return;
     this.#cancelPendingRequests("Claude Run ended before the user responded", "run-ended");
     active.nodes.endAll();
@@ -3499,6 +3584,7 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #publishInterrupted(active: ActiveTurn): void {
+    active.retry.dispose();
     if (!this.#publisher.claimTerminal(active)) return;
     this.#cancelPendingRequests("Claude Run was interrupted", "run-ended");
     active.nodes.endAll();

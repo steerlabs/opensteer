@@ -1,6 +1,6 @@
 import { toolOutputWithImages } from "@opensteer/harness";
 import { opencodeLightModelFamilies } from "@opensteer/core";
-import { resolveLightModel } from "@opensteer/harness";
+import { resolveLightModel, type HarnessLog } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { pathToFileURL } from "node:url";
@@ -58,6 +58,8 @@ import {
   nativeImageNeedsPreparation,
   prepareNativeImage,
   resolvedInputSequence,
+  ProviderRetryTracker,
+  formatRetryBudgetMessage,
   providerSecretFile,
   reasoningEffortLabel,
   runEndedEvent,
@@ -548,6 +550,7 @@ export class OpencodeHarnessDriver implements HarnessDriver {
       config,
       context.sourceId,
       this.#dependencies,
+      context.log,
     );
   }
 }
@@ -558,6 +561,7 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
   readonly #config: OpencodeHarnessConfig;
   readonly #sourceId: string;
   readonly #dependencies: OpencodeHarnessDependencies;
+  readonly #log: HarnessLog | undefined;
   readonly #sessions = new HarnessSessionRegistry<OpencodeHarnessSession>("OpenCode");
 
   constructor(
@@ -565,11 +569,13 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
     config: OpencodeHarnessConfig,
     sourceId: string,
     dependencies: OpencodeHarnessDependencies,
+    log?: HarnessLog,
   ) {
     this.instanceId = instanceId;
     this.#config = config;
     this.#sourceId = sourceId;
     this.#dependencies = dependencies;
+    this.#log = log;
   }
 
   async generateText({
@@ -743,6 +749,7 @@ class OpencodeHarnessAdapter implements HarnessAdapter {
       context,
       mode,
       (closed) => this.#sessions.release(closed),
+      this.#log,
     );
   }
 }
@@ -775,6 +782,8 @@ interface OpencodeActiveTurn {
   interruptRequested: boolean;
   interruptPromise?: Promise<void>;
   readonly requestedBy: UserId;
+  readonly retry: ProviderRetryTracker;
+  stalledCleanup?: Promise<void>;
   readonly runId: HarnessRunInput["runId"];
   started: boolean;
   terminal: boolean;
@@ -821,6 +830,7 @@ class OpencodeHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
   readonly #config: OpencodeHarnessConfig;
   readonly #sourceId: string;
+  readonly #log: HarnessLog | undefined;
   #context: HarnessSessionContext;
   readonly #publisher: TurnPublisher;
   readonly #onClose: (session: OpencodeHarnessSession) => void;
@@ -846,9 +856,11 @@ class OpencodeHarnessSession implements HarnessSession {
     sourceId: string,
     context: HarnessSessionContext,
     onClose: (session: OpencodeHarnessSession) => void,
+    log?: HarnessLog,
   ) {
     this.#config = config;
     this.#sourceId = sourceId;
+    this.#log = log;
     this.#context = context;
     this.#onClose = onClose;
     this.#publisher = new TurnPublisher({
@@ -867,6 +879,7 @@ class OpencodeHarnessSession implements HarnessSession {
     context: HarnessSessionContext,
     mode: OpencodeSessionMode,
     onClose: (session: OpencodeHarnessSession) => void,
+    log?: HarnessLog,
   ): Promise<OpencodeHarnessSession> {
     if (context.signal.aborted) {
       throw new OpensteerError({
@@ -874,7 +887,7 @@ class OpencodeHarnessSession implements HarnessSession {
         message: "OpenCode session was cancelled before startup",
       });
     }
-    const session = new OpencodeHarnessSession(config, sourceId, context, onClose);
+    const session = new OpencodeHarnessSession(config, sourceId, context, onClose, log);
     try {
       await session.#initialize(dependencies, mode);
       return session;
@@ -923,6 +936,44 @@ class OpencodeHarnessSession implements HarnessSession {
       interruptRequested: run.signal.aborted,
       nodes: new SubagentNodes((event) => this.#publish(event)),
       requestedBy: run.requestedBy,
+      retry: new ProviderRetryTracker({
+        publish: (event) => this.#publish(event),
+        onBudgetExceeded: (record) => {
+          if (active.terminal || active.interruptRequested) return;
+          active.interruptRequested = true;
+          const failure = new OpensteerError({
+            code: "harness_error",
+            message: formatRetryBudgetMessage(record, active.retry.budgetMs),
+            retryable: false,
+          });
+          if (this.#server) {
+            const server = this.#server;
+            const sessionsToAbort = [
+              ...new Set([...active.children, ...active.background, this.#requireSessionId()]),
+            ];
+            active.stalledCleanup = Promise.allSettled(
+              sessionsToAbort.map((sessionId) =>
+                server.request("POST", `/session/${encodeURIComponent(sessionId)}/abort`, {
+                  body: {},
+                  directory: this.#context.workspacePath,
+                }),
+              ),
+            )
+              .then((results) => {
+                if (results.some((result) => result.status === "rejected")) {
+                  this.#streamLifetime.abort(failure);
+                }
+              })
+              .catch(() => {
+                this.#streamLifetime.abort(failure);
+              });
+          }
+          this.#publisher.latchUnusable(failure);
+          this.#publishFailure(active, failure);
+        },
+        log: this.#log,
+        logContext: { harness: "opencode", runId: run.runId },
+      }),
       runId: run.runId,
       started: false,
       taskChildren: new Map(),
@@ -1007,7 +1058,9 @@ class OpencodeHarnessSession implements HarnessSession {
         else this.#publishFailure(active, toHarnessError(error, "OpenCode turn failed"));
       }
     } finally {
+      active.retry.dispose();
       run.signal.removeEventListener("abort", abort);
+      if (active.stalledCleanup) await active.stalledCleanup;
       if (this.#activeTurn === active) this.#activeTurn = undefined;
     }
   }
@@ -1317,6 +1370,37 @@ class OpencodeHarnessSession implements HarnessSession {
         if (active.rootIdle && !active.background.size) this.#settleTurn();
         return;
       }
+      case "session.status": {
+        const active = this.#liveTurn();
+        if (!active || !isRecord(properties)) return;
+        const sessionID = properties.sessionID;
+        if (
+          typeof sessionID !== "string" ||
+          (sessionID !== this.#sessionId &&
+            !active.children.has(sessionID) &&
+            !active.background.has(sessionID))
+        ) {
+          return;
+        }
+        const status = isRecord(properties.status) ? properties.status : null;
+        if (!status || status.type !== "retry") return;
+        this.#ensureRunStarted(active);
+        const next = typeof status.next === "number" ? status.next : null;
+        const retryDelayMs =
+          next !== null && Number.isFinite(next) && next > Date.now()
+            ? Math.max(0, Math.round(next - Date.now()))
+            : null;
+        active.retry.noteRetry({
+          source: sessionID,
+          attempt: typeof status.attempt === "number" ? status.attempt : null,
+          retryDelayMs,
+          message:
+            typeof status.message === "string" && status.message.trim()
+              ? status.message
+              : "OpenCode is retrying the request",
+        });
+        return;
+      }
       case "session.created":
       case "session.updated": {
         // A subagent's child session names this one as its parent.
@@ -1381,8 +1465,16 @@ class OpencodeHarnessSession implements HarnessSession {
       }
       case "message.part.delta": {
         const delta = parseOpencode(OpencodePartDeltaSchema, properties, "message.part.delta");
+        const child = this.#childSession(delta.sessionID);
+        if (child) {
+          if (child.active.childMessages.has(delta.messageID) && delta.delta.length > 0) {
+            child.active.retry.recover(child.session);
+          }
+          return;
+        }
         if (delta.sessionID !== this.#sessionId) return;
         if (!this.#assistantMessages.has(delta.messageID)) return;
+        if (delta.delta.length > 0) this.#activeTurn?.retry.recover(delta.sessionID);
         this.#handleDelta(delta.partID, delta.delta);
         return;
       }
@@ -1455,6 +1547,7 @@ class OpencodeHarnessSession implements HarnessSession {
         const idle = parseOpencode(OpencodeSessionIdleSchema, properties, "session.idle");
         const active = this.#liveTurn();
         if (!active) return;
+        active.retry.recover(idle.sessionID);
         if (active.background.delete(idle.sessionID)) {
           active.finishedBackground.add(idle.sessionID);
           active.nodes.complete(
@@ -1514,6 +1607,7 @@ class OpencodeHarnessSession implements HarnessSession {
     const finished = part.time?.end !== undefined;
     switch (part.type) {
       case "text":
+        if (part.text) this.#activeTurn?.retry.recover(part.sessionID);
         if (finished && part.text) {
           this.#publish({
             data: { content: [{ text: part.text, type: "text" }], messageId: createId("message") },
@@ -1522,6 +1616,7 @@ class OpencodeHarnessSession implements HarnessSession {
         }
         return;
       case "reasoning":
+        if (part.text) this.#activeTurn?.retry.recover(part.sessionID);
         if (finished && part.text) {
           this.#publish({
             data: { blockId: part.id, text: truncateReasoning(part.text) },
@@ -1530,6 +1625,13 @@ class OpencodeHarnessSession implements HarnessSession {
         }
         return;
       case "tool":
+        if (
+          part.state?.status === "running" &&
+          part.callID &&
+          !this.#startedTools.has(part.callID)
+        ) {
+          this.#activeTurn?.retry.recover(part.sessionID);
+        }
         this.#handleToolPart(part);
         return;
       case "step-finish":
@@ -1817,6 +1919,7 @@ class OpencodeHarnessSession implements HarnessSession {
     if (part.type === "text" && part.time?.end !== undefined && part.text) {
       if (!active.completedParts.has(part.id)) {
         active.completedParts.add(part.id);
+        active.retry.recover(session);
         active.nodes.message(session, part.text);
       }
       return;
@@ -1824,6 +1927,7 @@ class OpencodeHarnessSession implements HarnessSession {
     if (part.type === "reasoning" && part.time?.end !== undefined && part.text) {
       if (!active.completedParts.has(part.id)) {
         active.completedParts.add(part.id);
+        active.retry.recover(session);
         active.nodes.reasoning(session, part.id, part.text);
       }
       return;
@@ -1838,6 +1942,9 @@ class OpencodeHarnessSession implements HarnessSession {
     }
     if (part.type !== "tool" || !part.callID || !part.state) return;
     if (part.tool === "experimental_image_generate") {
+      if (part.state.status === "running" && !this.#startedTools.has(part.callID)) {
+        active.retry.recover(session);
+      }
       this.#handleToolPart(part, nodeId);
       return;
     }
@@ -1846,6 +1953,9 @@ class OpencodeHarnessSession implements HarnessSession {
     const tool = opencodeToolIdentity(part.tool ?? "unknown");
     const { state } = part;
     if (!this.#startedTools.has(key)) {
+      if (state.status === "pending" || state.status === "running") {
+        active.retry.recover(session);
+      }
       this.#startedTools.add(key);
       active.nodes.progress(
         session,
@@ -2180,6 +2290,7 @@ class OpencodeHarnessSession implements HarnessSession {
   }
 
   #publishTerminal(active: OpencodeActiveTurn, status: "completed" | "interrupted"): void {
+    active.retry.dispose();
     this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     this.#forgetTurnState();
@@ -2195,6 +2306,7 @@ class OpencodeHarnessSession implements HarnessSession {
   }
 
   #publishFailure(active: OpencodeActiveTurn, error: OpensteerError): void {
+    active.retry.dispose();
     this.#cancelImageGenerations(active);
     if (!this.#publisher.claimTerminal(active)) return;
     this.#forgetTurnState();

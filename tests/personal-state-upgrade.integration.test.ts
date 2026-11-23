@@ -18,7 +18,7 @@ import {
   readTranscriptPage,
 } from "../packages/database/src/personal-sync-store.js";
 import { transcriptCard } from "../packages/client/src/host/transcript-item-view.js";
-import { threadDoneByMigrationName } from "../packages/database/src/personal-state-schema.js";
+import { runProviderRetryMigrationName } from "../packages/database/src/personal-state-schema.js";
 import { agentGrantsMigrationName } from "../packages/database/src/agent-grants-migration.js";
 import { agentSessionsMigrationName } from "../packages/database/src/agent-sessions-migration.js";
 import { agentDirectoryMigrationName } from "../packages/database/src/agent-directory-migration.js";
@@ -246,8 +246,8 @@ test("carries a person's work from a database the released Home last migrated th
     // The released lineage ends at main's newest migration; everything after it is this one's.
     const all = await migrationProvider().getMigrations();
     const names = Object.keys(all);
-    const released = names.filter((name) => name <= threadDoneByMigrationName);
-    expect(names.filter((name) => name > threadDoneByMigrationName)).toEqual([
+    const released = names.filter((name) => name <= runProviderRetryMigrationName);
+    expect(names.filter((name) => name > runProviderRetryMigrationName)).toEqual([
       agentGrantsMigrationName,
       agentSessionsMigrationName,
       "0102_chrome_live_tabs_source",

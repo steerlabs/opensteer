@@ -14,6 +14,7 @@ import {
   inlineTranscriptMessagesMigrationName,
   stoppedRunsNotNewsMigrationName,
   threadDoneByMigrationName,
+  runProviderRetryMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
@@ -66,6 +67,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     inlineTranscriptMessagesMigrationName,
     stoppedRunsNotNewsMigrationName,
     threadDoneByMigrationName,
+    runProviderRetryMigrationName,
     agentGrantsMigrationName,
     agentSessionsMigrationName,
     "0102_chrome_live_tabs_source",

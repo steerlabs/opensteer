@@ -716,6 +716,7 @@ async function finalizeRunOutcome(
       runnerSafetyTerminal: input.source === "runner" && input.status !== "completed",
       ...(mutation ? { revision: mutation.sequence } : {}),
       failure: input.status === "failed" ? jsonValue(input.failure!) : null,
+      providerRetry: null,
       status: input.status,
     })
     .where("id", "=", run.id)

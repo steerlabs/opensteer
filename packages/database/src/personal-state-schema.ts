@@ -14,6 +14,7 @@ import type {
   RunAttemptId,
   RunId,
   RunFailure,
+  RunRetry,
   RunnerId,
   TabId,
   RunUsage,
@@ -137,6 +138,7 @@ export interface TranscriptPreview {
   readonly endedAt?: string;
   readonly replyMessageId?: MessageId;
   readonly failure?: RunFailure;
+  readonly retry?: RunRetry;
   readonly usage?: RunUsage;
   readonly messageKind?: Extract<MessageKind, "input" | "assistant" | "continuation">;
   readonly messageAuthor?: MessageAuthor;
@@ -744,6 +746,16 @@ export async function applyThreadDoneBy(database: Kysely<DatabaseSchema>) {
     update threads set done_by = 'quiet'
     where done_at is not null and done_reason = 'quiet' and done_by is null;
   `.execute(database);
+}
+
+export const runProviderRetryMigrationName = "0046_run_provider_retry";
+/**
+ * Tracks a Run's live provider retry notice (`runs.provider_retry`) so tasks
+ * and transcripts show active retry status across reloads instead of silently
+ * staying on "Working".
+ */
+export async function applyRunProviderRetry(database: Kysely<DatabaseSchema>) {
+  await sql`alter table runs add column if not exists provider_retry jsonb`.execute(database);
 }
 
 export async function applyPersonalStateSchema(transaction: Kysely<DatabaseSchema>) {

@@ -9,6 +9,7 @@ import {
   type ConsumedDraftRevision,
   type MessageRecordStorage,
   type PendingSendCommand,
+  type WebSocketClient,
 } from "../packages/client/src/host/index.js";
 import {
   controlledClientSession,
@@ -18,6 +19,7 @@ import {
   BrowserPageContentPartSchema,
   createId,
   ModelSelectionSchema,
+  type AuthSessionId,
 } from "../packages/core/src/index.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { insertDictationText } from "../packages/client/src/dictation/index.js";
@@ -223,7 +225,12 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       ["replace-cookie", "refresh-view"],
     ],
     async (events) => {
-      let cookie = original.loginId;
+      const deploymentId = createId("deployment");
+      const userId = createId("user");
+      const originalSession = createId("authSession");
+      const replacementSession = createId("authSession");
+      let shellSession: AuthSessionId = originalSession;
+      let cookie: AuthSessionId = originalSession;
       const admissions: string[] = [];
       const accepted = new Set<string>();
       let hostCooperates = false;
@@ -233,11 +240,103 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
       const session = controlledClientSession();
       const secondWindow = controlledClientSession();
       const storage = createMessageOutboxStorage(disk().port);
-      session.change({ phase: "recovering" });
       const host = new HttpHostClient({
         baseUrl: "https://host.test",
+        capabilities: [],
+        reconnectBaseDelayMs: 0,
+        webSocketFactory: () => {
+          const listeners = new Map<string, Set<(event: never) => void>>();
+          const emit = (type: string, event: unknown) => {
+            for (const listener of listeners.get(type) ?? []) listener(event as never);
+          };
+          const ws: WebSocketClient = {
+            binaryType: "arraybuffer",
+            readyState: 0,
+            addEventListener: (type, listener) => {
+              const set = listeners.get(type) ?? new Set();
+              set.add(listener as (event: never) => void);
+              listeners.set(type, set);
+            },
+            close: () => {
+              (ws as { readyState: number }).readyState = 3;
+            },
+            send: (raw) => {
+              if (typeof raw !== "string") return;
+              const frame = JSON.parse(raw) as { type?: string; generation?: number };
+              if (frame.type !== "client.attach") return;
+              const generation = frame.generation ?? 1;
+              const attachedSession = shellSession;
+              queueMicrotask(() => {
+                if (ws.readyState !== 1) return;
+                emit("message", {
+                  data: JSON.stringify({
+                    type: "host.snapshot",
+                    subscriptionId: "shell",
+                    scope: { kind: "shell" },
+                    generation,
+                    throughSequence: "0",
+                    snapshot: {
+                      deploymentId,
+                      viewerId: userId,
+                      epoch: crypto.randomUUID(),
+                      tasks: [],
+                      visits: [],
+                      attention: [],
+                      attentionHasMore: false,
+                      counts: {
+                        pendingRequestCount: 0,
+                        pendingRequestsRevision: "0",
+                        needsYouCount: 0,
+                        unreadTaskCount: 0,
+                      },
+                      session: {
+                        sessionId: attachedSession,
+                        sessionSurface: "canonical",
+                        user: {
+                          id: userId,
+                          displayName: "Person",
+                          email: "person@example.test",
+                          image: null,
+                          emailVerified: true,
+                          disabledAt: null,
+                        },
+                        can: {
+                          createTasks: true,
+                          useVoice: true,
+                          manageComputers: true,
+                          managePrivateResources: true,
+                        },
+                      },
+                      activeTaskIds: [],
+                      activeNextBefore: null,
+                      recentTaskIds: [],
+                      nextBefore: null,
+                      taskCounts: { active: 0, open: 0 },
+                    },
+                  }),
+                });
+                emit("message", {
+                  data: JSON.stringify({
+                    type: "host.synchronized",
+                    subscriptionId: "shell",
+                    scope: { kind: "shell" },
+                    generation,
+                    throughSequence: "0",
+                  }),
+                });
+              });
+            },
+          };
+          queueMicrotask(() => {
+            if (ws.readyState !== 0) return;
+            (ws as { readyState: number }).readyState = 1;
+            emit("open", {});
+          });
+          return ws;
+        },
         fetch: async (url, init) => {
-          if (!String(url).endsWith("/commands.dispatch")) return Response.error();
+          const href = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+          if (!href.endsWith("/commands.dispatch")) return Response.error();
           await wire.promise;
           assert.equal(init?.credentials, "include");
           const headers = new Headers(init?.headers);
@@ -247,7 +346,8 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
           const admission = !expected || expected === authenticated;
           if (admission) admissions.push(authenticated);
           if (admission && hostCooperates) {
-            const command = JSON.parse(String(init?.body)) as PendingSendCommand;
+            assert.equal(typeof init?.body, "string");
+            const command = JSON.parse(init?.body as string) as PendingSendCommand;
             assert.equal(command.type, "thread.sendMessage");
             accepted.add(command.idempotencyKey);
             // Admission survived a lost response. The event stream can settle it.
@@ -267,7 +367,23 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
           );
         },
       });
-      vi.spyOn(host.connection, "getSnapshot").mockImplementation(session.connection.getSnapshot);
+      const attach = async (nextSession: AuthSessionId, initial = false) => {
+        shellSession = nextSession;
+        const pending = initial ? host.load() : host.reauthenticate();
+        for (
+          let step = 0;
+          step < 10 && host.connection.getSnapshot().scope?.loginId !== nextSession;
+          step++
+        ) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        await pending;
+      };
+      await attach(originalSession, true);
+      const originalScope = host.connection.getSnapshot().scope!;
+      const replacementScope = { ...originalScope, loginId: replacementSession };
+      session.change({ scope: originalScope, phase: "recovering" });
+      secondWindow.change({ scope: originalScope });
       const outbox = initializeMessageOutbox(host, {
         session,
         storage,
@@ -277,22 +393,23 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
         for (const event of events) {
           if (event === "enqueue") {
             // Window A recorded the old credential. B's sign-in arrives separately.
-            if (session.connection.getSnapshot().scope?.loginId === original.loginId) {
+            if (session.connection.getSnapshot().scope?.loginId === originalScope.loginId) {
               await outbox.enqueue(message("owned"));
               enqueued = true;
             }
           } else if (event === "replace-cookie") {
-            secondWindow.change({ scope: replacement });
-            cookie = secondWindow.connection.getSnapshot().scope!.loginId;
+            secondWindow.change({ scope: replacementScope });
+            cookie = replacementSession;
           } else if (event === "refresh-view") {
-            session.change({ scope: replacement });
+            await attach(replacementSession);
+            session.change({ scope: replacementScope });
           } else if (event === "admit") {
             wire.resolve();
             await create;
             await vi.advanceTimersByTimeAsync(0);
           } else {
             session.change({ phase: "ready", readyRevision: 2 });
-            if (session.connection.getSnapshot().scope?.loginId === original.loginId) {
+            if (session.connection.getSnapshot().scope?.loginId === originalScope.loginId) {
               create = host
                 .createThread(
                   {
@@ -301,7 +418,7 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
                     harnessInstanceId: createId("harnessInstance"),
                     idempotencyKey: "create-1",
                   },
-                  original,
+                  originalScope,
                 )
                 .catch(() => {});
             }
@@ -309,21 +426,22 @@ it("P1.1 admits queued work only for the shared credential that owns it", async 
           }
         }
         assert(
-          !admissions.includes(replacement.loginId),
+          !admissions.includes(replacementScope.loginId),
           "queued under the old login, admitted under the new cookie",
         );
-        assert.deepEqual(await storage.load(replacement), []);
-        const [held] = await storage.load(original);
+        assert.deepEqual(await storage.load(replacementScope), []);
+        const [held] = await storage.load(originalScope);
         if (enqueued) assert.equal(held?.localId, "owned");
         if (held && held.phase !== "rejected") {
           hostCooperates = true;
-          cookie = original.loginId;
-          session.change({ scope: original, phase: "ready", readyRevision: 3 });
+          cookie = originalSession;
+          await attach(originalSession);
+          session.change({ scope: originalScope, phase: "ready", readyRevision: 3 });
           await vi.advanceTimersByTimeAsync(100_000);
           assert.deepEqual([...accepted], ["owned"]);
           outbox.observe([{ id: createId("message"), clientSendKey: "owned" }]);
           await vi.advanceTimersByTimeAsync(0);
-          assert.deepEqual(await storage.load(original), []);
+          assert.deepEqual(await storage.load(originalScope), []);
         }
       } finally {
         wire.resolve();
