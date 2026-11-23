@@ -19,6 +19,7 @@ import {
 import type { z } from "zod";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import "./connection.js";
 import {
   revokeRunGrants,
@@ -1794,7 +1795,7 @@ export async function retryCommand(
           runnerBootId: null,
           runnerId: null,
           startedAt: null,
-          status: "pending",
+          ...triggerOccurrenceStateColumns("pending"),
           updatedAt: new Date(),
         })
         .where("commandId", "=", commandId)
@@ -1867,7 +1868,7 @@ export async function failCommand(
           .set({
             completedAt: now,
             error: jsonValue(failure),
-            status: "failed",
+            ...triggerOccurrenceStateColumns("failed"),
             updatedAt: now,
           })
           .where("commandId", "=", commandId)

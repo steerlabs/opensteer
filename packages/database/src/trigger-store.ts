@@ -6,6 +6,7 @@ import {
 } from "./personal-mutation.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
+import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 import { createHash } from "node:crypto";
 import {
   minThreadAccessMode,
@@ -963,7 +964,7 @@ export class TriggerStore {
                 .set({
                   completedAt: now,
                   error: jsonValue(cancellation),
-                  status: "canceled",
+                  ...triggerOccurrenceStateColumns("canceled"),
                   updatedAt: now,
                 })
                 .where("id", "=", row.id)
@@ -1125,21 +1126,23 @@ export class TriggerStore {
         .execute(),
       this.#database
         .selectFrom("triggerOccurrences")
+        .leftJoin("commands", "commands.id", "triggerOccurrences.commandId")
         .select([
-          "completedAt",
-          "contactLostAt",
-          "createdAt",
-          "error",
-          "event",
-          "id",
-          "status",
-          "triggerId",
+          "triggerOccurrences.completedAt",
+          "triggerOccurrences.contactLostAt",
+          "triggerOccurrences.createdAt",
+          "triggerOccurrences.error",
+          "triggerOccurrences.event",
+          "triggerOccurrences.id",
+          "triggerOccurrences.status",
+          "triggerOccurrences.triggerId",
+          "commands.frameSentAt",
         ])
-        .distinctOn("triggerId")
-        .where("triggerId", "in", triggerIds)
-        .orderBy("triggerId")
-        .orderBy("createdAt", "desc")
-        .orderBy("id", "desc")
+        .distinctOn("triggerOccurrences.triggerId")
+        .where("triggerOccurrences.triggerId", "in", triggerIds)
+        .orderBy("triggerOccurrences.triggerId")
+        .orderBy("triggerOccurrences.createdAt", "desc")
+        .orderBy("triggerOccurrences.id", "desc")
         .execute(),
       this.#database
         .selectFrom("triggerWatchActivations")
@@ -1169,6 +1172,7 @@ export class TriggerStore {
               createdAt: occurrence.createdAt.toISOString(),
               error: triggerOccurrenceErrorMessage(occurrence.error),
               id: occurrence.id,
+              sent: occurrence.frameSentAt !== null,
               source: TriggerProgramEventSchema.parse(occurrence.event).source.kind,
               status: occurrence.status,
             }
@@ -1635,10 +1639,12 @@ export class TriggerStore {
         .executeTakeFirstOrThrow(),
       this.#database
         .selectFrom("triggerOccurrences")
-        .selectAll()
-        .where("triggerId", "=", trigger.id)
-        .orderBy("createdAt", "desc")
-        .orderBy("id", "desc")
+        .leftJoin("commands", "commands.id", "triggerOccurrences.commandId")
+        .selectAll("triggerOccurrences")
+        .select("commands.frameSentAt")
+        .where("triggerOccurrences.triggerId", "=", trigger.id)
+        .orderBy("triggerOccurrences.createdAt", "desc")
+        .orderBy("triggerOccurrences.id", "desc")
         .limit(Math.min(Math.max(occurrenceLimit, 1), 100))
         .execute(),
       this.#database
@@ -1987,7 +1993,7 @@ export class TriggerStore {
             .set({
               completedAt: now,
               error: jsonValue(cancellation),
-              status: "canceled",
+              ...triggerOccurrenceStateColumns("canceled"),
               updatedAt: now,
             })
             .where("id", "=", row.id)
@@ -2262,7 +2268,7 @@ export class TriggerStore {
             terminalEvidenceAt: null,
             contactLostAt: null,
             executionGeneration,
-            status: "running",
+            ...triggerOccurrenceStateColumns("running"),
             runnerBootId: input.runnerBootId,
             runnerId: input.runnerId,
             startedAt: new Date(),
@@ -2487,7 +2493,7 @@ export class TriggerStore {
               })
             : null,
           exitCode: input.output.exitCode,
-          status: input.output.status,
+          ...triggerOccurrenceStateColumns(input.output.status),
           result: input.output.result === null ? null : jsonValue(input.output.result),
           stderr: input.output.stderr,
           stdout: input.output.stdout,
@@ -2499,7 +2505,7 @@ export class TriggerStore {
       let failureNotice:
         | {
             readonly detail: string;
-            readonly reason: "final-occurrence-failed" | "started-failing";
+            readonly reason: "final-occurrence-failed" | "started-failing" | "outcome-unknown";
           }
         | undefined;
       if (input.output.status === "succeeded") {
@@ -2565,12 +2571,30 @@ export class TriggerStore {
             reason: final ? "final-occurrence-failed" : "started-failing",
           };
         }
+      } else if (input.output.status === "unknown") {
+        const final = await isFinalOccurrence(transaction, occurrence);
+        if (final) {
+          failureNotice = {
+            detail:
+              input.output.error?.trim() ||
+              "Automation script exit status could not be determined.",
+            reason: "outcome-unknown",
+          };
+        }
       }
       await transaction
         .updateTable("commands")
         .set({
-          lastError: null,
-          status: "succeeded",
+          lastError:
+            input.output.status === "unknown"
+              ? jsonValue({
+                  code: "outcome_unknown",
+                  message:
+                    input.output.error?.trim() ||
+                    "Automation script exit status could not be determined.",
+                })
+              : null,
+          status: input.output.status === "unknown" ? "unknown" : "succeeded",
           updatedAt: now,
         })
         .where("id", "=", occurrence.commandId)
@@ -2817,7 +2841,7 @@ export class TriggerStore {
             contactLostAt: null,
             error: null,
             terminalEvidenceAt: null,
-            status: "running",
+            ...triggerOccurrenceStateColumns("running"),
             updatedAt: now,
           })
           .where("id", "in", restoredUnknownIds)
@@ -2835,7 +2859,7 @@ export class TriggerStore {
             runnerId: null,
             startedAt: null,
             terminalEvidenceAt: null,
-            status: "pending",
+            ...triggerOccurrenceStateColumns("pending"),
             updatedAt: now,
           })
           .where(
@@ -2858,7 +2882,7 @@ export class TriggerStore {
             completedAt: now,
             contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
             error: unknownErrorPayload,
-            status: "unknown",
+            ...triggerOccurrenceStateColumns("unknown"),
             terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
             updatedAt: now,
           })
@@ -2954,13 +2978,9 @@ export class TriggerStore {
   async #markActiveUnknownInTransaction(
     transaction: Transaction<DatabaseSchema>,
     input: {
-      readonly excludeOccurrenceIds?: readonly TriggerOccurrenceId[];
-      readonly excludeSameBootOccurrenceIds?: readonly TriggerOccurrenceId[];
       readonly message: string;
-      readonly resetUnsentToPending?: boolean;
       readonly runnerBootId?: string;
       readonly runnerId: RunnerId;
-      readonly sameBootId?: string;
     },
   ): Promise<number> {
     let query = transaction
@@ -2969,20 +2989,6 @@ export class TriggerStore {
       .where("status", "=", "running")
       .where("runnerId", "=", input.runnerId);
     if (input.runnerBootId) query = query.where("runnerBootId", "=", input.runnerBootId);
-    if (input.excludeOccurrenceIds && input.excludeOccurrenceIds.length > 0) {
-      query = query.where("id", "not in", input.excludeOccurrenceIds);
-    }
-    if (
-      input.excludeSameBootOccurrenceIds &&
-      input.excludeSameBootOccurrenceIds.length > 0 &&
-      input.sameBootId
-    ) {
-      const protectedIds = input.excludeSameBootOccurrenceIds;
-      const sameBootId = input.sameBootId;
-      query = query.where((eb) =>
-        eb.not(eb.and([eb("id", "in", protectedIds), eb("runnerBootId", "=", sameBootId)])),
-      );
-    }
     const rows = await query.orderBy("id", "asc").forNoKeyUpdate().execute();
     if (rows.length === 0) return 0;
 
@@ -2996,27 +3002,24 @@ export class TriggerStore {
       .forNoKeyUpdate()
       .execute();
     const frameSentByCommandId = new Map(commandRows.map((row) => [row.id, row.frameSentAt]));
-    const unsentRows = input.resetUnsentToPending
-      ? rows.filter((row) => frameSentByCommandId.get(row.commandId) === null)
-      : [];
-    const unknownRows = input.resetUnsentToPending
-      ? rows.filter((row) => frameSentByCommandId.get(row.commandId) !== null)
-      : rows;
+    // AA3(b) / Z5: a firing that never left the Home on a removed computer is canceled, never unknown.
+    const unsentRows = rows.filter((row) => frameSentByCommandId.get(row.commandId) === null);
+    const unknownRows = rows.filter((row) => frameSentByCommandId.get(row.commandId) !== null);
 
     if (unsentRows.length > 0) {
       const unsentIds = unsentRows.map((row) => row.id);
       const unsentCommandIds = unsentRows.map((row) => row.commandId);
+      const cancelError = jsonValue({
+        code: "canceled_by_computer_removed",
+        message: "Automation occurrence was canceled because its computer was removed.",
+      });
       await transaction
         .updateTable("triggerOccurrences")
         .set({
-          admittedAccessMode: null,
-          admittedGrantRevision: null,
-          contactLostAt: null,
-          runnerBootId: null,
-          runnerId: null,
-          startedAt: null,
-          terminalEvidenceAt: null,
-          status: "pending",
+          completedAt: now,
+          error: cancelError,
+          ...triggerOccurrenceStateColumns("canceled"),
+          terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
           updatedAt: now,
         })
         .where("id", "in", unsentIds)
@@ -3025,14 +3028,12 @@ export class TriggerStore {
       await transaction
         .updateTable("commands")
         .set({
-          dispatcherId: null,
-          frameSentAt: null,
-          lastError: null,
-          status: "pending",
+          lastError: cancelError,
+          status: "failed",
           updatedAt: now,
         })
         .where("id", "in", unsentCommandIds)
-        .where("status", "=", "dispatched")
+        .where("status", "in", ["pending", "dispatched"])
         .execute();
     }
 
@@ -3051,7 +3052,7 @@ export class TriggerStore {
         completedAt: now,
         contactLostAt: sql`case when connection_id is not null then coalesce(contact_lost_at, ${now}) else contact_lost_at end`,
         error: errorPayload,
-        status: "unknown",
+        ...triggerOccurrenceStateColumns("unknown"),
         terminalEvidenceAt: sql`case when connection_id is not null then coalesce(terminal_evidence_at, ${now}) else terminal_evidence_at end`,
         updatedAt: now,
       })
@@ -3285,7 +3286,7 @@ async function enqueueOccurrence(
       runnerId: null,
       sourceKey,
       startedAt: null,
-      status: "pending",
+      ...triggerOccurrenceStateColumns("pending"),
       stderr: "",
       stdout: "",
       triggerId: trigger.id,
@@ -3782,7 +3783,9 @@ function revisionFromRow(row: TriggerRevisionRow): TriggerRevision {
     triggerId: row.triggerId,
   });
 }
-function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
+function occurrenceFromRow(
+  row: TriggerOccurrenceRow & { readonly frameSentAt?: Date | null },
+): TriggerOccurrence {
   return TriggerOccurrenceSchema.parse({
     commandId: CommandIdSchema.parse(row.commandId),
     completedAt: row.completedAt?.toISOString() ?? null,
@@ -3795,6 +3798,7 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
     id: row.id,
     result: row.result,
     revisionId: row.revisionId,
+    ...(row.frameSentAt !== undefined ? { sent: row.frameSentAt !== null } : {}),
     startedAt: row.startedAt?.toISOString() ?? null,
     status: row.status,
     stderr: row.stderr,

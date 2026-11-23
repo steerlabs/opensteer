@@ -1543,6 +1543,7 @@ it("applies 0055_automation_scripts expand-only without breaking legacy v5 rows"
     `usr:${fixture.userId}`;
   const triggerId = `trg_${crypto.randomUUID()}`;
   const legacyRevisionId = `trv_${crypto.randomUUID()}`;
+  const inFlightCmdId = `cmd_${crypto.randomUUID()}`;
   const legacyProgram = {
     language: "javascript",
     source: "export default async function () { return { ok: true }; }",
@@ -1563,9 +1564,25 @@ it("applies 0055_automation_scripts expand-only without breaking legacy v5 rows"
         ${JSON.stringify(legacyProgram)}::jsonb,
         ${fixture.userId}
       )`.execute(tx);
+    // AA3(a): an in-flight v5 firing dispatched before 0055 must get frame_sent_at backfilled so
+    // it settles to unknown after upgrade rather than returning to pending and failing.
+    await sql`insert into commands(
+      id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
+      idempotency_key, type, payload, status
+    ) values (
+      ${inFlightCmdId}, ${fixture.environmentId}, ${task.id}, ${fixture.userId}, ${principalId},
+      '{"kind":"person"}'::jsonb, 'in-flight-pre-0055', 'trigger.execute', '{}'::jsonb, 'dispatched'
+    )`.execute(tx);
   });
 
   await migrateToLatest(database, migrationsBefore("0056_pause_legacy_v5_automations"));
+
+  const backfilled = (
+    await sql<{ frameSentAt: Date | null }>`
+      select frame_sent_at as "frameSentAt" from commands where id = ${inFlightCmdId}
+    `.execute(database)
+  ).rows[0];
+  expect(backfilled?.frameSentAt).not.toBeNull();
 
   // Legacy v5 automation stays untouched and active (Y16: pausing old programs lands when old runtime is removed).
   const legacyTrigger = (

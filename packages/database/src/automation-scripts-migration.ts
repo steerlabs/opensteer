@@ -78,5 +78,10 @@ export async function applyAutomationScripts(database: Kysely<DatabaseSchema>): 
 
     alter table commands
       add column frame_sent_at timestamptz;
+    update commands
+      set frame_sent_at = updated_at
+      where type = 'trigger.execute'
+        and status = 'dispatched'
+        and frame_sent_at is null;
   `.execute(database);
 }

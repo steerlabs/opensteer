@@ -1278,10 +1278,11 @@ integration.sequential("automation failure notices", () => {
     expect(raw.status).toBe("unknown");
   });
 
-  it("keeps status and outcome in lockstep across failCommand and cancelPendingOccurrences (Z3)", async ({
+  it("transitions occurrence status cleanly across failCommand, cancelPendingOccurrences, and unsent Runner removal (Z3 / AA3)", async ({
     storeFixture,
   }) => {
-    const { createFixture, createCronTrigger, detail, start, store, triggers } = storeFixture;
+    const { createFixture, createCronTrigger, database, detail, start, store, triggers } =
+      storeFixture;
     const fixture = await createFixture("z3-single-writer");
     const created = await createCronTrigger(fixture, "z3-writer");
 
@@ -1303,7 +1304,7 @@ integration.sequential("automation failure notices", () => {
       listAfterFail.find((item) => item.id === created.trigger.id)?.latestOccurrence?.status,
     ).toBe("failed");
 
-    // 2. startExecution -> retryCommand(provenNotStarted) -> cancelPendingOccurrences must surface as "canceled".
+    // 2. startExecution -> retryCommand(provenNotStarted) -> cancelPendingOccurrences must surface as "canceled" with sent=false.
     const second = await triggers.enqueueManual({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -1319,6 +1320,7 @@ integration.sequential("automation failure notices", () => {
     expect(canceled.canceledOccurrenceIds).toEqual([second.id]);
     const afterCancel = await detail(created.trigger.id, fixture.userId);
     expect(afterCancel.occurrences.find((o) => o.id === second.id)?.status).toBe("canceled");
+    expect(afterCancel.occurrences.find((o) => o.id === second.id)?.sent).toBe(false);
     const listAfterCancel = await triggers.listForOwner({
       ownerId: fixture.userId,
       reader: personTaskReader,
@@ -1326,6 +1328,30 @@ integration.sequential("automation failure notices", () => {
     expect(
       listAfterCancel.find((item) => item.id === created.trigger.id)?.latestOccurrence?.status,
     ).toBe("canceled");
+
+    // 3. AA3(b) / Z5: a running firing that never left the Home (frame_sent_at IS NULL) becomes
+    // "canceled" on computer removal, never "unknown".
+    const unsentOnRemove = await triggers.enqueueManual({
+      actorThreadId: null,
+      ownerId: fixture.userId,
+      triggerId: created.trigger.id,
+    });
+    await start(fixture, unsentOnRemove, "boot-z3");
+    await database
+      .updateTable("commands")
+      .set({ frameSentAt: null })
+      .where("id", "=", unsentOnRemove.commandId)
+      .execute();
+    await database
+      .updateTable("runners")
+      .set({ kind: "local", ownerKind: "user", ownerUserId: fixture.userId })
+      .where("id", "=", fixture.runnerId)
+      .execute();
+    await store.revokeRunner(fixture.runnerId, fixture.userId);
+    const afterRemove = await detail(created.trigger.id, fixture.userId);
+    const removedRow = afterRemove.occurrences.find((o) => o.id === unsentOnRemove.id);
+    expect(removedRow?.status).toBe("canceled");
+    expect(removedRow?.sent).toBe(false);
   });
   it("records one watch-crash-loop notice without auto-pausing (Y10)", async ({ storeFixture }) => {
     const { createFixture, triggers, storedNotices, detail } = storeFixture;

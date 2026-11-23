@@ -236,15 +236,44 @@ export class AutomationScriptExecutor {
         output: "raw",
         stdin: "closed",
       });
-      const stdout = collectBounded(child.stdout, MAX_OUTPUT_TAIL_BYTES);
-      const stderr = collectBounded(child.stderr, MAX_OUTPUT_TAIL_BYTES);
+      const stdout = collectBounded(child.stdout, MAX_OUTPUT_TAIL_BYTES).catch(() => "");
+      const stderr = collectBounded(child.stderr, MAX_OUTPUT_TAIL_BYTES).catch(() => "");
       const stop = () => void child.terminate().catch(() => undefined);
       if (input.signal.aborted) stop();
       else input.signal.addEventListener("abort", stop, { once: true });
 
-      const exit = await child.exited.finally(() =>
-        input.signal.removeEventListener("abort", stop),
-      );
+      let exit: Awaited<typeof child.exited>;
+      try {
+        exit = await child.exited.finally(() => input.signal.removeEventListener("abort", stop));
+      } catch (error) {
+        const [stdoutText, stderrText] = await Promise.all([stdout, stderr]);
+        const completedAt = new Date().toISOString();
+        if (input.signal.aborted) {
+          return {
+            completedAt,
+            error: "Automation firing was canceled",
+            exitCode: null,
+            occurrenceId: input.firingId,
+            result: null,
+            status: "canceled",
+            stderr: stderrText,
+            stdout: stdoutText,
+          };
+        }
+        return {
+          completedAt,
+          error:
+            error instanceof Error && error.message
+              ? `Automation script exit status could not be determined: ${error.message}`
+              : "Automation script exit status could not be determined",
+          exitCode: null,
+          occurrenceId: input.firingId,
+          result: null,
+          status: "unknown",
+          stderr: stderrText,
+          stdout: stdoutText,
+        };
+      }
       const [stdoutText, stderrText] = await Promise.all([stdout, stderr]);
       const completedAt = new Date().toISOString();
 

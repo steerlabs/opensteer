@@ -16,6 +16,7 @@ import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { cancelPending } from "./request-cancellation.js";
 import { commitPersonalMutation } from "./personal-mutation.js";
+import { triggerOccurrenceStateColumns } from "./trigger-occurrence-state.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
 import {
@@ -1322,9 +1323,9 @@ export async function revokeRunner(
           resolvedAt: revokedAt,
         });
         if (lockedOccurrences.length > 0) {
-          await transaction
+          const lockedCommands = await transaction
             .selectFrom("commands")
-            .select("id")
+            .select(["frameSentAt", "id"])
             .where(
               "id",
               "in",
@@ -1333,6 +1334,9 @@ export async function revokeRunner(
             .orderBy("id", "asc")
             .forNoKeyUpdate()
             .execute(databaseOperationOptions());
+          const frameSentByCommandId = new Map(
+            lockedCommands.map((row) => [row.id, row.frameSentAt]),
+          );
           const cancelError = {
             code: "canceled_by_computer_removed",
             message: "Automation occurrence was canceled because its computer was removed.",
@@ -1342,7 +1346,9 @@ export async function revokeRunner(
             message: "Outcome unknown: its computer was removed while this firing was running.",
           };
           for (const row of lockedOccurrences) {
-            if (row.status === "pending") {
+            const neverSent =
+              row.status === "pending" || frameSentByCommandId.get(row.commandId) === null;
+            if (neverSent) {
               await transaction
                 .updateTable("commands")
                 .set({
@@ -1351,18 +1357,21 @@ export async function revokeRunner(
                   updatedAt: revokedAt,
                 })
                 .where("id", "=", row.commandId)
-                .where("status", "=", "pending")
+                .where("status", "in", ["pending", "dispatched"])
                 .execute(databaseOperationOptions());
               await transaction
                 .updateTable("triggerOccurrences")
                 .set({
                   completedAt: revokedAt,
                   error: jsonValue(cancelError),
-                  status: "canceled",
+                  ...(row.connectionId && !row.terminalEvidenceAt
+                    ? { terminalEvidenceAt: revokedAt }
+                    : {}),
+                  ...triggerOccurrenceStateColumns("canceled"),
                   updatedAt: revokedAt,
                 })
                 .where("id", "=", row.id)
-                .where("status", "=", "pending")
+                .where("status", "in", ["pending", "running"])
                 .execute(databaseOperationOptions());
             } else if (row.status === "running") {
               await transaction
@@ -1384,7 +1393,7 @@ export async function revokeRunner(
                   ...(row.connectionId && !row.terminalEvidenceAt
                     ? { terminalEvidenceAt: revokedAt }
                     : {}),
-                  status: "unknown",
+                  ...triggerOccurrenceStateColumns("unknown"),
                   updatedAt: revokedAt,
                 })
                 .where("id", "=", row.id)

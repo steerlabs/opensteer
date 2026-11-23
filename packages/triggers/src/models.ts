@@ -242,6 +242,7 @@ export const TriggerOccurrenceSchema = z.strictObject({
   id: TriggerOccurrenceIdSchema,
   result: z.unknown().nullable(),
   revisionId: TriggerRevisionIdSchema,
+  sent: z.boolean().optional(),
   startedAt: IsoDateTimeSchema.nullable(),
   status: TriggerOccurrenceStatusSchema,
   stderr: z.string(),
@@ -271,6 +272,7 @@ export const TriggerSummarySchema = z.strictObject({
       createdAt: IsoDateTimeSchema,
       error: z.string().nullable(),
       id: TriggerOccurrenceIdSchema,
+      sent: z.boolean().optional(),
       source: TriggerOccurrenceSourceKindSchema,
       status: TriggerOccurrenceStatusSchema,
     })
@@ -414,7 +416,7 @@ export const TriggerExecutionOutputSchema = z.strictObject({
   exitCode: z.number().int().nullable(),
   occurrenceId: TriggerOccurrenceIdSchema,
   result: z.unknown().nullable(),
-  status: z.enum(["succeeded", "failed", "canceled"]),
+  status: z.enum(["succeeded", "failed", "canceled", "unknown"]),
   stderr: z.string().max(512 * 1_024),
   stdout: z.string().max(512 * 1_024),
 });

@@ -2767,11 +2767,11 @@ export class RunnerRuntime {
     } finally {
       output ??= {
         completedAt: new Date().toISOString(),
-        error: "Trigger program ended without an execution result",
+        error: "Automation script ended without an execution result",
         exitCode: null,
         occurrenceId: context.occurrenceId,
         result: null,
-        status: "failed",
+        status: "unknown",
         stderr: "",
         stdout: "",
       };

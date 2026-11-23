@@ -91,6 +91,37 @@ describe("placing automations", () => {
       /^Running as far as Opensteer knows — contact lost yesterday,/u,
     );
   });
+
+  it("reads Stopped for a sent firing ended by a pause and Canceled for one that never started (AA3)", () => {
+    const unsent = {
+      completedAt: at(0, 16, 20),
+      createdAt: at(0, 16, 15),
+      sent: false,
+      status: "canceled",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+    const sent = {
+      completedAt: at(0, 16, 20),
+      createdAt: at(0, 16, 15),
+      sent: true,
+      status: "canceled",
+    } as NonNullable<TriggerSummary["latestOccurrence"]>;
+    expect(runOutcome(unsent as never, null, null, now)).toBe("Canceled");
+    expect(runOutcome(sent as never, null, null, now)).toBe("Stopped");
+    expect(latestRun(unsent, now)).toEqual({ text: "Last run canceled", tone: "muted" });
+    expect(latestRun(sent, now)).toEqual({ text: "Last run stopped", tone: "muted" });
+    const onceUnsent = automation({
+      latestOccurrence: unsent,
+      nextFireAt: null,
+      source: { kind: "schedule", schedule: { at: at(0, 16, 15), kind: "at" } },
+    });
+    const onceSent = automation({
+      latestOccurrence: sent,
+      nextFireAt: null,
+      source: { kind: "schedule", schedule: { at: at(0, 16, 15), kind: "at" } },
+    });
+    expect(placeAutomation(onceUnsent, now).problem).toBe("It was canceled before it ran.");
+    expect(placeAutomation(onceSent, now).problem).toBe("It was stopped while running.");
+  });
 });
 
 describe("the next run", () => {

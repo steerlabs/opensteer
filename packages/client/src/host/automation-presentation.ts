@@ -84,7 +84,11 @@ export function placeAutomation(summary: PlaceableAutomation, now: number): Auto
     case "unknown":
       return attention("Opensteer lost contact while it was running.");
     case "canceled":
-      return attention("It was canceled before it ran.");
+      return attention(
+        summary.latestOccurrence.sent
+          ? "It was stopped while running."
+          : "It was canceled before it ran.",
+      );
     case "succeeded":
     case undefined:
       return attention("Its time passed before it could run.");
@@ -321,7 +325,7 @@ export function latestRun(
     case "unknown":
       return { text: "Last run outcome unknown", tone: "warn" };
     case "canceled":
-      return { text: "Last run canceled", tone: "muted" };
+      return { text: occurrence.sent ? "Last run stopped" : "Last run canceled", tone: "muted" };
     case "running":
       return occurrence.contactLostAt
         ? {
@@ -352,7 +356,7 @@ export function runOutcome(
         ? `Running as far as Opensteer knows — contact lost ${formatMoment(occurrence.contactLostAt, now, true)}`
         : "Running now";
     case "canceled":
-      return "Canceled";
+      return occurrence.sent ? "Stopped" : "Canceled";
     case "failed":
       return "Failed";
     case "unknown":
