@@ -1,7 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 import { deviceAccess } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
-import { OpensteerError, type DeviceId, type RunId, type RunnerId } from "@opensteer/core";
+import {
+  OpensteerError,
+  raisedBeforeEffect,
+  type DeviceId,
+  type RunId,
+  type RunnerId,
+} from "@opensteer/core";
 import type { OpensteerStore, RevokedRunGrant, ShellStopIdempotency } from "@opensteer/database";
 import type {
   RunnerAuxiliaryStream,
@@ -161,6 +167,8 @@ interface ShellTerminalRecord {
   /** The durable write in flight, so a later ending event joins it instead of racing it. */
   persisting: Promise<{ readonly ended: boolean }> | null;
   retryTimer: NodeJS.Timeout | undefined;
+  /** Its end was already written, with the agent's admission, before the sockets closed (K2). */
+  endedDurably?: boolean;
 }
 
 /**
@@ -719,6 +727,35 @@ export class ShellHub implements ShellControlStreamHandler {
     reason: ShellCloseReason,
     options: { readonly idempotency?: ShellStopIdempotency } = {},
   ): Promise<{ readonly ended: boolean }> {
+    // An agent's Stop of a live session (G3, K2): its last admission and the end are one step.
+    // The end is written with the admission, in one transaction, before any socket closes; a
+    // refusal there closes nothing and is raised before any effect. Only then do the sockets go.
+    const admit = options.idempotency?.admit;
+    const live = this.#sessions.get(sessionId);
+    if (admit && live && live.endReason === null) {
+      const written = await this.#options.store.endShellSession({
+        bytesIn: live.bytesIn,
+        bytesOut: live.bytesOut,
+        reason,
+        sessionId,
+        idempotency: {
+          ...options.idempotency!,
+          admit: async (transaction) => {
+            try {
+              await admit(transaction);
+            } catch (error) {
+              throw error instanceof Error ? raisedBeforeEffect(error) : error;
+            }
+          },
+        },
+      });
+      const claimed = this.#claimTerminal(sessionId, reason);
+      if (claimed !== null && claimed !== "already-claimed") {
+        claimed.endedDurably = written.ended;
+        await this.#persistTerminal(claimed);
+      }
+      return written;
+    }
     // Outside the machine's admission turn, on purpose. Claiming is a
     // synchronous state change, and so is the commit that makes a session
     // active, so whichever runs first still wins without either taking a turn —
@@ -736,12 +773,20 @@ export class ShellHub implements ShellControlStreamHandler {
         ...(options.idempotency ? { idempotency: options.idempotency } : {}),
       });
     }
-    // The sockets are already going: the row must end now whatever the agent's authority, so
-    // its admission is the one its command made just before, and the record still names it.
-    const { admit: _admitted, ...recorded } = options.idempotency ?? {};
+    // An ending another cause already claimed: its row is owed whatever the agent's authority,
+    // and the agent's Stop is then recorded where it is admitted, its admission intact.
+    if (admit) {
+      await this.#persistTerminal(claimed);
+      return this.#options.store.endShellSession({
+        reason,
+        sessionId,
+        idempotency: options.idempotency!,
+      });
+    }
+    // The person's Stop: the sockets are going and the row ends with its key.
     return this.#persistTerminal(
       claimed,
-      options.idempotency ? { idempotency: recorded as ShellStopIdempotency } : {},
+      options.idempotency ? { idempotency: options.idempotency } : {},
     );
   }
 
@@ -983,7 +1028,7 @@ export class ShellHub implements ShellControlStreamHandler {
       return { ended: false };
     }
     this.#releaseTombstone(record);
-    if (ended.ended) {
+    if (ended.ended || record.endedDurably) {
       void this.#options.notifier.ended({
         endReason: record.reason,
         runnerId: record.runnerId,

@@ -51,6 +51,36 @@ const enginesShownWithoutThePersonsConfiguration: ReadonlySet<string> = new Set(
 ]);
 
 /**
+ * The neutral refusal shown to any party that started a task (a connected
+ * agent, a chat sender, or a follow-up Run). Identical for every engine and
+ * every refusal reason so external callers never learn what the person has
+ * configured on their computer.
+ */
+export const ENGINE_UNAVAILABLE_FOR_TASK_MESSAGE = "This engine is not available for this task.";
+
+/**
+ * Refusal carrying two audiences: `.message` is always neutral
+ * (`ENGINE_UNAVAILABLE_FOR_TASK_MESSAGE`) for external callers and chat
+ * replies, while `.ownerMessage` gives the person on their own screens the
+ * exact reason and what they can change.
+ */
+export class EngineUnavailableForTaskError extends OpensteerError {
+  readonly ownerMessage: string;
+
+  constructor(ownerMessage: string) {
+    super({ code: "forbidden", message: ENGINE_UNAVAILABLE_FOR_TASK_MESSAGE });
+    this.name = "EngineUnavailableForTaskError";
+    this.ownerMessage = ownerMessage;
+  }
+}
+
+/**
+ * Engines that run from a Runner-owned home (not the person's own settings),
+ * but do not yet have a real-engine boundary test proving all three guarantees.
+ */
+const enginesAwaitingBoundaryProof: ReadonlySet<string> = new Set(["opencode", "antigravity"]);
+
+/**
  * The one place that refuses a Run an engine cannot be shown to start without
  * the person's own configuration, before any process starts. The Runner asks
  * it for every Run; drivers that may refuse ask it again as a backstop.
@@ -68,21 +98,25 @@ export function assertEngineMayRun(
   if (driverKind === "codex") {
     const check = checkCodexOthersHome(context);
     if (!check.ok) {
-      throw new OpensteerError({ code: "forbidden", message: check.message });
+      throw new EngineUnavailableForTaskError(check.message);
     }
     return;
   }
   if (driverKind === "pi") {
     const check = checkPiOthersHome(context);
     if (!check.ok) {
-      throw new OpensteerError({ code: "forbidden", message: check.message });
+      throw new EngineUnavailableForTaskError(check.message);
     }
     return;
   }
   if (enginesShownWithoutThePersonsConfiguration.has(driverKind)) return;
   const label = harnessCatalogEntry(driverKind)?.label ?? "This engine";
-  throw new OpensteerError({
-    code: "forbidden",
-    message: `${label} starts with your own ${label} settings, so it runs only tasks you started yourself that no connected agent or chat has written to.`,
-  });
+  if (enginesAwaitingBoundaryProof.has(driverKind)) {
+    throw new EngineUnavailableForTaskError(
+      `${label} is not yet verified to keep your settings out of tasks a connected agent or chat started, so it runs only tasks you started yourself that no connected agent or chat has written to.`,
+    );
+  }
+  throw new EngineUnavailableForTaskError(
+    `${label} starts with your own ${label} settings, so it runs only tasks you started yourself that no connected agent or chat has written to.`,
+  );
 }

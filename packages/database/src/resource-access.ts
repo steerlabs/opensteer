@@ -263,11 +263,17 @@ export async function readConnectionRowStanding(
       // A chat is a connection with a sender rule; what it says when it has ended is a chat's.
       chat: read !== undefined && read.connection.bridgeSenders !== null,
     };
-  const row = read.connection;
-  const access = grantTarget && agentGrantAccess(row.grant, grantTarget);
+  // The effective grant, from this one place (G1, K6): nothing past it reads the stored one. A
+  // chat anyone may speak in is narrowed here (its row cannot store more: agent_connections_bridge).
+  const grant = effectiveConnectionGrant(
+    AgentGrantSchema.parse(read.connection.grant),
+    read.connection.bridgeSenders,
+  );
+  const row = { ...read.connection, grant };
+  const access = grantTarget && agentGrantAccess(grant, grantTarget);
   if (access === null)
     throw new OpensteerError({ code: "not_found", message: "That item is unavailable." });
-  const accessMode = applyConnectionPolicy(read.work, row.grant, row.accessMode);
+  const accessMode = applyConnectionPolicy(read.work, grant, row.accessMode);
   if (access === "read" && writeTargetName !== undefined)
     throw forbidden(`${writeTargetName} is shared for reading only.`);
   return {
@@ -311,11 +317,9 @@ export async function liveAgentConnection(
     throw waiting
       ? new ConnectionWaiting()
       : forbidden(chat ? chatEndedMessage : lineageEndedMessage);
-  // The raw grant is not read past this point: a chat anyone may speak in is narrowed here.
-  const grant = effectiveConnectionGrant(AgentGrantSchema.parse(row.grant), row.bridgeSenders);
   return {
     agentConnectionId: row.id,
-    grant,
+    grant: row.grant,
     grantRevision: row.grantRevision,
     consentVersion: row.consentVersion,
     accessMode: row.accessMode,
@@ -1115,6 +1119,9 @@ export async function admitCommand(
     ? await admit(database)
     : await withDatabaseTransaction(database, admit);
   const connection = execution.agentConnection;
+  // The same holding rule the listing reads, where it is admitted (and readmitted at the effect).
+  if (connection && !lineageAllowsPersonalContext(connection) && anyoneChatHoldsNo(row))
+    return { answer: "not_found", face: undefined, execution };
   const scope = effectiveGrantScope(execution);
   const caller: CommandRuleCaller = {
     connection: scope ? { grant: scope } : null,
@@ -1150,6 +1157,15 @@ function effectiveGrantScope(
   return execution.agentConnection?.grant.scope ?? null;
 }
 
+/**
+ * What a chat anyone in its conversation may message never holds (X15, K3): any automation
+ * command, whatever thing it names (a new one names its anchor task). A stranger's message never
+ * ends in a standing automation that later runs with a task's authority.
+ */
+function anyoneChatHoldsNo(row: CommandRow): boolean {
+  return row.family === "automations";
+}
+
 /** A caller as whether it holds a command reads it: its live scope and grant, and its mode. */
 export interface CommandHolder {
   readonly scope: "everything" | "selected" | null;
@@ -1166,6 +1182,7 @@ export interface CommandHolder {
  */
 export function commandHolds(type: CommandType, holder: CommandHolder): boolean {
   const row = commandRow(type) as CommandRow;
+  if (holder.anyoneChat && anyoneChatHoldsNo(row)) return false;
   if (
     !commandHeld(row, {
       connection: holder.scope ? { grant: holder.scope } : null,
@@ -1178,8 +1195,6 @@ export function commandHolds(type: CommandType, holder: CommandHolder): boolean 
   // A new thing has nothing to be outside of: admission reaches it, and a selected grant asks.
   if (row.scope === "new") return true;
   // Otherwise what it governs must be a kind this grant reaches some thing of.
-  if (holder.anyoneChat && commandGovernedKinds(type).every((kind) => kind === "automation"))
-    return false;
   return commandGovernedKinds(type).some((kind) => selectedHoldsKind(kind, grant));
 }
 

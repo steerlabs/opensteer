@@ -1,4 +1,5 @@
 import { commandActivity } from "./commands/activity.js";
+import type { CommandProposal } from "./commands/actor.js";
 import { runnerRestartingCloseCode } from "@opensteer/protocol";
 import { registerStandardCdpRoute } from "./browser/standard-cdp-route.js";
 import { standardCdpConnectPrefix } from "./browser/standard-cdp-tickets.js";
@@ -1759,7 +1760,11 @@ export async function createHostServer(
     | "references.resolve"
   >;
 
-  const executeCoreCommand = async (command: CoreCommand, context: HostApiServerContext) => {
+  const executeCoreCommand = async (
+    command: CoreCommand,
+    context: HostApiServerContext,
+    readmit?: CommandProposal["readmit"],
+  ) => {
     if (isConnectionCommand(command)) {
       if (!dependencies.connections)
         throw new OpensteerError({
@@ -1780,7 +1785,7 @@ export async function createHostServer(
     const userId = session.user.id;
     if (isAdministrationCommand(command))
       return administration.execute(
-        { kind: "person", userId, sessionId: session.id },
+        { kind: "person", userId, sessionId: session.id, ...(readmit ? { readmit } : {}) },
         command,
         context.afterResponse,
       );
@@ -2634,8 +2639,12 @@ export async function createHostServer(
     });
   };
 
-  const handleCoreCommand = async (command: CoreCommand, context: HostApiServerContext) =>
-    hostApi["commands.dispatch"].success.parse(await executeCoreCommand(command, context));
+  const handleCoreCommand = async (
+    command: CoreCommand,
+    context: HostApiServerContext,
+    readmit?: CommandProposal["readmit"],
+  ) =>
+    hostApi["commands.dispatch"].success.parse(await executeCoreCommand(command, context, readmit));
 
   const identityRpcHandlers = createIdentityRpcHandlers(
     dependencies.authenticator,

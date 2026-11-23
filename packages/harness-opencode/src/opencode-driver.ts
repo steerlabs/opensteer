@@ -3,7 +3,7 @@ import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel, type HarnessLog } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { redactUrlCredentials } from "@opensteer/shared/safeMessage";
+import { engineDiagnosticSecrets, redactNetworkCredentials } from "@opensteer/shared/safeMessage";
 import { pathToFileURL } from "node:url";
 import {
   attachmentMaxBytes,
@@ -942,6 +942,7 @@ class OpencodeHarnessSession implements HarnessSession {
       requestedBy: run.requestedBy,
       retry: new ProviderRetryTracker({
         publish: (event) => this.#publish(event),
+        secrets: engineDiagnosticSecrets(this.#context.environment),
         onBudgetExceeded: (record) => {
           if (active.terminal || active.interruptRequested) return;
           active.interruptRequested = true;
@@ -2322,7 +2323,11 @@ class OpencodeHarnessSession implements HarnessSession {
         runFailedEvent({
           code: opencodeFailureCode(error),
           message:
-            this.#server?.redactDiagnostic(error.message) ?? redactUrlCredentials(error.message),
+            this.#server?.redactDiagnostic(error.message) ??
+            redactNetworkCredentials(
+              error.message,
+              engineDiagnosticSecrets(this.#context.environment),
+            ),
           retryable: error.retryable,
         }),
       );

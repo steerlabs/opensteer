@@ -87,6 +87,8 @@ export async function serveMcp(
     readonly administration?: import("./handlers/administration.js").AdministrationToolHandlers;
     readonly browser?: import("./handlers/browser.js").BrowserToolHandlers;
     readonly sessionPerson?: import("./handlers/session-person.js").SessionPersonTools;
+    /** The Home's command tools (opensteer_commands, _command and _state). */
+    readonly commands?: import("./handlers/commands.js").CommandTools;
     readonly onToolError?: (error: unknown, tool: string) => void;
     /** The person's Macs and phones as the computer-use service reports them. */
     readonly computerApps?: {
@@ -249,6 +251,7 @@ export async function serveMcp(
       tabs: options.tabHandlers ?? ({} as never),
       ...(options.browser ? { browser: options.browser } : {}),
       ...(options.sessionPerson ? { sessionPerson: options.sessionPerson } : {}),
+      ...(options.commands ? { commands: options.commands } : {}),
       administration:
         options.administration ??
         (new Proxy(

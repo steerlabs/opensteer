@@ -56,7 +56,8 @@ describe("SurfaceLedger", () => {
         // The destroy request is irreversible: the tab sleeps now, whatever the engine answers.
         expect(record.live).toBeNull();
         expect(ledger.stateOf(record.id)).toBe("suspended");
-        expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId);
+        // Released as asleep: the tab keeps its place in any lineage, for its own wake (run 12).
+        expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId, true);
         if (failure === "rejects") closing.reject(new Error("Close refused"));
         await vi.advanceTimersByTimeAsync(2_000);
         // Past its bound the sleep answers, its page still closing.
@@ -122,6 +123,116 @@ describe("SurfaceLedger", () => {
       await ledger.close();
     }
   });
+  it.each([
+    ["the tab itself wakes with its state", "restored", true],
+    ["a fresh page opens at its address", "fresh", false],
+    ["it slept with nothing to restore", "address", false],
+  ] as const)(
+    "tells the router of a sleep and of its own wake, from its own record: %s (run 12)",
+    async (_case, how, itself) => {
+      const page = new FakePage({ url: "https://lineage.test/" });
+      if (how !== "address") page.captureRestore = async () => ({ saved: true });
+      const context = new FakeContext([page]);
+      const claimTarget = vi.fn();
+      const releaseTarget = vi.fn();
+      const ledger = new SurfaceLedger(context, { claimTarget, releaseTarget });
+      await ledger.start();
+      await flushMicrotasks();
+      const id = ledger.snapshot()[0]!.id;
+      const slept = await page.targetId();
+      try {
+        expect(await ledger.sleep(id, () => null)).toBe(true);
+        // Only a tab that can wake as itself keeps a place: with nothing to restore, it holds none.
+        if (how === "address") expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept);
+        else expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept, true);
+        if (how === "fresh") {
+          const create = context.createPage.bind(context);
+          vi.spyOn(context, "createPage").mockImplementation(async (options) => {
+            const created = await create(options);
+            Object.assign(created, { openedFresh: true });
+            return created;
+          });
+        }
+        claimTarget.mockClear();
+        const woken = await ledger.wake(id);
+        expect(claimTarget).toHaveBeenCalledExactlyOnceWith(woken.targetId, undefined, {
+          from: slept,
+          itself,
+        });
+      } finally {
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
+  it.each([
+    ["its captured state is kept", false, true],
+    ["its captured state was evicted under the restore budget", true, false],
+  ] as const)(
+    "wakes a tab slept as the Mac's launcher sleeps it (history and session storage captured) as itself only while %s (run 12)",
+    async (_case, evict, itself) => {
+      const page = new FakePage({ url: "https://mac.test/form" });
+      // Shaped as `ElectronPageRestore`: the history entries with Blink page state, the index,
+      // and the origin's session storage.
+      page.captureRestore = async () => ({
+        entries: [{ url: "https://mac.test/form", title: "Form", pageState: "AAAA" }],
+        index: 0,
+        sessionStorage: { origin: "https://mac.test", items: [["draft", "kept"]] },
+      });
+      const context = new FakeContext([page]);
+      const claimTarget = vi.fn();
+      const releaseTarget = vi.fn();
+      const ledger = new SurfaceLedger(context, { claimTarget, releaseTarget });
+      await ledger.start();
+      await flushMicrotasks();
+      const id = ledger.snapshot()[0]!.id;
+      const slept = await page.targetId();
+      try {
+        expect(await ledger.sleep(id, () => null)).toBe(true);
+        expect(releaseTarget).toHaveBeenCalledExactlyOnceWith(slept, true);
+        if (evict) {
+          const record = [...ledger.policyRecords()].find((entry) => entry.id === id)!;
+          ledger.releaseRestore(record);
+          // The eviction ends its place at once.
+          expect(releaseTarget).toHaveBeenLastCalledWith(slept);
+        }
+        claimTarget.mockClear();
+        const woken = await ledger.wake(id);
+        expect(claimTarget).toHaveBeenCalledExactlyOnceWith(woken.targetId, undefined, {
+          from: slept,
+          itself,
+        });
+      } finally {
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
+
+  it("ends a sleeping tab's place as soon as its close begins, before the close is confirmed (run 12)", async () => {
+    const page = new FakePage({ url: "https://close.test/" });
+    page.captureRestore = async () => ({ saved: true });
+    const releaseTarget = vi.fn();
+    const context = new FakeContext([page]);
+    const ledger = new SurfaceLedger(context, { releaseTarget });
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    const slept = await page.targetId();
+    const released = vi.fn(() => new Promise<never>(() => undefined));
+    Object.assign(context, { releaseRestore: released });
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      releaseTarget.mockClear();
+      const closing = ledger.closeSurface(id).catch(() => undefined);
+      await flushMicrotasks();
+      expect(releaseTarget).toHaveBeenCalledWith(slept);
+      void closing;
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
   it("sleeps a lease without closing its record and wakes once with the same identity", async () => {
     const page = new FakePage({ url: "https://sleep.test/", title: "Keep me" });
     const context = new FakeContext([page]);
@@ -149,8 +260,36 @@ describe("SurfaceLedger", () => {
       expect(ledger.inventoryRevision).toBe(revision);
       expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toEqual([]);
       const create = vi.spyOn(context, "createPage");
-      const [first, second] = await Promise.all([ledger.wake(before.id), ledger.wake(before.id)]);
+      // Each caller returns only after the tab is announced live (finding 10); only what the wake
+      // itself announces counts (V2).
+      events.length = 0;
+      const announced = () =>
+        events.some(
+          (event) =>
+            event.type === "changed" &&
+            event.change === "updated" &&
+            event.surface.id === before.id &&
+            event.surface.state === "live",
+        );
+      const seen = (wake: ReturnType<typeof ledger.wake>) =>
+        wake.then((binding) => {
+          expect(announced()).toBe(true);
+          return binding;
+        });
+      const [first, second] = await Promise.all([
+        seen(ledger.wake(before.id)),
+        seen(ledger.wake(before.id)),
+      ]);
       expect(first).toEqual(second);
+      // A wake never says the tab is suspended: the controller would tear the tab's input down.
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "changed" &&
+            event.surface.id === before.id &&
+            event.surface.state === "suspended",
+        ),
+      ).toEqual([]);
       expect(ledger.surfaceIdForTarget(oldTargetId)).toBeUndefined();
       expect(ledger.surfaceIdForTarget(first.targetId)).toBe(before.id);
       expect(await ledger.resolveTarget(first.targetId)).toBe(true);
@@ -168,6 +307,178 @@ describe("SurfaceLedger", () => {
     } finally {
       await ledger.closeOwnedPages();
       await ledger.close();
+    }
+  });
+
+  it("refuses only this pass when the freeze fails, and the tab sleeps restorably on the next", async () => {
+    const page = new FakePage({ url: "https://freeze.test/" });
+    let fails = true;
+    Object.assign(page, {
+      captureRestore: async () => ({ saved: true }),
+      freeze: async () => {
+        if (fails) throw new Error("Tab freeze timed out.");
+        return async () => {};
+      },
+    });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(false);
+      fails = false;
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      // Restorable: it sleeps as itself, the engine's saved state kept for its wake.
+      expect(
+        (
+          ledger as unknown as { records: Map<string, { restore?: { engine: unknown } }> }
+        ).records.get(id)?.restore?.engine,
+      ).toEqual({ saved: true });
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it("decides a sleep on a frozen page, thaws it when the sleep does not go ahead, and lets a last-resort protection give way only to the last resort (V1)", async () => {
+    const page = new FakePage({ url: "https://protect.test/" });
+    const steps: string[] = [];
+    let reason: string | null = null;
+    Object.assign(page, {
+      keepAwake: () => {
+        steps.push(`read:${reason ?? "none"}`);
+        return reason;
+      },
+      freeze: async () => {
+        steps.push("freeze");
+        return async () => {
+          steps.push("thaw");
+        };
+      },
+    });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      // A protection that starts after the first read is read again on the frozen page.
+      const keepAwake = page.keepAwake!.bind(page);
+      let reads = 0;
+      page.keepAwake = () => {
+        if (++reads === 2) reason = "capturing";
+        return keepAwake();
+      };
+      expect(await ledger.sleep(id, () => null)).toBe(false);
+      expect(steps).toEqual(["read:none", "freeze", "read:capturing", "thaw"]);
+      // Not known is not unprotected, in every pass.
+      steps.length = 0;
+      reason = "unknown";
+      expect(await ledger.sleep(id, () => null, { lastResort: true })).toBe(false);
+      // A last-resort protection: refused by an ordinary pass, taken by the last resort.
+      reason = "notifications";
+      expect(await ledger.sleep(id, () => null)).toBe(false);
+      reason = "capturing";
+      expect(await ledger.sleep(id, () => null, { lastResort: true })).toBe(false);
+      reason = "notifications";
+      expect(await ledger.sleep(id, () => null, { lastResort: true })).toBe(true);
+      expect(ledger.stateOf(id)).toBe("suspended");
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
+  it("waits for a woken page's load only as long as its operation, and says at once when the tab went back to sleep (V3)", async () => {
+    const page = new FakePage({ url: "https://load.test/" });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      // The fake page never reports itself complete: only the operation's end stops the wait.
+      const cancelled = new AbortController();
+      const waiting = ledger.documentLoaded(id, 15_000, cancelled.signal);
+      const started = performance.now();
+      cancelled.abort();
+      await expect(waiting).rejects.toMatchObject({ reason: "browser-command-cancelled" });
+      expect(performance.now() - started).toBeLessThan(1_000);
+      // A tab asleep again is said at once, not waited for.
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      const asked = performance.now();
+      expect(await ledger.documentLoaded(id, 15_000)).toBe("asleep");
+      expect(performance.now() - asked).toBeLessThan(1_000);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
+  it("ends a load wait at a cancel while its page does not answer, never a poll later", async () => {
+    const page = new FakePage({ url: "https://silent.test/" });
+    page.cdpSession.responses.set("Runtime.evaluate", () => new Promise(() => {}));
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      const cancelled = new AbortController();
+      const waiting = ledger.documentLoaded(id, 15_000, cancelled.signal);
+      await vi.waitFor(() =>
+        expect(page.cdpSession.sent.some((entry) => entry.method === "Runtime.evaluate")).toBe(
+          true,
+        ),
+      );
+      const asked = performance.now();
+      cancelled.abort();
+      await expect(waiting).rejects.toMatchObject({ reason: "browser-command-cancelled" });
+      expect(performance.now() - asked).toBeLessThan(300);
+      // And a short wait ends at its own bound, not a page read later.
+      const started = performance.now();
+      expect(await ledger.documentLoaded(id, 200)).toBe("loading");
+      expect(performance.now() - started).toBeLessThan(600);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
+  it("takes a page showing a dialog as loaded at once: its document cannot answer until the dialog closes", async () => {
+    const page = new FakePage({ url: "https://dialog.test/" });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      // The fake page never says it is complete, as a page blocked by its dialog does not.
+      page.cdpSession.emit("Page.javascriptDialogOpening", { message: "Sure?", type: "confirm" });
+      await flushMicrotasks();
+      const asked = performance.now();
+      expect(await ledger.documentLoaded(id, 15_000)).toBe("loaded");
+      expect(performance.now() - asked).toBeLessThan(1_000);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
+  it("keeps no closed target in a sleeping lineage when the page's sleep cannot keep the tab as itself (finding 10)", async () => {
+    const page = new FakePage({ url: "https://no-helper.test/" });
+    Object.assign(page, {
+      captureRestore: async () => ({ kind: "chromium-discard", tokenId: "token", url: page.url() }),
+      sleepsAsItself: () => false,
+    });
+    const releaseTarget = vi.fn();
+    const ledger = new SurfaceLedger(new FakeContext([page]), { releaseTarget });
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      expect(releaseTarget).toHaveBeenCalledWith(await page.targetId());
+      expect(releaseTarget).not.toHaveBeenCalledWith(expect.anything(), true);
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
     }
   });
 

@@ -1,4 +1,6 @@
 import type { AuthenticatedSession, UserId } from "@opensteer/core";
+import type { DatabaseSchema } from "@opensteer/database";
+import type { Kysely } from "kysely";
 import type { HostApiServerContext } from "@opensteer/protocol";
 import type { AgentCaller } from "../mcp/agent-caller.js";
 import { requireSession } from "../server/rpc-context.js";
@@ -12,6 +14,12 @@ export interface CommandProposal {
   readonly revision: string;
   /** Who proposed it, as the Request recorded it; written to the command's ledger row. */
   readonly proposedBy: Readonly<Record<string, unknown>>;
+  /**
+   * The proposer's admission, run again in the transaction that makes the change, where the store
+   * takes one (a tab group's close, rename or delete): it refuses when the proposer could no
+   * longer ask for it, as a tab added to the group meanwhile that it does not hold.
+   */
+  readonly readmit?: (transaction: Kysely<DatabaseSchema>) => Promise<void>;
 }
 
 /**

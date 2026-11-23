@@ -98,25 +98,29 @@ export function createAgentReviewer({
           { store, runners },
           { userId: ownerUserId, wants: () => [model], canRun: backgroundTextSupport(runners) },
         );
-        const candidate = candidates[0];
-        if (!candidate || signal.aborted) return "ask";
-        const { environmentId, harnessInstanceId, harnessRevision, runModelSelection } = candidate;
-        const result = await runners.backgroundText(
-          {
-            type: "host.background-text",
-            attemptId: BackgroundTextAttemptIdSchema.parse(randomUUID()),
-            environmentId,
-            harnessInstanceId,
-            harnessRevision,
-            modelSelection: runModelSelection,
-            prompt: text,
-            deadline,
-          },
-          signal,
-        );
-        return result.ok && !signal.aborted && Date.now() < Date.parse(deadline)
-          ? parseAgentReview(result.text)
-          : "ask";
+        for (const candidate of candidates) {
+          if (signal.aborted || Date.now() >= Date.parse(deadline)) return "ask";
+          const { environmentId, harnessInstanceId, harnessRevision, runModelSelection } =
+            candidate;
+          const result = await runners
+            .backgroundText(
+              {
+                type: "host.background-text",
+                attemptId: BackgroundTextAttemptIdSchema.parse(randomUUID()),
+                environmentId,
+                harnessInstanceId,
+                harnessRevision,
+                modelSelection: runModelSelection,
+                prompt: text,
+                deadline,
+              },
+              signal,
+            )
+            .catch(() => ({ ok: false as const, failure: "failed" as const }));
+          if (signal.aborted || Date.now() >= Date.parse(deadline)) return "ask";
+          if (result.ok) return parseAgentReview(result.text);
+        }
+        return "ask";
       };
       return await Promise.race([review().catch(() => "ask" as const), aborted.promise]);
     },

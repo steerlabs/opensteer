@@ -1,3 +1,4 @@
+import { CommandTools } from "./handlers/commands.js";
 import {
   createId,
   DeviceIdSchema,
@@ -851,7 +852,31 @@ describeStore("a selected connection reads only its own lineage", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("lineage-sql-paging-and-caps");
     const runScopes: Record<string, RunToolScope> = {};
-    const url = await serveMcp(storeFixture, { runScopes });
+    // The state tool over the person's own Needs you list (every pending Request, as the person
+    // reads it); what the tool cuts it to is the code under test.
+    const commands = new CommandTools({
+      database: storeFixture.database,
+      registry: {} as never,
+      requests: () => undefined,
+      administration: {} as never,
+      reads: () => ({
+        "requests.list": async () => ({
+          ok: true,
+          data: {
+            requests: (
+              await storeFixture.database
+                .selectFrom("requests")
+                .select(["id", "originatingThreadId"])
+                .where("requestedBy", "=", f.userId)
+                .where("status", "=", "pending")
+                .orderBy("id")
+                .execute()
+            ).map((request) => ({ request })),
+          },
+        }),
+      }),
+    });
+    const url = await serveMcp(storeFixture, { runScopes, commands });
     const agentA = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
@@ -945,6 +970,34 @@ describeStore("a selected connection reads only its own lineage", (it) => {
     };
     expect(cappedBody.task.pendingRequests).toBe(1);
     expect(cappedBody.pendingRequests?.map(({ id }) => id)).toEqual([visiblePending.request.id]);
+
+    // The state tool's requests area is the same one predicate (K5): what this lineage may see
+    // of B's task is there, the hidden ones are not, and one more hidden changes no byte.
+    const stateRequests = async () => {
+      const state = await callA("opensteer_state", { area: "requests" });
+      expect(state.isError, JSON.stringify(state.content)).not.toBe(true);
+      return state.structuredContent as {
+        view: { requests: { request: { id: string; originatingThreadId: string } }[] };
+      };
+    };
+    const stateBefore = await stateRequests();
+    expect(
+      stateBefore.view.requests
+        .filter(({ request }) => request.originatingThreadId === taskB)
+        .map(({ request }) => request.id),
+    ).toEqual([visiblePending.request.id]);
+    await storeFixture.store.requests.create({
+      callId: "r5-hidden-pending-state",
+      kind: "person.question",
+      mode: "durable",
+      originatingRunId: runB.runId,
+      originatingThreadId: taskB,
+      requestedBy: f.userId,
+      requiredActor: "requester",
+      payload: { kind: "person.question" },
+      presentation: questionPresentation("Hidden from the state tool"),
+    });
+    expect(JSON.stringify(await stateRequests())).toBe(JSON.stringify(stateBefore));
 
     // 2. Default (messagesOnly) and activity views: a newer hidden person.question from B must
     // neither appear nor shorten/split pages or change page bytes compared to its absence.

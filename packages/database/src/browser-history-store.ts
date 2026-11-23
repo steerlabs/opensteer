@@ -366,6 +366,8 @@ export class BrowserHistoryStore {
     };
     return withDatabaseTransaction(this.#database, async (tx) => {
       await lockCommandIdempotency(tx, input.ownerId, input.idempotencyKey);
+      // An agent's erasure is admitted where it commits (G3, K2), under its own key.
+      await input.administration?.admit?.(tx);
       if (!(await this.#profile(tx, input.profileId, input.ownerId)))
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
       const previous = await findCommandByIdempotency(tx, input.ownerId, input.idempotencyKey);

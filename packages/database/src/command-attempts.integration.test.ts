@@ -59,6 +59,46 @@ describeStore("a connection's command acting outside the database (G4)", (test) 
   });
 });
 
+describeStore("a narrowed grant and a connection's command acting outside (K4)", (test) => {
+  test("waits on its running command, as on its sessions, until the command's evidence", async ({
+    storeFixture: f,
+  }) => {
+    const owner = (await f.createRunFixture("command-attempts-narrowed")).userId;
+    const connections = new AgentConnectionStore(f.database);
+    const record = await connections.create({
+      userId: owner,
+      label: "Narrowed agent",
+      clientName: "Narrowed agent",
+      accessMode: "full-access",
+      resource: "https://home.test/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(record.id, `hash-${randomBytes(8).toString("hex")}`);
+    const begun = await beginCommandAttempt(f.database, {
+      requestedBy: owner,
+      callerKey: `connection:${record.id}`,
+      connectionId: record.id,
+      type: "machine.revoke",
+      idempotencyKey: "narrowed-1",
+    });
+    if (begun.kind !== "begun") throw new Error("expected a new attempt");
+    // The person narrows the grant while it acts.
+    await connections.update(owner, {
+      connectionId: record.id,
+      expectedRevision: 1,
+      grant: { scope: "selected", tasks: true, resources: [] },
+    });
+    const outstanding = async () =>
+      outstandingAttempts(await connectionAttempts(f.database, record.id))
+        .filter((entry) => entry.kind === "command")
+        .map((entry) => entry.id);
+    expect(await outstanding()).toEqual([begun.id]);
+    await settleCommandAttempt(f.database, begun.id, "done");
+    expect(await outstanding()).toEqual([]);
+  });
+});
+
 describeStore("one key, one attempt (K1)", (test) => {
   test("an earlier attempt of the key that is running or unknown is answered, never begun again", async ({
     storeFixture: f,

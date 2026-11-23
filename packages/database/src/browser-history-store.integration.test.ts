@@ -124,8 +124,28 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
     await expect(
       history.clear({ profileId: other.id, ownerId: stranger, idempotencyKey: "stranger-clear" }),
     ).rejects.toMatchObject({ code: "not_found" });
-    // Erasure replays do not erase a subsequent, genuinely new visit.
+    // An agent's erasure is admitted where it commits (K2): refused there, nothing is erased.
     await visit(url);
+    const refusal = new Error("This agent may no longer ask for this");
+    await expect(
+      history.clear({
+        profileId,
+        ownerId,
+        idempotencyKey: "agent-clear",
+        administration: {
+          requestedBy: ownerId,
+          idempotencyKey: "agent-clear",
+          type: "browser.history.clear",
+          request: { profileId },
+          authoritySource: { kind: "mcp", callerKind: "connection", callerKey: "connection:c" },
+          admit: async () => {
+            throw refusal;
+          },
+        } as never,
+      }),
+    ).rejects.toBe(refusal);
+    expect((await list()).entries).toHaveLength(1);
+    // Erasure replays do not erase a subsequent, genuinely new visit.
     await history.remove({ profileId, ownerId, url, idempotencyKey: "remove-one" });
     expect((await list()).entries).toHaveLength(1);
     await expect(

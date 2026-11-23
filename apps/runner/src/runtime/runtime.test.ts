@@ -5696,7 +5696,8 @@ describe("harness process environment", () => {
     )!;
     expect(failure.data).toMatchObject({
       code: "forbidden",
-      message: expect.stringContaining(
+      message: "This engine is not available for this task.",
+      ownerMessage: expect.stringContaining(
         "so it runs only tasks you started yourself that no connected agent or chat has written to.",
       ),
     });
@@ -5846,6 +5847,171 @@ describe("harness process environment", () => {
       });
     } finally {
       vi.unstubAllEnvs();
+      await runtime.close();
+    }
+  });
+
+  it("keeps a proxy password out of retry messages, failure messages, and start-up errors in events, catalogs, and logs (G7)", async () => {
+    const proxy = "http://alice:p@ss/word?q#g7@proxy.invalid:8080";
+    const tokenProxy = "http://proxy-token-g7@proxy.invalid:8080";
+    const password = "p@ss/word?q#g7";
+    const token = "proxy-token-g7";
+    const secrets = networkCredentialSecrets({ HTTP_PROXY: tokenProxy, HTTPS_PROXY: proxy });
+    const logs: Array<{
+      readonly level: "error" | "info";
+      readonly message: string;
+      readonly details: Readonly<Record<string, unknown>> | undefined;
+    }> = [];
+    const logger = {
+      error: (message: string, details?: Readonly<Record<string, unknown>>) => {
+        logs.push({ details, level: "error", message });
+      },
+      info: (message: string, details?: Readonly<Record<string, unknown>>) => {
+        logs.push({ details, level: "info", message });
+      },
+    };
+    const environmentId = createId("environment");
+    const driverKind = HarnessIdSchema.parse("g7-proxy-redaction-test");
+    const registry = new HarnessRegistry();
+    let mode: "retry-and-fail" | "startup-throw" = "retry-and-fail";
+    const driver = new FakeHarnessDriver(driverKind, () => {
+      if (mode === "startup-throw") {
+        throw new Error(`Engine start-up failed via ${proxy}`);
+      }
+      return new ScriptedHarnessSession([
+        {
+          data: {
+            attempt: 1,
+            code: "proxy_error",
+            maxAttempts: 5,
+            message: `Retrying request via ${proxy}`,
+            status: "retrying",
+          },
+          type: "run.retry",
+        },
+        {
+          data: {
+            code: "engine_error",
+            message: `Run failed via ${proxy}`,
+            ownerMessage: `Owner detail via ${proxy}`,
+            retryable: false,
+            status: "failed",
+          },
+          type: "run.failed",
+        },
+      ]);
+    });
+    registry.registerDriver(
+      Object.assign(driver, {
+        inspect: async () => ({
+          connections: [],
+          detail: `Engine start-up check unavailable via ${proxy} and ${tokenProxy}`,
+          status: "unavailable" as const,
+        }),
+      }),
+    );
+    const runtime = configuredRuntime({
+      environmentId,
+      logger,
+      maxConcurrentRuns: 2,
+      networkSecrets: secrets,
+      registry,
+    });
+    runtime.setHostRunRetryEvents(true);
+    try {
+      const inspected = await runtime.inspectHarnesses(
+        [harnessDefinition(driverKind, "G7 proxy redaction", 1)],
+        new AbortController().signal,
+        true,
+      );
+      expect(inspected).toMatchObject([
+        {
+          detail:
+            "Engine start-up check unavailable via http://[REDACTED]@proxy.invalid:8080 and http://[REDACTED]@proxy.invalid:8080",
+          status: "unavailable",
+        },
+      ]);
+
+      const retryAndFailCommand = executeCommand(environmentId, driverKind);
+      const startupCommand = executeCommand(environmentId, driverKind);
+      await reconcile(registry, retryAndFailCommand, startupCommand);
+      const events: RunnerOperationalReport[] = [];
+      const sink: RunnerMessageSink = {
+        send: async (message) => {
+          events.push(message);
+        },
+      };
+      await expect(runtime.handleCommand(retryAndFailCommand, sink)).resolves.toEqual({
+        status: "accepted",
+      });
+      await waitUntil(() =>
+        events.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === retryAndFailCommand.context.runId &&
+            message.event.type === "run.failed",
+        ),
+      );
+      const retryEvent = events.find(
+        (message) =>
+          message.type === "runner.event" &&
+          message.event.runId === retryAndFailCommand.context.runId &&
+          message.event.type === "run.retry",
+      );
+      const failedEvent = events.find(
+        (message) =>
+          message.type === "runner.event" &&
+          message.event.runId === retryAndFailCommand.context.runId &&
+          message.event.type === "run.failed",
+      );
+      expect(retryEvent).toMatchObject({
+        event: {
+          data: { message: "Retrying request via http://[REDACTED]@proxy.invalid:8080" },
+          type: "run.retry",
+        },
+      });
+      expect(failedEvent).toMatchObject({
+        event: {
+          data: {
+            message: "Run failed via http://[REDACTED]@proxy.invalid:8080",
+            ownerMessage: "Owner detail via http://[REDACTED]@proxy.invalid:8080",
+          },
+          type: "run.failed",
+        },
+      });
+
+      mode = "startup-throw";
+      await expect(runtime.handleCommand(startupCommand, sink)).resolves.toEqual({
+        status: "accepted",
+      });
+      await waitUntil(() =>
+        events.some(
+          (message) =>
+            message.type === "runner.event" &&
+            message.event.runId === startupCommand.context.runId &&
+            message.event.type === "run.failed",
+        ),
+      );
+      const startupFailedEvent = events.find(
+        (message) =>
+          message.type === "runner.event" &&
+          message.event.runId === startupCommand.context.runId &&
+          message.event.type === "run.failed",
+      );
+      expect(startupFailedEvent).toMatchObject({
+        event: {
+          data: { message: "Engine start-up failed via http://[REDACTED]@proxy.invalid:8080" },
+          type: "run.failed",
+        },
+      });
+
+      for (const secret of [password, token]) {
+        expect(JSON.stringify(inspected)).not.toContain(secret);
+        expect(JSON.stringify(events)).not.toContain(secret);
+        expect(JSON.stringify(logs)).not.toContain(secret);
+      }
+      expect(logs.some((entry) => entry.message === "run.failed")).toBe(true);
+    } finally {
       await runtime.close();
     }
   });

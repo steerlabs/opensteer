@@ -62,6 +62,7 @@ import {
   type TriggerWatchActivationId,
 } from "@opensteer/core";
 import {
+  EngineUnavailableForTaskError,
   assertEngineMayRun,
   assertFreshProviderSessionContext,
   discoverModelServers,
@@ -656,11 +657,13 @@ export class RunnerRuntime {
       throw new Error("An isolated-service Linux Runner requires the Runner-owned harness sandbox");
     }
     this.#harnessSandbox = options.harnessSandbox;
-    this.#logger = options.logger;
     this.#safeMessageOptions =
       options.networkSecrets === undefined
         ? safeMessageOptions
         : { ...safeMessageOptions, secrets: options.networkSecrets };
+    this.#logger = options.logger
+      ? scrubbingLogger(options.logger, this.#safeMessageOptions.secrets)
+      : undefined;
     this.#maxConcurrentRuns = boundedPositiveInteger(
       options.maxConcurrentRuns,
       1,
@@ -1071,10 +1074,12 @@ export class RunnerRuntime {
             this.#privateStateDirectory,
             signal,
           );
+          const redactDetail = (detail: string) =>
+            redactNetworkCredentials(detail, this.#safeMessageOptions.secrets);
           if (result.status === "preparing") {
             return HarnessInstanceCatalogSchema.parse({
               connections: [],
-              detail: result.detail,
+              detail: redactDetail(result.detail),
               driverKind: definition.driverKind,
               harnessInstanceId: definition.id,
               models: [],
@@ -1087,7 +1092,7 @@ export class RunnerRuntime {
             if (result.status === "authentication-required") {
               return HarnessInstanceCatalogSchema.parse({
                 connections,
-                detail: result.detail,
+                detail: redactDetail(result.detail),
                 driverKind: definition.driverKind,
                 harnessInstanceId: definition.id,
                 models: [],
@@ -1097,7 +1102,7 @@ export class RunnerRuntime {
             }
             return HarnessInstanceCatalogSchema.parse({
               connections,
-              detail: result.detail,
+              detail: redactDetail(result.detail),
               driverKind: definition.driverKind,
               harnessInstanceId: definition.id,
               models: [],
@@ -1115,7 +1120,7 @@ export class RunnerRuntime {
               continuationKey: providerState.continuationKey,
               driverKind: definition.driverKind,
             }),
-            ...(result.detail ? { detail: result.detail } : {}),
+            ...(result.detail ? { detail: redactDetail(result.detail) } : {}),
             driverKind: definition.driverKind,
             harnessInstanceId: definition.id,
             models: result.models,
@@ -3516,13 +3521,19 @@ export class RunnerRuntime {
           )
         : active.abort.signal.aborted
           ? { data: { status: "interrupted" }, type: "run.interrupted" }
-          : failureEvent(
-              safeMessage(error, this.#safeMessageOptions),
-              // A refusal reaches the Home as one, not as an execution error.
-              error instanceof OpensteerError && error.code === "forbidden"
-                ? "forbidden"
-                : "runner_execution_error",
-            );
+          : error instanceof EngineUnavailableForTaskError
+            ? failureEvent(
+                error.message,
+                "forbidden",
+                redactNetworkCredentials(error.ownerMessage, this.#safeMessageOptions.secrets),
+              )
+            : failureEvent(
+                safeMessage(error, this.#safeMessageOptions),
+                // A refusal reaches the Home as one, not as an execution error.
+                error instanceof OpensteerError && error.code === "forbidden"
+                  ? "forbidden"
+                  : "runner_execution_error",
+              );
     } finally {
       // A Run without personal context had no Agent home: nothing of it is scanned after.
       if (workspace && this.#skillObserver && active.folders?.agentHome) {
@@ -3606,7 +3617,10 @@ export class RunnerRuntime {
         // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
           code: terminal.data.code,
-          detail: terminal.data.message,
+          detail: redactNetworkCredentials(
+            terminal.data.ownerMessage ?? terminal.data.message,
+            this.#safeMessageOptions.secrets,
+          ),
           driverKind: context.harness.driverKind,
           harnessInstanceId: context.harnessInstanceId,
           runId: context.runId,
@@ -4473,6 +4487,14 @@ function fittedDurableEvent(
             redactNetworkCredentials(event.data.message, secrets),
             runFailureMessageMaxLength,
           ),
+          ...(event.data.ownerMessage !== undefined
+            ? {
+                ownerMessage: fittedText(
+                  redactNetworkCredentials(event.data.ownerMessage, secrets),
+                  runFailureMessageMaxLength,
+                ),
+              }
+            : {}),
         },
       };
     default:
@@ -4631,15 +4653,36 @@ function fittedTail(text: string, truncated: boolean, maxBytes: number): string 
   return `…${text.slice(start).toWellFormed()}`;
 }
 
-function failureEvent(message: string, code: string): HarnessDurableEvent {
+function failureEvent(message: string, code: string, ownerMessage?: string): HarnessDurableEvent {
   return {
     data: {
       code,
       message,
+      ...(ownerMessage ? { ownerMessage } : {}),
       retryable: false,
       status: "failed",
     },
     type: "run.failed",
+  };
+}
+
+function scrubbingLogger(logger: RunnerLogger, secrets: readonly string[]): RunnerLogger {
+  const scrubDetails = (
+    details: Readonly<Record<string, unknown>> | undefined,
+  ): Readonly<Record<string, unknown>> | undefined =>
+    details
+      ? Object.fromEntries(
+          Object.entries(details).map(([key, value]) => [
+            key,
+            typeof value === "string" ? redactNetworkCredentials(value, secrets) : value,
+          ]),
+        )
+      : undefined;
+  return {
+    error: (message, details) =>
+      logger.error(redactNetworkCredentials(message, secrets), scrubDetails(details)),
+    info: (message, details) =>
+      logger.info(redactNetworkCredentials(message, secrets), scrubDetails(details)),
   };
 }
 

@@ -1,3 +1,4 @@
+import type { CommandProposal } from "../commands/actor.js";
 import { removeDevice } from "./device-removal.js";
 import { DeviceDriverService } from "./device-driver-service.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
@@ -38,6 +39,8 @@ export type AdministrationCaller =
   | ({
       readonly kind: "person";
       readonly sessionId?: AuthSessionId;
+      /** An approved proposal's last admission, run where the change is written (K2). */
+      readonly readmit?: CommandProposal["readmit"];
     } & AdministrationActor);
 export type AdministrationDependencies = Pick<
   HostServerDependencies,
@@ -610,6 +613,9 @@ export class AdministrationService {
               ...(administration
                 ? { authoritySource: administration.authoritySource, admit: administration.admit }
                 : {}),
+              // The person approving an agent's Stop: the agent that asked is admitted again
+              // where the end is written, before any socket closes (K2).
+              ...(caller.kind === "person" && caller.readmit ? { admit: caller.readmit } : {}),
             },
           },
         );

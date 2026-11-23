@@ -101,12 +101,14 @@ export function runEndedEvent(status: "completed" | "interrupted"): HarnessEvent
 export function runFailedEvent(failure: {
   readonly code: string;
   readonly message: string;
+  readonly ownerMessage?: string;
   readonly retryable: boolean;
 }): HarnessEvent {
   return {
     data: {
       code: failure.code,
       message: failure.message,
+      ...(failure.ownerMessage ? { ownerMessage: failure.ownerMessage } : {}),
       retryable: failure.retryable,
       status: "failed",
     },
