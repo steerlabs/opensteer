@@ -289,18 +289,18 @@ export class CommandRequestService {
     // A connection's ask is answerable only while it could still ask for this: a Disconnect or a
     // narrowing since closes it, and nothing runs.
     const connectionId = pending.command.proposer.connectionId;
-    if (connectionId && !(await this.#stillAsks(actor.userId, connectionId, command))) {
-      await this.#store.close(input.requestId);
-      throw new OpensteerError({
-        code: "forbidden",
-        reason: "proposer-gone",
-        message: "The agent that asked can no longer ask for this, so its Request closed.",
-      });
-    }
     const approved = RequestJsonObjectSchema.parse(
       JSON.parse(JSON.stringify(proposedCommand(row, command))),
     );
-    await this.#store.beginApproval({
+    const begun = await this.#store.beginApproval({
+      ...(connectionId
+        ? {
+            // As the connection the door admitted it under (`connection:<id>`), in the approval's
+            // own transaction.
+            stillAsks: (transaction) =>
+              this.#stillAsks(transaction, actor.userId, connectionId, command),
+          }
+        : {}),
       requestId: input.requestId,
       expectedRevision: input.expectedRevision,
       resolvedBy: actor.userId,
@@ -319,6 +319,12 @@ export class CommandRequestService {
           throw changesWhatWasAsked();
       },
     });
+    if (begun.closed)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "proposer-gone",
+        message: "The agent that asked can no longer ask for this, so its Request closed.",
+      });
     const approver = person({
       requestId: input.requestId,
       revision: input.expectedRevision,
@@ -354,9 +360,14 @@ export class CommandRequestService {
   }
 
   /** Whether the proposing connection could still ask for this command, as it is now. */
-  async #stillAsks(owner: UserId, connectionId: string, command: HostApiCommand): Promise<boolean> {
+  async #stillAsks(
+    database: Kysely<DatabaseSchema>,
+    owner: UserId,
+    connectionId: string,
+    command: HostApiCommand,
+  ): Promise<boolean> {
     try {
-      const admission = await admitCommand(this.#database, {
+      const admission = await admitCommand(database, {
         ownerUserId: owner,
         subject: commandSubject(`connection:${connectionId}`),
         command,

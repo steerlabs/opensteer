@@ -483,12 +483,43 @@ export class CommandRequestStore {
     /** The approving call's key, and the command that will run, kept apart from the proposal. */
     readonly approvalKey: string;
     readonly approved: NonNullable<CommandRequestPart["approved"]>;
-  }): Promise<{ readonly request: Request; readonly part: CommandRequestPart }> {
+    /**
+     * Whether its proposer could still ask for this command, read in this same transaction: a
+     * Disconnect or a narrowing up to the commit is seen, and the ask closes with nothing run.
+     */
+    readonly stillAsks?: (transaction: Transaction<DatabaseSchema>) => Promise<boolean>;
+  }): Promise<
+    | { readonly request: Request; readonly part: CommandRequestPart; readonly closed?: never }
+    | { readonly closed: true }
+  > {
     return commitPersonalMutation(this.#database, async (transaction) => {
+      // The proposer first: its connection row is held for share until this commits, so a
+      // narrowing or a Disconnect waits for the approval or is seen by it (lock order: the
+      // connection before the task and the Request).
+      const asks = input.stillAsks ? await input.stillAsks(transaction) : true;
       const row = await this.#lockPending(transaction, input);
       const part = CommandRequestPartSchema.parse(row.command);
       input.accept(part);
       const now = this.#now();
+      if (!asks) {
+        const closed = await transaction
+          .updateTable("requests")
+          .set({
+            status: "cancelled",
+            cancellationReason: "authority-revoked",
+            resolvedAt: now,
+            resolvedBy: null,
+          })
+          .where("id", "=", row.id)
+          .where("status", "=", "pending")
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        const request = requestFromRow(closed);
+        if (!request.originatingAgentSessionId)
+          await enqueueContinuation(transaction, request, now);
+        await refreshRequestState(transaction, request.id);
+        return { closed: true as const };
+      }
       const resolved = await transaction
         .updateTable("requests")
         .set({

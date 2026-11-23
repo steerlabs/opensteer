@@ -47,8 +47,9 @@ describeStore("command Requests at the Home", (it) => {
         .set({ accessMode: "full-access" })
         .where("id", "=", id as never)
         .execute();
+    const commandStore = new CommandRequestStore(database, store.requests);
     const service = new CommandRequestService({
-      store: new CommandRequestStore(database, store.requests),
+      store: commandStore,
       database,
       requests: store.requests,
     });
@@ -147,6 +148,7 @@ describeStore("command Requests at the Home", (it) => {
       f,
       database,
       store,
+      commandStore,
       service,
       ran,
       run,
@@ -736,6 +738,70 @@ describeStore("command Requests at the Home", (it) => {
     ).toEqual({ status: "withdrawn", requestId: proposed.requestId });
     expect((await store.requests.get(proposed.requestId as never))!.status).toBe("withdrawn");
     expect(ran).toEqual([]);
+  });
+
+  it("re-admits the proposal as its connection inside the approval's own transaction (AD5)", async ({
+    storeFixture,
+  }) => {
+    const { f, database, service, store, commandStore, ran, approve } = await setup(storeFixture);
+    const connections = new AgentConnectionStore(database);
+    const connection = await connections.create({
+      userId: f.userId,
+      label: "Agent",
+      clientName: "Agent",
+      accessMode: "full-access",
+      resource: "http://localhost/mcp",
+      expiresAt: new Date(Date.now() + 60 * 60_000),
+      grant: { scope: "everything" },
+    });
+    await connections.activate(connection.id, `hash-${randomUUID()}`);
+    const { session } = await beginAgentSession(database, {
+      userId: f.userId,
+      agentConnectionId: connection.id,
+    });
+    const proposed = (await service.propose({
+      ownerUserId: f.userId,
+      command: {
+        type: "harness.rename",
+        idempotencyKey: randomUUID(),
+        environmentId: f.environmentId,
+        harnessInstanceId: "hin_00000000-0000-4000-8000-000000001501",
+        name: "Raced",
+      } as unknown as HostApiCommand,
+      ask: { status: "ask", reason: "step" },
+      face: 0,
+      proposer: {
+        kind: "connection",
+        name: "Agent",
+        taskTitle: null,
+        key: `connection:${connection.id}` as ProposerLineageKey,
+        connectionId: connection.id,
+        grantRevision: 1,
+      },
+      origin: { agentSessionId: session.id },
+      originatingThreadId: session.threadId,
+      callKey: randomUUID(),
+    })) as { requestId: string };
+    // The person narrows the grant just as the approval begins: after any check made before it.
+    const begin = commandStore.beginApproval.bind(commandStore);
+    commandStore.beginApproval = async (input) => {
+      await connections.update(f.userId, {
+        connectionId: connection.id,
+        expectedRevision: 1,
+        grant: { scope: "selected", tasks: true, resources: [] },
+      });
+      return begin(input);
+    };
+    await expect(
+      approve(
+        proposed.requestId,
+        (await store.requests.get(proposed.requestId as never))!.command!.command,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden", reason: "proposer-gone" });
+    expect(ran).toEqual([]);
+    expect(await store.requests.get(proposed.requestId as never)).toMatchObject({
+      status: "cancelled",
+    });
   });
 
   it("refuses an approval once the proposing connection is Disconnected, and closes it (X9)", async ({
