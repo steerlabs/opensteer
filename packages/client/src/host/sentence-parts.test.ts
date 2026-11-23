@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addressParts,
   outsideText,
+  phoneSentence,
   plainSentence,
   sentence,
   sentenceWith,
@@ -141,5 +142,25 @@ describe("what comes from outside is cleaned before it is drawn", () => {
     expect(
       plainSentence(["Messages from ", { name: "Work, who is allowed to use everything" }, "."]),
     ).toBe("Messages from “Work, who is allowed to use everything”.");
+  });
+});
+
+describe("the phone's drawing of a sentence", () => {
+  it("never breaks or hyphenates an address inside a part, and may break at each joint", () => {
+    const drawn = phoneSentence(["Paused because ", { address: "tim@example.com" }, " needs it."]);
+    const address = drawn.slice(drawn.indexOf("\u2068") + 1, drawn.indexOf("\u2069"));
+    expect(address.split("\u200B")).toEqual([
+      "t\u2060i\u2060m\u2060@",
+      "e\u2060x\u2060a\u2060m\u2060p\u2060l\u2060e",
+      ".\u2060c\u2060o\u2060m",
+    ]);
+    // What a person reads is the plain sentence: nothing visible is added.
+    expect(drawn.replace(/[\u2060\u200B\u2068\u2069]/gu, "")).toBe(
+      "Paused because tim@example.com needs it.",
+    );
+  });
+
+  it("isolates a name and puts it in quotation marks, cleaned", () => {
+    expect(phoneSentence(["You, as ", { name: "Tim\u202E" }])).toBe("You, as “\u2068Tim\u2069”");
   });
 });

@@ -3,7 +3,8 @@ import {
   accessModeOptions,
   agentClaim,
   agentConsentHeading,
-  agentWhoOriginLine,
+  agentWhoOriginParts,
+  phoneSentence,
   toggleDraftResource,
   workWords,
   agentBrowserOptions,
@@ -341,7 +342,9 @@ function AgentAuthorization(props: {
         work={workHomeMark(workPolicy)?.badge ?? null}
         who={{
           heading: heading.claim ?? workWords("who.verified"),
-          origins: who.verified ? who.origins.map(agentWhoOriginLine) : [],
+          origins: who.verified
+            ? who.origins.map((origin) => phoneSentence(agentWhoOriginParts(origin)))
+            : [],
           verified: who.verified,
           warning: who.warning,
         }}

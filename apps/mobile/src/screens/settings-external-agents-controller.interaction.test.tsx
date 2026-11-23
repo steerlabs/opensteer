@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { act } from "react";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { createRoot, type Root } from "react-dom/client";
 import { externalAgentGuides } from "@opensteer/client/host";
 import { MockHostClient, mockConnectedAgents } from "@opensteer/client/mock";
@@ -41,7 +42,7 @@ vi.mock("./use-settings-host.js", () => ({
 }));
 vi.mock("./native-settings-page.js", () => ({
   NativeSettingsPage: (props: NativeSettingsPageProps) => {
-    state.page = props;
+    state.page = readAsDrawn(props);
     return null;
   },
 }));

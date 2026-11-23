@@ -17,7 +17,9 @@ export type SentencePart = string | { readonly address: string } | { readonly na
 
 /** A value from outside: removed are direction controls, zero-width characters, soft hyphens. */
 export function outsideText(value: string): string {
-  return value.replace(/[؜‎‏‪-‮⁦-⁩]/gu, "").replace(/[­᠎​-‍⁠﻿]/gu, "");
+  return value
+    .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "")
+    .replace(/[\u00AD\u180E\u200B-\u200D\u2060\uFEFF]/gu, "");
 }
 
 /**
@@ -79,6 +81,29 @@ export function plainSentence(parts: readonly SentencePart[]): string {
     .map((part) =>
       typeof part === "string" ? part : "address" in part ? partText(part) : `“${partText(part)}”`,
     )
+    .join("");
+}
+
+/**
+ * The sentence as the phone draws it, where text has no boxes: the one place every phone sentence
+ * with a name or an address goes through. An address breaks only at its joints and is never
+ * hyphenated (a word joiner between each two of a part's characters, a zero-width space at each
+ * joint); each name and address is isolated from the direction of the text around it; a name
+ * stands in quotation marks. Its words are the same as `plainSentence`'s; what it adds is
+ * invisible, so it is for drawing, never for a copy.
+ */
+export function phoneSentence(parts: readonly SentencePart[]): string {
+  const isolate = (text: string) => `\u2068${text}\u2069`;
+  return parts
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if ("name" in part) return `“${isolate(partText(part))}”`;
+      return isolate(
+        addressParts(partText(part))
+          .map((piece) => Array.from(piece).join("\u2060"))
+          .join("\u200B"),
+      );
+    })
     .join("");
 }
 

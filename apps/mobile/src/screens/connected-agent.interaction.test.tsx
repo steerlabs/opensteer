@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { createId } from "@opensteer/core";
+import { readAsDrawn } from "./read-as-drawn.test-support.js";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { agentWords, HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
@@ -48,7 +49,7 @@ vi.mock("./native-settings-page.js", async () => {
     NativeSettingsPage: (props: NativeSettingsPageProps) => {
       const sheet = props.sheet !== undefined;
       if (sheet) state.sheet = props;
-      else state.page = props;
+      else state.page = readAsDrawn(props);
       useEffect(
         () => () => {
           if (sheet) state.sheet = null;

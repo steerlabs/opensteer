@@ -14,7 +14,8 @@ import {
   chatDraftRefusal,
   draftFromGrant,
   grantFromDraft,
-  agentWhoOriginLine,
+  agentWhoOriginParts,
+  phoneSentence,
   toggleDraftResource,
   sameGrant,
   type AgentGrantDraft,
@@ -390,7 +391,7 @@ export function connectedAgentSections(props: {
               ...detail.row.identity.who.origins.map((origin): NativeSettingsRow => ({
                 key: origin.role,
                 kind: "text",
-                label: agentWhoOriginLine(origin),
+                label: phoneSentence(agentWhoOriginParts(origin)),
               })),
             ],
           },
@@ -463,7 +464,7 @@ export function connectedAgentSections(props: {
       {
         key: "chat-where",
         title: agentWords("chat.where.title"),
-        rows: [{ key: "where", kind: "text", label: chat.where }],
+        rows: [{ key: "where", kind: "text", label: phoneSentence(chat.whereParts) }],
       },
       {
         key: "chat-speakers",
@@ -472,8 +473,8 @@ export function connectedAgentSections(props: {
           {
             key: "speakers",
             kind: "text",
-            label: chat.speakers.title,
-            detail: chat.speakers.detail,
+            label: phoneSentence(chat.speakers.titleParts),
+            detail: phoneSentence(chat.speakers.detailParts),
           },
         ],
         footer: { text: chat.fixed },
@@ -588,7 +589,7 @@ export function connectedAgentSections(props: {
       key: row.label,
       kind: "text",
       label: row.label,
-      detail: row.value,
+      detail: phoneSentence(row.valueParts),
     })),
   });
   if (active && who.withdrawn === null)
