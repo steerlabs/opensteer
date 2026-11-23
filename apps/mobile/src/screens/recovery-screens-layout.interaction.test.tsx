@@ -231,4 +231,41 @@ describe("the screens a person meets when something is wrong, at the largest tex
     const scroll = frames.frame(container.querySelector('[data-rn="ScrollView"]')!);
     expect(inside(scroll, sheet), "the sheet's words run past its edge").toBe(true);
   });
+
+  // The reader's re-check of 5ebc2cbbd: in landscape the island and the home indicator stand at
+  // the sides, and the sheet's words and its Reconnect ran under them.
+  it("keeps the connection sheet's words and its Reconnect clear of the sides in landscape", async () => {
+    const landscape: LayoutPhone = {
+      header: 32,
+      insets: { bottom: 21, left: 59, right: 59, top: 0 },
+      name: "a phone with an island, on its side",
+      window: { height: 390, width: 844 },
+    };
+    geometry.frame = { height: landscape.window.height, width: landscape.window.width };
+    const { container, frames } = await draw(
+      landscape,
+      <View style={{ maxHeight: landscape.window.height, width: landscape.window.width }}>
+        <ConnectionDetails
+          action={{ label: "Reconnect", onPress: () => undefined }}
+          explanation="Your phone can’t reach Studio Mac mini."
+          mark={<View style={{ height: 28, width: 28 }} />}
+          meta={null}
+          name="Studio Mac mini"
+          others={[]}
+          state="Offline"
+        />
+      </View>,
+      landscape.insets,
+    );
+    const clear = (label: string, frame: { x: number; width: number }) => {
+      expect(frame.x, `${label} starts under the left side`).toBeGreaterThanOrEqual(
+        landscape.insets.left,
+      );
+      expect(frame.x + frame.width, `${label} runs under the right side`).toBeLessThanOrEqual(
+        landscape.window.width - landscape.insets.right,
+      );
+    };
+    clear("the name", frames.frame(textElement(container, "Studio Mac mini")));
+    clear("Reconnect", frames.frame(control(container, "Reconnect")));
+  });
 });

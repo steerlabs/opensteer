@@ -41,11 +41,14 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: {
   // At the largest sizes each row's words take the width under its name, and the mark stands
   // above the name (`stacked-layout.ts`).
   const stacked = useStackedLayout();
+  // In landscape the island and the home indicator stand at the sides.
+  const sides = { paddingLeft: space[20] + insets.left, paddingRight: space[20] + insets.right };
   return (
     <View style={{ maxHeight: tallest }}>
       <ScrollView
         contentContainerStyle={[
           styles.details,
+          sides,
           props.action === null && { paddingBottom: insets.bottom + space[24] },
         ]}
         style={styles.words}
@@ -109,7 +112,7 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: {
       </ScrollView>
       {/* The one thing to do stays in view below the words, whatever their size. */}
       {props.action === null ? null : (
-        <View style={[styles.action, { paddingBottom: insets.bottom + space[16] }]}>
+        <View style={[styles.action, sides, { paddingBottom: insets.bottom + space[16] }]}>
           <PrimaryButton
             busy={props.action.busy === true}
             compact
@@ -127,8 +130,8 @@ export const ConnectionDetails = memo(function ConnectionDetails(props: {
 const markColumn = 28 + space[10];
 
 const styles = StyleSheet.create({
-  action: { alignItems: "flex-start", paddingHorizontal: space[20], paddingTop: space[14] },
-  details: { paddingBottom: space[24], paddingHorizontal: space[20], paddingTop: space[24] },
+  action: { alignItems: "flex-start", paddingTop: space[14] },
+  details: { paddingBottom: space[24], paddingTop: space[24] },
   head: { alignItems: "center", flexDirection: "row", gap: space[10] },
   headStacked: { alignItems: "flex-start", flexDirection: "column" },
   meta: { marginTop: space[14] },
