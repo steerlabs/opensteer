@@ -4,7 +4,7 @@ import { createControlPlaneAuth, ControlPlaneAuthenticator } from "../auth/auth.
 import { sql } from "kysely";
 import type { Kysely } from "kysely";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createControlPlaneDatabase } from "./database.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
@@ -636,7 +636,17 @@ integration("organizations removed (0037_remove_organizations)", () => {
           return error as Error & { cause?: Error };
         },
       );
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await vi.waitFor(async () => {
+        const waiting = await client.query<{ waiting: boolean }>(
+          `select exists (
+             select 1 from pg_locks
+             where relation = 'public.organizations'::regclass
+               and mode = 'AccessExclusiveLock'
+               and not granted
+           ) as waiting`,
+        );
+        expect(waiting.rows[0]?.waiting).toBe(true);
+      });
       expect(settled).toBe(false);
       await client.query("commit");
       const raceError = await migrating;
