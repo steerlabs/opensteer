@@ -8,7 +8,6 @@ import { Popover } from "../popover.js";
 import { SurfaceMenuRow } from "../surface-menu.js";
 import { useToast } from "../toast.js";
 import { OccupantMarks } from "./occupant-marks.js";
-import { useTabGroupCloser } from "./tab-closer.js";
 import type { TaskDirectory } from "./task-directory.js";
 import type { TabSortHandle } from "./use-tab-sort.js";
 
@@ -139,7 +138,6 @@ export const TabGroupHeader = memo(function TabGroupHeader({
           group={group}
           hostClient={hostClient}
           onClose={() => onEdit(null)}
-          tabIds={tabIds}
         />
       ) : null}
     </li>
@@ -152,19 +150,16 @@ function TabGroupEditor({
   group,
   hostClient,
   onClose,
-  tabIds,
 }: {
   readonly anchor: HTMLElement;
   readonly at: { x: number; y: number } | undefined;
   readonly group: TabGroup;
   readonly hostClient: HostClient;
   readonly onClose: () => void;
-  readonly tabIds: readonly TabId[];
 }) {
   const [title, setTitle] = useState(group.name);
   const saved = useRef(group.name);
   const toast = useToast();
-  const closeGroup = useTabGroupCloser();
   const failed = toastFailure(toast);
   const save = () => {
     const trimmed = title.trim();
@@ -255,16 +250,15 @@ function TabGroupEditor({
           item={{ icon: "close", label: "Close group" }}
           onChoose={() => {
             onClose();
-            // The store keeps a group its tabs left; closing the group itself takes it away too.
-            closeGroup(
-              tabIds,
-              () =>
-                void act(
-                  hostClient,
-                  { label: "close this group", done: "closed", happened: "this group closed" },
-                  () => hostClient.deleteTabGroup(group.groupId),
-                ).catch(failed),
-            );
+            // One decision on the Home: the members the group has then close, and the group with
+            // them; a tab that could not close keeps the group, and the person hears it.
+            void act(
+              hostClient,
+              { label: "close this group", done: "closed", happened: "this group closed" },
+              () => hostClient.closeTabGroup(group.groupId),
+            ).then((result) => {
+              if (!result.groupClosed) toast.error("Some tabs in this group stayed open.");
+            }, failed);
           }}
         />
       </div>

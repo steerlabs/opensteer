@@ -78,6 +78,11 @@ export interface TabServicePort {
     key: string,
   ): Promise<{ group: TabGroup }>;
   deleteGroup(ownerId: UserId, groupId: TabGroupId, key: string): Promise<{ layout: TabLayout }>;
+  closeGroup(
+    actor: TabActor,
+    groupId: TabGroupId,
+    key: string,
+  ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }>;
   get(ownerId: UserId, tabId: TabId): Promise<Tab>;
   bootstrap(ownerId: UserId, maxBytes: number): Promise<TabBootstrap>;
   requireOpenPage(claims: RunToolScope, tabId: TabId): Promise<PageAgentBinding>;

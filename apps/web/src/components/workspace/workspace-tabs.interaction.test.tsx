@@ -177,6 +177,9 @@ describe("one tab list", () => {
       expect(item).toBeDefined();
       return item!;
     });
+    const closeGroup = vi.spyOn(client, "closeTabGroup");
+    const closeTabs = vi.spyOn(client, "closeTabs");
+    const deleteGroup = vi.spyOn(client, "deleteTabGroup");
     await click(close);
     await until("Close group left its group behind", () => {
       expect(document.querySelector(`[data-tab-group-id="${group}"]`)).toBeNull();
@@ -185,6 +188,10 @@ describe("one tab list", () => {
       ).toBe(false);
     });
     for (const tabId of members.tabIds) expect(strip().ordered).not.toContain(tabId);
+    // One command, naming the group: the Home decides which tabs it held and whether it goes.
+    expect(closeGroup.mock.calls).toEqual([[group]]);
+    expect(closeTabs).not.toHaveBeenCalled();
+    expect(deleteGroup).not.toHaveBeenCalled();
   });
 
   it("a group's menu renames and ungroups it, keeping every tab where it was", async () => {

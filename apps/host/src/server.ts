@@ -2608,6 +2608,15 @@ export async function createHostServer(
           type: command.type,
           ...(await dependencies.tabs.deleteGroup(userId, command.groupId, command.idempotencyKey)),
         };
+      case "tab.group.close":
+        return {
+          type: command.type,
+          ...(await dependencies.tabs.closeGroup(
+            { kind: "person", ownerId: userId },
+            command.groupId,
+            command.idempotencyKey,
+          )),
+        };
       case "app.rename":
       case "app.start":
       case "app.stop":
