@@ -43,7 +43,7 @@ import {
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtempSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -83,8 +83,36 @@ void withTimeout(run(), 90_000, {
   async () => {
     smokeFinished = true;
     clearInterval(smokeLiveness);
+    // Chromium may still be writing into the profile as it winds down, so the removal retries
+    // for a moment. A profile that still cannot go fails the smoke at once, naming what is left
+    // and which of this smoke's child processes still run, instead of hanging or passing.
+    const removal = await rm(smokeProfile, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    if (removal !== null) {
+      const left = await readdir(smokeProfile, { recursive: true }).catch(() => []);
+      process.stderr.write(
+        `${JSON.stringify({
+          event: "electron-browser-smoke.failed",
+          message: `The smoke's browser profile could not be removed: ${String(removal)}`,
+          left: left.slice(0, 50),
+          leftCount: left.length,
+          children: app
+            .getAppMetrics()
+            .filter((metric) => metric.type !== "Browser")
+            .map((metric) => ({ pid: metric.pid, type: metric.type, name: metric.name ?? null })),
+        })}\n`,
+      );
+      app.exit(1);
+      return;
+    }
     process.stdout.write(`${JSON.stringify({ event: "electron-browser-smoke.passed" })}\n`);
-    await rm(smokeProfile, { recursive: true, force: true });
     app.quit();
   },
   (error: unknown) => {

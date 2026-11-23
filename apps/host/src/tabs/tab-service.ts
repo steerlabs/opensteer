@@ -1200,6 +1200,87 @@ export class TabService implements TabServicePort {
     };
   }
 
+  /**
+   * Closes a group in one decision on the Home: the members it has now close as a close of each
+   * would, and the group goes once none is left. A member that may not close stays, and so does
+   * the group; the result names it.
+   */
+  async closeGroup(
+    actor: TabActor,
+    groupId: TabGroupId,
+    key: string,
+  ): Promise<TabCloseResult & { groupClosed: boolean; layout: TabLayout }> {
+    const failed: TabCloseResult["failed"] = [],
+      permitted = new Set<TabId>(),
+      cleanup: { row: TabRecord; closePage: boolean }[] = [];
+    const result = await this.options.store.closeGroup(
+      owner(actor),
+      groupId,
+      operationKey(actor, key),
+      async (tx, rows, layout) => {
+        const item = layout.items.find(
+          (item) => item.kind === "group" && item.group.groupId === groupId,
+        );
+        if (item?.kind !== "group") return;
+        await this.options.authorizeMembership(actor, tx);
+        const denied = (await this.options.deniedRows?.(actor, rows, tx)) ?? new Set<TabId>();
+        for (const tabId of item.group.tabIds) {
+          const row = rows.find((row) => row.id === tabId);
+          if (!row || row.ownerId !== owner(actor) || denied.has(row.id)) {
+            failed.push({
+              tabId,
+              error: normalizeToolError({
+                code: "not_found",
+                message: "This tab is no longer in the list.",
+                next: null,
+              }),
+            });
+            continue;
+          }
+          const task =
+            row.pageBinding && row.openedBy && row.openedBy !== "person"
+              ? await tx
+                  .selectFrom("threads")
+                  .select(["originConnectionId", "worker"])
+                  .where("id", "=", row.openedBy.taskId)
+                  .where("createdBy", "=", owner(actor))
+                  .executeTakeFirst()
+              : undefined;
+          permitted.add(tabId);
+          cleanup.push({
+            row,
+            closePage: Boolean(task?.originConnectionId && task.worker === "external"),
+          });
+        }
+      },
+      (row) => permitted.has(row.id),
+    );
+    // As a close of each member finishes: viewers end and the catalog moves, once.
+    const meta = tabMutationMeta(result);
+    if (!meta.replayed) {
+      const ending = cleanup
+        .filter(({ row }) => result.tabIds.includes(row.id))
+        .map(async ({ row, closePage }) => {
+          if (row.kind === "page")
+            await this.options.pages.closeViewers(owner(actor), row, closePage);
+          else if (row.kind === "phone" || row.kind === "window")
+            await this.options.nativeTargets.closeOwnerViews(owner(actor), row.id, row.generation);
+        });
+      this.#applyCatalogMutation(owner(actor), result.layout);
+      for (const outcome of await Promise.allSettled(ending))
+        if (outcome.status === "rejected") this.options.onError(outcome.reason);
+    }
+    return {
+      // The store's answer, a replay's included: exactly the members this close took.
+      closed: result.tabIds,
+      failed,
+      groupClosed: !result.layout.items.some(
+        (item) => item.kind === "group" && item.group.groupId === groupId,
+      ),
+      layout: meta.replayed && meta.currentLayout ? meta.currentLayout : result.layout,
+    };
+  }
+
   async reopen(
     actor: TabActor,
     tabId: TabId | undefined,
@@ -1501,6 +1582,11 @@ export class TabService implements TabServicePort {
         return {
           type: command.type,
           ...(await this.deleteGroup(ownerId, command.groupId, command.idempotencyKey)),
+        };
+      case "tab.group.close":
+        return {
+          type: command.type,
+          ...(await this.closeGroup(actor, command.groupId, command.idempotencyKey)),
         };
     }
   }

@@ -35,6 +35,8 @@ export interface TabsClient {
   organizeTabs(input: TabOrganizeInput): Promise<TabOrganizeResult>;
   updateTabGroup(input: TabGroupUpdateInput): Promise<TabGroup>;
   deleteTabGroup(groupId: TabGroupId): Promise<void>;
+  /** The Home closes the group's members as they are then, and the group once none is left. */
+  closeTabGroup(groupId: TabGroupId): Promise<TabCloseResult & { readonly groupClosed: boolean }>;
   listApps(query?: string): Promise<App[]>;
   /** One app, as an app tab reads its origin chat. */
   getApp(appId: AppId): Promise<App>;
