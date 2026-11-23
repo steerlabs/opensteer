@@ -3631,6 +3631,9 @@ async function executeMockCommand(
     case "browser.session.close":
       await client.closeBrowser(command.sessionId);
       return unsupportedMockRpc();
+    case "browser.session.dismiss":
+      await client.dismissBrowserSession(command.sessionId);
+      return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
     case "trigger.create":
       return rpcSuccess(
         hostApi["commands.dispatch"].success.parse({
@@ -4395,6 +4398,22 @@ export class MockHostClient implements HostClient {
   /** The preview Home has no pooled browser to restart: refused, and nothing changes. */
   readonly restartPooledBrowser = (_computerId: string): Promise<void> =>
     Promise.reject(new BrowserRestartUnavailable());
+
+  /** W15: removes an unconfirmed-closing session from the preview snapshot. */
+  readonly dismissBrowserSession = async (sessionId: string): Promise<void> => {
+    const snapshot = this.#state.getSnapshot();
+    const browserPools = snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.#state.updatePlaces({
+      ...snapshot,
+      browserSessions: snapshot.browserSessions.filter((session) => session.id !== sessionId),
+      ...(browserPools ? { browserPools } : {}),
+    });
+  };
 
   /** A navigation can stay loading after the restored page has painted. */
   setBrowserLoading(tabId: string, loading: boolean): void {

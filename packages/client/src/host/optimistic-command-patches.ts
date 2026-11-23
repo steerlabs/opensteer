@@ -52,6 +52,7 @@ type OptimisticCommandPatch =
       readonly type: Extract<CommandType, "browser.profile.delete">;
     }
   | { readonly sessionId: string; readonly type: Extract<CommandType, "browser.session.close"> }
+  | { readonly sessionId: string; readonly type: Extract<CommandType, "browser.session.dismiss"> }
   | { readonly thread: ThreadSummary; readonly type: Extract<CommandType, "thread.create"> }
   | {
       readonly acceptedRunCreatedAt: string | null;
@@ -144,6 +145,24 @@ export const optimisticCommandPatches = {
       session.id === sessionId ? { ...session, state: "closed" } : session,
     ),
   }),
+  "browser.session.dismiss": (snapshot, { sessionId }) => ({
+    ...snapshot,
+    browserSessions: snapshot.browserSessions.filter((session) => session.id !== sessionId),
+    ...(snapshot.browserPools
+      ? {
+          browserPools: snapshot.browserPools.map((pool) => {
+            if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) {
+              return pool;
+            }
+            const remaining = pool.unconfirmedClosings.filter(
+              (entry) => entry.sessionId !== sessionId,
+            );
+            const { unconfirmedClosings: _dropped, ...rest } = pool;
+            return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+          }),
+        }
+      : {}),
+  }),
   "browser.session.start": (snapshot, { session }) => ({
     ...snapshot,
     browserSessions: [
@@ -211,6 +230,8 @@ export function applyOptimisticCommandPatch(
     case "browser.profile.delete":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "browser.session.close":
+      return optimisticCommandPatches[patch.type](snapshot, patch);
+    case "browser.session.dismiss":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "browser.session.start":
       return optimisticCommandPatches[patch.type](snapshot, patch);

@@ -2266,6 +2266,7 @@ export interface DatabaseSchema {
     runnerId: RunnerId;
     slotId: string;
     term: number;
+    dismissedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
   };
   browserPoolSlots: {
     runnerId: RunnerId;

@@ -215,6 +215,8 @@ import {
   listBrowserPoolReportedNotices,
   listBrowserPoolReadySessions,
   listBrowserPoolClosingSessions,
+  listBrowserPoolUnconfirmedClosings,
+  dismissBrowserPoolUnconfirmedSession,
   stopBrowserPoolSession,
   seeBrowserPoolDocumentLoss,
   readBrowserPoolSessionLineage,
@@ -532,7 +534,10 @@ export interface BrowserSessionRepository {
   resolveResourceAccess?: OpensteerStore["resolveResourceAccess"];
   runCapabilityScope?: OpensteerStore["runCapabilityScope"];
   assertActiveGrant?: OpensteerStore["assertActiveGrant"];
-  listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]>;
+  listBrowserSessions(
+    ownerId: UserId,
+    options?: { readonly pooled?: boolean },
+  ): Promise<readonly BrowserSessionRecord[]>;
   /** The conversations using each session that the reader can open, bounded per session. */
   listBrowserSessionThreads(input: {
     readonly ownerId: UserId;
@@ -6846,6 +6851,7 @@ export class BrowserService {
         };
       }),
     );
+    const unconfirmedClosings = await listBrowserPoolUnconfirmedClosings(database, runnerId);
     return [
       {
         runnerId,
@@ -6857,6 +6863,7 @@ export class BrowserService {
         ...(slot.failedStarts ? { failures: slot.failedStarts } : {}),
         ...(pages.length ? { pages } : {}),
         ...(notReady ? { notReady } : {}),
+        ...(unconfirmedClosings.length ? { unconfirmedClosings } : {}),
       },
     ];
   }
@@ -6884,6 +6891,21 @@ export class BrowserService {
     if (!this.#pools.size || !(this.#repository instanceof OpensteerStore))
       throw new OpensteerError({ code: "not_found", message: "This note is not here." });
     await seeBrowserPoolDocumentLoss(this.#repository.database, ownerId, surfaceId, noticeId);
+  }
+
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its database state (Rule 4: an unconfirmed Stop stays closing).
+   */
+  async dismissUnconfirmedSession(ownerId: UserId, sessionId: BrowserSessionId): Promise<void> {
+    if (!(this.#repository instanceof OpensteerStore))
+      throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
+    await dismissBrowserPoolUnconfirmedSession(this.#repository.database, {
+      ownerId,
+      sessionId,
+      subject: { kind: "person" },
+    });
+    this.#onSessionsChanged([sessionId]);
   }
 
   /**
@@ -11644,6 +11666,7 @@ export function publicProfile(record: BrowserProfileRecord): BrowserProfile {
 function publicSession(record: BrowserSessionRecord): HostedBrowserSession {
   return {
     access: "read-write",
+    ...(record.closeUnconfirmed ? { closeUnconfirmed: true as const } : {}),
     createdAt: record.createdAt.toISOString(),
     id: record.id,
     origin: record.origin,

@@ -121,6 +121,7 @@ export const databaseLockOrder = [
   "trigger_occurrences",
   "advisory:personal-tab-reopen",
   "browser_sessions",
+  "browser_pool_sessions",
   "tab_layouts",
   "personal_tabs",
   // Personal reservations serialize browser and installation creation.

@@ -108,7 +108,8 @@ export async function applyBrowserPoolSessions(database: Kysely<unknown>): Promi
       session_id text primary key,
       runner_id text not null,
       slot_id text not null,
-      term integer not null check (term > 0)
+      term integer not null check (term > 0),
+      dismissed_at timestamptz
     )
   `.execute(database);
   await sql`

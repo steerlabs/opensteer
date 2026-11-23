@@ -6,11 +6,13 @@ import {
   bindBrowserPoolSession,
   closeBrowserPoolSessions,
   decideAgentOperation,
+  dismissBrowserPoolUnconfirmedSession,
   handOffAgentOperation,
   installBrowserPoolSlot,
   lineageEndedMessage,
   listBrowserPoolDocumentLosses,
   listBrowserPoolRetiredTargets,
+  listBrowserPoolUnconfirmedClosings,
   readBrowserPoolSlot,
   retireBrowserPoolTarget,
   settleBrowserPoolRelay,
@@ -3667,6 +3669,276 @@ it("never forgets a retired target while a closing session still has an active b
       receiptSpy.mockRestore();
       closeSpy.mockRestore();
     }
+  } finally {
+    await j.close();
+  }
+});
+
+it("marks an unconfirmed-closing replaced-browser session closeUnconfirmed, sorts it with ended rows, and dismisses it without closing the row (X2)", async () => {
+  const j = await journey("x2-unconfirmed-closing-lifecycle", { chromium: false });
+  try {
+    const home = await j.startHome();
+    const { sessionId: oldSessionId, tabId: oldTabId } = await home.service.openTab(
+      j.task.userId,
+      j.command("x2-old"),
+    );
+    const oldSlot = (await readBrowserPoolSlot(j.database, j.task.runnerId))!;
+    home.coordinator.close();
+    await j.store.transitionBrowserSession({ sessionId: oldSessionId, state: "closing" });
+    await home.service.close();
+
+    // Retire the old target and install a replacement target on the same runner, leaving the
+    // old session closing with no host confirmation.
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: oldSlot.slotId, term: oldSlot.term },
+    });
+    const nextSlot = {
+      runnerId: j.task.runnerId,
+      runtimeId: `rt-x2-${randomUUID().slice(0, 8)}`,
+      slotId: `slot-x2-${randomUUID().slice(0, 8)}`,
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(j.database, nextSlot);
+    const activeSessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await j.store.createBrowserSession({
+      id: activeSessionId,
+      ownerId: j.task.userId,
+      placementKey: `runner:${j.task.runnerId}`,
+      runnerId: j.task.runnerId,
+      runtimeId: nextSlot.runtimeId,
+      origin: "person",
+      profileId: null,
+      pooled: true,
+    });
+    await j.store.transitionBrowserSession({ sessionId: activeSessionId, state: "ready" });
+
+    const newService = new BrowserService({
+      deploymentId: j.task.deploymentId,
+      hostOrigin: new URL("http://127.0.0.1"),
+      onSessionsChanged: () => {},
+      personal: true,
+      pooledRunner: j.task.runnerId,
+      repository: personalBrowserRepository(j.store),
+    });
+    const nextCoordinator = new BrowserPoolCoordinator({
+      database: j.database,
+      runnerId: j.task.runnerId,
+      runtimeId: nextSlot.runtimeId,
+      slotId: nextSlot.slotId,
+      term: nextSlot.term,
+      runtime: {
+        poolState: async () => ({
+          phase: "running",
+          fence: {
+            slot: nextSlot.slotId,
+            term: nextSlot.term,
+            instance: nextSlot.instanceId,
+            epoch: nextSlot.epoch,
+          },
+          sessions: [],
+        }),
+        controlPool: async () => ({ ok: true }),
+        endSession: async () => ({ kind: "gone" }),
+      },
+      controller: {
+        status: async () => ({
+          slotId: nextSlot.slotId,
+          term: nextSlot.term,
+          instance: nextSlot.instanceId,
+          epoch: nextSlot.epoch,
+          phase: "running",
+          savedState: null,
+        }),
+        result: async () => null,
+        apply: async (call) => ({
+          id: call.id,
+          applied: true,
+          status: {
+            slotId: nextSlot.slotId,
+            term: nextSlot.term,
+            instance: nextSlot.instanceId,
+            epoch: nextSlot.epoch,
+            phase: "running",
+            savedState: null,
+          },
+        }),
+      },
+    });
+    await newService.adoptPool(j.task.runnerId, nextCoordinator);
+    try {
+      const listed = await j.store.listBrowserSessions(j.task.userId, { pooled: true });
+      const oldRow = listed.find((row) => row.id === oldSessionId);
+      const activeRow = listed.find((row) => row.id === activeSessionId);
+      expect(oldRow?.state).toBe("closing");
+      expect(oldRow?.closeUnconfirmed).toBe(true);
+      expect(activeRow?.closeUnconfirmed).toBeUndefined();
+      // Active ready row sorts before the unconfirmed-closing row (bucket 0 before bucket 1).
+      expect(listed.findIndex((row) => row.id === activeSessionId)).toBeLessThan(
+        listed.findIndex((row) => row.id === oldSessionId),
+      );
+
+      // Pool report exposes the unconfirmed-closing session and its tab for live clients.
+      const unconfirmed = await listBrowserPoolUnconfirmedClosings(j.database, j.task.runnerId);
+      expect(unconfirmed).toEqual([{ sessionId: oldSessionId, surfaceIds: [oldTabId] }]);
+      const reports = await newService.resourcePools([j.task.runnerId]);
+      expect(reports[0]?.unconfirmedClosings).toEqual([
+        { sessionId: oldSessionId, surfaceIds: [oldTabId] },
+      ]);
+
+      // Dismissing hides it from the person's list and pool report while keeping the DB row closing (Rule 4).
+      await newService.dismissUnconfirmedSession(j.task.userId, oldSessionId);
+      expect((await j.row(oldSessionId))?.state).toBe("closing");
+      const afterDismiss = await j.store.listBrowserSessions(j.task.userId, { pooled: true });
+      expect(afterDismiss.some((row) => row.id === oldSessionId)).toBe(false);
+      expect(await listBrowserPoolUnconfirmedClosings(j.database, j.task.runnerId)).toEqual([]);
+      const reportsAfter = await newService.resourcePools([j.task.runnerId]);
+      expect(reportsAfter[0]?.unconfirmedClosings).toBeUndefined();
+
+      // Re-dismissing is idempotent; dismissing a live ready session is refused.
+      await newService.dismissUnconfirmedSession(j.task.userId, oldSessionId);
+      await expect(
+        newService.dismissUnconfirmedSession(j.task.userId, activeSessionId),
+      ).rejects.toMatchObject({ code: "conflict" });
+    } finally {
+      nextCoordinator.close();
+      await newService.close();
+    }
+  } finally {
+    await j.close();
+  }
+});
+
+it("enforces authority on dismissBrowserPoolUnconfirmedSession: outside grant is not_found, read-only is forbidden, in-grant write succeeds (X2)", async () => {
+  const j = await journey("x2-unconfirmed-closing-authority", { chromium: false });
+  try {
+    const profileA = await j.store.createBrowserProfile({
+      idempotencyKey: `x2-prof-a-${randomUUID()}`,
+      name: "Profile A",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+    });
+    const profileB = await j.store.createBrowserProfile({
+      idempotencyKey: `x2-prof-b-${randomUUID()}`,
+      name: "Profile B",
+      ownerId: j.task.userId,
+      homeRunnerId: j.task.runnerId,
+    });
+    await j.database
+      .updateTable("browserProfiles")
+      .set({ storageState: "local", storageRunnerId: j.task.runnerId })
+      .where("id", "=", profileA.id)
+      .execute();
+    const oldSlot = {
+      runnerId: j.task.runnerId,
+      runtimeId: `rt-x2-auth-${randomUUID().slice(0, 8)}`,
+      slotId: `slot-x2-auth-${randomUUID().slice(0, 8)}`,
+      term: 1,
+      instanceId: randomUUID(),
+      epoch: 1,
+    };
+    await installBrowserPoolSlot(j.database, oldSlot);
+    const sessionId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    await j.store.createBrowserSession({
+      id: sessionId,
+      ownerId: j.task.userId,
+      placementKey: `runner:${j.task.runnerId}`,
+      runnerId: j.task.runnerId,
+      runtimeId: oldSlot.runtimeId,
+      origin: "person",
+      profileId: profileA.id,
+      pooled: true,
+    });
+    await j.store.transitionBrowserSession({ sessionId, state: "closing" });
+    await retireBrowserPoolTarget(j.database, j.task.runnerId, {
+      target: { slotId: oldSlot.slotId, term: oldSlot.term },
+    });
+
+    const connections = new AgentConnectionStore(j.database);
+    const outsideGrant = await connections.create({
+      userId: j.task.userId,
+      label: "Outside grant",
+      clientName: "Outside agent",
+      accessMode: "full-access",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profileB.id }],
+      },
+      resource: "https://x2.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(outsideGrant.id, randomUUID())).toBe(true);
+
+    const readOnlyGrant = await connections.create({
+      userId: j.task.userId,
+      label: "Read-only grant",
+      clientName: "Read-only agent",
+      accessMode: "read-only",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profileA.id }],
+      },
+      resource: "https://x2.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(readOnlyGrant.id, randomUUID())).toBe(true);
+
+    const writeGrant = await connections.create({
+      userId: j.task.userId,
+      label: "Write grant",
+      clientName: "Write agent",
+      accessMode: "full-access",
+      grant: {
+        scope: "selected",
+        tasks: false,
+        resources: [{ kind: "browser-profile", profileId: profileA.id }],
+      },
+      resource: "https://x2.test/mcp",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    expect(await connections.activate(writeGrant.id, randomUUID())).toBe(true);
+
+    // Outside grant reads identically to non-existent (Rule 5).
+    const missingId = BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`);
+    const nonExistentErr = await dismissBrowserPoolUnconfirmedSession(j.database, {
+      ownerId: j.task.userId,
+      sessionId: missingId,
+      subject: { kind: "connection", agentConnectionId: outsideGrant.id },
+    }).catch((err: unknown) => err);
+    const outsideErr = await dismissBrowserPoolUnconfirmedSession(j.database, {
+      ownerId: j.task.userId,
+      sessionId,
+      subject: { kind: "connection", agentConnectionId: outsideGrant.id },
+    }).catch((err: unknown) => err);
+    expect(outsideErr).toMatchObject({
+      code: "not_found",
+      message: (nonExistentErr as Error).message,
+    });
+
+    // Read-only grant on the session's profile is forbidden (Rule 1).
+    await expect(
+      dismissBrowserPoolUnconfirmedSession(j.database, {
+        ownerId: j.task.userId,
+        sessionId,
+        subject: { kind: "connection", agentConnectionId: readOnlyGrant.id },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+
+    // Read-write grant on the session's profile succeeds while keeping state closing (Rule 4).
+    await dismissBrowserPoolUnconfirmedSession(j.database, {
+      ownerId: j.task.userId,
+      sessionId,
+      subject: { kind: "connection", agentConnectionId: writeGrant.id },
+    });
+    expect((await j.row(sessionId))?.state).toBe("closing");
+    expect(
+      (await j.store.listBrowserSessions(j.task.userId, { pooled: true })).some(
+        (row) => row.id === sessionId,
+      ),
+    ).toBe(false);
   } finally {
     await j.close();
   }

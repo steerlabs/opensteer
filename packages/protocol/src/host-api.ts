@@ -1160,6 +1160,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
+    sessionId: z.string().min(1),
+    type: z.literal("browser.session.dismiss"),
+  }),
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
     surfaceId: z.string().min(1).max(200),
     noticeId: z.string().min(1).max(200),
     type: z.literal("browser.pool.notice.seen"),
@@ -1483,6 +1488,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     deletion: BrowserProfileDeletionSchema.optional().catch(undefined),
   }),
   z.object({ type: z.literal("browser.session.close") }),
+  z.object({ type: z.literal("browser.session.dismiss") }),
   z.object({ type: z.literal("browser.pool.restart") }),
   z.object({ type: z.literal("browser.pool.notice.seen") }),
   z.object({ type: z.literal("browser.history.remove") }),

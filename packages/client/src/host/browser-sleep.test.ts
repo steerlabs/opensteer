@@ -384,3 +384,62 @@ describe("a browser that cannot be used now", () => {
     );
   });
 });
+
+describe("unconfirmed-closing replaced-browser session (X2)", () => {
+  it("reports the exact copy and Remove from list action from either session or pool report", async () => {
+    const mod = await import("./browser-sleep.js");
+    const closeUnconfirmed = (
+      mod as unknown as {
+        browserCloseUnconfirmed?: (
+          session: { readonly id: string; readonly closeUnconfirmed?: true } | null | undefined,
+          fromPool: { readonly sessionId: string } | null | undefined,
+        ) => {
+          readonly title: string;
+          readonly detail: string;
+          readonly action: string;
+          readonly sessionId: string;
+        } | null;
+      }
+    ).browserCloseUnconfirmed;
+    expect(closeUnconfirmed).toBeTypeOf("function");
+    const expected = {
+      title: "This page didn't confirm it closed",
+      detail:
+        "Its browser was replaced before it answered, and Opensteer can no longer ask it. Nothing more is sent to this page.",
+      action: "Remove from list",
+      sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+    };
+    expect(
+      closeUnconfirmed!(
+        { id: "bsn_11111111-1111-4111-8111-111111111111", closeUnconfirmed: true },
+        null,
+      ),
+    ).toEqual(expected);
+    expect(
+      closeUnconfirmed!(null, { sessionId: "bsn_11111111-1111-4111-8111-111111111111" }),
+    ).toEqual(expected);
+    expect(
+      closeUnconfirmed!({ id: "bsn_11111111-1111-4111-8111-111111111111" }, null),
+    ).toBeNull();
+    const viewWithUnconfirmed = browserSleepFromHome(
+      [
+        {
+          runnerId: computer,
+          phase: "running",
+          since: "2026-01-01T00:00:00.000Z",
+          unconfirmedClosings: [
+            {
+              sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+              surfaceIds: [tab],
+            },
+          ],
+        } as never,
+      ],
+      computer,
+      tab,
+    ) as unknown as { readonly closeUnconfirmed?: { readonly sessionId: string } | null };
+    expect(viewWithUnconfirmed.closeUnconfirmed).toEqual({
+      sessionId: "bsn_11111111-1111-4111-8111-111111111111",
+    });
+  });
+});

@@ -25,6 +25,8 @@ export interface BrowserSleepState {
   readonly noteKey: string | null;
   /** The person has seen the note: it leaves and does not come back. */
   readonly seen: () => void;
+  /** W15: present when this tab's session was closing on a replaced browser that never confirmed. */
+  readonly closeUnconfirmed: { readonly sessionId: string } | null;
 }
 
 /** What the hook reads: a page view's client may hold no more than its snapshot. */
@@ -71,7 +73,15 @@ export function useBrowserSleep(
   const seen = useCallback(() => {
     if (computerId && tabId) notes.seen(computerId, tabId, tab);
   }, [computerId, notes, tab, tabId]);
-  return { browser: view.browser, tab, elapsedMs, note, noteKey: key, seen };
+  return {
+    browser: view.browser,
+    tab,
+    elapsedMs,
+    note,
+    noteKey: key,
+    seen,
+    closeUnconfirmed: view.closeUnconfirmed ?? null,
+  };
 }
 
 /**

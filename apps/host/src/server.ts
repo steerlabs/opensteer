@@ -2616,6 +2616,12 @@ export async function createHostServer(
       case "browser.session.close":
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
         return { type: command.type };
+      case "browser.session.dismiss":
+        await dependencies.browser.dismissUnconfirmedSession(
+          userId,
+          BrowserSessionIdSchema.parse(command.sessionId),
+        );
+        return { type: command.type };
       case "browser.pool.notice.seen":
         await dependencies.browser.poolNoticeSeen(
           userId,

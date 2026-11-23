@@ -1,11 +1,13 @@
 import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
 import {
+  browserCloseUnconfirmed,
   browserRestartFailure,
   browserSleepWords,
   browserNotReady,
   browserStartFailure,
   canRespondToRequests,
+  dismissBrowserSession,
   placeAgentState,
   restartPooledBrowser,
   listedRowThreadId,
@@ -997,8 +999,33 @@ function BrowserTab(props: {
   // A Cloud Computer's browser that could not start stands in for its page; tabs and sign-ins
   // are kept. Every other browser is `not-pooled` and never shows this.
   const sleep = useBrowserSleep(hostClient, tabId);
+  const closeUnconfirmed = browserCloseUnconfirmed(session, sleep.closeUnconfirmed);
+  const [dismissingUnconfirmed, setDismissingUnconfirmed] = useState(false);
   const startFailure = browserStartFailure(sleep.browser);
   const [trying, setTrying] = useState(false);
+  if (closeUnconfirmed) {
+    return (
+      <TabStatus
+        action={{
+          label: closeUnconfirmed.action,
+          onPress: () => {
+            if (dismissingUnconfirmed) return;
+            setDismissingUnconfirmed(true);
+            void dismissBrowserSession(hostClient, closeUnconfirmed.sessionId)
+              .catch((error: unknown) =>
+                Alert.alert(
+                  closeUnconfirmed.title,
+                  error instanceof Error ? error.message : "Try again in a moment.",
+                ),
+              )
+              .finally(() => setDismissingUnconfirmed(false));
+          },
+        }}
+        detail={closeUnconfirmed.detail}
+        title={closeUnconfirmed.title}
+      />
+    );
+  }
   if (startFailure && sleep.browser.kind === "failed") {
     const computerId = sleep.browser.computerId;
     return (

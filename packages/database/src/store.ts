@@ -862,8 +862,11 @@ export class OpensteerStore {
   ): Promise<BrowserSessionRecord | null> {
     return browserSessionStore.getBrowserSessionForOwner(this.#database, sessionId, ownerId);
   }
-  async listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]> {
-    return browserSessionStore.listBrowserSessions(this.#database, ownerId);
+  async listBrowserSessions(
+    ownerId: UserId,
+    options?: { readonly pooled?: boolean },
+  ): Promise<readonly BrowserSessionRecord[]> {
+    return browserSessionStore.listBrowserSessions(this.#database, ownerId, options);
   }
   async listBrowserSessionThreads(input: {
     readonly ownerId: UserId;

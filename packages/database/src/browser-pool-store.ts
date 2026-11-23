@@ -1,5 +1,6 @@
 import type { HostedBrowserSessionState } from "@opensteer/protocol";
 import {
+  intersectResourceAccess,
   OpensteerError,
   type BrowserSessionId,
   type BrowserSurfaceId,
@@ -8,9 +9,16 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable } from "kysely";
 import { randomUUID } from "node:crypto";
-import { transitionBrowserSession } from "./browser-session-store.js";
+import { ownedBrowserSession, transitionBrowserSession } from "./browser-session-store.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 import { activePersonalMutation, commitPersonalMutation } from "./personal-mutation.js";
+import {
+  admitExecution,
+  authorizeTarget,
+  executionAccess,
+  selectedGrantOf,
+  type AuthoritySubject,
+} from "./resource-access.js";
 import type { DatabaseSchema } from "./schema.js";
 
 /** The fence of one pooled browser: issued by its physical controller, never read from it. */
@@ -1038,6 +1046,157 @@ export async function listBrowserPoolClosingSessions(
     .orderBy("id")
     .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
+}
+
+/**
+ * W15: sessions of a replaced pooled browser whose Stop never got the host's confirmation and that
+ * the person has not yet removed from their list, paired with their open tabs.
+ */
+export async function listBrowserPoolUnconfirmedClosings(
+  database: Kysely<DatabaseSchema>,
+  runnerId: RunnerId,
+): Promise<
+  readonly { readonly sessionId: BrowserSessionId; readonly surfaceIds: readonly string[] }[]
+> {
+  const rows = await database
+    .selectFrom("browserPoolSessions")
+    .innerJoin("browserSessions", "browserSessions.id", "browserPoolSessions.sessionId")
+    .select("browserPoolSessions.sessionId")
+    .where("browserPoolSessions.runnerId", "=", runnerId)
+    .where("browserPoolSessions.dismissedAt", "is", null)
+    .where("browserSessions.state", "=", "closing")
+    .where(
+      sql<boolean>`not exists (
+        select 1 from browser_pool_slots slot
+        where slot.runner_id = browser_pool_sessions.runner_id
+          and slot.slot_id = browser_pool_sessions.slot_id
+          and slot.term = browser_pool_sessions.term
+      )`,
+    )
+    .orderBy("browserSessions.createdAt", "desc")
+    .limit(128)
+    .execute(databaseOperationOptions());
+  if (!rows.length) return [];
+  const sessionIds = rows.map(({ sessionId }) => sessionId);
+  const tabs = await listBrowserPoolSessionTabs(database, sessionIds);
+  return sessionIds.map((sessionId) => ({
+    sessionId,
+    surfaceIds: [...(tabs.get(sessionId) ?? [])],
+  }));
+}
+
+/**
+ * W15: removes an unconfirmed-closing replaced-browser session from the person's list. Records
+ * dismissal on `browser_pool_sessions.dismissed_at` only — never writes `browser_sessions.state`
+ * (Rule 4: an unconfirmed Stop stays `closing` in the database). Authority is decided solely
+ * through `resource-access.ts` (Rule 1) and outside a connected agent's grant reads identically to
+ * non-existent (Rule 5).
+ */
+export async function dismissBrowserPoolUnconfirmedSession(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly ownerId: UserId;
+    readonly sessionId: BrowserSessionId;
+    readonly subject?: AuthoritySubject;
+  },
+): Promise<void> {
+  const notFound = () =>
+    new OpensteerError({ code: "not_found", message: "Browser session not found." });
+  await commitPersonalMutation(database, async (tx, mutation) => {
+    const execution = await admitExecution(tx, {
+      ownerUserId: input.ownerId,
+      subject: input.subject ?? { kind: "person" },
+    });
+    const row = await tx
+      .selectFrom("browserSessions")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .leftJoin("browserPoolSessions", "browserPoolSessions.sessionId", "browserSessions.id")
+      .select([
+        "browserSessions.id",
+        "browserSessions.profileId",
+        "browserSessions.state",
+        "browserPoolSessions.sessionId as poolSessionId",
+        "browserPoolSessions.runnerId as poolRunnerId",
+        "browserPoolSessions.slotId as poolSlotId",
+        "browserPoolSessions.term as poolTerm",
+        "browserPoolSessions.dismissedAt",
+      ])
+      .where("browserSessions.id", "=", input.sessionId)
+      .where((expression) => ownedBrowserSession(expression, input.ownerId))
+      .executeTakeFirst(databaseOperationOptions());
+    if (!row) throw notFound();
+
+    if (execution.agentConnection) {
+      if (row.profileId === null) {
+        if (selectedGrantOf(execution)) throw notFound();
+        if (executionAccess(execution) !== "read-write") {
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "This connected agent may only view this browser.",
+          });
+        }
+      } else {
+        const grantAccess = authorizeTarget(execution, {
+          kind: "browser-profile",
+          profileId: row.profileId,
+        });
+        if (grantAccess === null) throw notFound();
+        if (intersectResourceAccess(grantAccess, executionAccess(execution)) !== "read-write") {
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "This connected agent may only view this browser.",
+          });
+        }
+      }
+    } else if (executionAccess(execution) !== "read-write") {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This task may only view this browser.",
+      });
+    }
+
+    if (
+      !row.poolSessionId ||
+      !row.poolRunnerId ||
+      !row.poolSlotId ||
+      row.poolTerm === null ||
+      row.state !== "closing"
+    ) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This browser session is not an unconfirmed closing session.",
+      });
+    }
+
+    const onCurrentTarget = await tx
+      .selectFrom("browserPoolSlots")
+      .select("runnerId")
+      .where("runnerId", "=", row.poolRunnerId)
+      .where("slotId", "=", row.poolSlotId)
+      .where("term", "=", row.poolTerm)
+      .executeTakeFirst(databaseOperationOptions());
+    if (onCurrentTarget) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This browser session belongs to the current browser.",
+      });
+    }
+
+    const locked = await tx
+      .selectFrom("browserPoolSessions")
+      .select(["sessionId", "dismissedAt"])
+      .where("sessionId", "=", input.sessionId)
+      .forNoKeyUpdate()
+      .executeTakeFirst(databaseOperationOptions());
+    if (!locked || locked.dismissedAt !== null) return;
+    await tx
+      .updateTable("browserPoolSessions")
+      .set({ dismissedAt: new Date() })
+      .where("sessionId", "=", input.sessionId)
+      .where("dismissedAt", "is", null)
+      .execute(databaseOperationOptions());
+    mutation.bumpResource("browser-placement");
+  });
 }
 
 export function listBrowserPoolDocumentLosses(

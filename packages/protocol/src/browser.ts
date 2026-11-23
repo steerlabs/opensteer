@@ -1468,6 +1468,11 @@ export const HostedBrowserSessionSchema = z.object({
   profileId: BrowserProfileIdSchema.nullable(),
   runtimeId: z.string().min(1).max(255),
   state: HostedBrowserSessionStateSchema,
+  /**
+   * W15: Stop never got its replaced browser's confirmation; kept closing honestly until the
+   * person removes it from their list.
+   */
+  closeUnconfirmed: z.literal(true).optional(),
   attachedRunIds: z.array(RunIdSchema).max(browserSessionMaxAttachedRuns).optional(),
   /**
    * An agent is acting in this browser now: it sent a command within the last
@@ -1491,6 +1496,7 @@ export const AgentBrowserSessionSummarySchema = HostedBrowserSessionSchema.omit(
   navigationVersion: true,
   tabRestoreVersion: true,
   acting: true,
+  closeUnconfirmed: true,
   opener: true,
   attachedRunIds: true,
   page: true,
@@ -1552,6 +1558,19 @@ export const BrowserPoolReportSchema = z.object({
    * ignores it.
    */
   notReady: z.object({ reason: z.string().min(1).max(64) }).optional(),
+  /**
+   * W15: sessions of a replaced browser whose Stop never confirmed, with their open tabs, until
+   * the person removes them from their list.
+   */
+  unconfirmedClosings: z
+    .array(
+      z.object({
+        sessionId: BrowserSessionIdSchema,
+        surfaceIds: z.array(z.string().min(1).max(200)).max(128),
+      }),
+    )
+    .max(128)
+    .optional(),
 });
 export type BrowserPoolReportView = z.infer<typeof BrowserPoolReportSchema>;
 export const BrowserPoolReportsViewSchema = z.array(BrowserPoolReportSchema).max(129);

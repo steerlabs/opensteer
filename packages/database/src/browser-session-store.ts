@@ -92,6 +92,8 @@ export interface BrowserSessionRecord {
   readonly profileId: BrowserProfileId | null;
   readonly runtimeId: string;
   readonly state: HostedBrowserSessionState;
+  /** W15: Stop never got its replaced browser's word; kept closing honestly (Rule 4). */
+  readonly closeUnconfirmed?: true;
   readonly updatedAt: Date;
 }
 
@@ -99,8 +101,8 @@ export interface BrowserSessionWithAttachmentCountRecord extends BrowserSessionR
   readonly activeAttachmentCount: number;
 }
 
-export function ownedBrowserSession(
-  expression: ExpressionBuilder<DatabaseSchema, "browserProfiles" | "browserSessions">,
+export function ownedBrowserSession<TB extends "browserProfiles" | "browserSessions">(
+  expression: ExpressionBuilder<DatabaseSchema, TB>,
   ownerId: UserId,
 ) {
   return expression.and([
@@ -1541,10 +1543,35 @@ export async function getBrowserSessionForOwner(
 export async function listBrowserSessions(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
+  options?: { readonly pooled?: boolean },
 ): Promise<readonly BrowserSessionRecord[]> {
-  return database
+  if (!options?.pooled) {
+    return database
+      .selectFrom("browserSessions")
+      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+      .select([
+        "browserSessions.createdAt",
+        "browserSessions.runnerId",
+        "browserSessions.id",
+        "browserSessions.origin",
+        "browserSessions.opener",
+        "browserSessions.placementKey",
+        "browserSessions.profileId",
+        "browserSessions.runtimeId",
+        "browserSessions.state",
+        "browserSessions.updatedAt",
+      ])
+      .where((expression) => ownedBrowserSession(expression, ownerId))
+      .orderBy(
+        sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
+      )
+      .orderBy("browserSessions.createdAt", "desc")
+      .execute(databaseOperationOptions());
+  }
+  const rows = await database
     .selectFrom("browserSessions")
     .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+    .leftJoin("browserPoolSessions", "browserPoolSessions.sessionId", "browserSessions.id")
     .select([
       "browserSessions.createdAt",
       "browserSessions.runnerId",
@@ -1556,13 +1583,40 @@ export async function listBrowserSessions(
       "browserSessions.runtimeId",
       "browserSessions.state",
       "browserSessions.updatedAt",
+      sql<boolean>`(
+        ${sql.ref("browserSessions.state")} = 'closing'
+        and ${sql.ref("browserPoolSessions.sessionId")} is not null
+        and not exists (
+          select 1 from browser_pool_slots slot
+          where slot.runner_id = ${sql.ref("browserPoolSessions.runnerId")}
+            and slot.slot_id = ${sql.ref("browserPoolSessions.slotId")}
+            and slot.term = ${sql.ref("browserPoolSessions.term")}
+        )
+      )`.as("closeUnconfirmed"),
     ])
     .where((expression) => ownedBrowserSession(expression, ownerId))
+    .where("browserPoolSessions.dismissedAt", "is", null)
     .orderBy(
-      sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
+      sql<number>`case
+        when ${sql.ref("browserSessions.state")} in ('starting', 'ready') then 0
+        when ${sql.ref("browserSessions.state")} = 'closing'
+          and (
+            ${sql.ref("browserPoolSessions.sessionId")} is null
+            or exists (
+              select 1 from browser_pool_slots slot
+              where slot.runner_id = ${sql.ref("browserPoolSessions.runnerId")}
+                and slot.slot_id = ${sql.ref("browserPoolSessions.slotId")}
+                and slot.term = ${sql.ref("browserPoolSessions.term")}
+            )
+          ) then 0
+        else 1
+      end`,
     )
     .orderBy("browserSessions.createdAt", "desc")
     .execute(databaseOperationOptions());
+  return rows.map(({ closeUnconfirmed, ...row }) =>
+    closeUnconfirmed ? { ...row, closeUnconfirmed: true as const } : row,
+  );
 }
 
 /**

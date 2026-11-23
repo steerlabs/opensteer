@@ -83,6 +83,16 @@ export interface BrowserPoolReport {
    * long), or one this client does not know. Absent while it can be used.
    */
   readonly notReady?: { readonly reason: string } | undefined;
+  /**
+   * W15: sessions of a replaced browser whose Stop never confirmed, with their open tabs, until
+   * the person removes them from their list.
+   */
+  readonly unconfirmedClosings?:
+    | readonly {
+        readonly sessionId: string;
+        readonly surfaceIds: readonly string[];
+      }[]
+    | undefined;
 }
 
 /* ------------------------------------------------------------------------- *
@@ -148,6 +158,8 @@ export type BrowserTabReturn =
 export interface BrowserSleepView {
   readonly browser: BrowserSleep;
   readonly tab: BrowserTabReturn;
+  /** W15: present when this tab's session was closing on a replaced browser that never confirmed. */
+  readonly closeUnconfirmed?: { readonly sessionId: string };
 }
 
 const kept: BrowserTabReturn = { kind: "kept" };
@@ -172,7 +184,14 @@ export function browserSleepFromHome(
   if (!computerId) return browserNotPooled;
   const report = reports?.find((candidate) => candidate.runnerId === computerId);
   if (!report) return browserNotPooled;
-  return { browser: browserOf(report), tab: tabId ? tabOf(report, tabId) : kept };
+  const unconfirmed = tabId
+    ? report.unconfirmedClosings?.find((candidate) => candidate.surfaceIds.includes(tabId))
+    : undefined;
+  return {
+    browser: browserOf(report),
+    tab: tabId ? tabOf(report, tabId) : kept,
+    ...(unconfirmed ? { closeUnconfirmed: { sessionId: unconfirmed.sessionId } } : {}),
+  };
 }
 
 function browserOf(report: BrowserPoolReport): BrowserSleep {
@@ -328,6 +347,11 @@ export const browserSleepWords = {
   restartRefusedTitle: "Couldn’t restart your browser",
   restartRefused: "Your Cloud Computer can’t restart its browser yet. Nothing was changed.",
   restartFailed: "Your browser wasn’t restarted. Try again in a moment.",
+
+  closeUnconfirmedTitle: "This page didn't confirm it closed",
+  closeUnconfirmedDetail:
+    "Its browser was replaced before it answered, and Opensteer can no longer ask it. Nothing more is sent to this page.",
+  removeFromList: "Remove from list",
 
   dismiss: "Dismiss",
 } as const;
@@ -553,4 +577,50 @@ export function restartPooledBrowser(
   return hostClient.restartPooledBrowser
     ? hostClient.restartPooledBrowser(computerId)
     : Promise.reject(new BrowserRestartUnavailable());
+}
+
+/**
+ * W15: what an unconfirmed-closing replaced-browser session says in place of its page, with one
+ * explicit action ("Remove from list") that hides it without pretending the browser confirmed.
+ */
+export function browserCloseUnconfirmed(
+  session: { readonly id: string; readonly closeUnconfirmed?: true | undefined } | null | undefined,
+  fromPool: { readonly sessionId: string } | null | undefined,
+): {
+  readonly title: string;
+  readonly detail: string;
+  readonly action: string;
+  readonly sessionId: string;
+} | null {
+  const sessionId = session?.closeUnconfirmed ? session.id : fromPool?.sessionId;
+  if (!sessionId) return null;
+  return {
+    title: browserSleepWords.closeUnconfirmedTitle,
+    detail: browserSleepWords.closeUnconfirmedDetail,
+    action: browserSleepWords.removeFromList,
+    sessionId,
+  };
+}
+
+/** Removes an unconfirmed-closing replaced-browser session from the person's list. */
+export async function dismissBrowserSession(
+  hostClient: {
+    readonly dismissBrowserSession?: (sessionId: string) => Promise<void>;
+    readonly dispatch?: (command: {
+      readonly idempotencyKey: string;
+      readonly sessionId: string;
+      readonly type: "browser.session.dismiss";
+    }) => Promise<unknown>;
+  },
+  sessionId: string,
+): Promise<void> {
+  if (hostClient.dismissBrowserSession) {
+    await hostClient.dismissBrowserSession(sessionId);
+    return;
+  }
+  await hostClient.dispatch?.({
+    idempotencyKey: globalThis.crypto.randomUUID(),
+    sessionId,
+    type: "browser.session.dismiss",
+  });
 }

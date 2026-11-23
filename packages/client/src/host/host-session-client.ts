@@ -1066,6 +1066,32 @@ export class HttpHostClient {
     });
   }
 
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its closing state on the Home.
+   */
+  async dismissBrowserSession(sessionId: string): Promise<void> {
+    await this.dispatch({
+      type: "browser.session.dismiss",
+      sessionId,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+    });
+    const browserSessions = this.#snapshot.browserSessions.filter(
+      (session) => session.id !== sessionId,
+    );
+    const browserPools = this.#snapshot.browserPools?.map((pool) => {
+      if (!pool.unconfirmedClosings?.some((entry) => entry.sessionId === sessionId)) return pool;
+      const remaining = pool.unconfirmedClosings.filter((entry) => entry.sessionId !== sessionId);
+      const { unconfirmedClosings: _dropped, ...rest } = pool;
+      return remaining.length ? { ...rest, unconfirmedClosings: remaining } : rest;
+    });
+    this.#update({
+      ...this.#snapshot,
+      browserSessions,
+      ...(browserPools ? { browserPools } : {}),
+    });
+  }
+
   async dispatch(
     command: ClientCommandInput,
     options?: { readonly preserveOrigin?: boolean; readonly expectedLogin?: ClientScope },

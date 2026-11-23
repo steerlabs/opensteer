@@ -759,6 +759,8 @@ export interface PersonalTabLineage {
 export interface BrowserSessionSummary {
   /** Host freshness for bootstrap lifecycle reconciliation. */
   updatedAt?: string;
+  /** W15: Stop never got its replaced browser's confirmation; kept closing honestly. */
+  closeUnconfirmed?: true | undefined;
   navigationVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
   access: "read" | "read-write";
@@ -1137,6 +1139,11 @@ export interface HostClient extends TabsClient {
    * through `restartPooledBrowser`.
    */
   readonly restartPooledBrowser?: (computerId: string) => Promise<void>;
+  /**
+   * W15: removes an unconfirmed-closing replaced-browser session from the person's list without
+   * changing its underlying closing state.
+   */
+  readonly dismissBrowserSession?: (sessionId: string) => Promise<void>;
   /** Popups this client's own input opens from one tab, as each one opens. */
   readonly subscribeBrowserPopups?: (
     sessionId: string,
