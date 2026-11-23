@@ -57,7 +57,7 @@ func TestAXIncrementalMergeOrderingVisibilityAndRedaction(t *testing.T) {
 			t.Fatalf("lost hierarchy: %+v", snapshot)
 		}
 		encoded, _ := json.Marshal(snapshot)
-		if strings.Contains(string(encoded), "sentinel") || snapshot.Nodes[1].Frame != nil || snapshot.Nodes[1].Secure != "unknown" {
+		if strings.Contains(string(encoded), "sentinel") || snapshot.Nodes[1].Frame != nil || snapshot.Nodes[1].Secure != "yes" {
 			t.Fatal("unqualified field value/frame escaped")
 		}
 		if err := tree.merge(axDump(axAttributes(1, map[string]interface{}{"9": []interface{}{}}))); err != nil {

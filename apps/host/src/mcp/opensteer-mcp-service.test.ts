@@ -839,6 +839,7 @@ describe("Opensteer MCP spine", () => {
         deploymentId: createId("deployment"),
         store: {
           requests: {
+            agentPage: async () => page,
             visiblePage: async () => page,
             connectionPage: async () => page,
             withdraw: async () => ({ request: { ...request, status: "withdrawn" }, events: [] }),
@@ -872,7 +873,16 @@ describe("Opensteer MCP spine", () => {
             { id: request.id, title: "Sign in to Example", reason: "Check the account" },
             { kind: "harness.input", reason: null },
           ],
-          window: { hasMore: false, nextCursor: null, totalItems: 2, itemCount: 2, byteCount: 0 },
+          window: {
+            hasMore: false,
+            nextCursor: null,
+            totalItems: 2,
+            itemCount: 2,
+            byteCount: Buffer.byteLength(
+              JSON.stringify((result as { requests: unknown[] }).requests),
+              "utf8",
+            ),
+          },
         });
         expect(JSON.stringify(result)).not.toMatch(
           /private-payload|private-answer|presentation|payload|response/,

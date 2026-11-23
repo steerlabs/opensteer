@@ -1,11 +1,16 @@
 import {
   OpensteerError,
+  personQuestionRecord,
   requestTitleText,
   utf8Prefix,
   type ExecutionNodeId,
   type IntegrationCallSubject,
   type Message,
+  type PersonQuestionRecord,
+  type Request,
   type RequestId,
+  type RequestPresentation,
+  type RequestResponse,
   type RunId,
   type ThreadId,
   type UserId,
@@ -19,6 +24,7 @@ import { z } from "zod";
 import type { PlaceView } from "./personal-state-schema.js";
 import { authorizedDetail, authorizedSyncState } from "./personal-sync-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
+import { requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import { executionNodeFromRow, messagesFromRows } from "./thread-row-mappers.js";
 
@@ -53,6 +59,9 @@ export type AgentThreadActivityItem = ActivityBase &
         requestId: RequestId;
         title: string;
         requestKind: string;
+        requestStatus: Request["status"];
+        question: PersonQuestionRecord | null;
+        questionOversized?: boolean;
       }
   );
 
@@ -64,21 +73,32 @@ export async function readAgentThreadRecent(
     await authorizedSyncState(tx, input.ownerId);
     if (!(await authorizedDetail(tx, input.ownerId, { kind: "thread", threadId: input.threadId })))
       return null;
-    const runs = await tx
-      .selectFrom("runs")
-      .select([
-        "id as runId",
-        "status",
-        "assignmentId",
-        "modelSelection",
-        "createdAt",
-        "startedAt",
-        "completedAt",
-      ])
-      .where("threadId", "=", input.threadId)
-      .orderBy("runOrdinal", "desc")
-      .limit(Math.max(25, Math.min(50, input.runLimit)))
-      .execute();
+    const [runs, pendingRequestRows] = await Promise.all([
+      tx
+        .selectFrom("runs")
+        .select([
+          "id as runId",
+          "status",
+          "assignmentId",
+          "modelSelection",
+          "createdAt",
+          "startedAt",
+          "completedAt",
+        ])
+        .where("threadId", "=", input.threadId)
+        .orderBy("runOrdinal", "desc")
+        .limit(Math.max(25, Math.min(50, input.runLimit)))
+        .execute(),
+      tx
+        .selectFrom("requests")
+        .selectAll()
+        .where("originatingThreadId", "=", input.threadId)
+        .where("status", "=", "pending")
+        .orderBy("createdAt", "asc")
+        .orderBy("id", "asc")
+        .limit(25)
+        .execute(),
+    ]);
     const recent = runs.slice(0, 25).map(({ runId }) => runId);
     const places = recent.length
       ? (
@@ -102,6 +122,7 @@ export async function readAgentThreadRecent(
         completedAt: run.completedAt?.toISOString() ?? null,
       })),
       places,
+      pendingRequests: pendingRequestRows.map(requestFromRow),
     };
   });
 }
@@ -132,11 +153,14 @@ function activityMetadata(
   const query = tx
     .selectFrom("transcriptItems as item")
     .leftJoin("messages as message", "message.id", "item.messageId")
+    .leftJoin("requests as request", "request.id", "item.requestId")
     .select(["item.id", "item.position"])
     .select(
-      sql<number>`coalesce(octet_length(jsonb_build_array(message.content,message.author,message.quote,message.origin)::text),0)`.as(
-        "messageBytes",
-      ),
+      sql<number>`coalesce(octet_length(jsonb_build_array(message.content,message.author,message.quote,message.origin)::text),0)
+        + case when item.kind='request' and request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)')
+          then coalesce(case when octet_length(request.presentation::text)<=2097152 then octet_length(request.presentation::text) end,0)
+            + coalesce(case when octet_length(request.response::text)<=2097152 then octet_length(request.response::text) end,0)
+          else 0 end`.as("messageBytes"),
     )
     .where("item.threadId", "=", input.threadId)
     .where(sql<boolean>`item.visible`);
@@ -148,10 +172,16 @@ function activityMetadata(
           ? sql<boolean>`item.kind='node-message'`
           : sql<boolean>`item.kind in ('node-message','tool')`,
       );
+  if (input.messagesOnly)
+    return query
+      .where("item.nodeId", "is", null)
+      .where(
+        sql<boolean>`((item.kind='message' and message.published) or (item.kind='request' and request.kind='person.question'))`,
+      );
   return query
     .where("item.nodeId", "is", null)
     .where(sql<boolean>`item.kind in ('message','tool','place','app','request','node')`)
-    .where(sql<boolean>`item.kind <> 'message' or message.published`);
+    .where(sql<boolean>`(item.kind <> 'message' or message.published)`);
 }
 
 async function activityItems(
@@ -188,6 +218,15 @@ async function activityItems(
     .select([
       sql<boolean>`request.presentation->>'agentProposed' = 'true'`.as("agentProposed"),
       sql<string | null>`left(request.presentation->>'title',240)`.as("requestTitle"),
+      sql<RequestPresentation | null>`case when request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)') and octet_length(request.presentation::text)<=2097152 then request.presentation end`.as(
+        "requestPresentation",
+      ),
+      sql<RequestResponse | null>`case when request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)') and octet_length(request.response::text)<=2097152 then request.response end`.as(
+        "requestResponse",
+      ),
+      sql<boolean>`coalesce(request.kind='person.question' and not jsonb_path_exists(request.presentation, '$.fields[*] ? (@.secret == true)') and (octet_length(request.presentation::text)>2097152 or octet_length(request.response::text)>2097152), false)`.as(
+        "questionOversized",
+      ),
       sql<string | PlaceView | null>`case when item.kind='place' then item.body
         when item.kind='node-message' then case when ${named} and octet_length(item.body::text)<=491520 then item.body
           else to_jsonb(left(item.body#>>'{}',2048)) end end`.as("placeOrText"),
@@ -289,29 +328,40 @@ async function activityItems(
               },
             ]
           : [];
-      case "request":
-        return row.requestId && row.requestKind
-          ? [
-              {
-                ...base,
-                type:
-                  row.requestStatus === "cancelled"
-                    ? "request.cancelled"
-                    : row.requestStatus === "pending"
-                      ? "request.opened"
-                      : "request.resolved",
-                requestId: row.requestId,
-                title: utf8Prefix(
-                  requestTitleText({
-                    title: row.requestTitle ?? "Request",
-                    ...(row.agentProposed ? { agentProposed: true } : {}),
-                  }),
-                  240,
-                ),
-                requestKind: row.requestKind,
-              },
-            ]
-          : [];
+      case "request": {
+        if (!row.requestId || !row.requestKind || !row.requestStatus) return [];
+        const rawQuestion = row.requestPresentation
+          ? personQuestionRecord({
+              kind: row.requestKind,
+              status: row.requestStatus,
+              presentation: row.requestPresentation,
+              response: row.requestResponse ?? null,
+            })
+          : null;
+        return [
+          {
+            ...base,
+            type:
+              row.requestStatus === "cancelled"
+                ? "request.cancelled"
+                : row.requestStatus === "pending"
+                  ? "request.opened"
+                  : "request.resolved",
+            requestId: row.requestId,
+            title: utf8Prefix(
+              requestTitleText({
+                title: row.requestTitle ?? "Request",
+                ...(row.agentProposed ? { agentProposed: true } : {}),
+              }),
+              240,
+            ),
+            requestKind: row.requestKind,
+            requestStatus: row.requestStatus,
+            question: rawQuestion,
+            ...(row.questionOversized ? { questionOversized: true } : {}),
+          },
+        ];
+      }
       default:
         return [];
     }

@@ -1400,6 +1400,8 @@ export class OpensteerStore {
     readonly parentThreadId?: ThreadId;
     readonly changedSince?: Date;
     readonly nativeOnly?: boolean;
+    readonly done?: boolean;
+    readonly hasPendingRequests?: boolean;
   }): Promise<AgentThreadListPage> {
     return threadStore.agentThreadPageForOwner(this.#database, input);
   }

@@ -14,6 +14,8 @@ import {
   dropDeviceAccessCountMigrationName,
   browserSessionTabsIndexMigrationName,
   inlineTranscriptMessagesMigrationName,
+  stoppedRunsNotNewsMigrationName,
+  threadDoneByMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName } from "./agent-grants-migration.js";
@@ -92,6 +94,8 @@ test.each(["empty", "personal", "personal-0035"] as const)(
         dropDeviceAccessCountMigrationName,
         browserSessionTabsIndexMigrationName,
         inlineTranscriptMessagesMigrationName,
+        stoppedRunsNotNewsMigrationName,
+        threadDoneByMigrationName,
         agentGrantsMigrationName,
         agentSessionsMigrationName,
         "0046_chrome_live_tabs_source",

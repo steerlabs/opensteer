@@ -94,7 +94,7 @@ export function assertAgentRequestAnswer(
     });
   assertRequestRevision({ revision }, responder.expectedRevision);
 }
-async function connectionRequests(
+export async function connectionRequests(
   tx: Transaction<DatabaseSchema>,
   authority: Extract<ThreadCallerAuthority, { kind: "connection" }>,
 ) {

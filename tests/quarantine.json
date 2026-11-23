@@ -611,27 +611,6 @@
     "status": "investigating",
     "firstSeen": "2026-11-13T23:26:00Z",
     "deadline": "2026-11-20T23:26:00Z",
-    "sha": "cfe134868e561ff20551d0bdb70cdcd22f71c141",
-    "file": "tests/browser-sessions-viewer.integration.test.ts",
-    "name": [
-      "Browser Sessions through a whole deployment",
-      "says a tab is loading only while its own page loads, through the catalog, and Stop ends it"
-    ],
-    "evidence": [
-      "Failed 1/18 once on the agent-tabs branch: closing the still-loading tab returned ok:false, then Deployment and BrowserRuntime cleanup rejected with runtime-shutdown.queue-timeout. The next two full-file runs of the same code under OPENSTEER_LOCK_ORDER_MODE=enforce passed 18/18. The assertion now matches the whole response so a recurrence carries its error.",
-      "Root cause unproved. Investigate the close/navigation/runtime-disposal interleaving under load, keep the loading and close assertions and existing timeouts, and require full-file evidence plus a deterministic regression before resolving.",
-      "Investigation from base 059294a2e05a80f2f348cbfb7625e1cff26fc0aa: the complete viewer file passed 18/18 alongside presence, identities and editing in four enforcing workers with two concurrent headless browser workers. The historical close/persistence interleaving did not reproduce; keep this entry. Cleanup phase reports now default into retained run-owned artifacts.",
-      "Linux CI hunt from bba0d040fe: the loading/Stop/close target passed 31 baseline iterations (https://github.com/steerlabs/opensteer/actions/runs/43639185533) and 8 iterations at d342426bd8 (https://github.com/steerlabs/opensteer/actions/runs/43640089838), including one complete 18-case viewer file. Ubuntu 24.04, pinned headless Chromium, real PostgreSQL and enforcing lock order were used, with four workers configured for three target files. The next iteration was cancelled by the investigation and is excluded. No close failure or shutdown queue timeout reproduced, so no root fix or quarantine removal is claimed.",
-      "Final validation of the native-close candidate at 59b6f192bb was interrupted in https://github.com/steerlabs/opensteer/actions/runs/43646513195 when the browser sibling failed the popup case. No complete integration iteration qualified this candidate. The viewer report also records a different case failing database cleanup during cancellation; it does not establish the historical loading-tab close/shutdown cause. Keep this quarantine and its existing deadlines.",
-      "The quarantine reached its deadline on 2026-11-20T23:26:00Z with no root cause proved, which stops every integration run. Returned to investigating as the rule prescribes: the test runs and counts again. No deadline was extended."
-    ]
-  },
-  {
-    "area": "Browser",
-    "owner": "Browser maintainers",
-    "status": "investigating",
-    "firstSeen": "2026-11-13T23:26:00Z",
-    "deadline": "2026-11-20T23:26:00Z",
     "sha": "36aab700ee2ecb88cd5c4f6b547b98b24613b473",
     "file": "tests/browser-stream.bench.ts",
     "name": [
@@ -709,7 +688,8 @@
     ],
     "evidence": [
       "Fails intermittently since #638 (unified tabs, Browser Harness openPage and the reworked agent CDP bridge): on its branch at 03bdfdb28 (https://github.com/steerlabs/opensteer/actions/runs/43790574948), on main at 1a0d6b311 (https://github.com/steerlabs/opensteer/actions/runs/43922680655) and on a docs-only PR at a0d74d4a1 (https://github.com/steerlabs/opensteer/actions/runs/43925614504). Main passed on the runs between them.",
-      "Measured locally with the silence window widened: no program hung. Under load (load average 30-110) single Browser Harness programs took 5-15.4 s and every one finished; one dialog answer alone took 6.5 s. Before the fake engine reported progress, a turn of four or five programs exceeded waitForInput's 15 s no-event window (2 of 3 runs failed). With each program reported as a Codex command item, 17 of 18 runs passed; the failure was one program still running after 15 s at moderate load. Remaining work: why a single program can take over 15 s under load (gotoUrl/waitForLoad, Page.handleJavaScriptDialog latency through the agent CDP bridge)."
+      "Measured locally with the silence window widened: no program hung. Under load (load average 30-110) single Browser Harness programs took 5-15.4 s and every one finished; one dialog answer alone took 6.5 s. Before the fake engine reported progress, a turn of four or five programs exceeded waitForInput's 15 s no-event window (2 of 3 runs failed). With each program reported as a Codex command item, 17 of 18 runs passed; the failure was one program still running after 15 s at moderate load. Remaining work: why a single program can take over 15 s under load (gotoUrl/waitForLoad, Page.handleJavaScriptDialog latency through the agent CDP bridge).",
+      "The quarantine expired on 2026-11-23 without a root fix and was not renewed. The case runs and gates again; this record stays for the unexplained dialog/CDP latency timeout."
     ]
   },
   {

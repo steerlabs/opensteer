@@ -1,5 +1,5 @@
 // Package display starts RTP video streams over
-// com.apple.coredevice.displayservice. Touch input is discarded unless a stream is running.
+// com.apple.coredevice.displayservice.
 package display
 
 import (
@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"sync"
 	"syscall"
@@ -35,11 +34,12 @@ const (
 	accessNetworkType       = int64(1)
 	transportProtocolType   = int64(2)
 
-	// The deadline the device applies to its own side. Keep it under the caller's:
-	// the device giving up first answers with an error and keeps the connection.
-	negotiationTimeoutSeconds = uint64(10)
+	// Stream idle timeout sent to CoreDevice (matches Xcode Device Hub).
+	streamTimeoutSeconds = uint64(3600)
 
-	DefaultDisplayID = 1
+	DefaultDisplayID       = 1
+	DefaultAudioSenderPort = 50000
+	DefaultVideoSenderPort = 50001
 )
 
 // Service is a connection to the device's display service. One request runs at a
@@ -83,28 +83,87 @@ type VideoStreamRequest struct {
 	ReceiverPort int
 	// SenderIP is the device's address over the tunnel (ios.DeviceEntry.Address).
 	SenderIP string
+	// SenderPort is the device's RTP source port; defaults to DefaultVideoSenderPort.
+	SenderPort int
 	// DisplayID selects the display; use DefaultDisplayID for the main one.
 	DisplayID int
+	// ClientSessionID binds audio and video to one screen-sharing session.
+	ClientSessionID uuid.UUID
 }
 
-// StartVideoStream starts an RTP video stream of one display. iOS 27+, earlier
-// fails 9021. Pass a deadline: the daemon can stop answering, so close on timeout.
-func (s *Service) StartVideoStream(ctx context.Context, req VideoStreamRequest) (uuid.UUID, error) {
-	if req.ReceiverIP == "" || req.ReceiverPort == 0 {
-		return uuid.Nil, fmt.Errorf("StartVideoStream: receiver address is required, bind a Receiver first")
+// AudioStreamRequest establishes the CoreDevice screen-sharing session before video.
+type AudioStreamRequest struct {
+	ReceiverIP      string
+	ReceiverPort    int
+	SenderIP        string
+	SenderPort      int
+	ClientSessionID uuid.UUID
+}
+
+// StartAudioStreamWithOffer starts the audio half of a CoreDevice screen-sharing session.
+// Starting audio first on the shared ClientSessionID initializes the device's screen video rules.
+func (s *Service) StartAudioStreamWithOffer(ctx context.Context, req AudioStreamRequest, offer []byte) (uuid.UUID, map[string]interface{}, error) {
+	if req.ReceiverIP == "" || req.ReceiverPort < 1 || req.ReceiverPort > 65535 {
+		return uuid.Nil, nil, fmt.Errorf("StartAudioStreamWithOffer: receiver address is required")
 	}
 	if req.SenderIP == "" {
-		return uuid.Nil, fmt.Errorf("StartVideoStream: sender address is required")
+		return uuid.Nil, nil, fmt.Errorf("StartAudioStreamWithOffer: sender address is required")
+	}
+	if len(offer) == 0 {
+		return uuid.Nil, nil, errors.New("display: audio offer is required")
+	}
+	senderPort := req.SenderPort
+	if senderPort <= 0 || senderPort > 65535 {
+		senderPort = DefaultAudioSenderPort
+	}
+	clientSessionID := req.ClientSessionID
+	if clientSessionID == uuid.Nil {
+		clientSessionID = uuid.New()
+	}
+	input := map[string]interface{}{
+		"clientSupportedFeatures": clientSupportedFeatures,
+		"direction":               "output",
+		"negotiatorOffer":         offer,
+		"options": map[string]interface{}{
+			"AVCMediaStreamNegotiatorAccessNetworkType":     map[string]interface{}{"int": accessNetworkType},
+			"AVCMediaStreamNegotiatorTransportProtocolType": map[string]interface{}{"int": transportProtocolType},
+			"avcMediaStreamOptionClientSessionID":           map[string]interface{}{"uuid": clientSessionID},
+		},
+		"receiverIP":   req.ReceiverIP,
+		"receiverPort": uint64(req.ReceiverPort),
+		"senderIP":     req.SenderIP,
+		"senderPort":   uint64(senderPort),
+		"timeout":      streamTimeoutSeconds,
+		"type":         "audio",
+	}
+	output, err := s.invoke(ctx, featureStartMediaStream, actionMediaStreamStart, input)
+	return clientSessionID, output, err
+}
+
+// StartVideoStreamWithOffer starts an RTP video stream of one display. iOS 27+, earlier
+// fails 9021. Pass a deadline: the daemon can stop answering, so close on timeout.
+func (s *Service) StartVideoStreamWithOffer(ctx context.Context, req VideoStreamRequest, offer []byte) (uuid.UUID, map[string]interface{}, error) {
+	if req.ReceiverIP == "" || req.ReceiverPort < 1 || req.ReceiverPort > 65535 {
+		return uuid.Nil, nil, fmt.Errorf("StartVideoStreamWithOffer: receiver address is required, bind a Receiver first")
+	}
+	if req.SenderIP == "" {
+		return uuid.Nil, nil, fmt.Errorf("StartVideoStreamWithOffer: sender address is required")
 	}
 	displayID := req.DisplayID
 	if displayID == 0 {
 		displayID = DefaultDisplayID
 	}
+	senderPort := req.SenderPort
+	if senderPort <= 0 || senderPort > 65535 {
+		senderPort = DefaultVideoSenderPort
+	}
 
-	clientSessionID := uuid.New()
-	offer, err := buildVideoNegotiatorOffer(uuid.New(), rand.Uint32())
-	if err != nil {
-		return uuid.Nil, err
+	if len(offer) == 0 {
+		return uuid.Nil, nil, errors.New("display: video offer is required")
+	}
+	clientSessionID := req.ClientSessionID
+	if clientSessionID == uuid.Nil {
+		clientSessionID = uuid.New()
 	}
 
 	input := map[string]interface{}{
@@ -121,24 +180,29 @@ func (s *Service) StartVideoStream(ctx context.Context, req VideoStreamRequest) 
 		"receiverIP":   req.ReceiverIP,
 		"receiverPort": uint64(req.ReceiverPort),
 		"senderIP":     req.SenderIP,
-		"timeout":      negotiationTimeoutSeconds,
+		"senderPort":   uint64(senderPort),
+		"timeout":      streamTimeoutSeconds,
 		"type":         "video",
 	}
 
-	if _, err := s.invoke(ctx, featureStartMediaStream, actionMediaStreamStart, input); err != nil {
-		// The id comes back even on failure: the device may have started the
-		// stream anyway, and stopping it needs this id. A failure closes this
-		// Service's connection, so the stop has to go out on a new one.
-		return clientSessionID, err
-	}
-	return clientSessionID, nil
+	// Return the ID even on error: the device may have started the stream.
+	output, err := s.invoke(ctx, featureStartMediaStream, actionMediaStreamStart, input)
+	return clientSessionID, output, err
 }
 
-// StopMediaStream requests a scoped stop. Rejection or channel loss remains an error.
+// StopMediaStream retains the legacy stop-all behavior for existing callers.
 func (s *Service) StopMediaStream(ctx context.Context, clientSessionID uuid.UUID) error {
+	return s.StopMediaStreamScoped(ctx, clientSessionID, true)
+}
+
+// StopMediaStreamScoped stops this client's stream unless stopAll is explicit.
+func (s *Service) StopMediaStreamScoped(ctx context.Context, clientSessionID uuid.UUID, stopAll bool) error {
+	if clientSessionID == uuid.Nil {
+		return errors.New("display: client session ID is required")
+	}
 	input := map[string]interface{}{
 		"avcMediaStreamOptionClientSessionID": map[string]interface{}{"uuid": clientSessionID},
-		"stopAll":                             true,
+		"stopAll":                             stopAll,
 	}
 	_, err := s.invoke(ctx, featureStopMediaStream, actionMediaStreamStop, input)
 	return err
@@ -152,6 +216,9 @@ func (s *Service) StopMediaStream(ctx context.Context, clientSessionID uuid.UUID
 func (s *Service) invoke(ctx context.Context, feature, action string, input map[string]interface{}) (map[string]interface{}, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Neither a blocked read nor a blocked write can be cancelled, so closing the
 	// connection is what ends them. It is discarded either way, so nothing is lost
@@ -182,7 +249,7 @@ func (s *Service) invoke(ctx context.Context, feature, action string, input map[
 	}
 	output, ok := response["CoreDevice.output"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("display: unexpected response to %s: %+v", feature, response)
+		return nil, fmt.Errorf("display: unexpected response to %s", feature)
 	}
 	return output, nil
 }

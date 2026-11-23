@@ -48,9 +48,13 @@ const (
 	WifiPairingRequired            Reason = "wifi-pairing-required"
 	WifiTransportUnsupported       Reason = "wifi-transport-unsupported"
 	WifiIdentityMismatch           Reason = "wifi-identity-mismatch"
+	// WifiPairingDenied means the phone's owner declined this Mac when the phone asked.
+	WifiPairingDenied Reason = "wifi-pairing-denied"
+	// WifiPairingFailed means Wi-Fi pairing over the cable did not finish; trying again can work.
+	WifiPairingFailed Reason = "wifi-pairing-failed"
 )
 
-var Reasons = append([]Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported, WifiNotEnabled, LocalNetworkPermissionRequired, WifiPhoneNotFound, WifiPairingRequired, WifiTransportUnsupported, WifiIdentityMismatch}, screenReasons...)
+var Reasons = append([]Reason{NativeServiceFailed, Cancelled, DeadlineExceeded, CandidateGone, IdentityMismatch, USBMuxUnavailable, TrustRequired, TrustPending, TrustDenied, PhoneLocked, PairingRevoked, PairingFailed, DeveloperModeRequired, DeveloperModeUnknown, ImageMissing, ImageIncompatible, ImageMountFailed, PersonalizationNetwork, PersonalizationRejected, TunnelFailed, ServiceMissing, ProtocolUnsupported, UnsupportedIOS, QualificationRequired, PhoneInUse, MediaRequired, MediaConflict, PhoneDisconnected, OwnedElsewhere, StaleEpoch, NoSession, NotInitialized, Unsupported, WifiNotEnabled, LocalNetworkPermissionRequired, WifiPhoneNotFound, WifiPairingRequired, WifiTransportUnsupported, WifiIdentityMismatch, WifiPairingDenied, WifiPairingFailed}, screenReasons...)
 
 type Failure struct {
 	Code           Reason `json:"code"`
@@ -174,21 +178,23 @@ type Capabilities struct {
 	Act            *Reason `json:"act"`
 	Launch         *Reason `json:"launch"`
 	InstalledApps  *Reason `json:"installedApps"`
-	Text           Reason  `json:"text"`
-	Clear          Reason  `json:"clear"`
-	IndexedTargets Reason  `json:"indexedTargets"`
-	LiveVideo      Reason  `json:"liveVideo"`
+	Text           *Reason `json:"text"`
+	Clear          *Reason `json:"clear"`
+	IndexedTargets *Reason `json:"indexedTargets"`
+	LiveVideo      *Reason `json:"liveVideo"`
+	Wake           *Reason `json:"wake"`
 }
 type Roster struct {
 	Revision   uint64      `json:"revision"`
 	Candidates []Candidate `json:"candidates"`
 }
 type Event struct {
-	Kind     string `json:"kind"`
-	BootID   string `json:"bootId"`
-	Sequence uint64 `json:"sequence"`
-	Event    string `json:"event"`
-	Roster   Roster `json:"roster"`
+	Kind         string             `json:"kind"`
+	BootID       string             `json:"bootId"`
+	Sequence     uint64             `json:"sequence"`
+	Event        string             `json:"event"`
+	Roster       *Roster            `json:"roster,omitempty"`
+	DisplayState *DisplayStateEvent `json:"displayState,omitempty"`
 }
 
 func Params(r Request) (interface{}, error) {

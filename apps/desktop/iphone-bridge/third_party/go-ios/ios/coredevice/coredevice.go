@@ -1,6 +1,10 @@
 package coredevice
 
-import "github.com/google/uuid"
+import (
+	"fmt"
+
+	"github.com/google/uuid"
+)
 
 func BuildRequest(deviceId, feature string, input map[string]interface{}) map[string]interface{} {
 	u := uuid.New()
@@ -44,7 +48,12 @@ type Error struct {
 	Code   int64
 }
 
-func (e *Error) Error() string { return "CoreDevice request rejected" }
+func (e *Error) Error() string {
+	if e.Domain != "" || e.Code != 0 {
+		return fmt.Sprintf("CoreDevice request rejected (%s:%d)", e.Domain, e.Code)
+	}
+	return "CoreDevice request rejected"
+}
 func ResponseError(reply map[string]interface{}) error {
 	value, exists := reply["CoreDevice.error"]
 	if !exists {

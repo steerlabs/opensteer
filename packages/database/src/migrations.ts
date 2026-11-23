@@ -21,12 +21,16 @@ import {
   applyAnsweredQuestionRecords,
   applyBrowserSessionTabsIndex,
   applyInlineTranscriptMessages,
+  applyStoppedRunsNotNews,
+  applyThreadDoneBy,
   applyPersonalStateSchema,
   browserSessionTabsIndexMigrationName,
   applyDropDeviceAccessCount,
   applyTaskApprovalReceipts,
   dropDeviceAccessCountMigrationName,
   inlineTranscriptMessagesMigrationName,
+  stoppedRunsNotNewsMigrationName,
+  threadDoneByMigrationName,
   taskApprovalReceiptsMigrationName,
 } from "./personal-state-schema.js";
 import { agentGrantsMigrationName, applyAgentGrants } from "./agent-grants-migration.js";
@@ -614,6 +618,8 @@ export function migrationProvider(options?: {
               [dropDeviceAccessCountMigrationName]: { up: applyDropDeviceAccessCount },
               [browserSessionTabsIndexMigrationName]: { up: applyBrowserSessionTabsIndex },
               [inlineTranscriptMessagesMigrationName]: { up: applyInlineTranscriptMessages },
+              [stoppedRunsNotNewsMigrationName]: { up: applyStoppedRunsNotNews },
+              [threadDoneByMigrationName]: { up: applyThreadDoneBy },
               [agentGrantsMigrationName]: { up: applyAgentGrants },
               [agentSessionsMigrationName]: { up: applyAgentSessions },
               "0046_chrome_live_tabs_source": {

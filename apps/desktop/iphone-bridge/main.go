@@ -26,7 +26,9 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	server := &wire.Server{BootID: uuid.New().String()}
-	server.Handler = phone.NewManager(ctx, phone.SystemUSB{}, server.Publish)
+	manager := phone.NewManager(ctx, phone.SystemUSB{}, server.Publish)
+	manager.SetDisplayBackend(newMediaPipeline, recognizeFrameOCR, server.PublishDisplayState)
+	server.Handler = manager
 	// Go opens Darwin FIFOs without kqueue polling. Register a nonblocking
 	// duplicate so Close interrupts the reader even while the parent keeps stdin open.
 	fd, err := syscall.Dup(int(os.Stdin.Fd()))
