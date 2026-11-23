@@ -659,4 +659,39 @@ describe("taskWaitingReason", () => {
     });
     client.dispose();
   });
+
+  it("shows provider retry progress instead of generic Working when a running task is retrying", () => {
+    const task = entry(1001, "Set up Sales CRM", "running", 1, 1);
+    const retrying = {
+      ...task,
+      thread: {
+        ...task.thread,
+        status: "running" as const,
+        doneAt: null,
+        pendingRequests: 0,
+        retry: {
+          status: "retrying" as const,
+          attempt: 2,
+          maxAttempts: 5,
+          message: "Selected model is at capacity.",
+        },
+      },
+    };
+    const list = taskList(snapshot([retrying]));
+    expect(list.working[0]).toMatchObject({
+      threadId: task.thread.id,
+      tone: "working",
+      line: "Retrying (2/5)",
+    });
+
+    const recovered = {
+      ...retrying,
+      thread: { ...retrying.thread, retry: null },
+    };
+    expect(taskList(snapshot([recovered])).working[0]).toMatchObject({
+      threadId: task.thread.id,
+      tone: "working",
+      line: "Working",
+    });
+  });
 });

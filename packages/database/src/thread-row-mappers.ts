@@ -235,6 +235,7 @@ export function runFromRow(row: {
   readonly causalChainId: CausalChainId;
   readonly environmentId: EnvironmentId;
   readonly failure: RunFailure | null;
+  readonly providerRetry?: import("@opensteer/core").RunRetry | null;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly modelSelection: ModelSelection;
   readonly requestedBy: UserId;
@@ -270,6 +271,7 @@ export function runFromRow(row: {
     modelSelection: row.modelSelection,
     replyTarget: row.replyTarget,
     requestedBy: row.requestedBy,
+    ...(row.providerRetry !== undefined ? { retry: row.providerRetry } : {}),
     runOrdinal: row.runOrdinal,
     startedAt: row.startedAt?.toISOString() ?? null,
     status: row.status,

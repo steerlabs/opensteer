@@ -617,6 +617,69 @@ function runScenario(id, payload) {
       step({ input: 5, output: 2 }, 0);
       emit("session.idle", { sessionID: id });
       return;
+    case "retry-child-duplicate-tool":
+      knownSessions.add(childSessionId);
+      emit("session.created", { info: { id: childSessionId, parentID: id } });
+      rootTaskPart("call_task_retry", "running", {
+        metadata: { sessionId: childSessionId },
+      });
+      emit("message.updated", {
+        info: { id: "msg_child_retry", role: "assistant", sessionID: childSessionId },
+      });
+      // Child starts a tool before retrying.
+      emit("message.part.updated", {
+        sessionID: childSessionId,
+        part: {
+          id: "part_child_tool",
+          type: "tool",
+          callID: "call_child_1",
+          tool: "bash",
+          messageID: "msg_child_retry",
+          sessionID: childSessionId,
+          state: { status: "running", input: { command: "echo hi" }, title: "bash" },
+        },
+      });
+      emit("session.status", {
+        sessionID: childSessionId,
+        status: { type: "retry", attempt: 1, message: "Child upstream busy", next: 0 },
+      });
+      // Replaying an already-seen running update must NOT clear the child's active retry.
+      emit("message.part.updated", {
+        sessionID: childSessionId,
+        part: {
+          id: "part_child_tool",
+          type: "tool",
+          callID: "call_child_1",
+          tool: "bash",
+          messageID: "msg_child_retry",
+          sessionID: childSessionId,
+          state: { status: "running", input: { command: "echo hi" }, title: "bash" },
+        },
+      });
+      emit("session.status", {
+        sessionID: childSessionId,
+        status: { type: "retry", attempt: 2, message: "Child upstream busy", next: 0 },
+      });
+      emit("message.part.updated", {
+        sessionID: childSessionId,
+        part: {
+          id: "part_child_text",
+          type: "text",
+          text: "Child recovered.",
+          messageID: "msg_child_retry",
+          sessionID: childSessionId,
+          time: { start: 1, end: 2 },
+        },
+      });
+      emit("session.idle", { sessionID: childSessionId });
+      rootTaskPart("call_task_retry", "completed", {
+        metadata: { sessionId: childSessionId },
+        output: "Child recovered.",
+      });
+      textPart("Done.");
+      step({ input: 5, output: 2 }, 0);
+      emit("session.idle", { sessionID: id });
+      return;
     case "reasoning":
       reasoningPart("Weighing the options");
       textPart("Done.");

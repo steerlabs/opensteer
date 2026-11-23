@@ -239,6 +239,8 @@ export interface ThreadSummary {
   harnessLabel: string;
   /** A Run waits to start and none is executing, as the shell's task row says. */
   runQueued?: boolean;
+  /** Active provider retry on the task's executing Run, when retrying. */
+  retry?: import("@opensteer/core").RunRetry | null;
   id: string;
   inputQueuePaused: boolean;
   /** One of the person's tasks in navigation lists; see the Host's `Thread.listed`. */
@@ -508,6 +510,7 @@ export type RunEntryStatus =
 
 export interface RunEntry {
   compaction?: import("@opensteer/core").NativeCompactionActivity;
+  retry?: import("@opensteer/core").RunRetry;
   delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;

@@ -186,6 +186,8 @@ export const RunnerCapabilitySchema = z.enum([
   // Accepts `host.shell.probe-full-disk-access`; an older Runner's strict
   // frame parser drops its connection on an unknown Host frame.
   "full-disk-access-probe-v1",
+  // Emits durable `run.retry` events when the Host acknowledges `runRetryEvents: true` on welcome.
+  "run-retry-v1",
 ]);
 export type RunnerCapability = z.infer<typeof RunnerCapabilitySchema>;
 
@@ -858,6 +860,21 @@ export const RunFailureSchema = z.strictObject(runFailureShape);
 export const RunFailureViewSchema = z.object(runFailureShape);
 export type RunFailure = z.infer<typeof RunFailureSchema>;
 
+/** The longest a Run's provider-retry summary message may be, in UTF-8 bytes / UTF-16 units. */
+export const runRetryMessageMaxLength = 256;
+
+const runRetryShape = {
+  attempt: z.number().int().min(1),
+  code: z.string().min(1).max(128).nullable().optional(),
+  maxAttempts: z.number().int().min(1).nullable().optional(),
+  message: z.string().max(runRetryMessageMaxLength),
+  retryDelayMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+  status: z.enum(["retrying", "recovered"]),
+} as const;
+export const RunRetrySchema = z.strictObject(runRetryShape);
+export const RunRetryViewSchema = z.object(runRetryShape);
+export type RunRetry = z.infer<typeof RunRetrySchema>;
+
 /**
  * What one Run consumed, as the provider reported it. Opensteer never
  * estimates: a field is present only when the engine stated it, and `costUsd`
@@ -903,6 +920,7 @@ const runShape = {
   replyTarget: ReplyTargetSchema.nullable(),
   providerSessionId: ProviderSessionIdSchema.nullable(),
   requestedBy: UserIdSchema,
+  retry: RunRetrySchema.nullable().optional(),
   runOrdinal: z.number().int().nonnegative(),
   startedAt: IsoDateTimeSchema.nullable(),
   status: RunStatusSchema,
@@ -917,6 +935,7 @@ export const RunViewSchema = z.object({
   delivery: TeamRunDeliveryViewSchema.nullable().default(null),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
+  retry: RunRetryViewSchema.nullable().optional(),
   usage: RunUsageViewSchema.optional(),
   replyTarget: ReplyTargetViewSchema.nullable(),
 });

@@ -1385,6 +1385,324 @@ function handleTurnStart(message) {
     method: "turn/started",
     params: { threadId, turn: { error: null, id: turnId, items: [], status: "inProgress" } },
   });
+  if (scenario === "retry-recover") {
+    send({
+      method: "error",
+      params: {
+        threadId,
+        turnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Selected model is at capacity. Please try a different model.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    send({
+      method: "item/started",
+      params: {
+        threadId,
+        turnId,
+        item: { type: "userMessage", id: "user-1", content: [{ type: "text", text: "Go" }] },
+      },
+    });
+    send({
+      method: "error",
+      params: {
+        threadId,
+        turnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 2/5",
+          additionalDetails: "Selected model is at capacity. Please try a different model.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    send({
+      method: "item/agentMessage/delta",
+      params: { threadId, turnId, itemId: "answer-1", delta: "Recovered" },
+    });
+    send({
+      method: "item/completed",
+      params: {
+        threadId,
+        turnId,
+        item: { type: "agentMessage", id: "answer-1", phase: "final_answer", text: "Recovered" },
+      },
+    });
+    sendTurnCompleted("completed");
+    return;
+  }
+  if (scenario === "retry-budget-exceeded") {
+    send({
+      method: "error",
+      params: {
+        threadId,
+        turnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Selected model is at capacity.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    setTimeout(() => {
+      send({
+        method: "error",
+        params: {
+          threadId,
+          turnId,
+          willRetry: true,
+          error: {
+            message: "Reconnecting... 2/5",
+            additionalDetails: "Selected model is at capacity.",
+            codexErrorInfo: "other",
+          },
+        },
+      });
+    }, 40);
+    return;
+  }
+  if (scenario === "retry-budget-429") {
+    send({
+      method: "error",
+      params: {
+        threadId,
+        turnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Too many requests",
+          codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } },
+        },
+      },
+    });
+    return;
+  }
+  if (scenario === "retry-budget-usage-limit") {
+    send({
+      method: "error",
+      params: {
+        threadId,
+        turnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Usage limit reached",
+          codexErrorInfo: "usageLimitExceeded",
+        },
+      },
+    });
+    return;
+  }
+  if (scenario === "retry-root-settles-with-child") {
+    const childThreadId = "thr_retry_root_child";
+    const childTurnId = "turn_retry_root_child";
+    send({
+      method: "item/started",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          type: "collabAgentToolCall",
+          id: "collab_root_settle",
+          tool: "spawn_agent",
+          newThreadId: childThreadId,
+        },
+      },
+    });
+    send({
+      method: "turn/started",
+      params: { threadId: childThreadId, turn: { id: childTurnId, status: "inProgress" } },
+    });
+    // Root enters retry AFTER spawning the child, then settles without another item.
+    send({
+      method: "error",
+      params: {
+        threadId,
+        turnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Model at capacity.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    // Root settles immediately while child stays alive past the retry budget.
+    sendTurnCompleted("completed");
+    setTimeout(() => {
+      send({
+        method: "turn/completed",
+        params: { threadId: childThreadId, turn: { id: childTurnId, status: "completed" } },
+      });
+    }, 180);
+    return;
+  }
+  if (scenario === "retry-child-collab-delta-recovers") {
+    const childThreadId = "thr_retry_collab_delta";
+    const childTurnId = "turn_retry_collab_delta";
+    send({
+      method: "item/started",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          type: "collabAgentToolCall",
+          id: "collab_delta_recover",
+          tool: "spawn_agent",
+          newThreadId: childThreadId,
+        },
+      },
+    });
+    send({
+      method: "turn/started",
+      params: { threadId: childThreadId, turn: { id: childTurnId, status: "inProgress" } },
+    });
+    send({
+      method: "error",
+      params: {
+        threadId: childThreadId,
+        turnId: childTurnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Child model at capacity.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    setTimeout(() => {
+      send({
+        method: "item/agentMessage/delta",
+        params: { threadId: childThreadId, turnId: childTurnId, delta: "Resumed" },
+      });
+    }, 30);
+    setTimeout(() => {
+      send({
+        method: "turn/completed",
+        params: { threadId: childThreadId, turn: { id: childTurnId, status: "completed" } },
+      });
+      sendTurnCompleted("completed");
+    }, 180);
+    return;
+  }
+  if (scenario === "retry-child-collab-expires") {
+    const childThreadId = "thr_retry_collab_expire";
+    const childTurnId = "turn_retry_collab_expire";
+    send({
+      method: "item/started",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          type: "collabAgentToolCall",
+          id: "collab_expire",
+          tool: "spawn_agent",
+          newThreadId: childThreadId,
+        },
+      },
+    });
+    send({
+      method: "turn/started",
+      params: { threadId: childThreadId, turn: { id: childTurnId, status: "inProgress" } },
+    });
+    send({
+      method: "error",
+      params: {
+        threadId: childThreadId,
+        turnId: childTurnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Child stuck at capacity.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    return;
+  }
+  if (scenario === "retry-child-adopt-replay-preserves-retry") {
+    const childThreadId = "thr_retry_adopt_replay";
+    const childTurnId = "turn_retry_adopt_replay";
+    send({
+      method: "item/started",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          type: "collabAgentToolCall",
+          id: "collab_adopt_replay",
+          tool: "spawn_agent",
+          newThreadId: childThreadId,
+        },
+      },
+    });
+    send({
+      method: "turn/started",
+      params: { threadId: childThreadId, turn: { id: childTurnId, status: "inProgress" } },
+    });
+    // Child emits reasoning BEFORE adoption, then enters retry.
+    send({
+      method: "item/started",
+      params: {
+        threadId: childThreadId,
+        turnId: childTurnId,
+        item: { id: "reason_before_retry", type: "reasoning" },
+      },
+    });
+    send({
+      method: "error",
+      params: {
+        threadId: childThreadId,
+        turnId: childTurnId,
+        willRetry: true,
+        error: {
+          message: "Reconnecting... 1/5",
+          additionalDetails: "Child stalled after early reasoning.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    // Parent adopts child via subAgentActivity, replaying the buffered reasoning item.
+    // That replay must NOT cancel the child's live retry deadline.
+    setTimeout(() => {
+      send({
+        method: "item/started",
+        params: {
+          threadId,
+          turnId,
+          item: {
+            id: "subagent_adopt_replay",
+            type: "subAgentActivity",
+            agentThreadId: childThreadId,
+            agentPath: "/root/worker",
+          },
+        },
+      });
+    }, 20);
+    return;
+  }
+  if (scenario === "error-nonretryable-detail") {
+    send({
+      method: "error",
+      params: {
+        threadId,
+        turnId,
+        willRetry: false,
+        error: {
+          message: "Request failed",
+          additionalDetails: "Selected model is at capacity.",
+          codexErrorInfo: "other",
+        },
+      },
+    });
+    sendTurnCompleted("failed", { message: "Turn failed" });
+    return;
+  }
   if (restateUsage) restateThreadUsage(threadId, turnId);
   if (emitUnscoped) {
     send({

@@ -19,6 +19,7 @@ import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 import { isThreadUnread } from "./thread-unread.js";
+import { providerRetryLabel } from "./provider-retry.js";
 
 /** What a task is doing, in the order a reader has to care. */
 export type TaskTone = "needs-you" | "working" | "waiting" | "failed" | "finished";
@@ -410,6 +411,7 @@ function taskLine(
       return more > 0 ? `${title} · ${more} more` : title;
     }
     case "working":
+      if (entry.thread.retry?.status === "retrying") return providerRetryLabel(entry.thread.retry);
       if (surface?.kind === "page")
         return surface.site ? `On ${surface.site}` : `In ${surface.title}`;
       if (surface) return `Using ${placeName(surface) ?? surface.title}`;

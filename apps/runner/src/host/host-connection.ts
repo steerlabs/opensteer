@@ -34,6 +34,7 @@ import {
   runEventsCapability,
   runEventsUpdateReason,
   runEventsVersion,
+  runRetryCapability,
   type RunnerChallenge,
   type RunnerCommand,
   type RunnerConnectionFence,
@@ -1116,6 +1117,7 @@ export class ReconnectingHostConnection {
       ? new AgentsWorkSession({
           agents,
           agentHome: welcome.agentHome,
+          runRetryEvents: welcome.runRetryEvents === true,
           appTransport: this.#config,
           environmentId: () => requiredEnvironmentId(this.#identity),
           fail: (reason) => socket.close(1011, reason),
@@ -1274,6 +1276,8 @@ interface AgentsWorkSessionOptions {
   readonly agents: RunnerAgentsConnection;
   /** The Agent home this computer hosts, as the Host's welcome named it. */
   readonly agentHome?: ComputerFolder | undefined;
+  /** Whether the connected Host confirmed support for `run.retry` events on welcome. */
+  readonly runRetryEvents?: boolean | undefined;
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
   readonly fence: RunnerConnectionFenceLedger;
@@ -1310,6 +1314,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
 
   constructor(options: AgentsWorkSessionOptions) {
     this.#options = options;
+    options.agents.runtime.setHostRunRetryEvents(options.runRetryEvents === true);
     this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
     options.agents.runtime.observeAgentHomeSkills(async (bindingGeneration, scan) => {
       await this.#reportSkills(
@@ -2373,6 +2378,7 @@ export function runnerCapabilities(
       : []),
 
     "agent-home-settings-v1",
+    runRetryCapability,
     "settings-plugin-policy-v1",
     "assignments-v1",
     "attempts-v1",

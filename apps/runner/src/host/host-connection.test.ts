@@ -141,6 +141,7 @@ describe("AgentsWorkSession", () => {
         fenceRequestAnswers: vi.fn(),
         observeAgentHomeSkills: () => undefined,
         observeAgentHomeSettings: async () => undefined,
+        setHostRunRetryEvents: () => undefined,
         subscribeHarnessPreparation: () => () => undefined,
         appServers: { observe: () => () => undefined },
         handleCommand: async (command: RunnerCommand) => {
