@@ -264,8 +264,16 @@ give the connection more than the person approved. The Host says which a Run is
 (`personLineage`, from the Run's connection, its task's origin and the chats in its context
 lineage), and `engineConfiguration` (`packages/harness/src/engine-configuration.ts`) is the one
 place that chooses. Claude Code and Codex follow it. Cursor cannot start without the person's own
-Cursor configuration, so it refuses such a task and says why. The other five engines still start
-every task as before.
+Cursor configuration, so it refuses such a task and says why. Pi is started for such a task with
+an empty system prompt, so the person's `SYSTEM.md` stays out and Pi keeps its own. Grok and Muse
+start every task as before; both read some of the person's own configuration (by their code and
+documentation, not yet shown on the engines).
+
+Every task's engine gets the person's proxy and certificate variables (`HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`)
+from their login shell: they are how the engine reaches the network, not its configuration. A
+proxy address can carry a password, so a URL's user and password are removed from every engine
+error, Run failure and Runner log line (`redactUrlCredentials`, `packages/shared/src/safeMessage.ts`).
 
 The task's mode wins over the person's settings. Claude Code receives the permission mode on the
 command line, and in Supervised and Auto-accept edits an Opensteer PreToolUse hook asks before
