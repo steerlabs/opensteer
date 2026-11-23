@@ -281,7 +281,10 @@ a temporary home and project and shows all three on the real engine. Otherwise
 `assertEngineMayRun`, in the same file, refuses it before any process starts, with code `forbidden`
 and one sentence: "Codex starts with your own Codex settings, so it runs only tasks you started
 yourself that no connected agent or chat has written to." The Home offers every engine to every
-task and does not refuse by engine itself, so the Runner refuses.
+task and does not refuse by engine itself, so the Runner refuses. Background text (task naming and
+Auto-mode review) always starts without the person's configuration on every engine, using the
+Opensteer-owned home on Codex (refusing as unavailable when no file login is present) and the
+others'-tasks folder on Pi.
 
 - **Claude Code** runs both. Its own task gets the person's settings, instructions, tools and MCP
   servers. Another's task loads no settings source, only Opensteer's MCP server, and no web search

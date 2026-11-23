@@ -48,7 +48,11 @@ import {
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexHarnessDriver, codexAccessModeConfiguration } from "./index.js";
+import {
+  CodexHarnessDriver,
+  codexAccessModeConfiguration,
+  codexOthersHomeDirectory,
+} from "./index.js";
 import { CodexHarnessConfigSchema, MINIMUM_CODEX_CLI_VERSION } from "./config.js";
 
 // A Run outside any task with nothing earlier to state, for a person whose
@@ -4579,6 +4583,83 @@ describe("Codex Thread naming", () => {
       ).toEqual([]);
     } finally {
       await fixture.adapter.close();
+    }
+  });
+
+  it("runs ambient background text from the Opensteer-owned CODEX_HOME and refuses keyring logins without spawning", async () => {
+    const ambientHome = await mkdtemp(join(tmpdir(), "opensteer-codex-bg-ambient-"));
+    temporaryDirectories.push(ambientHome);
+    await writeFile(
+      join(ambientHome, "auth.json"),
+      JSON.stringify({ OPENAI_API_KEY: "sk-bg-stub", auth_mode: "apikey" }),
+    );
+    await writeFile(
+      join(ambientHome, "config.toml"),
+      [
+        'notify = ["echo", "never-run-for-bg"]',
+        'developer_instructions = "person-secret"',
+        'model_provider = "openai"',
+        "",
+      ].join("\n"),
+    );
+    let launched: HarnessProcessLaunch | undefined;
+    const fixture = await setup("thread-name", {
+      environmentOverrides: { CODEX_HOME: ambientHome },
+      providerStateKind: "ambient",
+    });
+    try {
+      expect(
+        await fixture.adapter.generateText!({
+          context: {
+            ...fixture.context,
+            scratchDirectory: fixture.context.threadStateDirectory,
+            wrapProcessLaunch: (launch) => {
+              launched = launch;
+              return launch;
+            },
+          },
+          modelSelection: fixture.context.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      const expectedHome = codexOthersHomeDirectory(fixture.context.providerState, ambientHome);
+      expect(launched?.environment.CODEX_HOME).toBe(expectedHome);
+      expect(launched?.args).toContain('cli_auth_credentials_store="file"');
+      const writtenConfig = await readFile(join(expectedHome, "config.toml"), "utf8");
+      expect(writtenConfig).not.toContain("never-run-for-bg");
+      expect(writtenConfig).not.toContain("person-secret");
+    } finally {
+      await fixture.adapter.close();
+    }
+
+    const keyringHome = await mkdtemp(join(tmpdir(), "opensteer-codex-bg-keyring-"));
+    temporaryDirectories.push(keyringHome);
+    await writeFile(join(keyringHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+    let keyringSpawns = 0;
+    const keyringFixture = await setup("thread-name", {
+      environmentOverrides: { CODEX_HOME: keyringHome },
+      providerStateKind: "ambient",
+    });
+    try {
+      expect(
+        await keyringFixture.adapter.generateText!({
+          context: {
+            ...keyringFixture.context,
+            scratchDirectory: keyringFixture.context.threadStateDirectory,
+            wrapProcessLaunch: (launch) => {
+              keyringSpawns += 1;
+              return launch;
+            },
+          },
+          modelSelection: keyringFixture.context.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: false, failure: "unavailable" });
+      expect(keyringSpawns).toBe(0);
+    } finally {
+      await keyringFixture.adapter.close();
     }
   });
 });

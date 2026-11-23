@@ -2311,6 +2311,68 @@ describe("pi Thread naming", () => {
       await fixture.adapter.close();
     }
   });
+
+  it("runs ambient background text from an others'-tasks Pi agent folder, never the person's own", async () => {
+    const ambientAgentDir = await mkdtemp(join(tmpdir(), "opensteer-pi-bg-ambient-"));
+    temporaryDirectories.push(ambientAgentDir);
+    await writeFile(join(ambientAgentDir, "auth.json"), "{}");
+    await writeFile(join(ambientAgentDir, "models.json"), '{"providers":{}}');
+    await writeFile(join(ambientAgentDir, "settings.json"), '{"shellCommandPrefix":"echo nope;"}');
+    await writeFile(join(ambientAgentDir, "SYSTEM.md"), "PERSON-SYSTEM-MARKER");
+
+    const fixture = await setup({});
+    let capturedAgentDir: string | undefined;
+    let capturedEntries: string[] | undefined;
+    const namingContext = {
+      ...fixture.context,
+      environment: {
+        ...fixture.context.environment,
+        PI_CODING_AGENT_DIR: ambientAgentDir,
+      },
+      providerState: {
+        ...fixture.context.providerState,
+        kind: "ambient" as const,
+        providerHomeDirectory: undefined,
+      },
+      wrapProcessLaunch: (launch: HarnessProcessLaunch) => {
+        capturedAgentDir = launch.environment.PI_CODING_AGENT_DIR;
+        return launch;
+      },
+    };
+    try {
+      expect(
+        await fixture.adapter.generateText!({
+          context: {
+            ...namingContext,
+            scratchDirectory: namingContext.threadStateDirectory,
+            wrapProcessLaunch: (launch) => {
+              capturedAgentDir = launch.environment.PI_CODING_AGENT_DIR;
+              if (capturedAgentDir && capturedAgentDir !== ambientAgentDir) {
+                const { readdirSync } = createRequire(import.meta.url)("node:fs") as {
+                  readdirSync: (path: string) => string[];
+                };
+                capturedEntries = readdirSync(capturedAgentDir).sort();
+              }
+              return launch;
+            },
+          },
+          modelSelection: namingContext.modelSelection,
+          prompt: "Name it",
+          signal: AbortSignal.timeout(2_000),
+        }),
+      ).toEqual({ ok: true, text: "Support migration\nheadphones" });
+      expect(capturedAgentDir).toBeDefined();
+      expect(capturedAgentDir).not.toBe(ambientAgentDir);
+      expect(capturedEntries).toEqual(["auth.json", "models.json"]);
+      expect(
+        (await readdir(fixture.context.threadStateDirectory)).filter((name) =>
+          name.startsWith("text-"),
+        ),
+      ).toEqual([]);
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
 });
 
 it("delivers distinct full names for two plugins and a loose review skill", async () => {

@@ -514,9 +514,23 @@ class PiHarnessAdapter implements HarnessAdapter {
     if (context.runtimeBoundary.kind !== "native-user")
       return { ok: false, failure: "unavailable" };
     return backgroundTextResult(signal, async () => {
-      const environment = await piProcessEnvironment(context.environment, context.providerState);
-      return withBackgroundTextDirectory(context, signal, (directory) =>
-        runTitleProcess(
+      const processEnvironment = await piProcessEnvironment(
+        context.environment,
+        context.providerState,
+      );
+      return withBackgroundTextDirectory(context, signal, async (directory) => {
+        // Background text never reads the person's ambient Pi agent folder.
+        const environment =
+          context.providerState.kind !== "isolated"
+            ? {
+                ...processEnvironment,
+                PI_CODING_AGENT_DIR: await piAgentDirectoryForOthersTasks(
+                  processEnvironment,
+                  join(directory, "pi-agent"),
+                ),
+              }
+            : processEnvironment;
+        return runTitleProcess(
           context,
           {
             executable: this.#dependencies.nodeExecutable,
@@ -548,8 +562,8 @@ class PiHarnessAdapter implements HarnessAdapter {
           },
           signal,
           prompt,
-        ),
-      );
+        );
+      });
     });
   }
 

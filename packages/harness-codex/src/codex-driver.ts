@@ -907,6 +907,17 @@ class CodexHarnessAdapter implements HarnessAdapter {
     prompt,
     signal,
   }: HarnessGenerateTextInput): Promise<HarnessGenerateTextResult> {
+    // Background text (task naming, Auto-mode review) never starts with the
+    // person's own Codex home; on an ambient profile without a file login,
+    // refuse before spawning so the Home can pick another engine or fall back.
+    if (
+      !checkCodexOthersHome({
+        environment: context.environment,
+        providerState: context.providerState,
+      }).ok
+    ) {
+      return { ok: false, failure: "unavailable" };
+    }
     return backgroundTextResult(signal, async () => {
       return withBackgroundTextDirectory(context, signal, async (directory) => {
         const environment = {
@@ -921,6 +932,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
               signal,
               workingDirectory: directory,
             },
+            "stripped",
           )),
         };
         // 0.162.0 normalizes unified_exec back on unless managed policy pins
@@ -957,6 +969,9 @@ class CodexHarnessAdapter implements HarnessAdapter {
                 context.providerState,
                 environment,
                 [directory],
+                undefined,
+                "stripped",
+                context.providerState.kind === "ambient",
               ),
               "-c",
               `log_dir=${JSON.stringify(directory)}`,

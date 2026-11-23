@@ -80,7 +80,8 @@ async function startStubApi(command: string) {
         input?: unknown[];
         tools?: { name?: string; type?: string }[];
       };
-      const answered = JSON.stringify(parsed.input ?? []).includes("function_call_output");
+      const answered =
+        !command || JSON.stringify(parsed.input ?? []).includes("function_call_output");
       const names = new Set((parsed.tools ?? []).map((tool) => tool.name));
       const call = names.has("shell_command")
         ? { arguments: { command }, name: "shell_command" }
@@ -416,3 +417,118 @@ it("refuses others' tasks before starting Codex when the login is in the keyring
   expect((missingAuth.startFailure as OpensteerError).message).toContain("auth.json");
   expect(missingAuth.requests).toHaveLength(0);
 }, 120_000);
+
+it("runs Codex background text from the Opensteer-owned home without notify or person instructions, and refuses keyring logins", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "opensteer-codex-bg-")));
+  cleanups.push(() => rm(root, { force: true, maxRetries: 20, recursive: true, retryDelay: 100 }));
+  const home = join(root, "home");
+  const codexHome = join(home, ".codex");
+  const state = join(root, "state");
+  const notifyRan = join(root, "notify-ran");
+  await mkdir(codexHome, { recursive: true });
+  await mkdir(state, { recursive: true });
+  const api = await startStubApi("");
+  await writeFile(
+    join(codexHome, "auth.json"),
+    JSON.stringify({ OPENAI_API_KEY: "sk-local-stub", auth_mode: "apikey" }),
+  );
+  await writeFile(
+    join(codexHome, "config.toml"),
+    [
+      'model_provider = "stub"',
+      `notify = ["touch", "${notifyRan}"]`,
+      'developer_instructions = "PERSON-DEVELOPER-MARKER"',
+      "",
+      "[model_providers.stub]",
+      'name = "stub"',
+      `base_url = "${api.url}"`,
+      'wire_api = "responses"',
+      'env_key = "STUB_API_KEY"',
+      "",
+      "[agents.person-agent]",
+      'description = "PERSON-AGENT-MARKER"',
+      "",
+    ].join("\n"),
+  );
+  await writeFile(join(codexHome, "AGENTS.md"), "PERSON-GLOBAL-AGENTS-MARKER");
+  const driver = new CodexHarnessDriver({
+    launch: {
+      arguments: [],
+      executable: process.env.OPENSTEER_CODEX_EXECUTABLE || packagedCodexExecutable(),
+    },
+  });
+  const instanceId = createId("harnessInstance");
+  const adapter = await driver.create({ config: {}, instanceId, sourceId: "openai" });
+  cleanups.push(() => adapter.close());
+  const result = await adapter.generateText!({
+    context: {
+      environment: {
+        CODEX_HOME: codexHome,
+        HOME: home,
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        STUB_API_KEY: "local-stub",
+        TMPDIR: state,
+      },
+      providerState: {
+        continuationKey: root,
+        kind: "ambient",
+        privateStateRoot: state,
+        providerHomeDirectory: undefined,
+        store: { directory: codexHome, id: "own-configuration" },
+      },
+      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
+      scratchDirectory: state,
+      wrapProcessLaunch: (launch) => launch,
+    },
+    modelSelection: ModelSelectionSchema.parse({
+      modelId: "gpt-5.4",
+      options: {},
+      providerId: "openai",
+    }),
+    prompt: "Name this task.",
+    signal: AbortSignal.timeout(120_000),
+  });
+  expect(result).toEqual({ ok: true, text: "done" });
+  expect(await exists(notifyRan)).toBe(false);
+  const sent = api.requests.join("\n");
+  for (const marker of [
+    "PERSON-DEVELOPER-MARKER",
+    "PERSON-AGENT-MARKER",
+    "PERSON-GLOBAL-AGENTS-MARKER",
+  ])
+    expect(sent).not.toContain(marker);
+
+  // Keyring store refuses without spawning or reaching the API.
+  const beforeCount = api.requests.length;
+  await writeFile(join(codexHome, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+  const refused = await adapter.generateText!({
+    context: {
+      environment: {
+        CODEX_HOME: codexHome,
+        HOME: home,
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        STUB_API_KEY: "local-stub",
+        TMPDIR: state,
+      },
+      providerState: {
+        continuationKey: root,
+        kind: "ambient",
+        privateStateRoot: state,
+        providerHomeDirectory: undefined,
+        store: { directory: codexHome, id: "own-configuration" },
+      },
+      runtimeBoundary: nativeUserHarnessRuntimeBoundary,
+      scratchDirectory: state,
+      wrapProcessLaunch: (launch) => launch,
+    },
+    modelSelection: ModelSelectionSchema.parse({
+      modelId: "gpt-5.4",
+      options: {},
+      providerId: "openai",
+    }),
+    prompt: "Name this task.",
+    signal: AbortSignal.timeout(30_000),
+  });
+  expect(refused).toEqual({ ok: false, failure: "unavailable" });
+  expect(api.requests).toHaveLength(beforeCount);
+}, 180_000);
