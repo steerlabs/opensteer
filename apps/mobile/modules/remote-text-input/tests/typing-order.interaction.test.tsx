@@ -1252,8 +1252,9 @@ describe("a person's caret moves and selections in the native field", () => {
       } else if (choice < 0.62) {
         const [start, end] = [pick(boundaries), pick(boundaries)].sort((x, y) => x - y);
         const word = pick(["the", "ab", "é"]);
-        // Not from a recording (CV2): any range, as in the third generator.
-        if (!display && !acted) await run.replaceRange(start!, end!, word);
+        // Not from a recording (CV2): any range, as in the third generator. In C also after the
+        // page acted: a replacement it then refuses may be missing, never what was typed.
+        if (!display && (!acted || which === "C")) await run.replaceRange(start!, end!, word);
       } else if (choice < 0.65) {
         text = pick(["pasted", "א b"]);
         kind = "typed";
@@ -1406,6 +1407,26 @@ describe("a person's caret moves and selections in the native field", () => {
     expect(native.text === "" || native.text === "a").toBe(true);
     expect(remote.value).toBe("a");
     expect(remote.refused).toEqual([]);
+  });
+
+  // CV1, the walk: a word the keyboard replaces by range after the page rewrote the field is
+  // refused as a replacement; the letters typed stay, and what is typed next lands.
+  it("keeps the typed word when the page refuses the keyboard's replacement of it", async () => {
+    const { remote, keyboard, answerAll, publish } = await open();
+    for (const letter of "teh") await keyboard((field) => field.insertText(letter));
+    await answerAll();
+    await keyboard((field) => field.replaceRange(0, 3, "the"));
+    // The page rewrites the field before the replacement reaches it: a new context.
+    remote.value = `Z${remote.value}`;
+    remote.caret += 1;
+    remote.earlier.add(remote.contextId!);
+    remote.contextId = "00000000-0000-4000-8000-000000000999";
+    await publish(remote.contextId);
+    await answerAll();
+    await keyboard((field) => field.insertText(" "));
+    await answerAll();
+    expect(remote.value).toBe("Zteh ");
+    expect(remote.refused).toMatchObject([{ kind: "edit", edit: { text: "the", before: "teh" } }]);
   });
 
   // CW2, CW3: each check catches a loss. A far side that drops or refuses one operation makes

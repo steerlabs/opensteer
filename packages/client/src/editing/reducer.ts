@@ -744,6 +744,19 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
         emit({ kind: "command", command: deletion });
         state.suppressedInput = event.inputType;
         reset();
+      } else if (
+        deletion &&
+        event.inputType.includes("Backward") &&
+        state.proxy.selectionStart === 0 &&
+        state.proxy.selectionEnd === 0 &&
+        !state.pendingEcho
+      ) {
+        // CV1: a backward deletion at the mirror's start is the page's, at its caret: the page may
+        // hold text before it that the mirror does not (it begins where the page's caret was).
+        // The mirror after the caret is unchanged either way.
+        prevent();
+        emit({ kind: "command", command: deletion });
+        state.suppressedInput = event.inputType;
       }
       break;
     }

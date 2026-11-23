@@ -987,3 +987,23 @@ describe("a paste over a selection the target cannot delete", () => {
     expect(result.refusal).toBe("range-edits");
   });
 });
+
+// CV1 (found by regime C, seed 735): a Backspace at the mirror's start is the page's, at its
+// caret. The mirror begins where the page's caret was, so the page may hold text before it.
+it("sends a Backspace at the mirror's start to the page", () => {
+  let state = createEditingState("ios", abilities);
+  for (const event of [
+    { type: "context", context },
+    { type: "beforeinput", inputType: "insertText", data: "x" },
+    input("x"),
+    { type: "selection", proxy: proxy("x", 0) },
+  ] satisfies EditingProxyEvent[])
+    state = reduceEditing(state, event).state;
+  const result = reduceEditing(state, {
+    type: "beforeinput",
+    inputType: "deleteContentBackward",
+    data: null,
+  });
+  expect(result.operations).toEqual([{ kind: "command", command: "deleteBackward" }]);
+  expect(result.instruction.preventDefault).toBe(true);
+});
