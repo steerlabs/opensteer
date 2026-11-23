@@ -3303,11 +3303,18 @@ describe("one Codex app-server per account", () => {
         await stopping.stop();
         await stoppingObserver.done;
         await interrupting.catch(() => undefined);
-        await new Promise((resolve) => setTimeout(resolve, waitAfterStopMs));
-        expect(normalizedTypes(stoppingObserver.events)).toContain("run.interrupted");
-        expect(normalizedTypes(stoppingObserver.events)).not.toContain("run.failed");
         const pids = await runServerPids(fixture);
         expect(pids).toHaveLength(1);
+        await expect(
+          vi.waitFor(
+            () => {
+              if (other.usable && processAlive(pids[0]!)) throw new Error("server stayed alive");
+            },
+            { interval: 20, timeout: waitAfterStopMs },
+          ),
+        ).rejects.toThrow("server stayed alive");
+        expect(normalizedTypes(stoppingObserver.events)).toContain("run.interrupted");
+        expect(normalizedTypes(stoppingObserver.events)).not.toContain("run.failed");
         expect(processAlive(pids[0]!)).toBe(true);
         expect(other.usable).toBe(true);
         await writeFile(neverReleased, "");
@@ -3370,7 +3377,14 @@ describe("one Codex app-server per account", () => {
       );
       // Boundary check returns while unload is still waiting on thread/closed.
       await writeFile(mcpRelease, "");
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await expect(
+        vi.waitFor(
+          () => {
+            if (!settled) throw new Error("still waiting on close");
+          },
+          { interval: 10, timeout: 150 },
+        ),
+      ).rejects.toThrow("still waiting on close");
       expect(settled).toBe(false);
 
       await writeFile(closeRelease, "");
@@ -3450,8 +3464,18 @@ describe("one Codex app-server per account", () => {
         }),
       );
       void stopping.interrupt();
-      const stopPromise = stopping.stop();
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      let stopSettled = false;
+      const stopPromise = stopping.stop().finally(() => {
+        stopSettled = true;
+      });
+      await expect(
+        vi.waitFor(
+          () => {
+            if (!stopSettled) throw new Error("waiting for turn/start");
+          },
+          { interval: 10, timeout: 60 },
+        ),
+      ).rejects.toThrow("waiting for turn/start");
       await writeFile(turnStartRelease, "");
       await stopPromise;
       await observer.done;

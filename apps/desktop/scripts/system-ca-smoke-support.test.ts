@@ -35,7 +35,8 @@ afterEach(() => {
 });
 
 describe("system-ca smoke lifecycle", () => {
-  const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+  const fingerprint =
+    "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
   const sha256 = fingerprint.replaceAll(":", "");
 
   it("never lets cleanup hide a primary probe error and still deletes the cert and writes system-ca.json", async () => {
@@ -73,10 +74,14 @@ describe("system-ca smoke lifecycle", () => {
             return ok();
           }
           if (subcommand === "find-certificate") {
-            return certPresent ? ok("found") : fail("The specified item could not be found in the keychain.");
+            return certPresent
+              ? ok("found")
+              : fail("The specified item could not be found in the keychain.");
           }
           if (subcommand === "dump-trust-settings") {
-            return trustPresent ? ok("Cert 0: Opensteer system CA fixture 1") : fail("No Trust Settings were found.");
+            return trustPresent
+              ? ok("Cert 0: Opensteer system CA fixture 1")
+              : fail("No Trust Settings were found.");
           }
           return ok();
         },
@@ -95,7 +100,9 @@ describe("system-ca smoke lifecycle", () => {
     expect(existsSync(reportPath)).toBe(true);
     const report = JSON.parse(readFileSync(reportPath, "utf8")) as SystemCaSmokeReport;
     expect(report.added).toBe(true);
-    expect(report.rows).toEqual([{ listed: true, process: "home-node", reached: true, setting: "on" }]);
+    expect(report.rows).toEqual([
+      { listed: true, process: "home-node", reached: true, setting: "on" },
+    ]);
     expect(report.error).toContain("utility-runner crashed before posting");
     expect(report.cleanup.removeTrustedCert?.stderr).toContain("Authorization denied");
     expect(report.cleanup.restored).toBe(false);
@@ -132,7 +139,9 @@ describe("system-ca smoke lifecycle", () => {
           return ok();
         }
         if (subcommand === "find-certificate") {
-          return certPresent ? ok("found") : fail("The specified item could not be found in the keychain.");
+          return certPresent
+            ? ok("found")
+            : fail("The specified item could not be found in the keychain.");
         }
         if (subcommand === "dump-trust-settings") {
           return fail("SecTrustSettingsCopyTrustSettings: No Trust Settings were found.");
@@ -239,10 +248,14 @@ describe("system-ca smoke lifecycle", () => {
           return ok();
         }
         if (subcommand === "find-certificate") {
-          return certPresent ? ok("found") : fail("The specified item could not be found in the keychain.");
+          return certPresent
+            ? ok("found")
+            : fail("The specified item could not be found in the keychain.");
         }
         if (subcommand === "dump-trust-settings") {
-          return ok(trustPresent ? "Cert 0: Opensteer system CA fixture 4" : "Cert 0: Existing Admin Root");
+          return ok(
+            trustPresent ? "Cert 0: Opensteer system CA fixture 4" : "Cert 0: Existing Admin Root",
+          );
         }
         return ok();
       },

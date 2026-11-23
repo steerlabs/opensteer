@@ -3902,7 +3902,10 @@ describe("RunnerRuntime", () => {
     it("does not take a rejected shared-engine open as proof that the session stopped", async () => {
       const reached = deferred<void>();
       const rejected = deferred<void>();
-      const driver = new FakeHarnessDriver("test-driver", () => new SharedEngineSession(Promise.resolve()));
+      const driver = new FakeHarnessDriver(
+        "test-driver",
+        () => new SharedEngineSession(Promise.resolve()),
+      );
       const create = driver.create.bind(driver);
       driver.create = async (input) => {
         const adapter = await create(input);
@@ -3947,7 +3950,7 @@ describe("RunnerRuntime", () => {
           dataDirectory: dirname(testPrivateStateRoot),
           listProcesses: async () => [],
         }),
-        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50 },
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50, uncontainedRetryMs: 30 },
       });
       const messages: RunnerOperationalReport[] = [];
       const sink: RunnerMessageSink = {
@@ -4088,7 +4091,14 @@ describe("RunnerRuntime", () => {
         }) as typeof first;
         await runtime.handleCommand(second, sink);
         // Past graceMs (20ms), session 1's stop has not settled yet: resumeSession must wait.
-        await new Promise((resolve) => setTimeout(resolve, 120));
+        await expect(
+          vi.waitFor(
+            () => {
+              if (resumeCalls === 0) throw new Error("still waiting on warm stop");
+            },
+            { interval: 10, timeout: 120 },
+          ),
+        ).rejects.toThrow("still waiting on warm stop");
         expect(resumeCalls).toBe(0);
 
         stopSettled.resolve();
@@ -4178,7 +4188,7 @@ describe("RunnerRuntime", () => {
             return [];
           },
         }),
-        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50 },
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50, uncontainedRetryMs: 30 },
       });
       const messages: RunnerOperationalReport[] = [];
       const sink: RunnerMessageSink = {
@@ -4211,8 +4221,16 @@ describe("RunnerRuntime", () => {
 
         // Now processes become provably gone, while session.stop() is STILL pending.
         containmentUnknown = false;
-        // Wait past uncontainedRetryMs (5_000 ms) so any duplicate timer would fire.
-        await new Promise((resolve) => setTimeout(resolve, 5_300));
+        // Wait past uncontainedRetryMs (30 ms) so any duplicate timer would fire.
+        await expect(
+          vi.waitFor(
+            async () => {
+              const decision = await runtime.handleCommand(nextTurn(second), sink);
+              if (decision.status === "rejected") throw new Error("still held");
+            },
+            { interval: 20, timeout: 150 },
+          ),
+        ).rejects.toThrow("still held");
         expect(await runtime.handleCommand(nextTurn(second), sink)).toEqual({
           status: "rejected",
           error: {
@@ -4233,7 +4251,7 @@ describe("RunnerRuntime", () => {
         stopSettled.resolve();
         await runtime.close();
       }
-    }, 15_000);
+    });
 
     it("retires the shared engine when session.stop() rejects and releases the task once the retired process exits", async () => {
       let failStop!: (error: Error) => void;
@@ -4282,7 +4300,7 @@ describe("RunnerRuntime", () => {
           dataDirectory: dirname(testPrivateStateRoot),
           listProcesses: async () => [],
         }),
-        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50 },
+        stopTimings: { graceMs: 20, sharedEngineSettleMs: 50, uncontainedRetryMs: 30 },
       });
       const messages: RunnerOperationalReport[] = [];
       const sink: RunnerMessageSink = {

@@ -3107,7 +3107,7 @@ export function isRunTerminationUnproven(run: Pick<RunEntry, "error" | "status">
 
 export function runOutcomeTitle(
   run: Pick<RunEntry, "error" | "status">,
-  options?: { readonly conversation?: boolean; readonly mobile?: boolean },
+  options?: { readonly conversation?: boolean | undefined; readonly mobile?: boolean | undefined },
 ): string {
   if (isRunTerminationUnproven(run)) return "Couldn’t confirm this stopped";
   if (options?.conversation === true) return "Opensteer couldn’t finish";

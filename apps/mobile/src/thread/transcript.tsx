@@ -1885,7 +1885,7 @@ function RunOutcome(props: {
       <>
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
-            {runOutcomeTitle(run, { conversation: props.conversation, mobile: true })}
+            {runOutcomeTitle(run, { conversation: props.conversation === true, mobile: true })}
           </AppText>
           {message === null ? null : (
             <AppText role="secondary" selectable tone="soft">

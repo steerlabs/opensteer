@@ -2584,7 +2584,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         if (nativeTurn) context.completedTurns.add(nativeTurn);
         if (active.childTurns.get(childThreadId) !== nativeTurn) return;
         active.childTurns.delete(childThreadId);
-        if (this.#openTurns.get(childThreadId) === nativeTurn) this.#openTurns.delete(childThreadId);
+        if (this.#openTurns.get(childThreadId) === nativeTurn)
+          this.#openTurns.delete(childThreadId);
         active.nodes.complete(
           childThreadId,
           status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "completed",

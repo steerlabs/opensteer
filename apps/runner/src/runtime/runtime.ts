@@ -175,6 +175,7 @@ export interface RunnerRuntimeOptions {
   readonly stopTimings?: {
     readonly graceMs?: number;
     readonly sharedEngineSettleMs?: number;
+    readonly uncontainedRetryMs?: number;
   };
   /** Schedules credential refresh only; leases, sockets and engine timers stay real. */
   readonly credentialRefreshClock?: Pick<Clock, "schedule">;
@@ -342,6 +343,14 @@ interface ActiveRun {
   task?: Promise<void>;
 }
 
+type EngineSessionEndResult =
+  | { readonly proven: true; readonly termination: "proven" }
+  | {
+      readonly proven: false;
+      readonly termination: Exclude<TerminationProof, "proven">;
+      readonly engineStopping?: Promise<void> | undefined;
+    };
+
 type ExecutionEndReport = Extract<
   RunnerOperationalReport,
   {
@@ -439,6 +448,7 @@ export class RunnerRuntime {
   readonly #executionNow: () => number;
   readonly #stopGraceMs: number;
   readonly #sharedEngineSettleMs: number;
+  readonly #uncontainedRetryMs: number;
   readonly #machineAccess: RunnerRuntimeOptions["machineAccess"];
   readonly #mode: RuntimeMode;
   readonly #privateStateDirectory: string;
@@ -615,6 +625,7 @@ export class RunnerRuntime {
     this.#stopGraceMs = options.stopTimings?.graceMs ?? executionStopGraceMs;
     this.#sharedEngineSettleMs =
       options.stopTimings?.sharedEngineSettleMs ?? sharedEngineStopSettleMs;
+    this.#uncontainedRetryMs = options.stopTimings?.uncontainedRetryMs ?? uncontainedRetryMs;
     this.#credentialRefreshClock = options.credentialRefreshClock ?? systemClock;
     this.#attachmentCache = options.attachmentCache;
     this.#agentSkills = options.agentSkills;
@@ -2122,7 +2133,7 @@ export class RunnerRuntime {
     };
     const ensurePolling = () => {
       if (retry || this.#uncontainedThreads.get(threadId) !== hold) return;
-      retry = setInterval(check, uncontainedRetryMs);
+      retry = setInterval(check, this.#uncontainedRetryMs);
       retry.unref?.();
     };
     // A shared engine still stopping is the rest of what must be proven; its
@@ -2175,14 +2186,7 @@ export class RunnerRuntime {
     readonly sharedEngineProcess?: boolean | undefined;
     readonly retireSharedEngine?: ((reason: string) => Promise<void>) | undefined;
     readonly abortLifetime?: (() => void) | undefined;
-  }): Promise<
-    | { readonly proven: true; readonly termination: "proven" }
-    | {
-        readonly proven: false;
-        readonly termination: Exclude<TerminationProof, "proven">;
-        readonly engineStopping?: Promise<void> | undefined;
-      }
-  > {
+  }): Promise<EngineSessionEndResult> {
     let asked: Promise<void> | undefined;
     const termination = await this.#containment
       .terminate(input.scope, async () => {
@@ -3579,7 +3583,7 @@ export class RunnerRuntime {
   async #retireWarmEngine(
     engine: WarmEngine,
     options?: { readonly holdThread?: boolean },
-  ): Promise<Awaited<ReturnType<RunnerRuntime["#endEngineSession"]>>> {
+  ): Promise<EngineSessionEndResult> {
     const ended = await this.#endEngineSession({
       abortLifetime: () => engine.lifetime.abort(new Error("Warm engine retired")),
       retireSharedEngine: engine.retireSharedEngine,

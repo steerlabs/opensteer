@@ -374,18 +374,18 @@ async function verifyCodexAppServerStop() {
     if (unsubscribeCResult?.status === "notLoaded") {
       throw new Error("thread/unsubscribe without turn/interrupt unexpectedly returned notLoaded");
     }
-    const closedWithoutInterrupt = await Promise.race([
-      waitFor(
-        (message) => message.method === "thread/closed" && message.params?.threadId === threadC,
-        5_000,
-        "thread C thread/closed",
-      ).then(
-        () => true,
-        () => false,
-      ),
-    ]);
+    const closedWithoutInterrupt = await waitFor(
+      (message) => message.method === "thread/closed" && message.params?.threadId === threadC,
+      5_000,
+      "thread C thread/closed",
+    ).then(
+      () => true,
+      () => false,
+    );
     if (closedWithoutInterrupt) {
-      throw new Error("thread/unsubscribe without turn/interrupt unexpectedly emitted thread/closed");
+      throw new Error(
+        "thread/unsubscribe without turn/interrupt unexpectedly emitted thread/closed",
+      );
     }
   } finally {
     server.kill("SIGKILL");
@@ -399,7 +399,7 @@ async function verifyCodexAppServerStop() {
 
 async function startCodexResponsesStub() {
   let requestId = 0;
-  const server = createServer(async (req, reply) => {
+  const handleRequest = async (req, reply) => {
     const id = ++requestId;
     let raw = "";
     for await (const chunk of req) raw += chunk;
@@ -418,7 +418,11 @@ async function startCodexResponsesStub() {
     const prompts = (Array.isArray(body.input) ? body.input : [])
       .filter((item) => item.role === "user")
       .flatMap((item) => (Array.isArray(item.content) ? item.content : []));
-    const prompt = prompts.map((item) => item.text).filter(Boolean).at(-1) ?? "";
+    const prompt =
+      prompts
+        .map((item) => item.text)
+        .filter(Boolean)
+        .at(-1) ?? "";
     const hold = !prompt.includes("SMOKE_SHORT");
 
     reply.writeHead(200, {
@@ -497,6 +501,14 @@ async function startCodexResponsesStub() {
       },
     });
     reply.end();
+  };
+  const server = createServer((req, reply) => {
+    void handleRequest(req, reply).catch(() => {
+      if (!reply.headersSent) {
+        reply.writeHead(500);
+      }
+      reply.end();
+    });
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
