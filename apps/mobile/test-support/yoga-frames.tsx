@@ -337,16 +337,16 @@ export interface Piece {
   readonly gap: number;
 }
 
-/** A text's characters as a person sees them: word joiners and zero-width spaces draw nothing. */
+/** A text's characters as a person sees them: joiners, zero-width spaces and bidi isolates draw nothing. */
 export function drawnText(text: string): string {
-  return text.replace(/[\u2060\u200B]/gu, "");
+  return text.replace(/[\u2060\u200B\u2068\u2069]/gu, "");
 }
 
 /** A text's pieces: its words, and inside an address its parts. */
 /**
  * A text's pieces, as a line breaker sees the characters drawn: a space breaks, unless a word
  * joiner holds it to either side (then it is part of a word, as the phone's text engine keeps it);
- * a zero-width space breaks and takes no room; a word joiner takes no room.
+ * a zero-width space breaks and takes no room; word joiners and bidi isolates take no room.
  */
 export function pieces(text: string): Piece[] {
   return text
@@ -355,7 +355,7 @@ export function pieces(text: string): Piece[] {
     .flatMap((word) =>
       word
         .split("\u200B")
-        .map((part) => part.replace(/\u2060/gu, ""))
+        .map((part) => part.replace(/[\u2060\u2068\u2069]/gu, ""))
         .filter(Boolean)
         .map((part, index) => ({ gap: index === 0 ? 1 : 0, word: part })),
     );
