@@ -1893,25 +1893,6 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   }
   /** Every agent command in this phase that came back refused, with what it was refused for. */
   const agentRefusals: Array<Record<string, unknown>> = [];
-  /**
-   * The follow view's own record of its casts (`ScreencastController.diagnostics`): each start and
-   * why, each frame it set aside and why. Read from the controller the smoke drives.
-   */
-  const followDiagnostics = () =>
-    (
-      controller as unknown as {
-        readonly screencast: {
-          readonly diagnostics: readonly {
-            readonly stage: string;
-            readonly reason?: string;
-            readonly castId?: number;
-          }[];
-        };
-      }
-    ).screencast.diagnostics.map(
-      (record) =>
-        `${record.stage}${record.reason === undefined ? "" : ` ${record.reason}`}${record.castId === undefined ? "" : ` #${record.castId}`}`,
-    );
   const phaseStart = performance.now();
   // The follow view's record with when each entry came and the address of the tab it is for, then.
   const followTimed: Array<{ readonly at: number; readonly entry: string }> = [];
@@ -1936,6 +1917,19 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       return push(...entries);
     };
   }
+  /**
+   * The follow view's record since `since`, each entry with when it came and its tab's address.
+   * Read by time: the follow view keeps its own record in a ring of 256, whose length stops
+   * growing once it is full, so an index taken earlier reads nothing (the walker's runs on
+   * 8890420c6, never-shown-tab and slow-load-tab).
+   */
+  const followSince = (since: number) =>
+    followTimed
+      .filter(({ at }) => at >= since)
+      .map(({ at, entry }) => `${Math.round(at - since)}ms ${entry}`);
+  /** A check that counted a start exported that start's record, and its reason with it. */
+  const recordsItsStarts = (starts: number, followView: readonly string[]) =>
+    starts === 0 || followView.some((entry) => / cast-start /u.test(entry));
   /** What the follow view and each tab's debugger did since `since`, each tab by its address. */
   const evidenceSince = (since: number) => ({
     followView: followTimed
@@ -3073,7 +3067,6 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
     await agent("Target.closeTarget", { targetId: created.targetId });
 
     const openSince = performance.now();
-    const followAtOpen = followDiagnostics().length;
     // Each ledger event for the tab, as the follow view is given it: whether its document had
     // committed, and was still loading, when each start was asked for and refused.
     const ledgerEvents: Array<{ readonly surfaceId: string | null; readonly entry: string }> = [];
@@ -3130,7 +3123,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
       // What the tab's debugger saw, start to stop, so a count over the bound shows why.
       timeline: castTimeline(personTabDebugger, openSince),
       // The follow view's own reason for each start it asked for, and each it set aside.
-      followView: followDiagnostics().slice(followAtOpen),
+      followView: followSince(openSince),
       ledgerEvents: ledgerEvents
         .filter((event) => event.surfaceId === null || event.surfaceId === personTab.surface.id)
         .slice(0, 40)
@@ -3180,6 +3173,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         personTabCasts.redraws === 0 &&
         // Opening can restart once after the initial viewport is sized.
         personTabCasts.castStarts <= 2 &&
+        recordsItsStarts(personTabCasts.castStarts, personTabCasts.followView) &&
         outcome.errors.length === 0,
       outcome,
     );
@@ -3192,7 +3186,6 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
   await section("slow-load-tab", async () => {
     const from = messages.length;
     const openSince = performance.now();
-    const followAtOpen = followDiagnostics().length;
     const url = `${origin}/slow-load`;
     const events: Array<{ readonly at: number; readonly entry: string; readonly id: string }> = [];
     let committedAt: number | null = null;
@@ -3239,7 +3232,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         loadedMs: loadedAt === null ? null : Math.round(loadedAt - openSince),
         castStarts: castStartsOn(tabDebugger, openSince, performance.now()),
         timeline: castTimeline(tabDebugger, openSince),
-        followView: followDiagnostics().slice(followAtOpen),
+        followView: followSince(openSince),
         ledgerEvents: events.filter((event) => event.id === id).map((event) => event.entry),
         errors: errorsFrom(from),
       };
@@ -3250,6 +3243,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           // Pictured while it still loaded: the picture did not wait for the load to end.
           (loadedAt === null || pictureAt < loadedAt) &&
           outcome.castStarts <= 2 &&
+          recordsItsStarts(outcome.castStarts, outcome.followView) &&
           outcome.errors.length === 0,
         outcome,
       );
@@ -3507,7 +3501,6 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
         dialogBShown: ledger.dialogOf(tabB)?.id === dialogB,
       };
       // What the follow view did from here, in its own words (its diagnostics, newest last).
-      const followSeen = followDiagnostics().length;
       const answeredAt = performance.now();
       const own = await answerWith(dialogB, false);
       await waitForAsync(async () => (await answerOf(tabB, readB)) !== null, 2_000).catch(
@@ -3526,7 +3519,7 @@ async function followViewPhase(launcher: ElectronBrowserLauncher, origin: string
           turnedToB: Math.round(turnedToBAt - turnedAwayAt),
           answeredB: Math.round(answeredAt - turnedAwayAt),
         },
-        followView: followDiagnostics().slice(followSeen),
+        followView: followSince(answeredAt),
         // From B's opening, the follow view's record for B (and the tab it turned to between).
         followViewSinceOpening: followLog
           .slice(-120)
