@@ -2407,8 +2407,14 @@ it("never puts a tab to sleep while it captures the camera or microphone, and sl
   expect(await ledger.sleep(tab.id, () => null)).toBe(false);
   expect(await ledger.sleep(tab.id, () => null)).toBe(false);
   expect(ledger.stateOf(tab.id)).not.toBe("suspended");
+  // V1: a clone of a captured track still captures once the original stops.
+  await evalValue(
+    cdp,
+    `window.__copy = window.__call.getVideoTracks()[0].clone(); window.__call.getTracks().forEach((track) => track.stop()); true`,
+  );
+  expect(await ledger.sleep(tab.id, () => null)).toBe(false);
   // The call ends: the tab may sleep.
-  await evalValue(cdp, `window.__call.getTracks().forEach((track) => track.stop()); true`);
+  await evalValue(cdp, `window.__copy.stop(); true`);
   expect(await ledger.sleep(tab.id, () => null)).toBe(true);
 }, 60_000);
 
@@ -2547,6 +2553,41 @@ it("never puts a tab to sleep that desktop Chrome would not discard, nor one tha
   });
   expect(await notify.page.keepAwake?.()).toBe("notifications");
   expect(await ledger.sleep(notify.tab.id, () => null)).toBe(false);
+  // V1: notifications give way to the out-of-memory last resort, as in Chromium's urgent discard.
+  expect(await ledger.sleep(notify.tab.id, () => null, { lastResort: true })).toBe(true);
+
+  // V1: an input inside a shadow root is a form the person edited.
+  const shadow = await open(6, "/article?id=shadow", "/article");
+  await evalValue(
+    shadow.cdp,
+    `(() => { const host = document.createElement("div"); document.body.append(host); const root = host.attachShadow({ mode: "open" }); root.innerHTML = "<input id=inner>"; root.getElementById("inner").focus(); return true; })()`,
+  );
+  await shadow.cdp.send("Input.insertText", { text: "typed in a shadow root" });
+  expect(await shadow.page.keepAwake?.()).toBe("form");
+
+  // V1: Web Audio is heard while it runs, and for a minute after.
+  const audio2 = await open(7, "/article?id=webaudio", "/article");
+  await audio2.cdp.send("Runtime.evaluate", {
+    expression: `(async () => { window.__audio = new AudioContext(); await window.__audio.resume(); return window.__audio.state; })()`,
+    awaitPromise: true,
+    userGesture: true,
+  });
+  expect(await audio2.page.keepAwake?.()).toBe("media");
+  await audio2.cdp.send("Runtime.evaluate", {
+    expression: `window.__audio.close()`,
+    awaitPromise: true,
+  });
+  expect(await audio2.page.keepAwake?.()).toBe("recently-audible");
+
+  // V1 (rule A): a protection that cannot be read is not known, and not known is not unprotected.
+  const unreadable = await open(8, "/article?id=unreadable", "/article");
+  const raw = (unreadable.page as unknown as { page: import("playwright-core").Page }).page;
+  const busy = vi
+    .spyOn(raw.mainFrame(), "evaluate")
+    .mockRejectedValue(new Error("The page is busy."));
+  expect(await unreadable.page.keepAwake?.()).toBe("unknown");
+  expect(await ledger.sleep(unreadable.tab.id, () => null, { lastResort: true })).toBe(false);
+  busy.mockRestore();
 
   // A PDF (kPdf).
   const pdf = await open(5, "/doc.pdf", "/doc.pdf");

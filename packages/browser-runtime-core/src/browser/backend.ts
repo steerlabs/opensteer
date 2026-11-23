@@ -69,6 +69,8 @@ export type KeepAwakeReason =
   | "notifications"
   | "form"
   | "beforeunload"
+  /** V1: a protection could not be read; not known is not unprotected. */
+  | "unknown"
   /** The tab-lifecycle helper is still being looked for after launch. */
   | "tab-helper";
 
@@ -136,6 +138,11 @@ export interface BrowserPage {
    * closing and wakes at its address), so nothing of it is kept in a lineage while it sleeps.
    */
   sleepsAsItself?(): boolean;
+  /**
+   * V1: freezes the page so nothing in it can change while its protections are read for a sleep;
+   * the answer thaws it again when the sleep does not go ahead.
+   */
+  freeze?(): Promise<() => Promise<void>>;
   agentCdp(): Promise<CdpSession>;
   cdp(): Promise<CdpSession>;
   /** Asks the engine to end the page. Settling proves nothing; `onClose` does. */

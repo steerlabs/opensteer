@@ -68,6 +68,163 @@ export type SleepBlocker =
   | "protection-failed"
   | "capture-failed";
 
+/**
+ * V1: every protection, in one table. NEVER: not slept by any pass. LAST RESORT: slept only when
+ * memory is still over the threshold with nothing else left (to keep the kernel's out-of-memory
+ * killer away); the others are conditions of the tab or the sleep itself, never overridden.
+ * `chromium` is the counterpart in Chromium's discard policy (discard_eligibility_policy.cc), which
+ * chrome.tabs.discard bypasses entirely: Opensteer enforces each one itself.
+ */
+export const sleepProtections: Readonly<
+  Record<
+    SleepBlocker,
+    {
+      readonly kind: "never" | "last-resort" | "condition";
+      readonly fact: string;
+      readonly chromium: string | null;
+    }
+  >
+> = {
+  "host-state": {
+    kind: "never",
+    fact: "the Home's session state, unknown or keep-awake",
+    chromium: null,
+  },
+  closing: { kind: "condition", fact: "the session is closing", chromium: null },
+  closed: { kind: "condition", fact: "the tab closed", chromium: null },
+  viewed: { kind: "never", fact: "a person views it (Home state)", chromium: "kVisible" },
+  pinned: {
+    kind: "never",
+    fact: "a pending request, or a tab woken for an agent not yet attached (Home pins)",
+    chromium: "kPinnedTab",
+  },
+  native: { kind: "never", fact: "shown in the desktop app's own window", chromium: "kVisible" },
+  viewer: { kind: "never", fact: "a viewer streams it (controller)", chromium: "kVisible" },
+  "held-input": { kind: "never", fact: "a key or button is held in it", chromium: null },
+  "sign-in": {
+    kind: "never",
+    fact: "a sign-in, passkey or person offer in it",
+    chromium: "kFormInteractions",
+  },
+  operation: {
+    kind: "never",
+    fact: "an agent's or the runtime's operation runs on it (lease)",
+    chromium: "kDevToolsOpen",
+  },
+  "agent-input": {
+    kind: "never",
+    fact: "an agent typed or clicked in it during a live Run",
+    chromium: "kUserEdits",
+  },
+  "agent-bound": {
+    kind: "last-resort",
+    fact: "a live Run or connected agent is bound to it (Home agentTabs)",
+    chromium: null,
+  },
+  "recently-viewed": {
+    kind: "last-resort",
+    fact: "a person saw it in the last ten minutes",
+    chromium: "kRecentlyVisible",
+  },
+  typed: {
+    kind: "last-resort",
+    fact: "text was typed into it through Opensteer",
+    chromium: "kUserEdits",
+  },
+  quiet: { kind: "last-resort", fact: "used in the last ten seconds", chromium: null },
+  suspended: { kind: "condition", fact: "already asleep", chromium: "kAlreadyDiscarded" },
+  dialog: { kind: "never", fact: "a JavaScript dialog is open", chromium: null },
+  loading: { kind: "condition", fact: "its document is loading", chromium: null },
+  unrestorable: {
+    kind: "condition",
+    fact: "an earlier capture failed",
+    chromium: "kDiscardAttempted",
+  },
+  address: {
+    kind: "condition",
+    fact: "not an http(s) or blank page",
+    chromium: "kNotWebOrInternal",
+  },
+  "restore-version": { kind: "condition", fact: "the session cannot restore tabs", chromium: null },
+  opener: { kind: "never", fact: "a live page holds a script link to it", chromium: null },
+  demanded: { kind: "condition", fact: "asked for during the sleep", chromium: null },
+  "document-changed": {
+    kind: "condition",
+    fact: "its document changed during the sleep",
+    chromium: null,
+  },
+  "protection-failed": {
+    kind: "never",
+    fact: "a protection read failed (this pass)",
+    chromium: null,
+  },
+  "capture-failed": {
+    kind: "never",
+    fact: "its state could not be captured (this pass)",
+    chromium: null,
+  },
+  upload: { kind: "never", fact: "an upload is in flight", chromium: null },
+  post: {
+    kind: "never",
+    fact: "its document came from a form POST, which no reload repeats",
+    chromium: null,
+  },
+  download: { kind: "never", fact: "a download is in flight", chromium: null },
+  media: {
+    kind: "never",
+    fact: "it plays audio now (elements, native players, Web Audio)",
+    chromium: "kAudible",
+  },
+  fullscreen: { kind: "never", fact: "it is fullscreen", chromium: "kVisible" },
+  capturing: {
+    kind: "never",
+    fact: "it captures camera, microphone or screen",
+    chromium: "kCapturingVideo/Audio/Window/Display",
+  },
+  "tab-helper": {
+    kind: "condition",
+    fact: "the browser's look for the tab helper has not ended",
+    chromium: null,
+  },
+  device: {
+    kind: "never",
+    fact: "a USB device or Bluetooth server is connected",
+    chromium: "kConnectedToUSB/Bluetooth",
+  },
+  "picture-in-picture": {
+    kind: "never",
+    fact: "it shows picture-in-picture (in view)",
+    chromium: "kPictureInPicture",
+  },
+  "recently-audible": {
+    kind: "last-resort",
+    fact: "it was heard in the last minute",
+    chromium: "kRecentlyAudible",
+  },
+  pdf: { kind: "last-resort", fact: "it shows a PDF", chromium: "kPdf" },
+  notifications: {
+    kind: "last-resort",
+    fact: "the site may notify",
+    chromium: "kNotificationsEnabled (proactive only)",
+  },
+  form: {
+    kind: "last-resort",
+    fact: "the person changed a form or edited the page",
+    chromium: "kFormInteractions/kUserEdits",
+  },
+  beforeunload: {
+    kind: "last-resort",
+    fact: "it asks to be warned before it goes",
+    chromium: null,
+  },
+  unknown: { kind: "never", fact: "a protection could not be read (this pass)", chromium: null },
+};
+
+/** V1: whether a protection gives way to the out-of-memory last resort. */
+export function lastResortOnly(reason: SleepBlocker): boolean {
+  return sleepProtections[reason].kind === "last-resort";
+}
+
 type Closing = {
   readonly page: string;
   readonly surface: BrowserSurfaceId | null;

@@ -2,7 +2,7 @@ import { totalmem } from "node:os";
 import type { BrowserSurfaceId, BrowserSessionState } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { BrowserMemoryPressure, BrowserRendererUsage } from "./backend.js";
-import type { PageCounts, SleepBlocker } from "./page-ownership.js";
+import { lastResortOnly, type PageCounts, type SleepBlocker } from "./page-ownership.js";
 import type { SurfaceLedger, TabRecord } from "./surface-ledger.js";
 
 const quietMs = 10_000;
@@ -397,7 +397,8 @@ export class TabSleeper {
     // person saw in the last ten minutes.
     if (!lastResort && now - (session.viewedUntil.get(record.id) ?? -Infinity) < recentlyViewedMs)
       return "recently-viewed";
-    if (record.typed) return "typed";
+    // V1: typed text is an edited form: the last resort may take it, nothing else.
+    if (!lastResort && record.typed) return "typed";
     if (!young && now - record.usedAt < quietMs) return "quiet";
     const live = record.live;
     if (!live) return "suspended";
@@ -967,9 +968,10 @@ export class TabSleeper {
       // Over the start threshold with no tab past its quiet period able to sleep, the least
       // recently used tab that is not in use sleeps, whatever its age: a renderer the kernel
       // kills loses more than a tab put to sleep. One per pass; the next sample decides again.
+      // V1: a pass whose every attempt was refused slept nothing either.
       if (
         !this.closed &&
-        attempted === 0 &&
+        slept === 0 &&
         this.usesLinuxMemoryPressure() &&
         this.memoryPressureState.known &&
         this.releasing &&
@@ -995,10 +997,26 @@ export class TabSleeper {
         // over.
         const freshReading =
           releasingAtStart && this.memorySampledAt > this.lastSleptAt + linuxPressureSettleMs;
+        // V1: then a tab whose own page refused its last sleep for a last-resort reason (heard in
+        // the last minute, an edited form, a beforeunload handler, notifications, a PDF).
+        const pageProtected = () =>
+          candidates
+            .filter(
+              ({ id, session, record }) =>
+                this.sessions.get(id) === session &&
+                !spared(session, record) &&
+                now >= holdUntil(session) &&
+                record.lastRefusal !== undefined &&
+                lastResortOnly(record.lastRefusal) &&
+                this.blocked(id, record, now, undefined, true, true) === null,
+            )
+            .sort((a, b) => a.record.usedAt - b.record.usedAt)[0];
         const youngest =
           young ??
           (freshReading
-            ? (lastResort("recently-viewed", true) ?? lastResort("agent-bound", true))
+            ? (lastResort("recently-viewed", true) ??
+              pageProtected() ??
+              lastResort("agent-bound", true))
             : undefined);
         if (youngest) {
           const { id, session, record } = youngest;
@@ -1006,7 +1024,13 @@ export class TabSleeper {
           attempted++;
           this.reclaimInFlight++;
           const committed = await session.ledger
-            .sleep(record.id, (next) => this.blocked(id, next, Date.now(), undefined, true, bound))
+            .sleep(
+              record.id,
+              (next) => this.blocked(id, next, Date.now(), undefined, true, bound),
+              {
+                lastResort: bound,
+              },
+            )
             .finally(() => this.reclaimInFlight--);
           if (committed) {
             slept++;

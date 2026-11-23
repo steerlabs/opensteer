@@ -14,6 +14,7 @@ import {
 } from "@opensteer/protocol/browser";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { lastResortOnly } from "./page-ownership.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncMutex } from "../async.js";
@@ -181,6 +182,8 @@ export interface TabRecord {
   usedAt: number;
   unrestorable: boolean;
   restore: { url: string; engine: unknown | null; bytes: number } | null;
+  /** V1: why the last sleep of this tab was refused, for the last resort to weigh. */
+  lastRefusal?: SleepBlocker;
   /**
    * TS7: when the last wake opened this tab again at its address, so what it held is gone; the
    * person is told, as after a browser restart. Cleared when the tab next sleeps.
@@ -524,6 +527,8 @@ export class SurfaceLedger {
   async sleep(
     id: BrowserSurfaceId,
     blocked: (record: TabRecord) => SleepBlocker | null,
+    /** V1: the out-of-memory last resort, where a last-resort protection gives way. */
+    options: { readonly lastResort?: boolean } = {},
   ): Promise<boolean> {
     const record = this.liveRecord(id);
     if (!record) {
@@ -533,8 +538,14 @@ export class SurfaceLedger {
     const live = record.live;
     const refused = (reason: SleepBlocker) => {
       this.pages.noteSleepRefusal(live.page, reason);
+      record.lastRefusal = reason;
       return false;
     };
+    // V1: a page's own protection, as this sleep weighs it (a last-resort one gives way only to
+    // the last resort).
+    const holds = (reason: SleepBlocker | null) =>
+      reason && !(options.lastResort && lastResortOnly(reason)) ? reason : null;
+    let thaw: (() => Promise<void>) | undefined;
     if (this.closing) return refused("closing");
     const precheck = blocked(record);
     if (precheck) return refused(precheck);
@@ -543,7 +554,7 @@ export class SurfaceLedger {
     let stage: "protection" | "capture" = "protection";
     let slept = false;
     try {
-      const protection = await this.engineProtection(record);
+      const protection = holds(await this.engineProtection(record));
       if (protection) return refused(protection);
       stage = "capture";
       const engine = await withTimeout(
@@ -558,8 +569,13 @@ export class SurfaceLedger {
         record.documentId === documentId
       )
         record.unrestorable = true;
+      // V1: decided on a page that can no longer change: frozen first, then every protection is
+      // read again on it; a sleep that does not go ahead thaws it.
+      thaw = await withTimeout(live.page.freeze?.() ?? Promise.resolve(undefined), 2_000, {
+        timeoutError: () => new Error("Tab freeze timed out."),
+      });
       stage = "protection";
-      const finalProtection = await this.engineProtection(record);
+      const finalProtection = holds(await this.engineProtection(record));
       const late = record.lease.demanded
         ? "demanded"
         : record.lease.state !== "sleeping"
@@ -573,7 +589,11 @@ export class SurfaceLedger {
                 : (blocked(record) ??
                   finalProtection ??
                   (record.unrestorable ? "unrestorable" : null));
-      if (late) return refused(late);
+      if (late) {
+        await thaw?.().catch(() => undefined);
+        return refused(late);
+      }
+      delete record.lastRefusal;
       this.pages.noteSleepRefusal(live.page, null);
       record.restore = {
         url: record.url,
@@ -593,6 +613,7 @@ export class SurfaceLedger {
         record.unrestorable = true;
         if (record.restore) record.restore = { url: record.url, engine: null, bytes: 0 };
       }
+      await thaw?.().catch(() => undefined);
       return refused(`${stage}-failed`);
     } finally {
       if (record.lease.state === "sleeping") record.lease.endSleep(false);

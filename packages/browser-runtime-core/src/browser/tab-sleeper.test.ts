@@ -698,6 +698,27 @@ describe("TabSleeper", () => {
     }
   });
 
+  it("under pressure sleeps a tab whose page protects it only for the last resort, and never one that captures (V1)", async () => {
+    const limit = 2 * 1024 ** 3;
+    const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };
+    const f = await fixture({ memoryPressure: () => Promise.resolve(pressure) });
+    try {
+      // The tab's own page refuses an ordinary sleep: notifications granted (last resort).
+      f.page.keepAwake = () => "notifications";
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(30_000);
+      // Nothing else to sleep, memory still over: the last resort takes it.
+      expect(f.ledger.stateOf(f.record.id)).toBe("suspended");
+      // A tab that captures is never taken, last resort or not.
+      const capturing = await f.ledger.openSurface({ origin: "agent", activate: false });
+      Object.assign(f.ledger.binding(capturing.id)!.page, { keepAwake: () => "capturing" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(f.ledger.stateOf(capturing.id)).toBe("live");
+    } finally {
+      await f.close();
+    }
+  });
+
   it("lets opens over the threshold through one at a time, each once the open before it has made its page (TS13)", async () => {
     const limit = 2 * 1024 ** 3;
     const pressure = { usedBytes: Math.round(limit * 0.8), limitBytes: limit };

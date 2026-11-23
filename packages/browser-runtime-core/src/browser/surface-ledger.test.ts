@@ -310,6 +310,54 @@ describe("SurfaceLedger", () => {
     }
   });
 
+  it("decides a sleep on a frozen page, thaws it when the sleep does not go ahead, and lets a last-resort protection give way only to the last resort (V1)", async () => {
+    const page = new FakePage({ url: "https://protect.test/" });
+    const steps: string[] = [];
+    let reason: string | null = null;
+    Object.assign(page, {
+      keepAwake: () => {
+        steps.push(`read:${reason ?? "none"}`);
+        return reason;
+      },
+      freeze: async () => {
+        steps.push("freeze");
+        return async () => {
+          steps.push("thaw");
+        };
+      },
+    });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const id = ledger.snapshot()[0]!.id;
+    try {
+      // A protection that starts after the first read is read again on the frozen page.
+      const keepAwake = page.keepAwake!.bind(page);
+      let reads = 0;
+      page.keepAwake = () => {
+        if (++reads === 2) reason = "capturing";
+        return keepAwake();
+      };
+      expect(await ledger.sleep(id, () => null)).toBe(false);
+      expect(steps).toEqual(["read:none", "freeze", "read:capturing", "thaw"]);
+      // Not known is not unprotected, in every pass.
+      steps.length = 0;
+      reason = "unknown";
+      expect(await ledger.sleep(id, () => null, { lastResort: true })).toBe(false);
+      // A last-resort protection: refused by an ordinary pass, taken by the last resort.
+      reason = "notifications";
+      expect(await ledger.sleep(id, () => null)).toBe(false);
+      reason = "capturing";
+      expect(await ledger.sleep(id, () => null, { lastResort: true })).toBe(false);
+      reason = "notifications";
+      expect(await ledger.sleep(id, () => null, { lastResort: true })).toBe(true);
+      expect(ledger.stateOf(id)).toBe("suspended");
+    } finally {
+      await ledger.closeOwnedPages().catch(() => undefined);
+      await ledger.close().catch(() => undefined);
+    }
+  });
+
   it("waits for a woken page's load only as long as its operation, and says at once when the tab went back to sleep (V3)", async () => {
     const page = new FakePage({ url: "https://load.test/" });
     const ledger = new SurfaceLedger(new FakeContext([page]));

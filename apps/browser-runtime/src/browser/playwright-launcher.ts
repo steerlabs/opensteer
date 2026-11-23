@@ -2255,6 +2255,7 @@ const pageStateScript = `(() => {
   const playing = new Set();
   const devices = new Set();
   let audibleAt = 0;
+  let webAudioRunning = () => false;
   let edited = false;
   let unloadHandlers = 0;
   Object.defineProperty(globalThis, key, {
@@ -2264,7 +2265,7 @@ const pageStateScript = `(() => {
       const doc = globalThis.document;
       if (doc && (doc.pictureInPictureElement || globalThis.documentPictureInPicture?.window))
         return "picture-in-picture";
-      if (playing.size) return "media";
+      if (playing.size || webAudioRunning()) return "media";
       if (audibleAt && Date.now() - audibleAt < 60000) return "recently-audible";
       if (doc && doc.contentType === "application/pdf") return "pdf";
       if (globalThis.Notification && Notification.permission === "granted") return "notifications";
@@ -2275,6 +2276,17 @@ const pageStateScript = `(() => {
   });
   const media = globalThis.navigator && navigator.mediaDevices;
   if (media) {
+    const watchTrack = (track) => {
+      tracks.add(track);
+      track.addEventListener("ended", () => tracks.delete(track));
+    };
+    // V1: a clone of a captured track captures as well.
+    const clone = MediaStreamTrack.prototype.clone;
+    MediaStreamTrack.prototype.clone = function (...args) {
+      const copy = clone.apply(this, args);
+      if (tracks.has(this)) watchTrack(copy);
+      return copy;
+    };
     const watch = (stream) => {
       for (const track of stream.getTracks()) {
         tracks.add(track);
@@ -2296,17 +2308,37 @@ const pageStateScript = `(() => {
     }
   }
   const audible = (element) => !element.paused && !element.ended && !element.muted && element.volume > 0;
+  // V1: the event's own target, inside a shadow root too (composedPath), not the retargeted host.
+  const origin = (event) => (event.composedPath && event.composedPath()[0]) || event.target;
   const heard = (event) => {
-    const element = event.target;
+    const element = origin(event);
     if (!(element instanceof HTMLMediaElement)) return;
     if (audible(element)) playing.add(element);
     else if (playing.delete(element)) audibleAt = Date.now();
   };
   for (const type of ["playing", "pause", "ended", "volumechange", "emptied"])
     globalThis.addEventListener(type, heard, true);
+  // V1: Web Audio is heard while it runs, and for a minute after.
+  const Audio = globalThis.AudioContext;
+  if (typeof Audio === "function") {
+    const running = new Set();
+    const audioState = (context) => {
+      if (context.state === "running") running.add(context);
+      else if (running.delete(context)) audibleAt = Date.now();
+    };
+    globalThis.AudioContext = new Proxy(Audio, {
+      construct(target, args, newTarget) {
+        const context = Reflect.construct(target, args, newTarget);
+        context.addEventListener("statechange", () => audioState(context));
+        audioState(context);
+        return context;
+      },
+    });
+    webAudioRunning = () => running.size > 0;
+  }
   const editing = (event) => {
     if (!event.isTrusted) return;
-    const target = event.target;
+    const target = origin(event);
     if (
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
@@ -2341,6 +2373,8 @@ const pageStateScript = `(() => {
     usb.open = function (...args) {
       return open.apply(this, args).then((value) => (devices.add(this), value));
     };
+    // V1: a device unplugged without a close is gone.
+    navigator.usb?.addEventListener?.("disconnect", (event) => devices.delete(event.device));
     usb.close = function (...args) {
       return close.apply(this, args).finally(() => devices.delete(this));
     };
@@ -2350,7 +2384,14 @@ const pageStateScript = `(() => {
     const connect = gatt.connect;
     const disconnect = gatt.disconnect;
     gatt.connect = function (...args) {
-      return connect.apply(this, args).then((value) => (devices.add(this), value));
+      return connect.apply(this, args).then((value) => {
+        devices.add(this);
+        // V1: a link that drops without a disconnect is gone.
+        this.device?.addEventListener?.("gattserverdisconnected", () => devices.delete(this), {
+          once: true,
+        });
+        return value;
+      });
     };
     gatt.disconnect = function (...args) {
       devices.delete(this);
@@ -2368,7 +2409,8 @@ type PageKeepAwake =
   | "pdf"
   | "notifications"
   | "form"
-  | "beforeunload";
+  | "beforeunload"
+  | "unknown";
 const pageKeepAwakeReasons: ReadonlySet<string> = new Set<PageKeepAwake>([
   "media",
   "capturing",
@@ -2379,15 +2421,18 @@ const pageKeepAwakeReasons: ReadonlySet<string> = new Set<PageKeepAwake>([
   "notifications",
   "form",
   "beforeunload",
+  "unknown",
 ]);
 
 /** The first thing this frame's document holds that a sleep would lose, or null. */
 async function documentKeepAwake(frame: Frame): Promise<PageKeepAwake | null> {
+  // V1 (rule A): a read that fails is not known, and not known is not unprotected; only a frame
+  // that is really gone has nothing to protect.
   const reason = await frame
     .evaluate<unknown>(
       `(() => { const state = globalThis[Symbol.for("opensteer.keepAwake")]; return typeof state === "function" ? state() : null; })()`,
     )
-    .catch(() => null);
+    .catch(() => (frame.isDetached() ? null : "unknown"));
   return typeof reason === "string" && pageKeepAwakeReasons.has(reason)
     ? (reason as PageKeepAwake)
     : null;
@@ -2421,6 +2466,7 @@ async function documentMediaPlaying(frame: Frame): Promise<boolean | null> {
 class PlaywrightPageHandle implements BrowserPage {
   readonly captureRestore?: () => Promise<unknown | null>;
   readonly sleepsAsItself: () => boolean;
+  readonly freeze: () => Promise<() => Promise<void>>;
   private pendingDiscard: {
     readonly tokenId: string;
     readonly targetId: string;
@@ -2478,6 +2524,26 @@ class PlaywrightPageHandle implements BrowserPage {
     }
     // Without the helper once the look has ended, a sleep closes the tab (finding 10).
     this.sleepsAsItself = () => this.contextHandle.lifecycle !== undefined;
+    // V1: a sleep reads the page's protections on a frozen page; one that does not go ahead thaws
+    // it. A page that could not be frozen reads as not known.
+    this.freeze = async () => {
+      const lifecycle = async (state: "frozen" | "active") => {
+        const session = await withTimeout(this.context.newCDPSession(this.page), 1_000, {
+          timeoutError: () => new Error("Freeze CDP attach timed out."),
+        });
+        try {
+          await withTimeout(session.send("Page.setWebLifecycleState", { state }), 1_000, {
+            timeoutError: () => new Error("Freeze timed out."),
+          });
+        } finally {
+          await withTimeout(session.detach(), 500, {
+            timeoutError: () => new Error("Freeze detach timed out."),
+          }).catch(() => undefined);
+        }
+      };
+      await lifecycle("frozen");
+      return () => lifecycle("active");
+    };
     page.on("request", (request) => {
       if (!["GET", "HEAD"].includes(request.method())) this.uploads.add(request);
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
