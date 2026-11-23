@@ -24,3 +24,6 @@ export const MAX_AUTOMATION_SECRETS = 64;
 
 /** Maximum UTF-8 byte length of a single sealed automation secret value. */
 export const MAX_AUTOMATION_SECRET_VALUE_BYTES = 64 * 1_024;
+
+/** Maximum combined UTF-8 byte length of all sealed secrets on a single automation (Finding 15). */
+export const MAX_AUTOMATION_SECRETS_TOTAL_BYTES = 64 * 1_024;

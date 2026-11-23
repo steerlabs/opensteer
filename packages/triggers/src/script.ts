@@ -1,7 +1,11 @@
 import { utf8ByteLength } from "@opensteer/core";
 import { basename } from "node:path";
 import { z } from "zod";
-import { MAX_AUTOMATION_SECRET_VALUE_BYTES, MAX_SCRIPT_BYTES } from "./fuses.js";
+import {
+  MAX_AUTOMATION_SECRET_VALUE_BYTES,
+  MAX_AUTOMATION_SECRETS_TOTAL_BYTES,
+  MAX_SCRIPT_BYTES,
+} from "./fuses.js";
 import type { StoredTriggerProgram } from "./models.js";
 
 /**
@@ -80,60 +84,18 @@ export function scriptFileExtension(interpreter: readonly string[] | null | unde
   return ".txt";
 }
 
-const FORBIDDEN_SECRET_NAMES = new Set([
-  "PATH",
-  "PATHEXT",
-  "HOME",
-  "USER",
-  "LOGNAME",
-  "SHELL",
-  "TMPDIR",
-  "TEMP",
-  "TMP",
-  "IFS",
-  "ENV",
-  "BASH_ENV",
-  "CDPATH",
-  "GLOBIGNORE",
-  "PS4",
-  "COMSPEC",
-  "SYSTEMROOT",
-  "WINDIR",
-  "APPDATA",
-  "LOCALAPPDATA",
-  "USERPROFILE",
-  "LD_PRELOAD",
-  "LD_LIBRARY_PATH",
-  "LD_AUDIT",
-  "LD_DEBUG",
-  "NODE_OPTIONS",
-  "NODE_PATH",
-  "NODE_EXTRA_CA_CERTS",
-  "PYTHONSTARTUP",
-  "PYTHONPATH",
-  "PYTHONHOME",
-  "RUBYOPT",
-  "PERL5OPT",
-  "PERL5LIB",
-]);
-
-function isForbiddenSecretName(name: string): boolean {
-  const upper = name.toUpperCase();
-  if (upper.startsWith("OPENSTEER_")) return true;
-  if (upper.startsWith("DYLD_")) return true;
-  if (upper.startsWith("LD_")) return true;
-  return FORBIDDEN_SECRET_NAMES.has(upper);
-}
+/**
+ * Prefix applied to every per-automation sealed secret in the script's environment (Z10).
+ * Nothing read by an OS loader, shell, or runtime starts with `OPENSTEER_SECRET_`, so
+ * sealed values can never shadow `PATH`, `LD_*`, `DYLD_*`, `ZDOTDIR`, `HTTP_PROXY`, etc.
+ */
+export const AUTOMATION_SECRET_ENV_PREFIX = "OPENSTEER_SECRET_" as const;
 
 export const AutomationSecretNameSchema = z
   .string()
   .regex(
-    /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u,
-    "Secret name must be a valid environment variable name (letters, digits, and underscores).",
-  )
-  .refine(
-    (name) => !isForbiddenSecretName(name),
-    "That environment variable name is reserved by Opensteer or the operating system.",
+    /^[A-Za-z_][A-Za-z0-9_]{0,63}$/u,
+    "Secret name must be 1 to 64 letters, digits, or underscores starting with a letter or underscore.",
   );
 
 export const AutomationSecretValueSchema = z
@@ -143,3 +105,29 @@ export const AutomationSecretValueSchema = z
     (value) => utf8ByteLength(value) <= MAX_AUTOMATION_SECRET_VALUE_BYTES,
     `Secret value exceeds ${MAX_AUTOMATION_SECRET_VALUE_BYTES} bytes.`,
   );
+
+/** Returns the prefixed environment variable name (`OPENSTEER_SECRET_<name>`) for a sealed secret. */
+export function automationSecretEnvName(name: string): string {
+  const parsed = AutomationSecretNameSchema.parse(name);
+  return `${AUTOMATION_SECRET_ENV_PREFIX}${parsed}`;
+}
+
+/** Combined UTF-8 byte size of all secret names and values, bounded so execve never hits E2BIG. */
+export function automationSecretsTotalBytes(secrets: Readonly<Record<string, string>>): number {
+  let total = 0;
+  for (const [name, value] of Object.entries(secrets)) {
+    total += utf8ByteLength(AUTOMATION_SECRET_ENV_PREFIX) + utf8ByteLength(name) + utf8ByteLength(value);
+  }
+  return total;
+}
+
+export function assertAutomationSecretsWithinBounds(
+  secrets: Readonly<Record<string, string>>,
+): void {
+  const total = automationSecretsTotalBytes(secrets);
+  if (total > MAX_AUTOMATION_SECRETS_TOTAL_BYTES) {
+    throw new Error(
+      `Automation secrets total size (${total} bytes) exceeds ${MAX_AUTOMATION_SECRETS_TOTAL_BYTES} bytes.`,
+    );
+  }
+}

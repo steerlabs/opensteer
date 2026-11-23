@@ -241,12 +241,15 @@ describe("AutomationScriptExecutor", () => {
       script: {
         interpreter: ["/bin/sh"],
         text: [
-          'printf "secret=%s\\n" "$WEBHOOK_SECRET"',
+          'printf "prefixed=%s\\n" "$OPENSTEER_SECRET_WEBHOOK_SECRET"',
+          'printf "unprefixed=%s\\n" "${WEBHOOK_SECRET:-unset}"',
+          'printf "zdotdir=%s\\n" "${ZDOTDIR:-unset}"',
+          'printf "prefixed_zdotdir=%s\\n" "$OPENSTEER_SECRET_ZDOTDIR"',
           'printf "cdp=%s\\n" "$OPENSTEER_CDP_URL"',
           'printf "bytes=%s\\n" "$(wc -c < "$(node -e "console.log(JSON.parse(require(\'fs\').readFileSync(process.env.OPENSTEER_EVENT,\'utf8\')).request.bodyPath)")" | tr -d " ")"',
         ].join("\r\n"),
       },
-      secrets: { WEBHOOK_SECRET: "whsec_top_secret" },
+      secrets: { WEBHOOK_SECRET: "whsec_top_secret", ZDOTDIR: "/tmp/evil" },
       signal: new AbortController().signal,
       webhookBody: rawBody,
       workspace,
@@ -254,7 +257,10 @@ describe("AutomationScriptExecutor", () => {
 
     expect(output.status).toBe("succeeded");
     expect(output.exitCode).toBe(0);
-    expect(output.stdout).toContain("secret=whsec_top_secret");
+    expect(output.stdout).toContain("prefixed=whsec_top_secret");
+    expect(output.stdout).toContain("unprefixed=unset");
+    expect(output.stdout).toContain("zdotdir=unset");
+    expect(output.stdout).toContain("prefixed_zdotdir=/tmp/evil");
     expect(output.stdout).toContain("cdp=ws://127.0.0.1:9999/cdp");
     expect(output.stdout).toContain(`bytes=${rawBody.byteLength}`);
     // Script file must never rely on +x (noexec safe).

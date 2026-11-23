@@ -50,7 +50,7 @@ describe("AutomationSecrets", () => {
     expect(cleared).toBeNull();
   });
 
-  it("binds sealed envelopes to their trigger id and rejects forbidden secret names", async () => {
+  it("binds sealed envelopes to their trigger id, rejects case-insensitive collisions, and bounds total bytes (Z10)", async () => {
     const secrets = makeSecrets();
     const sealed = await secrets.apply(triggerA, null, { set: { MY_KEY: "secret" } });
     expect(sealed).not.toBeNull();
@@ -58,10 +58,15 @@ describe("AutomationSecrets", () => {
     await expect(secrets.values(triggerB, sealed!.envelope)).rejects.toThrow();
 
     await expect(
-      secrets.apply(triggerA, null, { set: { OPENSTEER_MCP_TOKEN: "hijack" } }),
+      secrets.apply(triggerA, null, { set: { "BAD-NAME": "nope" } }),
     ).rejects.toThrow();
     await expect(
-      secrets.apply(triggerA, null, { set: { LD_PRELOAD: "/tmp/evil.so" } }),
-    ).rejects.toThrow();
+      secrets.apply(triggerA, sealed!.envelope, { set: { my_key: "collision" } }),
+    ).rejects.toThrow(/already exists/iu);
+    await expect(
+      secrets.apply(triggerA, null, {
+        set: { BIG_A: "a".repeat(40_000), BIG_B: "b".repeat(40_000) },
+      }),
+    ).rejects.toThrow(/total/iu);
   });
 });

@@ -3,6 +3,9 @@ import type { TriggerId, TriggerOccurrenceId } from "@opensteer/core";
 import { NativeFsHelper, NativeFsHelperError } from "@opensteer/shared/files/native-fs-helper";
 import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import {
+  assertAutomationSecretsWithinBounds,
+  automationSecretEnvName,
+  AutomationSecretValueSchema,
   MAX_OUTPUT_TAIL_BYTES,
   normalizeScriptText,
   scriptFileExtension,
@@ -276,6 +279,13 @@ export class AutomationScriptExecutor {
     environment.PATH = existingPath
       ? `${this.#cliBinDirectory}${delimiter}${existingPath}`
       : this.#cliBinDirectory;
+    if (input.secrets) {
+      assertAutomationSecretsWithinBounds(input.secrets);
+      for (const [name, value] of Object.entries(input.secrets)) {
+        AutomationSecretValueSchema.parse(value);
+        environment[automationSecretEnvName(name)] = value;
+      }
+    }
     environment.OPENSTEER_AUTOMATION_ID = input.automationId;
     environment.OPENSTEER_CLI = this.#cliScriptPath;
     environment.OPENSTEER_EVENT = input.eventFile;
@@ -286,11 +296,6 @@ export class AutomationScriptExecutor {
     if (input.endpoints.browserCdp) {
       environment.OPENSTEER_CDP_TOKEN = input.endpoints.browserCdp.token;
       environment.OPENSTEER_CDP_URL = input.endpoints.browserCdp.url;
-    }
-    if (input.secrets) {
-      for (const [name, value] of Object.entries(input.secrets)) {
-        environment[name] = value;
-      }
     }
     return environment;
   }

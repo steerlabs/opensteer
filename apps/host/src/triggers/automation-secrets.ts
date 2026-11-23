@@ -3,7 +3,9 @@ import { OpensteerError, type TriggerId } from "@opensteer/core";
 import {
   AutomationSecretNameSchema,
   AutomationSecretValueSchema,
+  automationSecretsTotalBytes,
   MAX_AUTOMATION_SECRETS,
+  MAX_AUTOMATION_SECRETS_TOTAL_BYTES,
 } from "@opensteer/triggers";
 
 export interface AutomationSecretsPatch {
@@ -64,10 +66,29 @@ export class AutomationSecrets {
     }
 
     const keys = Object.keys(next);
+    const seenLower = new Map<string, string>();
+    for (const key of keys) {
+      const lower = key.toLowerCase();
+      const existing = seenLower.get(lower);
+      if (existing && existing !== key) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: `Secret "${key}" conflicts with "${existing}" which already exists with different casing.`,
+        });
+      }
+      seenLower.set(lower, key);
+    }
     if (keys.length > MAX_AUTOMATION_SECRETS) {
       throw new OpensteerError({
         code: "bad_request",
         message: `An automation can hold at most ${MAX_AUTOMATION_SECRETS} secrets.`,
+      });
+    }
+    const totalBytes = automationSecretsTotalBytes(next);
+    if (totalBytes > MAX_AUTOMATION_SECRETS_TOTAL_BYTES) {
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `Automation secrets total size exceeds ${MAX_AUTOMATION_SECRETS_TOTAL_BYTES} bytes.`,
       });
     }
     if (keys.length === 0) return null;

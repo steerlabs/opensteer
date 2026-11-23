@@ -77,28 +77,17 @@ describe("AutomationScriptSchema", () => {
   });
 });
 
-describe("AutomationSecretNameSchema", () => {
-  it("accepts normal environment variable names and rejects reserved or hijack names", () => {
+describe("AutomationSecretNameSchema (Z10)", () => {
+  it("accepts letters, digits, and underscores and exposes them solely under OPENSTEER_SECRET_", () => {
     expect(AutomationSecretNameSchema.safeParse("STRIPE_WEBHOOK_SECRET").success).toBe(true);
     expect(AutomationSecretNameSchema.safeParse("api_key_2").success).toBe(true);
+    // Because every sealed value is prefixed with OPENSTEER_SECRET_, names like PATH,
+    // ZDOTDIR, LD_PRELOAD, or HTTP_PROXY cannot shadow OS/interpreter variables.
+    for (const safe of ["PATH", "ZDOTDIR", "LD_PRELOAD", "HTTP_PROXY", "NODE_USE_ENV_PROXY"]) {
+      expect(AutomationSecretNameSchema.safeParse(safe).success, safe).toBe(true);
+    }
 
-    for (const bad of [
-      "",
-      "123_BAD",
-      "BAD-NAME",
-      "OPENSTEER_MCP_TOKEN",
-      "opensteer_event",
-      "PATH",
-      "HOME",
-      "SHELL",
-      "LD_PRELOAD",
-      "LD_LIBRARY_PATH",
-      "DYLD_INSERT_LIBRARIES",
-      "NODE_OPTIONS",
-      "BASH_ENV",
-      "PYTHONPATH",
-      "IFS",
-    ]) {
+    for (const bad of ["", "123_BAD", "BAD-NAME", "BAD.NAME", "A".repeat(65)]) {
       expect(AutomationSecretNameSchema.safeParse(bad).success, bad).toBe(false);
     }
 
