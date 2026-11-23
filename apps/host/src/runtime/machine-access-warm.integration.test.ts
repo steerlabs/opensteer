@@ -974,10 +974,26 @@ class ColdCodexHarnessDriver extends CodexHarnessDriver {
     context: Parameters<CodexHarnessDriver["create"]>[0],
   ): Promise<HarnessAdapter> {
     const adapter = await super.create(context);
-    const capabilities = { ...adapter.capabilities, warmReuse: false };
+    const capabilities = { ...adapter.capabilities, sharedEngineProcess: false, warmReuse: false };
+    const withoutSharedEngine = (
+      sessionContext: Parameters<HarnessAdapter["startSession"]>[0],
+    ) => {
+      const { sharedEngine: _ignored, ...dedicated } = sessionContext;
+      return dedicated;
+    };
     return new Proxy(adapter, {
       get: (target, property) => {
         if (property === "capabilities") return capabilities;
+        if (property === "startSession") {
+          return (sessionContext: Parameters<HarnessAdapter["startSession"]>[0]) =>
+            target.startSession(withoutSharedEngine(sessionContext));
+        }
+        if (property === "resumeSession") {
+          return (
+            providerSessionReference: string,
+            sessionContext: Parameters<HarnessAdapter["resumeSession"]>[1],
+          ) => target.resumeSession(providerSessionReference, withoutSharedEngine(sessionContext));
+        }
         const value: unknown = Reflect.get(target, property, target);
         if (typeof value !== "function") return value;
         return (...args: unknown[]): unknown => Reflect.apply(value, target, args);
